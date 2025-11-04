@@ -61,7 +61,7 @@ mappings:
       course_info: "CourseInformation.txt"
       staff_info: "StaffInformation.txt"
       student_demographic: "StudentDemographicInformation.txt"
-      class_info: "ClassInformationEnh.txt" 
+      class_info: "ClassInfoEnhanced.txt" 
     field_map:
       "Class ID":
         column: "Master Timetable ID"

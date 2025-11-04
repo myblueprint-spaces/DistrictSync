@@ -656,10 +656,11 @@ class DataTransformer:
                             
                             teacher_id_y_col = staff_id_col + "_y"
                             if teacher_id_y_col in valid_homeroom_enrollments.columns:
-                                teacher_enroll = valid_homeroom_enrollments.drop_duplicates(subset=["Class ID"])[["Class ID", teacher_id_y_col]].copy()
+                                teacher_enroll = valid_homeroom_enrollments.drop_duplicates(subset=["Class ID"])[["Class ID", teacher_id_y_col, "school number"]].copy()
                                 teacher_enroll.rename(columns={teacher_id_y_col: "User ID"}, inplace=True)
                                 teacher_enroll["Role"] = "teacher"
-                                teacher_enroll = teacher_enroll[teacher_enroll["User ID"].notna() & (teacher_enroll["User ID"].astype(str).str.strip() != "")]
+                                clean_ids = teacher_enroll["User ID"].astype(str).str.strip().str.lower()
+                                teacher_enroll = teacher_enroll[teacher_enroll["User ID"].notna() & (clean_ids != "") & (clean_ids != "nan")]
                                 final_enrollments.append(teacher_enroll)
                                 logger.info(f"[Enrollments] Created {len(teacher_enroll)} teacher homeroom enrollments")
 
@@ -717,7 +718,8 @@ class DataTransformer:
                     teacher_enroll = non_blended_df[["Class ID", staff_id_col, "school number"]].copy()
                     teacher_enroll.rename(columns={staff_id_col: "User ID"}, inplace=True)
                     teacher_enroll["Role"] = "teacher"
-                    teacher_enroll = teacher_enroll[teacher_enroll["User ID"].notna() & (teacher_enroll["User ID"].astype(str).str.strip() != "")]
+                    clean_ids = teacher_enroll["User ID"].astype(str).str.strip().str.lower()
+                    teacher_enroll = teacher_enroll[teacher_enroll["User ID"].notna() & (clean_ids != "") & (clean_ids != "nan")]
                     final_enrollments.append(teacher_enroll)
                     logger.info(f"[Enrollments] Created {len(teacher_enroll)} teacher subject enrollments")
             
