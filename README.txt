@@ -12,17 +12,15 @@ data/input/ folder:
 
 StudentSchedule.txt 
 
-
 StudentDemographicEnhanced.txt 
-
 
 StaffInformation.txt 
 
-
 EmergencyContactInformation.txt 
 
-
 CourseInformation.txt 
+
+ClassInformationEnhanced.txt
 
 Note: The tool requires these exact filenames and field names.
 
