@@ -326,24 +326,60 @@ class DataTransformer:
         field_map = mapping.get("field_map", {})
         
         if entity == "Students":
+            # 1. Determine EnrollStatus on working dataframe first
+            if "enrolment status" in working.columns:
+                working["EnrollStatus"] = working["enrolment status"].apply(
+                    lambda x: str(x).strip() if str(x).strip() in ["Active", "PreReg"] else "Inactive"
+                )
+            elif "withdraw date" in working.columns:
+                # Parse withdraw date and check if it's in the past (or today)
+                today = datetime.now().date()
+                unparseable_dates = []
+                
+                def check_withdraw_date(x):
+                    if pd.isna(x) or str(x).strip() == "":
+                        return "Active"
+                    try:
+                        # Try common date formats
+                        date_str = str(x).strip()
+                        for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
+                            try:
+                                withdraw_date = datetime.strptime(date_str, fmt).date()
+                                return "Inactive" if withdraw_date <= today else "Active"
+                            except ValueError:
+                                continue
+                        # If no format matched, treat as Inactive (has a date but couldn't parse)
+                        unparseable_dates.append(date_str)
+                        return "Inactive"
+                    except Exception:
+                        return "Inactive"
+                
+                working["EnrollStatus"] = working["withdraw date"].apply(check_withdraw_date)
+                
+                # Log unparseable dates once with count and unique samples
+                if unparseable_dates:
+                    unique_formats = set(unparseable_dates[:10])  # Sample up to 10 unique formats
+                    logger.warning(f"[Students] Could not parse {len(unparseable_dates)} withdraw date(s). Sample formats: {unique_formats}")
+            else:
+                logger.warning("[Students] Could not find 'enrolment status' or 'withdraw date' column. Defaulting to 'Active'.")
+                working["EnrollStatus"] = "Active"
+
+            # 2. Filter: Keep only Active students
+            initial_count = len(working)
+            working = working[working["EnrollStatus"] == "Active"].copy()
+            filtered_count = initial_count - len(working)
+            if filtered_count > 0:
+                logger.info(f"[Students] Filtered out {filtered_count} inactive students.")
+
+            # 3. Populate result with EnrollStatus (all will be 'Active' now)
+            result["EnrollStatus"] = working["EnrollStatus"]
+
+            # 4. Generate Email Address (only for remaining Active students)
             email_format_config = field_map.get("Email Address", {})
             if isinstance(email_format_config, dict):
                 email_format = email_format_config.get("format")
                 if email_format:
                     result["Email Address"] = working.apply(self.generate_student_email, format_str=email_format.lower(), axis=1)
-
-            if "EnrollStatus" not in result.columns:
-                if "enrolment status" in working.columns:
-                    result["EnrollStatus"] = working["enrolment status"].apply(
-                        lambda x: str(x).strip() if str(x).strip() in ["Active", "PreReg"] else "Inactive"
-                    )
-                elif "withdraw date" in working.columns:
-                    result["EnrollStatus"] = working["withdraw date"].apply(
-                        lambda x: "Active" if pd.isna(x) or str(x).strip() == "" else "Inactive"
-                    )
-                else:
-                    logger.warning("[Students] Could not find 'enrolment status' or 'withdraw date' column. Defaulting to 'Active'.")
-                    result["EnrollStatus"] = "Active"
 
         if entity == "Staff":
             source_config = mapping.get("source_files", {})
