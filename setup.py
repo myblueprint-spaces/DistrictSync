@@ -18,4 +18,4 @@ setup(
     python_requires=">=3.8",
 )
 
-#pyinstaller --onefile --name GDE2Acsv --add-data "config;config" --add-data "data/input;data/input" --add-data "data/output;data/output" --distpath bin --hidden-import=pandas --hidden-import=yaml --hidden-import=logging.config src/main.py
+#pyinstaller --onefile --name GDE2Acsv --add-data "config;config" --add-data "data/input;data/input" --add-data "data/output;data/output" --distpath dist --hidden-import=pandas --hidden-import=yaml --hidden-import=logging.config src/main.py
