@@ -37,7 +37,7 @@ jobs:
         run: mypy src/ --exclude 'src/ui'
 
       - name: Security scan with bandit
-        run: bandit -r src/ -q
+        run: bandit -r src/ -q -c pyproject.toml
 
       - name: Run tests with coverage
         run: python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=80

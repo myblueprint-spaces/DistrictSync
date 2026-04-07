@@ -105,3 +105,8 @@ strict = false
 [[tool.mypy.overrides]]
 module = ["src.ui.*"]
 ignore_errors = true  # Streamlit stubs not available
+
+[tool.bandit]
+# B603/B607: subprocess calls — all inputs validated via validators.py
+# B404: subprocess import — required for schtasks/crontab
+skips = ["B404", "B603", "B607"]

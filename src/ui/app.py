@@ -59,7 +59,7 @@ try:
                         status_parts.append("Last run: success")
                     elif last_result != "—":
                         status_parts.append(f"Last run result: `{last_result}`")
-            except Exception:
+            except Exception:  # nosec B110 - optional status display
                 pass
 
         st.success(" | ".join(status_parts))

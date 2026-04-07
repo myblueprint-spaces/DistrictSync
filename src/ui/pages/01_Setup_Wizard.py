@@ -179,7 +179,7 @@ if st.session_state.wizard_step == 1:
                     missing_check = [f for f in expected if not (Path(input_dir) / f).exists()]
                     if missing_check:
                         st.warning(f"Expected GDE files not found in input directory: {', '.join(missing_check)}")
-                except Exception:
+                except Exception:  # nosec B110 - optional file check
                     pass
 
             _go(2)
@@ -256,7 +256,7 @@ elif st.session_state.wizard_step == 3:
         try:
             h, m = cfg.schedule_time.split(":")
             current_time = datetime.time(int(h), int(m))
-        except Exception:
+        except Exception:  # nosec B110 - fallback to default time
             pass
 
     run_time = st.time_input("Daily run time (24-hour)", value=current_time)

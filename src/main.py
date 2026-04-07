@@ -41,7 +41,7 @@ def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list
         try:
             with open(prev_path, encoding="utf-8") as f:
                 prev_count = sum(1 for _ in f) - 1
-        except Exception:
+        except Exception:  # nosec B112 - skip unreadable previous output files
             continue
         if prev_count > 0 and len(df) < prev_count * (1 - ANOMALY_THRESHOLD):
             pct = ((prev_count - len(df)) / prev_count) * 100

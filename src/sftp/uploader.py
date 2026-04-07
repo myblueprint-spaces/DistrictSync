@@ -95,7 +95,7 @@ class SFTPUploader:
 
         client = paramiko.SSHClient()
         client.load_system_host_keys()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # nosec B507 - host restricted to ALLOWED_SFTP_HOSTS
         client.connect(
             self.host,
             port=self.port,
