@@ -22,12 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 class ClassTransformer(BaseTransformer):
-
     def __init__(self):
         self._blended_detector = BlendedClassDetector()
 
-    def transform(self, df: pd.DataFrame, mapping: dict[str, Any],
-                  context: TransformContext) -> pd.DataFrame:
+    def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         source_config = mapping.get("source_files", {})
         normalized_sources = self.normalize_source_config(source_config)
         field_map = mapping.get("field_map", {})
@@ -37,10 +35,12 @@ class ClassTransformer(BaseTransformer):
         final_classes: list[pd.DataFrame] = []
 
         self._run_blended_detection(normalized_sources, mapping, context, teacher_id_col)
-        self._create_homeroom_classes(final_classes, normalized_sources, field_map,
-                                     homeroom_grades, teacher_id_col, context)
-        self._create_subject_classes(final_classes, normalized_sources, field_map,
-                                     homeroom_grades, teacher_id_col, context)
+        self._create_homeroom_classes(
+            final_classes, normalized_sources, field_map, homeroom_grades, teacher_id_col, context
+        )
+        self._create_subject_classes(
+            final_classes, normalized_sources, field_map, homeroom_grades, teacher_id_col, context
+        )
 
         if final_classes:
             result = pd.concat(final_classes, ignore_index=True).drop_duplicates(subset=["Class ID"])
@@ -52,8 +52,9 @@ class ClassTransformer(BaseTransformer):
     # -------------------------------------------------------------------
     # Blended detection
     # -------------------------------------------------------------------
-    def _run_blended_detection(self, normalized_sources: dict, mapping: dict,
-                               context: TransformContext, teacher_id_col: str) -> None:
+    def _run_blended_detection(
+        self, normalized_sources: dict, mapping: dict, context: TransformContext, teacher_id_col: str
+    ) -> None:
         class_info_df = self.get_source_file(context, normalized_sources, "class_info")
         if class_info_df.empty:
             logger.info("[Classes] No class info data found for blended class detection")
@@ -71,10 +72,15 @@ class ClassTransformer(BaseTransformer):
     # -------------------------------------------------------------------
     # Homeroom classes
     # -------------------------------------------------------------------
-    def _create_homeroom_classes(self, final_classes: list[pd.DataFrame],
-                                 normalized_sources: dict, field_map: dict,
-                                 homeroom_grades: list, teacher_id_col: str,
-                                 context: TransformContext) -> None:
+    def _create_homeroom_classes(
+        self,
+        final_classes: list[pd.DataFrame],
+        normalized_sources: dict,
+        field_map: dict,
+        homeroom_grades: list,
+        teacher_id_col: str,
+        context: TransformContext,
+    ) -> None:
         student_demo_df = self.get_source_file(context, normalized_sources, "student_demographic")
         if student_demo_df.empty:
             return
@@ -103,7 +109,8 @@ class ClassTransformer(BaseTransformer):
 
         hc = unique_homerooms.copy()
         hc["Class ID"] = (
-            hc[SCHOOL_NUMBER].astype(str) + "_"
+            hc[SCHOOL_NUMBER].astype(str)
+            + "_"
             + hc[homeroom_col].fillna("UnassignedHomeroom").astype(str)
             + f"_{context.school_year}"
         )
@@ -144,10 +151,15 @@ class ClassTransformer(BaseTransformer):
     # -------------------------------------------------------------------
     # Subject classes
     # -------------------------------------------------------------------
-    def _create_subject_classes(self, final_classes: list[pd.DataFrame],
-                                normalized_sources: dict, field_map: dict,
-                                homeroom_grades: list, teacher_id_col: str,
-                                context: TransformContext) -> None:
+    def _create_subject_classes(
+        self,
+        final_classes: list[pd.DataFrame],
+        normalized_sources: dict,
+        field_map: dict,
+        homeroom_grades: list,
+        teacher_id_col: str,
+        context: TransformContext,
+    ) -> None:
         schedule_df = self.get_source_file(context, normalized_sources, "student_schedule")
         if schedule_df.empty:
             return
@@ -163,8 +175,7 @@ class ClassTransformer(BaseTransformer):
         if non_homeroom_df.empty:
             return
 
-        merged = self._merge_course_and_staff(non_homeroom_df, normalized_sources,
-                                               teacher_id_col, context)
+        merged = self._merge_course_and_staff(non_homeroom_df, normalized_sources, teacher_id_col, context)
         merged = self._assign_class_ids(merged, field_map, context)
 
         subject_output = pd.DataFrame()
@@ -173,7 +184,11 @@ class ClassTransformer(BaseTransformer):
         self._assign_grades(subject_output, merged, field_map, context)
 
         school_id_config = field_map.get("School ID", {})
-        school_col = school_id_config.get("column", SCHOOL_NUMBER).lower() if isinstance(school_id_config, dict) else SCHOOL_NUMBER
+        school_col = (
+            school_id_config.get("column", SCHOOL_NUMBER).lower()
+            if isinstance(school_id_config, dict)
+            else SCHOOL_NUMBER
+        )
         subject_output["School ID"] = merged.get(school_col, "")
         subject_output["Start Date"] = self.resolve_date(field_map, "Start Date", context)
         subject_output["End Date"] = self.resolve_date(field_map, "End Date", context)
@@ -181,8 +196,9 @@ class ClassTransformer(BaseTransformer):
         final_classes.append(subject_output)
         logger.info(f"[Classes] Created {len(subject_output)} subject classes")
 
-    def _merge_course_and_staff(self, df: pd.DataFrame, normalized_sources: dict,
-                                 teacher_id_col: str, context: TransformContext) -> pd.DataFrame:
+    def _merge_course_and_staff(
+        self, df: pd.DataFrame, normalized_sources: dict, teacher_id_col: str, context: TransformContext
+    ) -> pd.DataFrame:
         merged = df
         course_df = self.get_source_file(context, normalized_sources, "course_info")
         if not course_df.empty:
@@ -207,12 +223,12 @@ class ClassTransformer(BaseTransformer):
             )
         return merged
 
-    def _assign_class_ids(self, merged: pd.DataFrame, field_map: dict,
-                          context: TransformContext) -> pd.DataFrame:
+    def _assign_class_ids(self, merged: pd.DataFrame, field_map: dict, context: TransformContext) -> pd.DataFrame:
         return self.assign_class_ids(merged, field_map, context)
 
-    def _assign_class_names(self, output: pd.DataFrame, merged: pd.DataFrame,
-                            field_map: dict, context: TransformContext) -> None:
+    def _assign_class_names(
+        self, output: pd.DataFrame, merged: pd.DataFrame, field_map: dict, context: TransformContext
+    ) -> None:
         name_config = field_map.get("Name", {})
         if not isinstance(name_config, dict):
             return
@@ -229,8 +245,9 @@ class ClassTransformer(BaseTransformer):
 
         output["Name"] = merged.apply(get_name, axis=1)
 
-    def _assign_grades(self, output: pd.DataFrame, merged: pd.DataFrame,
-                       field_map: dict, context: TransformContext) -> None:
+    def _assign_grades(
+        self, output: pd.DataFrame, merged: pd.DataFrame, field_map: dict, context: TransformContext
+    ) -> None:
         grade_config = field_map.get("Grade", "grade")
 
         def get_grade(row):

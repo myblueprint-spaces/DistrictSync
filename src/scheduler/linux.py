@@ -70,9 +70,12 @@ def register_cron(
 
     cmd_parts = [
         quote_for_shell(str(exe_path)),
-        "--sis", quote_for_shell(sis_type),
-        "--input", quote_for_shell(str(input_dir)),
-        "--output", quote_for_shell(str(output_dir)),
+        "--sis",
+        quote_for_shell(sis_type),
+        "--input",
+        quote_for_shell(str(input_dir)),
+        "--output",
+        quote_for_shell(str(output_dir)),
     ]
     if sftp:
         cmd_parts.append("--sftp")

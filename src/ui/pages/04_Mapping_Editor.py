@@ -55,6 +55,7 @@ def _go(step: int) -> None:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_available_configs() -> list[str]:
     configs = []
     if MAPPING_DIR.exists():
@@ -119,7 +120,10 @@ for i, (col, label) in enumerate(zip(step_cols, STEPS), start=1):
     if i < current:
         col.markdown(f"<span style='color:#16A34A;font-size:0.8rem'>✓ {i}. {label}</span>", unsafe_allow_html=True)
     elif i == current:
-        col.markdown(f"<span style='color:#1D5BB5;font-size:0.8rem;font-weight:700'>● {i}. {label}</span>", unsafe_allow_html=True)
+        col.markdown(
+            f"<span style='color:#1D5BB5;font-size:0.8rem;font-weight:700'>● {i}. {label}</span>",
+            unsafe_allow_html=True,
+        )
     else:
         col.markdown(f"<span style='color:#94A3B8;font-size:0.8rem'>{i}. {label}</span>", unsafe_allow_html=True)
 st.divider()
@@ -243,12 +247,26 @@ elif st.session_state.me_step == 2:
 
             # Standard Student Schedule headers
             default_headers = [
-                "School Year", "School Number", "Student Number", "PEN",
-                "Grade", "Homeroom", "Course School Number", "Course Code",
-                "District Course Code", "Course Title", "Short Name",
-                "Period", "Day", "Semester", "Section Letter",
-                "Master Timetable ID", "Teacher ID", "Teacher Name",
-                "Primary Teacher", "Enrolment Status",
+                "School Year",
+                "School Number",
+                "Student Number",
+                "PEN",
+                "Grade",
+                "Homeroom",
+                "Course School Number",
+                "Course Code",
+                "District Course Code",
+                "Course Title",
+                "Short Name",
+                "Period",
+                "Day",
+                "Semester",
+                "Section Letter",
+                "Master Timetable ID",
+                "Teacher ID",
+                "Teacher Name",
+                "Primary Teacher",
+                "Enrolment Status",
             ]
 
             header_text = st.text_area(
@@ -426,7 +444,11 @@ elif st.session_state.me_step == 4:
 
         elif field["widget"] == "transform":
             val = column_selectbox(
-                field["label"], detected, current, field["help"], key=f"me_s_{name}",
+                field["label"],
+                detected,
+                current,
+                field["help"],
+                key=f"me_s_{name}",
             )
             st.caption(f"ℹ️ {field['help']}")
             new_fm[name] = {"column": val, "transform": field["transform"]}
@@ -457,7 +479,11 @@ elif st.session_state.me_step == 4:
             )
             if email_mode == "Read from a column in the file":
                 new_fm[name] = column_selectbox(
-                    "Email column", detected, default_col or "Student email address", "", key=f"me_s_{name}_col",
+                    "Email column",
+                    detected,
+                    default_col or "Student email address",
+                    "",
+                    key=f"me_s_{name}_col",
                 )
             elif "pattern" in email_mode:
                 pattern = st.text_input(
@@ -484,12 +510,20 @@ elif st.session_state.me_step == 4:
                 new_fm[name] = {"value": ""}
             else:
                 new_fm[name] = column_selectbox(
-                    f"{field['label']} column", detected, "", field["help"], key=f"me_s_{name}_col",
+                    f"{field['label']} column",
+                    detected,
+                    "",
+                    field["help"],
+                    key=f"me_s_{name}_col",
                 )
 
         else:  # column_select
             val = column_selectbox(
-                field["label"], detected, current, field["help"], key=f"me_s_{name}",
+                field["label"],
+                detected,
+                current,
+                field["help"],
+                key=f"me_s_{name}",
             )
             if val:
                 new_fm[name] = val
@@ -528,13 +562,21 @@ elif st.session_state.me_step == 5:
 
             if field["widget"] == "transform":
                 val = column_selectbox(
-                    field["label"], detected_staff, current, field["help"], key=f"me_st_{name}",
+                    field["label"],
+                    detected_staff,
+                    current,
+                    field["help"],
+                    key=f"me_st_{name}",
                 )
                 st.caption(f"ℹ️ {field['help']}")
                 staff_fm[name] = {"column": val, "transform": field["transform"]}
             else:
                 val = column_selectbox(
-                    field["label"], detected_staff, current, field["help"], key=f"me_st_{name}",
+                    field["label"],
+                    detected_staff,
+                    current,
+                    field["help"],
+                    key=f"me_st_{name}",
                 )
                 if val:
                     staff_fm[name] = val
@@ -548,7 +590,11 @@ elif st.session_state.me_step == 5:
             name = field["name"]
             current = _get_field_value(config, "Family", name)
             val = column_selectbox(
-                field["label"], detected_family, current, field["help"], key=f"me_f_{name}",
+                field["label"],
+                detected_family,
+                current,
+                field["help"],
+                key=f"me_f_{name}",
             )
             if val:
                 family_fm[name] = val
@@ -587,11 +633,14 @@ elif st.session_state.me_step == 6:
     # --- Class ID ---
     st.markdown("#### Class Identification")
     class_id_raw = classes_fm.get("Class ID", {})
-    default_class_id_col = class_id_raw.get("column", "Master Timetable ID") if isinstance(class_id_raw, dict) else "Master Timetable ID"
+    default_class_id_col = (
+        class_id_raw.get("column", "Master Timetable ID") if isinstance(class_id_raw, dict) else "Master Timetable ID"
+    )
 
     class_id_col = column_selectbox(
         "Unique class identifier column",
-        detected_sched, default_class_id_col,
+        detected_sched,
+        default_class_id_col,
         "The Master Timetable ID or similar unique class section identifier.",
         key="me_class_id_col",
     )
@@ -610,23 +659,30 @@ elif st.session_state.me_step == 6:
     c1, c2 = st.columns(2)
     with c1:
         teacher_name_col = column_selectbox(
-            "Teacher name column", detected_sched,
+            "Teacher name column",
+            detected_sched,
             name_config.get("teacher last name", "Teacher Name"),
-            "", key="me_class_teacher",
+            "",
+            key="me_class_teacher",
         )
         course_title_col = column_selectbox(
-            "Course title column", detected_sched,
+            "Course title column",
+            detected_sched,
             name_config.get("course title", "Course Title"),
-            "", key="me_class_title",
+            "",
+            key="me_class_title",
         )
     with c2:
         section_col = column_selectbox(
-            "Section letter column", detected_sched,
+            "Section letter column",
+            detected_sched,
             name_config.get("section letter", "Section Letter"),
-            "", key="me_class_section",
+            "",
+            key="me_class_section",
         )
         primary_teacher_col = column_selectbox(
-            "Primary teacher flag column (optional)", detected_sched,
+            "Primary teacher flag column (optional)",
+            detected_sched,
             name_config.get("primary teacher flag", "Primary Teacher"),
             "Column where 'Y' marks the primary teacher. Leave blank if not available.",
             key="me_class_primary",
@@ -653,16 +709,24 @@ elif st.session_state.me_step == 6:
     )
 
     enroll_user_id = enroll_fm.get("User ID", {})
-    default_student_id = enroll_user_id.get("student_id_col", "Student ID") if isinstance(enroll_user_id, dict) else "Student ID"
-    default_teacher_id = enroll_user_id.get("staff_id_col", "Teacher ID") if isinstance(enroll_user_id, dict) else "Teacher ID"
+    default_student_id = (
+        enroll_user_id.get("student_id_col", "Student ID") if isinstance(enroll_user_id, dict) else "Student ID"
+    )
+    default_teacher_id = (
+        enroll_user_id.get("staff_id_col", "Teacher ID") if isinstance(enroll_user_id, dict) else "Teacher ID"
+    )
 
     student_id_col = column_selectbox(
-        "Student ID column", detected_sched, default_student_id,
+        "Student ID column",
+        detected_sched,
+        default_student_id,
         "Which column identifies the student in the schedule file.",
         key="me_enroll_student",
     )
     teacher_id_col = column_selectbox(
-        "Teacher/Staff ID column", detected_sched, default_teacher_id,
+        "Teacher/Staff ID column",
+        detected_sched,
+        default_teacher_id,
         "Which column identifies the teacher in the schedule file.",
         key="me_enroll_teacher",
     )
@@ -774,7 +838,9 @@ elif st.session_state.me_step == 7:
                 try:
                     config_name = f"{district_id}myedbc"
                     loaded = load_config(config_name)
-                    st.success(f"Validation passed — `{config_name}` loads correctly with {len(loaded.mappings)} entities.")
+                    st.success(
+                        f"Validation passed — `{config_name}` loads correctly with {len(loaded.mappings)} entities."
+                    )
                 except Exception as e:
                     st.warning(f"Configuration saved but validation warning: {e}")
 

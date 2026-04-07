@@ -15,44 +15,30 @@ class TestClassesTransformHomeroom:
         self.transformer = DataTransformer()
         self.transformer.set_school_year(2025)
 
-    def test_homeroom_classes_created(
-        self, student_schedule_df, classes_mapping, global_config, raw_data
-    ):
-        result = self.transformer.transform(
-            student_schedule_df, classes_mapping, "Classes", raw_data, global_config
-        )
+    def test_homeroom_classes_created(self, student_schedule_df, classes_mapping, global_config, raw_data):
+        result = self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
         assert not result.empty
         # Should have homeroom classes for grades in homeroom_grades config
-        homeroom_classes = result[result["Class ID"].str.contains("_2025") & ~result["Class ID"].str.startswith("BLENDED")]
+        homeroom_classes = result[
+            result["Class ID"].str.contains("_2025") & ~result["Class ID"].str.startswith("BLENDED")
+        ]
         assert len(homeroom_classes) > 0
 
-    def test_homeroom_class_id_format(
-        self, student_schedule_df, classes_mapping, global_config, raw_data
-    ):
-        result = self.transformer.transform(
-            student_schedule_df, classes_mapping, "Classes", raw_data, global_config
-        )
+    def test_homeroom_class_id_format(self, student_schedule_df, classes_mapping, global_config, raw_data):
+        result = self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
         # Homeroom class IDs should be: {school_number}_{homeroom}_{year}
         homeroom_ids = result[result["Class ID"].str.match(r"^\d+_\w+_\d{4}$")]["Class ID"]
         for class_id in homeroom_ids:
             assert class_id.endswith("_2025")
 
-    def test_homeroom_has_academic_dates(
-        self, student_schedule_df, classes_mapping, global_config, raw_data
-    ):
-        result = self.transformer.transform(
-            student_schedule_df, classes_mapping, "Classes", raw_data, global_config
-        )
+    def test_homeroom_has_academic_dates(self, student_schedule_df, classes_mapping, global_config, raw_data):
+        result = self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
         if "Start Date" in result.columns and "End Date" in result.columns:
             assert (result["Start Date"] == "2025-08-25").any() or result["Start Date"].isna().all()
             assert (result["End Date"] == "2026-07-25").any() or result["End Date"].isna().all()
 
-    def test_homeroom_name_format(
-        self, student_schedule_df, classes_mapping, global_config, raw_data
-    ):
-        result = self.transformer.transform(
-            student_schedule_df, classes_mapping, "Classes", raw_data, global_config
-        )
+    def test_homeroom_name_format(self, student_schedule_df, classes_mapping, global_config, raw_data):
+        result = self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
         # Homeroom names should contain the homeroom code and year
         if "Name" in result.columns:
             names = result["Name"].dropna().tolist()
@@ -67,42 +53,26 @@ class TestClassesTransformSubject:
         self.transformer = DataTransformer()
         self.transformer.set_school_year(2025)
 
-    def test_subject_classes_created(
-        self, student_schedule_df, classes_mapping, global_config, raw_data
-    ):
-        result = self.transformer.transform(
-            student_schedule_df, classes_mapping, "Classes", raw_data, global_config
-        )
+    def test_subject_classes_created(self, student_schedule_df, classes_mapping, global_config, raw_data):
+        result = self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
         # Grades 10, 12 are not in homeroom_grades → should get subject classes
         # MT004 (MAT10 grade 10) and MT005 (ENG12 grade 12) should be subject classes
         assert not result.empty
 
-    def test_subject_class_name_includes_teacher(
-        self, student_schedule_df, classes_mapping, global_config, raw_data
-    ):
-        result = self.transformer.transform(
-            student_schedule_df, classes_mapping, "Classes", raw_data, global_config
-        )
+    def test_subject_class_name_includes_teacher(self, student_schedule_df, classes_mapping, global_config, raw_data):
+        result = self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
         if "Name" in result.columns:
             names = result["Name"].dropna().tolist()
             # At least some names should have teacher last names
             has_teacher_name = any("Liu" in str(n) or "Singh" in str(n) or "Reed" in str(n) for n in names)
             assert has_teacher_name
 
-    def test_deduplicated_by_class_id(
-        self, student_schedule_df, classes_mapping, global_config, raw_data
-    ):
-        result = self.transformer.transform(
-            student_schedule_df, classes_mapping, "Classes", raw_data, global_config
-        )
+    def test_deduplicated_by_class_id(self, student_schedule_df, classes_mapping, global_config, raw_data):
+        result = self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
         assert result["Class ID"].duplicated().sum() == 0
 
-    def test_all_classes_have_school_id(
-        self, student_schedule_df, classes_mapping, global_config, raw_data
-    ):
-        result = self.transformer.transform(
-            student_schedule_df, classes_mapping, "Classes", raw_data, global_config
-        )
+    def test_all_classes_have_school_id(self, student_schedule_df, classes_mapping, global_config, raw_data):
+        result = self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
         if "School ID" in result.columns:
             assert result["School ID"].notna().all()
 

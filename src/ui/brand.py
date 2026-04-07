@@ -16,6 +16,7 @@ import streamlit as st
 # Falls back to a text badge if the image file isn't present.
 # ---------------------------------------------------------------------------
 
+
 def _logo_data_uri(filename: str) -> str:
     """Return a data: URI for an image in docs/assets/, or '' if not found."""
     # Try common relative paths (dev layout vs PyInstaller bundle)
@@ -44,14 +45,14 @@ _MB_LOGO = _logo_data_uri("myblueprint-logo.png")
 #   Dark navy      — headings / strong text
 #   Light bg       — page / card backgrounds
 
-MB_PRIMARY   = "#1D5BB5"   # myBlueprint blue
-MB_DARK      = "#0F2D6B"   # deep navy (headings, sidebar)
-MB_ACCENT    = "#0EA5E9"   # sky-blue accent
-MB_GREEN     = "#16A34A"   # success / active
-MB_LIGHT_BG  = "#F0F6FF"   # page background tint
-MB_BORDER    = "#DBEAFE"   # card / divider border
-MB_TEXT      = "#0F172A"   # body text
-MB_MUTED     = "#64748B"   # captions / muted
+MB_PRIMARY = "#1D5BB5"  # myBlueprint blue
+MB_DARK = "#0F2D6B"  # deep navy (headings, sidebar)
+MB_ACCENT = "#0EA5E9"  # sky-blue accent
+MB_GREEN = "#16A34A"  # success / active
+MB_LIGHT_BG = "#F0F6FF"  # page background tint
+MB_BORDER = "#DBEAFE"  # card / divider border
+MB_TEXT = "#0F172A"  # body text
+MB_MUTED = "#64748B"  # captions / muted
 
 CSS = f"""
 <style>
@@ -214,7 +215,7 @@ def inject_brand_css() -> None:
 
 def header(title: str, subtitle: str = "", brand: str = "SpacesEDU by myBlueprint") -> None:
     """Render the branded page header band with SpacesEDU logo."""
-    sub_html = f'<p>{subtitle}</p>' if subtitle else ""
+    sub_html = f"<p>{subtitle}</p>" if subtitle else ""
 
     if _SPACES_WORDMARK:
         logo_html = (

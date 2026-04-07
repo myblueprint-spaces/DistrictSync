@@ -63,9 +63,7 @@ class DataLoader:
                 dest = self.output_path / tmp_file.name
                 shutil.move(str(tmp_file), str(dest))
 
-            logger.info(
-                f"Committed {len(outputs)} output file(s) to {self.output_path.resolve()}"
-            )
+            logger.info(f"Committed {len(outputs)} output file(s) to {self.output_path.resolve()}")
         except Exception:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise
@@ -102,10 +100,7 @@ class DataLoader:
         try:
             missing_cols = [c for c in field_order if c not in df.columns]
             if missing_cols:
-                raise ValueError(
-                    f"Cannot write {entity_name}.csv — "
-                    f"columns missing from output: {missing_cols}"
-                )
+                raise ValueError(f"Cannot write {entity_name}.csv — " f"columns missing from output: {missing_cols}")
             output_file = directory / f"{entity_name}.csv"
             df[field_order].to_csv(output_file, index=False, encoding="utf-8-sig")
             label = "Staged" if staging else "Saved"

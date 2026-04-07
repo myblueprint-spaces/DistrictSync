@@ -27,9 +27,7 @@ class TransformContext:
     blended_class_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
     blended_teacher_map: dict[str, list[str]] = field(default_factory=dict)
 
-    def set_school_year(self, year: int,
-                        start_month_day: str = "08-25",
-                        end_month_day: str = "07-25") -> None:
+    def set_school_year(self, year: int, start_month_day: str = "08-25", end_month_day: str = "07-25") -> None:
         self.school_year = year
         self.academic_start = f"{year}-{start_month_day}"
         self.academic_end = f"{year + 1}-{end_month_day}"

@@ -17,12 +17,14 @@ def validate_csv(file_path: Path) -> bool:
     except Exception as e:
         raise ValueError(f"Invalid CSV format in {file_path}: {str(e)}") from e
 
+
 def ensure_directory(path: Path) -> Path:
     """
     Create directory if it doesn't exist
     """
     path.mkdir(parents=True, exist_ok=True)
     return path
+
 
 def safe_float_conversion(value, default=0.0):
     """
@@ -32,6 +34,7 @@ def safe_float_conversion(value, default=0.0):
         return float(value)
     except (ValueError, TypeError):
         return default
+
 
 def validate_path(path: Path) -> bool:
     """Validate path exists and is directory"""

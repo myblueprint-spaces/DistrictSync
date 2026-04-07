@@ -16,44 +16,49 @@ logger = logging.getLogger(__name__)
 # Field mapping variants — the polymorphic heart of the config
 # -----------------------------------------------------------------------
 
+
 class FieldTransform(BaseModel):
     """Column mapping with an optional transform function (e.g., grade_to_ceds)."""
+
     column: str
     transform: str = ""
 
 
 class FieldFixedValue(BaseModel):
     """Fixed literal value injected into every row."""
+
     value: str
 
 
 class FieldAcademicYear(BaseModel):
     """Date resolved from the computed academic year bounds."""
+
     use_academic_year: bool = True
     value: Optional[str] = None
 
     @model_validator(mode="after")
     def check_consistency(self):
         if not self.use_academic_year and not self.value:
-            raise ValueError(
-                "When use_academic_year is false, a 'value' must be provided"
-            )
+            raise ValueError("When use_academic_year is false, a 'value' must be provided")
         return self
 
 
 class FieldAppendYear(BaseModel):
     """Column whose value gets the school year appended (e.g., MTID_2025)."""
+
     column: str
     append_year_to_id: bool = True
 
 
 class FieldEmailFormat(BaseModel):
     """Template-based email generation using row fields."""
+
     format: str
 
 
 class FieldNameConfig(BaseModel):
     """Class Name config — references multiple source columns."""
+
     primary_teacher_flag: str = Field(alias="primary teacher flag", default="")
     teacher_last_name: str = Field(alias="teacher last name", default="")
     course_title: str = Field(alias="course title", default="")
@@ -64,14 +69,15 @@ class FieldNameConfig(BaseModel):
 
 class FieldIdRolePair(BaseModel):
     """Paired student/staff ID columns for User ID or Role resolution."""
+
     student_id_col: str
     staff_id_col: str
 
 
 # Union of all field mapping types
 FieldMapping = Union[
-    str,                # Direct column name
-    None,               # Auto-detected (e.g., EnrollStatus)
+    str,  # Direct column name
+    None,  # Auto-detected (e.g., EnrollStatus)
     FieldTransform,
     FieldFixedValue,
     FieldAcademicYear,
@@ -122,8 +128,10 @@ def classify_field(raw: Any) -> FieldMapping:
 # Entity and top-level config
 # -----------------------------------------------------------------------
 
+
 class EntityConfig(BaseModel):
     """Config for a single output entity (Students, Staff, etc.)."""
+
     source_files: dict[str, str]
     field_map: dict[str, Any]
     headers: dict[str, list[str]] = Field(default_factory=dict)
@@ -138,16 +146,9 @@ class EntityConfig(BaseModel):
         if isinstance(sf, list):
             roles = ["student_schedule", "course_info", "staff_info", "student_demographic"]
             if all(isinstance(item, dict) for item in sf):
-                data["source_files"] = {
-                    item["role"]: item["file"] for item in sf
-                    if "role" in item and "file" in item
-                }
+                data["source_files"] = {item["role"]: item["file"] for item in sf if "role" in item and "file" in item}
             elif all(isinstance(item, str) for item in sf):
-                data["source_files"] = {
-                    roles[i]: filename
-                    for i, filename in enumerate(sf)
-                    if i < len(roles)
-                }
+                data["source_files"] = {roles[i]: filename for i, filename in enumerate(sf) if i < len(roles)}
         return data
 
     @model_validator(mode="after")
@@ -162,6 +163,7 @@ class EntityConfig(BaseModel):
 
 class GlobalConfig(BaseModel):
     """Top-level global_config section."""
+
     school_year_sources: dict[str, str] = Field(default_factory=dict)
     homeroom_grades: list[str] = Field(default_factory=list)
     entity_order: list[str] = Field(default_factory=list)
@@ -178,6 +180,7 @@ class GlobalConfig(BaseModel):
 
 class MappingConfig(BaseModel):
     """Root config model — validated representation of the YAML mapping file."""
+
     version: Union[str, float]
     sis: str
     global_config: GlobalConfig = Field(default_factory=GlobalConfig)

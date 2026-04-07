@@ -14,74 +14,92 @@ from src.main import main
 # Shared GDE data builders
 # ---------------------------------------------------------------------------
 
+
 def _write_student_demographic(path, filename):
-    pd.DataFrame({
-        "Student Number": ["S001", "S002", "S003"],
-        "Legal First Name": ["Alice", "Bob", "Charlie"],
-        "Legal Surname": ["Smith", "Jones", "Brown"],
-        "Date of birth": ["2010-01-15", "2009-06-20", "2011-03-10"],
-        "Grade": ["3", "10", "12"],
-        "School Number": ["100", "200", "200"],
-        "Homeroom": ["A1", "C3", "C4"],
-        "Previous school number": ["", "", ""],
-        "Usual First Name": ["", "", ""],
-        "Usual surname": ["", "", ""],
-        "Student email address": ["alice@test.ca", "bob@test.ca", "charlie@test.ca"],
-        "Enrolment Status": ["Active", "Active", "Active"],
-        "Teacher Name": ["Ms. Harper", "Mrs. Liu", "Mr. Singh"],
-        "Teacher ID": ["T001", "T003", "T004"],
-    }).to_csv(path / filename, index=False)
+    pd.DataFrame(
+        {
+            "Student Number": ["S001", "S002", "S003"],
+            "Legal First Name": ["Alice", "Bob", "Charlie"],
+            "Legal Surname": ["Smith", "Jones", "Brown"],
+            "Date of birth": ["2010-01-15", "2009-06-20", "2011-03-10"],
+            "Grade": ["3", "10", "12"],
+            "School Number": ["100", "200", "200"],
+            "Homeroom": ["A1", "C3", "C4"],
+            "Previous school number": ["", "", ""],
+            "Usual First Name": ["", "", ""],
+            "Usual surname": ["", "", ""],
+            "Student email address": ["alice@test.ca", "bob@test.ca", "charlie@test.ca"],
+            "Enrolment Status": ["Active", "Active", "Active"],
+            "Teacher Name": ["Ms. Harper", "Mrs. Liu", "Mr. Singh"],
+            "Teacher ID": ["T001", "T003", "T004"],
+        }
+    ).to_csv(path / filename, index=False)
 
 
 def _write_staff(path, filename):
-    pd.DataFrame({
-        "Teacher ID": ["T001", "T003", "T004"],
-        "First Name": ["Jane", "Linda", "Raj"],
-        "Last Name": ["Harper", "Liu", "Singh"],
-        "Email Address": ["harper@school.ca", "liu@school.ca", "singh@school.ca"],
-        "Teaching Staff": ["Y", "Y", "Y"],
-        "School Number": ["100", "200", "200"],
-    }).to_csv(path / filename, index=False)
+    pd.DataFrame(
+        {
+            "Teacher ID": ["T001", "T003", "T004"],
+            "First Name": ["Jane", "Linda", "Raj"],
+            "Last Name": ["Harper", "Liu", "Singh"],
+            "Email Address": ["harper@school.ca", "liu@school.ca", "singh@school.ca"],
+            "Teaching Staff": ["Y", "Y", "Y"],
+            "School Number": ["100", "200", "200"],
+        }
+    ).to_csv(path / filename, index=False)
 
 
 def _write_schedule(path):
-    pd.DataFrame({
-        "Student Number": ["S001", "S002", "S003"],
-        "Student ID": ["S001", "S002", "S003"],
-        "School Number": ["100", "200", "200"],
-        "School Year": ["2025/2026", "2025/2026", "2025/2026"],
-        "Grade": ["3", "10", "12"],
-        "Master Timetable ID": ["MT001", "MT002", "MT003"],
-        "Teacher ID": ["T001", "T003", "T004"],
-        "Section Letter": ["A", "A", "A"],
-        "District Course Code": ["HR-3", "MAT10", "ENG12"],
-        "Primary Teacher": ["Y", "Y", "Y"],
-        "Teacher Name": ["Harper", "Liu", "Singh"],
-    }).to_csv(path / "StudentSchedule.txt", index=False)
+    pd.DataFrame(
+        {
+            "Student Number": ["S001", "S002", "S003"],
+            "Student ID": ["S001", "S002", "S003"],
+            "School Number": ["100", "200", "200"],
+            "School Year": ["2025/2026", "2025/2026", "2025/2026"],
+            "Grade": ["3", "10", "12"],
+            "Master Timetable ID": ["MT001", "MT002", "MT003"],
+            "Teacher ID": ["T001", "T003", "T004"],
+            "Section Letter": ["A", "A", "A"],
+            "District Course Code": ["HR-3", "MAT10", "ENG12"],
+            "Primary Teacher": ["Y", "Y", "Y"],
+            "Teacher Name": ["Harper", "Liu", "Singh"],
+        }
+    ).to_csv(path / "StudentSchedule.txt", index=False)
 
 
 def _write_course_info(path):
-    pd.DataFrame({
-        "School Number": ["100", "200", "200"],
-        "Course Code": ["HR-3", "MAT10", "ENG12"],
-        "Title": ["Homeroom 3", "Math 10", "English 12"],
-    }).to_csv(path / "CourseInformation.txt", index=False)
+    pd.DataFrame(
+        {
+            "School Number": ["100", "200", "200"],
+            "Course Code": ["HR-3", "MAT10", "ENG12"],
+            "Title": ["Homeroom 3", "Math 10", "English 12"],
+        }
+    ).to_csv(path / "CourseInformation.txt", index=False)
 
 
 def _write_emergency_contacts(path):
-    pd.DataFrame({
-        "Student Number": ["S001"],
-        "First Name": ["John"],
-        "Last Name": ["Smith"],
-        "Email Address": ["john@mail.com"],
-    }).to_csv(path / "EmergencyContactInformation.txt", index=False)
+    pd.DataFrame(
+        {
+            "Student Number": ["S001"],
+            "First Name": ["John"],
+            "Last Name": ["Smith"],
+            "Email Address": ["john@mail.com"],
+        }
+    ).to_csv(path / "EmergencyContactInformation.txt", index=False)
 
 
 def _write_class_info_enh(path):
-    pd.DataFrame(columns=[
-        "School Number", "Teacher ID", "Master Timetable ID",
-        "Term", "Semester", "Day", "Period",
-    ]).to_csv(path / "ClassInformationEnh.txt", index=False)
+    pd.DataFrame(
+        columns=[
+            "School Number",
+            "Teacher ID",
+            "Master Timetable ID",
+            "Term",
+            "Semester",
+            "Day",
+            "Period",
+        ]
+    ).to_csv(path / "ClassInformationEnh.txt", index=False)
 
 
 EXPECTED_OUTPUTS = ["Students.csv", "Staff.csv", "Family.csv", "Classes.csv", "Enrollments.csv"]
@@ -91,8 +109,8 @@ EXPECTED_OUTPUTS = ["Students.csv", "Staff.csv", "Family.csv", "Classes.csv", "E
 # SD48 tests (uses StudentDemographicEnhanced.txt + StaffInformation.txt)
 # ---------------------------------------------------------------------------
 
-class TestSD48Pipeline:
 
+class TestSD48Pipeline:
     @pytest.fixture
     def sd48_files(self, tmp_path):
         input_dir = tmp_path / "input"
@@ -138,6 +156,7 @@ class TestSD48Pipeline:
 # SD74 tests — uses same file names as base myedbc (no overrides in sd74)
 # ---------------------------------------------------------------------------
 
+
 class TestSD74Pipeline:
     """SD74 uses distinct source file names: studentcourseselection.txt,
     StaffInformation.txt, ParentInformation.txt, ClassInfoEnhanced.txt."""
@@ -156,35 +175,46 @@ class TestSD74Pipeline:
         _write_staff(input_dir, "StaffInformation.txt")
 
         # Schedule uses studentcourseselection.txt (lowercase)
-        pd.DataFrame({
-            "Student Number": ["S001", "S002", "S003"],
-            "Student ID": ["S001", "S002", "S003"],
-            "School Number": ["100", "200", "200"],
-            "School Year": ["2025/2026", "2025/2026", "2025/2026"],
-            "Grade": ["3", "10", "12"],
-            "Master Timetable ID": ["MT001", "MT002", "MT003"],
-            "Teacher ID": ["T001", "T003", "T004"],
-            "Section": ["A", "A", "A"],
-            "District Course Code": ["HR-3", "MAT10", "ENG12"],
-            "Primary Teacher": ["Y", "Y", "Y"],
-            "Teacher Name": ["Harper", "Liu", "Singh"],
-        }).to_csv(input_dir / "studentcourseselection.txt", index=False)
+        pd.DataFrame(
+            {
+                "Student Number": ["S001", "S002", "S003"],
+                "Student ID": ["S001", "S002", "S003"],
+                "School Number": ["100", "200", "200"],
+                "School Year": ["2025/2026", "2025/2026", "2025/2026"],
+                "Grade": ["3", "10", "12"],
+                "Master Timetable ID": ["MT001", "MT002", "MT003"],
+                "Teacher ID": ["T001", "T003", "T004"],
+                "Section": ["A", "A", "A"],
+                "District Course Code": ["HR-3", "MAT10", "ENG12"],
+                "Primary Teacher": ["Y", "Y", "Y"],
+                "Teacher Name": ["Harper", "Liu", "Singh"],
+            }
+        ).to_csv(input_dir / "studentcourseselection.txt", index=False)
 
         _write_course_info(input_dir)
 
         # Family uses ParentInformation.txt with "Surname" column
-        pd.DataFrame({
-            "Student Number": ["S001"],
-            "First Name": ["John"],
-            "Surname": ["Smith"],
-            "Email Address": ["john@mail.com"],
-        }).to_csv(input_dir / "ParentInformation.txt", index=False)
+        pd.DataFrame(
+            {
+                "Student Number": ["S001"],
+                "First Name": ["John"],
+                "Surname": ["Smith"],
+                "Email Address": ["john@mail.com"],
+            }
+        ).to_csv(input_dir / "ParentInformation.txt", index=False)
 
         # ClassInfoEnhanced.txt (different name from base ClassInformationEnh.txt)
-        pd.DataFrame(columns=[
-            "School Number", "Teacher ID", "Master Timetable ID",
-            "Term", "Semester", "Day", "Period",
-        ]).to_csv(input_dir / "ClassInfoEnhanced.txt", index=False)
+        pd.DataFrame(
+            columns=[
+                "School Number",
+                "Teacher ID",
+                "Master Timetable ID",
+                "Term",
+                "Semester",
+                "Day",
+                "Period",
+            ]
+        ).to_csv(input_dir / "ClassInfoEnhanced.txt", index=False)
 
         return input_dir, output_dir
 

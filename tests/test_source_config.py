@@ -6,7 +6,6 @@ from src.etl.transformer import DataTransformer
 
 
 class TestNormalizeSourceConfig:
-
     def setup_method(self):
         self.transformer = DataTransformer()
 
@@ -51,7 +50,6 @@ class TestNormalizeSourceConfig:
 
 
 class TestGetSourceFile:
-
     def setup_method(self):
         self.transformer = DataTransformer()
 

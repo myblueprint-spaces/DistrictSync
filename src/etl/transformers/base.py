@@ -20,35 +20,66 @@ logger = logging.getLogger(__name__)
 
 
 class BaseTransformer(ABC):
-
     # -----------------------------------------------------------------------
     # Allowlist of YAML-callable transform functions (security: prevents
     # arbitrary method invocation via getattr on user-supplied config)
     # -----------------------------------------------------------------------
-    ALLOWED_TRANSFORMS: frozenset[str] = frozenset({
-        "grade_to_ceds", "map_role", "truncate_name",
-    })
+    ALLOWED_TRANSFORMS: frozenset[str] = frozenset(
+        {
+            "grade_to_ceds",
+            "map_role",
+            "truncate_name",
+        }
+    )
 
     # -----------------------------------------------------------------------
     # CEDS grade mapping (class-level constant)
     # -----------------------------------------------------------------------
     CEDS_MAPPING: dict[str, str] = {
-        "INFANT/TODDLER": "IT", "PRESCHOOL": "PR", "PRE-K": "PK",
-        "PREKINDERGARTEN": "PK", "TK": "TK", "TRANSITIONAL KINDERGARTEN": "TK",
-        "KINDERGARTEN": "KG", "K": "KG", "01": "01", "1": "01", "02": "02", "2": "02",
-        "03": "03", "3": "03", "04": "04", "4": "04", "05": "05", "5": "05", "06": "06", "6": "06",
-        "07": "07", "7": "07", "08": "08", "8": "08", "09": "09", "9": "09", "10": "10", "11": "11",
-        "12": "12", "13": "13", "POSTSECONDARY": "PS", "UGRADED": "UG", "UNGRADED": "UG",
-        "UG": "UG", "OTHER": "Other", "EL": "KG", "KF": "KG",
+        "INFANT/TODDLER": "IT",
+        "PRESCHOOL": "PR",
+        "PRE-K": "PK",
+        "PREKINDERGARTEN": "PK",
+        "TK": "TK",
+        "TRANSITIONAL KINDERGARTEN": "TK",
+        "KINDERGARTEN": "KG",
+        "K": "KG",
+        "01": "01",
+        "1": "01",
+        "02": "02",
+        "2": "02",
+        "03": "03",
+        "3": "03",
+        "04": "04",
+        "4": "04",
+        "05": "05",
+        "5": "05",
+        "06": "06",
+        "6": "06",
+        "07": "07",
+        "7": "07",
+        "08": "08",
+        "8": "08",
+        "09": "09",
+        "9": "09",
+        "10": "10",
+        "11": "11",
+        "12": "12",
+        "13": "13",
+        "POSTSECONDARY": "PS",
+        "UGRADED": "UG",
+        "UNGRADED": "UG",
+        "UG": "UG",
+        "OTHER": "Other",
+        "EL": "KG",
+        "KF": "KG",
     }
 
     # -----------------------------------------------------------------------
     # Abstract interface
     # -----------------------------------------------------------------------
     @abstractmethod
-    def transform(self, df: pd.DataFrame, mapping: dict[str, Any],
-                  context: TransformContext) -> pd.DataFrame:
-        ...
+    def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame: ...
 
     # -----------------------------------------------------------------------
     # Static utility methods
@@ -69,7 +100,7 @@ class BaseTransformer(ABC):
         if len(name) <= max_len:
             return name
         trunc_len = max_len - 3
-        last_space = name.rfind(' ', 0, trunc_len)
+        last_space = name.rfind(" ", 0, trunc_len)
         if last_space != -1:
             return name[:last_space] + "..."
         return name[:trunc_len] + "..."
@@ -115,8 +146,7 @@ class BaseTransformer(ABC):
         logger.warning(f"Source file for role '{role}' not found in configuration")
         return pd.DataFrame()
 
-    def resolve_date(self, field_map: dict[str, Any], field_name: str,
-                     context: TransformContext) -> str:
+    def resolve_date(self, field_map: dict[str, Any], field_name: str, context: TransformContext) -> str:
         """Resolve a date field from config — either a fixed value or academic year date.
 
         Eliminates the 4x repeated use_academic_year / value / fallback pattern.
@@ -129,15 +159,13 @@ class BaseTransformer(ABC):
     # -----------------------------------------------------------------------
     # Field generation helpers
     # -----------------------------------------------------------------------
-    def generate_class_id(self, row: pd.Series, mt_id_col: str,
-                          append_year: bool, context: TransformContext) -> str:
+    def generate_class_id(self, row: pd.Series, mt_id_col: str, append_year: bool, context: TransformContext) -> str:
         mt_id = row.get(mt_id_col, "")
         if mt_id and append_year:
             return f"{mt_id}_{context.school_year}"
         return mt_id
 
-    def assign_class_ids(self, df: pd.DataFrame, field_map: dict,
-                         context: TransformContext) -> pd.DataFrame:
+    def assign_class_ids(self, df: pd.DataFrame, field_map: dict, context: TransformContext) -> pd.DataFrame:
         """Assign Class ID column using blended_class_map with generate_class_id fallback.
 
         Shared by ClassTransformer and EnrollmentTransformer to ensure IDs
@@ -154,24 +182,26 @@ class BaseTransformer(ABC):
             df[mt_id_col] = df[mt_id_col].astype(str).str.strip()
             df["Class ID"] = df[mt_id_col].map(context.blended_class_map)
             fallback = df.apply(
-                lambda row: self.generate_class_id(
-                    row, mt_id_col=mt_id_col, append_year=True, context=context
-                ),
+                lambda row: self.generate_class_id(row, mt_id_col=mt_id_col, append_year=True, context=context),
                 axis=1,
             )
             df["Class ID"] = df["Class ID"].fillna(fallback)
         else:
             df["Class ID"] = df.apply(
-                lambda row: self.generate_class_id(
-                    row, mt_id_col=mt_id_col, append_year=True, context=context
-                ),
+                lambda row: self.generate_class_id(row, mt_id_col=mt_id_col, append_year=True, context=context),
                 axis=1,
             )
         return df
 
-    def generate_class_name(self, row: pd.Series, teacher_flag_col: str,
-                            teacher_last_col: str, course_title_col: str,
-                            section_letter_col: str, context: TransformContext) -> str:
+    def generate_class_name(
+        self,
+        row: pd.Series,
+        teacher_flag_col: str,
+        teacher_last_col: str,
+        course_title_col: str,
+        section_letter_col: str,
+        context: TransformContext,
+    ) -> str:
         course_title = str(row.get(course_title_col, row.get("title", "Unknown Course"))).strip()
         teacher_last = ""
 
@@ -181,7 +211,7 @@ class BaseTransformer(ABC):
         else:
             teacher_last = str(row.get(teacher_last_col, "")).strip()
 
-        if pd.isna(teacher_last) or teacher_last.lower() == 'nan':
+        if pd.isna(teacher_last) or teacher_last.lower() == "nan":
             teacher_last = ""
 
         section = str(row.get(section_letter_col, "")).strip()
@@ -246,9 +276,14 @@ class BaseTransformer(ABC):
     # -----------------------------------------------------------------------
     # Generic field-map application (used by Students, Staff, Family)
     # -----------------------------------------------------------------------
-    def apply_field_map(self, working: pd.DataFrame, result: pd.DataFrame,
-                        field_map: dict[str, Any], entity: str,
-                        context: TransformContext) -> pd.DataFrame:
+    def apply_field_map(
+        self,
+        working: pd.DataFrame,
+        result: pd.DataFrame,
+        field_map: dict[str, Any],
+        entity: str,
+        context: TransformContext,
+    ) -> pd.DataFrame:
         """Apply the generic YAML field_map to produce output columns."""
         for tgt_field, src_info in field_map.items():
             try:
@@ -262,7 +297,9 @@ class BaseTransformer(ABC):
                 elif isinstance(src_info, dict) and src_info.get("append_year_to_id"):
                     col_name = src_info.get("column", "").lower()
                     result[tgt_field] = working.apply(
-                        lambda row, c=col_name: self.generate_class_id(row, mt_id_col=c, append_year=True, context=context),
+                        lambda row, c=col_name: self.generate_class_id(
+                            row, mt_id_col=c, append_year=True, context=context
+                        ),
                         axis=1,
                     )
                 elif isinstance(src_info, dict):

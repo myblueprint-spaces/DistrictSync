@@ -60,7 +60,10 @@ for i, (col, label) in enumerate(zip(step_cols, STEPS), start=1):
     if i < current:
         col.markdown(f"<span style='color:#16A34A;font-size:0.8rem'>✓ {i}. {label}</span>", unsafe_allow_html=True)
     elif i == current:
-        col.markdown(f"<span style='color:#1D5BB5;font-size:0.8rem;font-weight:700'>● {i}. {label}</span>", unsafe_allow_html=True)
+        col.markdown(
+            f"<span style='color:#1D5BB5;font-size:0.8rem;font-weight:700'>● {i}. {label}</span>",
+            unsafe_allow_html=True,
+        )
     else:
         col.markdown(f"<span style='color:#94A3B8;font-size:0.8rem'>{i}. {label}</span>", unsafe_allow_html=True)
 
@@ -71,13 +74,16 @@ st.divider()
 # Helper — schedule registration (defined before the if/elif chain)
 # ---------------------------------------------------------------------------
 
+
 def _register_schedule(cfg: AppConfig) -> None:
     """Register the OS schedule and update cfg.schedule_registered."""
     import sys as _sys
+
     exe_path = Path(_sys.executable)  # The running Python / frozen exe
 
     if _sys.platform == "win32":
         from src.scheduler.windows import register_task
+
         ok, msg = register_task(
             task_name=cfg.schedule_task_name,
             exe_path=exe_path,
@@ -89,6 +95,7 @@ def _register_schedule(cfg: AppConfig) -> None:
         )
     else:
         from src.scheduler.linux import register_cron
+
         ok, msg = register_cron(
             exe_path=exe_path,
             sis_type=cfg.sis_type,
@@ -106,8 +113,7 @@ def _register_schedule(cfg: AppConfig) -> None:
         # Parse common errors into user-friendly messages
         if "Access is denied" in msg or "access denied" in msg.lower():
             st.error(
-                "Permission denied. Right-click the application and "
-                "select 'Run as administrator', then try again."
+                "Permission denied. Right-click the application and " "select 'Run as administrator', then try again."
             )
         else:
             st.error(f"Failed to register schedule: {msg}")
@@ -192,10 +198,7 @@ elif st.session_state.wizard_step == 2:
     st.page_link("pages/04_Mapping_Editor.py", label="Need a new district mapping? Open the Mapping Editor", icon="🗺️")
 
     mapping_dir = Path("config/mappings")
-    available = sorted(
-        p.stem.replace("_mapping", "")
-        for p in mapping_dir.glob("*_mapping.yaml")
-    )
+    available = sorted(p.stem.replace("_mapping", "") for p in mapping_dir.glob("*_mapping.yaml"))
 
     friendly_names = {
         "myedbc": "MyEducation BC (default)",
@@ -247,6 +250,7 @@ elif st.session_state.wizard_step == 3:
     )
 
     import datetime
+
     current_time = datetime.time(3, 0)
     if cfg.schedule_time:
         try:
@@ -257,9 +261,7 @@ elif st.session_state.wizard_step == 3:
 
     run_time = st.time_input("Daily run time (24-hour)", value=current_time)
 
-    st.info(
-        f"The tool will run every day at **{run_time.strftime('%H:%M')}** local server time."
-    )
+    st.info(f"The tool will run every day at **{run_time.strftime('%H:%M')}** local server time.")
 
     col1, col2 = st.columns([1, 5])
     with col1:
@@ -296,21 +298,20 @@ elif st.session_state.wizard_step == 4:
             sftp_host = st.selectbox(
                 "SFTP Host",
                 options=sorted(ALLOWED_SFTP_HOSTS),
-                index=sorted(ALLOWED_SFTP_HOSTS).index(cfg.sftp_host)
-                if cfg.sftp_host in ALLOWED_SFTP_HOSTS else 0,
+                index=sorted(ALLOWED_SFTP_HOSTS).index(cfg.sftp_host) if cfg.sftp_host in ALLOWED_SFTP_HOSTS else 0,
             )
             sftp_username = st.text_input("Username", value=cfg.sftp_username)
             sftp_remote_path = st.text_input("Remote Path", value=cfg.sftp_remote_path or "/upload")
         with col2:
             sftp_port = st.number_input("Port", value=cfg.sftp_port or 22, min_value=1, max_value=65535)
-            sftp_password = st.text_input("Password", type="password",
-                                           placeholder="Leave blank to keep existing")
+            sftp_password = st.text_input("Password", type="password", placeholder="Leave blank to keep existing")
 
         if st.button("Test Connection"):
             if not sftp_host or not sftp_username:
                 st.error("Host and username are required to test the connection.")
             else:
                 from src.sftp.uploader import SFTPUploader
+
                 try:
                     uploader = SFTPUploader(sftp_host, int(sftp_port), sftp_username, sftp_remote_path)
                     if sftp_password:
@@ -360,9 +361,10 @@ elif st.session_state.wizard_step == 4:
                     if sftp_password:
                         try:
                             from src.sftp.uploader import SFTPUploader
-                            SFTPUploader(
-                                sftp_host, int(sftp_port), sftp_username, sftp_remote_path
-                            ).store_password(sftp_password)
+
+                            SFTPUploader(sftp_host, int(sftp_port), sftp_username, sftp_remote_path).store_password(
+                                sftp_password
+                            )
                         except Exception as e:
                             st.error(
                                 f"Could not store password: {e}\n\n"
@@ -434,8 +436,11 @@ elif st.session_state.wizard_step == 5:
                 output_buf = _io.StringIO()
                 with contextlib.redirect_stdout(output_buf):
                     run_pipeline(
-                        cfg.sis_type, cfg.input_dir, cfg.output_dir,
-                        dry_run=True, quality=True,
+                        cfg.sis_type,
+                        cfg.input_dir,
+                        cfg.output_dir,
+                        dry_run=True,
+                        quality=True,
                     )
                 result_text = output_buf.getvalue()
                 if result_text:

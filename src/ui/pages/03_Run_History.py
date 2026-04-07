@@ -34,10 +34,7 @@ LOG_PATHS = [
 log_file = next((p for p in LOG_PATHS if p.exists()), None)
 
 if log_file is None:
-    st.info(
-        "No run history yet.  Once the schedule is activated (via Setup Wizard), "
-        "run logs will appear here."
-    )
+    st.info("No run history yet.  Once the schedule is activated (via Setup Wizard), " "run logs will appear here.")
     st.stop()
 
 # ---------------------------------------------------------------------------
@@ -67,27 +64,26 @@ if runs:
 
     rows = []
     for r in runs[-50:][::-1]:  # newest first
-        rows.append({
-            "Date / Time": r.get("timestamp", "—"),
-            "Status": "✅ Success" if r.get("status") == "success" else "❌ Failed",
-            "Duration (s)": r.get("duration_s", "—"),
-            "Students": r.get("Students", "—"),
-            "Staff": r.get("Staff", "—"),
-            "Family": r.get("Family", "—"),
-            "Classes": r.get("Classes", "—"),
-            "Enrollments": r.get("Enrollments", "—"),
-            "SFTP": "✅" if r.get("sftp_ok") else ("❌" if r.get("sftp_attempted") else "—"),
-            "Error": r.get("error", ""),
-        })
+        rows.append(
+            {
+                "Date / Time": r.get("timestamp", "—"),
+                "Status": "✅ Success" if r.get("status") == "success" else "❌ Failed",
+                "Duration (s)": r.get("duration_s", "—"),
+                "Students": r.get("Students", "—"),
+                "Staff": r.get("Staff", "—"),
+                "Family": r.get("Family", "—"),
+                "Classes": r.get("Classes", "—"),
+                "Enrollments": r.get("Enrollments", "—"),
+                "SFTP": "✅" if r.get("sftp_ok") else ("❌" if r.get("sftp_attempted") else "—"),
+                "Error": r.get("error", ""),
+            }
+        )
 
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 else:
-    st.info(
-        "No structured run history found.  "
-        "Run history will be recorded starting from the next scheduled run."
-    )
+    st.info("No structured run history found.  " "Run history will be recorded starting from the next scheduled run.")
 
 # ---------------------------------------------------------------------------
 # Always show the recent raw log (last 200 lines)

@@ -9,7 +9,6 @@ from src.etl.transformer import DataTransformer
 
 
 class TestSetSchoolYear:
-
     def test_sets_year_and_dates(self):
         t = DataTransformer()
         t.set_school_year(2025)
@@ -26,7 +25,6 @@ class TestSetSchoolYear:
 
 
 class TestDetermineSchoolYear:
-
     def setup_method(self):
         self.transformer = DataTransformer()
 

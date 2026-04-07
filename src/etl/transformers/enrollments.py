@@ -13,9 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class EnrollmentTransformer(BaseTransformer):
-
-    def transform(self, df: pd.DataFrame, mapping: dict[str, Any],
-                  context: TransformContext) -> pd.DataFrame:
+    def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         source_config = mapping.get("source_files", {})
         normalized_sources = self.normalize_source_config(source_config)
         field_map = mapping.get("field_map", {})
@@ -34,15 +32,11 @@ class EnrollmentTransformer(BaseTransformer):
 
         final: list[pd.DataFrame] = []
 
-        self._homeroom_enrollments(final, student_demo_df, homeroom_grades,
-                                   student_id_col, staff_id_col, context)
-        self._subject_enrollments(final, schedule_df, homeroom_grades,
-                                  student_id_col, staff_id_col, field_map, context)
+        self._homeroom_enrollments(final, student_demo_df, homeroom_grades, student_id_col, staff_id_col, context)
+        self._subject_enrollments(final, schedule_df, homeroom_grades, student_id_col, staff_id_col, field_map, context)
 
         if final:
-            result = pd.concat(final, ignore_index=True).drop_duplicates(
-                subset=["Class ID", "User ID", "Role"]
-            )
+            result = pd.concat(final, ignore_index=True).drop_duplicates(subset=["Class ID", "User ID", "Role"])
             if SCHOOL_NUMBER in result.columns:
                 result.rename(columns={SCHOOL_NUMBER: "School ID"}, inplace=True)
             logger.info(f"[Enrollments] Created {len(result)} total enrollments")
@@ -53,8 +47,9 @@ class EnrollmentTransformer(BaseTransformer):
     # -------------------------------------------------------------------
     # Helpers
     # -------------------------------------------------------------------
-    def _load_student_demo(self, normalized_sources: dict, staff_id_col: str,
-                           context: TransformContext) -> pd.DataFrame:
+    def _load_student_demo(
+        self, normalized_sources: dict, staff_id_col: str, context: TransformContext
+    ) -> pd.DataFrame:
         df = self.get_source_file(context, normalized_sources, "student_demographic")
         if df.empty:
             logger.warning("[Enrollments] Student demographic data not available")
@@ -67,11 +62,15 @@ class EnrollmentTransformer(BaseTransformer):
     # -------------------------------------------------------------------
     # Homeroom enrollments
     # -------------------------------------------------------------------
-    def _homeroom_enrollments(self, final: list[pd.DataFrame],
-                              student_demo_df: pd.DataFrame,
-                              homeroom_grades: list,
-                              student_id_col: str, staff_id_col: str,
-                              context: TransformContext) -> None:
+    def _homeroom_enrollments(
+        self,
+        final: list[pd.DataFrame],
+        student_demo_df: pd.DataFrame,
+        homeroom_grades: list,
+        student_id_col: str,
+        staff_id_col: str,
+        context: TransformContext,
+    ) -> None:
         if student_demo_df.empty or context.homeroom_classes_df.empty:
             return
 
@@ -94,9 +93,7 @@ class EnrollmentTransformer(BaseTransformer):
             if staff_id_col in hr_classes.columns:
                 hr_classes[staff_id_col] = hr_classes[staff_id_col].astype(str).str.strip()
 
-            merged = homeroom_students.merge(
-                hr_classes, on=[SCHOOL_NUMBER, homeroom_col], how="left"
-            )
+            merged = homeroom_students.merge(hr_classes, on=[SCHOOL_NUMBER, homeroom_col], how="left")
             valid = merged[merged["Class ID"].notna()]
             if valid.empty:
                 return
@@ -126,11 +123,16 @@ class EnrollmentTransformer(BaseTransformer):
     # -------------------------------------------------------------------
     # Subject enrollments
     # -------------------------------------------------------------------
-    def _subject_enrollments(self, final: list[pd.DataFrame],
-                             schedule_df: pd.DataFrame,
-                             homeroom_grades: list,
-                             student_id_col: str, staff_id_col: str,
-                             field_map: dict, context: TransformContext) -> None:
+    def _subject_enrollments(
+        self,
+        final: list[pd.DataFrame],
+        schedule_df: pd.DataFrame,
+        homeroom_grades: list,
+        student_id_col: str,
+        staff_id_col: str,
+        field_map: dict,
+        context: TransformContext,
+    ) -> None:
         # Work on a copy to avoid mutating the shared raw_data DataFrame
         schedule_df = schedule_df.copy()
 
@@ -156,7 +158,7 @@ class EnrollmentTransformer(BaseTransformer):
         self._blended_teacher_enrollments(final, context)
 
         # Non-blended teacher enrollments
-        non_blended = non_homeroom[~non_homeroom['Class ID'].isin(context.blended_teacher_map.keys())]
+        non_blended = non_homeroom[~non_homeroom["Class ID"].isin(context.blended_teacher_map.keys())]
         if staff_id_col in non_blended.columns and "Class ID" in non_blended.columns:
             teacher_enroll = non_blended[["Class ID", staff_id_col, SCHOOL_NUMBER]].copy()
             teacher_enroll.rename(columns={staff_id_col: "User ID"}, inplace=True)
@@ -165,8 +167,7 @@ class EnrollmentTransformer(BaseTransformer):
             final.append(teacher_enroll)
             logger.info(f"[Enrollments] Created {len(teacher_enroll)} teacher subject enrollments")
 
-    def _assign_class_ids(self, df: pd.DataFrame, field_map: dict,
-                          context: TransformContext) -> pd.DataFrame:
+    def _assign_class_ids(self, df: pd.DataFrame, field_map: dict, context: TransformContext) -> pd.DataFrame:
         return self.assign_class_ids(df, field_map, context)
 
     @staticmethod
@@ -175,12 +176,14 @@ class EnrollmentTransformer(BaseTransformer):
         for blended_id, teacher_list in context.blended_teacher_map.items():
             school_id = context.blended_class_metadata.get(blended_id, {}).get("School ID", "")
             for teacher_id in teacher_list:
-                rows.append({
-                    "Class ID": blended_id,
-                    "User ID": teacher_id,
-                    "Role": "teacher",
-                    SCHOOL_NUMBER: school_id,
-                })
+                rows.append(
+                    {
+                        "Class ID": blended_id,
+                        "User ID": teacher_id,
+                        "Role": "teacher",
+                        SCHOOL_NUMBER: school_id,
+                    }
+                )
         if rows:
             blended_df = pd.DataFrame(rows).drop_duplicates()
             final.append(blended_df)

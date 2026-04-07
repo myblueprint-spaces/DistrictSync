@@ -30,7 +30,7 @@ class AppConfig:
     sis_type: str = "myedbc"
 
     # Scheduling
-    schedule_time: str = "03:00"          # HH:MM (24-hour)
+    schedule_time: str = "03:00"  # HH:MM (24-hour)
     schedule_task_name: str = "GDE2Acsv_Daily"
     schedule_registered: bool = False
 
@@ -77,12 +77,13 @@ class AppConfig:
         if not (self.input_dir and self.output_dir and self.sis_type):
             return False
         from src.utils.validators import _SIS_TYPE_RE
+
         return bool(_SIS_TYPE_RE.match(self.sis_type))
 
     def sftp_is_configured(self) -> bool:
         """Return True if SFTP has been enabled and configured."""
-        if not (self.sftp_enabled and self.sftp_host
-                and self.sftp_username and self.sftp_remote_path):
+        if not (self.sftp_enabled and self.sftp_host and self.sftp_username and self.sftp_remote_path):
             return False
         from src.utils.validators import ALLOWED_SFTP_HOSTS
+
         return self.sftp_host.strip().lower() in ALLOWED_SFTP_HOSTS

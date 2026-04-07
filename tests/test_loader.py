@@ -7,7 +7,6 @@ from src.etl.loader import DataLoader
 
 
 class TestDataLoader:
-
     def test_saves_csv(self, tmp_path):
         loader = DataLoader(str(tmp_path))
         df = pd.DataFrame({"Name": ["Alice", "Bob"], "Grade": ["05", "06"]})

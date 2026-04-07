@@ -7,17 +7,19 @@ from src.etl.transformer import DataTransformer
 
 
 class TestMapRole:
-
-    @pytest.mark.parametrize("flag, expected", [
-        ("Y", "teacher"),
-        ("y", "teacher"),
-        (" Y ", "teacher"),
-        ("N", "administrator"),
-        ("n", "administrator"),
-        ("", "administrator"),
-        ("No", "administrator"),
-        ("Yes", "administrator"),  # Only exact "y" is teacher
-    ])
+    @pytest.mark.parametrize(
+        "flag, expected",
+        [
+            ("Y", "teacher"),
+            ("y", "teacher"),
+            (" Y ", "teacher"),
+            ("N", "administrator"),
+            ("n", "administrator"),
+            ("", "administrator"),
+            ("No", "administrator"),
+            ("Yes", "administrator"),  # Only exact "y" is teacher
+        ],
+    )
     def test_map_role(self, flag, expected):
         assert DataTransformer.map_role(flag) == expected
 
@@ -29,7 +31,6 @@ class TestMapRole:
 
 
 class TestGenerateUserRole:
-
     def setup_method(self):
         self.transformer = DataTransformer()
 
@@ -56,7 +57,6 @@ class TestGenerateUserRole:
 
 
 class TestGenerateUserId:
-
     def setup_method(self):
         self.transformer = DataTransformer()
 

@@ -25,19 +25,23 @@ class TestEnrollmentStatusFromField:
         return self.transformer.transform(df, mapping, "Students", raw_data, global_config)
 
     def test_active_kept(self):
-        df = pd.DataFrame({
-            "enrolment status": ["Active"],
-            "student number": ["S001"],
-        })
+        df = pd.DataFrame(
+            {
+                "enrolment status": ["Active"],
+                "student number": ["S001"],
+            }
+        )
         result = self._transform_students(df)
         assert len(result) == 1
 
     def test_prereg_kept(self):
         """PreReg students should NOT be filtered out."""
-        df = pd.DataFrame({
-            "enrolment status": ["PreReg"],
-            "student number": ["S001"],
-        })
+        df = pd.DataFrame(
+            {
+                "enrolment status": ["PreReg"],
+                "student number": ["S001"],
+            }
+        )
         # PreReg is kept as-is, but the filter keeps only "Active" —
         # so PreReg WILL be filtered. Let's verify current behavior.
         result = self._transform_students(df)
@@ -47,27 +51,33 @@ class TestEnrollmentStatusFromField:
         assert len(result) == 0
 
     def test_inactive_filtered(self):
-        df = pd.DataFrame({
-            "enrolment status": ["Inactive"],
-            "student number": ["S001"],
-        })
+        df = pd.DataFrame(
+            {
+                "enrolment status": ["Inactive"],
+                "student number": ["S001"],
+            }
+        )
         result = self._transform_students(df)
         assert len(result) == 0
 
     def test_other_status_becomes_inactive(self):
         """Any status other than Active/PreReg → Inactive → filtered."""
-        df = pd.DataFrame({
-            "enrolment status": ["Withdrawn", "Transferred", "Suspended"],
-            "student number": ["S001", "S002", "S003"],
-        })
+        df = pd.DataFrame(
+            {
+                "enrolment status": ["Withdrawn", "Transferred", "Suspended"],
+                "student number": ["S001", "S002", "S003"],
+            }
+        )
         result = self._transform_students(df)
         assert len(result) == 0
 
     def test_mixed_statuses(self):
-        df = pd.DataFrame({
-            "enrolment status": ["Active", "Inactive", "Active", "Withdrawn"],
-            "student number": ["S001", "S002", "S003", "S004"],
-        })
+        df = pd.DataFrame(
+            {
+                "enrolment status": ["Active", "Inactive", "Active", "Withdrawn"],
+                "student number": ["S001", "S002", "S003", "S004"],
+            }
+        )
         result = self._transform_students(df)
         assert len(result) == 2
 
@@ -98,12 +108,15 @@ class TestEnrollmentStatusFromWithdrawDate:
         result = self._transform_students(df)
         assert len(result) == 1
 
-    @pytest.mark.parametrize("date_str", [
-        "15-Jan-2020",   # %d-%b-%Y — past
-        "2020-06-15",    # %Y-%m-%d — past
-        "06/15/2020",    # %m/%d/%Y — past
-        "15/06/2020",    # %d/%m/%Y — past
-    ])
+    @pytest.mark.parametrize(
+        "date_str",
+        [
+            "15-Jan-2020",  # %d-%b-%Y — past
+            "2020-06-15",  # %Y-%m-%d — past
+            "06/15/2020",  # %m/%d/%Y — past
+            "15/06/2020",  # %d/%m/%Y — past
+        ],
+    )
     def test_past_date_is_inactive(self, date_str):
         df = pd.DataFrame({"withdraw date": [date_str], "student number": ["S001"]})
         result = self._transform_students(df)

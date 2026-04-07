@@ -1,6 +1,5 @@
 """Tests for configuration validation and loading."""
 
-
 import pytest
 import yaml
 from pydantic import ValidationError
@@ -25,7 +24,6 @@ from src.config.models import (
 # classify_field
 # -----------------------------------------------------------------------
 class TestClassifyField:
-
     def test_none(self):
         assert classify_field(None) is None
 
@@ -97,7 +95,6 @@ class TestClassifyField:
 # EntityConfig
 # -----------------------------------------------------------------------
 class TestEntityConfig:
-
     def test_basic_entity(self):
         cfg = EntityConfig(
             source_files={"student_demographic": "StudentDemo.txt"},
@@ -129,7 +126,6 @@ class TestEntityConfig:
 # GlobalConfig
 # -----------------------------------------------------------------------
 class TestGlobalConfig:
-
     def test_defaults(self):
         cfg = GlobalConfig()
         assert cfg.school_year_sources == {}
@@ -151,7 +147,6 @@ class TestGlobalConfig:
 # MappingConfig
 # -----------------------------------------------------------------------
 class TestMappingConfig:
-
     def _minimal_config(self, **overrides):
         base = {
             "version": "1.9",
@@ -206,7 +201,6 @@ class TestMappingConfig:
 # Deep merge
 # -----------------------------------------------------------------------
 class TestDeepMerge:
-
     def test_simple_override(self):
         base = {"a": 1, "b": 2}
         override = {"b": 3}
@@ -233,7 +227,6 @@ class TestDeepMerge:
 # load_config against real YAML files
 # -----------------------------------------------------------------------
 class TestLoadConfig:
-
     @pytest.mark.parametrize("sis_type", ["myedbc", "sd48myedbc", "sd51myedbc", "sd74myedbc"])
     def test_all_standard_configs_valid(self, sis_type):
         cfg = load_config(sis_type)
@@ -254,7 +247,6 @@ class TestLoadConfig:
 # Config inheritance
 # -----------------------------------------------------------------------
 class TestConfigInheritance:
-
     def test_inheritance_merges_base(self, tmp_path):
         # Write a base config
         base = {

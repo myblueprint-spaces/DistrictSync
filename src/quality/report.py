@@ -16,6 +16,7 @@ import pandas as pd
 @dataclass
 class EntityReport:
     """Quality metrics for a single output entity."""
+
     name: str
     row_count: int = 0
     duplicate_count: int = 0
@@ -26,6 +27,7 @@ class EntityReport:
 @dataclass
 class DataQualityReport:
     """Full quality report across all entities."""
+
     entities: dict[str, EntityReport] = field(default_factory=dict)
     cross_entity_warnings: list[str] = field(default_factory=list)
 
@@ -51,9 +53,7 @@ class DataQualityReport:
                 report.missing_fields[col] = total_missing
                 pct = total_missing / len(df) * 100 if len(df) > 0 else 0
                 if pct > 50:
-                    report.warnings.append(
-                        f"{col}: {pct:.0f}% missing ({total_missing}/{len(df)})"
-                    )
+                    report.warnings.append(f"{col}: {pct:.0f}% missing ({total_missing}/{len(df)})")
 
     def _check_duplicates(self, report: EntityReport, df: pd.DataFrame, name: str) -> None:
         """Check for duplicate records based on entity-specific keys.
@@ -90,9 +90,7 @@ class DataQualityReport:
             enrolled_classes = set(enrollments["Class ID"].dropna())
             orphaned = enrolled_classes - class_ids
             if orphaned:
-                self.cross_entity_warnings.append(
-                    f"{len(orphaned)} enrollment class IDs not found in Classes output"
-                )
+                self.cross_entity_warnings.append(f"{len(orphaned)} enrollment class IDs not found in Classes output")
 
         students = outputs.get("Students")
         staff = outputs.get("Staff")

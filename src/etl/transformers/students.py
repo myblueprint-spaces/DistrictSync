@@ -13,9 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class StudentTransformer(BaseTransformer):
-
-    def transform(self, df: pd.DataFrame, mapping: dict[str, Any],
-                  context: TransformContext) -> pd.DataFrame:
+    def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         working = self.normalize_columns(df)
         result = pd.DataFrame()
         field_map = mapping.get("field_map", {})
@@ -64,8 +62,7 @@ class StudentTransformer(BaseTransformer):
                 )
         else:
             logger.warning(
-                "[Students] Could not find 'enrolment status' or 'withdraw date' column. "
-                "Defaulting to 'Active'."
+                "[Students] Could not find 'enrolment status' or 'withdraw date' column. " "Defaulting to 'Active'."
             )
             working["EnrollStatus"] = "Active"
 
@@ -78,8 +75,7 @@ class StudentTransformer(BaseTransformer):
             logger.info(f"[Students] Filtered out {filtered_count} inactive students.")
         return working
 
-    def _generate_emails(self, working: pd.DataFrame, result: pd.DataFrame,
-                         field_map: dict[str, Any]) -> None:
+    def _generate_emails(self, working: pd.DataFrame, result: pd.DataFrame, field_map: dict[str, Any]) -> None:
         email_config = field_map.get("Email Address", {})
         if isinstance(email_config, dict):
             email_format = email_config.get("format")

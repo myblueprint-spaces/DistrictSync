@@ -24,13 +24,11 @@ logger = logging.getLogger(__name__)
 class BlendedClassDetector(BaseTransformer):
     """Detects blended classes and populates context with blended mappings."""
 
-    def transform(self, df: pd.DataFrame, mapping: dict[str, Any],
-                  context: TransformContext) -> pd.DataFrame:
+    def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         """Not used directly — call detect() instead."""
         raise NotImplementedError("Use detect() instead")
 
-    def detect(self, class_info_df: pd.DataFrame, mapping: dict[str, Any],
-               context: TransformContext) -> None:
+    def detect(self, class_info_df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> None:
         """Run blended class detection and populate context.blended_* state."""
         if class_info_df.empty:
             logger.info("No class info data available for blended class detection")
@@ -62,15 +60,15 @@ class BlendedClassDetector(BaseTransformer):
             return
 
         working = class_info_df.copy()
-        session_components = [SCHOOL_NUMBER, teacher_id_col, 'term', 'semester', 'day', 'period']
+        session_components = [SCHOOL_NUMBER, teacher_id_col, "term", "semester", "day", "period"]
         available = [col for col in session_components if col in working.columns]
 
         for col in available:
-            working[col] = working[col].fillna('').astype(str)
-        working['session_key'] = working[available].agg('_'.join, axis=1)
+            working[col] = working[col].fillna("").astype(str)
+        working["session_key"] = working[available].agg("_".join, axis=1)
 
         count = 0
-        for session_key, group in working.groupby('session_key'):
+        for session_key, group in working.groupby("session_key"):
             if len(group) <= 1:
                 continue
 
@@ -83,9 +81,7 @@ class BlendedClassDetector(BaseTransformer):
             for mt_id in all_mt_ids:
                 context.blended_class_map[mt_id] = blended_id
 
-            all_teachers = working[
-                working[MASTER_TIMETABLE_ID].isin(all_mt_ids)
-            ][teacher_id_col].unique().tolist()
+            all_teachers = working[working[MASTER_TIMETABLE_ID].isin(all_mt_ids)][teacher_id_col].unique().tolist()
             context.blended_teacher_map[blended_id] = all_teachers
 
             grade_str = self.get_grade_range(group, mtid_to_grade)
@@ -125,9 +121,14 @@ class BlendedClassDetector(BaseTransformer):
         except ValueError:
             return "/".join(sorted(grades))
 
-    def create_name(self, session_group: pd.DataFrame, field_map: dict[str, Any],
-                    grade_str: str, course_title_map: dict[str, str],
-                    context: TransformContext) -> str:
+    def create_name(
+        self,
+        session_group: pd.DataFrame,
+        field_map: dict[str, Any],
+        grade_str: str,
+        course_title_map: dict[str, str],
+        context: TransformContext,
+    ) -> str:
         name_parts = []
 
         name_config = field_map.get("Name", {})
@@ -138,10 +139,7 @@ class BlendedClassDetector(BaseTransformer):
                 if pd.notna(teacher_name) and str(teacher_name).strip():
                     name_parts.append(str(teacher_name).strip())
 
-        unique_titles = sorted({
-            course_title_map.get(code, "Unknown Course")
-            for code in session_group[COURSE_CODE]
-        })
+        unique_titles = sorted({course_title_map.get(code, "Unknown Course") for code in session_group[COURSE_CODE]})
         if unique_titles:
             name_parts.append(" / ".join(unique_titles))
         if grade_str:
@@ -156,9 +154,9 @@ class BlendedClassDetector(BaseTransformer):
 
     @staticmethod
     def _build_grade_map(schedule_df: pd.DataFrame) -> dict[str, str]:
-        if MASTER_TIMETABLE_ID in schedule_df.columns and 'grade' in schedule_df.columns:
-            pairs = schedule_df[[MASTER_TIMETABLE_ID, 'grade']].dropna().drop_duplicates()
-            return pd.Series(pairs['grade'].values, index=pairs[MASTER_TIMETABLE_ID]).to_dict()
+        if MASTER_TIMETABLE_ID in schedule_df.columns and "grade" in schedule_df.columns:
+            pairs = schedule_df[[MASTER_TIMETABLE_ID, "grade"]].dropna().drop_duplicates()
+            return pd.Series(pairs["grade"].values, index=pairs[MASTER_TIMETABLE_ID]).to_dict()
         logger.warning(f"Missing '{MASTER_TIMETABLE_ID}' or 'grade' in student schedule.")
         return {}
 

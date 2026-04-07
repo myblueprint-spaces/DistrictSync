@@ -19,6 +19,7 @@ import yaml
 # Column detection from uploaded sample files
 # ---------------------------------------------------------------------------
 
+
 def detect_columns(file_bytes: bytes, filename: str) -> tuple[list[str], bool]:
     """Read a GDE file and return (column_names, is_headerless).
 
@@ -70,9 +71,24 @@ def _looks_like_data(values: list[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 CEDS_GRADES = [
-    "IT", "PR", "PK", "TK", "KG",
-    "01", "02", "03", "04", "05", "06", "07",
-    "08", "09", "10", "11", "12", "13",
+    "IT",
+    "PR",
+    "PK",
+    "TK",
+    "KG",
+    "01",
+    "02",
+    "03",
+    "04",
+    "05",
+    "06",
+    "07",
+    "08",
+    "09",
+    "10",
+    "11",
+    "12",
+    "13",
 ]
 
 # Source file roles with plain-language descriptions
@@ -117,35 +133,175 @@ def get_field_metadata() -> dict[str, list[dict[str, Any]]]:
     """
     return {
         "Students": [
-            {"name": "User ID", "label": "Student's unique ID", "help": "Typically the Student Number column.", "widget": "column_select", "required": True},
-            {"name": "Student Number", "label": "Student number", "help": "The student's official number in your SIS.", "widget": "column_select", "required": True},
-            {"name": "First Name", "label": "Student's first name", "help": "Legal or preferred first name.", "widget": "column_select", "required": True},
-            {"name": "Last Name", "label": "Student's last name", "help": "Legal or preferred last name.", "widget": "column_select", "required": True},
-            {"name": "Date of Birth", "label": "Date of birth", "help": "Student's date of birth.", "widget": "column_select", "required": True},
-            {"name": "Grade", "label": "Grade level", "help": "Grades are automatically converted to standard CEDS format (K becomes KG, 1 becomes 01, etc.).", "widget": "transform", "transform": "grade_to_ceds", "required": True},
-            {"name": "EnrollStatus", "label": "Enrollment status", "help": "Auto-detected from the enrollment status column or withdrawal date. No configuration needed.", "widget": "auto", "required": False},
-            {"name": "SchoolCode", "label": "School number/code", "help": "The school this student attends.", "widget": "column_select", "required": True},
-            {"name": "Homeroom", "label": "Homeroom", "help": "The student's homeroom assignment (used for homeroom class generation).", "widget": "column_select", "required": False},
-            {"name": "PreRegSchoolCode", "label": "Previous school number", "help": "The school the student transferred from (if applicable).", "widget": "column_select", "required": False},
-            {"name": "Preferred First Name", "label": "Preferred/usual first name", "help": "If different from legal name. Leave blank to skip.", "widget": "column_select", "required": False},
-            {"name": "Preferred Last Name", "label": "Preferred/usual last name", "help": "If different from legal name. Leave blank to skip.", "widget": "column_select", "required": False},
-            {"name": "Community Hours", "label": "Community service hours", "help": "Leave blank if not tracked.", "widget": "fixed_or_column", "required": False},
-            {"name": "Literacy Test Completed", "label": "Literacy test completion", "help": "Leave blank if not tracked.", "widget": "fixed_or_column", "required": False},
-            {"name": "Email Address", "label": "Student email address", "help": "Choose how to determine student emails.", "widget": "email_choice", "required": False},
+            {
+                "name": "User ID",
+                "label": "Student's unique ID",
+                "help": "Typically the Student Number column.",
+                "widget": "column_select",
+                "required": True,
+            },
+            {
+                "name": "Student Number",
+                "label": "Student number",
+                "help": "The student's official number in your SIS.",
+                "widget": "column_select",
+                "required": True,
+            },
+            {
+                "name": "First Name",
+                "label": "Student's first name",
+                "help": "Legal or preferred first name.",
+                "widget": "column_select",
+                "required": True,
+            },
+            {
+                "name": "Last Name",
+                "label": "Student's last name",
+                "help": "Legal or preferred last name.",
+                "widget": "column_select",
+                "required": True,
+            },
+            {
+                "name": "Date of Birth",
+                "label": "Date of birth",
+                "help": "Student's date of birth.",
+                "widget": "column_select",
+                "required": True,
+            },
+            {
+                "name": "Grade",
+                "label": "Grade level",
+                "help": "Grades are automatically converted to standard CEDS format (K becomes KG, 1 becomes 01, etc.).",
+                "widget": "transform",
+                "transform": "grade_to_ceds",
+                "required": True,
+            },
+            {
+                "name": "EnrollStatus",
+                "label": "Enrollment status",
+                "help": "Auto-detected from the enrollment status column or withdrawal date. No configuration needed.",
+                "widget": "auto",
+                "required": False,
+            },
+            {
+                "name": "SchoolCode",
+                "label": "School number/code",
+                "help": "The school this student attends.",
+                "widget": "column_select",
+                "required": True,
+            },
+            {
+                "name": "Homeroom",
+                "label": "Homeroom",
+                "help": "The student's homeroom assignment (used for homeroom class generation).",
+                "widget": "column_select",
+                "required": False,
+            },
+            {
+                "name": "PreRegSchoolCode",
+                "label": "Previous school number",
+                "help": "The school the student transferred from (if applicable).",
+                "widget": "column_select",
+                "required": False,
+            },
+            {
+                "name": "Preferred First Name",
+                "label": "Preferred/usual first name",
+                "help": "If different from legal name. Leave blank to skip.",
+                "widget": "column_select",
+                "required": False,
+            },
+            {
+                "name": "Preferred Last Name",
+                "label": "Preferred/usual last name",
+                "help": "If different from legal name. Leave blank to skip.",
+                "widget": "column_select",
+                "required": False,
+            },
+            {
+                "name": "Community Hours",
+                "label": "Community service hours",
+                "help": "Leave blank if not tracked.",
+                "widget": "fixed_or_column",
+                "required": False,
+            },
+            {
+                "name": "Literacy Test Completed",
+                "label": "Literacy test completion",
+                "help": "Leave blank if not tracked.",
+                "widget": "fixed_or_column",
+                "required": False,
+            },
+            {
+                "name": "Email Address",
+                "label": "Student email address",
+                "help": "Choose how to determine student emails.",
+                "widget": "email_choice",
+                "required": False,
+            },
         ],
         "Staff": [
-            {"name": "User ID", "label": "Staff member's unique ID", "help": "Typically the Teacher ID column.", "widget": "column_select", "required": True},
-            {"name": "First Name", "label": "Staff first name", "help": "", "widget": "column_select", "required": True},
+            {
+                "name": "User ID",
+                "label": "Staff member's unique ID",
+                "help": "Typically the Teacher ID column.",
+                "widget": "column_select",
+                "required": True,
+            },
+            {
+                "name": "First Name",
+                "label": "Staff first name",
+                "help": "",
+                "widget": "column_select",
+                "required": True,
+            },
             {"name": "Last Name", "label": "Staff last name", "help": "", "widget": "column_select", "required": True},
             {"name": "Email", "label": "Staff email address", "help": "", "widget": "column_select", "required": True},
-            {"name": "Role", "label": "Teaching staff indicator", "help": "Column where 'Y' means teacher, anything else means administrator.", "widget": "transform", "transform": "map_role", "required": True},
-            {"name": "School ID", "label": "Staff member's school number", "help": "", "widget": "column_select", "required": True},
+            {
+                "name": "Role",
+                "label": "Teaching staff indicator",
+                "help": "Column where 'Y' means teacher, anything else means administrator.",
+                "widget": "transform",
+                "transform": "map_role",
+                "required": True,
+            },
+            {
+                "name": "School ID",
+                "label": "Staff member's school number",
+                "help": "",
+                "widget": "column_select",
+                "required": True,
+            },
         ],
         "Family": [
-            {"name": "First Name", "label": "Contact's first name", "help": "", "widget": "column_select", "required": True},
-            {"name": "Last Name", "label": "Contact's last name", "help": "", "widget": "column_select", "required": True},
-            {"name": "Email", "label": "Contact's email address", "help": "", "widget": "column_select", "required": False},
-            {"name": "Student User ID", "label": "Student number (links contact to student)", "help": "", "widget": "column_select", "required": True},
+            {
+                "name": "First Name",
+                "label": "Contact's first name",
+                "help": "",
+                "widget": "column_select",
+                "required": True,
+            },
+            {
+                "name": "Last Name",
+                "label": "Contact's last name",
+                "help": "",
+                "widget": "column_select",
+                "required": True,
+            },
+            {
+                "name": "Email",
+                "label": "Contact's email address",
+                "help": "",
+                "widget": "column_select",
+                "required": False,
+            },
+            {
+                "name": "Student User ID",
+                "label": "Student number (links contact to student)",
+                "help": "",
+                "widget": "column_select",
+                "required": True,
+            },
         ],
     }
 
@@ -153,6 +309,7 @@ def get_field_metadata() -> dict[str, list[dict[str, Any]]]:
 # ---------------------------------------------------------------------------
 # Override diff — produce minimal YAML with _base inheritance
 # ---------------------------------------------------------------------------
+
 
 def build_override_dict(base_resolved: dict, user_config: dict) -> dict:
     """Compare user_config against base_resolved, return only differences.
@@ -211,6 +368,7 @@ def _diff_dict(base: dict, user: dict) -> dict:
 # YAML save
 # ---------------------------------------------------------------------------
 
+
 def save_mapping_yaml(district_id: str, override_dict: dict, base_name: str = "myedbc") -> Path:
     """Write a district mapping YAML file with _base inheritance.
 
@@ -242,6 +400,7 @@ def save_mapping_yaml(district_id: str, override_dict: dict, base_name: str = "m
 # ---------------------------------------------------------------------------
 # Reusable Streamlit widgets
 # ---------------------------------------------------------------------------
+
 
 def column_selectbox(
     label: str,

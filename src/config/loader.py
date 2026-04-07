@@ -67,9 +67,7 @@ def _resolve_inheritance(
 
     base_path = config_dir / f"{base_name}_mapping.yaml"
     if not base_path.exists():
-        raise FileNotFoundError(
-            f"Base config '{base_name}_mapping.yaml' not found at {base_path}"
-        )
+        raise FileNotFoundError(f"Base config '{base_name}_mapping.yaml' not found at {base_path}")
 
     base_raw = _load_yaml(base_path)
     # Recursively resolve if base also inherits (pass same visited set)

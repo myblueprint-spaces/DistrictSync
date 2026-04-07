@@ -4,12 +4,10 @@ Tests homeroom enrollments, subject enrollments, blended teacher enrollments,
 and deduplication.
 """
 
-
 from src.etl.transformer import DataTransformer
 
 
 class TestEnrollmentsTransform:
-
     def setup_method(self):
         self.transformer = DataTransformer()
         self.transformer.set_school_year(2025)
@@ -103,7 +101,6 @@ class TestEnrollmentsTransform:
 
 
 class TestEnrollmentsBlended:
-
     def setup_method(self):
         self.transformer = DataTransformer()
         self.transformer.set_school_year(2025)

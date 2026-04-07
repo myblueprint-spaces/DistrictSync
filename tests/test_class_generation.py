@@ -6,7 +6,6 @@ from src.etl.transformer import DataTransformer
 
 
 class TestTruncateName:
-
     def test_short_name_unchanged(self):
         assert DataTransformer._truncate_name("Short Name") == "Short Name"
 
@@ -39,7 +38,6 @@ class TestTruncateName:
 
 
 class TestGenerateClassId:
-
     def setup_method(self):
         self.transformer = DataTransformer()
         self.transformer.set_school_year(2025)
@@ -67,92 +65,91 @@ class TestGenerateClassId:
 
 
 class TestGenerateClassName:
-
     def setup_method(self):
         self.transformer = DataTransformer()
         self.transformer.set_school_year(2025)
 
     def test_full_name_with_teacher_and_section(self):
-        row = pd.Series({
-            "primary teacher": "Y",
-            "last name": "Harper",
-            "title": "Science 7",
-            "section letter": "A",
-        })
-        result = self.transformer.generate_class_name(
-            row, "primary teacher", "last name", "title", "section letter"
+        row = pd.Series(
+            {
+                "primary teacher": "Y",
+                "last name": "Harper",
+                "title": "Science 7",
+                "section letter": "A",
+            }
         )
+        result = self.transformer.generate_class_name(row, "primary teacher", "last name", "title", "section letter")
         assert result == "Harper Science 7 (A) 2025"
 
     def test_no_teacher_flag_column(self):
         """When teacher flag column doesn't exist, should still use teacher name."""
-        row = pd.Series({
-            "last name": "Reed",
-            "title": "English 7",
-            "section letter": "B",
-        })
-        result = self.transformer.generate_class_name(
-            row, "", "last name", "title", "section letter"
+        row = pd.Series(
+            {
+                "last name": "Reed",
+                "title": "English 7",
+                "section letter": "B",
+            }
         )
+        result = self.transformer.generate_class_name(row, "", "last name", "title", "section letter")
         assert result == "Reed English 7 (B) 2025"
 
     def test_teacher_flag_not_primary(self):
         """When teacher flag is 'N', teacher name should be excluded."""
-        row = pd.Series({
-            "primary teacher": "N",
-            "last name": "Harper",
-            "title": "Science 7",
-            "section letter": "A",
-        })
-        result = self.transformer.generate_class_name(
-            row, "primary teacher", "last name", "title", "section letter"
+        row = pd.Series(
+            {
+                "primary teacher": "N",
+                "last name": "Harper",
+                "title": "Science 7",
+                "section letter": "A",
+            }
         )
+        result = self.transformer.generate_class_name(row, "primary teacher", "last name", "title", "section letter")
         assert "Harper" not in result
         assert "Science 7 (A) 2025" in result
 
     def test_nan_teacher_name(self):
-        row = pd.Series({
-            "primary teacher": "Y",
-            "last name": float("nan"),
-            "title": "Math 10",
-            "section letter": "A",
-        })
-        result = self.transformer.generate_class_name(
-            row, "primary teacher", "last name", "title", "section letter"
+        row = pd.Series(
+            {
+                "primary teacher": "Y",
+                "last name": float("nan"),
+                "title": "Math 10",
+                "section letter": "A",
+            }
         )
+        result = self.transformer.generate_class_name(row, "primary teacher", "last name", "title", "section letter")
         assert "nan" not in result.lower()
         assert "Math 10 (A) 2025" in result
 
     def test_missing_title_uses_unknown_course(self):
-        row = pd.Series({
-            "primary teacher": "Y",
-            "last name": "Smith",
-            "section letter": "A",
-        })
-        result = self.transformer.generate_class_name(
-            row, "primary teacher", "last name", "", "section letter"
+        row = pd.Series(
+            {
+                "primary teacher": "Y",
+                "last name": "Smith",
+                "section letter": "A",
+            }
         )
+        result = self.transformer.generate_class_name(row, "primary teacher", "last name", "", "section letter")
         assert "Unknown Course" in result
 
     def test_no_section(self):
-        row = pd.Series({
-            "primary teacher": "Y",
-            "last name": "Harper",
-            "title": "Science 7",
-            "section letter": "",
-        })
-        result = self.transformer.generate_class_name(
-            row, "primary teacher", "last name", "title", "section letter"
+        row = pd.Series(
+            {
+                "primary teacher": "Y",
+                "last name": "Harper",
+                "title": "Science 7",
+                "section letter": "",
+            }
         )
+        result = self.transformer.generate_class_name(row, "primary teacher", "last name", "title", "section letter")
         assert result == "Harper Science 7 2025"
 
     def test_long_name_truncated(self):
-        row = pd.Series({
-            "last name": "Verylonglastnameington",
-            "title": "Advanced Placement International Baccalaureate Science and Technology Course Extended",
-            "section letter": "ABCDE",
-        })
-        result = self.transformer.generate_class_name(
-            row, "", "last name", "title", "section letter"
+        row = pd.Series(
+            {
+                "last name": "Verylonglastnameington",
+                "title": "Advanced Placement International Baccalaureate Science and Technology Course Extended",
+                "section letter": "ABCDE",
+            }
         )
+        result = self.transformer.generate_class_name(row, "", "last name", "title", "section letter")
         assert len(result) <= 100

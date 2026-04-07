@@ -36,6 +36,7 @@ header(
 # ---------------------------------------------------------------------------
 try:
     from src.config.app_config import AppConfig  # noqa: E402
+
     cfg = AppConfig.load()
     if cfg.is_complete():
         status_parts = [
@@ -48,6 +49,7 @@ try:
         if sys.platform == "win32" and cfg.schedule_registered:
             try:
                 from src.scheduler.windows import query_task
+
                 task_info = query_task(cfg.schedule_task_name)
                 if task_info.get("exists"):
                     next_run = task_info.get("next_run_time", "—")

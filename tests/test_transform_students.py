@@ -6,30 +6,23 @@ from src.etl.transformer import DataTransformer
 
 
 class TestStudentsTransform:
-
     def setup_method(self):
         self.transformer = DataTransformer()
         self.transformer.set_school_year(2025)
 
-    def test_full_student_transform(
-        self, student_demographic_df, students_mapping, global_config, raw_data
-    ):
+    def test_full_student_transform(self, student_demographic_df, students_mapping, global_config, raw_data):
         result = self.transformer.transform(
             student_demographic_df, students_mapping, "Students", raw_data, global_config
         )
         # All 6 Active students kept (PreReg Grace is filtered because filter is == "Active")
-        active_count = len(student_demographic_df[
-            student_demographic_df["enrolment status"] == "Active"
-        ])
+        active_count = len(student_demographic_df[student_demographic_df["enrolment status"] == "Active"])
         assert len(result) == active_count
 
         # Verify expected output columns from field_map
         for field in students_mapping["field_map"]:
             assert field in result.columns, f"Missing output column: {field}"
 
-    def test_grade_mapped_to_ceds(
-        self, student_demographic_df, students_mapping, global_config, raw_data
-    ):
+    def test_grade_mapped_to_ceds(self, student_demographic_df, students_mapping, global_config, raw_data):
         result = self.transformer.transform(
             student_demographic_df, students_mapping, "Students", raw_data, global_config
         )
@@ -41,34 +34,30 @@ class TestStudentsTransform:
 
     def test_inactive_students_excluded(self, students_mapping, global_config):
         """Students with Inactive status should not appear in output."""
-        df = pd.DataFrame({
-            "student number": ["S001", "S002", "S003"],
-            "legal first name": ["A", "B", "C"],
-            "legal surname": ["X", "Y", "Z"],
-            "date of birth": ["2010-01-01", "2010-01-01", "2010-01-01"],
-            "grade": ["5", "6", "7"],
-            "school number": ["100", "100", "100"],
-            "homeroom": ["A", "B", "C"],
-            "previous school number": ["", "", ""],
-            "usual first name": ["", "", ""],
-            "usual surname": ["", "", ""],
-            "student email address": ["", "", ""],
-            "enrolment status": ["Active", "Inactive", "Active"],
-        })
-        raw_data = {"StudentDemographicInformation.txt": df}
-        result = self.transformer.transform(
-            df, students_mapping, "Students", raw_data, global_config
+        df = pd.DataFrame(
+            {
+                "student number": ["S001", "S002", "S003"],
+                "legal first name": ["A", "B", "C"],
+                "legal surname": ["X", "Y", "Z"],
+                "date of birth": ["2010-01-01", "2010-01-01", "2010-01-01"],
+                "grade": ["5", "6", "7"],
+                "school number": ["100", "100", "100"],
+                "homeroom": ["A", "B", "C"],
+                "previous school number": ["", "", ""],
+                "usual first name": ["", "", ""],
+                "usual surname": ["", "", ""],
+                "student email address": ["", "", ""],
+                "enrolment status": ["Active", "Inactive", "Active"],
+            }
         )
+        raw_data = {"StudentDemographicInformation.txt": df}
+        result = self.transformer.transform(df, students_mapping, "Students", raw_data, global_config)
         assert len(result) == 2
 
-    def test_withdraw_date_transform(
-        self, student_demographic_with_withdraw_df, students_mapping, global_config
-    ):
+    def test_withdraw_date_transform(self, student_demographic_with_withdraw_df, students_mapping, global_config):
         df = student_demographic_with_withdraw_df
         raw_data = {"StudentDemographicInformation.txt": df}
-        result = self.transformer.transform(
-            df, students_mapping, "Students", raw_data, global_config
-        )
+        result = self.transformer.transform(df, students_mapping, "Students", raw_data, global_config)
         # S001: no date → Active (kept)
         # S002: past date → Inactive (filtered)
         # S003: future date → Active (kept)
@@ -77,20 +66,22 @@ class TestStudentsTransform:
         assert len(result) == 2
 
     def test_email_generation_when_format_configured(self, global_config):
-        df = pd.DataFrame({
-            "student number": ["12345"],
-            "legal first name": ["Alice"],
-            "legal surname": ["Smith"],
-            "date of birth": ["2010-01-01"],
-            "grade": ["5"],
-            "school number": ["100"],
-            "homeroom": ["A"],
-            "previous school number": [""],
-            "usual first name": [""],
-            "usual surname": [""],
-            "student email address": [""],
-            "enrolment status": ["Active"],
-        })
+        df = pd.DataFrame(
+            {
+                "student number": ["12345"],
+                "legal first name": ["Alice"],
+                "legal surname": ["Smith"],
+                "date of birth": ["2010-01-01"],
+                "grade": ["5"],
+                "school number": ["100"],
+                "homeroom": ["A"],
+                "previous school number": [""],
+                "usual first name": [""],
+                "usual surname": [""],
+                "student email address": [""],
+                "enrolment status": ["Active"],
+            }
+        )
         mapping = {
             "source_files": {"student_demographic": "StudentDemographicInformation.txt"},
             "field_map": {

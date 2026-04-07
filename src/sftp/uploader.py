@@ -54,6 +54,7 @@ class SFTPUploader:
         """Store the SFTP password in the OS credential manager."""
         try:
             import keyring
+
             keyring.set_password(KEYRING_SERVICE, self.username, password)
             logger.info("SFTP credentials stored successfully")
         except Exception as exc:
@@ -64,6 +65,7 @@ class SFTPUploader:
         """Retrieve the SFTP password from the OS credential manager."""
         try:
             import keyring
+
             return keyring.get_password(KEYRING_SERVICE, self.username)
         except Exception as exc:
             logger.error(f"Failed to retrieve SFTP password: {exc}")
@@ -89,10 +91,7 @@ class SFTPUploader:
 
         password = self._get_password()
         if not password:
-            raise RuntimeError(
-                "No SFTP password found. "
-                "Run the setup wizard to enter credentials."
-            )
+            raise RuntimeError("No SFTP password found. " "Run the setup wizard to enter credentials.")
 
         client = paramiko.SSHClient()
         client.load_system_host_keys()

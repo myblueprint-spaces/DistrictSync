@@ -26,8 +26,7 @@ class DefaultTransformer(BaseTransformer):
     def __init__(self, entity_name: str):
         self._entity_name = entity_name
 
-    def transform(self, df: pd.DataFrame, mapping: dict[str, Any],
-                  context: TransformContext) -> pd.DataFrame:
+    def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         working = self.normalize_columns(df)
         result = pd.DataFrame()
         field_map = mapping.get("field_map", {})

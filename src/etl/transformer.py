@@ -84,16 +84,20 @@ class DataTransformer:
 
     # --- Core methods ---
 
-    def set_school_year(self, year: int,
-                        start_month_day: str = "08-25",
-                        end_month_day: str = "07-25") -> None:
+    def set_school_year(self, year: int, start_month_day: str = "08-25", end_month_day: str = "07-25") -> None:
         self._context.set_school_year(year, start_month_day, end_month_day)
 
     def determine_school_year(self, all_data: dict[str, pd.DataFrame], source_config: Any) -> int:
         return self._blended_detector.determine_school_year(all_data, source_config)
 
-    def transform(self, df: pd.DataFrame, mapping: dict[str, Any], entity: str,
-                  raw_data: dict[str, pd.DataFrame], global_config: dict[str, Any]) -> pd.DataFrame:
+    def transform(
+        self,
+        df: pd.DataFrame,
+        mapping: dict[str, Any],
+        entity: str,
+        raw_data: dict[str, pd.DataFrame],
+        global_config: dict[str, Any],
+    ) -> pd.DataFrame:
         self._context.raw_data = raw_data
         self._context.global_config = global_config
         transformer = get_transformer(entity)
@@ -117,8 +121,7 @@ class DataTransformer:
     def normalize_source_config(source_config: Any) -> dict[str, str]:
         return BaseTransformer.normalize_source_config(source_config)
 
-    def get_source_file(self, raw_data: dict[str, pd.DataFrame], source_config: Any,
-                        role: str) -> pd.DataFrame:
+    def get_source_file(self, raw_data: dict[str, pd.DataFrame], source_config: Any, role: str) -> pd.DataFrame:
         # Temporarily set raw_data on context for the base method
         old = self._context.raw_data
         self._context.raw_data = raw_data
@@ -134,12 +137,16 @@ class DataTransformer:
             return f"{mt_id}_{self._context.school_year}"
         return mt_id
 
-    def generate_class_name(self, row: pd.Series, teacher_flag_col: str,
-                            teacher_last_col: str, course_title_col: str,
-                            section_letter_col: str) -> str:
+    def generate_class_name(
+        self,
+        row: pd.Series,
+        teacher_flag_col: str,
+        teacher_last_col: str,
+        course_title_col: str,
+        section_letter_col: str,
+    ) -> str:
         return self._blended_detector.generate_class_name(
-            row, teacher_flag_col, teacher_last_col, course_title_col,
-            section_letter_col, self._context
+            row, teacher_flag_col, teacher_last_col, course_title_col, section_letter_col, self._context
         )
 
     def generate_user_role(self, row: pd.Series, staff_id_col: str, student_id_col: str) -> str:
@@ -153,24 +160,30 @@ class DataTransformer:
 
     # --- Blended class delegates ---
 
-    def _validate_blended_class(self, session_group: pd.DataFrame,
-                                mtid_to_grade_map: dict[str, str]) -> bool:
+    def _validate_blended_class(self, session_group: pd.DataFrame, mtid_to_grade_map: dict[str, str]) -> bool:
         return self._blended_detector.validate(session_group, mtid_to_grade_map)
 
-    def _get_blended_grade_range(self, session_group: pd.DataFrame,
-                                 mtid_to_grade_map: dict[str, str]) -> str:
+    def _get_blended_grade_range(self, session_group: pd.DataFrame, mtid_to_grade_map: dict[str, str]) -> str:
         return self._blended_detector.get_grade_range(session_group, mtid_to_grade_map)
 
-    def _create_blended_class_name(self, session_group: pd.DataFrame,
-                                   field_map: dict[str, Any], grade_str: str,
-                                   course_code_to_title_map: dict[str, str]) -> str:
+    def _create_blended_class_name(
+        self,
+        session_group: pd.DataFrame,
+        field_map: dict[str, Any],
+        grade_str: str,
+        course_code_to_title_map: dict[str, str],
+    ) -> str:
         return self._blended_detector.create_name(
             session_group, field_map, grade_str, course_code_to_title_map, self._context
         )
 
-    def _detect_blended_classes(self, class_info_df: pd.DataFrame, mapping: dict[str, Any],
-                                raw_data: dict[str, pd.DataFrame],
-                                global_config: dict[str, Any]) -> None:
+    def _detect_blended_classes(
+        self,
+        class_info_df: pd.DataFrame,
+        mapping: dict[str, Any],
+        raw_data: dict[str, pd.DataFrame],
+        global_config: dict[str, Any],
+    ) -> None:
         self._context.raw_data = raw_data
         self._context.global_config = global_config
         self._blended_detector.detect(class_info_df, mapping, self._context)

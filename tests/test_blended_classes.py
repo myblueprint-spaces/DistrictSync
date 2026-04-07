@@ -6,7 +6,6 @@ from src.etl.transformer import DataTransformer
 
 
 class TestValidateBlendedClass:
-
     def setup_method(self):
         self.transformer = DataTransformer()
 
@@ -39,7 +38,6 @@ class TestValidateBlendedClass:
 
 
 class TestGetBlendedGradeRange:
-
     def setup_method(self):
         self.transformer = DataTransformer()
 
@@ -65,23 +63,22 @@ class TestGetBlendedGradeRange:
 
 
 class TestCreateBlendedClassName:
-
     def setup_method(self):
         self.transformer = DataTransformer()
         self.transformer.set_school_year(2025)
 
     def test_full_blended_name(self):
-        group = pd.DataFrame({
-            "teacher name": ["Adams", "Adams"],
-            "course code": ["ENG01", "ENG02"],
-            "master timetable id": ["MT1", "MT2"],
-        })
+        group = pd.DataFrame(
+            {
+                "teacher name": ["Adams", "Adams"],
+                "course code": ["ENG01", "ENG02"],
+                "master timetable id": ["MT1", "MT2"],
+            }
+        )
         field_map = {"Name": {"teacher_last_name": "Teacher Name"}}
         course_map = {"ENG01": "English 1", "ENG02": "English 2"}
 
-        result = self.transformer._create_blended_class_name(
-            group, field_map, "01/02", course_map
-        )
+        result = self.transformer._create_blended_class_name(group, field_map, "01/02", course_map)
         assert "Adams" in result
         assert "English 1" in result
         assert "English 2" in result
@@ -89,16 +86,16 @@ class TestCreateBlendedClassName:
         assert "2025" in result
 
     def test_fallback_when_no_teacher(self):
-        group = pd.DataFrame({
-            "course code": ["SCI01", "SCI02"],
-            "master timetable id": ["MT1", "MT2"],
-        })
+        group = pd.DataFrame(
+            {
+                "course code": ["SCI01", "SCI02"],
+                "master timetable id": ["MT1", "MT2"],
+            }
+        )
         field_map = {"Name": {"teacher_last_name": "teacher name"}}
         course_map = {"SCI01": "Science 1", "SCI02": "Science 2"}
 
-        result = self.transformer._create_blended_class_name(
-            group, field_map, "01/02", course_map
-        )
+        result = self.transformer._create_blended_class_name(group, field_map, "01/02", course_map)
         assert "Science 1" in result
         assert "2025" in result
 
@@ -110,9 +107,7 @@ class TestDetectBlendedClasses:
         self.transformer = DataTransformer()
         self.transformer.set_school_year(2025)
 
-    def test_detects_blended_from_class_info(
-        self, class_info_enh_df, blended_schedule_df, blended_course_info_df
-    ):
+    def test_detects_blended_from_class_info(self, class_info_enh_df, blended_schedule_df, blended_course_info_df):
         """Teacher T010 teaches MT100/MT101/MT102 at same time with grades 1,2,3 → blended."""
         raw_data = {
             "StudentSchedule.txt": blended_schedule_df,
@@ -164,27 +159,29 @@ class TestDetectBlendedClasses:
 
     def test_no_blending_when_empty_class_info(self):
         empty_df = pd.DataFrame()
-        self.transformer._detect_blended_classes(
-            empty_df, {"source_files": {}, "field_map": {}}, {}, {"mappings": {}}
-        )
+        self.transformer._detect_blended_classes(empty_df, {"source_files": {}, "field_map": {}}, {}, {"mappings": {}})
         assert self.transformer.blended_class_map == {}
 
     def test_no_blending_single_records(self):
         """Each session has only 1 record — no blending possible."""
-        df = pd.DataFrame({
-            "school number": ["100", "200"],
-            "teacher id": ["T001", "T002"],
-            "master timetable id": ["MT001", "MT002"],
-            "term": ["1", "1"],
-            "semester": ["1", "1"],
-            "day": ["1", "2"],
-            "period": ["1", "1"],
-        })
-        raw_data = {
-            "StudentSchedule.txt": pd.DataFrame({
+        df = pd.DataFrame(
+            {
+                "school number": ["100", "200"],
+                "teacher id": ["T001", "T002"],
                 "master timetable id": ["MT001", "MT002"],
-                "grade": ["5", "6"],
-            }),
+                "term": ["1", "1"],
+                "semester": ["1", "1"],
+                "day": ["1", "2"],
+                "period": ["1", "1"],
+            }
+        )
+        raw_data = {
+            "StudentSchedule.txt": pd.DataFrame(
+                {
+                    "master timetable id": ["MT001", "MT002"],
+                    "grade": ["5", "6"],
+                }
+            ),
             "CourseInformation.txt": pd.DataFrame({"course code": [], "title": []}),
         }
         mapping = {
@@ -194,10 +191,6 @@ class TestDetectBlendedClasses:
             },
             "field_map": {},
         }
-        global_config = {
-            "mappings": {
-                "Enrollments": {"field_map": {"User ID": {"staff_id_col": "Teacher ID"}}}
-            }
-        }
+        global_config = {"mappings": {"Enrollments": {"field_map": {"User ID": {"staff_id_col": "Teacher ID"}}}}}
         self.transformer._detect_blended_classes(df, mapping, raw_data, global_config)
         assert self.transformer.blended_class_map == {}

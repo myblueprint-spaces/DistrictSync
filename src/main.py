@@ -45,10 +45,7 @@ def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list
             continue
         if prev_count > 0 and len(df) < prev_count * (1 - ANOMALY_THRESHOLD):
             pct = ((prev_count - len(df)) / prev_count) * 100
-            msg = (
-                f"ANOMALY: {entity} dropped from {prev_count} to {len(df)} rows "
-                f"({pct:.0f}% decrease)"
-            )
+            msg = f"ANOMALY: {entity} dropped from {prev_count} to {len(df)} rows " f"({pct:.0f}% decrease)"
             logger.warning(msg)
             warnings.append(msg)
     return warnings
@@ -143,7 +140,9 @@ def run_pipeline(
         start_md = global_config.get("academic_start_month_day", "08-25")
         end_md = global_config.get("academic_end_month_day", "07-25")
         transformer.set_school_year(sy, start_md, end_md)
-        logger.info(f"Using school year {sy}, academic start={transformer.academic_start}, end={transformer.academic_end}")
+        logger.info(
+            f"Using school year {sy}, academic start={transformer.academic_start}, end={transformer.academic_end}"
+        )
 
         field_orders: dict[str, list[str]] = {}
 
@@ -210,17 +209,14 @@ def run_pipeline(
 
         # Emit structured run log
         elapsed = time.monotonic() - t0
-        _emit_run_log("success", elapsed, outputs,
-                       sftp_attempted=sftp_attempted, sftp_ok=sftp_ok,
-                       anomalies=anomalies)
+        _emit_run_log("success", elapsed, outputs, sftp_attempted=sftp_attempted, sftp_ok=sftp_ok, anomalies=anomalies)
 
     except SystemExit:
         raise
     except Exception as e:
         elapsed = time.monotonic() - t0
         logger.error(f"Pipeline failed: {e}")
-        _emit_run_log("failed", elapsed, outputs, error=str(e),
-                       sftp_attempted=sftp_attempted, sftp_ok=sftp_ok)
+        _emit_run_log("failed", elapsed, outputs, error=str(e), sftp_attempted=sftp_attempted, sftp_ok=sftp_ok)
         raise
 
 
@@ -232,8 +228,9 @@ def _sftp_upload(output_path: str) -> bool:
 
         cfg = AppConfig.load()
         if not cfg.sftp_is_configured():
-            logger.warning("SFTP upload requested but SFTP is not configured. "
-                           "Run the setup wizard to configure SFTP settings.")
+            logger.warning(
+                "SFTP upload requested but SFTP is not configured. " "Run the setup wizard to configure SFTP settings."
+            )
             return False
 
         uploader = SFTPUploader(
@@ -305,9 +302,7 @@ if __name__ == "__main__":
     except importlib.metadata.PackageNotFoundError:
         version = "dev"
 
-    parser = argparse.ArgumentParser(
-        description="SIS Data ETL Tool for myBlueprint - SpacesEDU"
-    )
+    parser = argparse.ArgumentParser(description="SIS Data ETL Tool for myBlueprint - SpacesEDU")
     parser.add_argument("--version", action="version", version=f"GDE2Acsv {version}")
     parser.add_argument("--sis", required=True, help="SIS type (e.g., myedbc)")
     parser.add_argument("--input", required=True, help="Path to input GDE files")
@@ -315,8 +310,7 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Run without writing output files")
     parser.add_argument("--diff", action="store_true", help="Show diff against existing output files")
     parser.add_argument("--quality", action="store_true", help="Generate a data quality report")
-    parser.add_argument("--sftp", action="store_true",
-                        help="Upload output CSVs via SFTP after a successful run")
+    parser.add_argument("--sftp", action="store_true", help="Upload output CSVs via SFTP after a successful run")
     args = parser.parse_args()
     try:
         sis = validate_sis_type(args.sis.lower())

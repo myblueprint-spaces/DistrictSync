@@ -20,15 +20,17 @@ inject_brand_css()
 header("Help & Documentation", "How GDE2Acsv works and what to expect")
 
 # ---------------------------------------------------------------------------
-tab_output, tab_logic, tab_files, tab_config, tab_quality, tab_cli, tab_trouble = st.tabs([
-    "Output Format",
-    "How It Works",
-    "File Handling",
-    "Configuration",
-    "Quality Checks",
-    "CLI & Automation",
-    "Troubleshooting",
-])
+tab_output, tab_logic, tab_files, tab_config, tab_quality, tab_cli, tab_trouble = st.tabs(
+    [
+        "Output Format",
+        "How It Works",
+        "File Handling",
+        "Configuration",
+        "Quality Checks",
+        "CLI & Automation",
+        "Troubleshooting",
+    ]
+)
 
 # ===================================================================
 # TAB 1 — Output Format

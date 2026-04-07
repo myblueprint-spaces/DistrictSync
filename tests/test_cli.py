@@ -4,7 +4,6 @@ These tests call run_pipeline() directly with flag=True to avoid the
 argparse layer, which allows pytest to capture stdout cleanly.
 """
 
-
 import pandas as pd
 import pytest
 
@@ -17,63 +16,80 @@ def gde_input(tmp_path):
     d = tmp_path / "input"
     d.mkdir()
 
-    pd.DataFrame({
-        "Student Number": ["S001", "S002"],
-        "Legal First Name": ["Alice", "Bob"],
-        "Legal Surname": ["Smith", "Jones"],
-        "Date of birth": ["2010-01-15", "2009-06-20"],
-        "Grade": ["10", "12"],
-        "School Number": ["100", "100"],
-        "Homeroom": ["A1", "A1"],
-        "Previous school number": ["", ""],
-        "Usual First Name": ["", ""],
-        "Usual surname": ["", ""],
-        "Student email address": ["alice@test.ca", "bob@test.ca"],
-        "Enrolment Status": ["Active", "Active"],
-        "Teacher Name": ["Ms. Harper", "Ms. Harper"],
-        "Teacher ID": ["T001", "T001"],
-    }).to_csv(d / "StudentDemographicInformation.txt", index=False)
+    pd.DataFrame(
+        {
+            "Student Number": ["S001", "S002"],
+            "Legal First Name": ["Alice", "Bob"],
+            "Legal Surname": ["Smith", "Jones"],
+            "Date of birth": ["2010-01-15", "2009-06-20"],
+            "Grade": ["10", "12"],
+            "School Number": ["100", "100"],
+            "Homeroom": ["A1", "A1"],
+            "Previous school number": ["", ""],
+            "Usual First Name": ["", ""],
+            "Usual surname": ["", ""],
+            "Student email address": ["alice@test.ca", "bob@test.ca"],
+            "Enrolment Status": ["Active", "Active"],
+            "Teacher Name": ["Ms. Harper", "Ms. Harper"],
+            "Teacher ID": ["T001", "T001"],
+        }
+    ).to_csv(d / "StudentDemographicInformation.txt", index=False)
 
-    pd.DataFrame({
-        "Student Number": ["S001", "S002"],
-        "Student ID": ["S001", "S002"],
-        "School Number": ["100", "100"],
-        "School Year": ["2025/2026", "2025/2026"],
-        "Grade": ["10", "12"],
-        "Master Timetable ID": ["MT001", "MT002"],
-        "Teacher ID": ["T001", "T001"],
-        "Section Letter": ["A", "A"],
-        "District Course Code": ["MAT10", "ENG12"],
-        "Primary Teacher": ["Y", "Y"],
-        "Teacher Name": ["Harper", "Harper"],
-    }).to_csv(d / "StudentSchedule.txt", index=False)
+    pd.DataFrame(
+        {
+            "Student Number": ["S001", "S002"],
+            "Student ID": ["S001", "S002"],
+            "School Number": ["100", "100"],
+            "School Year": ["2025/2026", "2025/2026"],
+            "Grade": ["10", "12"],
+            "Master Timetable ID": ["MT001", "MT002"],
+            "Teacher ID": ["T001", "T001"],
+            "Section Letter": ["A", "A"],
+            "District Course Code": ["MAT10", "ENG12"],
+            "Primary Teacher": ["Y", "Y"],
+            "Teacher Name": ["Harper", "Harper"],
+        }
+    ).to_csv(d / "StudentSchedule.txt", index=False)
 
-    pd.DataFrame({
-        "Teacher ID": ["T001"],
-        "First Name": ["Jane"],
-        "Last Name": ["Harper"],
-        "Email Address": ["harper@school.ca"],
-        "Teaching Staff": ["Y"],
-        "School Number": ["100"],
-    }).to_csv(d / "StaffInformationEnhanced.txt", index=False)
+    pd.DataFrame(
+        {
+            "Teacher ID": ["T001"],
+            "First Name": ["Jane"],
+            "Last Name": ["Harper"],
+            "Email Address": ["harper@school.ca"],
+            "Teaching Staff": ["Y"],
+            "School Number": ["100"],
+        }
+    ).to_csv(d / "StaffInformationEnhanced.txt", index=False)
 
-    pd.DataFrame({
-        "School Number": ["100", "100"],
-        "Course Code": ["MAT10", "ENG12"],
-        "Title": ["Math 10", "English 12"],
-    }).to_csv(d / "CourseInformation.txt", index=False)
+    pd.DataFrame(
+        {
+            "School Number": ["100", "100"],
+            "Course Code": ["MAT10", "ENG12"],
+            "Title": ["Math 10", "English 12"],
+        }
+    ).to_csv(d / "CourseInformation.txt", index=False)
 
-    pd.DataFrame({
-        "Student Number": ["S001"],
-        "First Name": ["John"],
-        "Last Name": ["Smith"],
-        "Email Address": ["john@mail.com"],
-    }).to_csv(d / "EmergencyContactInformation.txt", index=False)
+    pd.DataFrame(
+        {
+            "Student Number": ["S001"],
+            "First Name": ["John"],
+            "Last Name": ["Smith"],
+            "Email Address": ["john@mail.com"],
+        }
+    ).to_csv(d / "EmergencyContactInformation.txt", index=False)
 
-    pd.DataFrame(columns=[
-        "School Number", "Teacher ID", "Master Timetable ID",
-        "Term", "Semester", "Day", "Period",
-    ]).to_csv(d / "ClassInformationEnh.txt", index=False)
+    pd.DataFrame(
+        columns=[
+            "School Number",
+            "Teacher ID",
+            "Master Timetable ID",
+            "Term",
+            "Semester",
+            "Day",
+            "Period",
+        ]
+    ).to_csv(d / "ClassInformationEnh.txt", index=False)
 
     return d
 
@@ -84,7 +100,6 @@ def gde_output(tmp_path):
 
 
 class TestDryRunFlag:
-
     def test_dry_run_writes_no_files(self, gde_input, gde_output, capsys):
         gde_output.mkdir()
         run_pipeline("myedbc", str(gde_input), str(gde_output), dry_run=True)
@@ -107,7 +122,6 @@ class TestDryRunFlag:
 
 
 class TestDiffFlag:
-
     def test_diff_with_no_existing_output_reports_new(self, gde_input, gde_output, capsys):
         gde_output.mkdir()
         # First run to produce output, then diff against it
@@ -132,7 +146,6 @@ class TestDiffFlag:
 
 
 class TestQualityFlag:
-
     def test_quality_flag_prints_report(self, gde_input, gde_output, capsys):
         gde_output.mkdir()
         run_pipeline("myedbc", str(gde_input), str(gde_output), quality=True)

@@ -6,7 +6,6 @@ from src.etl.extractor import DataExtractor, ExtractionError
 
 
 class TestDataExtractor:
-
     def test_load_utf8_comma_csv(self, tmp_path):
         f = tmp_path / "test.txt"
         f.write_text("Name,Grade\nAlice,5\nBob,6\n", encoding="utf-8")

@@ -13,7 +13,6 @@ from src.etl.transformers.students import StudentTransformer
 
 
 class TestGetTransformer:
-
     def test_known_entity_returns_registered_transformer(self):
         transformer = get_transformer("Students")
         assert isinstance(transformer, StudentTransformer)
@@ -33,7 +32,6 @@ class TestGetTransformer:
 
 
 class TestDefaultTransformer:
-
     @pytest.fixture()
     def context(self):
         ctx = TransformContext()
@@ -41,11 +39,13 @@ class TestDefaultTransformer:
         return ctx
 
     def test_applies_field_map_string_columns(self, context):
-        df = pd.DataFrame({
-            "Course Code": ["MATH10", "ENG11"],
-            "Title": ["Mathematics 10", "English 11"],
-            "School Number": ["100", "100"],
-        })
+        df = pd.DataFrame(
+            {
+                "Course Code": ["MATH10", "ENG11"],
+                "Title": ["Mathematics 10", "English 11"],
+                "School Number": ["100", "100"],
+            }
+        )
         mapping = {
             "field_map": {
                 "Course Code": "course code",

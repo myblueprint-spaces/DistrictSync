@@ -66,7 +66,9 @@ class DataExtractor:
 
                         df = pd.read_csv(file_path, **kwargs)
 
-                        logger.info(f"Loaded {filename} with encoding={encoding}, sep={'auto' if sep is None else repr(sep)}")
+                        logger.info(
+                            f"Loaded {filename} with encoding={encoding}, sep={'auto' if sep is None else repr(sep)}"
+                        )
                         loaded_df = df
                         break
                     except (pd.errors.ParserError, UnicodeDecodeError, ValueError, csv.Error) as e:
@@ -78,9 +80,7 @@ class DataExtractor:
                     break
 
             if loaded_df is None:
-                raise ExtractionError(
-                    f"File exists but could not be parsed with any encoding/delimiter: {file_path}"
-                )
+                raise ExtractionError(f"File exists but could not be parsed with any encoding/delimiter: {file_path}")
             else:
                 # Normalize column names here
                 data[filename] = normalize_columns(loaded_df)

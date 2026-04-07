@@ -6,7 +6,6 @@ from src.quality.report import DataQualityReport
 
 
 class TestDataQualityReport:
-
     def test_basic_report_structure(self):
         outputs = {
             "Students": pd.DataFrame({"User ID": ["S1", "S2"], "Grade": ["01", "02"]}),
@@ -17,10 +16,12 @@ class TestDataQualityReport:
 
     def test_detects_missing_fields(self):
         outputs = {
-            "Students": pd.DataFrame({
-                "User ID": ["S1", "S2", "S3"],
-                "Email": [None, "", "a@b.com"],
-            }),
+            "Students": pd.DataFrame(
+                {
+                    "User ID": ["S1", "S2", "S3"],
+                    "Email": [None, "", "a@b.com"],
+                }
+            ),
         }
         report = DataQualityReport().analyze(outputs)
         assert "Email" in report.entities["Students"].missing_fields
@@ -35,11 +36,13 @@ class TestDataQualityReport:
 
     def test_detects_enrollment_duplicates(self):
         outputs = {
-            "Enrollments": pd.DataFrame({
-                "Class ID": ["C1", "C1", "C2"],
-                "User ID": ["S1", "S1", "S2"],
-                "Role": ["student", "student", "student"],
-            }),
+            "Enrollments": pd.DataFrame(
+                {
+                    "Class ID": ["C1", "C1", "C2"],
+                    "User ID": ["S1", "S1", "S2"],
+                    "Role": ["student", "student", "student"],
+                }
+            ),
         }
         report = DataQualityReport().analyze(outputs)
         assert report.entities["Enrollments"].duplicate_count == 2
@@ -47,11 +50,13 @@ class TestDataQualityReport:
     def test_orphaned_class_ids(self):
         outputs = {
             "Classes": pd.DataFrame({"Class ID": ["C1", "C2"]}),
-            "Enrollments": pd.DataFrame({
-                "Class ID": ["C1", "C3"],
-                "User ID": ["S1", "S2"],
-                "Role": ["student", "student"],
-            }),
+            "Enrollments": pd.DataFrame(
+                {
+                    "Class ID": ["C1", "C3"],
+                    "User ID": ["S1", "S2"],
+                    "Role": ["student", "student"],
+                }
+            ),
         }
         report = DataQualityReport().analyze(outputs)
         assert any("class IDs not found" in w for w in report.cross_entity_warnings)
@@ -60,11 +65,13 @@ class TestDataQualityReport:
         outputs = {
             "Students": pd.DataFrame({"User ID": ["S1"]}),
             "Staff": pd.DataFrame({"User ID": ["T1"]}),
-            "Enrollments": pd.DataFrame({
-                "Class ID": ["C1"],
-                "User ID": ["UNKNOWN_USER"],
-                "Role": ["student"],
-            }),
+            "Enrollments": pd.DataFrame(
+                {
+                    "Class ID": ["C1"],
+                    "User ID": ["UNKNOWN_USER"],
+                    "Role": ["student"],
+                }
+            ),
         }
         report = DataQualityReport().analyze(outputs)
         assert any("user IDs not found" in w for w in report.cross_entity_warnings)
@@ -72,11 +79,13 @@ class TestDataQualityReport:
     def test_no_orphan_warning_when_users_match(self):
         outputs = {
             "Students": pd.DataFrame({"User ID": ["S1"]}),
-            "Enrollments": pd.DataFrame({
-                "Class ID": ["C1"],
-                "User ID": ["S1"],
-                "Role": ["student"],
-            }),
+            "Enrollments": pd.DataFrame(
+                {
+                    "Class ID": ["C1"],
+                    "User ID": ["S1"],
+                    "Role": ["student"],
+                }
+            ),
             "Classes": pd.DataFrame({"Class ID": ["C1"]}),
         }
         report = DataQualityReport().analyze(outputs)
@@ -84,10 +93,12 @@ class TestDataQualityReport:
 
     def test_grade_distribution_warning(self):
         outputs = {
-            "Students": pd.DataFrame({
-                "User ID": ["S1", "S2", "S3"],
-                "Grade": ["01", "01", "12"],
-            }),
+            "Students": pd.DataFrame(
+                {
+                    "User ID": ["S1", "S2", "S3"],
+                    "Grade": ["01", "01", "12"],
+                }
+            ),
         }
         report = DataQualityReport().analyze(outputs)
         assert any("1 student" in w for w in report.cross_entity_warnings)
@@ -109,21 +120,25 @@ class TestDataQualityReport:
 
     def test_unknown_entity_duplicate_detection(self):
         outputs = {
-            "CourseInfo": pd.DataFrame({
-                "Course Code": ["MATH10", "ENG11", "MATH10"],
-                "Course Name": ["Math 10", "English 11", "Math 10 Dup"],
-            }),
+            "CourseInfo": pd.DataFrame(
+                {
+                    "Course Code": ["MATH10", "ENG11", "MATH10"],
+                    "Course Name": ["Math 10", "English 11", "Math 10 Dup"],
+                }
+            ),
         }
         report = DataQualityReport().analyze(outputs)
         assert report.entities["CourseInfo"].duplicate_count == 2
 
     def test_unknown_entity_id_column_heuristic(self):
         outputs = {
-            "StudentCourses": pd.DataFrame({
-                "Student ID": ["S1", "S1", "S2"],
-                "Course Code": ["MATH10", "ENG11", "MATH10"],
-                "Grade": ["10", "11", "10"],
-            }),
+            "StudentCourses": pd.DataFrame(
+                {
+                    "Student ID": ["S1", "S1", "S2"],
+                    "Course Code": ["MATH10", "ENG11", "MATH10"],
+                    "Grade": ["10", "11", "10"],
+                }
+            ),
         }
         report = DataQualityReport().analyze(outputs)
         # S1/MATH10 and S2/MATH10 are unique combos, no duplicates

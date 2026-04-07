@@ -68,11 +68,17 @@ def register_task(
     task_run = " ".join(cmd_parts)
 
     schtasks_args = [
-        "schtasks", "/Create", "/F",
-        "/TN", task_name,
-        "/TR", task_run,
-        "/SC", "DAILY",
-        "/ST", run_time,
+        "schtasks",
+        "/Create",
+        "/F",
+        "/TN",
+        task_name,
+        "/TR",
+        task_run,
+        "/SC",
+        "DAILY",
+        "/ST",
+        run_time,
     ]
 
     logger.info(f"Registering Windows scheduled task: {task_name} at {run_time}")
