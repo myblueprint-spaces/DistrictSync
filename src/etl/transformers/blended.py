@@ -156,14 +156,14 @@ class BlendedClassDetector(BaseTransformer):
     def _build_grade_map(schedule_df: pd.DataFrame) -> dict[str, str]:
         if MASTER_TIMETABLE_ID in schedule_df.columns and "grade" in schedule_df.columns:
             pairs = schedule_df[[MASTER_TIMETABLE_ID, "grade"]].dropna().drop_duplicates()
-            return pd.Series(pairs["grade"].values, index=pairs[MASTER_TIMETABLE_ID]).to_dict()
+            return pd.Series(pairs["grade"].values, index=pairs[MASTER_TIMETABLE_ID]).to_dict()  # type: ignore[return-value]
         logger.warning(f"Missing '{MASTER_TIMETABLE_ID}' or 'grade' in student schedule.")
         return {}
 
     @staticmethod
     def _build_course_title_map(course_df: pd.DataFrame) -> dict[str, str]:
         if COURSE_CODE in course_df.columns and COURSE_TITLE in course_df.columns:
-            pairs = course_df[[COURSE_CODE, COURSE_TITLE]].dropna().drop_duplicates(subset=[COURSE_CODE])
-            return pd.Series(pairs[COURSE_TITLE].values, index=pairs[COURSE_CODE]).to_dict()
+            pairs = course_df[[COURSE_CODE, COURSE_TITLE]].dropna().drop_duplicates(subset=[COURSE_CODE])  # type: ignore[call-overload]
+            return pd.Series(pairs[COURSE_TITLE].values, index=pairs[COURSE_CODE]).to_dict()  # type: ignore[return-value]
         logger.warning(f"Missing '{COURSE_CODE}' or '{COURSE_TITLE}' in course info.")
         return {}

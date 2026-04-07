@@ -44,7 +44,7 @@ class StaffTransformer(BaseTransformer):
             and STAFF_SOURCEID in roster_df.columns
         ):
             working = staff_df.merge(
-                roster_df[[teacher_id_col, STAFF_SOURCEID]].drop_duplicates(subset=[teacher_id_col]),
+                roster_df[[teacher_id_col, STAFF_SOURCEID]].drop_duplicates(subset=[teacher_id_col]),  # type: ignore[call-overload]
                 on=teacher_id_col,
                 how="left",
             )

@@ -114,7 +114,7 @@ class BaseTransformer(ABC):
     def clean_invalid_ids(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
         """Remove rows where id_col is NaN, empty, or the literal string 'nan'."""
         clean = df[id_col].astype(str).str.strip().str.lower()
-        return df[df[id_col].notna() & (clean != "") & (clean != "nan")]
+        return df[df[id_col].notna() & (clean != "") & (clean != "nan")]  # type: ignore[return-value]
 
     @staticmethod
     def normalize_source_config(source_config: Any) -> dict[str, str]:

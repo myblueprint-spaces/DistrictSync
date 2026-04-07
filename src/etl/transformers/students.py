@@ -69,7 +69,7 @@ class StudentTransformer(BaseTransformer):
     @staticmethod
     def _filter_active(working: pd.DataFrame) -> pd.DataFrame:
         initial_count = len(working)
-        working = working[working["EnrollStatus"] == "Active"].copy()
+        working = working[working["EnrollStatus"] == "Active"].copy()  # type: ignore[assignment]
         filtered_count = initial_count - len(working)
         if filtered_count > 0:
             logger.info(f"[Students] Filtered out {filtered_count} inactive students.")

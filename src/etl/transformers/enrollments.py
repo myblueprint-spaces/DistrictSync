@@ -140,11 +140,11 @@ class EnrollmentTransformer(BaseTransformer):
             schedule_df[staff_id_col] = schedule_df[staff_id_col].astype(str).str.strip()
 
         schedule_df["grade_ceds"] = schedule_df["grade"].apply(self.grade_to_ceds)
-        non_homeroom = schedule_df[~schedule_df["grade_ceds"].isin(homeroom_grades)].copy()
+        non_homeroom: pd.DataFrame = schedule_df[~schedule_df["grade_ceds"].isin(homeroom_grades)].copy()  # type: ignore[assignment]
         if non_homeroom.empty:
             return
 
-        non_homeroom = self._assign_class_ids(non_homeroom, field_map, context)
+        non_homeroom = self._assign_class_ids(non_homeroom, field_map, context)  # type: ignore[assignment]
 
         # Student subject enrollments
         if student_id_col in non_homeroom.columns and "Class ID" in non_homeroom.columns:

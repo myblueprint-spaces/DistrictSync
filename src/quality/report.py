@@ -97,9 +97,9 @@ class DataQualityReport:
         if "User ID" in enrollments.columns:
             known_users: set[str] = set()
             if students is not None and "User ID" in students.columns:
-                known_users.update(students["User ID"].dropna().astype(str))
+                known_users.update(students["User ID"].dropna().astype(str).tolist())
             if staff is not None and "User ID" in staff.columns:
-                known_users.update(staff["User ID"].dropna().astype(str))
+                known_users.update(staff["User ID"].dropna().astype(str).tolist())
             if known_users:
                 enrolled_users = set(enrollments["User ID"].dropna().astype(str))
                 orphaned = enrolled_users - known_users
