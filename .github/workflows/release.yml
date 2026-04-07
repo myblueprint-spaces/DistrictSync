@@ -141,8 +141,25 @@ jobs:
             | Linux   | `GDE2Acsv-linux`       | `chmod +x` before first run |
             | macOS   | `GDE2Acsv-macos`       | Allow in System Settings > Privacy & Security |
 
-            See the [Partner Installation Guide](https://github.com/${{ github.repository }}/blob/main/docs/partner/installation.md) for setup instructions.
+            See the [Documentation Site](https://${{ github.repository_owner }}.github.io/GDE2Acsv/) for setup instructions.
           files: |
             artifacts/GDE2Acsv-windows.exe
             artifacts/GDE2Acsv-linux
             artifacts/GDE2Acsv-macos
+
+  # -----------------------------------------------------------------------
+  # Deploy documentation to GitHub Pages
+  # -----------------------------------------------------------------------
+
+  deploy-docs:
+    needs: publish-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install mkdocs-material mkdocs-with-pdf
+      - run: mkdocs gh-deploy --force

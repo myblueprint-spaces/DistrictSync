@@ -59,6 +59,22 @@ Key conventions:
 
 ---
 
+## Add to ALLOWED_TRANSFORMS
+
+If your transformer introduces new named transform functions (used in YAML `transform:` keys), register them in `BaseTransformer.ALLOWED_TRANSFORMS` in `src/etl/transformers/base.py`. Only transforms in this allowlist can be referenced from YAML configs:
+
+```python
+ALLOWED_TRANSFORMS = {
+    "grade_to_ceds",
+    "map_role",
+    "my_new_transform",   # add yours here
+}
+```
+
+This prevents arbitrary method calls via config files.
+
+---
+
 ## Step 2 — Register the transformer
 
 Add it to the registry in `src/etl/transformers/registry.py`:
@@ -213,3 +229,9 @@ def transform(self, df, mapping, context):
 ```
 
 The `source_files` mapping in YAML uses role names (like `"staff_info"`, `"student_schedule"`) as keys. `get_source_file()` looks up the filename for that role and retrieves it from `context.raw_data`.
+
+---
+
+## Headerless source files
+
+If a source file has no header row (e.g., SD40's Student Schedule), the district config can inject column names via `file_headers:`. Your transformer does not need to handle this — the extractor injects the headers before the DataFrame reaches `context.raw_data`. Just use the injected column names in your `field_map` as normal.

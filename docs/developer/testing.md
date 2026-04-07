@@ -151,3 +151,15 @@ python -m pytest tests/test_benchmarks.py -v --benchmark-only
 ## CI matrix
 
 CI runs on Python 3.9, 3.11, and 3.13 on `ubuntu-latest` (see `.github/workflows/ci.yml`). All tests must pass on all three versions before a PR can be merged.
+
+CI also runs the following quality gates on each push:
+
+| Step | Command |
+|------|---------|
+| Format check | `ruff format --check src/ tests/` |
+| Type check | `mypy src/ --exclude 'src/ui'` (UI pages excluded) |
+| Security scan | `bandit -r src/ -q` |
+| Config validation | `make validate-config` (all 5 district YAML configs) |
+
+!!! note "Testing district configs with non-standard filenames"
+    When writing E2E tests for district configs that use non-standard filenames (e.g., SD40's CSV files with SD-40_ prefix), create fixture files in `tmp_path` using the exact filenames the district config expects. See `tests/test_pipeline_e2e_districts.py` for examples.

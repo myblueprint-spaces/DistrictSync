@@ -7,7 +7,7 @@ GDE2Acsv is a classic ETL pipeline: **Extract → Transform → Load**. All enti
 ## Pipeline overview
 
 ```
-GDE .txt files
+GDE files
      │
      ▼
 ┌─────────────┐
@@ -31,7 +31,7 @@ GDE .txt files
 5 CSV files (Students, Staff, Family, Classes, Enrollments)
 ```
 
-`src/main.py` orchestrates the three stages. It also handles CLI flags (`--dry-run`, `--diff`, `--quality`, `--sftp`) and calls `_sftp_upload()` after a successful write.
+`src/main.py` orchestrates the three stages. It also handles CLI flags (`--dry-run`, `--diff`, `--quality`, `--sftp`) and calls `_sftp_upload()` after a successful write. After each run, anomaly detection checks whether any entity's record count dropped more than 20% compared to the previous run. Each run writes a machine-readable `__GDE2ACSV_RUN__` JSON log tag consumed by the Run History UI page.
 
 ---
 
@@ -39,10 +39,11 @@ GDE .txt files
 
 **File:** `src/etl/extractor.py`
 
-- Loads each `.txt` file from the input directory.
+- Loads each GDE file from the input directory.
 - Tries UTF-8, Latin-1, CP1252 in sequence (MyEdBC files vary by district).
 - Auto-detects comma vs tab delimiter using `csv.Sniffer`.
 - Normalises column names immediately: lowercase + strip. All downstream code assumes lower-case column names.
+- Supports headerless source files: if a source file has no header row, column names can be injected via the `file_headers` parameter in the district config.
 
 ---
 
@@ -184,6 +185,9 @@ mappings:
 | `src/quality/report.py` | `DataQualityReport` — missing fields, duplicates, orphaned enrollments |
 | `src/utils/helpers.py` | `normalize_columns()` and other shared utilities |
 | `src/utils/logger.py` | Configured from `config/logging.conf`; log rotates at 5 MB |
+| `src/utils/validators.py` | Input validation, SFTP host allowlist enforcement |
+| `src/ui/mapping_helpers.py` | Column detection from uploaded files, YAML config generation for Mapping Editor |
+| `src/etl/column_names.py` | Column name constants — avoids magic strings across transformers |
 
 ---
 
@@ -197,5 +201,15 @@ mappings:
 | Setup Wizard | `pages/01_Setup_Wizard.py` | 5-step wizard: paths, district, schedule, SFTP, activate |
 | Convert | `pages/02_Convert.py` | Ad-hoc browser-based conversion (upload files, download CSVs) |
 | Run History | `pages/03_Run_History.py` | Parses `__GDE2ACSV_RUN__` JSON log tags, tabular history |
+| Mapping Editor | `pages/04_Mapping_Editor.py` | Step-by-step wizard for creating/modifying district YAML configs |
+| Help & Docs | `pages/05_Help.py` | Embedded documentation and quick-reference links |
 
 `src/ui/launcher.py` is the PyInstaller entry point for the UI executable.
+
+---
+
+## Security
+
+- **SFTP allowlist** — `src/utils/validators.py` enforces that SFTP uploads only go to known SpacesEDU hosts (`sftp.ca.spacesedu.com`, `sftp.app.spacesedu.com`, `sftp.myblueprint.ca`). Any other host is rejected before a connection is attempted.
+- **Input validation** — file paths and config values are validated at startup by Pydantic models and `src/utils/validators.py`.
+- **Transform allowlist** — only transforms registered in `BaseTransformer.ALLOWED_TRANSFORMS` can be referenced from YAML configs, preventing arbitrary code execution via config files.

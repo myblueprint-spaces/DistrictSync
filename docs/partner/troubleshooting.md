@@ -11,11 +11,11 @@
 2. **GDE files not in the input directory** — Verify the files are present:
    ```
    C:\GDE2Acsv\input\
-     StudentDemographicInformation.txt  ← must be here
-     StudentSchedule.txt
-     StaffInformationEnhanced.txt
-     CourseInformation.txt
-     EmergencyContactInformation.txt
+     your Student Demographic file     ← must be here
+     your Student Schedule file
+     your Staff Information file
+     your Course Information file
+     your Emergency Contact file
    ```
 
 3. **All students are inactive** — Only `Active` enrollment status is exported.
@@ -54,7 +54,7 @@
 ## Encoding errors in log
 
 ```
-WARNING - Could not decode file StudentDemographic.txt with utf-8, trying latin1
+WARNING - Could not decode your Student Demographic file with utf-8, trying latin1
 ```
 
 This is normal. The tool automatically tries UTF-8, Latin-1, and CP1252 in sequence. If all three fail, check that the file is a valid text file (not corrupt or binary).
@@ -80,6 +80,24 @@ The tool cannot find its configuration files. This happens when:
 If the tool crashes mid-run, you may find an incomplete output directory. Since v1.4+, GDE2Acsv uses atomic (transactional) writes — all CSVs are staged in a temporary directory first and only committed together on success. A failed run leaves the previous output intact.
 
 If you find a `.tmp_*` directory in your output folder, it means the tool was interrupted during a write. Delete it and re-run.
+
+---
+
+## SFTP Host Rejected
+
+GDE2Acsv only allows SFTP uploads to SpacesEDU servers (sftp.ca.spacesedu.com, sftp.app.spacesedu.com, sftp.myblueprint.ca). If you see 'SFTP host not allowed', verify you're using the correct SpacesEDU host.
+
+---
+
+## Record Count Drop Warning
+
+If a run produces significantly fewer records than the previous run (>20% decrease), a warning is logged. This usually means the GDE export was incomplete. Re-export the files from MyEdBC and run again.
+
+---
+
+## Wrong file extension (.csv vs .txt)
+
+Some districts (e.g., SD40 – New Westminster) export GDE files as `.csv` instead of `.txt`. If the tool cannot find the expected file, check whether your district's files have a `.csv` extension and contact SpacesEDU to ensure the correct district config (e.g., `sd40myedbc`) is configured for your installation.
 
 ---
 

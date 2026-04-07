@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-GDE2Acsv is a Python ETL tool that converts MyEducation BC General Data Extracts (GDEs) into SpacesEDU Advanced CSV format. It processes 6 input `.txt` files and produces 5 output `.csv` files (Students, Staff, Family, Classes, Enrollments). Distributed as single-file executables via PyInstaller for non-technical school district users running on district servers with task schedulers.
+GDE2Acsv is a Python ETL tool that converts MyEducation BC General Data Extracts (GDEs) into SpacesEDU Advanced CSV format. It processes GDE files (CSV or TXT, varies by district) and produces 5 output CSV files (Students, Staff, Family, Classes, Enrollments). Distributed as single-file executables via PyInstaller for non-technical school district users running on district servers with task schedulers.
 
 ## Commands
 
@@ -23,15 +23,31 @@ python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=80 
 
 294 tests, 91% coverage. Coverage omits `src/utils/logger.py` and `src/ui/*` (configured in `pyproject.toml`). Benchmarks deselected by default (`-m 'not benchmark'` in addopts).
 
-### Lint
+### Lint + Format
 ```bash
-ruff check src/ tests/        # check
-ruff check src/ tests/ --fix  # auto-fix
+ruff check src/ tests/           # lint check
+ruff check src/ tests/ --fix     # auto-fix lint
+ruff format src/ tests/          # format (CI enforces via --check)
+ruff format --check src/ tests/  # verify formatting matches CI
+```
+
+Requires ruff>=0.15. CI runs both `ruff check` and `ruff format --check`.
+
+### Type Check
+```bash
+mypy src/ --exclude 'src/ui'
+```
+
+Enforced in CI (non-UI modules). Requires `types-paramiko` and `types-PyYAML` stubs (in requirements-dev.txt).
+
+### Security Scan
+```bash
+bandit -r src/ -q
 ```
 
 ### Validate configs
 ```bash
-make validate-config
+make validate-config  # validates all 5 district configs: myedbc, sd40, sd48, sd51, sd74
 ```
 
 ### Streamlit web UI
@@ -42,99 +58,120 @@ streamlit run src/ui/app.py
 ### Build executables
 ```bash
 make build-win     # Windows .exe (run on Windows)
-make build-linux   # Linux binary via Docker
 ```
 
-PyInstaller requires hidden imports: `pandas`, `yaml`, `logging.config`, `pydantic`, `pydantic_core`.
+Linux/macOS builds are produced by GitHub Actions on tag push. PyInstaller hidden imports: `pandas`, `yaml`, `logging.config`, `pydantic`, `pydantic_core`, `paramiko`, `keyring`.
 
 ### Documentation
 ```bash
-make docs        # build MkDocs site to site/
-make docs-serve  # live preview at http://localhost:8000
+mkdocs serve       # live preview at http://localhost:8000
+mkdocs build       # build static site to site/
+mkdocs gh-deploy   # deploy to GitHub Pages
 ```
+
+MkDocs auto-deploys to GitHub Pages on release (via release.yml).
 
 ## Architecture
 
 Classic ETL pipeline orchestrated by `src/main.py`:
 
 ```
-GDE .txt files  -->  Extractor  -->  Transformer  -->  Loader  -->  CSV files
+GDE files  -->  Extractor  -->  Transformer  -->  Loader  -->  CSV files
+                                                    |
+                                              Anomaly Detection
+                                              Structured Logging
+                                              SFTP Upload
 ```
 
 ### Extractor (`src/etl/extractor.py`)
-Loads `.txt` files with multi-encoding fallback (UTF-8 -> Latin1 -> CP1252) and auto-delimiter detection (comma/tab). Normalizes column names (lowercase + strip) immediately after loading.
+Loads GDE files with multi-encoding fallback (UTF-8 -> Latin1 -> CP1252) and auto-delimiter detection (comma/tab). Supports headerless files via `file_headers` parameter (column names injected from YAML config). Normalizes column names (lowercase + strip) immediately after loading.
 
 ### Transformer (`src/etl/transformers/`)
 Entity-specific transformers using Strategy Pattern with a registry:
 
-- `base.py` — Abstract `BaseTransformer` with shared utilities (grade mapping, school year determination, academic date calculation)
+- `base.py` — Abstract `BaseTransformer` with shared utilities (grade mapping, school year determination, academic date calculation, `assign_class_ids()` shared by Classes+Enrollments). Has `ALLOWED_TRANSFORMS` allowlist for security.
 - `context.py` — `TransformContext` dataclass for cross-entity shared state
 - `registry.py` — Maps entity names ("Students", "Staff", etc.) to transformer classes
-- `students.py` — Active student filtering, CEDS grade mapping, email generation
-- `staff.py` — Staff records with role mapping
+- `students.py` — Active student filtering (enrollment status + withdrawal date with 4 date formats), CEDS grade mapping, email generation
+- `staff.py` — Staff records with role mapping (Y=teacher, else=administrator)
 - `family.py` — Parent/guardian contact extraction
 - `classes.py` — Homeroom generation + subject classes + blended class integration
-- `enrollments.py` — Student + teacher enrollment rows from schedule data
-- `blended.py` — Blended class detection service (same teacher/time/location with 2+ grade levels -> merged class)
-
-`src/etl/transformer.py` is a backward-compatible facade that delegates to the modular transformers. Existing code calls `DataTransformer().transform(df, entity_cfg, entity_name, raw_data, global_config)`.
+- `enrollments.py` — Student + teacher enrollment rows from schedule data; `.copy()` before mutations
+- `blended.py` — Blended class detection (same teacher/time with 2+ grade levels -> merged class)
 
 ### Loader (`src/etl/loader.py`)
-Writes DataFrames to CSV with field ordering from YAML config. `save_all()` uses atomic transactional writes: stages to `.tmp_<timestamp>/`, commits all on success, rolls back (deletes temp dir) on failure.
+Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. `save_all()` uses atomic transactional writes: stages to `.tmp_<timestamp>/`, commits all on success, rolls back on failure.
 
 ### Config (`src/config/`)
-- `models.py` — Pydantic v2 models for YAML mapping validation. 8 field mapping types detected by `classify_field()`: direct mapping (string), transform, fixed value, academic year, append year, email format, name config, ID-role pair.
-- `loader.py` — YAML loading with `_base` inheritance (deep merge) and Pydantic validation. `load_config(sis_type)` returns a validated `MappingConfig`.
+- `models.py` — Pydantic v2 models for YAML mapping validation. 8 field mapping types detected by `classify_field()`: direct mapping, transform, fixed value, academic year, append year, email format, name config, ID-role pair. EntityConfig also supports `headers` dict for headerless files.
+- `loader.py` — YAML loading with `_base` inheritance (deep merge, cycle detection) and Pydantic validation. `load_config(sis_type)` returns a validated `MappingConfig`.
 
 ### Quality (`src/quality/report.py`)
-`DataQualityReport` checks: missing/empty fields, duplicates per entity-specific keys, orphaned enrollments (class or user not found), grade distribution anomalies. Used via `--quality` CLI flag and tested in `tests/test_quality_report.py`.
+`DataQualityReport` checks: missing/empty fields (>50% threshold), duplicates per entity-specific keys, orphaned enrollments (class or user not found), grade distribution anomalies.
 
 ### Web UI (`src/ui/`)
-Multi-page Streamlit app. `app.py` is the landing page. Pages:
-- `pages/01_Setup_Wizard.py` — 5-step setup wizard (paths, district, schedule, SFTP, activate)
-- `pages/02_Convert.py` — ad-hoc browser-based conversion (upload files, download CSVs)
-- `pages/03_Run_History.py` — parses `__GDE2ACSV_RUN__` JSON log tags for tabular run history
+Multi-page Streamlit app. `app.py` is the landing page with status dashboard. Pages:
+- `pages/01_Setup_Wizard.py` — 5-step setup wizard (paths, district, schedule, SFTP, activate). Saves config per-step. SFTP host restricted to allowlist.
+- `pages/02_Convert.py` — Ad-hoc conversion with session_state persistence, quality report, missing file warnings. Uses `load_config()` with `_base` inheritance.
+- `pages/03_Run_History.py` — Parses `__GDE2ACSV_RUN__` JSON log tags for tabular run history
+- `pages/04_Mapping_Editor.py` — 7-step visual wizard for creating/editing district mapping configs without YAML. Uses `mapping_helpers.py` for column detection, override diff, YAML generation.
+- `pages/05_Help.py` — Reads markdown from `docs/` directory (single source of truth shared with MkDocs site)
 
 ### Supporting modules
-- `src/config/app_config.py` — runtime config (`~/.gde2acsv/config.json`); SFTP non-sensitive settings
-- `src/sftp/uploader.py` — `SFTPUploader` with paramiko + OS keyring credential storage
-- `src/scheduler/windows.py` — `schtasks.exe` wrapper for Windows Task Scheduler
-- `src/scheduler/linux.py` — crontab wrapper using sentinel comment `# GDE2Acsv managed entry`
-- `src/etl/column_names.py` — column name constants (avoid magic strings across transformers)
+- `src/config/app_config.py` — Runtime config (`~/.gde2acsv/config.json`); SFTP non-sensitive settings. Unix file permissions (0o700/0o600).
+- `src/sftp/uploader.py` — `SFTPUploader` with paramiko SSHClient + OS keyring. Host restricted to `ALLOWED_SFTP_HOSTS` (3 SpacesEDU servers).
+- `src/scheduler/windows.py` — `schtasks.exe` wrapper with input validation via `validators.py`
+- `src/scheduler/linux.py` — crontab wrapper with `shlex.quote()` and sentinel comment
+- `src/etl/column_names.py` — Column name constants (avoid magic strings across transformers)
+- `src/utils/validators.py` — Centralized security: SIS type validation, task name validation, run time validation, SFTP host allowlist, shell quoting
+- `src/ui/mapping_helpers.py` — Column detection from uploaded files, field metadata registry, override diff for `_base` inheritance, YAML generation
 
 ## Configuration-Driven Design
 
 All field mappings are in YAML files under `config/mappings/`. The `--sis` CLI argument selects which mapping file to load (e.g., `myedbc` -> `myedbc_mapping.yaml`). Mappings support:
 - Direct column mappings (string value)
-- Transform functions (dict with `transform` key, e.g., `grade_to_ceds`)
+- Transform functions (dict with `transform` key, e.g., `grade_to_ceds`, `map_role`). Only `ALLOWED_TRANSFORMS` in `base.py` are permitted.
 - Fixed values (dict with `value` key)
 - Academic year dates (dict with `use_academic_year` key)
 - ID year-appending (dict with `append_year_to_id` key)
-- Email format templates (dict with `format` key)
-- Name position extraction (dict with `name_position` key)
+- Email format templates (dict with `format` key, e.g., `{student number}@sd40.bc.ca`)
+- Name config (dict with `primary teacher flag`, `teacher last name`, `course title`, `section letter`)
+- ID-role pair (dict with `student_id_col` and `staff_id_col`)
+- Headers for headerless files (dict with filename -> column name list)
 
-District configs (sd48, sd51, sd74) can use `_base: myedbc` inheritance to override only what differs.
+5 district configs: `myedbc` (base), `sd40myedbc` (New Westminster — CSV files, headerless schedule), `sd48myedbc` (Sea to Sky), `sd51myedbc` (Boundary), `sd74myedbc` (Gold Trail). All use `_base: myedbc` inheritance.
 
 ## Key Data Flow
 
-- **Students** — Filtered to active-only (via enrollment status field or absence of withdrawal date)
-- **Classes** — Join StudentSchedule + CourseInformation + StaffInformation + optionally ClassInformationEnh (for blended classes). Homeroom classes auto-generated for elementary grades.
-- **Enrollments** — Merge StudentSchedule with StudentDemographic to produce both student and teacher enrollment rows
+- **Students** — Filtered to active-only (enrollment status "Active"/"PreReg", or no withdrawal date). Withdrawal dates parsed in 4 formats.
+- **Classes** — Join schedule + course info + staff info + optionally class info (for blended). Homeroom classes auto-generated for configured grades. Class names truncated to 100 chars.
+- **Enrollments** — Homeroom + subject + blended teacher enrollments. Deduplicated on Class ID + User ID + Role. Invalid teacher IDs ("nan", blank) filtered out.
+- **Anomaly detection** — Warns if any entity drops >20% vs previous run output
+- **Structured logging** — `__GDE2ACSV_RUN__` JSON emitted after each run with timing, counts, SFTP status
 - All entity transformations use pandas DataFrames with `.copy()` to avoid mutation side effects
+
+## Security
+
+- SFTP connections restricted to 3 known hosts via `validators.ALLOWED_SFTP_HOSTS`
+- Scheduler inputs (sis_type, task_name, paths, run_time) validated before subprocess/crontab calls
+- Transform dispatch uses `ALLOWED_TRANSFORMS` allowlist (prevents arbitrary method invocation via YAML)
+- Config file permissions set to 0o700/0o600 on Unix
+- `bandit` security scan in CI
+
+## Documentation
+
+Single source of truth: `docs/` directory is read by both MkDocs (static site / GitHub Pages) and the Streamlit Help page (`05_Help.py`). Update docs in `docs/` — both renderers pick up the changes.
+
+MkDocs deploys to GitHub Pages automatically on release tag push.
 
 ## Key Patterns
 
 - **Strategy Pattern** for transformers — each entity type has its own transformer class registered in `registry.py`
 - **TransformContext** — shared state across transformer invocations within a single pipeline run
-- **Backward-compatible facade** — `DataTransformer` in `transformer.py` delegates to new modular transformers
-- **Config inheritance** — district configs inherit from base via `_base` key with recursive deep merge
+- **Config inheritance** — district configs inherit from base via `_base` key with recursive deep merge and cycle detection
 - **Pydantic validation** — all YAML configs validated at startup before any ETL processing begins
-- **`to_raw_dict()`** — `MappingConfig.to_raw_dict()` converts the validated config back to raw dicts for the transformer pipeline; no YAML re-read needed
-- **Entity order gotcha** — `global_config.entity_order` defaults to `[]` (not None). Use `global_config.get("entity_order") or list(mappings.keys())` — NOT `.get("entity_order", fallback)` which won't trigger on empty list
-
-## Logging
-
-Configured via `config/logging.conf`. Debug-level logs go to `etl_tool.log` (append mode); console shows WARNING+. Key events logged: file loading, record counts, blended class detection, homeroom generation, active student filtering.
+- **`to_raw_dict()`** — `MappingConfig.to_raw_dict()` converts validated config back to raw dicts for the transformer pipeline
+- **Entity order gotcha** — `global_config.entity_order` defaults to `[]` (not None). Use `global_config.get("entity_order") or list(mappings.keys())`
 
 ## Testing Conventions
 
@@ -143,3 +180,4 @@ Configured via `config/logging.conf`. Debug-level logs go to `etl_tool.log` (app
 - Tests use pandas DataFrames directly — no file I/O in unit tests
 - Mock datetime for school year tests: patch `src.etl.transformers.base.datetime`
 - Config tests validate against real YAML files and test Pydantic model behavior
+- CI: ruff check + ruff format + mypy (non-UI) + bandit + pytest (80% coverage gate) + config validation (all 5 districts)

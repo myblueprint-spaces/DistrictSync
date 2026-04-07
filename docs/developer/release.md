@@ -51,7 +51,7 @@ push tag v*
 
 Each build job:
 1. Checks out the repo
-2. Installs Python 3.11 + `requirements.txt` + `pyinstaller`
+2. Installs Python 3.11 + `requirements.txt` + `pyinstaller` + `paramiko` + `keyring`
 3. Runs `pyinstaller --onefile` with `config/` bundled via `--add-data`
 4. Uploads the binary as a build artifact (retained 5 days)
 
@@ -69,6 +69,8 @@ These are required because PyInstaller's static analysis misses some imports:
 --hidden-import=logging.config
 --hidden-import=pydantic
 --hidden-import=pydantic_core
+--hidden-import=paramiko
+--hidden-import=keyring
 ```
 
 If you add a new dependency that PyInstaller silently misses, add it here in `release.yml`.
@@ -116,6 +118,9 @@ Use [semantic versioning](https://semver.org/):
 - [ ] Coverage is still ≥ 80%: `python -m pytest tests/ --cov=src --cov-fail-under=80`
 - [ ] Configs validate: `make validate-config`
 - [ ] Lint passes: `ruff check src/ tests/`
+- [ ] Format check passes: `ruff format --check src/ tests/`
+- [ ] Type check passes: `mypy --exclude 'src/ui' src/`
+- [ ] Security scan passes: `bandit -r src/`
 - [ ] `version` in `pyproject.toml` matches the tag you're about to push
 - [ ] CHANGELOG or commit messages are meaningful (Actions generates release notes from commit history)
 - [ ] If output CSV schema changed — partner guide and FAQ are updated

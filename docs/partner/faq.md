@@ -8,7 +8,7 @@ Once per day at the time configured in the Setup Wizard (default: 3:00 AM). This
 
 **Q: What happens if the GDE files are not present at run time?**
 
-The tool logs a warning for each missing file and skips the affected entity. For example, if `CourseInformation.txt` is missing, Classes and Enrollments will be skipped. The run is still considered complete; other entities are processed normally.
+The tool logs a warning for each missing file and skips the affected entity. For example, if the Course Information GDE file is missing, Classes and Enrollments will be skipped. The run is still considered complete; other entities are processed normally.
 
 **Q: Can I run it manually?**
 
@@ -76,4 +76,16 @@ Yes, by creating separate scheduled tasks with different `--sis`, `--input`, and
 
 **Q: Is there a web-based UI?**
 
-Yes — double-clicking `GDE2Acsv-windows.exe` opens a browser-based UI at `http://localhost:8501` for the Setup Wizard, ad-hoc conversions, and run history. For automated daily runs, the tool runs headlessly without opening a browser.
+Yes — double-clicking `GDE2Acsv-windows.exe` opens a browser-based UI at `http://localhost:8501`. It includes five pages: Setup Wizard, Convert, Run History, Mapping Editor, and Help & Docs. For automated daily runs, the tool runs headlessly without opening a browser.
+
+**Q: Can I customize field mappings without editing YAML?**
+
+Yes. The **Mapping Editor** page in the web UI provides a step-by-step wizard for creating or modifying district configurations. It auto-detects column names from your files and saves a properly formatted YAML config.
+
+**Q: Why is my SFTP host being rejected?**
+
+For security, SFTP uploads are restricted to SpacesEDU servers only (sftp.ca.spacesedu.com, sftp.app.spacesedu.com, sftp.myblueprint.ca). Contact SpacesEDU support if you need a different host.
+
+**Q: What does the record count drop warning mean?**
+
+After each run, GDE2Acsv compares output against the previous run. If any entity (Students, Classes, etc.) dropped by more than 20%, a warning is logged. This usually means the GDE export was partial or corrupted — re-export from MyEdBC.

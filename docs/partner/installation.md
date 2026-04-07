@@ -86,6 +86,9 @@ Review your settings and click **Save & Activate Schedule**.
 
 GDE2Acsv will create a Windows Task Scheduler entry named `GDE2Acsv_Daily` that runs every day at the time you specified.
 
+!!! tip "Custom district mapping?"
+    Need a custom district mapping? Use the **Mapping Editor** page to create or modify mappings visually.
+
 ---
 
 ## Step 3 — Manual Configuration (Linux)
@@ -198,11 +201,12 @@ INFO - SFTP upload complete: 5 file(s) uploaded
 ## What happens each day
 
 1. **03:00 AM** — Task Scheduler / cron starts `GDE2Acsv`
-2. Tool reads GDE `.txt` files from the input directory
+2. Tool reads GDE files from the input directory
 3. Transforms data into 5 CSV files
-4. Writes all 5 CSVs atomically (all succeed or none are committed)
-5. Uploads all 5 CSVs to SpacesEDU via SFTP
-6. Writes a detailed log entry to `etl_tool.log`
+4. Checks for anomalies — if any entity's record count has dropped more than 20% compared to the previous run, a warning is logged
+5. Writes all 5 CSVs atomically (all succeed or none are committed)
+6. Uploads all 5 CSVs to SpacesEDU via SFTP
+7. Writes a detailed log entry to `etl_tool.log`
 
 ---
 
@@ -211,6 +215,7 @@ INFO - SFTP upload complete: 5 file(s) uploaded
 | District | Config name | Notes |
 |----------|-------------|-------|
 | Default (MyEdBC) | `myedbc` | Standard filenames |
+| SD40 – New Westminster | `sd40myedbc` | CSV files with SD-40_/SD40- prefix. StudentSchedule has no headers (auto-injected via config). |
 | SD48 – Sea to Sky | `sd48myedbc` | Uses `StudentDemographicEnhanced.txt`, `StaffInformation.txt` |
 | SD51 – Boundary | `sd51myedbc` | Contact SpacesEDU for file naming |
 | SD74 – Gold Trail | `sd74myedbc` | Uses `studentcourseselection.txt`, `StaffInformation.txt`, `ParentInformation.txt` |

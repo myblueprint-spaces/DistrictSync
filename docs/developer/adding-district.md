@@ -12,8 +12,9 @@ Some districts have differences:
 
 | District | Difference |
 |----------|-----------|
-| SD48 – Sea to Sky | Uses `StudentDemographicEnhanced.txt` and `StaffInformation.txt` |
-| SD74 – Gold Trail | Uses `studentcourseselection.txt`, `StaffInformation.txt`, `ParentInformation.txt`, `ClassInfoEnhanced.txt` |
+| SD40 – New Westminster | GDE files are CSV format with SD-40_/SD40- prefix; Student Schedule has no headers (injected via `headers:` config) |
+| SD48 – Sea to Sky | Uses Student Demographic Enhanced and Staff Information (non-enhanced) |
+| SD74 – Gold Trail | Uses Student Course Selection, Staff Information, Parent Information, Class Info Enhanced |
 
 For each such district, you create a small YAML override file that inherits from `myedbc` and specifies only what differs.
 
@@ -29,12 +30,14 @@ Obtain a sample export from the district and note:
 Standard file set (from `myedbc_mapping.yaml`):
 
 ```
-StudentDemographicInformation.txt
-StaffInformationEnhanced.txt
-StudentSchedule.txt
-CourseInformation.txt
-EmergencyContactInformation.txt
+Student Demographic Information
+Staff Information Enhanced
+Student Schedule
+Course Information
+Emergency Contact Information
 ```
+
+(Exact filenames vary by district and may be `.txt` or `.csv`.)
 
 ---
 
@@ -54,6 +57,8 @@ Examine the log for `WARNING` lines like:
 ```
 WARNING - Primary source file 'StaffInformationEnhanced.txt' is empty for 'Staff'; skipping.
 ```
+
+(The filename in the warning reflects what the config expects — if it mismatches the actual file, update the `source_files` in your override YAML.)
 
 These tell you which files are named differently.
 
@@ -101,6 +106,27 @@ mappings:
 
 Remember: the extractor normalises column names to lowercase + stripped, so YAML values should be lowercase.
 
+### Handling headerless files
+
+Some districts export GDE files with no header row (SD40's Student Schedule is an example). Use the `headers:` key to inject column names:
+
+```yaml
+mappings:
+  Classes:
+    source_files:
+      student_schedule: "SD40_StudentSchedule.csv"
+    file_headers:
+      student_schedule:
+        - "Student Number"
+        - "Course Code"
+        - "Section"
+        - "Teacher ID"
+        - "School Number"
+        # ... all columns in order
+```
+
+When `file_headers` is present for a source file role, the extractor uses these names instead of reading a header row. The values must match what the downstream field_map expects (after lowercase normalization).
+
 ### Overriding global config
 
 If the district uses non-standard academic dates or homeroom grades:
@@ -145,6 +171,15 @@ validate-config:
 	python -c "from src.config.loader import load_config; load_config('sd74myedbc')"
 	python -c "from src.config.loader import load_config; load_config('sd99myedbc')"   # add this
 	@echo "All configs valid."
+```
+
+Also add the config name to the `validate-config` step in `.github/workflows/ci.yml` so it runs in CI on every pull request:
+
+```yaml
+- name: Validate configs
+  run: |
+    python -c "from src.config.loader import load_config; load_config('myedbc')"
+    python -c "from src.config.loader import load_config; load_config('sd99myedbc')"  # add this
 ```
 
 ---
@@ -213,6 +248,7 @@ Then without `--dry-run` to verify the output CSVs, and with `--quality` to spot
 | Config name | `_base` | Key differences |
 |-------------|---------|----------------|
 | `myedbc` | (none — base) | Standard MyEdBC filenames |
-| `sd48myedbc` | `myedbc` | `StudentDemographicEnhanced.txt`, `StaffInformation.txt` |
+| `sd40myedbc` | `myedbc` | CSV files with SD-40_/SD40- prefix; Student Schedule is headerless (`file_headers:` used) |
+| `sd48myedbc` | `myedbc` | Student Demographic Enhanced, Staff Information (non-enhanced) |
 | `sd51myedbc` | `myedbc` | Contact SpacesEDU for file naming details |
-| `sd74myedbc` | `myedbc` | `studentcourseselection.txt`, `StaffInformation.txt`, `ParentInformation.txt`, `ClassInfoEnhanced.txt` |
+| `sd74myedbc` | `myedbc` | Student Course Selection, Staff Information, Parent Information, Class Info Enhanced |

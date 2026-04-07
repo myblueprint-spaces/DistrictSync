@@ -16,7 +16,7 @@ hide:
 
 <div class="mb-stats">
   <div class="mb-stat-card"><div class="stat-value">5</div><div class="stat-label">CSV outputs</div></div>
-  <div class="mb-stat-card"><div class="stat-value">4+</div><div class="stat-label">District configs</div></div>
+  <div class="mb-stat-card"><div class="stat-value">5</div><div class="stat-label">District configs</div></div>
   <div class="mb-stat-card"><div class="stat-value">3</div><div class="stat-label">Platforms</div></div>
   <div class="mb-stat-card"><div class="stat-value">91%</div><div class="stat-label">Test coverage</div></div>
 </div>
@@ -41,16 +41,16 @@ Get the latest release for your platform:
 ## What it does
 
 ```
-GDE .txt files  →  GDE2Acsv  →  SpacesEDU CSV files  →  SFTP upload
+GDE files  →  GDE2Acsv  →  SpacesEDU CSV files  →  SFTP upload
 ```
 
 | Input (MyEdBC GDE) | Output (SpacesEDU) |
 |---|---|
-| `StudentDemographicInformation.txt` | `Students.csv` |
-| `StaffInformationEnhanced.txt` | `Staff.csv` |
-| `EmergencyContactInformation.txt` | `Family.csv` |
-| `StudentSchedule.txt` + `CourseInformation.txt` | `Classes.csv` |
-| `StudentSchedule.txt` + demographics | `Enrollments.csv` |
+| Student Demographic | `Students.csv` |
+| Staff Information – Enhanced | `Staff.csv` |
+| Emergency Contact Information | `Family.csv` |
+| Student Schedule + Course Information | `Classes.csv` |
+| Student Schedule + Student Demographic | `Enrollments.csv` |
 
 ### Key features
 
@@ -60,8 +60,12 @@ GDE .txt files  →  GDE2Acsv  →  SpacesEDU CSV files  →  SFTP upload
 - **Homeroom generation** — elementary homeroom classes auto-generated from demographics
 - **District config inheritance** — district-specific overrides layer on top of the base MyEdBC config
 - **Automated scheduling** — runs daily via Windows Task Scheduler or cron
-- **SFTP upload** — uploads generated CSVs directly to SpacesEDU after each run
+- **SFTP upload** — uploads generated CSVs directly to SpacesEDU after each run; host allowlist restricts uploads to SpacesEDU servers only
 - **Atomic writes** — all-or-nothing commit; a failed run never leaves partial output
+- **Anomaly detection** — warns when output record counts drop more than 20% compared to the previous run
+- **Structured run logging** — each run writes a machine-readable JSON log tag for the Run History page
+- **Mapping Editor** — web UI wizard for creating or modifying district configs without editing YAML
+- **Help & Docs page** — in-app access to documentation and support links
 
 ---
 
@@ -76,7 +80,7 @@ git push origin --tags
 
 GitHub Actions then:
 
-1. Runs the full test suite (Python 3.9, 3.11, 3.13) + lint + type check + config validation
+1. Runs the full test suite (Python 3.9, 3.11, 3.13) + lint + format check + type check + security scan (bandit) + config validation
 2. Builds platform executables — Windows `.exe`, Linux binary, macOS binary — in parallel
 3. Creates a GitHub Release with all three files attached and download links in the release notes
 
