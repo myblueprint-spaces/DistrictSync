@@ -1,9 +1,44 @@
 # Python cache
 __pycache__/
+*.pyc
 
 # Build and distribution folders
 /bin/
 /dist/
 /build/
 /linux_output/
-config/mappings/sd*
+*.egg-info/
+*.spec
+
+# Logs
+*.log
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Linting
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local data directories (input/output GDE files — never commit real student data)
+data/input/
+data/output/
+
+# MkDocs build output
+site/

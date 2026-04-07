@@ -1,6 +1,7 @@
 from pathlib import Path
+
 import pandas as pd
-import os
+
 
 def validate_csv(file_path: Path) -> bool:
     """
@@ -8,13 +9,13 @@ def validate_csv(file_path: Path) -> bool:
     """
     if not file_path.exists():
         raise FileNotFoundError(f"CSV file not found: {file_path}")
-    
+
     try:
         # Quick read without loading full data
         pd.read_csv(file_path, nrows=1)
         return True
     except Exception as e:
-        raise ValueError(f"Invalid CSV format in {file_path}: {str(e)}")
+        raise ValueError(f"Invalid CSV format in {file_path}: {str(e)}") from e
 
 def ensure_directory(path: Path) -> Path:
     """
@@ -31,7 +32,7 @@ def safe_float_conversion(value, default=0.0):
         return float(value)
     except (ValueError, TypeError):
         return default
-    
+
 def validate_path(path: Path) -> bool:
     """Validate path exists and is directory"""
     if not path.exists():
@@ -39,3 +40,10 @@ def validate_path(path: Path) -> bool:
     if not path.is_dir():
         raise NotADirectoryError(f"Path is not a directory: {path}")
     return True
+
+
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Strip whitespace and lowercase all column names. Returns a copy."""
+    df = df.copy()
+    df.columns = [col.strip().lower() for col in df.columns]
+    return df

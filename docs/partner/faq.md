@@ -1,0 +1,79 @@
+# Frequently Asked Questions
+
+## General
+
+**Q: How often does the tool run?**
+
+Once per day at the time configured in the Setup Wizard (default: 3:00 AM). This is controlled by Windows Task Scheduler (Windows) or cron (Linux/macOS).
+
+**Q: What happens if the GDE files are not present at run time?**
+
+The tool logs a warning for each missing file and skips the affected entity. For example, if `CourseInformation.txt` is missing, Classes and Enrollments will be skipped. The run is still considered complete; other entities are processed normally.
+
+**Q: Can I run it manually?**
+
+Yes, at any time:
+```cmd
+GDE2Acsv.exe --sis myedbc --input C:\GDE2Acsv\input --output C:\GDE2Acsv\output
+```
+
+Add `--sftp` to also upload after generating:
+```cmd
+GDE2Acsv.exe --sis myedbc --input ... --output ... --sftp
+```
+
+**Q: Can I preview the output without writing files?**
+
+Yes — use the `--dry-run` flag. It prints a summary of how many rows each entity would produce, without writing any files or uploading anything.
+
+---
+
+## Data questions
+
+**Q: Why are some students missing from the output?**
+
+Only students with `Enrolment Status = Active` are included. Students with status `PreReg`, `Inactive`, or with a past withdrawal date are excluded. Run `--quality` to see a breakdown.
+
+**Q: What does "blended class" mean?**
+
+A blended class is detected when the same teacher teaches multiple sections at the same time slot but with students from different grade levels. GDE2Acsv automatically merges these into a single class record for SpacesEDU. The class is named after the teacher, course titles, and grade range (e.g., "Reed - Science 3 / Science 4 (03/04) 2025").
+
+**Q: Why does the grade show as "01" instead of "1"?**
+
+GDE2Acsv maps all grade codes to the CEDS (Common Education Data Standards) format:
+
+| MyEdBC grade | CEDS output |
+|-------------|-------------|
+| K | KG |
+| 1 | 01 |
+| 2 | 02 |
+| … | … |
+| 12 | 12 |
+
+This is required by the SpacesEDU import format.
+
+---
+
+## Technical questions
+
+**Q: Do I need to install Python or anything else?**
+
+No. The `.exe` file is a self-contained executable that includes Python, all libraries, and the configuration files. Nothing else needs to be installed.
+
+**Q: Where are SFTP credentials stored?**
+
+Credentials are stored in the Windows Credential Manager (Windows) or the equivalent OS keychain — never in a plain text file. The configuration file (`~/.gde2acsv/config.json`) stores only non-sensitive settings like host and port.
+
+**Q: Can I run this on multiple districts from the same server?**
+
+Yes, by creating separate scheduled tasks with different `--sis`, `--input`, and `--output` arguments. Contact SpacesEDU for multi-district setup guidance.
+
+**Q: How do I update to a newer version?**
+
+1. Download the new `.exe` from the [Releases page](https://github.com/myblueprint/GDE2Acsv/releases/latest)
+2. Replace the existing `.exe` in `C:\GDE2Acsv\`
+3. The scheduled task continues to work automatically — no reconfiguration needed
+
+**Q: Is there a web-based UI?**
+
+Yes — double-clicking `GDE2Acsv-windows.exe` opens a browser-based UI at `http://localhost:8501` for the Setup Wizard, ad-hoc conversions, and run history. For automated daily runs, the tool runs headlessly without opening a browser.

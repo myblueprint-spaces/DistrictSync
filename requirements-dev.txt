@@ -1,0 +1,19 @@
+# Development + CI dependencies
+-r requirements.txt
+
+# Testing
+pytest>=7.0
+pytest-cov>=4.0
+pytest-benchmark>=4.0
+
+# Linting / formatting / type checking
+ruff>=0.4
+mypy>=1.0
+pandas-stubs>=2.0
+
+# Security scanning (used in CI)
+bandit>=1.7
+
+# Documentation
+mkdocs-material>=9.0
+mkdocs-with-pdf>=0.9

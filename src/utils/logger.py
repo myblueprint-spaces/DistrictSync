@@ -1,14 +1,14 @@
 import logging
 import logging.config
-import os
 from pathlib import Path
+
 
 def get_logger(name: str = __name__) -> logging.Logger:
     """
     Configure and return a logger instance with standard formatting
     """
     config_path = Path(__file__).parent.parent / "config" / "logging.conf"
-    
+
     if config_path.exists():
         logging.config.fileConfig(config_path)
     else:
@@ -21,5 +21,5 @@ def get_logger(name: str = __name__) -> logging.Logger:
                 logging.StreamHandler()
             ]
         )
-    
+
     return logging.getLogger(name)

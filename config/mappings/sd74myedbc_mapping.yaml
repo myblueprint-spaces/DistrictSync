@@ -1,97 +1,62 @@
-# Version 1.9 - MyEducation BC GDE to Advanced CSV Mapping (SD74 Customized)
+# SD74 - Inherits from standard MyEducation BC mapping
+# Differences: source file names, column casing, custom email, fixed dates,
+#              different Name config for classes, swapped legal/usual name fields
+_base: myedbc
 version: 1.9
 sis: MyEducationBC
 
 global_config:
   school_year_sources:
     student_schedule: "studentcourseselection.txt"
-  homeroom_grades: ["IT", "PR", "PK", "TK", "KG", "01", "02", "03", "04", "05", "06", "07"]
 
 mappings:
   Students:
-    source_files:
-      student_demographic: "StudentDemographicInformation.txt"
     field_map:
       "User ID": "Student number"
       "Student Number": "Student number"
       "First Name": "Usual first name"
       "Last Name": "Usual surname"
-      "Date of Birth": "Date of birth"
-      "Grade":
-        column: "Grade"
-        transform: "grade_to_ceds"
-      "EnrollStatus": #auto detected from Enrollment Status or Withdrawal Date fields
       "SchoolCode": "School number"
-      "Homeroom": "Homeroom"
-      "PreRegSchoolCode": "Previous school number"
       "Preferred First Name": "Legal first name"
       "Preferred Last Name": "Legal surname"
-      "Community Hours":
-        value: ""
-      "Literacy Test Completed":
-        value: ""
       "Email Address":
         format: "{student number}@sd74.bc.ca"
 
   Staff:
     source_files:
       staff_info: "StaffInformation.txt"
-    field_map:
-      "User ID": "Teacher Id"
-      "First Name": "First Name"
-      "Last Name": "Last Name"
-      "Email": "Email Address"
-      "Role":
-        column: "Teaching Staff"
-        transform: "map_role"
-      "School ID": "School Number"
 
   Family:
     source_files:
       emergency_contacts: "ParentInformation.txt"
     field_map:
-      "First Name": "First Name"
       "Last Name": "Surname"
-      "Email": "Email Address"
-      "Student User ID": "Student Number"
 
   Classes:
     source_files:
       student_schedule: "studentcourseselection.txt"
-      course_info: "CourseInformation.txt"
       staff_info: "StaffInformation.txt"
-      student_demographic: "StudentDemographicInformation.txt"
-      class_info: "ClassInfoEnhanced.txt" 
+      class_info: "ClassInfoEnhanced.txt"
     field_map:
-      "Class ID":
-        column: "Master Timetable ID"
-        append_year_to_id: true
       "Name":
         "primary teacher flag": ""
         "teacher last name": "Teacher Name"
         "course title": "Title"
         "section letter": "Section"
-      "Grade": "Grade"
-      "School ID": "School Number"
       "Start Date":
-        value : "2025-08-25"
+        value: "2025-08-25"
         use_academic_year: false
-      "End Date": 
+      "End Date":
         value: "2026-07-25"
         use_academic_year: false
 
   Enrollments:
     source_files:
       student_schedule: "studentcourseselection.txt"
-      student_demographic: "StudentDemographicInformation.txt"
     field_map:
-      "Class ID":
-        column: "Master Timetable ID"
-        append_year_to_id: true
       "User ID":
         "student_id_col": "Student Number"
         "staff_id_col": "Teacher ID"
       "Role":
         "student_id_col": "Student Number"
         "staff_id_col": "Teacher ID"
-      "School ID": "School Number"

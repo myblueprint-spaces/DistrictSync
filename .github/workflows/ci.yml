@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+          pip install paramiko keyring  # optional SFTP deps (needed by sftp/scheduler modules)
+
+      - name: Lint with ruff
+        run: ruff check src/ tests/
+
+      - name: Check formatting with ruff
+        run: ruff format --check src/ tests/
+
+      - name: Type-check with mypy
+        run: mypy src/
+        continue-on-error: true  # Lenient until type-hint pass is complete
+
+      - name: Security scan with bandit
+        run: bandit -r src/ -q
+
+      - name: Run tests with coverage
+        run: python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=80
+
+      - name: Validate all mapping configs
+        run: |
+          python -c "
+          from src.config.loader import load_config
+          for name in ['myedbc', 'sd48myedbc', 'sd51myedbc', 'sd74myedbc']:
+              cfg = load_config(name)
+              print(f'{name}: OK')
+          "

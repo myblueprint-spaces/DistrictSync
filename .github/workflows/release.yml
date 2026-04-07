@@ -1,0 +1,142 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: python -m pytest tests/ --cov=src --cov-fail-under=80
+
+  # -----------------------------------------------------------------------
+  # CLI executable builds (headless — for the scheduled task)
+  # -----------------------------------------------------------------------
+
+  build-windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt pyinstaller
+      - run: >
+          pyinstaller --onefile --name GDE2Acsv
+          --add-data "config;config"
+          --hidden-import=pandas
+          --hidden-import=yaml
+          --hidden-import=logging.config
+          --hidden-import=pydantic
+          --hidden-import=pydantic_core
+          src/main.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GDE2Acsv-windows
+          path: dist/GDE2Acsv.exe
+          retention-days: 5
+
+  build-linux:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt pyinstaller
+      - run: >
+          pyinstaller --onefile --name GDE2Acsv
+          --add-data "config:config"
+          --hidden-import=pandas
+          --hidden-import=yaml
+          --hidden-import=logging.config
+          --hidden-import=pydantic
+          --hidden-import=pydantic_core
+          src/main.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GDE2Acsv-linux
+          path: dist/GDE2Acsv
+          retention-days: 5
+
+  build-macos:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt pyinstaller
+      - run: >
+          pyinstaller --onefile --name GDE2Acsv
+          --add-data "config:config"
+          --hidden-import=pandas
+          --hidden-import=yaml
+          --hidden-import=logging.config
+          --hidden-import=pydantic
+          --hidden-import=pydantic_core
+          src/main.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GDE2Acsv-macos
+          path: dist/GDE2Acsv
+          retention-days: 5
+
+  # -----------------------------------------------------------------------
+  # Publish release with all artifacts
+  # -----------------------------------------------------------------------
+
+  publish-release:
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: GDE2Acsv-windows
+          path: artifacts/windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: GDE2Acsv-linux
+          path: artifacts/linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: GDE2Acsv-macos
+          path: artifacts/macos
+
+      - name: Rename and mark executables
+        run: |
+          mv artifacts/windows/GDE2Acsv.exe artifacts/GDE2Acsv-windows.exe
+          mv artifacts/linux/GDE2Acsv     artifacts/GDE2Acsv-linux
+          mv artifacts/macos/GDE2Acsv     artifacts/GDE2Acsv-macos
+          chmod +x artifacts/GDE2Acsv-linux artifacts/GDE2Acsv-macos
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            ## Downloads
+
+            | Platform | File | Notes |
+            |----------|------|-------|
+            | Windows | `GDE2Acsv-windows.exe` | Double-click or use in Task Scheduler |
+            | Linux   | `GDE2Acsv-linux`       | `chmod +x` before first run |
+            | macOS   | `GDE2Acsv-macos`       | Allow in System Settings > Privacy & Security |
+
+            See the [Partner Installation Guide](https://github.com/${{ github.repository }}/blob/main/docs/partner/installation.md) for setup instructions.
+          files: |
+            artifacts/GDE2Acsv-windows.exe
+            artifacts/GDE2Acsv-linux
+            artifacts/GDE2Acsv-macos

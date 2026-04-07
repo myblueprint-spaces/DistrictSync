@@ -1,0 +1,33 @@
+# SD51 - Inherits from standard MyEducation BC mapping
+# Differences: source file names, custom email format, fixed academic dates
+_base: myedbc
+version: 1.9
+sis: MyEducationBC
+
+mappings:
+  Students:
+    source_files:
+      student_demographic: "StudentDemographicEnhanced.txt"
+    field_map:
+      "Email Address":
+        format: "{student number}@sd51.bc.ca"
+
+  Staff:
+    source_files:
+      staff_info: "StaffInformation.txt"
+
+  Classes:
+    source_files:
+      staff_info: "StaffInformation.txt"
+      student_demographic: "StudentDemographicEnhanced.txt"
+    field_map:
+      "Start Date":
+        value: "2025-08-25"
+        use_academic_year: false
+      "End Date":
+        value: "2026-07-25"
+        use_academic_year: false
+
+  Enrollments:
+    source_files:
+      student_demographic: "StudentDemographicEnhanced.txt"

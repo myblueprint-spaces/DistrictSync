@@ -1,10 +1,16 @@
+import csv
 import logging
 from pathlib import Path
-from typing import Dict, List
 
 import pandas as pd
 
+from src.utils.helpers import normalize_columns
+
 logger = logging.getLogger(__name__)
+
+
+class ExtractionError(Exception):
+    """Raised when a file exists on disk but cannot be parsed by any encoding/delimiter."""
 
 
 class DataExtractor:
@@ -16,22 +22,13 @@ class DataExtractor:
     def __init__(self, input_path: str):
         self.input_path = Path(input_path)
 
-    @staticmethod
-    def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Strip whitespace and lowercase all column names.
-        """
-        df = df.copy()
-        df.columns = [col.strip().lower() for col in df.columns]
-        return df
-
-    def load_data(self, required_files: List[str]) -> Dict[str, pd.DataFrame]:
+    def load_data(self, required_files: list[str]) -> dict[str, pd.DataFrame]:
         """
         Try to load each file with multiple encodings and delimiters.
         Returns a dict: { filename → DataFrame }.
         If loading fails, returns an empty DataFrame for that key.
         """
-        data: Dict[str, pd.DataFrame] = {}
+        data: dict[str, pd.DataFrame] = {}
 
         for filename in required_files:
             file_path = self.input_path / filename
@@ -55,8 +52,8 @@ class DataExtractor:
                         logger.info(f"Loaded {filename} with encoding={encoding}, sep={'auto' if sep is None else repr(sep)}")
                         loaded_df = df
                         break
-                    except Exception as e:
-                        # Try the next combination
+                    except (pd.errors.ParserError, UnicodeDecodeError, ValueError, csv.Error) as e:
+                        # Try the next encoding/delimiter combination
                         logger.debug(f"Failed loading {filename} with encoding={encoding}, sep={repr(sep)}: {e}")
                         continue
 
@@ -64,11 +61,12 @@ class DataExtractor:
                     break
 
             if loaded_df is None:
-                logger.error(f"Could not parse {filename} with any method")
-                data[filename] = pd.DataFrame()
+                raise ExtractionError(
+                    f"File exists but could not be parsed with any encoding/delimiter: {file_path}"
+                )
             else:
                 # Normalize column names here
-                data[filename] = self._normalize_columns(loaded_df)
+                data[filename] = normalize_columns(loaded_df)
                 logger.info(f"Successfully loaded {filename}: {len(data[filename])} rows")
 
         return data
