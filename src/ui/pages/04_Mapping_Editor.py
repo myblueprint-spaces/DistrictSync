@@ -423,8 +423,7 @@ elif st.session_state.me_step == 3:
 elif st.session_state.me_step == 4:
     st.subheader("Step 4 — Student Data")
     st.markdown(
-        "Tell GDE2Acsv which columns in your Student Information file "
-        "contain each piece of data needed by SpacesEDU."
+        "Tell GDE2Acsv which columns in your Student Information file contain each piece of data needed by SpacesEDU."
     )
 
     config = st.session_state.me_config

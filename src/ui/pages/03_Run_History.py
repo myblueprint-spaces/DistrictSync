@@ -34,7 +34,7 @@ LOG_PATHS = [
 log_file = next((p for p in LOG_PATHS if p.exists()), None)
 
 if log_file is None:
-    st.info("No run history yet.  Once the schedule is activated (via Setup Wizard), " "run logs will appear here.")
+    st.info("No run history yet.  Once the schedule is activated (via Setup Wizard), run logs will appear here.")
     st.stop()
 
 # ---------------------------------------------------------------------------
@@ -83,7 +83,7 @@ if runs:
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 else:
-    st.info("No structured run history found.  " "Run history will be recorded starting from the next scheduled run.")
+    st.info("No structured run history found.  Run history will be recorded starting from the next scheduled run.")
 
 # ---------------------------------------------------------------------------
 # Always show the recent raw log (last 200 lines)

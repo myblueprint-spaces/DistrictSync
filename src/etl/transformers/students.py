@@ -62,7 +62,7 @@ class StudentTransformer(BaseTransformer):
                 )
         else:
             logger.warning(
-                "[Students] Could not find 'enrolment status' or 'withdraw date' column. " "Defaulting to 'Active'."
+                "[Students] Could not find 'enrolment status' or 'withdraw date' column. Defaulting to 'Active'."
             )
             working["EnrollStatus"] = "Active"
 

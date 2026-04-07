@@ -100,7 +100,7 @@ class DataLoader:
         try:
             missing_cols = [c for c in field_order if c not in df.columns]
             if missing_cols:
-                raise ValueError(f"Cannot write {entity_name}.csv — " f"columns missing from output: {missing_cols}")
+                raise ValueError(f"Cannot write {entity_name}.csv — columns missing from output: {missing_cols}")
             output_file = directory / f"{entity_name}.csv"
             df[field_order].to_csv(output_file, index=False, encoding="utf-8-sig")
             label = "Staged" if staging else "Saved"

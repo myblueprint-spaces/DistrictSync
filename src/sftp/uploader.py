@@ -91,7 +91,7 @@ class SFTPUploader:
 
         password = self._get_password()
         if not password:
-            raise RuntimeError("No SFTP password found. " "Run the setup wizard to enter credentials.")
+            raise RuntimeError("No SFTP password found. Run the setup wizard to enter credentials.")
 
         client = paramiko.SSHClient()
         client.load_system_host_keys()

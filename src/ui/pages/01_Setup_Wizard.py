@@ -113,7 +113,7 @@ def _register_schedule(cfg: AppConfig) -> None:
         # Parse common errors into user-friendly messages
         if "Access is denied" in msg or "access denied" in msg.lower():
             st.error(
-                "Permission denied. Right-click the application and " "select 'Run as administrator', then try again."
+                "Permission denied. Right-click the application and select 'Run as administrator', then try again."
             )
         else:
             st.error(f"Failed to register schedule: {msg}")
@@ -401,9 +401,7 @@ elif st.session_state.wizard_step == 5:
         st.markdown("**SFTP**")
         if cfg.sftp_enabled:
             st.code(
-                f"Host:   {cfg.sftp_host}:{cfg.sftp_port}\n"
-                f"User:   {cfg.sftp_username}\n"
-                f"Path:   {cfg.sftp_remote_path}"
+                f"Host:   {cfg.sftp_host}:{cfg.sftp_port}\nUser:   {cfg.sftp_username}\nPath:   {cfg.sftp_remote_path}"
             )
         else:
             st.code("Disabled")

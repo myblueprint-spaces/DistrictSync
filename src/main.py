@@ -45,7 +45,7 @@ def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list
             continue
         if prev_count > 0 and len(df) < prev_count * (1 - ANOMALY_THRESHOLD):
             pct = ((prev_count - len(df)) / prev_count) * 100
-            msg = f"ANOMALY: {entity} dropped from {prev_count} to {len(df)} rows " f"({pct:.0f}% decrease)"
+            msg = f"ANOMALY: {entity} dropped from {prev_count} to {len(df)} rows ({pct:.0f}% decrease)"
             logger.warning(msg)
             warnings.append(msg)
     return warnings
@@ -229,7 +229,7 @@ def _sftp_upload(output_path: str) -> bool:
         cfg = AppConfig.load()
         if not cfg.sftp_is_configured():
             logger.warning(
-                "SFTP upload requested but SFTP is not configured. " "Run the setup wizard to configure SFTP settings."
+                "SFTP upload requested but SFTP is not configured. Run the setup wizard to configure SFTP settings."
             )
             return False
 

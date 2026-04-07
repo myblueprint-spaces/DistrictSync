@@ -39,7 +39,7 @@ def validate_sis_type(value: str) -> str:
     """Ensure *value* is alphanumeric/underscore only (e.g. ``myedbc``)."""
     value = value.strip()
     if not _SIS_TYPE_RE.match(value):
-        raise ValueError(f"Invalid SIS type '{value}'. " "Must contain only letters, digits, and underscores.")
+        raise ValueError(f"Invalid SIS type '{value}'. Must contain only letters, digits, and underscores.")
     return value
 
 
@@ -48,7 +48,7 @@ def validate_task_name(value: str) -> str:
     value = value.strip()
     if not _TASK_NAME_RE.match(value):
         raise ValueError(
-            f"Invalid task name '{value}'. " "Must contain only letters, digits, spaces, underscores, and hyphens."
+            f"Invalid task name '{value}'. Must contain only letters, digits, spaces, underscores, and hyphens."
         )
     return value
 
@@ -77,7 +77,7 @@ def validate_sftp_host(host: str) -> str:
     host = host.strip().lower()
     if host not in ALLOWED_SFTP_HOSTS:
         allowed = ", ".join(sorted(ALLOWED_SFTP_HOSTS))
-        raise ValueError(f"SFTP host '{host}' is not allowed. " f"Permitted hosts: {allowed}")
+        raise ValueError(f"SFTP host '{host}' is not allowed. Permitted hosts: {allowed}")
     return host
 
 
