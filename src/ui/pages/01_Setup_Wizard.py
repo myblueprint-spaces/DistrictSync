@@ -189,6 +189,7 @@ elif st.session_state.wizard_step == 2:
         "Select the mapping configuration that matches your school district. "
         "Contact support@myBlueprint.ca if you are unsure which to choose."
     )
+    st.page_link("pages/04_Mapping_Editor.py", label="Need a new district mapping? Open the Mapping Editor", icon="🗺️")
 
     mapping_dir = Path("config/mappings")
     available = sorted(

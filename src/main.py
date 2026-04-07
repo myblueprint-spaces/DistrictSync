@@ -129,7 +129,13 @@ def run_pipeline(
         required_files = extract_required_files(config)
         logger.info(f"Required files: {required_files}")
 
-        raw_data = extractor.load_data(required_files)
+        # Collect explicit headers for headerless files (keyed by filename)
+        file_headers: dict[str, list[str]] = {}
+        for entity_cfg in mappings.values():
+            for filename, header_list in entity_cfg.get("headers", {}).items():
+                file_headers[filename] = header_list
+
+        raw_data = extractor.load_data(required_files, file_headers=file_headers)
 
         # Determine school year
         sy_sources_config = global_config.get("school_year_sources", {})

@@ -1,0 +1,92 @@
+# SD40 - New Westminster School District
+# Inherits from standard MyEducation BC mapping
+# Differences:
+#   - CSV files with "SD-40_" / "SD40-" prefix naming
+#   - StaffInformation (non-Enhanced, 10 columns)
+#   - StudentSchedule has NO header row — explicit headers injected via config
+#   - StudentEmergencyContact instead of EmergencyContactInformation
+#   - ClassInformation instead of ClassInformationEnh
+_base: myedbc
+version: 1.0
+sis: MyEducationBC
+
+global_config:
+  school_year_sources:
+    student_schedule: "SD40-StudentSchedule.csv"
+
+mappings:
+  Students:
+    source_files:
+      student_demographic: "SD-40_StudentDemographic.csv"
+
+  Staff:
+    source_files:
+      staff_info: "SD-40_StaffInformation.csv"
+
+  Family:
+    source_files:
+      emergency_contacts: "SD-40_StudentEmergencyContact.csv"
+
+  Classes:
+    source_files:
+      student_schedule: "SD40-StudentSchedule.csv"
+      course_info: "SD-40_CourseInformation.csv"
+      staff_info: "SD-40_StaffInformation.csv"
+      student_demographic: "SD-40_StudentDemographic.csv"
+      class_info: "SD-40_ClassInformation.csv"
+    headers:
+      "SD40-StudentSchedule.csv":
+        - "School Year"
+        - "School Number"
+        - "Student Number"
+        - "PEN"
+        - "Grade"
+        - "Homeroom"
+        - "Course School Number"
+        - "Course Code"
+        - "District Course Code"
+        - "Course Title"
+        - "Short Name"
+        - "Period"
+        - "Day"
+        - "Semester"
+        - "Section Letter"
+        - "Master Timetable ID"
+        - "Teacher ID"
+        - "Teacher Name"
+        - "Primary Teacher"
+        - "Enrolment Status"
+
+  Enrollments:
+    source_files:
+      student_schedule: "SD40-StudentSchedule.csv"
+      student_demographic: "SD-40_StudentDemographic.csv"
+    field_map:
+      "User ID":
+        "student_id_col": "Student Number"
+        "staff_id_col": "Teacher ID"
+      "Role":
+        "student_id_col": "Student Number"
+        "staff_id_col": "Teacher ID"
+    headers:
+      "SD40-StudentSchedule.csv":
+        - "School Year"
+        - "School Number"
+        - "Student Number"
+        - "PEN"
+        - "Grade"
+        - "Homeroom"
+        - "Course School Number"
+        - "Course Code"
+        - "District Course Code"
+        - "Course Title"
+        - "Short Name"
+        - "Period"
+        - "Day"
+        - "Semester"
+        - "Section Letter"
+        - "Master Timetable ID"
+        - "Teacher ID"
+        - "Teacher Name"
+        - "Primary Teacher"
+        - "Enrolment Status"

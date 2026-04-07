@@ -78,19 +78,19 @@ col1, col2 = st.columns([3, 2])
 with col1:
     st.subheader("What it does")
     st.markdown(
-        "GDE2Acsv reads the five standard GDE export files from MyEducation BC and "
-        "produces the five CSV files required by SpacesEDU's Advanced CSV import format. "
+        "GDE2Acsv reads the standard General Data Extract (GDE) files from MyEducation BC and "
+        "produces the CSV files required by SpacesEDU's Advanced CSV import format. "
         "It runs automatically every night and uploads results via SFTP."
     )
 
     st.markdown("""
 | Input (MyEdBC GDE) | Output (SpacesEDU) |
 |---|---|
-| `StudentDemographicInformation.txt` | `Students.csv` |
-| `StaffInformationEnhanced.txt` | `Staff.csv` |
-| `EmergencyContactInformation.txt` | `Family.csv` |
-| `StudentSchedule.txt` + `CourseInformation.txt` | `Classes.csv` |
-| `StudentSchedule.txt` + demographics | `Enrollments.csv` |
+| Student Demographic | `Students.csv` |
+| Staff Information – Enhanced | `Staff.csv` |
+| Emergency Contact Information | `Family.csv` |
+| Student Schedule + Course Information | `Classes.csv` |
+| Student Schedule + Class Information – Enhanced | `Enrollments.csv` |
 """)
 
 with col2:
@@ -101,6 +101,10 @@ with col2:
     st.caption("Upload GDE files and download CSVs on demand")
     st.page_link("pages/03_Run_History.py", label="Run History", icon="📋")
     st.caption("View the log of automated daily runs")
+    st.page_link("pages/04_Mapping_Editor.py", label="Mapping Editor", icon="🗺️")
+    st.caption("Create or customize district data configurations")
+    st.page_link("pages/05_Help.py", label="Help & Docs", icon="❓")
+    st.caption("Output format, how it works, troubleshooting")
 
 st.divider()
 st.caption("SpacesEDU by myBlueprint · GDE2Acsv · support@myBlueprint.ca")

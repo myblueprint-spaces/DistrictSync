@@ -126,6 +126,7 @@ class EntityConfig(BaseModel):
     """Config for a single output entity (Students, Staff, etc.)."""
     source_files: dict[str, str]
     field_map: dict[str, Any]
+    headers: dict[str, list[str]] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -206,10 +207,13 @@ class MappingConfig(BaseModel):
         """
         mappings_raw: dict[str, Any] = {}
         for entity_name, entity_cfg in self.mappings.items():
-            mappings_raw[entity_name] = {
+            entry: dict[str, Any] = {
                 "source_files": dict(entity_cfg.source_files),
                 "field_map": self.get_raw_field_map(entity_name),
             }
+            if entity_cfg.headers:
+                entry["headers"] = dict(entity_cfg.headers)
+            mappings_raw[entity_name] = entry
 
         global_raw: dict[str, Any] = {
             "school_year_sources": dict(self.global_config.school_year_sources),

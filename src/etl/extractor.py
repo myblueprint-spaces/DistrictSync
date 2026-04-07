@@ -22,12 +22,17 @@ class DataExtractor:
     def __init__(self, input_path: str):
         self.input_path = Path(input_path)
 
-    def load_data(self, required_files: list[str]) -> dict[str, pd.DataFrame]:
+    def load_data(
+        self,
+        required_files: list[str],
+        file_headers: dict[str, list[str]] | None = None,
+    ) -> dict[str, pd.DataFrame]:
         """
         Try to load each file with multiple encodings and delimiters.
         Returns a dict: { filename → DataFrame }.
         If loading fails, returns an empty DataFrame for that key.
         """
+        file_headers = file_headers or {}
         data: dict[str, pd.DataFrame] = {}
 
         for filename in required_files:
@@ -39,15 +44,27 @@ class DataExtractor:
                 data[filename] = pd.DataFrame()
                 continue
 
+            # Check if explicit headers are provided (for headerless files)
+            explicit_names = file_headers.get(filename)
+            if explicit_names:
+                logger.info(f"Using explicit headers for {filename} ({len(explicit_names)} columns)")
+
             loaded_df = None
             for encoding in ("utf-8", "latin1", "cp1252"):
                 for sep in (",", "\t", None):
                     try:
+                        kwargs: dict = {"encoding": encoding, "on_bad_lines": "warn"}
+                        if explicit_names:
+                            kwargs["header"] = None
+                            kwargs["names"] = explicit_names
                         if sep is None:
-                            # Let pandas sniff the delimiter with python engine
-                            df = pd.read_csv(file_path, sep=None, engine="python", encoding=encoding, on_bad_lines="warn")
+                            kwargs["sep"] = None
+                            kwargs["engine"] = "python"
                         else:
-                            df = pd.read_csv(file_path, sep=sep, encoding=encoding, low_memory=False, on_bad_lines="warn")
+                            kwargs["sep"] = sep
+                            kwargs["low_memory"] = False
+
+                        df = pd.read_csv(file_path, **kwargs)
 
                         logger.info(f"Loaded {filename} with encoding={encoding}, sep={'auto' if sep is None else repr(sep)}")
                         loaded_df = df

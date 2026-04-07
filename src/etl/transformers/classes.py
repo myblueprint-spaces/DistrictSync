@@ -187,7 +187,7 @@ class ClassTransformer(BaseTransformer):
         course_df = self.get_source_file(context, normalized_sources, "course_info")
         if not course_df.empty:
             course_df = self.normalize_columns(course_df)
-            if DISTRICT_COURSE_CODE in merged.columns:
+            if DISTRICT_COURSE_CODE in merged.columns and COURSE_CODE not in merged.columns:
                 merged = merged.rename(columns={DISTRICT_COURSE_CODE: COURSE_CODE})
             merged = merged.merge(
                 course_df[[SCHOOL_NUMBER, COURSE_CODE, COURSE_TITLE]],
