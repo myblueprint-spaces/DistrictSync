@@ -149,9 +149,9 @@ class EnrollmentTransformer(BaseTransformer):
         # Student subject enrollments
         if student_id_col in non_homeroom.columns and "Class ID" in non_homeroom.columns:
             student_enroll = non_homeroom[["Class ID", student_id_col, SCHOOL_NUMBER]].copy()
-            student_enroll.rename(columns={student_id_col: "User ID"}, inplace=True)
+            student_enroll.rename(columns={student_id_col: "User ID"}, inplace=True)  # type: ignore[call-overload]
             student_enroll["Role"] = "student"
-            final.append(student_enroll)
+            final.append(student_enroll)  # type: ignore[arg-type]
             logger.info(f"[Enrollments] Created {len(student_enroll)} student subject enrollments")
 
         # Blended teacher enrollments
