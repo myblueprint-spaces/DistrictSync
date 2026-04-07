@@ -93,7 +93,7 @@ class ClassTransformer(BaseTransformer):
         grade_config = students_field_map.get("Grade", {})
         grade_col = grade_config.get("column", "grade").lower() if isinstance(grade_config, dict) else "grade"
         student_demo_df[grade_col] = student_demo_df[grade_col].apply(self.grade_to_ceds)
-        homeroom_students = student_demo_df[student_demo_df[grade_col].isin(homeroom_grades)]
+        homeroom_students: pd.DataFrame = student_demo_df[student_demo_df[grade_col].isin(homeroom_grades)]
 
         if homeroom_students.empty:
             return
@@ -171,7 +171,7 @@ class ClassTransformer(BaseTransformer):
             schedule_df[MASTER_TIMETABLE_ID] = schedule_df[MASTER_TIMETABLE_ID].astype(str).str.strip()
 
         schedule_df["grade_ceds"] = schedule_df["grade"].apply(self.grade_to_ceds)
-        non_homeroom_df = schedule_df[~schedule_df["grade_ceds"].isin(homeroom_grades)].copy()
+        non_homeroom_df: pd.DataFrame = schedule_df[~schedule_df["grade_ceds"].isin(homeroom_grades)].copy()
         if non_homeroom_df.empty:
             return
 

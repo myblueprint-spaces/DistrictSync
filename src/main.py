@@ -5,7 +5,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
 
@@ -58,7 +58,7 @@ def _emit_run_log(
     sftp_attempted: bool = False,
     sftp_ok: bool = False,
     error: str = "",
-    anomalies: list[str] | None = None,
+    anomalies: Optional[list[str]] = None,
 ) -> None:
     """Write a structured __GDE2ACSV_RUN__ log line for the Run History page."""
     entry = {

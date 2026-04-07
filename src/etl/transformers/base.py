@@ -233,7 +233,7 @@ class BaseTransformer(ABC):
     @staticmethod
     def generate_student_email(row: pd.Series, format_str: str) -> str:
         try:
-            row_lower = {k.lower(): v for k, v in row.to_dict().items()}
+            row_lower = {str(k).lower(): v for k, v in row.to_dict().items()}
             return format_str.format(**row_lower)
         except KeyError as e:
             logger.warning(f"Could not generate email. Missing key: {e}")

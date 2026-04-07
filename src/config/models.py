@@ -121,7 +121,7 @@ def classify_field(raw: Any) -> FieldMapping:
 
     # Fallback: unrecognized dict structure — likely a typo in the YAML config
     logger.warning(f"Unrecognized field config structure: {raw}")
-    return raw
+    return raw  # type: ignore[return-value]
 
 
 # -----------------------------------------------------------------------
@@ -239,13 +239,14 @@ class MappingConfig(BaseModel):
             if val is None or isinstance(val, (str, dict)):
                 raw[key] = val
             elif isinstance(val, FieldTransform):
-                raw[key] = {"column": val.column}
+                ft_dict: dict[str, Any] = {"column": val.column}
                 if val.transform:
-                    raw[key]["transform"] = val.transform
+                    ft_dict["transform"] = val.transform
+                raw[key] = ft_dict
             elif isinstance(val, FieldFixedValue):
                 raw[key] = {"value": val.value}
             elif isinstance(val, FieldAcademicYear):
-                d = {"use_academic_year": val.use_academic_year}
+                d: dict[str, Any] = {"use_academic_year": val.use_academic_year}
                 if val.value is not None:
                     d["value"] = val.value
                 raw[key] = d

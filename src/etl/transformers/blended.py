@@ -163,7 +163,7 @@ class BlendedClassDetector(BaseTransformer):
     @staticmethod
     def _build_course_title_map(course_df: pd.DataFrame) -> dict[str, str]:
         if COURSE_CODE in course_df.columns and COURSE_TITLE in course_df.columns:
-            pairs = course_df[[COURSE_CODE, COURSE_TITLE]].dropna().drop_duplicates(COURSE_CODE)
+            pairs = course_df[[COURSE_CODE, COURSE_TITLE]].dropna().drop_duplicates(subset=[COURSE_CODE])
             return pd.Series(pairs[COURSE_TITLE].values, index=pairs[COURSE_CODE]).to_dict()
         logger.warning(f"Missing '{COURSE_CODE}' or '{COURSE_TITLE}' in course info.")
         return {}

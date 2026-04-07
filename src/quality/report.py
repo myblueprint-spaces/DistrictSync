@@ -95,7 +95,7 @@ class DataQualityReport:
         students = outputs.get("Students")
         staff = outputs.get("Staff")
         if "User ID" in enrollments.columns:
-            known_users = set()
+            known_users: set[str] = set()
             if students is not None and "User ID" in students.columns:
                 known_users.update(students["User ID"].dropna().astype(str))
             if staff is not None and "User ID" in staff.columns:

@@ -1,6 +1,7 @@
 import csv
 import logging
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
@@ -25,7 +26,7 @@ class DataExtractor:
     def load_data(
         self,
         required_files: list[str],
-        file_headers: dict[str, list[str]] | None = None,
+        file_headers: Optional[dict[str, list[str]]] = None,
     ) -> dict[str, pd.DataFrame]:
         """
         Try to load each file with multiple encodings and delimiters.
