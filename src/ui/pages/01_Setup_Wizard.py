@@ -22,7 +22,9 @@ if str(_root) not in sys.path:
 
 from src.config.app_config import AppConfig  # noqa: E402
 from src.config.loader import load_config  # noqa: E402
+from src.main import extract_required_files  # noqa: E402
 from src.ui.brand import header, inject_brand_css, step_progress  # noqa: E402
+from src.utils.validators import ALLOWED_SFTP_HOSTS  # noqa: E402
 
 st.set_page_config(page_title="Setup Wizard — GDE2Acsv", page_icon="⚙️", layout="wide")
 inject_brand_css()
@@ -99,9 +101,16 @@ def _register_schedule(cfg: AppConfig) -> None:
     if ok:
         cfg.schedule_registered = True
         cfg.save()
-        st.success(msg)
+        st.success("Schedule registered successfully.")
     else:
-        st.error(msg)
+        # Parse common errors into user-friendly messages
+        if "Access is denied" in msg or "access denied" in msg.lower():
+            st.error(
+                "Permission denied. Right-click the application and "
+                "select 'Run as administrator', then try again."
+            )
+        else:
+            st.error(f"Failed to register schedule: {msg}")
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +161,21 @@ if st.session_state.wizard_step == 1:
         else:
             cfg.input_dir = input_dir
             cfg.output_dir = output_dir
+            cfg.save()  # Persist per-step to survive browser closure
+
+            # Check for expected GDE files
+            if cfg.sis_type:
+                try:
+                    config_obj = load_config(cfg.sis_type)
+                    expected = extract_required_files(config_obj)
+                    present = [f for f in expected if (Path(input_dir) / f).exists()]
+                    missing = [f for f in expected if f not in [Path(p).name for p in present]]
+                    missing_check = [f for f in expected if not (Path(input_dir) / f).exists()]
+                    if missing_check:
+                        st.warning(f"Expected GDE files not found in input directory: {', '.join(missing_check)}")
+                except Exception:
+                    pass
+
             _go(2)
             st.rerun()
 
@@ -163,7 +187,7 @@ elif st.session_state.wizard_step == 2:
     st.subheader("Step 2 — District Configuration")
     st.markdown(
         "Select the mapping configuration that matches your school district. "
-        "Contact SpacesEDU support if you are unsure which to choose."
+        "Contact support@myBlueprint.ca if you are unsure which to choose."
     )
 
     mapping_dir = Path("config/mappings")
@@ -205,6 +229,7 @@ elif st.session_state.wizard_step == 2:
     with col2:
         if st.button("Continue →", type="primary"):
             cfg.sis_type = selected
+            cfg.save()
             _go(3)
             st.rerun()
 
@@ -232,9 +257,7 @@ elif st.session_state.wizard_step == 3:
     run_time = st.time_input("Daily run time (24-hour)", value=current_time)
 
     st.info(
-        f"The tool will run every day at **{run_time.strftime('%H:%M')}** local server time.\n\n"
-        f"On Windows, this creates a Windows Task Scheduler entry.\n"
-        f"On Linux/macOS, this adds a crontab entry."
+        f"The tool will run every day at **{run_time.strftime('%H:%M')}** local server time."
     )
 
     col1, col2 = st.columns([1, 5])
@@ -245,6 +268,7 @@ elif st.session_state.wizard_step == 3:
     with col2:
         if st.button("Continue →", type="primary"):
             cfg.schedule_time = run_time.strftime("%H:%M")
+            cfg.save()
             _go(4)
             st.rerun()
 
@@ -257,17 +281,23 @@ elif st.session_state.wizard_step == 4:
     st.markdown(
         "Configure SFTP to automatically upload the generated CSVs to SpacesEDU "
         "after each successful run. Credentials are stored securely in your "
-        "operating system's credential manager (Windows Credential Manager / "
-        "macOS Keychain)."
+        "operating system's credential manager."
     )
 
     enable_sftp = st.toggle("Enable SFTP upload", value=cfg.sftp_enabled)
 
     if enable_sftp:
+        allowed_hosts_str = ", ".join(sorted(ALLOWED_SFTP_HOSTS))
+        st.caption(f"Allowed SFTP hosts: {allowed_hosts_str}")
+
         col1, col2 = st.columns(2)
         with col1:
-            sftp_host = st.text_input("SFTP Host", value=cfg.sftp_host,
-                                       placeholder="sftp.spacesEDU.com")
+            sftp_host = st.selectbox(
+                "SFTP Host",
+                options=sorted(ALLOWED_SFTP_HOSTS),
+                index=sorted(ALLOWED_SFTP_HOSTS).index(cfg.sftp_host)
+                if cfg.sftp_host in ALLOWED_SFTP_HOSTS else 0,
+            )
             sftp_username = st.text_input("Username", value=cfg.sftp_username)
             sftp_remote_path = st.text_input("Remote Path", value=cfg.sftp_remote_path or "/upload")
         with col2:
@@ -280,15 +310,18 @@ elif st.session_state.wizard_step == 4:
                 st.error("Host and username are required to test the connection.")
             else:
                 from src.sftp.uploader import SFTPUploader
-                uploader = SFTPUploader(sftp_host, int(sftp_port), sftp_username, sftp_remote_path)
-                if sftp_password:
-                    uploader.store_password(sftp_password)
-                with st.spinner("Connecting..."):
-                    ok, msg = uploader.test_connection()
-                if ok:
-                    st.success(f"✅ {msg}")
-                else:
-                    st.error(f"❌ {msg}")
+                try:
+                    uploader = SFTPUploader(sftp_host, int(sftp_port), sftp_username, sftp_remote_path)
+                    if sftp_password:
+                        uploader.store_password(sftp_password)
+                    with st.spinner("Connecting..."):
+                        ok, msg = uploader.test_connection()
+                    if ok:
+                        st.success(f"Connection successful: {msg}")
+                    else:
+                        st.error(f"Connection failed: {msg}")
+                except ValueError as e:
+                    st.error(str(e))
     else:
         sftp_host = cfg.sftp_host
         sftp_port = cfg.sftp_port
@@ -303,22 +336,47 @@ elif st.session_state.wizard_step == 4:
             st.rerun()
     with col2:
         if st.button("Continue →", type="primary"):
-            cfg.sftp_enabled = enable_sftp
             if enable_sftp:
-                cfg.sftp_host = sftp_host
-                cfg.sftp_port = int(sftp_port)
-                cfg.sftp_username = sftp_username
-                cfg.sftp_remote_path = sftp_remote_path
-                if sftp_password:
-                    try:
-                        from src.sftp.uploader import SFTPUploader
-                        SFTPUploader(
-                            sftp_host, int(sftp_port), sftp_username, sftp_remote_path
-                        ).store_password(sftp_password)
-                    except Exception as e:
-                        st.warning(f"Could not store password: {e}")
-            _go(5)
-            st.rerun()
+                # Validate required fields
+                errors = []
+                if not sftp_host:
+                    errors.append("SFTP Host is required.")
+                if not sftp_username:
+                    errors.append("Username is required.")
+                if not cfg.sftp_host and not sftp_password:
+                    # First-time setup requires password
+                    errors.append("Password is required for first-time SFTP setup.")
+
+                if errors:
+                    for e in errors:
+                        st.error(e)
+                else:
+                    cfg.sftp_enabled = True
+                    cfg.sftp_host = sftp_host
+                    cfg.sftp_port = int(sftp_port)
+                    cfg.sftp_username = sftp_username
+                    cfg.sftp_remote_path = sftp_remote_path
+                    if sftp_password:
+                        try:
+                            from src.sftp.uploader import SFTPUploader
+                            SFTPUploader(
+                                sftp_host, int(sftp_port), sftp_username, sftp_remote_path
+                            ).store_password(sftp_password)
+                        except Exception as e:
+                            st.error(
+                                f"Could not store password: {e}\n\n"
+                                "The OS credential manager may not be available. "
+                                "Try running the application as administrator."
+                            )
+                            st.stop()
+                    cfg.save()
+                    _go(5)
+                    st.rerun()
+            else:
+                cfg.sftp_enabled = False
+                cfg.save()
+                _go(5)
+                st.rerun()
 
 # ---------------------------------------------------------------------------
 # Step 5 — Summary and activation
@@ -353,7 +411,7 @@ elif st.session_state.wizard_step == 5:
             _go(4)
             st.rerun()
     with col2:
-        if st.button("💾 Save & Activate Schedule", type="primary"):
+        if st.button("Save & Activate Schedule", type="primary"):
             cfg.save()
             _register_schedule(cfg)
 
@@ -364,4 +422,23 @@ elif st.session_state.wizard_step == 5:
             "You can close this window; the tool will run automatically."
         )
 
+        # Offer a dry-run test
+        if st.button("Run Test (Dry Run)"):
+            try:
+                import contextlib
+                import io as _io
 
+                from src.main import run_pipeline
+
+                output_buf = _io.StringIO()
+                with contextlib.redirect_stdout(output_buf):
+                    run_pipeline(
+                        cfg.sis_type, cfg.input_dir, cfg.output_dir,
+                        dry_run=True, quality=True,
+                    )
+                result_text = output_buf.getvalue()
+                if result_text:
+                    st.code(result_text, language="text")
+                st.success("Dry run completed successfully.")
+            except Exception as e:
+                st.error(f"Dry run failed: {e}")

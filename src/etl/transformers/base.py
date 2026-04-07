@@ -12,6 +12,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.etl.column_names import MASTER_TIMETABLE_ID
 from src.etl.transformers.context import TransformContext
 from src.utils.helpers import normalize_columns as _normalize_columns
 
@@ -19,6 +20,14 @@ logger = logging.getLogger(__name__)
 
 
 class BaseTransformer(ABC):
+
+    # -----------------------------------------------------------------------
+    # Allowlist of YAML-callable transform functions (security: prevents
+    # arbitrary method invocation via getattr on user-supplied config)
+    # -----------------------------------------------------------------------
+    ALLOWED_TRANSFORMS: frozenset[str] = frozenset({
+        "grade_to_ceds", "map_role", "truncate_name",
+    })
 
     # -----------------------------------------------------------------------
     # CEDS grade mapping (class-level constant)
@@ -127,6 +136,39 @@ class BaseTransformer(ABC):
             return f"{mt_id}_{context.school_year}"
         return mt_id
 
+    def assign_class_ids(self, df: pd.DataFrame, field_map: dict,
+                         context: TransformContext) -> pd.DataFrame:
+        """Assign Class ID column using blended_class_map with generate_class_id fallback.
+
+        Shared by ClassTransformer and EnrollmentTransformer to ensure IDs
+        are computed identically across Classes and Enrollments output.
+        """
+        class_id_config = field_map.get("Class ID", {})
+        mt_id_col = (
+            class_id_config.get("column", MASTER_TIMETABLE_ID).lower()
+            if isinstance(class_id_config, dict)
+            else MASTER_TIMETABLE_ID
+        )
+
+        if mt_id_col in df.columns:
+            df[mt_id_col] = df[mt_id_col].astype(str).str.strip()
+            df["Class ID"] = df[mt_id_col].map(context.blended_class_map)
+            fallback = df.apply(
+                lambda row: self.generate_class_id(
+                    row, mt_id_col=mt_id_col, append_year=True, context=context
+                ),
+                axis=1,
+            )
+            df["Class ID"] = df["Class ID"].fillna(fallback)
+        else:
+            df["Class ID"] = df.apply(
+                lambda row: self.generate_class_id(
+                    row, mt_id_col=mt_id_col, append_year=True, context=context
+                ),
+                axis=1,
+            )
+        return df
+
     def generate_class_name(self, row: pd.Series, teacher_flag_col: str,
                             teacher_last_col: str, course_title_col: str,
                             section_letter_col: str, context: TransformContext) -> str:
@@ -229,6 +271,11 @@ class BaseTransformer(ABC):
                     if column_name in working.columns:
                         series = working[column_name]
                         if transform_name:
+                            if transform_name not in self.ALLOWED_TRANSFORMS:
+                                raise ValueError(
+                                    f"Unknown transform '{transform_name}' for field '{tgt_field}'. "
+                                    f"Allowed: {sorted(self.ALLOWED_TRANSFORMS)}"
+                                )
                             func = getattr(self, transform_name)
                             result[tgt_field] = series.apply(func)
                         else:

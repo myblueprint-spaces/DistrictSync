@@ -26,6 +26,8 @@ import logging
 import subprocess
 from pathlib import Path
 
+from src.utils.validators import quote_for_shell, validate_run_time, validate_sis_type
+
 logger = logging.getLogger(__name__)
 
 CRON_SENTINEL = "# GDE2Acsv managed entry"
@@ -62,13 +64,15 @@ def register_cron(
     Returns:
         (success, message)
     """
-    hour, minute = run_time.split(":")
+    # Validate all user-supplied values before touching crontab
+    sis_type = validate_sis_type(sis_type)
+    hour, minute = validate_run_time(run_time)
 
     cmd_parts = [
-        str(exe_path),
-        f"--sis {sis_type}",
-        f'--input "{input_dir}"',
-        f'--output "{output_dir}"',
+        quote_for_shell(str(exe_path)),
+        "--sis", quote_for_shell(sis_type),
+        "--input", quote_for_shell(str(input_dir)),
+        "--output", quote_for_shell(str(output_dir)),
     ]
     if sftp:
         cmd_parts.append("--sftp")

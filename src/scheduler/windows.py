@@ -24,6 +24,8 @@ import logging
 import subprocess
 from pathlib import Path
 
+from src.utils.validators import validate_run_time, validate_sis_type, validate_task_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,9 +52,14 @@ def register_task(
     Returns:
         (success, message)
     """
+    # Validate all user-supplied values before touching the OS
+    task_name = validate_task_name(task_name)
+    sis_type = validate_sis_type(sis_type)
+    validate_run_time(run_time)
+
     cmd_parts = [
         f'"{exe_path}"',
-        f'--sis {sis_type}',
+        f"--sis {sis_type}",
         f'--input "{input_dir}"',
         f'--output "{output_dir}"',
     ]
@@ -66,7 +73,6 @@ def register_task(
         "/TR", task_run,
         "/SC", "DAILY",
         "/ST", run_time,
-        "/RL", "HIGHEST",
     ]
 
     logger.info(f"Registering Windows scheduled task: {task_name} at {run_time}")
@@ -90,6 +96,7 @@ def delete_task(task_name: str) -> tuple[bool, str]:
     Returns:
         (success, message)
     """
+    task_name = validate_task_name(task_name)
     result = subprocess.run(
         ["schtasks", "/Delete", "/F", "/TN", task_name],
         capture_output=True,

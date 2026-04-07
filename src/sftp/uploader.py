@@ -5,10 +5,13 @@ Credentials are stored securely in the OS credential store via the
 Linux Secret Service).  Only non-sensitive settings (host, port, paths)
 are stored in the plain ``AppConfig`` JSON file.
 
+Connections are restricted to the SpacesEDU SFTP host allowlist
+(see ``src.utils.validators.ALLOWED_SFTP_HOSTS``).
+
 Usage::
 
     from src.sftp.uploader import SFTPUploader
-    uploader = SFTPUploader(host="sftp.example.com", port=22,
+    uploader = SFTPUploader(host="sftp.ca.spacesedu.com", port=22,
                             username="district_x", remote_path="/upload")
     uploader.store_password("secret")          # called once from setup wizard
     ok, msg = uploader.test_connection()
@@ -20,6 +23,8 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+
+from src.utils.validators import validate_sftp_host
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +41,7 @@ class SFTPUploader:
         username: str,
         remote_path: str,
     ) -> None:
-        self.host = host
+        self.host = validate_sftp_host(host)
         self.port = port
         self.username = username
         self.remote_path = remote_path
@@ -50,7 +55,7 @@ class SFTPUploader:
         try:
             import keyring
             keyring.set_password(KEYRING_SERVICE, self.username, password)
-            logger.info(f"SFTP password stored for user '{self.username}'")
+            logger.info("SFTP credentials stored successfully")
         except Exception as exc:
             logger.error(f"Failed to store SFTP password: {exc}")
             raise
@@ -65,6 +70,44 @@ class SFTPUploader:
             return None
 
     # ------------------------------------------------------------------
+    # Connection helpers
+    # ------------------------------------------------------------------
+
+    def _connect(self) -> tuple:
+        """Create an authenticated SSHClient + SFTPClient pair.
+
+        Returns:
+            (paramiko.SSHClient, paramiko.SFTPClient)
+
+        Raises:
+            RuntimeError: If paramiko is missing or credentials are unavailable.
+        """
+        try:
+            import paramiko
+        except ImportError as exc:
+            raise RuntimeError("paramiko is not installed. Run: pip install paramiko") from exc
+
+        password = self._get_password()
+        if not password:
+            raise RuntimeError(
+                "No SFTP password found. "
+                "Run the setup wizard to enter credentials."
+            )
+
+        client = paramiko.SSHClient()
+        client.load_system_host_keys()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            self.host,
+            port=self.port,
+            username=self.username,
+            password=password,
+            timeout=30,
+        )
+        sftp = client.open_sftp()
+        return client, sftp
+
+    # ------------------------------------------------------------------
     # Connection test (called from the setup wizard UI)
     # ------------------------------------------------------------------
 
@@ -74,28 +117,19 @@ class SFTPUploader:
         Returns:
             (success, message) — success is True if the connection worked.
         """
+        client = None
         try:
-            import paramiko
-        except ImportError:
-            return False, "paramiko is not installed. Run: pip install paramiko"
-
-        password = self._get_password()
-        if not password:
-            return False, f"No password found for '{self.username}'. Please enter credentials in Setup."
-
-        transport: paramiko.Transport | None = None
-        try:
-            transport = paramiko.Transport((self.host, self.port))
-            transport.connect(username=self.username, password=password)
-            sftp = paramiko.SFTPClient.from_transport(transport)
+            client, sftp = self._connect()
             sftp.listdir(self.remote_path)
             sftp.close()
             return True, f"Connection to {self.host}:{self.port} successful."
+        except RuntimeError as exc:
+            return False, str(exc)
         except Exception as exc:
             return False, f"Connection failed: {exc}"
         finally:
-            if transport and transport.is_active():
-                transport.close()
+            if client:
+                client.close()
 
     # ------------------------------------------------------------------
     # Upload
@@ -113,39 +147,26 @@ class SFTPUploader:
         Raises:
             RuntimeError: If the connection could not be established.
         """
-        try:
-            import paramiko
-        except ImportError as exc:
-            raise RuntimeError("paramiko is not installed") from exc
-
-        password = self._get_password()
-        if not password:
-            raise RuntimeError(
-                f"No SFTP password found for '{self.username}'. "
-                "Run the setup wizard to re-enter credentials."
-            )
-
         csv_files = sorted(output_dir.glob("*.csv"))
         if not csv_files:
             logger.warning(f"No CSV files found in {output_dir}")
             return []
 
-        transport = paramiko.Transport((self.host, self.port))
+        client, sftp = self._connect()
         try:
-            transport.connect(username=self.username, password=password)
-            sftp = paramiko.SFTPClient.from_transport(transport)
-
             uploaded: list[str] = []
             for local_file in csv_files:
                 remote_file = f"{self.remote_path.rstrip('/')}/{local_file.name}"
-                logger.info(f"Uploading {local_file.name} → {remote_file}")
-                sftp.put(str(local_file), remote_file)
-                uploaded.append(local_file.name)
-                logger.info(f"Uploaded {local_file.name} ({local_file.stat().st_size:,} bytes)")
+                try:
+                    logger.info(f"Uploading {local_file.name} -> {remote_file}")
+                    sftp.put(str(local_file), remote_file)
+                    uploaded.append(local_file.name)
+                    logger.info(f"Uploaded {local_file.name} ({local_file.stat().st_size:,} bytes)")
+                except Exception as exc:
+                    logger.error(f"Failed to upload {local_file.name}: {exc}")
 
             sftp.close()
             logger.info(f"SFTP upload complete: {len(uploaded)} file(s) uploaded")
             return uploaded
         finally:
-            if transport.is_active():
-                transport.close()
+            client.close()

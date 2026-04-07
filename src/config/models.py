@@ -5,9 +5,12 @@ missing fields, and schema violations surface as clear error messages
 rather than cryptic KeyErrors deep in the pipeline.
 """
 
+import logging
 from typing import Any, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------
 # Field mapping variants — the polymorphic heart of the config
@@ -110,7 +113,8 @@ def classify_field(raw: Any) -> FieldMapping:
     if "column" in raw:
         return FieldTransform(**raw)
 
-    # Fallback: unrecognized dict structure, keep as-is for flexibility
+    # Fallback: unrecognized dict structure — likely a typo in the YAML config
+    logger.warning(f"Unrecognized field config structure: {raw}")
     return raw
 
 

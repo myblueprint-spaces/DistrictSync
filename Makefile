@@ -19,7 +19,7 @@ ui:
 	streamlit run src/ui/app.py
 
 validate-config:
-	python -c "from src.config.loader import load_config; [print(n+': OK') or load_config(n) for n in ['myedbc','sd48myedbc','sd51myedbc','sd74myedbc']]"
+	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc','sd48myedbc','sd51myedbc','sd74myedbc']]"
 
 # Build Windows .exe locally (must run on Windows)
 build-win:

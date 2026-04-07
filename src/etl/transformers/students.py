@@ -51,7 +51,7 @@ class StudentTransformer(BaseTransformer):
                             continue
                     unparseable_dates.append(date_str)
                     return "Inactive"
-                except Exception:
+                except (TypeError, ValueError, AttributeError):
                     return "Inactive"
 
             working["EnrollStatus"] = working["withdraw date"].apply(check_withdraw_date)

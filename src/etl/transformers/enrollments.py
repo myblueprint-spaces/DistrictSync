@@ -5,7 +5,7 @@ from typing import Any
 
 import pandas as pd
 
-from src.etl.column_names import MASTER_TIMETABLE_ID, SCHOOL_NUMBER
+from src.etl.column_names import SCHOOL_NUMBER
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
 
@@ -75,6 +75,9 @@ class EnrollmentTransformer(BaseTransformer):
         if student_demo_df.empty or context.homeroom_classes_df.empty:
             return
 
+        # Work on a copy to avoid mutating the shared raw_data DataFrame
+        student_demo_df = student_demo_df.copy()
+
         students_field_map = context.get_students_config().get("field_map", {})
         grade_col = students_field_map.get("Grade", {}).get("column", "grade").lower()
         homeroom_col = students_field_map.get("Homeroom", "homeroom").lower()
@@ -117,7 +120,7 @@ class EnrollmentTransformer(BaseTransformer):
                 final.append(teacher_enroll)
                 logger.info(f"[Enrollments] Created {len(teacher_enroll)} teacher homeroom enrollments")
 
-        except Exception as e:
+        except (KeyError, pd.errors.MergeError) as e:
             logger.error(f"[Enrollments] Error merging homeroom data: {e}")
 
     # -------------------------------------------------------------------
@@ -128,6 +131,9 @@ class EnrollmentTransformer(BaseTransformer):
                              homeroom_grades: list,
                              student_id_col: str, staff_id_col: str,
                              field_map: dict, context: TransformContext) -> None:
+        # Work on a copy to avoid mutating the shared raw_data DataFrame
+        schedule_df = schedule_df.copy()
+
         if staff_id_col in schedule_df.columns:
             schedule_df[staff_id_col] = schedule_df[staff_id_col].astype(str).str.strip()
 
@@ -161,23 +167,7 @@ class EnrollmentTransformer(BaseTransformer):
 
     def _assign_class_ids(self, df: pd.DataFrame, field_map: dict,
                           context: TransformContext) -> pd.DataFrame:
-        class_id_config = field_map.get("Class ID", {})
-        mt_id_col = class_id_config.get("column", MASTER_TIMETABLE_ID).lower() if isinstance(class_id_config, dict) else MASTER_TIMETABLE_ID
-
-        if mt_id_col in df.columns:
-            df[mt_id_col] = df[mt_id_col].astype(str).str.strip()
-            df['Class ID'] = df[mt_id_col].map(context.blended_class_map)
-            fallback = df.apply(
-                lambda row: self.generate_class_id(row, mt_id_col=mt_id_col, append_year=True, context=context),
-                axis=1,
-            )
-            df['Class ID'] = df['Class ID'].fillna(fallback)
-        else:
-            df['Class ID'] = df.apply(
-                lambda row: self.generate_class_id(row, mt_id_col=mt_id_col, append_year=True, context=context),
-                axis=1,
-            )
-        return df
+        return self.assign_class_ids(df, field_map, context)
 
     @staticmethod
     def _blended_teacher_enrollments(final: list[pd.DataFrame], context: TransformContext) -> None:

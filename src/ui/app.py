@@ -38,13 +38,33 @@ try:
     from src.config.app_config import AppConfig  # noqa: E402
     cfg = AppConfig.load()
     if cfg.is_complete():
-        st.success(
-            f"**Configured** — District: `{cfg.sis_type}` | "
-            f"Daily run: `{cfg.schedule_time}` | "
-            f"SFTP: {'✓ enabled' if cfg.sftp_is_configured() else '✗ disabled'}"
-        )
+        status_parts = [
+            f"**Configured** — District: `{cfg.sis_type}`",
+            f"Daily run: `{cfg.schedule_time}`",
+            f"SFTP: {'enabled' if cfg.sftp_is_configured() else 'disabled'}",
+        ]
+
+        # Show last run status on Windows
+        if sys.platform == "win32" and cfg.schedule_registered:
+            try:
+                from src.scheduler.windows import query_task
+                task_info = query_task(cfg.schedule_task_name)
+                if task_info.get("exists"):
+                    next_run = task_info.get("next_run_time", "—")
+                    last_result = task_info.get("last_result", "—")
+                    status_parts.append(f"Next run: `{next_run}`")
+                    if last_result == "0":
+                        status_parts.append("Last run: success")
+                    elif last_result != "—":
+                        status_parts.append(f"Last run result: `{last_result}`")
+            except Exception:
+                pass
+
+        st.success(" | ".join(status_parts))
     else:
-        st.info("**Not yet configured.** Use the Setup Wizard in the sidebar to get started.")
+        st.info("**Not yet configured.** Click below to get started.")
+        if st.button("Start Setup Wizard", type="primary"):
+            st.switch_page("pages/01_Setup_Wizard.py")
 except Exception:
     st.info("**Not yet configured.** Use the Setup Wizard in the sidebar to get started.")
 
@@ -75,22 +95,12 @@ with col1:
 
 with col2:
     st.subheader("Navigation")
-    st.markdown("""
-<div style="display:flex;flex-direction:column;gap:0.75rem;margin-top:0.5rem">
-  <div style="background:#fff;border:1px solid #DBEAFE;border-radius:0.6rem;padding:0.9rem 1.1rem">
-    <strong style="color:#0F2D6B">⚙️ Setup Wizard</strong><br>
-    <span style="color:#64748B;font-size:0.85rem">Configure paths, schedule, and SFTP upload (first-time setup)</span>
-  </div>
-  <div style="background:#fff;border:1px solid #DBEAFE;border-radius:0.6rem;padding:0.9rem 1.1rem">
-    <strong style="color:#0F2D6B">🔄 Convert</strong><br>
-    <span style="color:#64748B;font-size:0.85rem">Upload GDE files and download CSVs on demand</span>
-  </div>
-  <div style="background:#fff;border:1px solid #DBEAFE;border-radius:0.6rem;padding:0.9rem 1.1rem">
-    <strong style="color:#0F2D6B">📋 Run History</strong><br>
-    <span style="color:#64748B;font-size:0.85rem">View the log of automated daily runs</span>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+    st.page_link("pages/01_Setup_Wizard.py", label="Setup Wizard", icon="⚙️")
+    st.caption("Configure paths, schedule, and SFTP upload")
+    st.page_link("pages/02_Convert.py", label="Convert", icon="🔄")
+    st.caption("Upload GDE files and download CSVs on demand")
+    st.page_link("pages/03_Run_History.py", label="Run History", icon="📋")
+    st.caption("View the log of automated daily runs")
 
 st.divider()
 st.caption("SpacesEDU by myBlueprint · GDE2Acsv · support@myBlueprint.ca")

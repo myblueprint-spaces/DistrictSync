@@ -209,22 +209,7 @@ class ClassTransformer(BaseTransformer):
 
     def _assign_class_ids(self, merged: pd.DataFrame, field_map: dict,
                           context: TransformContext) -> pd.DataFrame:
-        id_config = field_map.get("Class ID", {})
-        id_col = id_config.get("column", MASTER_TIMETABLE_ID).lower() if isinstance(id_config, dict) else MASTER_TIMETABLE_ID
-
-        if id_col in merged.columns:
-            merged['Class ID'] = merged[id_col].astype(str).str.strip().map(context.blended_class_map)
-            fallback = merged.apply(
-                lambda row: self.generate_class_id(row, mt_id_col=id_col, append_year=True, context=context),
-                axis=1,
-            )
-            merged['Class ID'] = merged['Class ID'].fillna(fallback)
-        else:
-            merged['Class ID'] = merged.apply(
-                lambda row: self.generate_class_id(row, mt_id_col=id_col, append_year=True, context=context),
-                axis=1,
-            )
-        return merged
+        return self.assign_class_ids(merged, field_map, context)
 
     def _assign_class_names(self, output: pd.DataFrame, merged: pd.DataFrame,
                             field_map: dict, context: TransformContext) -> None:
