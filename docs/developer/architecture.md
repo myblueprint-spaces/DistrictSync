@@ -198,8 +198,8 @@ mappings:
 | Page | File | Description |
 |------|------|-------------|
 | Home / status | `Home.py` | Config health check, navigation |
-| Setup Wizard | `pages/01_Setup_Wizard.py` | 5-step wizard: paths, district, schedule, SFTP, activate |
-| Convert | `pages/02_Convert.py` | Ad-hoc browser-based conversion (upload files, download CSVs) |
+| Setup Wizard | `pages/01_Setup_Wizard.py` | 5-step wizard (schedule + SFTP optional). Shows management dashboard post-setup for editing/disabling schedule and SFTP. |
+| Convert | `pages/02_Convert.py` | Ad-hoc conversion without schedule — upload files, convert, download CSVs or upload via SFTP |
 | Run History | `pages/03_Run_History.py` | Parses `__GDE2ACSV_RUN__` JSON log tags, tabular history |
 | Mapping Editor | `pages/04_Mapping_Editor.py` | Step-by-step wizard for creating/modifying district YAML configs |
 | Help & Docs | `pages/05_Help.py` | Embedded documentation and quick-reference links |

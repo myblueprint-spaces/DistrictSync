@@ -111,7 +111,7 @@ Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. 
 
 ### Web UI (`src/ui/`)
 Multi-page Streamlit app. `Home.py` is the landing page with status dashboard. Pages:
-- `pages/01_Setup_Wizard.py` — 5-step setup wizard (paths, district, schedule, SFTP, activate) with management dashboard for viewing/editing settings post-setup. Schedule and SFTP are optional. District names read from YAML `district_name` field.
+- `pages/01_Setup_Wizard.py` — 5-step wizard (schedule + SFTP optional). Shows management dashboard post-setup. District names from YAML `district_name` field.
 - `pages/02_Convert.py` — Ad-hoc conversion with session_state persistence, quality report, missing file warnings. Uses `load_config()` with `_base` inheritance.
 - `pages/03_Run_History.py` — Parses `__GDE2ACSV_RUN__` JSON log tags for tabular run history
 - `pages/04_Mapping_Editor.py` — 7-step visual wizard for creating/editing district mapping configs without YAML. Uses `mapping_helpers.py` for column detection, override diff, YAML generation.
