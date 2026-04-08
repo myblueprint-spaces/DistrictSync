@@ -19,7 +19,7 @@
    ```
 
 3. **All students are inactive** — Only `Active` enrollment status is exported.
-   - Run with `--quality` to get a breakdown: `GDE2Acsv.exe --sis myedbc --input ... --output ... --quality`
+   - Run with `--quality` to get a breakdown: `GDE2Acsv-windows.exe --sis myedbc --input ... --output ... --quality`
 
 ---
 
@@ -118,7 +118,7 @@ Check the **SpacesEDU import report** for details. See also [FAQ — What happen
 
 | Platform | Log file |
 |----------|----------|
-| Windows | Same directory as the `.exe`, e.g. `C:\GDE2Acsv\etl_tool.log` |
-| Linux | `~/.gde2acsv/etl_tool.log` or current directory |
+| Windows | Same directory as the `.exe`, e.g. `C:\GDE2Acsv\etl_tool.log` — requires Task Scheduler's **Start in** to be set to that folder (see [Task Scheduler does not run the task](#task-scheduler-does-not-run-the-task)) |
+| Linux | Current working directory when the command is run, e.g. `/opt/gde2acsv/etl_tool.log` |
 
 The log rotates automatically at 5MB and keeps 3 backups.

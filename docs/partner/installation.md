@@ -127,6 +127,15 @@ EOF
 
 ### Store the SFTP password
 
+This step requires Python 3 and the `keyring` package. Install them if not already present:
+
+```bash
+sudo apt-get install -y python3 python3-pip   # Debian/Ubuntu
+pip3 install keyring
+```
+
+Then store the password in the OS keychain:
+
 ```bash
 python3 -c "
 import keyring
@@ -180,7 +189,10 @@ A successful dry run prints a summary like:
 
 ## Step 5 — Check the log
 
-The ETL log is written to `etl_tool.log` in the same directory as the executable (or `~/.gde2acsv/etl_tool.log` on Linux).
+The ETL log is written to `etl_tool.log` in the current working directory at run time.
+
+- **Windows:** Task Scheduler's **Start in** field controls this — set it to `C:\GDE2Acsv\` and the log appears there. The Setup Wizard sets this automatically.
+- **Linux:** The log is written to whichever directory you run the command from (e.g. `/opt/gde2acsv/`).
 
 === "Windows"
     ```
@@ -189,7 +201,7 @@ The ETL log is written to `etl_tool.log` in the same directory as the executable
 
 === "Linux"
     ```bash
-    tail -50 ~/.gde2acsv/etl_tool.log
+    tail -50 /opt/gde2acsv/etl_tool.log
     ```
 
 A successful run ends with:

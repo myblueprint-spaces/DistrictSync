@@ -14,12 +14,12 @@ The tool logs a warning for each missing file and skips the affected entity. For
 
 Yes, at any time:
 ```cmd
-GDE2Acsv.exe --sis myedbc --input C:\GDE2Acsv\input --output C:\GDE2Acsv\output
+GDE2Acsv-windows.exe --sis myedbc --input C:\GDE2Acsv\input --output C:\GDE2Acsv\output
 ```
 
 Add `--sftp` to also upload after generating:
 ```cmd
-GDE2Acsv.exe --sis myedbc --input ... --output ... --sftp
+GDE2Acsv-windows.exe --sis myedbc --input ... --output ... --sftp
 ```
 
 **Q: Can I preview the output without writing files?**
@@ -134,7 +134,7 @@ Yes, by creating separate scheduled tasks with different `--sis`, `--input`, and
 
 **Q: Is there a web-based UI?**
 
-Yes — double-clicking `GDE2Acsv-windows.exe` opens a browser-based UI at `http://localhost:8501`. It includes five pages: Setup Wizard, Convert, Run History, Mapping Editor, and Help & Docs. For automated daily runs, the tool runs headlessly without opening a browser.
+Yes — double-clicking `GDE2Acsv-windows.exe` (with no arguments) opens a browser-based UI at `http://localhost:8501`. It includes five pages: Setup Wizard, Convert, Run History, Mapping Editor, and Help & Docs. When run with `--sis`/`--input`/`--output` arguments (e.g. from Task Scheduler), it runs headlessly without opening a browser.
 
 **Q: Can I customize field mappings without editing YAML?**
 

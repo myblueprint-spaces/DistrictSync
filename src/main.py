@@ -297,6 +297,13 @@ def main(sis_type: str, input_path: str, output_path: str) -> None:
 
 
 if __name__ == "__main__":
+    # No arguments → launch the web UI (e.g. double-clicked from Explorer)
+    if len(sys.argv) == 1:
+        from src.ui.launcher import main as _launch_ui
+
+        _launch_ui()
+        sys.exit(0)
+
     try:
         version = importlib.metadata.version("gde2acsv")
     except importlib.metadata.PackageNotFoundError:

@@ -13,7 +13,7 @@ mappings:
       student_demographic: SD-40_StudentDemographic.csv
     field_map:
       Email Address:
-        format: '{student number}@sd40.bc.ca'
+        format: '{student number}@newwestschools.ca'
   Staff:
     source_files:
       staff_info: SD-40_StaffInformation.csv
