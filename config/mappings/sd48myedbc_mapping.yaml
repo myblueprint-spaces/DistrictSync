@@ -3,6 +3,7 @@
 _base: myedbc
 version: 1.9
 sis: MyEducationBC
+district_name: "SD48 – Sea to Sky School District"
 
 mappings:
   Students:

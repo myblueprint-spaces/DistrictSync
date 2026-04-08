@@ -434,12 +434,14 @@ elif st.session_state.wizard_step == 2:
     mapping_dir = Path("config/mappings")
     available = sorted(p.stem.replace("_mapping", "") for p in mapping_dir.glob("*_mapping.yaml"))
 
-    friendly_names = {
-        "myedbc": "MyEducation BC (default)",
-        "sd48myedbc": "SD48 – Sea to Sky School District",
-        "sd51myedbc": "SD51 – Boundary School District",
-        "sd74myedbc": "SD74 – Gold Trail School District",
-    }
+    # Read district_name from each config; fall back to the config key
+    friendly_names: dict[str, str] = {}
+    for key in available:
+        try:
+            loaded_cfg = load_config(key)
+            friendly_names[key] = loaded_cfg.district_name or key
+        except Exception:  # nosec B110 - fallback to key if config fails
+            friendly_names[key] = key
 
     options = [(friendly_names.get(k, k), k) for k in available]
     labels = [o[0] for o in options]

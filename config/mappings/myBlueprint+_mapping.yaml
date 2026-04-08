@@ -1,6 +1,7 @@
 # Version 1.9 - MyEducation BC GDE to Advanced CSV Mapping (Standard)
 version: 1.9
 sis: MyEducationBC
+district_name: "myBlueprint+"
 
 global_config:
   school_year_sources:

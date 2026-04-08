@@ -183,6 +183,7 @@ class MappingConfig(BaseModel):
 
     version: Union[str, float]
     sis: str
+    district_name: str = ""
     global_config: GlobalConfig = Field(default_factory=GlobalConfig)
     mappings: dict[str, EntityConfig]
 

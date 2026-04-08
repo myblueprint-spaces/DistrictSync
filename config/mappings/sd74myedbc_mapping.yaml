@@ -4,6 +4,7 @@
 _base: myedbc
 version: 1.9
 sis: MyEducationBC
+district_name: "SD74 – Gold Trail School District"
 
 global_config:
   school_year_sources:
