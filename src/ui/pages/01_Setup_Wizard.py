@@ -423,7 +423,9 @@ elif st.session_state.wizard_step == 5:
             "You can close this window; the tool will run automatically."
         )
 
-        # Offer a dry-run test
+    # Dry-run test — always available when config is complete
+    if cfg.is_complete():
+        st.markdown("**Test your configuration** — runs the full pipeline without writing any files.")
         if st.button("Run Test (Dry Run)"):
             try:
                 import contextlib
