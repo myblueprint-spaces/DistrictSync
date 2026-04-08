@@ -109,7 +109,7 @@ class TransformContext:
 | `family.py` | Emergency contact extraction, deduplication by student |
 | `classes.py` | Homeroom generation, subject class join, blended class integration |
 | `enrollments.py` | Student + teacher rows from schedule + demographic data |
-| `blended.py` | `BlendedClassService` — detects same teacher/time/location with 2+ grade levels, merges into one record |
+| `blended.py` | `BlendedClassDetector` — groups sections by teacher+time slot, validates 2+ unique sections with 2+ CEDS grades. Falls back to deduplicated Student Schedule when Class Information lacks `teacher id`/`master timetable id` (e.g., non-enhanced files). Uses grade mode (most frequent) per section. |
 
 ### Facade
 

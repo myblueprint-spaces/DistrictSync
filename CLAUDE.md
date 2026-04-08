@@ -97,7 +97,7 @@ Entity-specific transformers using Strategy Pattern with a registry:
 - `family.py` — Parent/guardian contact extraction
 - `classes.py` — Homeroom generation + subject classes + blended class integration
 - `enrollments.py` — Student + teacher enrollment rows from schedule data; `.copy()` before mutations
-- `blended.py` — Blended class detection (same teacher/time with 2+ grade levels -> merged class)
+- `blended.py` — Blended class detection (same teacher/time with 2+ grade levels -> merged class). Falls back to deduplicated Student Schedule when ClassInformation lacks `teacher id`/`master timetable id`. Uses grade mode (most frequent) per MT ID.
 
 ### Loader (`src/etl/loader.py`)
 Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. `save_all()` uses atomic transactional writes: stages to `.tmp_<timestamp>/`, commits all on success, rolls back on failure.
@@ -111,7 +111,7 @@ Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. 
 
 ### Web UI (`src/ui/`)
 Multi-page Streamlit app. `Home.py` is the landing page with status dashboard. Pages:
-- `pages/01_Setup_Wizard.py` — 5-step setup wizard (paths, district, schedule, SFTP, activate). Saves config per-step. SFTP host restricted to allowlist.
+- `pages/01_Setup_Wizard.py` — 5-step setup wizard (paths, district, schedule, SFTP, activate) with management dashboard for viewing/editing settings post-setup. Schedule and SFTP are optional. District names read from YAML `district_name` field.
 - `pages/02_Convert.py` — Ad-hoc conversion with session_state persistence, quality report, missing file warnings. Uses `load_config()` with `_base` inheritance.
 - `pages/03_Run_History.py` — Parses `__GDE2ACSV_RUN__` JSON log tags for tabular run history
 - `pages/04_Mapping_Editor.py` — 7-step visual wizard for creating/editing district mapping configs without YAML. Uses `mapping_helpers.py` for column detection, override diff, YAML generation.
@@ -119,7 +119,7 @@ Multi-page Streamlit app. `Home.py` is the landing page with status dashboard. P
 
 ### Supporting modules
 - `src/config/app_config.py` — Runtime config (`~/.gde2acsv/config.json`); SFTP non-sensitive settings. Unix file permissions (0o700/0o600).
-- `src/sftp/uploader.py` — `SFTPUploader` with paramiko SSHClient + OS keyring. Host restricted to `ALLOWED_SFTP_HOSTS` (3 SpacesEDU servers).
+- `src/sftp/uploader.py` — `SFTPUploader` with paramiko SSHClient + OS keyring. Zips all CSVs into `gde2acsv_YYYY-MM-DD.zip` before upload. Host restricted to `ALLOWED_SFTP_HOSTS` (3 SpacesEDU servers).
 - `src/scheduler/windows.py` — `schtasks.exe` wrapper with input validation via `validators.py`
 - `src/scheduler/linux.py` — crontab wrapper with `shlex.quote()` and sentinel comment
 - `src/etl/column_names.py` — Column name constants (avoid magic strings across transformers)

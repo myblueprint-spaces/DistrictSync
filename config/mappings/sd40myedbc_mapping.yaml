@@ -3,6 +3,7 @@
 _base: myedbc
 version: '1.0'
 sis: MyEducationBC
+district_name: SD40 - New Westminster School District
 global_config:
   school_year_sources:
     student_schedule: SD40-StudentSchedule.csv

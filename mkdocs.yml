@@ -77,6 +77,7 @@ nav:
   - Home: index.md
   - Partner Guide:
     - Installation: partner/installation.md
+    - How Classes Work: partner/how-classes-work.md
     - Troubleshooting: partner/troubleshooting.md
     - FAQ: partner/faq.md
   - Developer Guide:

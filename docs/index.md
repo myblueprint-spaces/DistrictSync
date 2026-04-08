@@ -60,7 +60,7 @@ GDE files  →  GDE2Acsv  →  SpacesEDU CSV files  →  SFTP upload
 - **Homeroom generation** — elementary homeroom classes auto-generated from demographics
 - **District config inheritance** — district-specific overrides layer on top of the base MyEdBC config
 - **Automated scheduling** — runs daily via Windows Task Scheduler or cron
-- **SFTP upload** — uploads generated CSVs directly to SpacesEDU after each run; host allowlist restricts uploads to SpacesEDU servers only
+- **SFTP upload** — zips all CSVs into a single dated file and uploads to SpacesEDU after each run; host allowlist restricts uploads to SpacesEDU servers only
 - **Atomic writes** — all-or-nothing commit; a failed run never leaves partial output
 - **Anomaly detection** — warns when output record counts drop more than 20% compared to the previous run
 - **Structured run logging** — each run writes a machine-readable JSON log tag for the Run History page

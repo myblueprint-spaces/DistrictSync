@@ -36,7 +36,7 @@ Only students with `Enrolment Status = Active` are included. Students with statu
 
 **Q: What does "blended class" mean?**
 
-A blended class is detected when the same teacher teaches multiple sections at the same time slot but with students from different grade levels. GDE2Acsv automatically merges these into a single class record for SpacesEDU. The class is named after the teacher, course titles, and grade range (e.g., "Reed - Science 3 / Science 4 (03/04) 2025").
+A blended class is detected when the same teacher teaches multiple sections at the same time slot but with students from different grade levels. GDE2Acsv automatically merges these into a single class record for SpacesEDU. The class is named after the teacher, course titles, and grade range (e.g., "Reed - Science 3 / Science 4 (03/04) 2025"). See [How Classes Work](how-classes-work.md) for full details on class types.
 
 **Q: Why does the grade show as "01" instead of "1"?**
 
@@ -51,6 +51,20 @@ GDE2Acsv maps all grade codes to the CEDS (Common Education Data Standards) form
 | 12 | 12 |
 
 This is required by the SpacesEDU import format.
+
+---
+
+**Q: Do I have to set up a schedule?**
+
+No. The schedule is optional. You can use the **Convert** page in the web UI to run ad-hoc conversions: upload GDE files, convert, and download the CSVs directly in the browser. The schedule is only needed for unattended daily runs.
+
+**Q: How are files uploaded via SFTP?**
+
+All 5 output CSVs are zipped into a single dated file (e.g., `gde2acsv_2026-04-08.zip`) and uploaded as one file. This applies to both scheduled runs and ad-hoc uploads from the Convert page.
+
+**Q: Can I change the schedule or SFTP settings after setup?**
+
+Yes. Open the **Setup Wizard** page — if you've already completed setup, it shows a management dashboard where you can edit the schedule time, disable the schedule, edit SFTP settings, or disable SFTP. You don't need to re-run the full wizard.
 
 ---
 

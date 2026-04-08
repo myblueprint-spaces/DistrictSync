@@ -378,6 +378,8 @@ def save_mapping_yaml(district_id: str, override_dict: dict, base_name: str = "m
     output["_base"] = base_name
     output["version"] = override_dict.pop("version", "1.0")
     output["sis"] = override_dict.pop("sis", "MyEducationBC")
+    if "district_name" in override_dict:
+        output["district_name"] = override_dict.pop("district_name")
 
     # Add remaining overrides
     for key in ("global_config", "mappings"):

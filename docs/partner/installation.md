@@ -64,7 +64,9 @@ Select your district from the dropdown. If your district is not listed, contact 
 
 ### Wizard Step 3 — Schedule
 
-Choose the daily run time. We recommend **03:00 AM** (3am) — after the overnight GDE export from MyEdBC has completed.
+Optionally enable a daily automated schedule. If you only need ad-hoc runs via the Convert page, you can leave this disabled.
+
+If enabled, choose the daily run time. We recommend **03:00 AM** (3am) — after the overnight GDE export from MyEdBC has completed.
 
 ### Wizard Step 4 — SFTP Upload
 
@@ -76,15 +78,17 @@ Enter the SFTP credentials provided by SpacesEDU:
 | Port | `22` |
 | Username | (provided by SpacesEDU) |
 | Password | (provided by SpacesEDU) |
-| Remote Path | `/upload` |
+| Remote Path | `/files` |
 
 Click **Test Connection** to verify the credentials work.
 
-### Wizard Step 5 — Activate
+### Wizard Step 5 — Save & Activate
 
-Review your settings and click **Save & Activate Schedule**.
+Review your settings and click **Save & Activate Schedule** (or **Save Configuration** if no schedule was enabled).
 
-GDE2Acsv will create a Windows Task Scheduler entry named `GDE2Acsv_Daily` that runs every day at the time you specified.
+If a schedule was enabled, GDE2Acsv will create a Windows Task Scheduler entry named `GDE2Acsv_Daily` that runs every day at the time you specified.
+
+After saving, the Setup Wizard switches to a management dashboard where you can view, edit, or disable the schedule and SFTP settings at any time without re-running the wizard.
 
 !!! tip "Custom district mapping?"
     Need a custom district mapping? Use the **Mapping Editor** page to create or modify mappings visually.
@@ -116,7 +120,7 @@ cat > ~/.gde2acsv/config.json << 'EOF'
   "sftp_host": "sftp.spacesEDU.com",
   "sftp_port": 22,
   "sftp_username": "your_username",
-  "sftp_remote_path": "/upload"
+  "sftp_remote_path": "/files"
 }
 EOF
 ```
@@ -205,7 +209,7 @@ INFO - SFTP upload complete: 5 file(s) uploaded
 3. Transforms data into 5 CSV files
 4. Checks for anomalies — if any entity's record count has dropped more than 20% compared to the previous run, a warning is logged
 5. Writes all 5 CSVs atomically (all succeed or none are committed)
-6. Uploads all 5 CSVs to SpacesEDU via SFTP
+6. Zips all 5 CSVs into a single dated file (`gde2acsv_YYYY-MM-DD.zip`) and uploads to SpacesEDU via SFTP
 7. Writes a detailed log entry to `etl_tool.log`
 
 ---

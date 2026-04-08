@@ -56,8 +56,18 @@ class BlendedClassDetector(BaseTransformer):
 
         required = [teacher_id_col, MASTER_TIMETABLE_ID]
         if any(col not in class_info_df.columns for col in required):
-            logger.warning(f"Cannot detect blended classes. Missing required columns: {required}")
-            return
+            # Fall back to schedule data (e.g. non-enhanced ClassInformation).
+            # Schedule has one row per student; deduplicate to one row per
+            # section (Master Timetable ID) so the grouping logic is equivalent
+            # to ClassInformation's one-row-per-section structure.
+            if all(col in schedule_df.columns for col in required):
+                logger.info(
+                    "class_info missing required columns; falling back to student schedule for blended detection"
+                )
+                class_info_df = schedule_df.drop_duplicates(subset=[MASTER_TIMETABLE_ID])
+            else:
+                logger.warning(f"Cannot detect blended classes. Missing required columns: {required}")
+                return
 
         working = class_info_df.copy()
         session_components = [SCHOOL_NUMBER, teacher_id_col, "term", "semester", "day", "period"]
@@ -76,7 +86,7 @@ class BlendedClassDetector(BaseTransformer):
                 continue
 
             blended_id = f"BLENDED_{session_key}_{context.school_year}"
-            all_mt_ids = group[MASTER_TIMETABLE_ID].tolist()
+            all_mt_ids = sorted(set(group[MASTER_TIMETABLE_ID].tolist()))
 
             for mt_id in all_mt_ids:
                 context.blended_class_map[mt_id] = blended_id
@@ -98,11 +108,12 @@ class BlendedClassDetector(BaseTransformer):
         logger.info(f"[Blended Classes] Detection completed: {count} blended classes identified")
 
     def validate(self, session_group: pd.DataFrame, mtid_to_grade: dict[str, str]) -> bool:
-        """A valid blend requires 2+ records with 2+ distinct CEDS grades."""
-        if len(session_group) <= 1:
+        """A valid blend requires 2+ unique sections with 2+ distinct CEDS grades."""
+        unique_mt_ids = session_group[MASTER_TIMETABLE_ID].unique()
+        if len(unique_mt_ids) <= 1:
             return False
         grades = set()
-        for mt_id in session_group[MASTER_TIMETABLE_ID]:
+        for mt_id in unique_mt_ids:
             grade = mtid_to_grade.get(mt_id)
             if grade:
                 grades.add(self.grade_to_ceds(grade))
@@ -110,7 +121,7 @@ class BlendedClassDetector(BaseTransformer):
 
     def get_grade_range(self, session_group: pd.DataFrame, mtid_to_grade: dict[str, str]) -> str:
         grades = set()
-        for mt_id in session_group[MASTER_TIMETABLE_ID]:
+        for mt_id in session_group[MASTER_TIMETABLE_ID].unique():
             grade = mtid_to_grade.get(mt_id)
             if grade:
                 grades.add(self.grade_to_ceds(grade))
@@ -154,9 +165,16 @@ class BlendedClassDetector(BaseTransformer):
 
     @staticmethod
     def _build_grade_map(schedule_df: pd.DataFrame) -> dict[str, str]:
+        """Map each Master Timetable ID to its most common grade.
+
+        Uses mode (most frequent grade) to handle cases where the same
+        section has students from multiple grades in the schedule data.
+        """
         if MASTER_TIMETABLE_ID in schedule_df.columns and "grade" in schedule_df.columns:
-            pairs = schedule_df[[MASTER_TIMETABLE_ID, "grade"]].dropna().drop_duplicates()
-            return pd.Series(pairs["grade"].values, index=pairs[MASTER_TIMETABLE_ID]).to_dict()  # type: ignore[return-value]
+            pairs = schedule_df[[MASTER_TIMETABLE_ID, "grade"]].dropna()
+            # Use most frequent grade per MT ID (mode) to handle multi-grade enrollment
+            mode = pairs.groupby(MASTER_TIMETABLE_ID)["grade"].agg(lambda x: x.mode().iloc[0])
+            return mode.to_dict()  # type: ignore[return-value]
         logger.warning(f"Missing '{MASTER_TIMETABLE_ID}' or 'grade' in student schedule.")
         return {}
 
