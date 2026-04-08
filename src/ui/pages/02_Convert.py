@@ -82,7 +82,7 @@ def _load_uploaded_file(
                 df = pd.read_csv(io.BytesIO(content), **kwargs)
                 if len(df.columns) > 1 and not df.empty:
                     return normalize_columns(df)
-            except Exception:  # nosec B110 - try next encoding/delimiter combo
+            except Exception:  # nosec B112 - try next encoding/delimiter combo
                 continue
 
     # Last resort: force UTF-8 with error replacement
@@ -150,7 +150,7 @@ def _check_anomalies_ui(
         try:
             with open(prev_path, encoding="utf-8") as f:
                 prev_count = sum(1 for _ in f) - 1
-        except Exception:  # nosec B110 - skip unreadable previous files
+        except Exception:  # nosec B112 - skip unreadable previous files
             continue
         if prev_count > 0 and len(df) < prev_count * (1 - ANOMALY_THRESHOLD):
             pct = ((prev_count - len(df)) / prev_count) * 100
