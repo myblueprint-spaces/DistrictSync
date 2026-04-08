@@ -54,6 +54,7 @@ def main() -> None:
         "--global.developmentMode=false",
         "--server.headless=false",
         "--browser.gatherUsageStats=false",
+        "--client.toolbarMode=minimal",
         "--server.port=8501",
     ]
     sys.exit(stcli.main())
