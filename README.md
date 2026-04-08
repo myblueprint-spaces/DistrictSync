@@ -70,7 +70,7 @@ A browser-based interface for setup, ad-hoc conversions, and monitoring:
 
 ```bash
 pip install streamlit
-streamlit run src/ui/app.py
+streamlit run src/ui/Home.py
 ```
 
 **Pages:**

@@ -193,11 +193,11 @@ mappings:
 
 ## Web UI
 
-`src/ui/app.py` is a Streamlit multi-page app landing page. Pages:
+`src/ui/Home.py` is a Streamlit multi-page app landing page. Pages:
 
 | Page | File | Description |
 |------|------|-------------|
-| Home / status | `app.py` | Config health check, navigation |
+| Home / status | `Home.py` | Config health check, navigation |
 | Setup Wizard | `pages/01_Setup_Wizard.py` | 5-step wizard: paths, district, schedule, SFTP, activate |
 | Convert | `pages/02_Convert.py` | Ad-hoc browser-based conversion (upload files, download CSVs) |
 | Run History | `pages/03_Run_History.py` | Parses `__GDE2ACSV_RUN__` JSON log tags, tabular history |

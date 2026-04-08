@@ -52,7 +52,7 @@ make validate-config  # validates all 5 district configs: myedbc, sd40, sd48, sd
 
 ### Streamlit web UI
 ```bash
-streamlit run src/ui/app.py
+streamlit run src/ui/Home.py
 ```
 
 ### Build executables
@@ -110,7 +110,7 @@ Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. 
 `DataQualityReport` checks: missing/empty fields (>50% threshold), duplicates per entity-specific keys, orphaned enrollments (class or user not found), grade distribution anomalies.
 
 ### Web UI (`src/ui/`)
-Multi-page Streamlit app. `app.py` is the landing page with status dashboard. Pages:
+Multi-page Streamlit app. `Home.py` is the landing page with status dashboard. Pages:
 - `pages/01_Setup_Wizard.py` — 5-step setup wizard (paths, district, schedule, SFTP, activate). Saves config per-step. SFTP host restricted to allowlist.
 - `pages/02_Convert.py` — Ad-hoc conversion with session_state persistence, quality report, missing file warnings. Uses `load_config()` with `_base` inheritance.
 - `pages/03_Run_History.py` — Parses `__GDE2ACSV_RUN__` JSON log tags for tabular run history

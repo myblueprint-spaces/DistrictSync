@@ -4,7 +4,7 @@ This is the main entry point. Streamlit automatically discovers pages
 from the ``pages/`` subdirectory.
 
 Run with:
-    streamlit run src/ui/app.py
+    streamlit run src/ui/Home.py
 """
 
 import sys
@@ -38,7 +38,8 @@ try:
     from src.config.app_config import AppConfig  # noqa: E402
 
     cfg = AppConfig.load()
-    if cfg.is_complete():
+    if cfg.schedule_registered:
+        # Fully configured with active schedule
         status_parts = [
             f"**Configured** — District: `{cfg.sis_type}`",
             f"Daily run: `{cfg.schedule_time}`",
@@ -46,7 +47,7 @@ try:
         ]
 
         # Show last run status on Windows
-        if sys.platform == "win32" and cfg.schedule_registered:
+        if sys.platform == "win32":
             try:
                 from src.scheduler.windows import query_task
 
@@ -64,7 +65,7 @@ try:
 
         st.success(" | ".join(status_parts))
     else:
-        st.info("**Not yet configured.** Click below to get started.")
+        st.info("**No active schedule.** Set one up in the Setup Wizard, or use Convert for ad-hoc runs.")
         if st.button("Start Setup Wizard", type="primary"):
             st.switch_page("pages/01_Setup_Wizard.py")
 except Exception:

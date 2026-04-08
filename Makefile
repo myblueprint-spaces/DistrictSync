@@ -16,7 +16,7 @@ fmt:
 	ruff check src/ tests/ --fix
 
 ui:
-	streamlit run src/ui/app.py
+	streamlit run src/ui/Home.py
 
 validate-config:
 	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc','sd40myedbc','sd48myedbc','sd51myedbc','sd74myedbc']]"

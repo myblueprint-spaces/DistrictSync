@@ -25,18 +25,18 @@ from pathlib import Path
 
 
 def get_app_path() -> Path:
-    """Return the path to app.py, whether frozen or running from source."""
+    """Return the path to Home.py, whether frozen or running from source."""
     if getattr(sys, "frozen", False):
         # PyInstaller extracts files to sys._MEIPASS
-        return Path(sys._MEIPASS) / "src" / "ui" / "app.py"  # type: ignore[attr-defined]
-    return Path(__file__).parent / "app.py"
+        return Path(sys._MEIPASS) / "src" / "ui" / "Home.py"  # type: ignore[attr-defined]
+    return Path(__file__).parent / "Home.py"
 
 
 def main() -> None:
     app_path = get_app_path()
 
     if not app_path.exists():
-        print(f"Error: could not find app.py at {app_path}", file=sys.stderr)
+        print(f"Error: could not find Home.py at {app_path}", file=sys.stderr)
         sys.exit(1)
 
     # Ensure config/ is resolvable relative to the bundle root

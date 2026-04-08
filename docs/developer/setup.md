@@ -77,7 +77,7 @@ Flags:
 
 ```bash
 make ui
-# or: streamlit run src/ui/app.py
+# or: streamlit run src/ui/Home.py
 ```
 
 Opens at `http://localhost:8501`.
