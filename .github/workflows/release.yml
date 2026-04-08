@@ -34,6 +34,7 @@ jobs:
           --add-data "config;config"
           --add-data "src/ui;src/ui"
           --add-data "docs;docs"
+          --collect-all streamlit
           --hidden-import=pandas
           --hidden-import=yaml
           --hidden-import=logging.config
@@ -42,9 +43,6 @@ jobs:
           --hidden-import=paramiko
           --hidden-import=keyring
           --hidden-import=keyring.backends.Windows
-          --hidden-import=streamlit
-          --hidden-import=streamlit.web.cli
-          --hidden-import=streamlit.runtime.scriptrunner.magic_funcs
           src/main.py
       - uses: actions/upload-artifact@v4
         with:
