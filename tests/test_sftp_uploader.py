@@ -192,10 +192,12 @@ class TestUploadCsvs:
 
         # Capture the local ZIP path passed to sftp.put
         captured_local = []
+
         def capture_put(local, remote):
             # Read the ZIP before the temp dir is cleaned up
             with zipfile.ZipFile(local) as zf:
                 captured_local.extend(zf.namelist())
+
         mock_sftp.put.side_effect = capture_put
 
         with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
