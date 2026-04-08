@@ -97,7 +97,7 @@ Entity-specific transformers using Strategy Pattern with a registry:
 - `family.py` — Parent/guardian contact extraction
 - `classes.py` — Homeroom generation + subject classes + blended class integration
 - `enrollments.py` — Student + teacher enrollment rows from schedule data; `.copy()` before mutations
-- `blended.py` — Blended class detection (same teacher/time with 2+ grade levels -> merged class). Falls back to deduplicated Student Schedule when ClassInformation lacks `teacher id`/`master timetable id`. Uses grade mode (most frequent) per MT ID.
+- `blended.py` — Blended class detection (same teacher/time with 2+ grade levels -> merged class). Falls back to deduplicated schedule when ClassInfo lacks required columns.
 
 ### Loader (`src/etl/loader.py`)
 Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. `save_all()` uses atomic transactional writes: stages to `.tmp_<timestamp>/`, commits all on success, rolls back on failure.
