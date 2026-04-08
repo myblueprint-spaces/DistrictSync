@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gde2acsv"
-version = "2.0.0"
+version = "2.1.0"
 authors = [{name = "Shan Peiris", email = "shan.peiris@myblueprint.ca"}]
 description = "SIS Data ETL Tool - Converts General Data Extracts to SpacesEDU Advanced CSV"
 readme = "README.md"
