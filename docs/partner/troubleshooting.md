@@ -101,6 +101,19 @@ Some districts (e.g., SD40 – New Westminster) export GDE files as `.csv` inste
 
 ---
 
+## Records missing after SpacesEDU import
+
+If GDE2Acsv completed successfully but records are missing in SpacesEDU, the issue is on the import side — not GDE2Acsv. Common causes:
+
+- **Email domain mismatch** — student or staff email doesn't match the district's configured domain in SpacesEDU.
+- **Missing required field** — a record was skipped because a required field (User ID, Name, etc.) was blank.
+- **Orphaned enrollment** — an enrollment references a Class ID or User ID that doesn't exist in the corresponding file.
+- **Family without student** — a family record references a student not in `Students.csv`.
+
+Check the **SpacesEDU import report** for details. See also [FAQ — What happens after upload](faq.md#what-happens-after-upload-spacesedu-import).
+
+---
+
 ## Log location
 
 | Platform | Log file |

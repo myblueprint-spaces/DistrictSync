@@ -68,6 +68,50 @@ Yes. Open the **Setup Wizard** page — if you've already completed setup, it sh
 
 ---
 
+## What happens after upload (SpacesEDU import)
+
+GDE2Acsv generates the CSV files and uploads them. **SpacesEDU** then imports them. The following describes SpacesEDU's import behavior — not GDE2Acsv's.
+
+**Q: In what order does SpacesEDU process the files?**
+
+1. `Students.csv` — creates or updates student accounts
+2. `Staff.csv` — creates or updates staff accounts
+3. `Family.csv` — links family/guardian records to students
+4. `Classes.csv` — creates or updates class records
+5. `Enrollments.csv` — enrolls students and teachers into classes
+
+This order ensures dependencies are met (e.g., students exist before enrollments are created).
+
+**Q: How does SpacesEDU match existing users?**
+
+SpacesEDU matches incoming records against the database by **User ID** or **email**. If a match is found, the existing account is updated rather than duplicated.
+
+**Q: What happens to students or staff no longer in the file?**
+
+Users that no longer appear in `Students.csv` or `Staff.csv` (by User ID, Role, and School ID) are marked **Inactive** in SpacesEDU. They are not deleted.
+
+**Q: What happens to enrollments no longer in the file?**
+
+Students and teachers are **unenrolled** from a class if they no longer appear in `Enrollments.csv` for that class. Existing classes are preserved and new enrollments are added.
+
+**Q: When does SpacesEDU skip a record during import?**
+
+SpacesEDU validates each record and skips it (with a flag in the import report) when:
+
+| Issue | Action |
+|-------|--------|
+| Missing required field (User ID, Name, etc.) | Skip record |
+| Field format doesn't match (e.g., invalid grade) | Skip record |
+| Email doesn't match the district's email domain | Skip record |
+| Student ID in Family.csv not found in Students.csv | Skip record |
+| Class ID in Enrollments.csv not found in Classes.csv | Skip record |
+| User ID in Enrollments.csv not found in Students/Staff | Skip record |
+| Invalid file format (missing headers, wrong columns) | Skip entire file |
+
+Check the **SpacesEDU import report** after each import to see which records were skipped and why.
+
+---
+
 ## Technical questions
 
 **Q: Do I need to install Python or anything else?**
