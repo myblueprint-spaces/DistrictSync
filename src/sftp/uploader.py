@@ -134,38 +134,49 @@ class SFTPUploader:
     # Upload
     # ------------------------------------------------------------------
 
-    def upload_csvs(self, output_dir: Path) -> list[str]:
-        """Upload all CSV files in *output_dir* to the SFTP remote path.
+    def upload_csvs(self, output_dir: Path, zip_name: str | None = None) -> list[str]:
+        """Zip all CSV files in *output_dir* and upload the single ZIP via SFTP.
 
         Args:
             output_dir: Local directory containing the generated CSV files.
+            zip_name: Name of the ZIP file. Defaults to ``gde2acsv_YYYY-MM-DD.zip``.
 
         Returns:
-            List of filenames that were uploaded.
+            List of CSV filenames included in the uploaded ZIP.
 
         Raises:
             RuntimeError: If the connection could not be established.
         """
+        import tempfile
+        import zipfile
+        from datetime import date
+
+        if zip_name is None:
+            zip_name = f"gde2acsv_{date.today().isoformat()}.zip"
+
         csv_files = sorted(output_dir.glob("*.csv"))
         if not csv_files:
             logger.warning(f"No CSV files found in {output_dir}")
             return []
 
-        client, sftp = self._connect()
-        try:
-            uploaded: list[str] = []
-            for local_file in csv_files:
-                remote_file = f"{self.remote_path.rstrip('/')}/{local_file.name}"
-                try:
-                    logger.info(f"Uploading {local_file.name} -> {remote_file}")
-                    sftp.put(str(local_file), remote_file)
-                    uploaded.append(local_file.name)
-                    logger.info(f"Uploaded {local_file.name} ({local_file.stat().st_size:,} bytes)")
-                except Exception as exc:
-                    logger.error(f"Failed to upload {local_file.name}: {exc}")
+        # Create a temporary ZIP containing all CSVs
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / zip_name
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for csv_file in csv_files:
+                    zf.write(csv_file, csv_file.name)
+            logger.info(f"Created ZIP: {zip_name} with {len(csv_files)} file(s) ({zip_path.stat().st_size:,} bytes)")
 
-            sftp.close()
-            logger.info(f"SFTP upload complete: {len(uploaded)} file(s) uploaded")
-            return uploaded
-        finally:
-            client.close()
+            client, sftp = self._connect()
+            try:
+                remote_file = f"{self.remote_path.rstrip('/')}/{zip_name}"
+                logger.info(f"Uploading {zip_name} -> {remote_file}")
+                sftp.put(str(zip_path), remote_file)
+                logger.info(f"Uploaded {zip_name} ({zip_path.stat().st_size:,} bytes)")
+                sftp.close()
+                return [f.name for f in csv_files]
+            except Exception as exc:
+                logger.error(f"Failed to upload {zip_name}: {exc}")
+                raise
+            finally:
+                client.close()

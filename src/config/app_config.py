@@ -39,7 +39,7 @@ class AppConfig:
     sftp_host: str = ""
     sftp_port: int = 22
     sftp_username: str = ""
-    sftp_remote_path: str = "/upload"
+    sftp_remote_path: str = "/files"
 
     @classmethod
     def load(cls) -> AppConfig:

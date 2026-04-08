@@ -123,8 +123,10 @@ class TestTestConnection:
 
 
 class TestUploadCsvs:
-    def test_upload_all_csvs(self, tmp_path):
-        # Create test CSV files
+    def test_upload_zips_all_csvs(self, tmp_path):
+        """upload_csvs should zip all CSVs into a single dated file and upload it."""
+        from datetime import date
+
         (tmp_path / "Students.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
         (tmp_path / "Staff.csv").write_text("id,name\n1,Harper\n", encoding="utf-8")
 
@@ -134,28 +136,69 @@ class TestUploadCsvs:
         with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
             uploaded = uploader.upload_csvs(tmp_path)
 
+        # Returns the list of CSV filenames inside the ZIP
         assert len(uploaded) == 2
         assert "Staff.csv" in uploaded
         assert "Students.csv" in uploaded
-        assert mock_sftp.put.call_count == 2
+        # Only one sftp.put call (the dated ZIP file)
+        assert mock_sftp.put.call_count == 1
+        remote_path = mock_sftp.put.call_args[0][1]
+        expected_name = f"gde2acsv_{date.today().isoformat()}.zip"
+        assert remote_path == f"/upload/{expected_name}"
         mock_client.close.assert_called_once()
+
+    def test_upload_custom_zip_name(self, tmp_path):
+        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
+
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        mock_sftp = MagicMock()
+        mock_client = MagicMock()
+        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
+            uploaded = uploader.upload_csvs(tmp_path, zip_name="custom.zip")
+
+        assert len(uploaded) == 1
+        remote_path = mock_sftp.put.call_args[0][1]
+        assert remote_path == "/upload/custom.zip"
 
     def test_upload_no_csv_files(self, tmp_path):
         uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
         uploaded = uploader.upload_csvs(tmp_path)
         assert uploaded == []
 
-    def test_upload_handles_per_file_error(self, tmp_path):
+    def test_upload_raises_on_sftp_error(self, tmp_path):
         (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
-        (tmp_path / "Staff.csv").write_text("id\n1\n", encoding="utf-8")
 
         uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
         mock_sftp = MagicMock()
         mock_client = MagicMock()
-        # First put succeeds, second fails
-        mock_sftp.put.side_effect = [None, Exception("disk full")]
-        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
-            uploaded = uploader.upload_csvs(tmp_path)
+        mock_sftp.put.side_effect = Exception("disk full")
+        with (
+            patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)),
+            pytest.raises(Exception, match="disk full"),
+        ):
+            uploader.upload_csvs(tmp_path)
+        mock_client.close.assert_called_once()
 
-        # Only the first file should be in uploaded
-        assert len(uploaded) == 1
+    def test_uploaded_zip_contains_all_csvs(self, tmp_path):
+        """Verify the ZIP actually contains the expected CSV files."""
+        import zipfile
+
+        (tmp_path / "Students.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
+        (tmp_path / "Staff.csv").write_text("id,role\n1,teacher\n", encoding="utf-8")
+
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/files")
+        mock_sftp = MagicMock()
+        mock_client = MagicMock()
+
+        # Capture the local ZIP path passed to sftp.put
+        captured_local = []
+        def capture_put(local, remote):
+            # Read the ZIP before the temp dir is cleaned up
+            with zipfile.ZipFile(local) as zf:
+                captured_local.extend(zf.namelist())
+        mock_sftp.put.side_effect = capture_put
+
+        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
+            uploader.upload_csvs(tmp_path)
+
+        assert sorted(captured_local) == ["Staff.csv", "Students.csv"]

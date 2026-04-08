@@ -407,7 +407,9 @@ if outputs:
                                 remote_path=_app_cfg.sftp_remote_path,
                             )
                             uploaded_files_list = uploader.upload_csvs(tmp_path)
-                        st.success(f"Uploaded {len(uploaded_files_list)} file(s): {', '.join(uploaded_files_list)}")
+                        st.success(
+                            f"Uploaded ZIP with {len(uploaded_files_list)} file(s): {', '.join(uploaded_files_list)}"
+                        )
                     except Exception as e:
                         st.error(f"SFTP upload failed: {e}")
 
