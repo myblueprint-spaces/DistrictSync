@@ -1,0 +1,11 @@
+School Number,User Name,Teaching Staff,Teacher Id,Name,Prefix,Last Name,First Name,Email Address
+7474001,anneadams,Y,T0001000,Adams Anne,,Adams,Anne,adams@sd74.bc.ca
+7474005,brianbaker,Y,T0001001,Baker Brian,,Baker,Brian,baker@sd74.bc.ca
+7474012,carolclark,Y,T0001002,Clark Carol,,Clark,Carol,clark@sd74.bc.ca
+7474018,daviddixon,Y,T0001003,Dixon David,,Dixon,David,dixon@sd74.bc.ca
+7474001,ellenevans,Y,T0001004,Evans Ellen,,Evans,Ellen,evans@sd74.bc.ca
+7474005,frankfoster,Y,T0001005,Foster Frank,,Foster,Frank,foster@sd74.bc.ca
+7474012,gracegrant,Y,T0001006,Grant Grace,,Grant,Grace,grant@sd74.bc.ca
+7474018,henryhill,Y,T0001007,Hill Henry,,Hill,Henry,hill@sd74.bc.ca
+7474001,ireneirving,Y,T0001008,Irving Irene,,Irving,Irene,irving@sd74.bc.ca
+7474005,jasonjones,Y,T0001009,Jones Jason,,Jones,Jason,jones@sd74.bc.ca

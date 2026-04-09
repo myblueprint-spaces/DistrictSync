@@ -1,0 +1,63 @@
+# SD74 - Inherits from standard MyEducation BC mapping
+# Differences: source file names, column casing, custom email, fixed dates,
+#              different Name config for classes, swapped legal/usual name fields
+_base: myedbc
+version: 1.9
+sis: MyEducationBC
+district_name: SD74 - Gold Trail School District
+
+global_config:
+  school_year_sources:
+    student_schedule: "studentcourseselection.txt"
+
+mappings:
+  Students:
+    field_map:
+      "User ID": "Student number"
+      "Student Number": "Student number"
+      "First Name": "Usual first name"
+      "Last Name": "Usual surname"
+      "SchoolCode": "School number"
+      "Preferred First Name": "Legal first name"
+      "Preferred Last Name": "Legal surname"
+      "Email Address":
+        format: "{student number}@sd74.bc.ca"
+
+  Staff:
+    source_files:
+      staff_info: "StaffInformation.txt"
+
+  Family:
+    source_files:
+      emergency_contacts: "ParentInformation.txt"
+    field_map:
+      "Last Name": "Surname"
+
+  Classes:
+    source_files:
+      student_schedule: "studentcourseselection.txt"
+      staff_info: "StaffInformation.txt"
+      class_info: "ClassInfoEnhanced.txt"
+    field_map:
+      "Name":
+        "primary teacher flag": ""
+        "teacher last name": "Teacher Name"
+        "course title": "Title"
+        "section letter": "Section"
+      "Start Date":
+        value: "2025-08-25"
+        use_academic_year: false
+      "End Date":
+        value: "2026-07-25"
+        use_academic_year: false
+
+  Enrollments:
+    source_files:
+      student_schedule: "studentcourseselection.txt"
+    field_map:
+      "User ID":
+        "student_id_col": "Student Number"
+        "staff_id_col": "Teacher ID"
+      "Role":
+        "student_id_col": "Student Number"
+        "staff_id_col": "Teacher ID"

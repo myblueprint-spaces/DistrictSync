@@ -5,6 +5,9 @@ All data is synthetic — no real student PII.
 Fixtures are designed to exercise every code path in the transformer.
 """
 
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -12,6 +15,64 @@ import pytest
 import yaml
 
 from src.etl.transformer import DataTransformer
+
+# ---------------------------------------------------------------------------
+# Streamlit server fixture (used by Playwright UI smoke tests)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def streamlit_server():
+    """Start a headless Streamlit server for UI smoke tests.
+
+    Starts once per test session on port 8502 and tears down afterward.
+    Tests that need the server should request the `streamlit_server` fixture
+    directly — this avoids starting Streamlit for non-UI test runs.
+    """
+    try:
+        import requests as _requests
+    except ImportError:
+        pytest.skip("requests library not installed — skipping UI server startup")
+
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "streamlit",
+            "run",
+            "src/ui/Home.py",
+            "--server.headless=true",
+            "--server.port=8502",
+            "--browser.gatherUsageStats=false",
+            "--logger.level=error",
+            "--global.developmentMode=false",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    base_url = "http://localhost:8502"
+    started = False
+    for _ in range(30):
+        try:
+            r = _requests.get(base_url, timeout=2)
+            if r.status_code == 200:
+                started = True
+                break
+        except Exception:
+            time.sleep(1)
+
+    if not started:
+        proc.terminate()
+        pytest.fail("Streamlit server did not start within 30 seconds on port 8502")
+
+    yield base_url
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
 
 # ---------------------------------------------------------------------------
 # Transformer instance

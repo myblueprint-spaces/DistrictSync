@@ -60,6 +60,10 @@ python_functions = ["test_*"]
 addopts = "-v --tb=short -m 'not benchmark'"
 markers = [
     "benchmark: performance benchmarks (deselect with '-m \"not benchmark\"')",
+    "regression: golden-file snapshot tests — fail means output changed",
+    "integration: tests that use real servers or filesystem I/O",
+    "ui: Playwright browser smoke tests (require streamlit + chromium)",
+    "property: Hypothesis property-based tests",
 ]
 
 [tool.coverage.run]

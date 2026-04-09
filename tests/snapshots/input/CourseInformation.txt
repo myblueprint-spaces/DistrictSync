@@ -1,0 +1,113 @@
+School Number,Department,Standard Course Department Category Code,Standard Course Department Category Description,Course Code,Course Type,Title,Course Description,Credit Value,Grade Level,Catalogue Description,Short Name,Course Number,Format,Course Length,Academic Level Code,Include in Honour Roll,Include in GPA,Non Standard,Exam,On Report Card Indicator,Career Prep Indicator,Vocational Indicator
+7474001,Core,,,ENG08,Regular,English 8,English 8 course,4,9,English 8,ENG,894,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,ENG09,Regular,English 9,English 9 course,4,10,English 9,ENG,724,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,ENG10,Regular,English 10,English 10 course,4,8,English 10,ENG,921,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,ENG11,Regular,English 11,English 11 course,4,10,English 11,ENG,890,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,ENG12,Regular,English 12,English 12 course,4,10,English 12,ENG,949,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,MAT08,Regular,Math 8,Math 8 course,4,11,Math 8,MAT,263,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,MAT09,Regular,Math 9,Math 9 course,4,11,Math 9,MAT,752,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,MAT10,Regular,Math 10,Math 10 course,4,9,Math 10,MAT,770,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,SCI08,Regular,Science 8,Science 8 course,4,10,Science 8,SCI,242,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,SCI09,Regular,Science 9,Science 9 course,4,11,Science 9,SCI,502,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,SCI10,Regular,Science 10,Science 10 course,4,8,Science 10,SCI,131,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,PHE09,Regular,PHE 9,PHE 9 course,4,12,PHE 9,PHE,324,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,PHE10,Regular,PHE 10,PHE 10 course,4,8,PHE 10,PHE,588,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,SOC09,Regular,Social Studies 9,Social Studies 9 course,4,10,Social Studies 9,SOC,477,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,SOC10,Regular,Social Studies 10,Social Studies 10 course,4,8,Social Studies 10,SOC,551,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,ART10,Regular,Art 10,Art 10 course,4,11,Art 10,ART,463,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,MUS10,Regular,Music 10,Music 10 course,4,10,Music 10,MUS,874,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,BUS11,Regular,Business 11,Business 11 course,4,12,Business 11,BUS,400,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,CS11,Regular,Computer Science 11,Computer Science 11 course,4,9,Computer Science 11,CS1,582,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,CS12,Regular,Computer Science 12,Computer Science 12 course,4,11,Computer Science 12,CS1,460,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,HR-K,Regular,Homeroom K,Homeroom K course,4,10,Homeroom K,HR-,577,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,HR-1,Regular,Homeroom 1,Homeroom 1 course,4,8,Homeroom 1,HR-,419,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,HR-2,Regular,Homeroom 2,Homeroom 2 course,4,9,Homeroom 2,HR-,553,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,HR-3,Regular,Homeroom 3,Homeroom 3 course,4,8,Homeroom 3,HR-,578,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,HR-4,Regular,Homeroom 4,Homeroom 4 course,4,8,Homeroom 4,HR-,785,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,HR-5,Regular,Homeroom 5,Homeroom 5 course,4,12,Homeroom 5,HR-,991,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,HR-6,Regular,Homeroom 6,Homeroom 6 course,4,9,Homeroom 6,HR-,672,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474001,Core,,,HR-7,Regular,Homeroom 7,Homeroom 7 course,4,8,Homeroom 7,HR-,763,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,ENG08,Regular,English 8,English 8 course,4,8,English 8,ENG,268,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,ENG09,Regular,English 9,English 9 course,4,12,English 9,ENG,615,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,ENG10,Regular,English 10,English 10 course,4,9,English 10,ENG,669,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,ENG11,Regular,English 11,English 11 course,4,10,English 11,ENG,195,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,ENG12,Regular,English 12,English 12 course,4,12,English 12,ENG,866,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,MAT08,Regular,Math 8,Math 8 course,4,11,Math 8,MAT,928,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,MAT09,Regular,Math 9,Math 9 course,4,12,Math 9,MAT,281,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,MAT10,Regular,Math 10,Math 10 course,4,9,Math 10,MAT,368,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,SCI08,Regular,Science 8,Science 8 course,4,8,Science 8,SCI,574,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,SCI09,Regular,Science 9,Science 9 course,4,9,Science 9,SCI,794,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,SCI10,Regular,Science 10,Science 10 course,4,12,Science 10,SCI,973,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,PHE09,Regular,PHE 9,PHE 9 course,4,12,PHE 9,PHE,327,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,PHE10,Regular,PHE 10,PHE 10 course,4,10,PHE 10,PHE,128,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,SOC09,Regular,Social Studies 9,Social Studies 9 course,4,10,Social Studies 9,SOC,625,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,SOC10,Regular,Social Studies 10,Social Studies 10 course,4,8,Social Studies 10,SOC,263,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,ART10,Regular,Art 10,Art 10 course,4,12,Art 10,ART,105,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,MUS10,Regular,Music 10,Music 10 course,4,11,Music 10,MUS,939,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,BUS11,Regular,Business 11,Business 11 course,4,12,Business 11,BUS,718,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,CS11,Regular,Computer Science 11,Computer Science 11 course,4,9,Computer Science 11,CS1,976,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,CS12,Regular,Computer Science 12,Computer Science 12 course,4,11,Computer Science 12,CS1,669,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,HR-K,Regular,Homeroom K,Homeroom K course,4,10,Homeroom K,HR-,309,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,HR-1,Regular,Homeroom 1,Homeroom 1 course,4,11,Homeroom 1,HR-,953,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,HR-2,Regular,Homeroom 2,Homeroom 2 course,4,10,Homeroom 2,HR-,131,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,HR-3,Regular,Homeroom 3,Homeroom 3 course,4,11,Homeroom 3,HR-,952,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,HR-4,Regular,Homeroom 4,Homeroom 4 course,4,11,Homeroom 4,HR-,473,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,HR-5,Regular,Homeroom 5,Homeroom 5 course,4,10,Homeroom 5,HR-,115,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,HR-6,Regular,Homeroom 6,Homeroom 6 course,4,12,Homeroom 6,HR-,766,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474005,Core,,,HR-7,Regular,Homeroom 7,Homeroom 7 course,4,8,Homeroom 7,HR-,607,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,ENG08,Regular,English 8,English 8 course,4,12,English 8,ENG,215,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,ENG09,Regular,English 9,English 9 course,4,12,English 9,ENG,738,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,ENG10,Regular,English 10,English 10 course,4,8,English 10,ENG,429,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,ENG11,Regular,English 11,English 11 course,4,12,English 11,ENG,665,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,ENG12,Regular,English 12,English 12 course,4,9,English 12,ENG,338,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,MAT08,Regular,Math 8,Math 8 course,4,11,Math 8,MAT,392,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,MAT09,Regular,Math 9,Math 9 course,4,8,Math 9,MAT,171,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,MAT10,Regular,Math 10,Math 10 course,4,9,Math 10,MAT,295,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,SCI08,Regular,Science 8,Science 8 course,4,12,Science 8,SCI,108,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,SCI09,Regular,Science 9,Science 9 course,4,11,Science 9,SCI,412,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,SCI10,Regular,Science 10,Science 10 course,4,9,Science 10,SCI,938,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,PHE09,Regular,PHE 9,PHE 9 course,4,10,PHE 9,PHE,544,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,PHE10,Regular,PHE 10,PHE 10 course,4,11,PHE 10,PHE,872,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,SOC09,Regular,Social Studies 9,Social Studies 9 course,4,12,Social Studies 9,SOC,263,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,SOC10,Regular,Social Studies 10,Social Studies 10 course,4,9,Social Studies 10,SOC,646,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,ART10,Regular,Art 10,Art 10 course,4,10,Art 10,ART,823,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,MUS10,Regular,Music 10,Music 10 course,4,12,Music 10,MUS,553,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,BUS11,Regular,Business 11,Business 11 course,4,12,Business 11,BUS,806,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,CS11,Regular,Computer Science 11,Computer Science 11 course,4,9,Computer Science 11,CS1,977,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,CS12,Regular,Computer Science 12,Computer Science 12 course,4,8,Computer Science 12,CS1,134,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,HR-K,Regular,Homeroom K,Homeroom K course,4,8,Homeroom K,HR-,948,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,HR-1,Regular,Homeroom 1,Homeroom 1 course,4,12,Homeroom 1,HR-,997,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,HR-2,Regular,Homeroom 2,Homeroom 2 course,4,10,Homeroom 2,HR-,138,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,HR-3,Regular,Homeroom 3,Homeroom 3 course,4,9,Homeroom 3,HR-,809,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,HR-4,Regular,Homeroom 4,Homeroom 4 course,4,9,Homeroom 4,HR-,850,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,HR-5,Regular,Homeroom 5,Homeroom 5 course,4,12,Homeroom 5,HR-,489,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,HR-6,Regular,Homeroom 6,Homeroom 6 course,4,8,Homeroom 6,HR-,224,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474012,Core,,,HR-7,Regular,Homeroom 7,Homeroom 7 course,4,12,Homeroom 7,HR-,208,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,ENG08,Regular,English 8,English 8 course,4,10,English 8,ENG,560,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,ENG09,Regular,English 9,English 9 course,4,8,English 9,ENG,482,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,ENG10,Regular,English 10,English 10 course,4,11,English 10,ENG,645,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,ENG11,Regular,English 11,English 11 course,4,8,English 11,ENG,946,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,ENG12,Regular,English 12,English 12 course,4,12,English 12,ENG,723,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,MAT08,Regular,Math 8,Math 8 course,4,8,Math 8,MAT,741,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,MAT09,Regular,Math 9,Math 9 course,4,11,Math 9,MAT,870,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,MAT10,Regular,Math 10,Math 10 course,4,9,Math 10,MAT,342,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,SCI08,Regular,Science 8,Science 8 course,4,12,Science 8,SCI,345,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,SCI09,Regular,Science 9,Science 9 course,4,8,Science 9,SCI,937,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,SCI10,Regular,Science 10,Science 10 course,4,12,Science 10,SCI,977,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,PHE09,Regular,PHE 9,PHE 9 course,4,11,PHE 9,PHE,943,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,PHE10,Regular,PHE 10,PHE 10 course,4,8,PHE 10,PHE,449,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,SOC09,Regular,Social Studies 9,Social Studies 9 course,4,8,Social Studies 9,SOC,632,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,SOC10,Regular,Social Studies 10,Social Studies 10 course,4,10,Social Studies 10,SOC,333,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,ART10,Regular,Art 10,Art 10 course,4,9,Art 10,ART,581,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,MUS10,Regular,Music 10,Music 10 course,4,9,Music 10,MUS,152,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,BUS11,Regular,Business 11,Business 11 course,4,10,Business 11,BUS,290,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,CS11,Regular,Computer Science 11,Computer Science 11 course,4,8,Computer Science 11,CS1,481,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,CS12,Regular,Computer Science 12,Computer Science 12 course,4,12,Computer Science 12,CS1,989,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,HR-K,Regular,Homeroom K,Homeroom K course,4,9,Homeroom K,HR-,444,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,HR-1,Regular,Homeroom 1,Homeroom 1 course,4,8,Homeroom 1,HR-,721,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,HR-2,Regular,Homeroom 2,Homeroom 2 course,4,8,Homeroom 2,HR-,633,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,HR-3,Regular,Homeroom 3,Homeroom 3 course,4,9,Homeroom 3,HR-,593,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,HR-4,Regular,Homeroom 4,Homeroom 4 course,4,12,Homeroom 4,HR-,389,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,HR-5,Regular,Homeroom 5,Homeroom 5 course,4,11,Homeroom 5,HR-,903,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,HR-6,Regular,Homeroom 6,Homeroom 6 course,4,8,Homeroom 6,HR-,786,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N
+7474018,Core,,,HR-7,Regular,Homeroom 7,Homeroom 7 course,4,12,Homeroom 7,HR-,907,Classroom,Year,Regular,Y,Y,N,Y,Y,N,N

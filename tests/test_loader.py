@@ -2,6 +2,7 @@
 
 import pandas as pd
 import pytest
+from unittest.mock import patch
 
 from src.etl.loader import DataLoader
 
@@ -58,3 +59,90 @@ class TestDataLoader:
 
         raw_bytes = (tmp_path / "Test.csv").read_bytes()
         assert raw_bytes.startswith(b"\xef\xbb\xbf")  # UTF-8 BOM
+
+
+class TestAtomicWriteRollback:
+    """Verify save_all() atomicity — failure must leave existing output untouched."""
+
+    def _outputs(self) -> dict[str, pd.DataFrame]:
+        return {
+            "Students": pd.DataFrame({"Name": ["Alice"], "Grade": ["05"]}),
+            "Staff": pd.DataFrame({"Name": ["Harper"], "Role": ["teacher"]}),
+            "Family": pd.DataFrame({"Name": ["John"], "Email": ["john@test.ca"]}),
+        }
+
+    def _field_orders(self) -> dict[str, list[str]]:
+        return {
+            "Students": ["Name", "Grade"],
+            "Staff": ["Name", "Role"],
+            "Family": ["Name", "Email"],
+        }
+
+    def test_rollback_preserves_existing_output(self, tmp_path):
+        """If save_all() fails mid-commit, existing files are left untouched."""
+        loader = DataLoader(str(tmp_path))
+        # Pre-populate with known content
+        (tmp_path / "Students.csv").write_text("original content", encoding="utf-8")
+
+        call_count = 0
+
+        def move_fail_on_first(src, dst):
+            nonlocal call_count
+            call_count += 1
+            raise OSError("Simulated disk full")
+
+        with patch("src.etl.loader.shutil.move", side_effect=move_fail_on_first):
+            with pytest.raises(OSError, match="Simulated disk full"):
+                loader.save_all(self._outputs(), self._field_orders())
+
+        # Original file must be untouched
+        assert (tmp_path / "Students.csv").read_text(encoding="utf-8") == "original content"
+
+    def test_rollback_cleans_up_staging_dir(self, tmp_path):
+        """After a failure, no .tmp_* staging directory must remain."""
+        loader = DataLoader(str(tmp_path))
+
+        with patch("src.etl.loader.shutil.move", side_effect=OSError("disk full")):
+            with pytest.raises(OSError):
+                loader.save_all(self._outputs(), self._field_orders())
+
+        tmp_dirs = list(tmp_path.glob(".tmp_*"))
+        assert tmp_dirs == [], f"Staging directory not cleaned up: {tmp_dirs}"
+
+    def test_partial_failure_leaves_no_tmp_dir(self, tmp_path):
+        """Failure after the first successful move still cleans up staging dir."""
+        loader = DataLoader(str(tmp_path))
+
+        call_count = 0
+
+        def move_fail_on_third(src, dst):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 3:
+                raise OSError("Simulated write error on 3rd file")
+            import shutil as _shutil
+
+            _shutil.move(src, dst)
+
+        with patch("src.etl.loader.shutil.move", side_effect=move_fail_on_third):
+            with pytest.raises(OSError):
+                loader.save_all(self._outputs(), self._field_orders())
+
+        tmp_dirs = list(tmp_path.glob(".tmp_*"))
+        assert tmp_dirs == [], f"Staging directory not cleaned up after partial failure: {tmp_dirs}"
+
+    def test_successful_save_all_leaves_no_tmp_dir(self, tmp_path):
+        """Happy path: successful save_all() leaves no staging directory behind."""
+        loader = DataLoader(str(tmp_path))
+        loader.save_all(self._outputs(), self._field_orders())
+
+        tmp_dirs = list(tmp_path.glob(".tmp_*"))
+        assert tmp_dirs == [], f"Staging directory not cleaned up after success: {tmp_dirs}"
+
+    def test_successful_save_all_writes_all_files(self, tmp_path):
+        """Happy path: all files appear in output directory after save_all()."""
+        loader = DataLoader(str(tmp_path))
+        loader.save_all(self._outputs(), self._field_orders())
+
+        for entity in ["Students", "Staff", "Family"]:
+            assert (tmp_path / f"{entity}.csv").exists(), f"Missing {entity}.csv after save_all()"
