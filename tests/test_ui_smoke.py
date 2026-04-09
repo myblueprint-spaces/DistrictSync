@@ -51,16 +51,12 @@ class TestHomePageSmoke:
         """The GDE2Acsv app name must appear somewhere on the home page."""
         _wait_for_page(page, streamlit_server)
         # Look for the app title in the DOM — any element containing "GDE2Acsv"
-        assert page.locator("text=GDE2Acsv").count() > 0, (
-            "GDE2Acsv title not found anywhere on home page"
-        )
+        assert page.locator("text=GDE2Acsv").count() > 0, "GDE2Acsv title not found anywhere on home page"
 
     def test_home_has_navigation_sidebar(self, page, streamlit_server):
         """The sidebar navigation must be present."""
         _wait_for_page(page, streamlit_server)
-        assert page.locator("[data-testid='stSidebar']").count() > 0, (
-            "Sidebar not found on home page"
-        )
+        assert page.locator("[data-testid='stSidebar']").count() > 0, "Sidebar not found on home page"
 
 
 class TestSetupWizardSmoke:
@@ -74,9 +70,7 @@ class TestSetupWizardSmoke:
         # At minimum, some rendered content must exist (heading or markdown block)
         has_heading = page.locator("h1, h2, h3").count() > 0
         has_markdown = page.locator("[data-testid='stMarkdown']").count() > 0
-        assert has_heading or has_markdown, (
-            "Neither heading nor markdown content found on Setup Wizard page"
-        )
+        assert has_heading or has_markdown, "Neither heading nor markdown content found on Setup Wizard page"
 
 
 class TestConvertPageSmoke:
@@ -94,9 +88,7 @@ class TestConvertPageSmoke:
     def test_convert_has_district_selectbox(self, page, streamlit_server):
         """At least one selectbox (district picker) must be present."""
         _wait_for_page(page, f"{streamlit_server}/Convert")
-        assert page.locator("[data-testid='stSelectbox']").count() > 0, (
-            "No selectbox found on Convert page"
-        )
+        assert page.locator("[data-testid='stSelectbox']").count() > 0, "No selectbox found on Convert page"
 
 
 class TestRunHistorySmoke:
@@ -108,9 +100,9 @@ class TestRunHistorySmoke:
         """Either run log table or 'no history' message must appear."""
         _wait_for_page(page, f"{streamlit_server}/Run_History")
         # Accept any rendered content — markdown, dataframe, or info box
-        has_content = page.locator(
-            "[data-testid='stMarkdown'], [data-testid='stDataFrame'], [data-testid='stAlert']"
-        ).count() > 0
+        has_content = (
+            page.locator("[data-testid='stMarkdown'], [data-testid='stDataFrame'], [data-testid='stAlert']").count() > 0
+        )
         assert has_content, "Run History page has no rendered content"
 
 
@@ -122,9 +114,7 @@ class TestHelpPageSmoke:
     def test_help_has_tabs(self, page, streamlit_server):
         """The documentation tab bar must be visible."""
         _wait_for_page(page, f"{streamlit_server}/Help")
-        assert page.locator("[data-testid='stTabs']").count() > 0, (
-            "Tab bar not found on Help page"
-        )
+        assert page.locator("[data-testid='stTabs']").count() > 0, "Tab bar not found on Help page"
 
     def test_help_installation_tab_has_content(self, page, streamlit_server):
         """Clicking the Installation tab renders markdown content."""

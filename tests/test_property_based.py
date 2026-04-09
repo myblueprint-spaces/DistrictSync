@@ -145,9 +145,7 @@ class TestTruncateNamePropertyBased:
     def test_truncate_never_exceeds_max_len(self, name, max_len):
         """Result must never exceed max_len characters."""
         result = BaseTransformer.truncate_name(name, max_len)
-        assert len(result) <= max_len, (
-            f"truncate_name({name!r}, {max_len}) returned {len(result)}-char string"
-        )
+        assert len(result) <= max_len, f"truncate_name({name!r}, {max_len}) returned {len(result)}-char string"
 
     @given(name=st.text(max_size=50))
     def test_short_names_are_never_truncated(self, name):

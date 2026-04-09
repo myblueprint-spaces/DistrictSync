@@ -92,7 +92,10 @@ class TestAtomicWriteRollback:
             call_count += 1
             raise OSError("Simulated disk full")
 
-        with patch("src.etl.loader.shutil.move", side_effect=move_fail_on_first), pytest.raises(OSError, match="Simulated disk full"):
+        with (
+            patch("src.etl.loader.shutil.move", side_effect=move_fail_on_first),
+            pytest.raises(OSError, match="Simulated disk full"),
+        ):
             loader.save_all(self._outputs(), self._field_orders())
 
         # Original file must be untouched

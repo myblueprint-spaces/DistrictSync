@@ -59,18 +59,14 @@ class TestSD74Regression:
         for entity in ENTITIES:
             actual = _read(sd74_output / f"{entity}.csv")
             golden = _read(GOLDEN_DIR / f"{entity}.csv")
-            assert len(actual) == len(golden), (
-                f"{entity}: expected {len(golden)} rows, got {len(actual)}"
-            )
+            assert len(actual) == len(golden), f"{entity}: expected {len(golden)} rows, got {len(actual)}"
 
     def test_output_column_names_match_golden(self, sd74_output):
         for entity in ENTITIES:
             actual_cols = list(_read(sd74_output / f"{entity}.csv").columns)
             golden_cols = list(_read(GOLDEN_DIR / f"{entity}.csv").columns)
             assert actual_cols == golden_cols, (
-                f"{entity} column mismatch.\n"
-                f"  Expected: {golden_cols}\n"
-                f"  Got:      {actual_cols}"
+                f"{entity} column mismatch.\n  Expected: {golden_cols}\n  Got:      {actual_cols}"
             )
 
     # ------------------------------------------------------------------
@@ -110,9 +106,7 @@ class TestSD74Regression:
         students = _read(sd74_output / "Students.csv")
         emails = students["Email Address"].dropna()
         emails = emails[emails != ""]
-        assert all(e.endswith("@sd74.bc.ca") for e in emails), (
-            "All student emails must use @sd74.bc.ca domain"
-        )
+        assert all(e.endswith("@sd74.bc.ca") for e in emails), "All student emails must use @sd74.bc.ca domain"
 
     def test_classes_have_fixed_dates(self, sd74_output):
         classes = _read(sd74_output / "Classes.csv")

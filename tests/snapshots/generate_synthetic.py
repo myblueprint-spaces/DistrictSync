@@ -28,40 +28,94 @@ random.seed(74)  # Reproducible
 # Reference data
 # ---------------------------------------------------------------------------
 
-FIRST_NAMES = ["Emma", "Liam", "Olivia", "Noah", "Ava", "William", "Sophia",
-               "James", "Isabella", "Oliver", "Mia", "Benjamin", "Charlotte",
-               "Elijah", "Amelia", "Lucas", "Harper", "Mason", "Evelyn", "Logan"]
-LAST_NAMES  = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia",
-               "Miller", "Davis", "Wilson", "Taylor", "Anderson", "Thomas",
-               "Jackson", "White", "Harris", "Martin", "Thompson", "Moore"]
+FIRST_NAMES = [
+    "Emma",
+    "Liam",
+    "Olivia",
+    "Noah",
+    "Ava",
+    "William",
+    "Sophia",
+    "James",
+    "Isabella",
+    "Oliver",
+    "Mia",
+    "Benjamin",
+    "Charlotte",
+    "Elijah",
+    "Amelia",
+    "Lucas",
+    "Harper",
+    "Mason",
+    "Evelyn",
+    "Logan",
+]
+LAST_NAMES = [
+    "Smith",
+    "Johnson",
+    "Williams",
+    "Brown",
+    "Jones",
+    "Garcia",
+    "Miller",
+    "Davis",
+    "Wilson",
+    "Taylor",
+    "Anderson",
+    "Thomas",
+    "Jackson",
+    "White",
+    "Harris",
+    "Martin",
+    "Thompson",
+    "Moore",
+]
 
-TEACHER_FIRST = ["Anne", "Brian", "Carol", "David", "Ellen", "Frank",
-                 "Grace", "Henry", "Irene", "Jason"]
-TEACHER_LAST  = ["Adams", "Baker", "Clark", "Dixon", "Evans", "Foster",
-                 "Grant", "Hill", "Irving", "Jones"]
+TEACHER_FIRST = ["Anne", "Brian", "Carol", "David", "Ellen", "Frank", "Grace", "Henry", "Irene", "Jason"]
+TEACHER_LAST = ["Adams", "Baker", "Clark", "Dixon", "Evans", "Foster", "Grant", "Hill", "Irving", "Jones"]
 
 SCHOOLS = [7474001, 7474005, 7474012, 7474018]
-DOMAIN  = "sd74.bc.ca"
+DOMAIN = "sd74.bc.ca"
 
 GRADES = (
-    ["K"] * 8 + ["1"] * 8 + ["2"] * 8 + ["3"] * 8 + ["4"] * 8 +
-    ["5"] * 8 + ["6"] * 8 + ["7"] * 8 + ["8"] * 6 + ["9"] * 6 +
-    ["10"] * 6 + ["11"] * 5 + ["12"] * 5
+    ["K"] * 8
+    + ["1"] * 8
+    + ["2"] * 8
+    + ["3"] * 8
+    + ["4"] * 8
+    + ["5"] * 8
+    + ["6"] * 8
+    + ["7"] * 8
+    + ["8"] * 6
+    + ["9"] * 6
+    + ["10"] * 6
+    + ["11"] * 5
+    + ["12"] * 5
 )
 
 HOMEROOM_GRADES = {"K", "1", "2", "3", "4", "5", "6", "7"}
 
 COURSES = [
-    ("ENG08", "English 8"),   ("ENG09", "English 9"),
-    ("ENG10", "English 10"),  ("ENG11", "English 11"),
-    ("ENG12", "English 12"),  ("MAT08", "Math 8"),
-    ("MAT09", "Math 9"),      ("MAT10", "Math 10"),
-    ("SCI08", "Science 8"),   ("SCI09", "Science 9"),
-    ("SCI10", "Science 10"),  ("PHE09", "PHE 9"),
-    ("PHE10", "PHE 10"),      ("SOC09", "Social Studies 9"),
-    ("SOC10", "Social Studies 10"), ("ART10", "Art 10"),
-    ("MUS10", "Music 10"),    ("BUS11", "Business 11"),
-    ("CS11",  "Computer Science 11"), ("CS12", "Computer Science 12"),
+    ("ENG08", "English 8"),
+    ("ENG09", "English 9"),
+    ("ENG10", "English 10"),
+    ("ENG11", "English 11"),
+    ("ENG12", "English 12"),
+    ("MAT08", "Math 8"),
+    ("MAT09", "Math 9"),
+    ("MAT10", "Math 10"),
+    ("SCI08", "Science 8"),
+    ("SCI09", "Science 9"),
+    ("SCI10", "Science 10"),
+    ("PHE09", "PHE 9"),
+    ("PHE10", "PHE 10"),
+    ("SOC09", "Social Studies 9"),
+    ("SOC10", "Social Studies 10"),
+    ("ART10", "Art 10"),
+    ("MUS10", "Music 10"),
+    ("BUS11", "Business 11"),
+    ("CS11", "Computer Science 11"),
+    ("CS12", "Computer Science 12"),
 ]
 
 
@@ -70,8 +124,21 @@ def _pad(n: int, width: int = 7) -> str:
 
 
 def _dob(grade: str) -> str:
-    age = {"K": 5, "1": 6, "2": 7, "3": 8, "4": 9, "5": 10, "6": 11,
-           "7": 12, "8": 13, "9": 14, "10": 15, "11": 16, "12": 17}.get(grade, 10)
+    age = {
+        "K": 5,
+        "1": 6,
+        "2": 7,
+        "3": 8,
+        "4": 9,
+        "5": 10,
+        "6": 11,
+        "7": 12,
+        "8": 13,
+        "9": 14,
+        "10": 15,
+        "11": 16,
+        "12": 17,
+    }.get(grade, 10)
     year = 2025 - age
     month = random.randint(1, 12)
     day = random.randint(1, 28)
@@ -91,12 +158,15 @@ for i, (school, fn, ln) in enumerate(
         TEACHER_LAST,
     )
 ):
-    teachers.append({
-        "teacher_id": f"T{_pad(1000 + i)}",
-        "first": fn, "last": ln,
-        "email": f"{ln.lower()}@{DOMAIN}",
-        "school": school,
-    })
+    teachers.append(
+        {
+            "teacher_id": f"T{_pad(1000 + i)}",
+            "first": fn,
+            "last": ln,
+            "email": f"{ln.lower()}@{DOMAIN}",
+            "school": school,
+        }
+    )
 
 teacher_by_school: dict[int, list[dict]] = {}
 for t in teachers:
@@ -113,14 +183,20 @@ for i in range(100):
     school_teachers = teacher_by_school.get(school, teachers[:2])
     teacher = random.choice(school_teachers)
     sid = _pad(2000000 + i)
-    students.append({
-        "sid": sid, "first": fn, "last": ln, "grade": grade,
-        "school": school, "teacher": teacher,
-        "dob": _dob(grade),
-        "homeroom": f"DIV {i % 12 + 1}",
-        "usual_first": fn if random.random() > 0.7 else "",
-        "usual_last": "",
-    })
+    students.append(
+        {
+            "sid": sid,
+            "first": fn,
+            "last": ln,
+            "grade": grade,
+            "school": school,
+            "teacher": teacher,
+            "dob": _dob(grade),
+            "homeroom": f"DIV {i % 12 + 1}",
+            "usual_first": fn if random.random() > 0.7 else "",
+            "usual_last": "",
+        }
+    )
 
 # Parents: ~1.5 parents per student
 parents = []
@@ -129,21 +205,29 @@ for s in students:
     for _ in range(count):
         pfn = random.choice(FIRST_NAMES)
         pln = s["last"]
-        parents.append({
-            "school": s["school"], "sid": s["sid"],
-            "student_last": s["last"], "student_first": s["first"],
-            "grade": s["grade"], "homeroom": s["homeroom"],
-            "surname": pln, "first": pfn,
-            "email": f"{pfn.lower()}.{pln.lower()}@example.com",
-        })
+        parents.append(
+            {
+                "school": s["school"],
+                "sid": s["sid"],
+                "student_last": s["last"],
+                "student_first": s["first"],
+                "grade": s["grade"],
+                "homeroom": s["homeroom"],
+                "surname": pln,
+                "first": pfn,
+                "email": f"{pfn.lower()}.{pln.lower()}@example.com",
+            }
+        )
 
 # Schedule: homeroom + 3 subjects per secondary student
 schedule_rows = []
 mt_counter = [100000]
 
+
 def _next_mt():
     mt_counter[0] += 1
     return f"MT{mt_counter[0]}"
+
 
 for s in students:
     school_teachers = teacher_by_school.get(s["school"], teachers[:2])
@@ -151,33 +235,49 @@ for s in students:
 
     if s["grade"] in HOMEROOM_GRADES:
         # Homeroom only
-        schedule_rows.append({
-            "year": "2025/2026", "school": s["school"], "sid": s["sid"],
-            "last": s["last"], "first": s["first"], "grade": s["grade"],
-            "teacher_name": f"{teacher['last']} {teacher['first']}",
-            "semester": "1", "course": f"HR-{s['grade']}",
-            "how_taken": "Regular", "section": "A",
-            "mt_id": _next_mt(), "teacher_id": teacher["teacher_id"],
-            "room": "101", "schedule": "1-1",
-        })
+        schedule_rows.append(
+            {
+                "year": "2025/2026",
+                "school": s["school"],
+                "sid": s["sid"],
+                "last": s["last"],
+                "first": s["first"],
+                "grade": s["grade"],
+                "teacher_name": f"{teacher['last']} {teacher['first']}",
+                "semester": "1",
+                "course": f"HR-{s['grade']}",
+                "how_taken": "Regular",
+                "section": "A",
+                "mt_id": _next_mt(),
+                "teacher_id": teacher["teacher_id"],
+                "room": "101",
+                "schedule": "1-1",
+            }
+        )
     else:
         # 3–4 subject courses
         picked_courses = random.sample(COURSES, k=random.randint(3, 4))
         for course_code, _ in picked_courses:
             t = random.choice(school_teachers)
-            schedule_rows.append({
-                "year": "2025/2026", "school": s["school"], "sid": s["sid"],
-                "last": s["last"], "first": s["first"], "grade": s["grade"],
-                "teacher_name": f"{t['last']} {t['first']}",
-                "semester": random.choice(["1", "2"]),
-                "course": course_code,
-                "how_taken": "Regular",
-                "section": random.choice(["A", "B"]),
-                "mt_id": _next_mt(),
-                "teacher_id": t["teacher_id"],
-                "room": str(random.randint(100, 220)),
-                "schedule": f"{random.randint(1,2)}-{random.randint(1,5)}",
-            })
+            schedule_rows.append(
+                {
+                    "year": "2025/2026",
+                    "school": s["school"],
+                    "sid": s["sid"],
+                    "last": s["last"],
+                    "first": s["first"],
+                    "grade": s["grade"],
+                    "teacher_name": f"{t['last']} {t['first']}",
+                    "semester": random.choice(["1", "2"]),
+                    "course": course_code,
+                    "how_taken": "Regular",
+                    "section": random.choice(["A", "B"]),
+                    "mt_id": _next_mt(),
+                    "teacher_id": t["teacher_id"],
+                    "room": str(random.randint(100, 220)),
+                    "schedule": f"{random.randint(1, 2)}-{random.randint(1, 5)}",
+                }
+            )
 
 # Courses (unique set from schedule)
 used_courses = {r["course"] for r in schedule_rows}
@@ -188,30 +288,41 @@ for school in SCHOOLS:
             course_rows.append({"school": school, "code": code, "title": title})
     # Add homeroom course entries
     for grade_label in ["K", "1", "2", "3", "4", "5", "6", "7"]:
-        course_rows.append({
-            "school": school,
-            "code": f"HR-{grade_label}",
-            "title": f"Homeroom {grade_label}",
-        })
+        course_rows.append(
+            {
+                "school": school,
+                "code": f"HR-{grade_label}",
+                "title": f"Homeroom {grade_label}",
+            }
+        )
 
 # ClassInfoEnhanced: one row per schedule row (for blended detection)
 class_rows = []
 for r in schedule_rows[:50]:  # Subset for class info
-    class_rows.append({
-        "school": r["school"], "course": r["course"],
-        "teacher_id": r["teacher_id"], "primary": "Y",
-        "section": r["section"], "semester": r["semester"],
-        "term": "1", "day": str(random.randint(1, 2)),
-        "period": str(random.randint(1, 5)),
-        "mt_id": r["mt_id"],
-        "class_id": f"CLS{mt_counter[0]}",
-        "schedule_expr": r["schedule"], "max": "30", "unrotated": "",
-    })
+    class_rows.append(
+        {
+            "school": r["school"],
+            "course": r["course"],
+            "teacher_id": r["teacher_id"],
+            "primary": "Y",
+            "section": r["section"],
+            "semester": r["semester"],
+            "term": "1",
+            "day": str(random.randint(1, 2)),
+            "period": str(random.randint(1, 5)),
+            "mt_id": r["mt_id"],
+            "class_id": f"CLS{mt_counter[0]}",
+            "schedule_expr": r["schedule"],
+            "max": "30",
+            "unrotated": "",
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
 # Write files
 # ---------------------------------------------------------------------------
+
 
 def _write(filename: str, header: str, rows: list[str]) -> None:
     path = OUTPUT_DIR / filename
@@ -243,15 +354,15 @@ _write(
     "Release of Info to PAC",
     [
         f"{s['school']},{s['sid']},{s['homeroom']},{s['teacher']['last']} {s['teacher']['first']},"
-        f"{''.join([str(random.randint(0,9)) for _ in range(9)])},{s['first'].lower()}{s['sid']},"
+        f"{''.join([str(random.randint(0, 9)) for _ in range(9)])},{s['first'].lower()}{s['sid']},"
         f"{s['last']},{s['first']},,{s['usual_last']},{s['usual_first']},,"
-        f"{random.randint(100,9999)},Maple St,,,,"
+        f"{random.randint(100, 9999)},Maple St,,,,"
         f"Lillooet,BC,V0K1V0,,"
-        f"{s['dob']},,{random.choice(['M','F'])},,"
-        f"250-555-{random.randint(1000,9999)},"
+        f"{s['dob']},,{random.choice(['M', 'F'])},,"
+        f"250-555-{random.randint(1000, 9999)},"
         f"{s['grade']},,,,,English,,,Canadian,Canada,"
-        f"{_pad(random.randint(9000000000,9999999999), 10)},,"
-        f"2025-09-02,,,,{random.choice([7474001,''])},{random.choice(['Gold Trail School',''])},,"
+        f"{_pad(random.randint(9000000000, 9999999999), 10)},,"
+        f"2025-09-02,,,,{random.choice([7474001, ''])},{random.choice(['Gold Trail School', ''])},,"
         f",,,,2025,,,AM,,"
         f"{s['teacher']['teacher_id']},Both,,,,"
         f"Y,Y,Y,Y,Y,Y"
@@ -303,8 +414,8 @@ _write(
         f"{p['grade']},{p['homeroom']},{p['first'].lower()}{p['surname'].lower()},"
         f"{p['surname']},{p['first']},,"
         f"{'MO' if random.random() > 0.5 else 'FA'},Mother,,,,"
-        f"250-555-{random.randint(1000,9999)},"
-        f"{p['email']},,,{random.randint(100,999)},Pine Ave,"
+        f"250-555-{random.randint(1000, 9999)},"
+        f"{p['email']},,,{random.randint(100, 999)},Pine Ave,"
         f"Lillooet,V0K1V0,,,,,,"
         f"Active,English,Y,"
         for p in parents
@@ -323,8 +434,8 @@ _write(
     [
         f"{c['school']},Core,,,"
         f"{c['code']},Regular,{c['title']},{c['title']} course,"
-        f"4,{random.randint(8,12)},{c['title']},"
-        f"{c['code'][:3]},{random.randint(100,999)},Classroom,Year,"
+        f"4,{random.randint(8, 12)},{c['title']},"
+        f"{c['code'][:3]},{random.randint(100, 999)},Classroom,Year,"
         f"Regular,Y,Y,N,Y,Y,N,N"
         for c in course_rows
     ],
@@ -346,4 +457,6 @@ _write(
 )
 
 print("Done. Now regenerate golden output with:")
-print("  python -c \"from src.main import main; main('sd74myedbc', 'tests/snapshots/input', 'tests/snapshots/output')\"")
+print(
+    "  python -c \"from src.main import main; main('sd74myedbc', 'tests/snapshots/input', 'tests/snapshots/output')\""
+)
