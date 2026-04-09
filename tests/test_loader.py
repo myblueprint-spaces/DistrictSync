@@ -1,8 +1,9 @@
 """Tests for the DataLoader — CSV output with field ordering."""
 
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
-from unittest.mock import patch
 
 from src.etl.loader import DataLoader
 
@@ -91,9 +92,8 @@ class TestAtomicWriteRollback:
             call_count += 1
             raise OSError("Simulated disk full")
 
-        with patch("src.etl.loader.shutil.move", side_effect=move_fail_on_first):
-            with pytest.raises(OSError, match="Simulated disk full"):
-                loader.save_all(self._outputs(), self._field_orders())
+        with patch("src.etl.loader.shutil.move", side_effect=move_fail_on_first), pytest.raises(OSError, match="Simulated disk full"):
+            loader.save_all(self._outputs(), self._field_orders())
 
         # Original file must be untouched
         assert (tmp_path / "Students.csv").read_text(encoding="utf-8") == "original content"
@@ -102,9 +102,8 @@ class TestAtomicWriteRollback:
         """After a failure, no .tmp_* staging directory must remain."""
         loader = DataLoader(str(tmp_path))
 
-        with patch("src.etl.loader.shutil.move", side_effect=OSError("disk full")):
-            with pytest.raises(OSError):
-                loader.save_all(self._outputs(), self._field_orders())
+        with patch("src.etl.loader.shutil.move", side_effect=OSError("disk full")), pytest.raises(OSError):
+            loader.save_all(self._outputs(), self._field_orders())
 
         tmp_dirs = list(tmp_path.glob(".tmp_*"))
         assert tmp_dirs == [], f"Staging directory not cleaned up: {tmp_dirs}"
@@ -124,9 +123,8 @@ class TestAtomicWriteRollback:
 
             _shutil.move(src, dst)
 
-        with patch("src.etl.loader.shutil.move", side_effect=move_fail_on_third):
-            with pytest.raises(OSError):
-                loader.save_all(self._outputs(), self._field_orders())
+        with patch("src.etl.loader.shutil.move", side_effect=move_fail_on_third), pytest.raises(OSError):
+            loader.save_all(self._outputs(), self._field_orders())
 
         tmp_dirs = list(tmp_path.glob(".tmp_*"))
         assert tmp_dirs == [], f"Staging directory not cleaned up after partial failure: {tmp_dirs}"
