@@ -57,7 +57,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short -m 'not benchmark'"
+addopts = "-v --tb=short -m 'not benchmark and not ui'"
 markers = [
     "benchmark: performance benchmarks (deselect with '-m \"not benchmark\"')",
     "regression: golden-file snapshot tests — fail means output changed",

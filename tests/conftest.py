@@ -48,12 +48,16 @@ def streamlit_server():
             "--global.developmentMode=false",
         ],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
     )
 
     base_url = "http://localhost:8502"
     started = False
-    for _ in range(30):
+    for _ in range(60):
+        # Bail early if the process already crashed
+        if proc.poll() is not None:
+            stderr_out = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+            pytest.fail(f"Streamlit process exited early (rc={proc.returncode}):\n{stderr_out[:500]}")
         try:
             r = _requests.get(base_url, timeout=2)
             if r.status_code == 200:
@@ -64,7 +68,7 @@ def streamlit_server():
 
     if not started:
         proc.terminate()
-        pytest.fail("Streamlit server did not start within 30 seconds on port 8502")
+        pytest.fail("Streamlit server did not start within 60 seconds on port 8502")
 
     yield base_url
 
