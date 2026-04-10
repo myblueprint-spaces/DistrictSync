@@ -288,3 +288,27 @@ class TestOutputSchemaContract:
         assert not orphans, (
             f"[{sis}] {len(orphans)} Class IDs in Enrollments.csv are not defined in Classes.csv: {sorted(orphans)[:5]}"
         )
+
+    def test_no_empty_user_ids_in_enrollments(self, district_output):
+        """Every Enrollments row must have a non-empty User ID.
+
+        Regression guard for SD40 FY2026: blended detection was grouping
+        teacherless sections into fake blends and emitting teacher rows
+        with empty User ID, which the partner's pre-upload validator
+        rejects with 'Missing required Field:userId'.
+        """
+        sis, out = district_output
+        enrollments = pd.read_csv(out / "Enrollments.csv", encoding="utf-8-sig", dtype=str)
+        user_ids = enrollments["User ID"].fillna("").astype(str).str.strip().str.lower()
+        blank = enrollments[(user_ids == "") | (user_ids == "nan")]
+        assert blank.empty, (
+            f"[{sis}] {len(blank)} Enrollments rows have empty/nan User ID. Sample: {blank.head(3).to_dict('records')}"
+        )
+
+    def test_no_empty_class_ids_in_enrollments(self, district_output):
+        """Every Enrollments row must have a non-empty Class ID."""
+        sis, out = district_output
+        enrollments = pd.read_csv(out / "Enrollments.csv", encoding="utf-8-sig", dtype=str)
+        class_ids = enrollments["Class ID"].fillna("").astype(str).str.strip().str.lower()
+        blank = enrollments[(class_ids == "") | (class_ids == "nan")]
+        assert blank.empty, f"[{sis}] {len(blank)} Enrollments rows have empty/nan Class ID"

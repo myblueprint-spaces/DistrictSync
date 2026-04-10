@@ -194,3 +194,100 @@ class TestDetectBlendedClasses:
         global_config = {"mappings": {"Enrollments": {"field_map": {"User ID": {"staff_id_col": "Teacher ID"}}}}}
         self.transformer._detect_blended_classes(df, mapping, raw_data, global_config)
         assert self.transformer.blended_class_map == {}
+
+    def test_no_blending_for_blank_teacher_rows(self):
+        """Sections with no primary teacher must NOT be grouped as blended.
+
+        Regression: SD40 FY2026 had 500+ student-schedule rows per school
+        with blank Teacher ID spanning 2-3 grades. Before the fix, these all
+        collapsed into a single fake blend with session_key
+        '<school>_<blank>_<blank>_<blank>_<blank>_<blank>', producing
+        BLENDED class IDs like 'BLENDED_4040016__FY___2026' with empty
+        userId enrollment rows that the partner's pre-upload validator
+        rejected. A blended class requires a shared TEACHER by definition;
+        teacherless sections must be skipped entirely.
+        """
+        # Two MT IDs at same school, same (empty) time slot, two grades,
+        # but BOTH have blank teacher id — must NOT blend.
+        df = pd.DataFrame(
+            {
+                "school number": ["500", "500"],
+                "teacher id": ["", ""],
+                "master timetable id": ["MT500", "MT501"],
+                "term": ["", ""],
+                "semester": ["FY", "FY"],
+                "day": ["", ""],
+                "period": ["", ""],
+            }
+        )
+        raw_data = {
+            "StudentSchedule.txt": pd.DataFrame(
+                {
+                    "master timetable id": ["MT500", "MT501"],
+                    "grade": ["6", "7"],
+                }
+            ),
+            "CourseInformation.txt": pd.DataFrame({"course code": [], "title": []}),
+        }
+        mapping = {
+            "source_files": {
+                "student_schedule": "StudentSchedule.txt",
+                "course_info": "CourseInformation.txt",
+            },
+            "field_map": {},
+        }
+        global_config = {"mappings": {"Enrollments": {"field_map": {"User ID": {"staff_id_col": "Teacher ID"}}}}}
+        self.transformer._detect_blended_classes(df, mapping, raw_data, global_config)
+        assert self.transformer.blended_class_map == {}
+        assert self.transformer.blended_class_metadata == {}
+        assert self.transformer.blended_teacher_map == {}
+
+    def test_blank_teacher_rows_excluded_from_mixed_batch(self):
+        """When some rows have teachers and others don't, blank ones must be
+        dropped from session grouping but valid blends must still be detected.
+        """
+        df = pd.DataFrame(
+            {
+                "school number": ["500"] * 4,
+                "teacher id": ["T001", "T001", "", ""],
+                "master timetable id": ["MT500", "MT501", "MT502", "MT503"],
+                "course code": ["ENG06", "ENG07", "MAT06", "MAT07"],
+                "term": ["1"] * 4,
+                "semester": ["FY"] * 4,
+                "day": ["1"] * 4,
+                "period": ["1"] * 4,
+            }
+        )
+        raw_data = {
+            "StudentSchedule.txt": pd.DataFrame(
+                {
+                    "master timetable id": ["MT500", "MT501", "MT502", "MT503"],
+                    "grade": ["6", "7", "6", "7"],
+                }
+            ),
+            "CourseInformation.txt": pd.DataFrame(
+                {
+                    "course code": ["ENG06", "ENG07", "MAT06", "MAT07"],
+                    "title": ["English 6", "English 7", "Math 6", "Math 7"],
+                }
+            ),
+        }
+        mapping = {
+            "source_files": {
+                "student_schedule": "StudentSchedule.txt",
+                "course_info": "CourseInformation.txt",
+            },
+            "field_map": {},
+        }
+        global_config = {"mappings": {"Enrollments": {"field_map": {"User ID": {"staff_id_col": "Teacher ID"}}}}}
+        self.transformer._detect_blended_classes(df, mapping, raw_data, global_config)
+        # T001's valid blend of MT500/MT501 should be detected
+        assert "MT500" in self.transformer.blended_class_map
+        assert "MT501" in self.transformer.blended_class_map
+        # MT502/MT503 (teacherless) must NOT be blended
+        assert "MT502" not in self.transformer.blended_class_map
+        assert "MT503" not in self.transformer.blended_class_map
+        # No empty teacher id should end up in blended_teacher_map
+        for teachers in self.transformer.blended_teacher_map.values():
+            assert "" not in teachers
+            assert "nan" not in [str(t).lower() for t in teachers]

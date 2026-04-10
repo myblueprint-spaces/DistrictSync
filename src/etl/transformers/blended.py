@@ -70,6 +70,20 @@ class BlendedClassDetector(BaseTransformer):
                 return
 
         working = class_info_df.copy()
+
+        # Drop rows where teacher_id is blank/nan: a blended class is defined
+        # as multiple sections taught by the SAME teacher at the same time, so
+        # a section with no primary teacher can't participate. Without this
+        # guard, all teacherless sections at a school collapse into a single
+        # fake session_key (all blank components) and get "blended" together,
+        # producing empty-userId enrollment rows and nonsense class groupings.
+        if teacher_id_col in working.columns:
+            teacher_series = working[teacher_id_col].astype(str).str.strip().str.lower()
+            working = working[(teacher_series != "") & (teacher_series != "nan")]
+            if working.empty:
+                logger.info("[Blended Classes] No rows with a teacher id; skipping detection")
+                return
+
         session_components = [SCHOOL_NUMBER, teacher_id_col, "term", "semester", "day", "period"]
         available = [col for col in session_components if col in working.columns]
 
