@@ -73,20 +73,38 @@ html, body, [data-testid="stAppViewContainer"] {{
 [data-testid="stSidebar"] a:hover {{
     color: {MB_ACCENT} !important;
 }}
-/* Restore dark text inside form widgets in the sidebar — without this,
-   the broad white-text rule above makes selectbox values, text inputs,
-   and dropdown options white-on-white and invisible. Labels stay white. */
-[data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"],
-[data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"] *,
-[data-testid="stSidebar"] [data-baseweb="input"] input,
-[data-testid="stSidebar"] [data-baseweb="textarea"] textarea,
-[data-testid="stSidebar"] [data-baseweb="select"] input {{
+/* Restore dark text + white background inside form widgets in the sidebar —
+   without this, the broad white-text rule above makes selectbox values,
+   text inputs, and dropdown options white-on-white and invisible. Labels
+   stay white. Selector is intentionally broad (every descendant of the
+   widget) because BaseWeb does not reliably apply [role="combobox"] to
+   the selected value element. */
+[data-testid="stSidebar"] [data-baseweb="select"],
+[data-testid="stSidebar"] [data-baseweb="select"] *,
+[data-testid="stSidebar"] [data-baseweb="input"],
+[data-testid="stSidebar"] [data-baseweb="input"] *,
+[data-testid="stSidebar"] [data-baseweb="textarea"],
+[data-testid="stSidebar"] [data-baseweb="textarea"] * {{
     color: {MB_TEXT} !important;
+}}
+/* Ensure the widget container has a light background so dark text is
+   visible against it (the sidebar gradient would otherwise bleed through
+   on any transparent region). */
+[data-testid="stSidebar"] [data-baseweb="select"] > div,
+[data-testid="stSidebar"] [data-baseweb="input"] > div,
+[data-testid="stSidebar"] [data-baseweb="textarea"] > div {{
+    background-color: #ffffff !important;
 }}
 /* Dropdown popup options (rendered via portal but may inherit sidebar scope) */
 [data-baseweb="popover"] [role="option"],
 [data-baseweb="popover"] [role="option"] * {{
     color: {MB_TEXT} !important;
+}}
+/* Inline code in sidebar (e.g. "Config: `1.0` | SIS: ..." metadata line) —
+   the sweeping sidebar white-text rule hides the value otherwise. */
+[data-testid="stSidebar"] code {{
+    color: {MB_DARK} !important;
+    background: #EFF6FF !important;
 }}
 
 /* ── Top header band ── */

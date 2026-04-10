@@ -134,12 +134,23 @@ class SFTPUploader:
     # Upload
     # ------------------------------------------------------------------
 
-    def upload_csvs(self, output_dir: Path, zip_name: str | None = None) -> list[str]:
+    def upload_csvs(
+        self,
+        output_dir: Path,
+        zip_name: str | None = None,
+        sis_type: str | None = None,
+    ) -> list[str]:
         """Zip all CSV files in *output_dir* and upload the single ZIP via SFTP.
 
         Args:
             output_dir: Local directory containing the generated CSV files.
-            zip_name: Name of the ZIP file. Defaults to ``gde2acsv_YYYY-MM-DD.zip``.
+            zip_name: Explicit name of the ZIP file. If not provided, the name
+                is derived from ``sis_type`` and today's date via
+                ``build_zip_name`` — e.g. ``gde2acsv_sd40_2026-04-10.zip``
+                when ``sis_type='sd40myedbc'``, or
+                ``gde2acsv_2026-04-10.zip`` when no ``sis_type`` is provided.
+            sis_type: District SIS identifier used to derive the default
+                ``zip_name``. Ignored when ``zip_name`` is provided explicitly.
 
         Returns:
             List of CSV filenames included in the uploaded ZIP.
@@ -149,10 +160,11 @@ class SFTPUploader:
         """
         import tempfile
         import zipfile
-        from datetime import date
+
+        from src.utils.helpers import build_zip_name
 
         if zip_name is None:
-            zip_name = f"gde2acsv_{date.today().isoformat()}.zip"
+            zip_name = build_zip_name(sis_type)
 
         csv_files = sorted(output_dir.glob("*.csv"))
         if not csv_files:

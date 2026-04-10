@@ -1,11 +1,14 @@
 """Tests for src/utils/helpers.py — utility functions."""
 
 import contextlib
+from datetime import date
 
 import pandas as pd
 import pytest
 
 from src.utils.helpers import (
+    build_zip_name,
+    district_slug,
     ensure_directory,
     normalize_columns,
     safe_float_conversion,
@@ -90,3 +93,47 @@ class TestNormalizeColumns:
         df = pd.DataFrame(columns=["Name", "Age"])
         normalize_columns(df)
         assert list(df.columns) == ["Name", "Age"]
+
+
+class TestDistrictSlug:
+    def test_strips_myedbc_suffix(self):
+        assert district_slug("sd40myedbc") == "sd40"
+        assert district_slug("sd48myedbc") == "sd48"
+        assert district_slug("sd51myedbc") == "sd51"
+        assert district_slug("sd74myedbc") == "sd74"
+
+    def test_base_myedbc_unchanged(self):
+        assert district_slug("myedbc") == "myedbc"
+
+    def test_sanitizes_special_characters(self):
+        assert district_slug("myBlueprint+") == "myBlueprint"
+        assert district_slug("sis with spaces") == "sis_with_spaces"
+        assert district_slug("sis/with\\slashes") == "sis_with_slashes"
+
+    def test_fallback_when_all_stripped(self):
+        assert district_slug("+++") == "district"
+        assert district_slug("   ") == "district"
+
+
+class TestBuildZipName:
+    def test_with_district(self):
+        result = build_zip_name("sd40myedbc", for_date=date(2026, 4, 10))
+        assert result == "gde2acsv_sd40_2026-04-10.zip"
+
+    def test_with_base_district(self):
+        result = build_zip_name("myedbc", for_date=date(2026, 4, 10))
+        assert result == "gde2acsv_myedbc_2026-04-10.zip"
+
+    def test_without_district_falls_back_to_date_only(self):
+        """Legacy callers that don't know the district get the old format."""
+        result = build_zip_name(for_date=date(2026, 4, 10))
+        assert result == "gde2acsv_2026-04-10.zip"
+
+    def test_none_district_matches_default(self):
+        result = build_zip_name(sis_type=None, for_date=date(2026, 4, 10))
+        assert result == "gde2acsv_2026-04-10.zip"
+
+    def test_uses_today_when_no_date_provided(self):
+        result = build_zip_name("sd40myedbc")
+        today = date.today().isoformat()
+        assert result == f"gde2acsv_sd40_{today}.zip"

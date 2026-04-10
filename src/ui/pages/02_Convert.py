@@ -23,7 +23,7 @@ from src.etl.transformer import DataTransformer  # noqa: E402
 from src.main import extract_required_files  # noqa: E402
 from src.quality.report import DataQualityReport  # noqa: E402
 from src.ui.brand import header, inject_brand_css  # noqa: E402
-from src.utils.helpers import normalize_columns  # noqa: E402
+from src.utils.helpers import build_zip_name, normalize_columns  # noqa: E402
 
 MAPPING_DIR = Path("config/mappings")
 ANOMALY_THRESHOLD = 0.20
@@ -351,7 +351,7 @@ if outputs:
     st.download_button(
         label="Download All CSVs (ZIP)",
         data=zip_data,
-        file_name="gde2acsv_output.zip",
+        file_name=build_zip_name(selected),
         mime="application/zip",
         type="primary",
     )
@@ -406,7 +406,7 @@ if outputs:
                                 username=_app_cfg.sftp_username,
                                 remote_path=_app_cfg.sftp_remote_path,
                             )
-                            uploaded_files_list = uploader.upload_csvs(tmp_path)
+                            uploaded_files_list = uploader.upload_csvs(tmp_path, sis_type=selected)
                         st.success(
                             f"Uploaded ZIP with {len(uploaded_files_list)} file(s): {', '.join(uploaded_files_list)}"
                         )

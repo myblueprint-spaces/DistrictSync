@@ -187,7 +187,7 @@ def run_pipeline(
             # SFTP upload (only on a successful, non-dry-run write)
             if sftp:
                 sftp_attempted = True
-                sftp_ok = _sftp_upload(output_path)
+                sftp_ok = _sftp_upload(output_path, sis_type)
 
         # Dry-run summary
         if dry_run:
@@ -220,7 +220,7 @@ def run_pipeline(
         raise
 
 
-def _sftp_upload(output_path: str) -> bool:
+def _sftp_upload(output_path: str, sis_type: Optional[str] = None) -> bool:
     """Upload generated CSV files via SFTP. Returns True on success."""
     try:
         from src.config.app_config import AppConfig
@@ -239,7 +239,7 @@ def _sftp_upload(output_path: str) -> bool:
             username=cfg.sftp_username,
             remote_path=cfg.sftp_remote_path,
         )
-        uploaded = uploader.upload_csvs(Path(output_path))
+        uploaded = uploader.upload_csvs(Path(output_path), sis_type=sis_type)
         logger.info(f"SFTP upload complete: {len(uploaded)} file(s) — {uploaded}")
         return len(uploaded) > 0
     except ImportError as e:
