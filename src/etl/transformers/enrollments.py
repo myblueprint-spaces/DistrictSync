@@ -5,7 +5,7 @@ from typing import Any
 
 import pandas as pd
 
-from src.etl.column_names import SCHOOL_NUMBER
+from src.etl.column_names import MASTER_TIMETABLE_ID, SCHOOL_NUMBER
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
 
@@ -34,6 +34,7 @@ class EnrollmentTransformer(BaseTransformer):
 
         self._homeroom_enrollments(final, student_demo_df, homeroom_grades, student_id_col, staff_id_col, context)
         self._subject_enrollments(final, schedule_df, homeroom_grades, student_id_col, staff_id_col, field_map, context)
+        self._classinfo_coteacher_enrollments(final, staff_id_col, context)
 
         if final:
             result = pd.concat(final, ignore_index=True).drop_duplicates(subset=["Class ID", "User ID", "Role"])
@@ -188,3 +189,106 @@ class EnrollmentTransformer(BaseTransformer):
             blended_df = pd.DataFrame(rows).drop_duplicates()
             final.append(blended_df)
             logger.info(f"[Enrollments] Created {len(blended_df)} blended class teacher enrollments")
+
+    # -------------------------------------------------------------------
+    # ClassInformation co-teacher enrollments
+    # -------------------------------------------------------------------
+    def _classinfo_coteacher_enrollments(
+        self,
+        final: list[pd.DataFrame],
+        staff_id_col: str,
+        context: TransformContext,
+    ) -> None:
+        """Emit teacher enrollments for ClassInformation rows with Primary Teacher=Y.
+
+        Captures teachers (e.g. MADST modular-program teachers) who are not
+        derived from student_schedule. Matches by (school_number, section
+        letter) against homeroom_classes_df, and by Master Timetable ID
+        against blended_class_map for subject classes. Rows that don't
+        resolve to any known class are skipped. The outer
+        drop_duplicates(subset=["Class ID","User ID","Role"]) in transform()
+        deduplicates against any teacher rows already produced by the
+        student_schedule path.
+        """
+        class_info_df = context.class_info_df
+        if class_info_df.empty:
+            return
+
+        # Columns are already normalized by ClassTransformer._run_blended_detection,
+        # but take a copy so we don't mutate the cached frame.
+        class_info_df = class_info_df.copy()
+
+        primary_col = "primary teacher"
+        section_col = "section letter"
+        if primary_col not in class_info_df.columns or SCHOOL_NUMBER not in class_info_df.columns:
+            return
+        if staff_id_col not in class_info_df.columns:
+            return
+
+        primary_rows: pd.DataFrame = class_info_df[
+            class_info_df[primary_col].astype(str).str.strip().str.upper() == "Y"
+        ].copy()  # type: ignore[assignment]
+        if primary_rows.empty:
+            return
+
+        primary_rows[staff_id_col] = primary_rows[staff_id_col].astype(str).str.strip()
+        primary_rows[SCHOOL_NUMBER] = primary_rows[SCHOOL_NUMBER].astype(str).str.strip()
+        if section_col in primary_rows.columns:
+            primary_rows[section_col] = primary_rows[section_col].astype(str).str.strip()
+
+        rows: list[dict[str, Any]] = []
+
+        # Path 1: section-letter → homeroom class id
+        hr_df = context.homeroom_classes_df
+        if not hr_df.empty and section_col in primary_rows.columns:
+            students_field_map = context.get_students_config().get("field_map", {})
+            homeroom_col = students_field_map.get("Homeroom", "homeroom").lower()
+            if homeroom_col in hr_df.columns and SCHOOL_NUMBER in hr_df.columns:
+                hr_lookup = hr_df[[SCHOOL_NUMBER, homeroom_col, "Class ID"]].copy()
+                hr_lookup[SCHOOL_NUMBER] = hr_lookup[SCHOOL_NUMBER].astype(str).str.strip()
+                hr_lookup[homeroom_col] = hr_lookup[homeroom_col].astype(str).str.strip()
+                hr_lookup = hr_lookup.drop_duplicates(subset=[SCHOOL_NUMBER, homeroom_col])
+
+                merged = primary_rows.merge(
+                    hr_lookup.rename(columns={homeroom_col: section_col}),
+                    on=[SCHOOL_NUMBER, section_col],
+                    how="left",
+                )
+                hr_matches = merged[merged["Class ID"].notna()]
+                for _, row in hr_matches.iterrows():
+                    rows.append(
+                        {
+                            "Class ID": str(row["Class ID"]),
+                            "User ID": str(row[staff_id_col]),
+                            "Role": "teacher",
+                            SCHOOL_NUMBER: str(row[SCHOOL_NUMBER]),
+                        }
+                    )
+
+        # Path 2: Master Timetable ID → blended class id
+        if MASTER_TIMETABLE_ID in primary_rows.columns and context.blended_class_map:
+            primary_rows[MASTER_TIMETABLE_ID] = primary_rows[MASTER_TIMETABLE_ID].astype(str).str.strip()
+            for _, row in primary_rows.iterrows():
+                mt_id = row[MASTER_TIMETABLE_ID]
+                blended_id = context.blended_class_map.get(mt_id)
+                if blended_id:
+                    rows.append(
+                        {
+                            "Class ID": blended_id,
+                            "User ID": str(row[staff_id_col]),
+                            "Role": "teacher",
+                            SCHOOL_NUMBER: str(row[SCHOOL_NUMBER]),
+                        }
+                    )
+
+        if not rows:
+            return
+
+        coteacher_df = pd.DataFrame(rows)
+        coteacher_df = self.clean_invalid_ids(coteacher_df, "User ID")
+        coteacher_df = coteacher_df.drop_duplicates(subset=["Class ID", "User ID", "Role"])
+        if coteacher_df.empty:
+            return
+
+        final.append(coteacher_df)
+        logger.info(f"[Enrollments] Created {len(coteacher_df)} ClassInformation co-teacher enrollments")

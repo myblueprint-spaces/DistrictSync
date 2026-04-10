@@ -3,8 +3,6 @@
 Tests homeroom class generation, subject class creation, and blended class integration.
 """
 
-import pandas as pd
-
 from src.etl.transformer import DataTransformer
 
 
@@ -87,7 +85,12 @@ class TestClassesTransformBlended:
     def test_blended_classes_in_output(
         self, blended_schedule_df, classes_mapping, global_config, raw_data_with_blended
     ):
-        # Use a modified global_config with homeroom grades that match our data
+        """Regression guard: blended classes must appear in Classes.csv even when
+        all of their constituent students are in homeroom grades. The fixture
+        has grades 1/2/3 for the blend; with homeroom_grades=[KG..07], all those
+        students go through the homeroom path, so without the missing-blended
+        pass the BLENDED row would be dropped (causing orphan enrollments).
+        """
         global_config_copy = {**global_config}
         global_config_copy["homeroom_grades"] = ["01", "02", "03", "04", "05", "06", "07", "KG"]
 
@@ -95,12 +98,13 @@ class TestClassesTransformBlended:
             blended_schedule_df, classes_mapping, "Classes", raw_data_with_blended, global_config_copy
         )
 
-        if not result.empty:
-            result[result["Class ID"].str.startswith("BLENDED")]
-            # If blended detection worked, we should have blended class(es)
-            # The exact count depends on whether grade 1/2/3 are homeroom grades
-            # and whether the class info triggers blending
-            assert isinstance(result, pd.DataFrame)
+        assert not result.empty
+        blended_rows = result[result["Class ID"].str.startswith("BLENDED")]
+        assert not blended_rows.empty, (
+            "Blended classes must be written to Classes.csv even when all constituent students are in homeroom grades"
+        )
+        # Each detected blended must appear exactly once (dedup guarantee)
+        assert blended_rows["Class ID"].duplicated().sum() == 0
 
     def test_blended_class_grade_is_empty(
         self, blended_schedule_df, classes_mapping, global_config, raw_data_with_blended

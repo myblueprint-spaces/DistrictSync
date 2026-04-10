@@ -339,12 +339,12 @@ if outputs:
     if _app_cfg.output_dir and Path(_app_cfg.output_dir).is_dir():
         with st.expander("Diff vs Previous Output", expanded=False):
             diff_rows = _compute_diff(outputs, Path(_app_cfg.output_dir))
-            st.dataframe(pd.DataFrame(diff_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(diff_rows), width="stretch", hide_index=True)
 
     st.subheader("3. Preview")
     for name, df in outputs.items():
         with st.expander(f"{name}.csv — {len(df):,} rows", expanded=False):
-            st.dataframe(df.head(50), use_container_width=True)
+            st.dataframe(df.head(50), width="stretch")
 
     st.subheader("4. Download")
     zip_data = create_zip(outputs)

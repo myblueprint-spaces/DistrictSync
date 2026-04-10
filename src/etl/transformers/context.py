@@ -23,6 +23,7 @@ class TransformContext:
 
     # Cross-entity state: populated by ClassTransformer, consumed by EnrollmentTransformer
     homeroom_classes_df: pd.DataFrame = field(default_factory=pd.DataFrame)
+    class_info_df: pd.DataFrame = field(default_factory=pd.DataFrame)
     blended_class_map: dict[str, str] = field(default_factory=dict)
     blended_class_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
     blended_teacher_map: dict[str, list[str]] = field(default_factory=dict)

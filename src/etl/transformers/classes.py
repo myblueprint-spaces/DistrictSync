@@ -41,6 +41,7 @@ class ClassTransformer(BaseTransformer):
         self._create_subject_classes(
             final_classes, normalized_sources, field_map, homeroom_grades, teacher_id_col, context
         )
+        self._emit_missing_blended_classes(final_classes, field_map, context)
 
         if final_classes:
             result = pd.concat(final_classes, ignore_index=True).drop_duplicates(subset=["Class ID"])
@@ -65,6 +66,10 @@ class ClassTransformer(BaseTransformer):
             class_info_df[teacher_id_col] = class_info_df[teacher_id_col].astype(str).str.strip()
         if MASTER_TIMETABLE_ID in class_info_df.columns:
             class_info_df[MASTER_TIMETABLE_ID] = class_info_df[MASTER_TIMETABLE_ID].astype(str).str.strip()
+
+        # Cache normalized class_info on the context so EnrollmentTransformer
+        # can produce co-teacher enrollments without re-reading global_config.
+        context.class_info_df = class_info_df
 
         logger.info(f"[Classes] Class info data loaded: {len(class_info_df)} records")
         self._blended_detector.detect(class_info_df, mapping, context)
@@ -195,6 +200,53 @@ class ClassTransformer(BaseTransformer):
 
         final_classes.append(subject_output)
         logger.info(f"[Classes] Created {len(subject_output)} subject classes")
+
+    # -------------------------------------------------------------------
+    # Missing blended classes (guarantee no orphan Enrollments rows)
+    # -------------------------------------------------------------------
+    def _emit_missing_blended_classes(
+        self,
+        final_classes: list[pd.DataFrame],
+        field_map: dict,
+        context: TransformContext,
+    ) -> None:
+        """Emit any blended class that was detected but never written to Classes.csv.
+
+        The subject-class path only sees student_schedule rows filtered to
+        non-homeroom grades — so a blended class whose students are all in
+        homeroom grades (e.g. K–07) never produces a row, but Enrollments
+        still emits teacher rows for it. Close that gap by iterating
+        context.blended_class_metadata directly. The outer
+        drop_duplicates(subset=["Class ID"]) in transform() handles overlap
+        with the subject path; the two paths produce identical rows because
+        both draw Name/Grade/School ID from the same metadata entry.
+        """
+        if not context.blended_class_metadata:
+            return
+
+        already_emitted: set[str] = set()
+        for frame in final_classes:
+            if "Class ID" in frame.columns:
+                already_emitted.update(frame["Class ID"].dropna().astype(str).tolist())
+
+        missing_rows = []
+        for blended_id, metadata in context.blended_class_metadata.items():
+            if blended_id in already_emitted:
+                continue
+            missing_rows.append(
+                {
+                    "Class ID": blended_id,
+                    "Name": metadata.get("Name", ""),
+                    "Grade": "",
+                    "School ID": metadata.get("School ID", ""),
+                    "Start Date": self.resolve_date(field_map, "Start Date", context),
+                    "End Date": self.resolve_date(field_map, "End Date", context),
+                }
+            )
+
+        if missing_rows:
+            final_classes.append(pd.DataFrame(missing_rows))
+            logger.info(f"[Classes] Emitted {len(missing_rows)} missing blended classes")
 
     def _merge_course_and_staff(
         self, df: pd.DataFrame, normalized_sources: dict, teacher_id_col: str, context: TransformContext

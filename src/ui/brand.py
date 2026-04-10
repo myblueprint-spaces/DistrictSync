@@ -73,6 +73,21 @@ html, body, [data-testid="stAppViewContainer"] {{
 [data-testid="stSidebar"] a:hover {{
     color: {MB_ACCENT} !important;
 }}
+/* Restore dark text inside form widgets in the sidebar — without this,
+   the broad white-text rule above makes selectbox values, text inputs,
+   and dropdown options white-on-white and invisible. Labels stay white. */
+[data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"],
+[data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"] *,
+[data-testid="stSidebar"] [data-baseweb="input"] input,
+[data-testid="stSidebar"] [data-baseweb="textarea"] textarea,
+[data-testid="stSidebar"] [data-baseweb="select"] input {{
+    color: {MB_TEXT} !important;
+}}
+/* Dropdown popup options (rendered via portal but may inherit sidebar scope) */
+[data-baseweb="popover"] [role="option"],
+[data-baseweb="popover"] [role="option"] * {{
+    color: {MB_TEXT} !important;
+}}
 
 /* ── Top header band ── */
 .mb-header {{

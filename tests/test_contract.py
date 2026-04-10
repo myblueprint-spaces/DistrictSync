@@ -271,3 +271,20 @@ class TestOutputSchemaContract:
         # CEDS grades are 2-char strings (e.g. "03", "KG") or special values
         invalid = [g for g in grades if len(str(g)) > 5]
         assert not invalid, f"[{sis}] Students.csv has unexpectedly long Grade values: {invalid}"
+
+    def test_every_enrollment_class_exists_in_classes(self, district_output):
+        """Every Class ID referenced in Enrollments.csv must exist in Classes.csv.
+
+        Regression guard for the blended-class orphan bug: detected blended
+        classes must always be written to Classes.csv before Enrollments
+        references them.
+        """
+        sis, out = district_output
+        classes = pd.read_csv(out / "Classes.csv", encoding="utf-8-sig", dtype=str)
+        enrollments = pd.read_csv(out / "Enrollments.csv", encoding="utf-8-sig", dtype=str)
+        class_ids = set(classes["Class ID"].dropna().astype(str))
+        enrolled_ids = set(enrollments["Class ID"].dropna().astype(str))
+        orphans = enrolled_ids - class_ids
+        assert not orphans, (
+            f"[{sis}] {len(orphans)} Class IDs in Enrollments.csv are not defined in Classes.csv: {sorted(orphans)[:5]}"
+        )

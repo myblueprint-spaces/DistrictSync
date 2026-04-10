@@ -80,7 +80,7 @@ if runs:
         )
 
     df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
 else:
     st.info("No structured run history found.  Run history will be recorded starting from the next scheduled run.")
