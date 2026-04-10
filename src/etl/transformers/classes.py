@@ -227,7 +227,7 @@ class ClassTransformer(BaseTransformer):
         already_emitted: set[str] = set()
         for frame in final_classes:
             if "Class ID" in frame.columns:
-                already_emitted.update(frame["Class ID"].dropna().astype(str).tolist())
+                already_emitted.update(str(cid) for cid in frame["Class ID"].dropna())
 
         missing_rows = []
         for blended_id, metadata in context.blended_class_metadata.items():
