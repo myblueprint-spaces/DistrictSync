@@ -132,7 +132,7 @@ All field mappings are in YAML files under `config/mappings/`. The `--sis` CLI a
 - Direct column mappings (string value)
 - Transform functions (dict with `transform` key, e.g., `grade_to_ceds`, `map_role`). Only `ALLOWED_TRANSFORMS` in `base.py` are permitted.
 - Fixed values (dict with `value` key)
-- Academic year dates (dict with `use_academic_year` key)
+- Academic year dates (dict with `use_academic_year` key). Override with `use_academic_year: false` + `value: "YYYY-MM-DD"` for districts where auto-detection picks the wrong year (SD40, SD51, SD74 use this).
 - ID year-appending (dict with `append_year_to_id` key)
 - Email format templates (dict with `format` key, e.g., `{student number}@sd40.bc.ca`)
 - Name config (dict with `primary teacher flag`, `teacher last name`, `course title`, `section letter`)
