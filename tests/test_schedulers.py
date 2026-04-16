@@ -113,6 +113,53 @@ class TestWindowsRegisterTask:
                 run_time="25:99",
             )
 
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_frozen_exe_invoked_directly(self, mock_run):
+        """GDE2Acsv.exe must be invoked without 'cmd /c' wrapping."""
+        from src.scheduler.windows import register_task
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
+        register_task(
+            task_name="GDE2Acsv_Daily",
+            exe_path=Path("C:/GDE2Acsv/GDE2Acsv.exe"),
+            sis_type="myedbc",
+            input_dir=Path("C:/input"),
+            output_dir=Path("C:/output"),
+            run_time="03:00",
+        )
+        args = mock_run.call_args[0][0]
+        tr = args[args.index("/TR") + 1]
+        assert not tr.startswith("cmd /c")
+        assert tr.startswith('"C:\\GDE2Acsv\\GDE2Acsv.exe"') or tr.startswith('"C:/GDE2Acsv/GDE2Acsv.exe"')
+
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_python_source_mode_wraps_with_cmd_and_m_flag(self, mock_run):
+        """Running from source via python.exe must use 'cmd /c cd ... && python -m src.main ...'.
+
+        Without -m, Python treats --sis as a script path and exits with
+        ERROR_FILE_NOT_FOUND (0x80070002) — this is the bug that broke
+        the scheduled task in dev.
+        """
+        from src.scheduler.windows import register_task
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
+        register_task(
+            task_name="GDE2Acsv_Daily",
+            exe_path=Path("C:/Python313/python.exe"),
+            sis_type="myedbc",
+            input_dir=Path("C:/input"),
+            output_dir=Path("C:/output"),
+            run_time="03:00",
+            sftp=True,
+        )
+        args = mock_run.call_args[0][0]
+        tr = args[args.index("/TR") + 1]
+        assert tr.startswith("cmd /c")
+        assert "cd /d" in tr
+        assert "-m src.main" in tr
+        assert "--sis myedbc" in tr
+        assert "--sftp" in tr
+
 
 class TestWindowsDeleteTask:
     @patch("src.scheduler.windows.subprocess.run")
@@ -217,6 +264,26 @@ class TestLinuxRegisterCron:
         )
         assert "/other/job" in install_stdin
         assert "30 04" in install_stdin  # new time
+
+    @patch("src.scheduler.linux._run")
+    def test_register_python_source_uses_m_flag(self, mock_run):
+        """Running from source via python must prepend 'cd <root> && python -m src.main'."""
+        from src.scheduler.linux import register_cron
+
+        mock_run.side_effect = [
+            (1, "no crontab for user"),
+            (0, ""),
+        ]
+        register_cron(
+            exe_path=Path("/usr/bin/python3"),
+            sis_type="myedbc",
+            input_dir=Path("/data/input"),
+            output_dir=Path("/data/output"),
+            run_time="03:00",
+        )
+        install_stdin = mock_run.call_args_list[1][1].get("stdin", "")
+        assert "-m src.main" in install_stdin
+        assert "cd " in install_stdin and "&&" in install_stdin
 
     @patch("src.scheduler.linux._run")
     def test_register_with_sftp(self, mock_run):

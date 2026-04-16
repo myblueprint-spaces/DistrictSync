@@ -68,8 +68,25 @@ def register_cron(
     sis_type = validate_sis_type(sis_type)
     hour, minute = validate_run_time(run_time)
 
-    cmd_parts = [
-        quote_for_shell(str(exe_path)),
+    # Detect python-interpreter mode (source install) vs frozen binary.
+    # In source mode we must invoke "python -m src.main" from the
+    # project root; otherwise Python treats --sis as a script path and
+    # errors out.
+    is_python = exe_path.name.lower().startswith("python")
+    if is_python:
+        project_root = Path(__file__).resolve().parents[2]
+        cmd_parts = [
+            "cd",
+            quote_for_shell(str(project_root)),
+            "&&",
+            quote_for_shell(str(exe_path)),
+            "-m",
+            "src.main",
+        ]
+    else:
+        cmd_parts = [quote_for_shell(str(exe_path))]
+
+    cmd_parts += [
         "--sis",
         quote_for_shell(sis_type),
         "--input",

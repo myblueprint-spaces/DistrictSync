@@ -29,6 +29,53 @@ from src.utils.validators import validate_run_time, validate_sis_type, validate_
 logger = logging.getLogger(__name__)
 
 
+def _build_task_command(
+    exe_path: Path,
+    sis_type: str,
+    input_dir: Path,
+    output_dir: Path,
+    sftp: bool,
+) -> str:
+    """Construct the /TR command that Task Scheduler will execute.
+
+    Two modes:
+      - Frozen PyInstaller binary (e.g. GDE2Acsv.exe): invoke the exe
+        directly — ``"<exe>" --sis X --input Y --output Z [--sftp]``.
+      - Python interpreter (dev / source install): wrap in cmd.exe so we
+        can cd into the project root and invoke ``python -m src.main``.
+        Without the chdir, Python can't find the src package; without
+        the -m flag, Python treats --sis as a script path and errors
+        out with 0x80070002 (ERROR_FILE_NOT_FOUND).
+    """
+    is_python = exe_path.name.lower().startswith("python")
+
+    if is_python:
+        # Project root = two levels up from src/scheduler/windows.py
+        project_root = Path(__file__).resolve().parents[2]
+        inner = (
+            f'cd /d "{project_root}" && '
+            f'"{exe_path}" -m src.main '
+            f"--sis {sis_type} "
+            f'--input "{input_dir}" '
+            f'--output "{output_dir}"'
+        )
+        if sftp:
+            inner += " --sftp"
+        # schtasks /TR needs the entire value as one shell command.
+        # Use cmd /c so the && chain runs in a single process.
+        return f'cmd /c "{inner}"'
+
+    parts = [
+        f'"{exe_path}"',
+        f"--sis {sis_type}",
+        f'--input "{input_dir}"',
+        f'--output "{output_dir}"',
+    ]
+    if sftp:
+        parts.append("--sftp")
+    return " ".join(parts)
+
+
 def register_task(
     task_name: str,
     exe_path: Path,
@@ -42,7 +89,8 @@ def register_task(
 
     Args:
         task_name: Name displayed in Task Scheduler (e.g. "GDE2Acsv_Daily").
-        exe_path:  Absolute path to GDE2Acsv.exe.
+        exe_path:  Absolute path to GDE2Acsv.exe *or* the python.exe
+                   interpreter when running from source.
         sis_type:  SIS config identifier (e.g. "myedbc").
         input_dir: Directory containing GDE source files.
         output_dir: Directory to write CSV files.
@@ -57,15 +105,7 @@ def register_task(
     sis_type = validate_sis_type(sis_type)
     validate_run_time(run_time)
 
-    cmd_parts = [
-        f'"{exe_path}"',
-        f"--sis {sis_type}",
-        f'--input "{input_dir}"',
-        f'--output "{output_dir}"',
-    ]
-    if sftp:
-        cmd_parts.append("--sftp")
-    task_run = " ".join(cmd_parts)
+    task_run = _build_task_command(exe_path, sis_type, input_dir, output_dir, sftp)
 
     schtasks_args = [
         "schtasks",
