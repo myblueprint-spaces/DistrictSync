@@ -1,6 +1,6 @@
 # Architecture
 
-GDE2Acsv is a classic ETL pipeline: **Extract → Transform → Load**. All entity-specific logic lives in pluggable transformer classes; configuration drives field mappings without code changes.
+DistrictSync is a classic ETL pipeline: **Extract → Transform → Load**. All entity-specific logic lives in pluggable transformer classes; configuration drives field mappings without code changes.
 
 ---
 
@@ -31,7 +31,7 @@ GDE files
 5 CSV files (Students, Staff, Family, Classes, Enrollments)
 ```
 
-`src/main.py` orchestrates the three stages. It also handles CLI flags (`--dry-run`, `--diff`, `--quality`, `--sftp`) and calls `_sftp_upload()` after a successful write. After each run, anomaly detection checks whether any entity's record count dropped more than 20% compared to the previous run. Each run writes a machine-readable `__GDE2ACSV_RUN__` JSON log tag consumed by the Run History UI page.
+`src/main.py` orchestrates the three stages. It also handles CLI flags (`--dry-run`, `--diff`, `--quality`, `--sftp`) and calls `_sftp_upload()` after a successful write. After each run, anomaly detection checks whether any entity's record count dropped more than 20% compared to the previous run. Each run writes a machine-readable `__DISTRICTSYNC_RUN__` JSON log tag consumed by the Run History UI page.
 
 ---
 
@@ -178,7 +178,7 @@ mappings:
 
 | Module | Purpose |
 |--------|---------|
-| `src/config/app_config.py` | Runtime config (`~/.gde2acsv/config.json`) — SFTP host, schedule, paths |
+| `src/config/app_config.py` | Runtime config (`~/.districtsync/config.json`) — SFTP host, schedule, paths |
 | `src/sftp/uploader.py` | `SFTPUploader` — paramiko SFTP + OS keyring credential retrieval |
 | `src/scheduler/windows.py` | `schtasks.exe` wrapper for Windows Task Scheduler |
 | `src/scheduler/linux.py` | `crontab` wrapper for Linux cron |
@@ -200,7 +200,7 @@ mappings:
 | Home / status | `Home.py` | Config health check, navigation |
 | Setup Wizard | `pages/01_Setup_Wizard.py` | 5-step wizard (schedule + SFTP optional). Shows management dashboard post-setup for editing/disabling schedule and SFTP. |
 | Convert | `pages/02_Convert.py` | Ad-hoc conversion without schedule — upload files, convert, download CSVs or upload via SFTP |
-| Run History | `pages/03_Run_History.py` | Parses `__GDE2ACSV_RUN__` JSON log tags, tabular history |
+| Run History | `pages/03_Run_History.py` | Parses `__DISTRICTSYNC_RUN__` JSON log tags, tabular history |
 | Mapping Editor | `pages/04_Mapping_Editor.py` | Step-by-step wizard for creating/modifying district YAML configs |
 | Help & Docs | `pages/05_Help.py` | Embedded documentation and quick-reference links |
 

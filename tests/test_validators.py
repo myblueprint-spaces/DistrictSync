@@ -44,10 +44,10 @@ class TestValidateSisType:
 
 class TestValidateTaskName:
     def test_valid_simple(self):
-        assert validate_task_name("GDE2Acsv_Daily") == "GDE2Acsv_Daily"
+        assert validate_task_name("DistrictSync_Daily") == "DistrictSync_Daily"
 
     def test_valid_with_spaces_and_hyphens(self):
-        assert validate_task_name("GDE2Acsv Daily-Run") == "GDE2Acsv Daily-Run"
+        assert validate_task_name("DistrictSync Daily-Run") == "DistrictSync Daily-Run"
 
     def test_strips_whitespace(self):
         assert validate_task_name("  MyTask  ") == "MyTask"

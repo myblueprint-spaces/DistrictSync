@@ -24,7 +24,7 @@ from src.main import (
 @pytest.fixture
 def tmp_app_config(tmp_path, monkeypatch):
     """Redirect AppConfig + keyring to in-memory/tmp storage."""
-    cfg_dir = tmp_path / ".gde2acsv"
+    cfg_dir = tmp_path / ".districtsync"
     cfg_file = cfg_dir / "config.json"
     monkeypatch.setattr("src.config.app_config.APP_CONFIG_DIR", cfg_dir)
     monkeypatch.setattr("src.config.app_config.APP_CONFIG_FILE", cfg_file)
@@ -116,7 +116,7 @@ class TestSftpConfigureHeadless:
         )
         assert rc == 0
         assert cfg_file.exists()
-        assert store == {("GDE2Acsv_SFTP", "partner"): "hunter2"}
+        assert store == {("DistrictSync_SFTP", "partner"): "hunter2"}
 
     def test_rejects_disallowed_host(self, tmp_app_config, monkeypatch, capsys):
         monkeypatch.setenv(SFTP_PASSWORD_ENV_VAR, "x")
@@ -146,7 +146,7 @@ class TestSftpConfigureHeadless:
             )
         )
         assert rc == 0
-        assert store[("GDE2Acsv_SFTP", "partner")] == "piped-pw"
+        assert store[("DistrictSync_SFTP", "partner")] == "piped-pw"
 
 
 class TestSftpTest:

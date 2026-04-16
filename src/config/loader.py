@@ -6,7 +6,7 @@ duplication currently seen in sd48/sd51/sd74 configs.
 
 Mapping YAMLs are discovered from two directories, in order:
 
-1. ``~/.gde2acsv/mappings/`` — user-writable. Partner-created configs
+1. ``~/.districtsync/mappings/`` — user-writable. Partner-created configs
    (saved via the Mapping Editor) live here. A config here with the
    same SIS identifier as a built-in overrides the built-in.
 2. Bundled ``config/mappings/`` — ships with the binary. Resolved
@@ -141,7 +141,7 @@ def load_config(
         sis_type: SIS identifier (e.g. "myedbc", "sd48myedbc").
         config_dir: Override the config directory (for testing). When
             ``None`` (the default), search
-            ``~/.gde2acsv/mappings/`` first, then the bundled
+            ``~/.districtsync/mappings/`` first, then the bundled
             ``config/mappings/``.
 
     Returns:

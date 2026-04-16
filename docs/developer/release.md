@@ -38,7 +38,7 @@ push tag v*
 ┌──────────────┐   ┌──────────────────┐   ┌──────────────────┐
 │ build-windows│   │   build-linux    │   │   build-macos    │
 │ windows-latest│  │  ubuntu-latest   │   │  macos-latest    │
-│ → .exe        │  │  → GDE2Acsv-linux│   │  → GDE2Acsv-macos│
+│ → .exe        │  │  → DistrictSync-linux│   │  → DistrictSync-macos│
 └──────┬────────┘  └────────┬─────────┘   └──────────┬───────┘
        └───────────────────┬┘                         │
                            ▼─────────────────────────-┘
@@ -55,7 +55,7 @@ Each build job:
 3. Runs `pyinstaller --onefile` with `config/` bundled via `--add-data`
 4. Uploads the binary as a build artifact (retained 5 days)
 
-The publish job downloads all three artifacts, renames them (`GDE2Acsv-windows.exe`, `GDE2Acsv-linux`, `GDE2Acsv-macos`), and creates the GitHub Release with auto-generated release notes.
+The publish job downloads all three artifacts, renames them (`DistrictSync-windows.exe`, `DistrictSync-linux`, `DistrictSync-macos`), and creates the GitHub Release with auto-generated release notes.
 
 ---
 
@@ -100,8 +100,8 @@ version = "1.x.0"
 The CLI reads this at runtime:
 
 ```bash
-GDE2Acsv.exe --version
-# GDE2Acsv 1.x.0
+DistrictSync.exe --version
+# DistrictSync 1.x.0
 ```
 
 Use [semantic versioning](https://semver.org/):
@@ -132,9 +132,9 @@ Use [semantic versioning](https://semver.org/):
 The stable permalink pattern always points to the latest release:
 
 ```
-https://github.com/myblueprint/GDE2Acsv/releases/latest/download/GDE2Acsv-windows.exe
-https://github.com/myblueprint/GDE2Acsv/releases/latest/download/GDE2Acsv-linux
-https://github.com/myblueprint/GDE2Acsv/releases/latest/download/GDE2Acsv-macos
+https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-windows.exe
+https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-linux
+https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos
 ```
 
 These URLs never change and are safe to use in documentation, scripts, or partner emails.

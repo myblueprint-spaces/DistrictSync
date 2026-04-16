@@ -8,7 +8,7 @@ def get_logger(name: str = __name__) -> logging.Logger:
     """Configure and return a logger instance with standard formatting.
 
     Log output goes to a persistent, absolute path
-    (``~/.gde2acsv/etl_tool.log``) so logs survive PyInstaller
+    (``~/.districtsync/etl_tool.log``) so logs survive PyInstaller
     one-file exe restarts and are visible to Run History regardless
     of which working directory the ETL was launched from.
     """

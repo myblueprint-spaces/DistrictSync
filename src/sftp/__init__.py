@@ -1,1 +1,1 @@
-"""SFTP upload package for GDE2Acsv."""
+"""SFTP upload package for DistrictSync."""

@@ -1,5 +1,5 @@
 """
-Shared fixtures for GDE2Acsv tests.
+Shared fixtures for DistrictSync tests.
 
 All data is synthetic — no real student PII.
 Fixtures are designed to exercise every code path in the transformer.

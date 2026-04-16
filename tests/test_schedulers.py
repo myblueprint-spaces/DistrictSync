@@ -21,8 +21,8 @@ class TestWindowsRegisterTask:
         mock_run.return_value = MagicMock(returncode=0, stdout="SUCCESS", stderr="")
 
         ok, msg = register_task(
-            task_name="GDE2Acsv_Daily",
-            exe_path=Path("C:/GDE2Acsv/GDE2Acsv.exe"),
+            task_name="DistrictSync_Daily",
+            exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
             sis_type="myedbc",
             input_dir=Path("C:/input"),
             output_dir=Path("C:/output"),
@@ -34,7 +34,7 @@ class TestWindowsRegisterTask:
         args = mock_run.call_args[0][0]
         assert args[0] == "schtasks"
         assert "/Create" in args
-        assert "GDE2Acsv_Daily" in args
+        assert "DistrictSync_Daily" in args
 
     @patch("src.scheduler.windows.subprocess.run")
     def test_register_failure(self, mock_run):
@@ -43,8 +43,8 @@ class TestWindowsRegisterTask:
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Access denied")
 
         ok, msg = register_task(
-            task_name="GDE2Acsv_Daily",
-            exe_path=Path("C:/GDE2Acsv.exe"),
+            task_name="DistrictSync_Daily",
+            exe_path=Path("C:/DistrictSync.exe"),
             sis_type="myedbc",
             input_dir=Path("C:/input"),
             output_dir=Path("C:/output"),
@@ -60,8 +60,8 @@ class TestWindowsRegisterTask:
         mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
 
         register_task(
-            task_name="GDE2Acsv_Daily",
-            exe_path=Path("C:/GDE2Acsv.exe"),
+            task_name="DistrictSync_Daily",
+            exe_path=Path("C:/DistrictSync.exe"),
             sis_type="myedbc",
             input_dir=Path("C:/input"),
             output_dir=Path("C:/output"),
@@ -79,8 +79,8 @@ class TestWindowsRegisterTask:
 
         with pytest.raises(ValueError, match="Invalid SIS type"):
             register_task(
-                task_name="GDE2Acsv_Daily",
-                exe_path=Path("C:/GDE2Acsv.exe"),
+                task_name="DistrictSync_Daily",
+                exe_path=Path("C:/DistrictSync.exe"),
                 sis_type="bad;type",
                 input_dir=Path("C:/input"),
                 output_dir=Path("C:/output"),
@@ -93,7 +93,7 @@ class TestWindowsRegisterTask:
         with pytest.raises(ValueError, match="Invalid task name"):
             register_task(
                 task_name="task/../../etc",
-                exe_path=Path("C:/GDE2Acsv.exe"),
+                exe_path=Path("C:/DistrictSync.exe"),
                 sis_type="myedbc",
                 input_dir=Path("C:/input"),
                 output_dir=Path("C:/output"),
@@ -105,8 +105,8 @@ class TestWindowsRegisterTask:
 
         with pytest.raises(ValueError):
             register_task(
-                task_name="GDE2Acsv_Daily",
-                exe_path=Path("C:/GDE2Acsv.exe"),
+                task_name="DistrictSync_Daily",
+                exe_path=Path("C:/DistrictSync.exe"),
                 sis_type="myedbc",
                 input_dir=Path("C:/input"),
                 output_dir=Path("C:/output"),
@@ -115,13 +115,13 @@ class TestWindowsRegisterTask:
 
     @patch("src.scheduler.windows.subprocess.run")
     def test_frozen_exe_invoked_directly(self, mock_run):
-        """GDE2Acsv.exe must be invoked without 'cmd /c' wrapping."""
+        """DistrictSync.exe must be invoked without 'cmd /c' wrapping."""
         from src.scheduler.windows import register_task
 
         mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
         register_task(
-            task_name="GDE2Acsv_Daily",
-            exe_path=Path("C:/GDE2Acsv/GDE2Acsv.exe"),
+            task_name="DistrictSync_Daily",
+            exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
             sis_type="myedbc",
             input_dir=Path("C:/input"),
             output_dir=Path("C:/output"),
@@ -130,7 +130,9 @@ class TestWindowsRegisterTask:
         args = mock_run.call_args[0][0]
         tr = args[args.index("/TR") + 1]
         assert not tr.startswith("cmd /c")
-        assert tr.startswith('"C:\\GDE2Acsv\\GDE2Acsv.exe"') or tr.startswith('"C:/GDE2Acsv/GDE2Acsv.exe"')
+        assert tr.startswith('"C:\\DistrictSync\\DistrictSync.exe"') or tr.startswith(
+            '"C:/DistrictSync/DistrictSync.exe"'
+        )
 
     @patch("src.scheduler.windows.subprocess.run")
     def test_python_source_mode_wraps_with_cmd_and_m_flag(self, mock_run):
@@ -144,7 +146,7 @@ class TestWindowsRegisterTask:
 
         mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
         register_task(
-            task_name="GDE2Acsv_Daily",
+            task_name="DistrictSync_Daily",
             exe_path=Path("C:/Python313/python.exe"),
             sis_type="myedbc",
             input_dir=Path("C:/input"),
@@ -168,7 +170,7 @@ class TestWindowsDeleteTask:
 
         mock_run.return_value = MagicMock(returncode=0, stdout="SUCCESS", stderr="")
 
-        ok, msg = delete_task("GDE2Acsv_Daily")
+        ok, msg = delete_task("DistrictSync_Daily")
         assert ok is True
         args = mock_run.call_args[0][0]
         assert "/Delete" in args
@@ -179,7 +181,7 @@ class TestWindowsDeleteTask:
 
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Not found")
 
-        ok, msg = delete_task("GDE2Acsv_Daily")
+        ok, msg = delete_task("DistrictSync_Daily")
         assert ok is False
 
 
@@ -190,11 +192,11 @@ class TestWindowsQueryTask:
 
         mock_run.return_value = MagicMock(
             returncode=0,
-            stdout="Task Name: GDE2Acsv_Daily\nStatus: Ready\nNext Run Time: 03:00\nLast Result: 0\n",
+            stdout="Task Name: DistrictSync_Daily\nStatus: Ready\nNext Run Time: 03:00\nLast Result: 0\n",
             stderr="",
         )
 
-        info = query_task("GDE2Acsv_Daily")
+        info = query_task("DistrictSync_Daily")
         assert info["exists"] is True
         assert "status" in info
 
@@ -227,7 +229,7 @@ class TestLinuxRegisterCron:
         ]
 
         ok, msg = register_cron(
-            exe_path=Path("/opt/gde2acsv/GDE2Acsv"),
+            exe_path=Path("/opt/districtsync/DistrictSync"),
             sis_type="myedbc",
             input_dir=Path("/data/input"),
             output_dir=Path("/data/output"),
@@ -236,7 +238,7 @@ class TestLinuxRegisterCron:
         assert ok is True
         # Verify the crontab - call included the sentinel
         install_call = mock_run.call_args_list[1]
-        assert "GDE2Acsv managed entry" in install_call[1].get(
+        assert "DistrictSync managed entry" in install_call[1].get(
             "stdin", install_call[0][1] if len(install_call[0]) > 1 else ""
         )
 
@@ -251,7 +253,7 @@ class TestLinuxRegisterCron:
         ]
 
         ok, msg = register_cron(
-            exe_path=Path("/opt/gde2acsv/GDE2Acsv"),
+            exe_path=Path("/opt/districtsync/DistrictSync"),
             sis_type="myedbc",
             input_dir=Path("/data/input"),
             output_dir=Path("/data/output"),
@@ -295,7 +297,7 @@ class TestLinuxRegisterCron:
         ]
 
         register_cron(
-            exe_path=Path("/opt/gde2acsv/GDE2Acsv"),
+            exe_path=Path("/opt/districtsync/DistrictSync"),
             sis_type="myedbc",
             input_dir=Path("/data/input"),
             output_dir=Path("/data/output"),
@@ -312,7 +314,7 @@ class TestLinuxRegisterCron:
 
         with pytest.raises(ValueError, match="Invalid SIS type"):
             register_cron(
-                exe_path=Path("/opt/gde2acsv"),
+                exe_path=Path("/opt/districtsync"),
                 sis_type="bad;type",
                 input_dir=Path("/data/input"),
                 output_dir=Path("/data/output"),
@@ -325,7 +327,7 @@ class TestLinuxDeleteCron:
     def test_delete_removes_entry(self, mock_run):
         from src.scheduler.linux import CRON_SENTINEL, delete_cron
 
-        existing = f"0 3 * * * /opt/gde2acsv {CRON_SENTINEL}\n30 12 * * * /other/job\n"
+        existing = f"0 3 * * * /opt/districtsync {CRON_SENTINEL}\n30 12 * * * /other/job\n"
         mock_run.side_effect = [
             (0, existing),  # crontab -l
             (0, ""),  # crontab -
@@ -350,7 +352,7 @@ class TestLinuxCronEntryExists:
     def test_exists_when_present(self, mock_run):
         from src.scheduler.linux import CRON_SENTINEL, cron_entry_exists
 
-        mock_run.return_value = (0, f"0 3 * * * /opt/gde2acsv {CRON_SENTINEL}")
+        mock_run.return_value = (0, f"0 3 * * * /opt/districtsync {CRON_SENTINEL}")
         assert cron_entry_exists() is True
 
     @patch("src.scheduler.linux._run")

@@ -1,4 +1,4 @@
-"""Linux/macOS cron integration for GDE2Acsv.
+"""Linux/macOS cron integration for DistrictSync.
 
 Appends or removes a crontab entry using the system ``crontab`` command.
 No third-party dependencies.
@@ -11,7 +11,7 @@ Usage::
     from src.scheduler.linux import register_cron, delete_cron
 
     ok, msg = register_cron(
-        exe_path=Path("/opt/gde2acsv/GDE2Acsv"),
+        exe_path=Path("/opt/districtsync/DistrictSync"),
         sis_type="myedbc",
         input_dir=Path("/data/gde/input"),
         output_dir=Path("/data/gde/output"),
@@ -32,7 +32,7 @@ from src.utils.validators import quote_for_shell, validate_run_time, validate_si
 
 logger = logging.getLogger(__name__)
 
-CRON_SENTINEL = "# GDE2Acsv managed entry"
+CRON_SENTINEL = "# DistrictSync managed entry"
 
 
 def _run(args: list[str], stdin: str | None = None) -> tuple[int, str]:
@@ -54,10 +54,10 @@ def register_cron(
     run_time: str,
     sftp: bool = False,
 ) -> tuple[bool, str]:
-    """Add or replace the GDE2Acsv cron entry.
+    """Add or replace the DistrictSync cron entry.
 
     Args:
-        exe_path:  Absolute path to the GDE2Acsv binary.
+        exe_path:  Absolute path to the DistrictSync binary.
         sis_type:  SIS config identifier (e.g. "myedbc").
         input_dir: Source GDE file directory.
         output_dir: CSV output directory.
@@ -107,7 +107,7 @@ def register_cron(
     _, existing = _run(["crontab", "-l"])
     lines = existing.splitlines() if existing and "no crontab" not in existing.lower() else []
 
-    # Remove any previous GDE2Acsv entry
+    # Remove any previous DistrictSync entry
     lines = [ln for ln in lines if CRON_SENTINEL not in ln]
     lines.append(cron_line)
     new_crontab = "\n".join(lines) + "\n"
@@ -122,7 +122,7 @@ def register_cron(
 
 
 def delete_cron() -> tuple[bool, str]:
-    """Remove the GDE2Acsv managed cron entry.
+    """Remove the DistrictSync managed cron entry.
 
     Returns:
         (success, message)
@@ -138,6 +138,6 @@ def delete_cron() -> tuple[bool, str]:
 
 
 def cron_entry_exists() -> bool:
-    """Return True if a GDE2Acsv cron entry is present."""
+    """Return True if a DistrictSync cron entry is present."""
     _, existing = _run(["crontab", "-l"])
     return bool(existing and CRON_SENTINEL in existing)

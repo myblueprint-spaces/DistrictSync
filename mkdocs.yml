@@ -1,9 +1,9 @@
-site_name: GDE2Acsv
+site_name: DistrictSync
 site_description: MyEducation BC GDE to SpacesEDU Advanced CSV converter — by SpacesEDU by myBlueprint
 site_author: SpacesEDU by myBlueprint
-site_url: https://myblueprint.github.io/GDE2Acsv/
-repo_url: https://github.com/myblueprint/GDE2Acsv
-repo_name: myblueprint/GDE2Acsv
+site_url: https://myblueprint-spaces.github.io/DistrictSync/
+repo_url: https://github.com/myblueprint-spaces/DistrictSync
+repo_name: myblueprint-spaces/DistrictSync
 edit_uri: edit/main/docs/
 
 docs_dir: docs
@@ -51,9 +51,9 @@ plugins:
   # Uncomment when mkdocs-with-pdf is installed:
   # - with-pdf:
   #     author: SpacesEDU by myBlueprint
-  #     cover_title: GDE2Acsv
+  #     cover_title: DistrictSync
   #     cover_subtitle: Partner Installation & Developer Guide
-  #     output_path: pdf/GDE2Acsv-docs.pdf
+  #     output_path: pdf/DistrictSync-docs.pdf
 
 markdown_extensions:
   - admonition
@@ -92,8 +92,8 @@ nav:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/myblueprint/GDE2Acsv
-      name: GDE2Acsv on GitHub
+      link: https://github.com/myblueprint-spaces/DistrictSync
+      name: DistrictSync on GitHub
   generator: false
 
 copyright: >

@@ -1,4 +1,4 @@
-"""GDE2Acsv — Streamlit multi-page application.
+"""DistrictSync — Streamlit multi-page application.
 
 This is the main entry point. Streamlit automatically discovers pages
 from the ``pages/`` subdirectory.
@@ -19,7 +19,7 @@ if str(_root) not in sys.path:
 from src.ui.brand import header, inject_brand_css  # noqa: E402
 
 st.set_page_config(
-    page_title="GDE2Acsv — SpacesEDU",
+    page_title="DistrictSync — SpacesEDU",
     page_icon="🏫",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -27,7 +27,7 @@ st.set_page_config(
 
 inject_brand_css()
 header(
-    "GDE2Acsv",
+    "DistrictSync",
     "MyEducation BC General Data Extracts → SpacesEDU Advanced CSV",
 )
 
@@ -82,7 +82,7 @@ col1, col2 = st.columns([3, 2])
 with col1:
     st.subheader("What it does")
     st.markdown(
-        "GDE2Acsv reads the standard General Data Extract (GDE) files from MyEducation BC and "
+        "DistrictSync reads the standard General Data Extract (GDE) files from MyEducation BC and "
         "produces the CSV files required by SpacesEDU's Advanced CSV import format. "
         "It runs automatically every night and uploads results via SFTP."
     )
@@ -111,4 +111,4 @@ with col2:
     st.caption("Output format, how it works, troubleshooting")
 
 st.divider()
-st.caption("SpacesEDU by myBlueprint · GDE2Acsv · support@myBlueprint.ca")
+st.caption("SpacesEDU by myBlueprint · DistrictSync · support@myBlueprint.ca")

@@ -21,6 +21,17 @@ htmlcov/
 # Linting
 .ruff_cache/
 
+# Hypothesis
+.hypothesis/
+
+# Claude Code + MCP tooling
+.claude/
+.playwright-mcp/
+
+# Scratch / local debugging artifacts
+tmp_pdf/
+convert-before-select.png
+
 # Virtual environments
 .venv/
 venv/

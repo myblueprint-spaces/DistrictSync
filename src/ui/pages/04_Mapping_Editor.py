@@ -28,7 +28,7 @@ from src.ui.mapping_helpers import (  # noqa: E402
     save_mapping_yaml,
 )
 
-st.set_page_config(page_title="Mapping Editor — GDE2Acsv", page_icon="🗺️", layout="wide")
+st.set_page_config(page_title="Mapping Editor — DistrictSync", page_icon="🗺️", layout="wide")
 inject_brand_css()
 header("Mapping Editor", "Create or customize your district's data configuration")
 
@@ -183,7 +183,7 @@ if st.session_state.me_step == 1:
 elif st.session_state.me_step == 2:
     st.subheader("Step 2 — Your GDE Files")
     st.markdown(
-        "Tell GDE2Acsv what your data files are called. "
+        "Tell DistrictSync what your data files are called. "
         "Most districts use the standard names, but some have different prefixes or extensions."
     )
 
@@ -329,7 +329,7 @@ elif st.session_state.me_step == 3:
         "Which file contains the School Year?",
         file_options,
         index=file_options.index(current_sy_file) if current_sy_file in file_options else 0,
-        help="GDE2Acsv reads the school year from this file to generate IDs and dates.",
+        help="DistrictSync reads the school year from this file to generate IDs and dates.",
         key="me_sy_file",
     )
 
@@ -418,7 +418,7 @@ elif st.session_state.me_step == 3:
 elif st.session_state.me_step == 4:
     st.subheader("Step 4 — Student Data")
     st.markdown(
-        "Tell GDE2Acsv which columns in your Student Information file contain each piece of data needed by SpacesEDU."
+        "Tell DistrictSync which columns in your Student Information file contain each piece of data needed by SpacesEDU."
     )
 
     config = st.session_state.me_config

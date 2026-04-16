@@ -1,4 +1,4 @@
-"""Setup Wizard — guided 5-step configuration for GDE2Acsv.
+"""Setup Wizard — guided 5-step configuration for DistrictSync.
 
 Steps:
     1. File paths (input GDE directory, output CSV directory)
@@ -26,9 +26,9 @@ from src.etl.pipeline import extract_required_files  # noqa: E402
 from src.ui.brand import header, inject_brand_css, step_progress  # noqa: E402
 from src.utils.validators import ALLOWED_SFTP_HOSTS  # noqa: E402
 
-st.set_page_config(page_title="Setup Wizard — GDE2Acsv", page_icon="⚙️", layout="wide")
+st.set_page_config(page_title="Setup Wizard — DistrictSync", page_icon="⚙️", layout="wide")
 inject_brand_css()
-header("Setup Wizard", "Configure GDE2Acsv for automated daily processing")
+header("Setup Wizard", "Configure DistrictSync for automated daily processing")
 
 # ---------------------------------------------------------------------------
 # Session state: current step (1–5) and working config
@@ -360,20 +360,20 @@ st.divider()
 if st.session_state.wizard_step == 1:
     st.subheader("Step 1 — File Paths")
     st.markdown(
-        "Enter the directories that GDE2Acsv will read source files from and write CSVs to.\n\n"
+        "Enter the directories that DistrictSync will read source files from and write CSVs to.\n\n"
         "Both paths must already exist on this machine."
     )
 
     input_dir = st.text_input(
         "GDE Input Directory",
         value=cfg.input_dir or "",
-        placeholder=r"C:\GDE2Acsv\input",
+        placeholder=r"C:\DistrictSync\input",
         help="Directory where MyEducation BC places the GDE .txt files",
     )
     output_dir = st.text_input(
         "CSV Output Directory",
         value=cfg.output_dir or "",
-        placeholder=r"C:\GDE2Acsv\output",
+        placeholder=r"C:\DistrictSync\output",
         help="Directory where the generated CSV files will be written",
     )
 

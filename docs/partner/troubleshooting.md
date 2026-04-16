@@ -10,7 +10,7 @@
 
 2. **GDE files not in the input directory** — Verify the files are present:
    ```
-   C:\GDE2Acsv\input\
+   C:\DistrictSync\input\
      your Student Demographic file     ← must be here
      your Student Schedule file
      your Staff Information file
@@ -19,7 +19,7 @@
    ```
 
 3. **All students are inactive** — Only `Active` enrollment status is exported.
-   - Run with `--quality` to get a breakdown: `GDE2Acsv-windows.exe --sis myedbc --input ... --output ... --quality`
+   - Run with `--quality` to get a breakdown: `DistrictSync-windows.exe --sis myedbc --input ... --output ... --quality`
 
 ---
 
@@ -43,16 +43,16 @@
 
 **"Access denied" or task shows "Last Run Result: 0x1"**
 - The task must be configured to **Run whether user is logged on or not** and with **Highest Privileges**.
-- Delete the task (`schtasks /Delete /F /TN GDE2Acsv_Daily`) and re-run the Setup Wizard as Administrator.
+- Delete the task (`schtasks /Delete /F /TN DistrictSync_Daily`) and re-run the Setup Wizard as Administrator.
 
 **Task runs but nothing happens**
-- Open the Run History page in the GDE2Acsv wizard. Scheduled runs
-  write to the same `~/.gde2acsv/etl_tool.log` as manual runs, so
+- Open the Run History page in the DistrictSync wizard. Scheduled runs
+  write to the same `~/.districtsync/etl_tool.log` as manual runs, so
   they should appear there.
 - If there's a run but it failed, look for `Pipeline failed:` lines
   in the log for the cause.
 - The task's **Start in** field does not matter — logs always go to
-  `~/.gde2acsv/` regardless of the working directory.
+  `~/.districtsync/` regardless of the working directory.
 
 ---
 
@@ -82,7 +82,7 @@ The tool cannot find its configuration files. This happens when:
 
 ## Partial output files
 
-If the tool crashes mid-run, you may find an incomplete output directory. Since v1.4+, GDE2Acsv uses atomic (transactional) writes — all CSVs are staged in a temporary directory first and only committed together on success. A failed run leaves the previous output intact.
+If the tool crashes mid-run, you may find an incomplete output directory. Since v1.4+, DistrictSync uses atomic (transactional) writes — all CSVs are staged in a temporary directory first and only committed together on success. A failed run leaves the previous output intact.
 
 If you find a `.tmp_*` directory in your output folder, it means the tool was interrupted during a write. Delete it and re-run.
 
@@ -90,7 +90,7 @@ If you find a `.tmp_*` directory in your output folder, it means the tool was in
 
 ## SFTP Host Rejected
 
-GDE2Acsv only allows SFTP uploads to SpacesEDU servers (sftp.ca.spacesedu.com, sftp.app.spacesedu.com, sftp.myblueprint.ca). If you see 'SFTP host not allowed', verify you're using the correct SpacesEDU host.
+DistrictSync only allows SFTP uploads to SpacesEDU servers (sftp.ca.spacesedu.com, sftp.app.spacesedu.com, sftp.myblueprint.ca). If you see 'SFTP host not allowed', verify you're using the correct SpacesEDU host.
 
 ---
 
@@ -108,7 +108,7 @@ Some districts (e.g., SD40 – New Westminster) export GDE files as `.csv` inste
 
 ## Records missing after SpacesEDU import
 
-If GDE2Acsv completed successfully but records are missing in SpacesEDU, the issue is on the import side — not GDE2Acsv. Common causes:
+If DistrictSync completed successfully but records are missing in SpacesEDU, the issue is on the import side — not DistrictSync. Common causes:
 
 - **Email domain mismatch** — student or staff email doesn't match the district's configured domain in SpacesEDU.
 - **Missing required field** — a record was skipped because a required field (User ID, Name, etc.) was blank.
@@ -127,9 +127,9 @@ the `.exe` lives or what working directory the task runs from:
 
 | Platform | Log file |
 |----------|----------|
-| Windows | `C:\Users\<username>\.gde2acsv\etl_tool.log` |
-| Linux   | `/home/<username>/.gde2acsv/etl_tool.log` |
-| macOS   | `/Users/<username>/.gde2acsv/etl_tool.log` |
+| Windows | `C:\Users\<username>\.districtsync\etl_tool.log` |
+| Linux   | `/home/<username>/.districtsync/etl_tool.log` |
+| macOS   | `/Users/<username>/.districtsync/etl_tool.log` |
 
 The Run History page in the web UI reads from this same path and
 displays the runs in a sortable table. The log rotates automatically

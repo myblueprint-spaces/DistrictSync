@@ -19,7 +19,7 @@ if str(_root) not in sys.path:
 from src.ui.brand import header, inject_brand_css  # noqa: E402
 from src.utils.paths import user_log_file  # noqa: E402
 
-st.set_page_config(page_title="Run History — GDE2Acsv", page_icon="📋", layout="wide")
+st.set_page_config(page_title="Run History — DistrictSync", page_icon="📋", layout="wide")
 inject_brand_css()
 header("Run History", "Automated daily ETL run log")
 
@@ -46,14 +46,14 @@ if log_file is None:
 # Parse structured log lines (JSON-tagged)
 # ---------------------------------------------------------------------------
 
-STRUCTURED_TAG = "__GDE2ACSV_RUN__"
+STRUCTURED_TAG = "__DISTRICTSYNC_RUN__"
 runs: list[dict] = []
 
 with open(log_file, encoding="utf-8", errors="replace") as f:
     for line in f:
         if STRUCTURED_TAG in line:
             try:
-                # Format: ... __GDE2ACSV_RUN__ {...json...}
+                # Format: ... __DISTRICTSYNC_RUN__ {...json...}
                 json_part = line.split(STRUCTURED_TAG, 1)[1].strip()
                 entry = json.loads(json_part)
                 runs.append(entry)
@@ -111,4 +111,4 @@ with col1:
         st.rerun()
 
 st.divider()
-st.caption("SpacesEDU by myBlueprint · GDE2Acsv · support@myBlueprint.ca")
+st.caption("SpacesEDU by myBlueprint · DistrictSync · support@myBlueprint.ca")

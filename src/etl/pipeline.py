@@ -71,7 +71,7 @@ def _emit_run_log(
     error: str = "",
     anomalies: list[str] | None = None,
 ) -> None:
-    """Write a structured __GDE2ACSV_RUN__ log line for the Run History page."""
+    """Write a structured __DISTRICTSYNC_RUN__ log line for the Run History page."""
     entry = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "status": status,
@@ -86,7 +86,7 @@ def _emit_run_log(
         "error": error,
         "anomalies": anomalies or [],
     }
-    logger.info(f"__GDE2ACSV_RUN__ {json.dumps(entry)}")
+    logger.info(f"__DISTRICTSYNC_RUN__ {json.dumps(entry)}")
 
 
 def run_pipeline(
@@ -238,7 +238,7 @@ def _sftp_upload(output_path: str, sis_type: str | None = None) -> bool:
         if not cfg.sftp_is_configured():
             logger.warning(
                 "SFTP upload requested but SFTP is not configured. "
-                "Run 'GDE2Acsv --sftp-configure' or use the setup wizard."
+                "Run 'DistrictSync --sftp-configure' or use the setup wizard."
             )
             return False
 

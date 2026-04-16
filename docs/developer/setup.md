@@ -8,8 +8,8 @@
 ## Clone and install
 
 ```bash
-git clone https://github.com/myblueprint/GDE2Acsv.git
-cd GDE2Acsv
+git clone https://github.com/myblueprint-spaces/DistrictSync.git
+cd DistrictSync
 pip install -r requirements.txt -r requirements-dev.txt
 ```
 
@@ -40,7 +40,7 @@ bandit -r src/
 
 ## Environment
 
-No `.env` file is required. The tool reads all configuration from YAML files in `config/mappings/` and from `~/.gde2acsv/config.json` at runtime.
+No `.env` file is required. The tool reads all configuration from YAML files in `config/mappings/` and from `~/.districtsync/config.json` at runtime.
 
 ## Makefile targets
 

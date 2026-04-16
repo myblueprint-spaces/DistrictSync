@@ -50,7 +50,7 @@ STANDALONE_CUSTOM = {
 def redirect_home(tmp_path, monkeypatch):
     """Redirect Path.home() so user_mappings_dir() points at a tmp dir.
 
-    This isolates the test from the developer's real ~/.gde2acsv/mappings/
+    This isolates the test from the developer's real ~/.districtsync/mappings/
     so it doesn't pick up stray files. Also defensively clears any
     leaked sys.frozen / sys._MEIPASS from prior tests so bundle_root()
     correctly resolves to the project root in dev.
@@ -58,7 +58,7 @@ def redirect_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delattr(sys, "frozen", raising=False)
     monkeypatch.delattr(sys, "_MEIPASS", raising=False)
-    return tmp_path / ".gde2acsv" / "mappings"
+    return tmp_path / ".districtsync" / "mappings"
 
 
 def _write_yaml(path: Path, data: dict) -> None:

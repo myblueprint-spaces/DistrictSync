@@ -36,7 +36,7 @@ jobs:
       # Verified locally with a Playwright probe against the Setup
       # Wizard + every other page before this change was committed.
       - run: >
-          pyinstaller --onefile --name GDE2Acsv
+          pyinstaller --onefile --name DistrictSync
           --add-data "config;config"
           --add-data "src/ui;src/ui"
           --add-data "docs;docs"
@@ -66,8 +66,8 @@ jobs:
           src/main.py
       - uses: actions/upload-artifact@v4
         with:
-          name: GDE2Acsv-windows
-          path: dist/GDE2Acsv.exe
+          name: DistrictSync-windows
+          path: dist/DistrictSync.exe
           retention-days: 5
 
   build-linux:
@@ -80,7 +80,7 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt pyinstaller
       - run: >
-          pyinstaller --onefile --name GDE2Acsv
+          pyinstaller --onefile --name DistrictSync
           --add-data "config:config"
           --collect-submodules src
           --paths=.
@@ -104,8 +104,8 @@ jobs:
           src/main.py
       - uses: actions/upload-artifact@v4
         with:
-          name: GDE2Acsv-linux
-          path: dist/GDE2Acsv
+          name: DistrictSync-linux
+          path: dist/DistrictSync
           retention-days: 5
 
   build-macos:
@@ -118,7 +118,7 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt pyinstaller
       - run: >
-          pyinstaller --onefile --name GDE2Acsv
+          pyinstaller --onefile --name DistrictSync
           --add-data "config:config"
           --collect-submodules src
           --paths=.
@@ -141,8 +141,8 @@ jobs:
           src/main.py
       - uses: actions/upload-artifact@v4
         with:
-          name: GDE2Acsv-macos
-          path: dist/GDE2Acsv
+          name: DistrictSync-macos
+          path: dist/DistrictSync
           retention-days: 5
 
   # -----------------------------------------------------------------------
@@ -157,23 +157,23 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: GDE2Acsv-windows
+          name: DistrictSync-windows
           path: artifacts/windows
       - uses: actions/download-artifact@v4
         with:
-          name: GDE2Acsv-linux
+          name: DistrictSync-linux
           path: artifacts/linux
       - uses: actions/download-artifact@v4
         with:
-          name: GDE2Acsv-macos
+          name: DistrictSync-macos
           path: artifacts/macos
 
       - name: Rename and mark executables
         run: |
-          mv artifacts/windows/GDE2Acsv.exe artifacts/GDE2Acsv-windows.exe
-          mv artifacts/linux/GDE2Acsv       artifacts/GDE2Acsv-linux
-          mv artifacts/macos/GDE2Acsv       artifacts/GDE2Acsv-macos
-          chmod +x artifacts/GDE2Acsv-linux artifacts/GDE2Acsv-macos
+          mv artifacts/windows/DistrictSync.exe artifacts/DistrictSync-windows.exe
+          mv artifacts/linux/DistrictSync       artifacts/DistrictSync-linux
+          mv artifacts/macos/DistrictSync       artifacts/DistrictSync-macos
+          chmod +x artifacts/DistrictSync-linux artifacts/DistrictSync-macos
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -184,15 +184,15 @@ jobs:
 
             | Platform | File | Notes |
             |----------|------|-------|
-            | Windows | `GDE2Acsv-windows.exe` | Double-click to open the Setup Wizard, or run with `--sis`/`--input`/`--output` args for CLI use |
-            | Linux   | `GDE2Acsv-linux`       | `chmod +x` before first run |
-            | macOS   | `GDE2Acsv-macos`       | Allow in System Settings > Privacy & Security |
+            | Windows | `DistrictSync-windows.exe` | Double-click to open the Setup Wizard, or run with `--sis`/`--input`/`--output` args for CLI use |
+            | Linux   | `DistrictSync-linux`       | `chmod +x` before first run |
+            | macOS   | `DistrictSync-macos`       | Allow in System Settings > Privacy & Security |
 
-            See the [Documentation Site](https://${{ github.repository_owner }}.github.io/GDE2Acsv/) for setup instructions.
+            See the [Documentation Site](https://${{ github.repository_owner }}.github.io/DistrictSync/) for setup instructions.
           files: |
-            artifacts/GDE2Acsv-windows.exe
-            artifacts/GDE2Acsv-linux
-            artifacts/GDE2Acsv-macos
+            artifacts/DistrictSync-windows.exe
+            artifacts/DistrictSync-linux
+            artifacts/DistrictSync-macos
 
   # -----------------------------------------------------------------------
   # Deploy documentation to GitHub Pages

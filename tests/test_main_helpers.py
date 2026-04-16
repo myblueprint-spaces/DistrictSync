@@ -112,9 +112,9 @@ class TestEmitRunLog:
         with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
             _emit_run_log("success", 1.5, outputs)
 
-        log_lines = [r.message for r in caplog.records if "__GDE2ACSV_RUN__" in r.message]
+        log_lines = [r.message for r in caplog.records if "__DISTRICTSYNC_RUN__" in r.message]
         assert len(log_lines) == 1
-        payload = json.loads(log_lines[0].split("__GDE2ACSV_RUN__ ")[1])
+        payload = json.loads(log_lines[0].split("__DISTRICTSYNC_RUN__ ")[1])
         assert payload["status"] == "success"
         assert payload["duration_s"] == 1.5
         assert payload["Students"] == 10
@@ -125,8 +125,8 @@ class TestEmitRunLog:
         with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
             _emit_run_log("failed", 0.3, {}, error="boom")
 
-        log_lines = [r.message for r in caplog.records if "__GDE2ACSV_RUN__" in r.message]
-        payload = json.loads(log_lines[0].split("__GDE2ACSV_RUN__ ")[1])
+        log_lines = [r.message for r in caplog.records if "__DISTRICTSYNC_RUN__" in r.message]
+        payload = json.loads(log_lines[0].split("__DISTRICTSYNC_RUN__ ")[1])
         assert payload["status"] == "failed"
         assert payload["error"] == "boom"
 
@@ -134,8 +134,8 @@ class TestEmitRunLog:
         with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
             _emit_run_log("success", 2.0, {}, sftp_attempted=True, sftp_ok=True)
 
-        log_lines = [r.message for r in caplog.records if "__GDE2ACSV_RUN__" in r.message]
-        payload = json.loads(log_lines[0].split("__GDE2ACSV_RUN__ ")[1])
+        log_lines = [r.message for r in caplog.records if "__DISTRICTSYNC_RUN__" in r.message]
+        payload = json.loads(log_lines[0].split("__DISTRICTSYNC_RUN__ ")[1])
         assert payload["sftp_attempted"] is True
         assert payload["sftp_ok"] is True
 
@@ -143,8 +143,8 @@ class TestEmitRunLog:
         with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
             _emit_run_log("success", 1.0, {}, anomalies=["Students dropped 50%"])
 
-        log_lines = [r.message for r in caplog.records if "__GDE2ACSV_RUN__" in r.message]
-        payload = json.loads(log_lines[0].split("__GDE2ACSV_RUN__ ")[1])
+        log_lines = [r.message for r in caplog.records if "__DISTRICTSYNC_RUN__" in r.message]
+        payload = json.loads(log_lines[0].split("__DISTRICTSYNC_RUN__ ")[1])
         assert payload["anomalies"] == ["Students dropped 50%"]
 
 

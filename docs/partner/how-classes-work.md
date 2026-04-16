@@ -1,6 +1,6 @@
 # How Classes Work
 
-GDE2Acsv generates three types of classes in `Classes.csv`. Understanding how each type is detected helps you verify the output matches your district's expectations.
+DistrictSync generates three types of classes in `Classes.csv`. Understanding how each type is detected helps you verify the output matches your district's expectations.
 
 ---
 
@@ -8,7 +8,7 @@ GDE2Acsv generates three types of classes in `Classes.csv`. Understanding how ea
 
 ### Subject classes
 
-The primary class type. Each row in the Student Schedule GDE file represents a student enrolled in a course section. GDE2Acsv joins the schedule with Course Information and Staff Information to build a class record for each unique section.
+The primary class type. Each row in the Student Schedule GDE file represents a student enrolled in a course section. DistrictSync joins the schedule with Course Information and Staff Information to build a class record for each unique section.
 
 A subject class is identified by its **Master Timetable ID** — the unique section identifier assigned by MyEdBC. The class name is composed from the teacher name, course title, section letter, and school year (e.g., "Reed - Science 7 A 2025").
 
@@ -21,7 +21,7 @@ global_config:
   homeroom_grades: ["KG", "01", "02", "03", "04", "05", "06", "07"]
 ```
 
-For each student in a homeroom grade, GDE2Acsv creates a homeroom class based on the student's school and homeroom assignment from the Student Demographic file. Homeroom classes use an ID format of `HR_<school>_<homeroom>_<year>`.
+For each student in a homeroom grade, DistrictSync creates a homeroom class based on the student's school and homeroom assignment from the Student Demographic file. Homeroom classes use an ID format of `HR_<school>_<homeroom>_<year>`.
 
 Grades not listed in `homeroom_grades` do not get homeroom classes.
 
@@ -29,7 +29,7 @@ Grades not listed in `homeroom_grades` do not get homeroom classes.
 
 Detected automatically when the **same teacher** teaches **multiple course sections** at the **same time slot** (same period, day, and semester) with students from **two or more grade levels**.
 
-This is common in small or rural schools where, for example, a teacher runs a combined Grade 1/2 class. Instead of creating separate class records that would split the roster in SpacesEDU, GDE2Acsv merges them into a single blended class.
+This is common in small or rural schools where, for example, a teacher runs a combined Grade 1/2 class. Instead of creating separate class records that would split the roster in SpacesEDU, DistrictSync merges them into a single blended class.
 
 **How detection works:**
 
@@ -52,7 +52,7 @@ This is common in small or rural schools where, for example, a teacher runs a co
 | Blended | Student Schedule + Class Information | Course Information, Staff Information |
 
 !!! note "Districts without Enhanced Class Information"
-    Some districts (e.g., SD40) have a non-enhanced Class Information file that lacks the `Teacher ID` and `Master Timetable ID` columns needed for blended detection. In these cases, GDE2Acsv falls back to the Student Schedule data (deduplicated to one row per section) to perform the same detection. The results are equivalent.
+    Some districts (e.g., SD40) have a non-enhanced Class Information file that lacks the `Teacher ID` and `Master Timetable ID` columns needed for blended detection. In these cases, DistrictSync falls back to the Student Schedule data (deduplicated to one row per section) to perform the same detection. The results are equivalent.
 
 ---
 

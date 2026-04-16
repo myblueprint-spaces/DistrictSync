@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-GDE2Acsv is a Python ETL tool that converts MyEducation BC General Data Extracts (GDEs) into SpacesEDU Advanced CSV format. It processes GDE files (CSV or TXT, varies by district) and produces 5 output CSV files (Students, Staff, Family, Classes, Enrollments). Distributed as single-file executables via PyInstaller for non-technical school district users running on district servers with task schedulers.
+DistrictSync is a Python ETL tool that converts MyEducation BC General Data Extracts (GDEs) into SpacesEDU Advanced CSV format. It processes GDE files (CSV or TXT, varies by district) and produces 5 output CSV files (Students, Staff, Family, Classes, Enrollments). Distributed as single-file executables via PyInstaller for non-technical school district users running on district servers with task schedulers.
 
 ## Commands
 
@@ -18,11 +18,11 @@ CLI flags: `--dry-run` (preview without writing), `--diff` (compare against exis
 ### SFTP credential setup (headless / Docker / no-browser)
 ```bash
 python -m src.main --sftp-configure                                 # interactive prompt
-python -m src.main --sftp-configure --sftp-host H --sftp-user U --sftp-remote R  # headless (password from GDE2ACSV_SFTP_PASSWORD env var, --sftp-password-stdin, or prompt)
+python -m src.main --sftp-configure --sftp-host H --sftp-user U --sftp-remote R  # headless (password from DISTRICTSYNC_SFTP_PASSWORD env var, --sftp-password-stdin, or prompt)
 python -m src.main --sftp-test                                      # verify stored credentials
 python -m src.main --sftp-show                                      # print saved config (no password)
 ```
-Handlers live in `src/main.py` (`_sftp_configure`, `_sftp_test`, `_sftp_show`, `_read_sftp_password`). Host is validated against `validators.ALLOWED_SFTP_HOSTS`. Password is stored in the OS keyring (`KEYRING_SERVICE = "GDE2Acsv_SFTP"`); settings are written to `~/.gde2acsv/config.json`.
+Handlers live in `src/main.py` (`_sftp_configure`, `_sftp_test`, `_sftp_show`, `_read_sftp_password`). Host is validated against `validators.ALLOWED_SFTP_HOSTS`. Password is stored in the OS keyring (`KEYRING_SERVICE = "DistrictSync_SFTP"`); settings are written to `~/.districtsync/config.json`.
 
 ### Tests
 ```bash
@@ -122,13 +122,13 @@ Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. 
 Multi-page Streamlit app. `Home.py` is the landing page with status dashboard. Pages:
 - `pages/01_Setup_Wizard.py` — 5-step wizard (schedule + SFTP optional). Shows management dashboard post-setup. District names from YAML `district_name` field.
 - `pages/02_Convert.py` — Ad-hoc conversion with session_state persistence, quality report, missing file warnings. Uses `load_config()` with `_base` inheritance.
-- `pages/03_Run_History.py` — Parses `__GDE2ACSV_RUN__` JSON log tags for tabular run history
+- `pages/03_Run_History.py` — Parses `__DISTRICTSYNC_RUN__` JSON log tags for tabular run history
 - `pages/04_Mapping_Editor.py` — 7-step visual wizard for creating/editing district mapping configs without YAML. Uses `mapping_helpers.py` for column detection, override diff, YAML generation.
 - `pages/05_Help.py` — Reads markdown from `docs/` directory (single source of truth shared with MkDocs site)
 
 ### Supporting modules
-- `src/config/app_config.py` — Runtime config (`~/.gde2acsv/config.json`); SFTP non-sensitive settings. Unix file permissions (0o700/0o600).
-- `src/sftp/uploader.py` — `SFTPUploader` with paramiko SSHClient + OS keyring (both top-level imports). Zips all CSVs into `gde2acsv_YYYY-MM-DD.zip` before upload. Host restricted to `ALLOWED_SFTP_HOSTS` (3 SpacesEDU servers). Credential setup: wizard Step 4 (`src/ui/pages/01_Setup_Wizard.py`) **and** headless CLI (`--sftp-configure` / `--sftp-test` / `--sftp-show` in `src/main.py`).
+- `src/config/app_config.py` — Runtime config (`~/.districtsync/config.json`); SFTP non-sensitive settings. Unix file permissions (0o700/0o600).
+- `src/sftp/uploader.py` — `SFTPUploader` with paramiko SSHClient + OS keyring (both top-level imports). Zips all CSVs into `districtsync_YYYY-MM-DD.zip` before upload. Host restricted to `ALLOWED_SFTP_HOSTS` (3 SpacesEDU servers). Credential setup: wizard Step 4 (`src/ui/pages/01_Setup_Wizard.py`) **and** headless CLI (`--sftp-configure` / `--sftp-test` / `--sftp-show` in `src/main.py`).
 - `src/scheduler/windows.py` — `schtasks.exe` wrapper with input validation via `validators.py`
 - `src/scheduler/linux.py` — crontab wrapper with `shlex.quote()` and sentinel comment
 - `src/etl/column_names.py` — Column name constants (avoid magic strings across transformers)
@@ -158,7 +158,7 @@ All field mappings are in YAML files under `config/mappings/`. The `--sis` CLI a
 - **Classes** — Join schedule + course info + staff info + optionally class info (for blended). Homeroom classes auto-generated for configured grades. Class names truncated to 100 chars.
 - **Enrollments** — Homeroom + subject + blended teacher enrollments. Deduplicated on Class ID + User ID + Role. Invalid teacher IDs ("nan", blank) filtered out.
 - **Anomaly detection** — Warns if any entity drops >20% vs previous run output
-- **Structured logging** — `__GDE2ACSV_RUN__` JSON emitted after each run with timing, counts, SFTP status
+- **Structured logging** — `__DISTRICTSYNC_RUN__` JSON emitted after each run with timing, counts, SFTP status
 - All entity transformations use pandas DataFrames with `.copy()` to avoid mutation side effects
 
 ## Security

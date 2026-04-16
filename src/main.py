@@ -1,4 +1,4 @@
-"""GDE2Acsv CLI entry point.
+"""DistrictSync CLI entry point.
 
 Thin wrapper that parses command-line arguments and dispatches to the
 core pipeline (src/etl/pipeline.py) or the SFTP setup subcommands
@@ -63,7 +63,7 @@ def main(sis_type: str, input_path: str, output_path: str) -> None:
 # SFTP CLI subcommands — headless / Docker / scripted setup
 # ----------------------------------------------------------------------
 
-SFTP_PASSWORD_ENV_VAR = "GDE2ACSV_SFTP_PASSWORD"  # nosec B105
+SFTP_PASSWORD_ENV_VAR = "DISTRICTSYNC_SFTP_PASSWORD"  # nosec B105
 
 
 def _read_sftp_password(args: argparse.Namespace) -> str:
@@ -90,7 +90,7 @@ def _sftp_configure(args: argparse.Namespace) -> int:
 
     Two modes:
       1. Headless (all of --sftp-host/--sftp-user/--sftp-remote provided):
-         reads password from GDE2ACSV_SFTP_PASSWORD env var, stdin, or prompt.
+         reads password from DISTRICTSYNC_SFTP_PASSWORD env var, stdin, or prompt.
       2. Interactive (no flags): prompts for every field.
 
     Host is validated against ALLOWED_SFTP_HOSTS. Returns exit code.
@@ -145,7 +145,7 @@ def _sftp_configure(args: argparse.Namespace) -> int:
 
     print(f"SFTP configured: {username}@{host}:{port}{remote_path}")
     print("Password saved to the OS credential store.")
-    print("Run 'GDE2Acsv --sftp-test' to verify the connection.")
+    print("Run 'DistrictSync --sftp-test' to verify the connection.")
     return 0
 
 
@@ -153,7 +153,7 @@ def _sftp_test(args: argparse.Namespace) -> int:
     """Test the SFTP connection using the stored configuration."""
     cfg = AppConfig.load()
     if not cfg.sftp_is_configured():
-        print("Error: SFTP is not configured. Run 'GDE2Acsv --sftp-configure' first.")
+        print("Error: SFTP is not configured. Run 'DistrictSync --sftp-configure' first.")
         return 1
 
     uploader = SFTPUploader(
@@ -171,7 +171,7 @@ def _sftp_show(args: argparse.Namespace) -> int:
     """Print the saved SFTP configuration (never the password)."""
     cfg = AppConfig.load()
     if not cfg.sftp_enabled:
-        print("SFTP is not configured. Run 'GDE2Acsv --sftp-configure' to set it up.")
+        print("SFTP is not configured. Run 'DistrictSync --sftp-configure' to set it up.")
         return 0
     print("SFTP configuration:")
     print(f"  host:         {cfg.sftp_host}")
@@ -191,7 +191,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     try:
-        version = importlib.metadata.version("gde2acsv")
+        version = importlib.metadata.version("districtsync")
     except importlib.metadata.PackageNotFoundError:
         version = "dev"
 
@@ -199,14 +199,14 @@ if __name__ == "__main__":
         description="SIS Data ETL Tool for myBlueprint - SpacesEDU",
         epilog=(
             "SFTP setup (headless / Docker):\n"
-            "  GDE2Acsv --sftp-configure --sftp-host HOST --sftp-user USER --sftp-remote PATH\n"
+            "  DistrictSync --sftp-configure --sftp-host HOST --sftp-user USER --sftp-remote PATH\n"
             f"  (password read from ${SFTP_PASSWORD_ENV_VAR} env var, --sftp-password-stdin, or prompt)\n"
-            "  GDE2Acsv --sftp-test       # verify stored credentials\n"
-            "  GDE2Acsv --sftp-show       # print current SFTP configuration\n"
+            "  DistrictSync --sftp-test       # verify stored credentials\n"
+            "  DistrictSync --sftp-show       # print current SFTP configuration\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version=f"GDE2Acsv {version}")
+    parser.add_argument("--version", action="version", version=f"DistrictSync {version}")
 
     # ETL pipeline flags (required only when running the pipeline)
     parser.add_argument("--sis", help="SIS type (e.g., myedbc, sd40myedbc)")

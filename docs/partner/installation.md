@@ -1,6 +1,6 @@
 # Partner Installation Guide
 
-This guide walks you through installing and configuring GDE2Acsv on your school district's server. The entire process takes approximately 15–20 minutes.
+This guide walks you through installing and configuring DistrictSync on your school district's server. The entire process takes approximately 15–20 minutes.
 
 ---
 
@@ -16,15 +16,15 @@ Before you begin, ensure you have:
 
 ---
 
-## Step 1 — Download GDE2Acsv
+## Step 1 — Download DistrictSync
 
-1. Visit the [Releases page](https://github.com/myblueprint/GDE2Acsv/releases/latest)
+1. Visit the [Releases page](https://github.com/myblueprint-spaces/DistrictSync/releases/latest)
 2. Download the file for your platform:
-   - **Windows:** `GDE2Acsv-windows.exe`
-   - **Linux:** `GDE2Acsv-linux`
+   - **Windows:** `DistrictSync-windows.exe`
+   - **Linux:** `DistrictSync-linux`
 
 3. Put the file somewhere sensible. **The .exe can live anywhere** —
-   Desktop, `C:\Program Files\GDE2Acsv\`, `/opt/gde2acsv/`, a USB
+   Desktop, `C:\Program Files\DistrictSync\`, `/opt/districtsync/`, a USB
    stick, a shared network drive. Your settings, logs, and any
    custom mappings are written to your user home directory
    (see [Where does data live?](#where-does-data-live) below), not
@@ -34,32 +34,32 @@ Before you begin, ensure you have:
 
 === "Windows"
     ```
-    C:\GDE2Acsv\
-      GDE2Acsv-windows.exe
+    C:\DistrictSync\
+      DistrictSync-windows.exe
     ```
 
 === "Linux"
     ```bash
-    sudo mkdir -p /opt/gde2acsv
-    sudo mv GDE2Acsv-linux /opt/gde2acsv/GDE2Acsv
-    sudo chmod +x /opt/gde2acsv/GDE2Acsv
+    sudo mkdir -p /opt/districtsync
+    sudo mv DistrictSync-linux /opt/districtsync/DistrictSync
+    sudo chmod +x /opt/districtsync/DistrictSync
     ```
 
 ### Where does data live?
 
-All runtime state is stored in `~/.gde2acsv/` (your user home
+All runtime state is stored in `~/.districtsync/` (your user home
 directory). This works the same on every platform and survives
 updates to the .exe:
 
 | File | Purpose |
 |------|---------|
-| `~/.gde2acsv/config.json` | Wizard settings (input/output paths, SFTP host, schedule) |
-| `~/.gde2acsv/etl_tool.log` | All ETL run history — wizard runs, scheduled runs, and CLI runs all write here |
-| `~/.gde2acsv/mappings/*.yaml` | Any district mappings you create in the Mapping Editor (persists across exe upgrades) |
+| `~/.districtsync/config.json` | Wizard settings (input/output paths, SFTP host, schedule) |
+| `~/.districtsync/etl_tool.log` | All ETL run history — wizard runs, scheduled runs, and CLI runs all write here |
+| `~/.districtsync/mappings/*.yaml` | Any district mappings you create in the Mapping Editor (persists across exe upgrades) |
 | OS credential store | SFTP password (Windows Credential Manager / macOS Keychain / Linux Secret Service) |
 
 On Windows that path is
-`C:\Users\<your-username>\.gde2acsv\`. You can back up or inspect
+`C:\Users\<your-username>\.districtsync\`. You can back up or inspect
 this folder at any time. Deleting it resets the tool to first-run
 state.
 
@@ -72,7 +72,7 @@ state.
     [Step 3 — Headless configuration](#step-3-headless-configuration-linux-docker-no-browser)
     or see the dedicated [Headless & Docker SFTP Setup](headless-sftp-setup.md) guide.
 
-1. Double-click `GDE2Acsv-windows.exe`
+1. Double-click `DistrictSync-windows.exe`
 2. Your browser will open automatically at `http://localhost:8501`
 3. Follow the 5-step Setup Wizard:
 
@@ -80,8 +80,8 @@ state.
 
 | Field | Example | Notes |
 |-------|---------|-------|
-| GDE Input Directory | `C:\GDE2Acsv\input` | Where MyEdBC places the GDE files |
-| CSV Output Directory | `C:\GDE2Acsv\output` | Where CSVs will be written |
+| GDE Input Directory | `C:\DistrictSync\input` | Where MyEdBC places the GDE files |
+| CSV Output Directory | `C:\DistrictSync\output` | Where CSVs will be written |
 
 Click **Validate & Continue**.
 
@@ -113,7 +113,7 @@ Click **Test Connection** to verify the credentials work.
 
 Review your settings and click **Save & Activate Schedule** (or **Save Configuration** if no schedule was enabled).
 
-If a schedule was enabled, GDE2Acsv will create a Windows Task Scheduler entry named `GDE2Acsv_Daily` that runs every day at the time you specified.
+If a schedule was enabled, DistrictSync will create a Windows Task Scheduler entry named `DistrictSync_Daily` that runs every day at the time you specified.
 
 After saving, the Setup Wizard switches to a management dashboard where you can view, edit, or disable the schedule and SFTP settings at any time without re-running the wizard.
 
@@ -130,21 +130,21 @@ one-liners needed.
 
 ```bash
 # Interactive — prompts for each field (password input is hidden):
-/opt/gde2acsv/GDE2Acsv --sftp-configure
+/opt/districtsync/DistrictSync --sftp-configure
 
 # Or fully scripted with the password in an env var:
-export GDE2ACSV_SFTP_PASSWORD='your-password-here'
-/opt/gde2acsv/GDE2Acsv --sftp-configure \
+export DISTRICTSYNC_SFTP_PASSWORD='your-password-here'
+/opt/districtsync/DistrictSync --sftp-configure \
   --sftp-host sftp.ca.spacesedu.com \
   --sftp-user your_username \
   --sftp-remote /files
-unset GDE2ACSV_SFTP_PASSWORD
+unset DISTRICTSYNC_SFTP_PASSWORD
 
 # Verify:
-/opt/gde2acsv/GDE2Acsv --sftp-test
+/opt/districtsync/DistrictSync --sftp-test
 ```
 
-The host/port/user/remote path are written to `~/.gde2acsv/config.json`;
+The host/port/user/remote path are written to `~/.districtsync/config.json`;
 the password is stored in the OS credential store via the `keyring`
 library (Linux Secret Service, macOS Keychain, or Windows Credential
 Manager — depending on the platform).
@@ -157,7 +157,7 @@ scripted password piping via stdin, see the dedicated guide:
 
 ```bash
 # Run daily at 3:00 AM
-(crontab -l 2>/dev/null; echo "0 3 * * * /opt/gde2acsv/GDE2Acsv --sis myedbc --input /data/gde/input --output /data/gde/output --sftp # GDE2Acsv managed entry") | crontab -
+(crontab -l 2>/dev/null; echo "0 3 * * * /opt/districtsync/DistrictSync --sis myedbc --input /data/gde/input --output /data/gde/output --sftp # DistrictSync managed entry") | crontab -
 ```
 
 ---
@@ -169,12 +169,12 @@ scripted password piping via stdin, see the dedicated guide:
 === "Windows"
     Open Command Prompt as Administrator:
     ```cmd
-    C:\GDE2Acsv\GDE2Acsv-windows.exe --sis myedbc --input C:\GDE2Acsv\input --output C:\GDE2Acsv\output --dry-run
+    C:\DistrictSync\DistrictSync-windows.exe --sis myedbc --input C:\DistrictSync\input --output C:\DistrictSync\output --dry-run
     ```
 
 === "Linux"
     ```bash
-    /opt/gde2acsv/GDE2Acsv --sis myedbc --input /data/gde/input --output /data/gde/output --dry-run
+    /opt/districtsync/DistrictSync --sis myedbc --input /data/gde/input --output /data/gde/output --dry-run
     ```
 
 A successful dry run prints a summary like:
@@ -191,7 +191,7 @@ A successful dry run prints a summary like:
 ### Verify Task Scheduler (Windows)
 
 1. Open **Task Scheduler** (search in Start menu)
-2. Look for **GDE2Acsv_Daily** in the task list
+2. Look for **DistrictSync_Daily** in the task list
 3. Right-click → **Run** to trigger a test run immediately
 
 ---
@@ -200,24 +200,24 @@ A successful dry run prints a summary like:
 
 The ETL log is written to `etl_tool.log` in the current working directory at run time.
 
-- **Windows:** Task Scheduler's **Start in** field controls this — set it to `C:\GDE2Acsv\` and the log appears there. The Setup Wizard sets this automatically.
-- **Linux:** The log is written to whichever directory you run the command from (e.g. `/opt/gde2acsv/`).
+- **Windows:** Task Scheduler's **Start in** field controls this — set it to `C:\DistrictSync\` and the log appears there. The Setup Wizard sets this automatically.
+- **Linux:** The log is written to whichever directory you run the command from (e.g. `/opt/districtsync/`).
 
 === "Windows"
     ```
-    C:\GDE2Acsv\etl_tool.log
+    C:\DistrictSync\etl_tool.log
     ```
 
 === "Linux"
     ```bash
-    tail -50 /opt/gde2acsv/etl_tool.log
+    tail -50 /opt/districtsync/etl_tool.log
     ```
 
 A successful run ends with:
 
 ```
 INFO - ETL process completed successfully.
-INFO - Committed 5 output file(s) to C:\GDE2Acsv\output
+INFO - Committed 5 output file(s) to C:\DistrictSync\output
 INFO - SFTP upload complete: 5 file(s) uploaded
 ```
 
@@ -225,12 +225,12 @@ INFO - SFTP upload complete: 5 file(s) uploaded
 
 ## What happens each day
 
-1. **03:00 AM** — Task Scheduler / cron starts `GDE2Acsv`
+1. **03:00 AM** — Task Scheduler / cron starts `DistrictSync`
 2. Tool reads GDE files from the input directory
 3. Transforms data into 5 CSV files
 4. Checks for anomalies — if any entity's record count has dropped more than 20% compared to the previous run, a warning is logged
 5. Writes all 5 CSVs atomically (all succeed or none are committed)
-6. Zips all 5 CSVs into a single dated file (`gde2acsv_YYYY-MM-DD.zip`) and uploads to SpacesEDU via SFTP
+6. Zips all 5 CSVs into a single dated file (`districtsync_YYYY-MM-DD.zip`) and uploads to SpacesEDU via SFTP
 7. Writes a detailed log entry to `etl_tool.log`
 
 ---

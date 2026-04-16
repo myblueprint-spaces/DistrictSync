@@ -14,12 +14,12 @@ The tool logs a warning for each missing file and skips the affected entity. For
 
 Yes, at any time:
 ```cmd
-GDE2Acsv-windows.exe --sis myedbc --input C:\GDE2Acsv\input --output C:\GDE2Acsv\output
+DistrictSync-windows.exe --sis myedbc --input C:\DistrictSync\input --output C:\DistrictSync\output
 ```
 
 Add `--sftp` to also upload after generating:
 ```cmd
-GDE2Acsv-windows.exe --sis myedbc --input ... --output ... --sftp
+DistrictSync-windows.exe --sis myedbc --input ... --output ... --sftp
 ```
 
 **Q: Can I preview the output without writing files?**
@@ -36,11 +36,11 @@ Only students with `Enrolment Status = Active` are included. Students with statu
 
 **Q: What does "blended class" mean?**
 
-A blended class is detected when the same teacher teaches multiple sections at the same time slot but with students from different grade levels. GDE2Acsv automatically merges these into a single class record for SpacesEDU. The class is named after the teacher, course titles, and grade range (e.g., "Reed - Science 3 / Science 4 (03/04) 2025"). See [How Classes Work](how-classes-work.md) for full details on class types.
+A blended class is detected when the same teacher teaches multiple sections at the same time slot but with students from different grade levels. DistrictSync automatically merges these into a single class record for SpacesEDU. The class is named after the teacher, course titles, and grade range (e.g., "Reed - Science 3 / Science 4 (03/04) 2025"). See [How Classes Work](how-classes-work.md) for full details on class types.
 
 **Q: Why does the grade show as "01" instead of "1"?**
 
-GDE2Acsv maps all grade codes to the CEDS (Common Education Data Standards) format:
+DistrictSync maps all grade codes to the CEDS (Common Education Data Standards) format:
 
 | MyEdBC grade | CEDS output |
 |-------------|-------------|
@@ -60,7 +60,7 @@ No. The schedule is optional. You can use the **Convert** page in the web UI to 
 
 **Q: How are files uploaded via SFTP?**
 
-All 5 output CSVs are zipped into a single dated file (e.g., `gde2acsv_2026-04-08.zip`) and uploaded as one file. This applies to both scheduled runs and ad-hoc uploads from the Convert page.
+All 5 output CSVs are zipped into a single dated file (e.g., `districtsync_2026-04-08.zip`) and uploaded as one file. This applies to both scheduled runs and ad-hoc uploads from the Convert page.
 
 **Q: Can I change the schedule or SFTP settings after setup?**
 
@@ -70,7 +70,7 @@ Yes. Open the **Setup Wizard** page — if you've already completed setup, it sh
 
 ## What happens after upload (SpacesEDU import)
 
-GDE2Acsv generates the CSV files and uploads them. **SpacesEDU** then imports them. The following describes SpacesEDU's import behavior — not GDE2Acsv's.
+DistrictSync generates the CSV files and uploads them. **SpacesEDU** then imports them. The following describes SpacesEDU's import behavior — not DistrictSync's.
 
 **Q: In what order does SpacesEDU process the files?**
 
@@ -120,7 +120,7 @@ No. The `.exe` file is a self-contained executable that includes Python, all lib
 
 **Q: Where are SFTP credentials stored?**
 
-Credentials are stored in the Windows Credential Manager (Windows) or the equivalent OS keychain — never in a plain text file. The configuration file (`~/.gde2acsv/config.json`) stores only non-sensitive settings like host and port.
+Credentials are stored in the Windows Credential Manager (Windows) or the equivalent OS keychain — never in a plain text file. The configuration file (`~/.districtsync/config.json`) stores only non-sensitive settings like host and port.
 
 **Q: Can I run this on multiple districts from the same server?**
 
@@ -128,13 +128,13 @@ Yes, by creating separate scheduled tasks with different `--sis`, `--input`, and
 
 **Q: How do I update to a newer version?**
 
-1. Download the new `.exe` from the [Releases page](https://github.com/myblueprint/GDE2Acsv/releases/latest)
-2. Replace the existing `.exe` in `C:\GDE2Acsv\`
+1. Download the new `.exe` from the [Releases page](https://github.com/myblueprint-spaces/DistrictSync/releases/latest)
+2. Replace the existing `.exe` in `C:\DistrictSync\`
 3. The scheduled task continues to work automatically — no reconfiguration needed
 
 **Q: Is there a web-based UI?**
 
-Yes — double-clicking `GDE2Acsv-windows.exe` (with no arguments) opens a browser-based UI at `http://localhost:8501`. It includes five pages: Setup Wizard, Convert, Run History, Mapping Editor, and Help & Docs. When run with `--sis`/`--input`/`--output` arguments (e.g. from Task Scheduler), it runs headlessly without opening a browser.
+Yes — double-clicking `DistrictSync-windows.exe` (with no arguments) opens a browser-based UI at `http://localhost:8501`. It includes five pages: Setup Wizard, Convert, Run History, Mapping Editor, and Help & Docs. When run with `--sis`/`--input`/`--output` arguments (e.g. from Task Scheduler), it runs headlessly without opening a browser.
 
 **Q: Can I customize field mappings without editing YAML?**
 
@@ -146,13 +146,13 @@ For security, SFTP uploads are restricted to SpacesEDU servers only (sftp.ca.spa
 
 **Q: What does the record count drop warning mean?**
 
-After each run, GDE2Acsv compares output against the previous run. If any entity (Students, Classes, etc.) dropped by more than 20%, a warning is logged. This usually means the GDE export was partial or corrupted — re-export from MyEdBC.
+After each run, DistrictSync compares output against the previous run. If any entity (Students, Classes, etc.) dropped by more than 20%, a warning is logged. This usually means the GDE export was partial or corrupted — re-export from MyEdBC.
 
-**Q: Where does GDE2Acsv store my settings, logs, and custom mappings?**
+**Q: Where does DistrictSync store my settings, logs, and custom mappings?**
 
-All runtime state is written to `~/.gde2acsv/` — which is
-`C:\Users\<username>\.gde2acsv\` on Windows, `/home/<user>/.gde2acsv/` on Linux,
-and `/Users/<user>/.gde2acsv/` on macOS. Specifically:
+All runtime state is written to `~/.districtsync/` — which is
+`C:\Users\<username>\.districtsync\` on Windows, `/home/<user>/.districtsync/` on Linux,
+and `/Users/<user>/.districtsync/` on macOS. Specifically:
 
 - `config.json` — wizard settings (input/output paths, SFTP host, schedule time).
 - `etl_tool.log` — history of every run (wizard, scheduled, CLI). The Run History page reads this file.
@@ -160,8 +160,8 @@ and `/Users/<user>/.gde2acsv/` on macOS. Specifically:
 
 Your SFTP password is stored in the OS credential manager (Windows Credential Manager / macOS Keychain / Linux Secret Service), never on disk in plain text.
 
-You can back up `~/.gde2acsv/` to preserve your setup, or delete it to reset the tool to a fresh-install state. The `.exe` itself can live anywhere (Desktop, Program Files, USB stick) — it doesn't store anything next to itself.
+You can back up `~/.districtsync/` to preserve your setup, or delete it to reset the tool to a fresh-install state. The `.exe` itself can live anywhere (Desktop, Program Files, USB stick) — it doesn't store anything next to itself.
 
 **Q: I see a warning about `pkg_resources is deprecated` when I run the .exe from a terminal. Is that a problem?**
 
-No. That warning comes from the Python packaging machinery that PyInstaller embeds in the binary — not from GDE2Acsv itself. It prints once at startup and is harmless. Partners who double-click the .exe never see it because there's no terminal window. It will go away once PyInstaller upgrades its internal bootstrap code.
+No. That warning comes from the Python packaging machinery that PyInstaller embeds in the binary — not from DistrictSync itself. It prints once at startup and is harmless. Partners who double-click the .exe never see it because there's no terminal window. It will go away once PyInstaller upgrades its internal bootstrap code.

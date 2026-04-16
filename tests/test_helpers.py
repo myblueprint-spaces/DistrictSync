@@ -118,22 +118,22 @@ class TestDistrictSlug:
 class TestBuildZipName:
     def test_with_district(self):
         result = build_zip_name("sd40myedbc", for_date=date(2026, 4, 10))
-        assert result == "gde2acsv_sd40_2026-04-10.zip"
+        assert result == "districtsync_sd40_2026-04-10.zip"
 
     def test_with_base_district(self):
         result = build_zip_name("myedbc", for_date=date(2026, 4, 10))
-        assert result == "gde2acsv_myedbc_2026-04-10.zip"
+        assert result == "districtsync_myedbc_2026-04-10.zip"
 
     def test_without_district_falls_back_to_date_only(self):
         """Legacy callers that don't know the district get the old format."""
         result = build_zip_name(for_date=date(2026, 4, 10))
-        assert result == "gde2acsv_2026-04-10.zip"
+        assert result == "districtsync_2026-04-10.zip"
 
     def test_none_district_matches_default(self):
         result = build_zip_name(sis_type=None, for_date=date(2026, 4, 10))
-        assert result == "gde2acsv_2026-04-10.zip"
+        assert result == "districtsync_2026-04-10.zip"
 
     def test_uses_today_when_no_date_provided(self):
         result = build_zip_name("sd40myedbc")
         today = date.today().isoformat()
-        assert result == f"gde2acsv_sd40_{today}.zip"
+        assert result == f"districtsync_sd40_{today}.zip"

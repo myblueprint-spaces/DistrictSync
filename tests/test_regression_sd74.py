@@ -41,7 +41,7 @@ class TestSD74Regression:
         Redirect the bundle mapping lookup to the frozen snapshot dir and
         blank out the user-mappings dir, so only the snapshotted configs
         are consulted (not the live `config/mappings/` or any stray
-        `~/.gde2acsv/mappings/` overrides).
+        `~/.districtsync/mappings/` overrides).
         """
         out = tmp_path_factory.mktemp("sd74_regression")
         empty_user_dir = tmp_path_factory.mktemp("empty_user_mappings")

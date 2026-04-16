@@ -232,7 +232,7 @@ def create_zip(outputs: dict[str, pd.DataFrame]) -> bytes:
 # Page layout
 # ---------------------------------------------------------------------------
 
-st.set_page_config(page_title="Convert — GDE2Acsv", page_icon="🔄", layout="wide")
+st.set_page_config(page_title="Convert — DistrictSync", page_icon="🔄", layout="wide")
 inject_brand_css()
 header("Ad-hoc Conversion", "Upload GDE files and download the converted CSVs directly in the browser")
 
@@ -401,4 +401,4 @@ if outputs:
                     st.error(f"SFTP upload failed: {e}")
 
 st.divider()
-st.caption("SpacesEDU by myBlueprint · GDE2Acsv · support@myBlueprint.ca")
+st.caption("SpacesEDU by myBlueprint · DistrictSync · support@myBlueprint.ca")

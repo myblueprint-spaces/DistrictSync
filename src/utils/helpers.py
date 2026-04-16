@@ -74,12 +74,12 @@ def district_slug(sis_type: str) -> str:
 def build_zip_name(sis_type: str | None = None, for_date: date | None = None) -> str:
     """Build the canonical output zip filename.
 
-    Pattern: ``gde2acsv_<district>_<YYYY-MM-DD>.zip`` when sis_type is known,
-    falling back to ``gde2acsv_<YYYY-MM-DD>.zip`` for legacy callers that
+    Pattern: ``districtsync_<district>_<YYYY-MM-DD>.zip`` when sis_type is known,
+    falling back to ``districtsync_<YYYY-MM-DD>.zip`` for legacy callers that
     don't pass a district (preserves backwards compatibility with existing
     SFTP uploads that use only the date).
     """
     when = (for_date or date.today()).isoformat()
     if sis_type:
-        return f"gde2acsv_{district_slug(sis_type)}_{when}.zip"
-    return f"gde2acsv_{when}.zip"
+        return f"districtsync_{district_slug(sis_type)}_{when}.zip"
+    return f"districtsync_{when}.zip"

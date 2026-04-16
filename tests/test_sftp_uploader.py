@@ -114,7 +114,7 @@ class TestUploadCsvs:
         # Only one sftp.put call (the dated ZIP file)
         assert mock_sftp.put.call_count == 1
         remote_path = mock_sftp.put.call_args[0][1]
-        expected_name = f"gde2acsv_{date.today().isoformat()}.zip"
+        expected_name = f"districtsync_{date.today().isoformat()}.zip"
         assert remote_path == f"/upload/{expected_name}"
         mock_client.close.assert_called_once()
 

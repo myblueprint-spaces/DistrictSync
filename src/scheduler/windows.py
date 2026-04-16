@@ -1,6 +1,6 @@
 """Windows Task Scheduler integration via ``schtasks.exe``.
 
-Creates a daily scheduled task that runs the GDE2Acsv CLI at a
+Creates a daily scheduled task that runs the DistrictSync CLI at a
 specified time.  No third-party dependencies — uses subprocess only.
 
 Usage::
@@ -8,8 +8,8 @@ Usage::
     from src.scheduler.windows import register_task, query_task, delete_task
 
     ok, msg = register_task(
-        task_name="GDE2Acsv_Daily",
-        exe_path=Path("C:/GDE2Acsv/GDE2Acsv.exe"),
+        task_name="DistrictSync_Daily",
+        exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
         sis_type="myedbc",
         input_dir=Path("C:/GDE2Data/input"),
         output_dir=Path("C:/GDE2Data/output"),
@@ -41,7 +41,7 @@ def _build_task_command(
     """Construct the /TR command that Task Scheduler will execute.
 
     Two modes:
-      - Frozen PyInstaller binary (e.g. GDE2Acsv.exe): invoke the exe
+      - Frozen PyInstaller binary (e.g. DistrictSync.exe): invoke the exe
         directly — ``"<exe>" --sis X --input Y --output Z [--sftp]``.
       - Python interpreter (dev / source install): wrap in cmd.exe so we
         can cd into the project root and invoke ``python -m src.main``.
@@ -90,8 +90,8 @@ def register_task(
     """Create or replace a Windows scheduled task.
 
     Args:
-        task_name: Name displayed in Task Scheduler (e.g. "GDE2Acsv_Daily").
-        exe_path:  Absolute path to GDE2Acsv.exe *or* the python.exe
+        task_name: Name displayed in Task Scheduler (e.g. "DistrictSync_Daily").
+        exe_path:  Absolute path to DistrictSync.exe *or* the python.exe
                    interpreter when running from source.
         sis_type:  SIS config identifier (e.g. "myedbc").
         input_dir: Directory containing GDE source files.

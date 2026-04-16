@@ -1,4 +1,4 @@
-"""PyInstaller entry point for the GDE2Acsv UI executable.
+"""PyInstaller entry point for the DistrictSync UI executable.
 
 When frozen with PyInstaller, this script locates the Streamlit app
 and launches it programmatically, opening the browser automatically.

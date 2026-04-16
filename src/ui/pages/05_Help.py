@@ -16,9 +16,9 @@ if str(_root) not in sys.path:
 
 from src.ui.brand import header, inject_brand_css  # noqa: E402
 
-st.set_page_config(page_title="Help — GDE2Acsv", page_icon="❓", layout="wide")
+st.set_page_config(page_title="Help — DistrictSync", page_icon="❓", layout="wide")
 inject_brand_css()
-header("Help & Documentation", "How GDE2Acsv works and what to expect")
+header("Help & Documentation", "How DistrictSync works and what to expect")
 
 DOCS_DIR = Path("docs")
 
@@ -82,4 +82,4 @@ with tab_dev:
         st.markdown(_read_doc("developer/release.md"))
 
 st.divider()
-st.caption("SpacesEDU by myBlueprint · GDE2Acsv · support@myBlueprint.ca")
+st.caption("SpacesEDU by myBlueprint · DistrictSync · support@myBlueprint.ca")

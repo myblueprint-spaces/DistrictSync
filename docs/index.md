@@ -6,11 +6,11 @@ hide:
 
 <div class="mb-hero">
 <img src="assets/spacesedu-wordmark.png" alt="SpacesEDU" style="height:40px;margin-bottom:1rem;filter:brightness(0) invert(1)">
-<h1>GDE2Acsv</h1>
+<h1>DistrictSync</h1>
 <p>Convert MyEducation BC General Data Extracts to SpacesEDU Advanced CSV — automatically, every night.</p>
 
-[Download for Windows](https://github.com/myblueprint/GDE2Acsv/releases/latest/download/GDE2Acsv-windows.exe){ .md-button }
-[View on GitHub](https://github.com/myblueprint/GDE2Acsv){ .md-button .md-button--secondary }
+[Download for Windows](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-windows.exe){ .md-button }
+[View on GitHub](https://github.com/myblueprint-spaces/DistrictSync){ .md-button .md-button--secondary }
 
 </div>
 
@@ -29,9 +29,9 @@ Get the latest release for your platform:
 
 | Platform | Download | Notes |
 |----------|----------|-------|
-| **Windows** | [GDE2Acsv-windows.exe](https://github.com/myblueprint/GDE2Acsv/releases/latest/download/GDE2Acsv-windows.exe) | Double-click to open Setup Wizard |
-| **Linux** | [GDE2Acsv-linux](https://github.com/myblueprint/GDE2Acsv/releases/latest/download/GDE2Acsv-linux) | `chmod +x` before first run |
-| **macOS** | [GDE2Acsv-macos](https://github.com/myblueprint/GDE2Acsv/releases/latest/download/GDE2Acsv-macos) | Allow in System Settings › Privacy & Security |
+| **Windows** | [DistrictSync-windows.exe](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-windows.exe) | Double-click to open Setup Wizard |
+| **Linux** | [DistrictSync-linux](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-linux) | `chmod +x` before first run |
+| **macOS** | [DistrictSync-macos](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos) | Allow in System Settings › Privacy & Security |
 
 !!! tip "First time?"
     Start with the **[Partner Installation Guide](partner/installation.md)** for step-by-step setup instructions including the Setup Wizard walkthrough.
@@ -41,7 +41,7 @@ Get the latest release for your platform:
 ## What it does
 
 ```
-GDE files  →  GDE2Acsv  →  SpacesEDU CSV files  →  SFTP upload
+GDE files  →  DistrictSync  →  SpacesEDU CSV files  →  SFTP upload
 ```
 
 | Input (MyEdBC GDE) | Output (SpacesEDU) |
@@ -84,7 +84,7 @@ GitHub Actions then:
 2. Builds platform executables — Windows `.exe`, Linux binary, macOS binary — in parallel
 3. Creates a GitHub Release with all three files attached and download links in the release notes
 
-Partners can always get the latest version from the [Releases page](https://github.com/myblueprint/GDE2Acsv/releases/latest) — the `/releases/latest/download/` URL always resolves to the most recent release.
+Partners can always get the latest version from the [Releases page](https://github.com/myblueprint-spaces/DistrictSync/releases/latest) — the `/releases/latest/download/` URL always resolves to the most recent release.
 
 ---
 

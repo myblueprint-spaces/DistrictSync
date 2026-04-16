@@ -1,4 +1,4 @@
-"""Cross-platform task scheduler integration for GDE2Acsv.
+"""Cross-platform task scheduler integration for DistrictSync.
 
 - Windows: wraps schtasks.exe (Task Scheduler)
 - Linux/macOS: wraps crontab

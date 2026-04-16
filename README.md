@@ -1,4 +1,4 @@
-# GDE2Acsv
+# DistrictSync
 
 Converts **MyEducation BC General Data Extracts (GDEs)** into **SpacesEDU Advanced CSV** format for school districts in British Columbia.
 
@@ -8,11 +8,11 @@ Distributed as single-file executables for district servers. Runs daily via Wind
 
 | Platform | File | Notes |
 |----------|------|-------|
-| **Windows** | [GDE2Acsv-windows.exe](https://github.com/sh4npeiris/GDE2Acsv/releases/latest/download/GDE2Acsv-windows.exe) | Double-click to open Setup Wizard, or use in Task Scheduler |
-| **Linux** | [GDE2Acsv-linux](https://github.com/sh4npeiris/GDE2Acsv/releases/latest/download/GDE2Acsv-linux) | `chmod +x` before first run |
-| **macOS** | [GDE2Acsv-macos](https://github.com/sh4npeiris/GDE2Acsv/releases/latest/download/GDE2Acsv-macos) | Allow in System Settings > Privacy & Security |
+| **Windows** | [DistrictSync-windows.exe](https://github.com/sh4npeiris/DistrictSync/releases/latest/download/DistrictSync-windows.exe) | Double-click to open Setup Wizard, or use in Task Scheduler |
+| **Linux** | [DistrictSync-linux](https://github.com/sh4npeiris/DistrictSync/releases/latest/download/DistrictSync-linux) | `chmod +x` before first run |
+| **macOS** | [DistrictSync-macos](https://github.com/sh4npeiris/DistrictSync/releases/latest/download/DistrictSync-macos) | Allow in System Settings > Privacy & Security |
 
-See the **[Documentation Site](https://sh4npeiris.github.io/GDE2Acsv/)** for full setup instructions, troubleshooting, and FAQ.
+See the **[Documentation Site](https://sh4npeiris.github.io/DistrictSync/)** for full setup instructions, troubleshooting, and FAQ.
 
 ## What It Does
 
@@ -32,10 +32,10 @@ File names vary by district — each district's mapping config specifies its act
 
 ```bash
 # Windows
-.\GDE2Acsv.exe --sis myedbc --input data\input --output data\output
+.\DistrictSync.exe --sis myedbc --input data\input --output data\output
 
 # Linux
-./GDE2Acsv --sis myedbc --input data/input --output data/output
+./DistrictSync --sis myedbc --input data/input --output data/output
 ```
 
 ## District Configurations
@@ -94,7 +94,7 @@ streamlit run src/ui/Home.py
 
 ## Logging
 
-Debug logs written to `etl_tool.log`. Console shows WARNING+ only. Structured `__GDE2ACSV_RUN__` JSON entries are written after each run for the Run History page.
+Debug logs written to `etl_tool.log`. Console shows WARNING+ only. Structured `__DISTRICTSYNC_RUN__` JSON entries are written after each run for the Run History page.
 
 ## Support
 

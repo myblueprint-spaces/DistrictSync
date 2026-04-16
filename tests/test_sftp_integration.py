@@ -89,7 +89,7 @@ class TestSFTPRealUpload:
         assert result == []
 
     def test_upload_zip_name_includes_today(self, sftpserver, tmp_path):
-        """Default ZIP name must match gde2acsv_YYYY-MM-DD.zip."""
+        """Default ZIP name must match districtsync_YYYY-MM-DD.zip."""
         from datetime import date
 
         (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
@@ -116,5 +116,5 @@ class TestSFTPRealUpload:
                 uploader.upload_csvs(tmp_path)
 
         assert len(remote_paths) == 1
-        expected = f"/upload/gde2acsv_{date.today().isoformat()}.zip"
+        expected = f"/upload/districtsync_{date.today().isoformat()}.zip"
         assert remote_paths[0] == expected

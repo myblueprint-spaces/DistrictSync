@@ -10,7 +10,7 @@ from src.config.app_config import AppConfig
 @pytest.fixture
 def config_dir(tmp_path, monkeypatch):
     """Redirect AppConfig to a temp directory."""
-    cfg_dir = tmp_path / ".gde2acsv"
+    cfg_dir = tmp_path / ".districtsync"
     cfg_file = cfg_dir / "config.json"
     monkeypatch.setattr("src.config.app_config.APP_CONFIG_DIR", cfg_dir)
     monkeypatch.setattr("src.config.app_config.APP_CONFIG_FILE", cfg_file)

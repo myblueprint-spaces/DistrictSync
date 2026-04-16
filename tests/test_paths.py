@@ -20,7 +20,7 @@ def redirect_home(tmp_path, monkeypatch):
 class TestUserDataDir:
     def test_creates_dir_on_access(self, redirect_home):
         d = paths_module.user_data_dir()
-        assert d == redirect_home / ".gde2acsv"
+        assert d == redirect_home / ".districtsync"
         assert d.exists() and d.is_dir()
 
     def test_idempotent(self, redirect_home):
@@ -32,14 +32,14 @@ class TestUserDataDir:
 class TestUserMappingsDir:
     def test_nested_under_user_data(self, redirect_home):
         d = paths_module.user_mappings_dir()
-        assert d == redirect_home / ".gde2acsv" / "mappings"
+        assert d == redirect_home / ".districtsync" / "mappings"
         assert d.exists() and d.is_dir()
 
 
 class TestUserLogFile:
     def test_path_under_user_data(self, redirect_home):
         p = paths_module.user_log_file()
-        assert p == redirect_home / ".gde2acsv" / "etl_tool.log"
+        assert p == redirect_home / ".districtsync" / "etl_tool.log"
 
 
 @pytest.fixture

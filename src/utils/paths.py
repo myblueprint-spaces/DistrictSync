@@ -41,9 +41,9 @@ def user_data_dir() -> Path:
     """Persistent per-user data directory (logs, custom mappings, app config).
 
     Created on first access if missing. Same dir used by AppConfig
-    (`~/.gde2acsv/config.json`).
+    (`~/.districtsync/config.json`).
     """
-    path = Path.home() / ".gde2acsv"
+    path = Path.home() / ".districtsync"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

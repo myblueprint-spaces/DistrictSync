@@ -1,7 +1,7 @@
 """Runtime application configuration (non-sensitive settings only).
 
 Stores the partner's setup wizard choices to disk at
-``~/.gde2acsv/config.json``.  SFTP passwords are NOT stored here —
+``~/.districtsync/config.json``.  SFTP passwords are NOT stored here —
 they are stored in the OS credential store via the ``keyring`` library.
 """
 
@@ -16,7 +16,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-APP_CONFIG_DIR = Path.home() / ".gde2acsv"
+APP_CONFIG_DIR = Path.home() / ".districtsync"
 APP_CONFIG_FILE = APP_CONFIG_DIR / "config.json"
 
 
@@ -31,7 +31,7 @@ class AppConfig:
 
     # Scheduling
     schedule_time: str = "03:00"  # HH:MM (24-hour)
-    schedule_task_name: str = "GDE2Acsv_Daily"
+    schedule_task_name: str = "DistrictSync_Daily"
     schedule_registered: bool = False
 
     # SFTP (non-sensitive only)

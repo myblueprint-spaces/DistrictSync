@@ -31,7 +31,7 @@ from src.utils.validators import validate_sftp_host
 
 logger = logging.getLogger(__name__)
 
-KEYRING_SERVICE = "GDE2Acsv_SFTP"
+KEYRING_SERVICE = "DistrictSync_SFTP"
 
 
 class SFTPUploader:
@@ -141,9 +141,9 @@ class SFTPUploader:
             output_dir: Local directory containing the generated CSV files.
             zip_name: Explicit name of the ZIP file. If not provided, the name
                 is derived from ``sis_type`` and today's date via
-                ``build_zip_name`` — e.g. ``gde2acsv_sd40_2026-04-10.zip``
+                ``build_zip_name`` — e.g. ``districtsync_sd40_2026-04-10.zip``
                 when ``sis_type='sd40myedbc'``, or
-                ``gde2acsv_2026-04-10.zip`` when no ``sis_type`` is provided.
+                ``districtsync_2026-04-10.zip`` when no ``sis_type`` is provided.
             sis_type: District SIS identifier used to derive the default
                 ``zip_name``. Ignored when ``zip_name`` is provided explicitly.
 

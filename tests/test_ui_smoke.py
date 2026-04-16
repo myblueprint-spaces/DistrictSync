@@ -48,10 +48,10 @@ class TestHomePageSmoke:
         _wait_for_page(page, streamlit_server)
 
     def test_home_shows_app_title(self, page, streamlit_server):
-        """The GDE2Acsv app name must appear somewhere on the home page."""
+        """The DistrictSync app name must appear somewhere on the home page."""
         _wait_for_page(page, streamlit_server)
-        # Look for the app title in the DOM — any element containing "GDE2Acsv"
-        assert page.locator("text=GDE2Acsv").count() > 0, "GDE2Acsv title not found anywhere on home page"
+        # Look for the app title in the DOM — any element containing "DistrictSync"
+        assert page.locator("text=DistrictSync").count() > 0, "DistrictSync title not found anywhere on home page"
 
     def test_home_has_navigation_sidebar(self, page, streamlit_server):
         """The sidebar navigation must be present."""

@@ -41,7 +41,7 @@ validate-config:
 #   keyring.backends.Windows still needs --hidden-import because
 #   keyring discovers credential-store backends dynamically.
 build-win:
-	pyinstaller --onefile --name GDE2Acsv \
+	pyinstaller --onefile --name DistrictSync \
 	  --add-data "config;config" \
 	  --add-data "src/ui;src/ui" \
 	  --add-data "docs;docs" \
