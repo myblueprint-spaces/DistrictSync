@@ -21,7 +21,7 @@ if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 from src.config.app_config import AppConfig  # noqa: E402
-from src.config.loader import load_config  # noqa: E402
+from src.config.loader import available_configs, load_config  # noqa: E402
 from src.etl.pipeline import extract_required_files  # noqa: E402
 from src.ui.brand import header, inject_brand_css, step_progress  # noqa: E402
 from src.utils.validators import ALLOWED_SFTP_HOSTS  # noqa: E402
@@ -432,8 +432,8 @@ elif st.session_state.wizard_step == 2:
     )
     st.page_link("pages/04_Mapping_Editor.py", label="Need a new district mapping? Open the Mapping Editor", icon="🗺️")
 
-    mapping_dir = Path("config/mappings")
-    available = sorted(p.stem.replace("_mapping", "") for p in mapping_dir.glob("*_mapping.yaml"))
+    # List district configs from user dir + bundled defaults (user wins on name collision)
+    available = available_configs()
 
     # Read district_name from each config; fall back to the config key
     friendly_names: dict[str, str] = {}

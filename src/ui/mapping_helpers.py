@@ -386,8 +386,12 @@ def save_mapping_yaml(district_id: str, override_dict: dict, base_name: str = "m
         if key in override_dict:
             output[key] = override_dict[key]
 
-    config_dir = Path("config/mappings")
-    config_dir.mkdir(parents=True, exist_ok=True)
+    # User-created mappings live in a persistent per-user directory so
+    # they survive exe restarts (the bundled config/mappings dir is a
+    # read-only temp extraction in the frozen exe).
+    from src.utils.paths import user_mappings_dir
+
+    config_dir = user_mappings_dir()
     file_path = config_dir / f"{district_id}myedbc_mapping.yaml"
 
     # Build YAML with comment header

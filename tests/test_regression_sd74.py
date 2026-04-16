@@ -38,11 +38,17 @@ class TestSD74Regression:
     def sd74_output(self, tmp_path_factory):
         """Run SD74 pipeline against snapshot inputs using the frozen config.
 
-        Patching CONFIG_DIR ensures the live config/mappings/ files are not
-        consulted — only the frozen copies in tests/snapshots/config/ are used.
+        Redirect the bundle mapping lookup to the frozen snapshot dir and
+        blank out the user-mappings dir, so only the snapshotted configs
+        are consulted (not the live `config/mappings/` or any stray
+        `~/.gde2acsv/mappings/` overrides).
         """
         out = tmp_path_factory.mktemp("sd74_regression")
-        with patch("src.config.loader.CONFIG_DIR", FROZEN_CONFIG_DIR):
+        empty_user_dir = tmp_path_factory.mktemp("empty_user_mappings")
+        with (
+            patch("src.config.loader.bundle_mappings_dir", return_value=FROZEN_CONFIG_DIR),
+            patch("src.config.loader.user_mappings_dir", return_value=empty_user_dir),
+        ):
             main("sd74myedbc", str(INPUT_DIR), str(out))
         return out
 

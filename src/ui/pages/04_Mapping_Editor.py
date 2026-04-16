@@ -16,7 +16,7 @@ _root = Path(__file__).parent.parent.parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from src.config.loader import load_config  # noqa: E402
+from src.config.loader import available_configs, load_config  # noqa: E402
 from src.ui.brand import header, inject_brand_css, step_progress  # noqa: E402
 from src.ui.mapping_helpers import (  # noqa: E402
     CEDS_GRADES,
@@ -31,8 +31,6 @@ from src.ui.mapping_helpers import (  # noqa: E402
 st.set_page_config(page_title="Mapping Editor — GDE2Acsv", page_icon="🗺️", layout="wide")
 inject_brand_css()
 header("Mapping Editor", "Create or customize your district's data configuration")
-
-MAPPING_DIR = Path("config/mappings")
 
 # ---------------------------------------------------------------------------
 # Session state
@@ -57,11 +55,8 @@ def _go(step: int) -> None:
 
 
 def _get_available_configs() -> list[str]:
-    configs = []
-    if MAPPING_DIR.exists():
-        for p in sorted(MAPPING_DIR.glob("*_mapping.yaml")):
-            configs.append(p.stem.replace("_mapping", ""))
-    return configs
+    """List all district identifiers from user dir + bundled defaults."""
+    return available_configs()
 
 
 def _load_resolved_config(name: str) -> dict:

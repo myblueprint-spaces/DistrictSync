@@ -18,14 +18,13 @@ if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 from src.config.app_config import AppConfig  # noqa: E402
-from src.config.loader import load_config  # noqa: E402
+from src.config.loader import available_configs, load_config  # noqa: E402
 from src.etl.pipeline import extract_required_files  # noqa: E402
 from src.etl.transformer import DataTransformer  # noqa: E402
 from src.quality.report import DataQualityReport  # noqa: E402
 from src.ui.brand import header, inject_brand_css  # noqa: E402
 from src.utils.helpers import build_zip_name, normalize_columns  # noqa: E402
 
-MAPPING_DIR = Path("config/mappings")
 ANOMALY_THRESHOLD = 0.20
 
 # ---------------------------------------------------------------------------
@@ -35,12 +34,8 @@ _app_cfg = AppConfig.load()
 
 
 def get_available_configs() -> list[str]:
-    configs: list[str] = []
-    if MAPPING_DIR.exists():
-        for path in sorted(MAPPING_DIR.glob("*_mapping.yaml")):
-            name = path.stem.replace("_mapping", "")
-            configs.append(name)
-    return configs
+    """List all districts from user dir + bundled defaults."""
+    return available_configs()
 
 
 # ---------------------------------------------------------------------------

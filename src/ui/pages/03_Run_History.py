@@ -17,6 +17,7 @@ if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 from src.ui.brand import header, inject_brand_css  # noqa: E402
+from src.utils.paths import user_log_file  # noqa: E402
 
 st.set_page_config(page_title="Run History — GDE2Acsv", page_icon="📋", layout="wide")
 inject_brand_css()
@@ -24,11 +25,15 @@ header("Run History", "Automated daily ETL run log")
 
 # ---------------------------------------------------------------------------
 # Locate the log file
+#
+# All code paths (manual CLI, wizard, scheduled task) now log to the
+# canonical user-data path. Fall back to a legacy relative location
+# so logs from older dev runs still show up during a transition.
 # ---------------------------------------------------------------------------
 
 LOG_PATHS = [
-    Path("etl_tool.log"),
-    Path.home() / ".gde2acsv" / "etl_tool.log",
+    user_log_file(),
+    Path("etl_tool.log"),  # legacy fallback for very old local runs
 ]
 
 log_file = next((p for p in LOG_PATHS if p.exists()), None)
