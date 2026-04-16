@@ -19,8 +19,8 @@ if str(_root) not in sys.path:
 
 from src.config.app_config import AppConfig  # noqa: E402
 from src.config.loader import load_config  # noqa: E402
+from src.etl.pipeline import extract_required_files  # noqa: E402
 from src.etl.transformer import DataTransformer  # noqa: E402
-from src.main import extract_required_files  # noqa: E402
 from src.quality.report import DataQualityReport  # noqa: E402
 from src.ui.brand import header, inject_brand_css  # noqa: E402
 from src.utils.helpers import build_zip_name, normalize_columns  # noqa: E402
@@ -82,7 +82,8 @@ def _load_uploaded_file(
                 df = pd.read_csv(io.BytesIO(content), **kwargs)
                 if len(df.columns) > 1 and not df.empty:
                     return normalize_columns(df)
-            except Exception:  # nosec B112 - try next encoding/delimiter combo
+            # Try the next encoding/delimiter combo before falling back to UTF-8 replace.
+            except Exception:  # nosec B112
                 continue
 
     # Last resort: force UTF-8 with error replacement
@@ -150,7 +151,8 @@ def _check_anomalies_ui(
         try:
             with open(prev_path, encoding="utf-8") as f:
                 prev_count = sum(1 for _ in f) - 1
-        except Exception:  # nosec B112 - skip unreadable previous files
+        # Skip unreadable previous output files — missing baseline is fine.
+        except Exception:  # nosec B112
             continue
         if prev_count > 0 and len(df) < prev_count * (1 - ANOMALY_THRESHOLD):
             pct = ((prev_count - len(df)) / prev_count) * 100

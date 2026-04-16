@@ -22,7 +22,7 @@ if str(_root) not in sys.path:
 
 from src.config.app_config import AppConfig  # noqa: E402
 from src.config.loader import load_config  # noqa: E402
-from src.main import extract_required_files  # noqa: E402
+from src.etl.pipeline import extract_required_files  # noqa: E402
 from src.ui.brand import header, inject_brand_css, step_progress  # noqa: E402
 from src.utils.validators import ALLOWED_SFTP_HOSTS  # noqa: E402
 
@@ -155,7 +155,7 @@ if st.session_state.wizard_view == "manage":
             try:
                 h, m = cfg.schedule_time.split(":")
                 current_time = datetime.time(int(h), int(m))
-            except Exception:  # nosec B110
+            except Exception:
                 current_time = datetime.time(3, 0)
             new_time = st.time_input("New daily run time (24-hour)", value=current_time, key="manage_schedule_time")
             if st.button("Update Schedule", type="primary"):
@@ -413,7 +413,8 @@ if st.session_state.wizard_step == 1:
                     missing_check = [f for f in expected if not (Path(input_dir) / f).exists()]
                     if missing_check:
                         st.warning(f"Expected GDE files not found in input directory: {', '.join(missing_check)}")
-                except Exception:  # nosec B110 - optional file check
+                # Optional file-existence check; a failure here isn't fatal.
+                except Exception:  # nosec B110
                     pass
 
             _go(2)
@@ -440,7 +441,7 @@ elif st.session_state.wizard_step == 2:
         try:
             loaded_cfg = load_config(key)
             friendly_names[key] = loaded_cfg.district_name or key
-        except Exception:  # nosec B110 - fallback to key if config fails
+        except Exception:
             friendly_names[key] = key
 
     options = [(friendly_names.get(k, k), k) for k in available]
@@ -499,7 +500,8 @@ elif st.session_state.wizard_step == 3:
             try:
                 h, m = cfg.schedule_time.split(":")
                 current_time = datetime.time(int(h), int(m))
-            except Exception:  # nosec B110 - fallback to default time
+            # Malformed time string falls back to the 03:00 default initialized above.
+            except Exception:  # nosec B110
                 pass
 
         run_time = st.time_input("Daily run time (24-hour)", value=current_time)
@@ -683,7 +685,7 @@ elif st.session_state.wizard_step == 5:
                 import contextlib
                 import io as _io
 
-                from src.main import run_pipeline
+                from src.etl.pipeline import run_pipeline
 
                 output_buf = _io.StringIO()
                 with contextlib.redirect_stdout(output_buf):

@@ -23,7 +23,9 @@ Usage::
 from __future__ import annotations
 
 import logging
-import subprocess  # nosec B404 - required for crontab management
+
+# subprocess is required to invoke the system `crontab` command.
+import subprocess  # nosec B404
 from pathlib import Path
 
 from src.utils.validators import quote_for_shell, validate_run_time, validate_sis_type
@@ -34,7 +36,8 @@ CRON_SENTINEL = "# GDE2Acsv managed entry"
 
 
 def _run(args: list[str], stdin: str | None = None) -> tuple[int, str]:
-    result = subprocess.run(  # nosec B603 - inputs validated by validators.py
+    # Inputs are validated by src/utils/validators.py before reaching here.
+    result = subprocess.run(  # nosec B603
         args,
         input=stdin,
         capture_output=True,

@@ -109,7 +109,7 @@ class TestEmitRunLog:
             "Students": pd.DataFrame({"id": range(10)}),
             "Staff": pd.DataFrame({"id": range(5)}),
         }
-        with caplog.at_level(logging.INFO, logger="src.main"):
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
             _emit_run_log("success", 1.5, outputs)
 
         log_lines = [r.message for r in caplog.records if "__GDE2ACSV_RUN__" in r.message]
@@ -122,7 +122,7 @@ class TestEmitRunLog:
         assert payload["sftp_attempted"] is False
 
     def test_emits_error_info(self, caplog):
-        with caplog.at_level(logging.INFO, logger="src.main"):
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
             _emit_run_log("failed", 0.3, {}, error="boom")
 
         log_lines = [r.message for r in caplog.records if "__GDE2ACSV_RUN__" in r.message]
@@ -131,7 +131,7 @@ class TestEmitRunLog:
         assert payload["error"] == "boom"
 
     def test_emits_sftp_status(self, caplog):
-        with caplog.at_level(logging.INFO, logger="src.main"):
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
             _emit_run_log("success", 2.0, {}, sftp_attempted=True, sftp_ok=True)
 
         log_lines = [r.message for r in caplog.records if "__GDE2ACSV_RUN__" in r.message]
@@ -140,7 +140,7 @@ class TestEmitRunLog:
         assert payload["sftp_ok"] is True
 
     def test_emits_anomalies(self, caplog):
-        with caplog.at_level(logging.INFO, logger="src.main"):
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
             _emit_run_log("success", 1.0, {}, anomalies=["Students dropped 50%"])
 
         log_lines = [r.message for r in caplog.records if "__GDE2ACSV_RUN__" in r.message]

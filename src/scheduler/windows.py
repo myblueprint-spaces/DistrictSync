@@ -21,7 +21,9 @@ Usage::
 from __future__ import annotations
 
 import logging
-import subprocess  # nosec B404 - required for schtasks.exe
+
+# subprocess is required to invoke schtasks.exe.
+import subprocess  # nosec B404
 from pathlib import Path
 
 from src.utils.validators import validate_run_time, validate_sis_type, validate_task_name
@@ -122,7 +124,8 @@ def register_task(
     ]
 
     logger.info(f"Registering Windows scheduled task: {task_name} at {run_time}")
-    result = subprocess.run(  # nosec B603 - inputs validated by validators.py
+    # Inputs validated by src/utils/validators.py before reaching here.
+    result = subprocess.run(  # nosec B603
         schtasks_args,
         capture_output=True,
         text=True,
@@ -143,7 +146,8 @@ def delete_task(task_name: str) -> tuple[bool, str]:
         (success, message)
     """
     task_name = validate_task_name(task_name)
-    result = subprocess.run(  # nosec B603 B607 - task_name validated
+    # task_name is validated; schtasks.exe is a trusted Windows binary.
+    result = subprocess.run(  # nosec B603,B607
         ["schtasks", "/Delete", "/F", "/TN", task_name],
         capture_output=True,
         text=True,
@@ -159,7 +163,8 @@ def query_task(task_name: str) -> dict:
     Returns a dict with keys: ``exists``, ``status``, ``last_run``,
     ``next_run``, ``last_result``.  All values are strings.
     """
-    result = subprocess.run(  # nosec B603,B607 - read-only query
+    # Read-only query; schtasks.exe is a trusted Windows binary.
+    result = subprocess.run(  # nosec B603,B607
         ["schtasks", "/Query", "/TN", task_name, "/FO", "LIST"],
         capture_output=True,
         text=True,

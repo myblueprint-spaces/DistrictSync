@@ -60,7 +60,8 @@ try:
                         status_parts.append("Last run: success")
                     elif last_result != "—":
                         status_parts.append(f"Last run result: `{last_result}`")
-            except Exception:  # nosec B110 - optional status display
+            # Optional status display — ignore failures, widget is informational only.
+            except Exception:  # nosec B110
                 pass
 
         st.success(" | ".join(status_parts))
