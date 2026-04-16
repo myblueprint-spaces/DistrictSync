@@ -35,6 +35,7 @@ jobs:
           --add-data "src/ui;src/ui"
           --add-data "docs;docs"
           --collect-all streamlit
+          --collect-submodules src
           --hidden-import=pandas
           --hidden-import=yaml
           --hidden-import=logging.config
@@ -60,6 +61,7 @@ jobs:
       - run: >
           pyinstaller --onefile --name GDE2Acsv
           --add-data "config:config"
+          --collect-submodules src
           --hidden-import=pandas
           --hidden-import=yaml
           --hidden-import=logging.config
@@ -86,6 +88,7 @@ jobs:
       - run: >
           pyinstaller --onefile --name GDE2Acsv
           --add-data "config:config"
+          --collect-submodules src
           --hidden-import=pandas
           --hidden-import=yaml
           --hidden-import=logging.config

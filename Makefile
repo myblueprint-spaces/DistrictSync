@@ -33,6 +33,7 @@ build-win:
 	  --add-data "src/ui;src/ui" \
 	  --add-data "docs;docs" \
 	  --collect-all streamlit \
+	  --collect-submodules src \
 	  --hidden-import=pandas \
 	  --hidden-import=yaml \
 	  --hidden-import=logging.config \
