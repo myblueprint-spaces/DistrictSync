@@ -380,38 +380,28 @@ if outputs:
         else:
             anomalies = []
 
-        try:
-            import paramiko  # noqa: F401
+        st.caption(f"Upload to `{_app_cfg.sftp_host}:{_app_cfg.sftp_port}{_app_cfg.sftp_remote_path}`")
+        if st.button("Upload via SFTP", type="secondary"):
+            from src.sftp.uploader import SFTPUploader
 
-            _sftp_available = True
-        except ImportError:
-            _sftp_available = False
-
-        if not _sftp_available:
-            st.info("SFTP upload requires the `paramiko` package. Install with: `pip install paramiko`")
-        else:
-            st.caption(f"Upload to `{_app_cfg.sftp_host}:{_app_cfg.sftp_port}{_app_cfg.sftp_remote_path}`")
-            if st.button("Upload via SFTP", type="secondary"):
-                from src.sftp.uploader import SFTPUploader
-
-                with st.spinner("Uploading..."):
-                    try:
-                        with tempfile.TemporaryDirectory() as tmpdir:
-                            tmp_path = Path(tmpdir)
-                            for name, df in outputs.items():
-                                df.to_csv(tmp_path / f"{name}.csv", index=False, encoding="utf-8-sig")
-                            uploader = SFTPUploader(
-                                host=_app_cfg.sftp_host,
-                                port=_app_cfg.sftp_port,
-                                username=_app_cfg.sftp_username,
-                                remote_path=_app_cfg.sftp_remote_path,
-                            )
-                            uploaded_files_list = uploader.upload_csvs(tmp_path, sis_type=selected)
-                        st.success(
-                            f"Uploaded ZIP with {len(uploaded_files_list)} file(s): {', '.join(uploaded_files_list)}"
+            with st.spinner("Uploading..."):
+                try:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        tmp_path = Path(tmpdir)
+                        for name, df in outputs.items():
+                            df.to_csv(tmp_path / f"{name}.csv", index=False, encoding="utf-8-sig")
+                        uploader = SFTPUploader(
+                            host=_app_cfg.sftp_host,
+                            port=_app_cfg.sftp_port,
+                            username=_app_cfg.sftp_username,
+                            remote_path=_app_cfg.sftp_remote_path,
                         )
-                    except Exception as e:
-                        st.error(f"SFTP upload failed: {e}")
+                        uploaded_files_list = uploader.upload_csvs(tmp_path, sis_type=selected)
+                    st.success(
+                        f"Uploaded ZIP with {len(uploaded_files_list)} file(s): {', '.join(uploaded_files_list)}"
+                    )
+                except Exception as e:
+                    st.error(f"SFTP upload failed: {e}")
 
 st.divider()
 st.caption("SpacesEDU by myBlueprint · GDE2Acsv · support@myBlueprint.ca")

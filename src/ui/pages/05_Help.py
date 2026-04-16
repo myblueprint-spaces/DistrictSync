@@ -42,9 +42,10 @@ def _read_doc(relative_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-tab_install, tab_howit, tab_faq, tab_trouble, tab_dev = st.tabs(
+tab_install, tab_headless, tab_howit, tab_faq, tab_trouble, tab_dev = st.tabs(
     [
         "Installation",
+        "Headless / Docker SFTP",
         "How It Works",
         "FAQ",
         "Troubleshooting",
@@ -54,6 +55,9 @@ tab_install, tab_howit, tab_faq, tab_trouble, tab_dev = st.tabs(
 
 with tab_install:
     st.markdown(_read_doc("partner/installation.md"))
+
+with tab_headless:
+    st.markdown(_read_doc("partner/headless-sftp-setup.md"))
 
 with tab_howit:
     # Combine architecture overview with the partner-facing sections

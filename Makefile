@@ -21,11 +21,25 @@ ui:
 validate-config:
 	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc','sd40myedbc','sd48myedbc','sd51myedbc','sd74myedbc']]"
 
-# Build Windows .exe locally (must run on Windows)
+# Build Windows .exe locally (must run on Windows).
+# Mirrors .github/workflows/release.yml:build-windows so local builds
+# match CI. paramiko + keyring are now top-level imports in
+# src/sftp/uploader.py so PyInstaller picks them up automatically;
+# only keyring.backends.Windows still needs --hidden-import because
+# keyring discovers backends dynamically at runtime.
 build-win:
-	pyinstaller --onefile --name GDE2Acsv --add-data "config;config" \
-	  --hidden-import=pandas --hidden-import=yaml --hidden-import=logging.config \
-	  --hidden-import=pydantic --hidden-import=pydantic_core src/main.py
+	pyinstaller --onefile --name GDE2Acsv \
+	  --add-data "config;config" \
+	  --add-data "src/ui;src/ui" \
+	  --add-data "docs;docs" \
+	  --collect-all streamlit \
+	  --hidden-import=pandas \
+	  --hidden-import=yaml \
+	  --hidden-import=logging.config \
+	  --hidden-import=pydantic \
+	  --hidden-import=pydantic_core \
+	  --hidden-import=keyring.backends.Windows \
+	  src/main.py
 
 # Linux and macOS builds are produced automatically by GitHub Actions on tag push.
 # To release all three platforms: git tag v1.x.0 && git push origin --tags

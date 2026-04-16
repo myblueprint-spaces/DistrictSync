@@ -3,20 +3,13 @@
 When frozen with PyInstaller, this script locates the Streamlit app
 and launches it programmatically, opening the browser automatically.
 
-Build command (Windows):
-    pyinstaller --onefile --name GDE2Acsv-UI
-        --add-data "config;config"
-        --add-data "src/ui;src/ui"
-        --hidden-import=streamlit
-        --hidden-import=streamlit.web.cli
-        --hidden-import=paramiko
-        --hidden-import=keyring
-        --hidden-import=keyring.backends.Windows
-        --hidden-import=pandas
-        --hidden-import=yaml
-        --hidden-import=pydantic
-        --hidden-import=pydantic_core
-        src/ui/launcher.py
+The production build uses src/main.py as the PyInstaller entry so a
+single binary serves both CLI and UI (argv-less launch → UI, with args
+→ CLI). See .github/workflows/release.yml for the authoritative build
+command. paramiko + keyring are top-level imports in
+src/sftp/uploader.py so PyInstaller picks them up automatically; only
+keyring.backends.<platform> still needs --hidden-import because
+keyring discovers credential-store backends dynamically at runtime.
 """
 
 import os

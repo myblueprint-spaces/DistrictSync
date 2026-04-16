@@ -77,6 +77,7 @@ nav:
   - Home: index.md
   - Partner Guide:
     - Installation: partner/installation.md
+    - Headless & Docker SFTP Setup: partner/headless-sftp-setup.md
     - How Classes Work: partner/how-classes-work.md
     - Troubleshooting: partner/troubleshooting.md
     - FAQ: partner/faq.md

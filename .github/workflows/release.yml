@@ -28,7 +28,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install -r requirements.txt pyinstaller paramiko keyring streamlit
+      - run: pip install -r requirements.txt pyinstaller streamlit
       - run: >
           pyinstaller --onefile --name GDE2Acsv
           --add-data "config;config"
@@ -40,8 +40,6 @@ jobs:
           --hidden-import=logging.config
           --hidden-import=pydantic
           --hidden-import=pydantic_core
-          --hidden-import=paramiko
-          --hidden-import=keyring
           --hidden-import=keyring.backends.Windows
           src/main.py
       - uses: actions/upload-artifact@v4
@@ -58,7 +56,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install -r requirements.txt pyinstaller paramiko keyring
+      - run: pip install -r requirements.txt pyinstaller
       - run: >
           pyinstaller --onefile --name GDE2Acsv
           --add-data "config:config"
@@ -67,8 +65,8 @@ jobs:
           --hidden-import=logging.config
           --hidden-import=pydantic
           --hidden-import=pydantic_core
-          --hidden-import=paramiko
-          --hidden-import=keyring
+          --hidden-import=keyring.backends.SecretService
+          --hidden-import=keyring.backends.libsecret
           src/main.py
       - uses: actions/upload-artifact@v4
         with:
@@ -84,7 +82,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install -r requirements.txt pyinstaller paramiko keyring
+      - run: pip install -r requirements.txt pyinstaller
       - run: >
           pyinstaller --onefile --name GDE2Acsv
           --add-data "config:config"
@@ -93,8 +91,7 @@ jobs:
           --hidden-import=logging.config
           --hidden-import=pydantic
           --hidden-import=pydantic_core
-          --hidden-import=paramiko
-          --hidden-import=keyring
+          --hidden-import=keyring.backends.macOS
           src/main.py
       - uses: actions/upload-artifact@v4
         with:

@@ -24,6 +24,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import keyring
+import paramiko
+
 from src.utils.validators import validate_sftp_host
 
 logger = logging.getLogger(__name__)
@@ -53,8 +56,6 @@ class SFTPUploader:
     def store_password(self, password: str) -> None:
         """Store the SFTP password in the OS credential manager."""
         try:
-            import keyring
-
             keyring.set_password(KEYRING_SERVICE, self.username, password)
             logger.info("SFTP credentials stored successfully")
         except Exception as exc:
@@ -64,8 +65,6 @@ class SFTPUploader:
     def _get_password(self) -> str | None:
         """Retrieve the SFTP password from the OS credential manager."""
         try:
-            import keyring
-
             return keyring.get_password(KEYRING_SERVICE, self.username)
         except Exception as exc:
             logger.error(f"Failed to retrieve SFTP password: {exc}")
@@ -84,11 +83,6 @@ class SFTPUploader:
         Raises:
             RuntimeError: If paramiko is missing or credentials are unavailable.
         """
-        try:
-            import paramiko
-        except ImportError as exc:
-            raise RuntimeError("paramiko is not installed. Run: pip install paramiko") from exc
-
         password = self._get_password()
         if not password:
             raise RuntimeError("No SFTP password found. Run the setup wizard to enter credentials.")

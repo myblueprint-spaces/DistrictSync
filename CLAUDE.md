@@ -15,6 +15,15 @@ python -m src.main --sis myedbc --input data/input --output data/output
 
 CLI flags: `--dry-run` (preview without writing), `--diff` (compare against existing output), `--quality` (data quality report), `--sftp` (upload output CSVs via SFTP after run).
 
+### SFTP credential setup (headless / Docker / no-browser)
+```bash
+python -m src.main --sftp-configure                                 # interactive prompt
+python -m src.main --sftp-configure --sftp-host H --sftp-user U --sftp-remote R  # headless (password from GDE2ACSV_SFTP_PASSWORD env var, --sftp-password-stdin, or prompt)
+python -m src.main --sftp-test                                      # verify stored credentials
+python -m src.main --sftp-show                                      # print saved config (no password)
+```
+Handlers live in `src/main.py` (`_sftp_configure`, `_sftp_test`, `_sftp_show`, `_read_sftp_password`). Host is validated against `validators.ALLOWED_SFTP_HOSTS`. Password is stored in the OS keyring (`KEYRING_SERVICE = "GDE2Acsv_SFTP"`); settings are written to `~/.gde2acsv/config.json`.
+
 ### Tests
 ```bash
 python -m pytest tests/ -v                    # all tests
@@ -60,7 +69,7 @@ streamlit run src/ui/Home.py
 make build-win     # Windows .exe (run on Windows)
 ```
 
-Linux/macOS builds are produced by GitHub Actions on tag push. PyInstaller hidden imports: `pandas`, `yaml`, `logging.config`, `pydantic`, `pydantic_core`, `paramiko`, `keyring`.
+Linux/macOS builds are produced by GitHub Actions on tag push. PyInstaller hidden imports: `pandas`, `yaml`, `logging.config`, `pydantic`, `pydantic_core`, plus the platform-specific keyring backend (`keyring.backends.Windows` / `keyring.backends.macOS` / `keyring.backends.SecretService` + `keyring.backends.libsecret`). `paramiko` and `keyring` are top-level imports in `src/sftp/uploader.py` so PyInstaller picks them up from static analysis — only the dynamically-discovered keyring backends still need explicit hidden-imports.
 
 ### Documentation
 ```bash
@@ -119,7 +128,7 @@ Multi-page Streamlit app. `Home.py` is the landing page with status dashboard. P
 
 ### Supporting modules
 - `src/config/app_config.py` — Runtime config (`~/.gde2acsv/config.json`); SFTP non-sensitive settings. Unix file permissions (0o700/0o600).
-- `src/sftp/uploader.py` — `SFTPUploader` with paramiko SSHClient + OS keyring. Zips all CSVs into `gde2acsv_YYYY-MM-DD.zip` before upload. Host restricted to `ALLOWED_SFTP_HOSTS` (3 SpacesEDU servers).
+- `src/sftp/uploader.py` — `SFTPUploader` with paramiko SSHClient + OS keyring (both top-level imports). Zips all CSVs into `gde2acsv_YYYY-MM-DD.zip` before upload. Host restricted to `ALLOWED_SFTP_HOSTS` (3 SpacesEDU servers). Credential setup: wizard Step 4 (`src/ui/pages/01_Setup_Wizard.py`) **and** headless CLI (`--sftp-configure` / `--sftp-test` / `--sftp-show` in `src/main.py`).
 - `src/scheduler/windows.py` — `schtasks.exe` wrapper with input validation via `validators.py`
 - `src/scheduler/linux.py` — crontab wrapper with `shlex.quote()` and sentinel comment
 - `src/etl/column_names.py` — Column name constants (avoid magic strings across transformers)

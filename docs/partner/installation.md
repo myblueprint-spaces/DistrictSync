@@ -42,8 +42,10 @@ Before you begin, ensure you have:
 
 ## Step 2 — Run the Setup Wizard (Windows only)
 
-!!! note "Linux partners"
-    On Linux, skip to [Step 3 — Manual configuration](#step-3-manual-configuration-linux).
+!!! note "Linux / headless / Docker partners"
+    On Linux or in a container, skip to
+    [Step 3 — Headless configuration](#step-3-headless-configuration-linux-docker-no-browser)
+    or see the dedicated [Headless & Docker SFTP Setup](headless-sftp-setup.md) guide.
 
 1. Double-click `GDE2Acsv-windows.exe`
 2. Your browser will open automatically at `http://localhost:8501`
@@ -95,54 +97,36 @@ After saving, the Setup Wizard switches to a management dashboard where you can 
 
 ---
 
-## Step 3 — Manual Configuration (Linux)
+## Step 3 — Headless configuration (Linux / Docker / no browser)
 
-On Linux, create a configuration file and set up a crontab entry manually.
-
-### Create the config directory
-
-```bash
-mkdir -p ~/.gde2acsv
-```
-
-### Create the config file
+On Linux servers or containers with no browser, use the CLI to
+configure SFTP directly. No config-file hand-editing and no Python
+one-liners needed.
 
 ```bash
-cat > ~/.gde2acsv/config.json << 'EOF'
-{
-  "input_dir": "/data/gde/input",
-  "output_dir": "/data/gde/output",
-  "sis_type": "myedbc",
-  "schedule_time": "03:00",
-  "schedule_task_name": "GDE2Acsv_Daily",
-  "schedule_registered": false,
-  "sftp_enabled": true,
-  "sftp_host": "sftp.spacesEDU.com",
-  "sftp_port": 22,
-  "sftp_username": "your_username",
-  "sftp_remote_path": "/files"
-}
-EOF
+# Interactive — prompts for each field (password input is hidden):
+/opt/gde2acsv/GDE2Acsv --sftp-configure
+
+# Or fully scripted with the password in an env var:
+export GDE2ACSV_SFTP_PASSWORD='your-password-here'
+/opt/gde2acsv/GDE2Acsv --sftp-configure \
+  --sftp-host sftp.ca.spacesedu.com \
+  --sftp-user your_username \
+  --sftp-remote /files
+unset GDE2ACSV_SFTP_PASSWORD
+
+# Verify:
+/opt/gde2acsv/GDE2Acsv --sftp-test
 ```
 
-### Store the SFTP password
+The host/port/user/remote path are written to `~/.gde2acsv/config.json`;
+the password is stored in the OS credential store via the `keyring`
+library (Linux Secret Service, macOS Keychain, or Windows Credential
+Manager — depending on the platform).
 
-This step requires Python 3 and the `keyring` package. Install them if not already present:
-
-```bash
-sudo apt-get install -y python3 python3-pip   # Debian/Ubuntu
-pip3 install keyring
-```
-
-Then store the password in the OS keychain:
-
-```bash
-python3 -c "
-import keyring
-keyring.set_password('GDE2Acsv_SFTP', 'your_username', 'your_password')
-print('Password stored.')
-"
-```
+For Docker, secrets-manager integration, `libsecret` backends, and
+scripted password piping via stdin, see the dedicated guide:
+**[Headless & Docker SFTP Setup](headless-sftp-setup.md)**.
 
 ### Add the crontab entry
 
