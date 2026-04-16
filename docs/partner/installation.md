@@ -23,7 +23,14 @@ Before you begin, ensure you have:
    - **Windows:** `GDE2Acsv-windows.exe`
    - **Linux:** `GDE2Acsv-linux`
 
-3. Create a dedicated folder and place the file there:
+3. Put the file somewhere sensible. **The .exe can live anywhere** —
+   Desktop, `C:\Program Files\GDE2Acsv\`, `/opt/gde2acsv/`, a USB
+   stick, a shared network drive. Your settings, logs, and any
+   custom mappings are written to your user home directory
+   (see [Where does data live?](#where-does-data-live) below), not
+   next to the .exe, so the exe location is purely your preference.
+
+   Suggested layouts:
 
 === "Windows"
     ```
@@ -37,6 +44,24 @@ Before you begin, ensure you have:
     sudo mv GDE2Acsv-linux /opt/gde2acsv/GDE2Acsv
     sudo chmod +x /opt/gde2acsv/GDE2Acsv
     ```
+
+### Where does data live?
+
+All runtime state is stored in `~/.gde2acsv/` (your user home
+directory). This works the same on every platform and survives
+updates to the .exe:
+
+| File | Purpose |
+|------|---------|
+| `~/.gde2acsv/config.json` | Wizard settings (input/output paths, SFTP host, schedule) |
+| `~/.gde2acsv/etl_tool.log` | All ETL run history — wizard runs, scheduled runs, and CLI runs all write here |
+| `~/.gde2acsv/mappings/*.yaml` | Any district mappings you create in the Mapping Editor (persists across exe upgrades) |
+| OS credential store | SFTP password (Windows Credential Manager / macOS Keychain / Linux Secret Service) |
+
+On Windows that path is
+`C:\Users\<your-username>\.gde2acsv\`. You can back up or inspect
+this folder at any time. Deleting it resets the tool to first-run
+state.
 
 ---
 

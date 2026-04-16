@@ -45,9 +45,14 @@
 - The task must be configured to **Run whether user is logged on or not** and with **Highest Privileges**.
 - Delete the task (`schtasks /Delete /F /TN GDE2Acsv_Daily`) and re-run the Setup Wizard as Administrator.
 
-**Task runs but no log entry appears**
-- Check the task's "Start In" directory — it must be set to the directory containing the `.exe`.
-- In Task Scheduler, edit the task → Actions → set **Start in** to `C:\GDE2Acsv\`.
+**Task runs but nothing happens**
+- Open the Run History page in the GDE2Acsv wizard. Scheduled runs
+  write to the same `~/.gde2acsv/etl_tool.log` as manual runs, so
+  they should appear there.
+- If there's a run but it failed, look for `Pipeline failed:` lines
+  in the log for the cause.
+- The task's **Start in** field does not matter — logs always go to
+  `~/.gde2acsv/` regardless of the working directory.
 
 ---
 
@@ -116,9 +121,16 @@ Check the **SpacesEDU import report** for details. See also [FAQ — What happen
 
 ## Log location
 
+Every ETL run — wizard, scheduled task, and CLI — writes to a single
+persistent log file in your user home directory, regardless of where
+the `.exe` lives or what working directory the task runs from:
+
 | Platform | Log file |
 |----------|----------|
-| Windows | Same directory as the `.exe`, e.g. `C:\GDE2Acsv\etl_tool.log` — requires Task Scheduler's **Start in** to be set to that folder (see [Task Scheduler does not run the task](#task-scheduler-does-not-run-the-task)) |
-| Linux | Current working directory when the command is run, e.g. `/opt/gde2acsv/etl_tool.log` |
+| Windows | `C:\Users\<username>\.gde2acsv\etl_tool.log` |
+| Linux   | `/home/<username>/.gde2acsv/etl_tool.log` |
+| macOS   | `/Users/<username>/.gde2acsv/etl_tool.log` |
 
-The log rotates automatically at 5MB and keeps 3 backups.
+The Run History page in the web UI reads from this same path and
+displays the runs in a sortable table. The log rotates automatically
+at 5 MB and keeps 3 backups (`etl_tool.log.1`, `.2`, `.3`).

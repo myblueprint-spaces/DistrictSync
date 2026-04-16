@@ -23,10 +23,23 @@ validate-config:
 
 # Build Windows .exe locally (must run on Windows).
 # Mirrors .github/workflows/release.yml:build-windows so local builds
-# match CI. paramiko + keyring are now top-level imports in
-# src/sftp/uploader.py so PyInstaller picks them up automatically;
-# only keyring.backends.Windows still needs --hidden-import because
-# keyring discovers backends dynamically at runtime.
+# match CI.
+#
+# Why --paths=. + explicit --hidden-import for every src.* submodule:
+#   Streamlit pages (src/ui/pages/*.py) are exec()'d at runtime, so
+#   PyInstaller's static analyzer (which starts at src/main.py) never
+#   sees `from src.scheduler.windows import ...`, `from src.ui.brand
+#   import ...`, etc. --paths=. lets PyInstaller resolve the `src`
+#   package from the repo root, and --collect-submodules=src scoops
+#   up every submodule. The explicit --hidden-import lines below are
+#   belt-and-suspenders: if a future pyinstaller changes how
+#   --collect-submodules discovers packages, the listed modules are
+#   still guaranteed to be bundled.
+#
+#   paramiko + keyring are top-level imports in src/sftp/uploader.py
+#   so PyInstaller picks them up automatically; only
+#   keyring.backends.Windows still needs --hidden-import because
+#   keyring discovers credential-store backends dynamically.
 build-win:
 	pyinstaller --onefile --name GDE2Acsv \
 	  --add-data "config;config" \
@@ -34,12 +47,27 @@ build-win:
 	  --add-data "docs;docs" \
 	  --collect-all streamlit \
 	  --collect-submodules src \
+	  --paths=. \
 	  --hidden-import=pandas \
 	  --hidden-import=yaml \
 	  --hidden-import=logging.config \
 	  --hidden-import=pydantic \
 	  --hidden-import=pydantic_core \
 	  --hidden-import=keyring.backends.Windows \
+	  --hidden-import=src.scheduler.windows \
+	  --hidden-import=src.scheduler.linux \
+	  --hidden-import=src.ui.brand \
+	  --hidden-import=src.ui.mapping_helpers \
+	  --hidden-import=src.ui.launcher \
+	  --hidden-import=src.etl.transformers.base \
+	  --hidden-import=src.etl.transformers.classes \
+	  --hidden-import=src.etl.transformers.enrollments \
+	  --hidden-import=src.etl.transformers.blended \
+	  --hidden-import=src.etl.transformers.students \
+	  --hidden-import=src.etl.transformers.staff \
+	  --hidden-import=src.etl.transformers.family \
+	  --hidden-import=src.etl.transformers.registry \
+	  --hidden-import=src.etl.transformers.context \
 	  src/main.py
 
 # Linux and macOS builds are produced automatically by GitHub Actions on tag push.

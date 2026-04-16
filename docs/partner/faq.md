@@ -147,3 +147,21 @@ For security, SFTP uploads are restricted to SpacesEDU servers only (sftp.ca.spa
 **Q: What does the record count drop warning mean?**
 
 After each run, GDE2Acsv compares output against the previous run. If any entity (Students, Classes, etc.) dropped by more than 20%, a warning is logged. This usually means the GDE export was partial or corrupted — re-export from MyEdBC.
+
+**Q: Where does GDE2Acsv store my settings, logs, and custom mappings?**
+
+All runtime state is written to `~/.gde2acsv/` — which is
+`C:\Users\<username>\.gde2acsv\` on Windows, `/home/<user>/.gde2acsv/` on Linux,
+and `/Users/<user>/.gde2acsv/` on macOS. Specifically:
+
+- `config.json` — wizard settings (input/output paths, SFTP host, schedule time).
+- `etl_tool.log` — history of every run (wizard, scheduled, CLI). The Run History page reads this file.
+- `mappings/*.yaml` — any district mapping you create in the Mapping Editor. These override the built-in configs if the file name matches.
+
+Your SFTP password is stored in the OS credential manager (Windows Credential Manager / macOS Keychain / Linux Secret Service), never on disk in plain text.
+
+You can back up `~/.gde2acsv/` to preserve your setup, or delete it to reset the tool to a fresh-install state. The `.exe` itself can live anywhere (Desktop, Program Files, USB stick) — it doesn't store anything next to itself.
+
+**Q: I see a warning about `pkg_resources is deprecated` when I run the .exe from a terminal. Is that a problem?**
+
+No. That warning comes from the Python packaging machinery that PyInstaller embeds in the binary — not from GDE2Acsv itself. It prints once at startup and is harmless. Partners who double-click the .exe never see it because there's no terminal window. It will go away once PyInstaller upgrades its internal bootstrap code.

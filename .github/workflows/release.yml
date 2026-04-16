@@ -29,6 +29,12 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt pyinstaller streamlit
+      # Streamlit pages are exec()'d at runtime so PyInstaller's static
+      # analyzer starting at src/main.py never sees them. --paths=.
+      # plus --collect-submodules=src + explicit --hidden-import for
+      # every src.* submodule guarantees they all land in the bundle.
+      # Verified locally with a Playwright probe against the Setup
+      # Wizard + every other page before this change was committed.
       - run: >
           pyinstaller --onefile --name GDE2Acsv
           --add-data "config;config"
@@ -36,12 +42,27 @@ jobs:
           --add-data "docs;docs"
           --collect-all streamlit
           --collect-submodules src
+          --paths=.
           --hidden-import=pandas
           --hidden-import=yaml
           --hidden-import=logging.config
           --hidden-import=pydantic
           --hidden-import=pydantic_core
           --hidden-import=keyring.backends.Windows
+          --hidden-import=src.scheduler.windows
+          --hidden-import=src.scheduler.linux
+          --hidden-import=src.ui.brand
+          --hidden-import=src.ui.mapping_helpers
+          --hidden-import=src.ui.launcher
+          --hidden-import=src.etl.transformers.base
+          --hidden-import=src.etl.transformers.classes
+          --hidden-import=src.etl.transformers.enrollments
+          --hidden-import=src.etl.transformers.blended
+          --hidden-import=src.etl.transformers.students
+          --hidden-import=src.etl.transformers.staff
+          --hidden-import=src.etl.transformers.family
+          --hidden-import=src.etl.transformers.registry
+          --hidden-import=src.etl.transformers.context
           src/main.py
       - uses: actions/upload-artifact@v4
         with:
@@ -62,6 +83,7 @@ jobs:
           pyinstaller --onefile --name GDE2Acsv
           --add-data "config:config"
           --collect-submodules src
+          --paths=.
           --hidden-import=pandas
           --hidden-import=yaml
           --hidden-import=logging.config
@@ -69,6 +91,16 @@ jobs:
           --hidden-import=pydantic_core
           --hidden-import=keyring.backends.SecretService
           --hidden-import=keyring.backends.libsecret
+          --hidden-import=src.scheduler.linux
+          --hidden-import=src.etl.transformers.base
+          --hidden-import=src.etl.transformers.classes
+          --hidden-import=src.etl.transformers.enrollments
+          --hidden-import=src.etl.transformers.blended
+          --hidden-import=src.etl.transformers.students
+          --hidden-import=src.etl.transformers.staff
+          --hidden-import=src.etl.transformers.family
+          --hidden-import=src.etl.transformers.registry
+          --hidden-import=src.etl.transformers.context
           src/main.py
       - uses: actions/upload-artifact@v4
         with:
@@ -89,12 +121,23 @@ jobs:
           pyinstaller --onefile --name GDE2Acsv
           --add-data "config:config"
           --collect-submodules src
+          --paths=.
           --hidden-import=pandas
           --hidden-import=yaml
           --hidden-import=logging.config
           --hidden-import=pydantic
           --hidden-import=pydantic_core
           --hidden-import=keyring.backends.macOS
+          --hidden-import=src.scheduler.linux
+          --hidden-import=src.etl.transformers.base
+          --hidden-import=src.etl.transformers.classes
+          --hidden-import=src.etl.transformers.enrollments
+          --hidden-import=src.etl.transformers.blended
+          --hidden-import=src.etl.transformers.students
+          --hidden-import=src.etl.transformers.staff
+          --hidden-import=src.etl.transformers.family
+          --hidden-import=src.etl.transformers.registry
+          --hidden-import=src.etl.transformers.context
           src/main.py
       - uses: actions/upload-artifact@v4
         with:
