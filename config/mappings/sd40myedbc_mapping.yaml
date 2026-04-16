@@ -7,6 +7,12 @@ district_name: SD40 - New Westminster School District
 global_config:
   school_year_sources:
     student_schedule: SD40-StudentSchedule.csv
+  # SD40 tracks attendance in MyEd BC via dedicated ATT--AM / ATT--PM
+  # schedule rows. These are SIS-internal and shouldn't surface as
+  # separate classes in SpacesEDU.
+  excluded_course_codes:
+    - ATT--AM
+    - ATT--PM
 mappings:
   Students:
     source_files:

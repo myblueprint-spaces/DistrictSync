@@ -3,6 +3,8 @@
 Tests homeroom class generation, subject class creation, and blended class integration.
 """
 
+import pandas as pd
+
 from src.etl.transformer import DataTransformer
 
 
@@ -121,3 +123,49 @@ class TestClassesTransformBlended:
             blended_rows = result[result["Class ID"].str.startswith("BLENDED")]
             if not blended_rows.empty:
                 assert (blended_rows["Grade"] == "").all()
+
+
+class TestExcludedCourseCodes:
+    """Rows whose course code is in global_config.excluded_course_codes
+    must not become Classes.csv rows (e.g. MyEd BC's ATT--AM/ATT--PM
+    attendance-only schedule entries for SD40).
+    """
+
+    def setup_method(self):
+        self.transformer = DataTransformer()
+        self.transformer.set_school_year(2025)
+
+    def test_attendance_codes_filtered_from_subject_classes(
+        self, student_schedule_df, classes_mapping, global_config, raw_data
+    ):
+        # Inject an ATT--AM row for a grade-10 student (non-homeroom path)
+        att_row = pd.DataFrame(
+            {
+                "student number": ["S004"],
+                "student id": ["S004"],
+                "school number": ["200"],
+                "school year": ["2025/2026"],
+                "grade": ["10"],
+                "master timetable id": ["MT_ATT_AM"],
+                "teacher id": ["T003"],
+                "section letter": ["A"],
+                "district course code": ["ATT--AM"],
+                "primary teacher": ["Y"],
+                "teacher name": ["Liu"],
+            }
+        )
+        schedule_with_att = pd.concat([student_schedule_df, att_row], ignore_index=True)
+        raw_data_with_att = {**raw_data, "StudentSchedule.txt": schedule_with_att}
+
+        cfg = {**global_config, "excluded_course_codes": ["ATT--AM", "ATT--PM"]}
+        result = self.transformer.transform(schedule_with_att, classes_mapping, "Classes", raw_data_with_att, cfg)
+
+        # The ATT row's Class ID (MT_ATT_AM_2025) must not appear
+        assert "MT_ATT_AM_2025" not in result["Class ID"].values
+        # Other non-homeroom classes still flow through (grade 10/12 subjects)
+        assert any(result["Class ID"].astype(str).str.startswith("MT00"))
+
+    def test_exclusion_empty_by_default(self, student_schedule_df, classes_mapping, global_config, raw_data):
+        """Absent excluded_course_codes → no rows are filtered (backward compatible)."""
+        result = self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
+        assert not result.empty

@@ -48,6 +48,9 @@ class BlendedClassDetector(BaseTransformer):
         schedule_df = self.normalize_columns(schedule_df)
         course_df = self.normalize_columns(course_df)
 
+        excluded_codes = context.global_config.get("excluded_course_codes", [])
+        schedule_df = self.filter_excluded_course_codes(schedule_df, excluded_codes)
+
         if MASTER_TIMETABLE_ID in schedule_df.columns:
             schedule_df[MASTER_TIMETABLE_ID] = schedule_df[MASTER_TIMETABLE_ID].astype(str).str.strip()
 

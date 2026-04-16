@@ -67,6 +67,9 @@ class ClassTransformer(BaseTransformer):
         if MASTER_TIMETABLE_ID in class_info_df.columns:
             class_info_df[MASTER_TIMETABLE_ID] = class_info_df[MASTER_TIMETABLE_ID].astype(str).str.strip()
 
+        excluded_codes = context.global_config.get("excluded_course_codes", [])
+        class_info_df = self.filter_excluded_course_codes(class_info_df, excluded_codes)
+
         # Cache normalized class_info on the context so EnrollmentTransformer
         # can produce co-teacher enrollments without re-reading global_config.
         context.class_info_df = class_info_df
@@ -174,6 +177,11 @@ class ClassTransformer(BaseTransformer):
             schedule_df[teacher_id_col] = schedule_df[teacher_id_col].astype(str).str.strip()
         if MASTER_TIMETABLE_ID in schedule_df.columns:
             schedule_df[MASTER_TIMETABLE_ID] = schedule_df[MASTER_TIMETABLE_ID].astype(str).str.strip()
+
+        excluded_codes = context.global_config.get("excluded_course_codes", [])
+        schedule_df = self.filter_excluded_course_codes(schedule_df, excluded_codes)
+        if schedule_df.empty:
+            return
 
         schedule_df["grade_ceds"] = schedule_df["grade"].apply(self.grade_to_ceds)
         non_homeroom_df: pd.DataFrame = schedule_df[~schedule_df["grade_ceds"].isin(homeroom_grades)].copy()  # type: ignore[assignment]

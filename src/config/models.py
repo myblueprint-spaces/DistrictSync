@@ -169,6 +169,7 @@ class GlobalConfig(BaseModel):
     entity_order: list[str] = Field(default_factory=list)
     academic_start_month_day: str = "08-25"
     academic_end_month_day: str = "07-25"
+    excluded_course_codes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -225,6 +226,7 @@ class MappingConfig(BaseModel):
             "entity_order": list(self.global_config.entity_order),
             "academic_start_month_day": self.global_config.academic_start_month_day,
             "academic_end_month_day": self.global_config.academic_end_month_day,
+            "excluded_course_codes": list(self.global_config.excluded_course_codes),
         }
 
         return {"mappings": mappings_raw, "global_config": global_raw}

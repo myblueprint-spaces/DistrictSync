@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-from src.etl.column_names import MASTER_TIMETABLE_ID
+from src.etl.column_names import COURSE_CODE, DISTRICT_COURSE_CODE, MASTER_TIMETABLE_ID
 from src.etl.transformers.context import TransformContext
 from src.utils.helpers import normalize_columns as _normalize_columns
 
@@ -115,6 +115,23 @@ class BaseTransformer(ABC):
         """Remove rows where id_col is NaN, empty, or the literal string 'nan'."""
         clean = df[id_col].astype(str).str.strip().str.lower()
         return df[df[id_col].notna() & (clean != "") & (clean != "nan")]  # type: ignore[return-value]
+
+    @staticmethod
+    def filter_excluded_course_codes(df: pd.DataFrame, excluded_codes: list[str]) -> pd.DataFrame:
+        """Drop rows whose course code matches an entry in excluded_codes.
+
+        Checks `course code` first, then `district course code`. Match is
+        case-insensitive and whitespace-trimmed. Returns df unchanged when
+        excluded_codes is empty or neither column is present.
+        """
+        if not excluded_codes or df.empty:
+            return df
+        exclusion_set = {str(c).strip().upper() for c in excluded_codes}
+        for col in (COURSE_CODE, DISTRICT_COURSE_CODE):
+            if col in df.columns:
+                values = df[col].astype(str).str.strip().str.upper()
+                return df[~values.isin(exclusion_set)].copy()  # type: ignore[return-value]
+        return df
 
     @staticmethod
     def normalize_source_config(source_config: Any) -> dict[str, str]:

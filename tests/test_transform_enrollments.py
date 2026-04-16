@@ -289,3 +289,44 @@ class TestClassInfoCoTeacherEnrollments:
         assert not result.empty
         dupes = result.duplicated(subset=["Class ID", "User ID", "Role"])
         assert dupes.sum() == 0
+
+
+class TestEnrollmentsExcludedCourseCodes:
+    """Enrollments for excluded course codes must be suppressed too, otherwise
+    they become orphans (enrollment pointing at a non-existent class).
+    """
+
+    def setup_method(self):
+        self.transformer = DataTransformer()
+        self.transformer.set_school_year(2025)
+
+    def test_attendance_enrollments_suppressed(
+        self, student_schedule_df, classes_mapping, enrollments_mapping, global_config, raw_data
+    ):
+        att_row = pd.DataFrame(
+            {
+                "student number": ["S004"],
+                "student id": ["S004"],
+                "school number": ["200"],
+                "school year": ["2025/2026"],
+                "grade": ["10"],
+                "master timetable id": ["MT_ATT_AM"],
+                "teacher id": ["T003"],
+                "section letter": ["A"],
+                "district course code": ["ATT--AM"],
+                "primary teacher": ["Y"],
+                "teacher name": ["Liu"],
+            }
+        )
+        schedule_with_att = pd.concat([student_schedule_df, att_row], ignore_index=True)
+        raw_data_with_att = {**raw_data, "StudentSchedule.txt": schedule_with_att}
+
+        cfg = {**global_config, "excluded_course_codes": ["ATT--AM", "ATT--PM"]}
+
+        self.transformer.transform(schedule_with_att, classes_mapping, "Classes", raw_data_with_att, cfg)
+        result = self.transformer.transform(
+            schedule_with_att, enrollments_mapping, "Enrollments", raw_data_with_att, cfg
+        )
+
+        if not result.empty:
+            assert "MT_ATT_AM_2025" not in result["Class ID"].values

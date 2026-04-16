@@ -139,6 +139,8 @@ All field mappings are in YAML files under `config/mappings/`. The `--sis` CLI a
 - ID-role pair (dict with `student_id_col` and `staff_id_col`)
 - Headers for headerless files (dict with filename -> column name list)
 
+`global_config.excluded_course_codes` (list[str]) filters schedule + class_info rows by Course Code (case-insensitive, trimmed) before class/enrollment/blended generation. SD40 uses `["ATT--AM", "ATT--PM"]` to drop MyEd BC's internal attendance-only sections. Applied in `base.filter_excluded_course_codes()` and called from `classes.py`, `enrollments.py`, and `blended.py` (the schedule-fallback path).
+
 5 district configs: `myedbc` (base), `sd40myedbc` (New Westminster — CSV files, headerless schedule), `sd48myedbc` (Sea to Sky), `sd51myedbc` (Boundary), `sd74myedbc` (Gold Trail). All use `_base: myedbc` inheritance.
 
 ## Key Data Flow

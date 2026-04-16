@@ -140,6 +140,11 @@ class EnrollmentTransformer(BaseTransformer):
         if staff_id_col in schedule_df.columns:
             schedule_df[staff_id_col] = schedule_df[staff_id_col].astype(str).str.strip()
 
+        excluded_codes = context.global_config.get("excluded_course_codes", [])
+        schedule_df = self.filter_excluded_course_codes(schedule_df, excluded_codes)
+        if schedule_df.empty:
+            return
+
         schedule_df["grade_ceds"] = schedule_df["grade"].apply(self.grade_to_ceds)
         non_homeroom: pd.DataFrame = schedule_df[~schedule_df["grade_ceds"].isin(homeroom_grades)].copy()  # type: ignore[assignment]
         if non_homeroom.empty:
