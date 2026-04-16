@@ -101,7 +101,7 @@ class DataQualityReport:
             if staff is not None and "User ID" in staff.columns:
                 known_users.update(staff["User ID"].dropna().astype(str).tolist())  # type: ignore[arg-type]
             if known_users:
-                enrolled_users = set(enrollments["User ID"].dropna().astype(str))
+                enrolled_users: set[str] = {str(x) for x in enrollments["User ID"].dropna()}
                 orphaned = enrolled_users - known_users
                 if orphaned:
                     self.cross_entity_warnings.append(
