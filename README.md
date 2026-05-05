@@ -8,9 +8,9 @@ Distributed as single-file executables for district servers. Runs daily via Wind
 
 | Platform | File | Notes |
 |----------|------|-------|
-| **Windows** | [DistrictSync-windows.exe](https://github.com/sh4npeiris/DistrictSync/releases/latest/download/DistrictSync-windows.exe) | Double-click to open Setup Wizard, or use in Task Scheduler |
-| **Linux** | [DistrictSync-linux](https://github.com/sh4npeiris/DistrictSync/releases/latest/download/DistrictSync-linux) | `chmod +x` before first run |
-| **macOS** | [DistrictSync-macos](https://github.com/sh4npeiris/DistrictSync/releases/latest/download/DistrictSync-macos) | Allow in System Settings > Privacy & Security |
+| **Windows** | [DistrictSync-windows.exe](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-windows.exe) | Double-click to open Setup Wizard, or use in Task Scheduler |
+| **Linux** | [DistrictSync-linux](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-linux) | `chmod +x` before first run |
+| **macOS** | [DistrictSync-macos](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos) | Allow in System Settings > Privacy & Security |
 
 See the **[Documentation Site](https://sh4npeiris.github.io/DistrictSync/)** for full setup instructions, troubleshooting, and FAQ.
 
