@@ -50,7 +50,7 @@ GDE files  →  DistrictSync  →  SpacesEDU CSV files  →  SFTP upload
 | Staff Information – Enhanced | `Staff.csv` |
 | Emergency Contact Information | `Family.csv` |
 | Student Schedule + Course Information | `Classes.csv` |
-| Student Schedule + Student Demographic | `Enrollments.csv` |
+| Student Schedule + Class Information – Enhanced | `Enrollments.csv` |
 
 ### Key features
 
