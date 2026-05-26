@@ -51,7 +51,7 @@ No `.env` file is required. The tool reads all configuration from YAML files in 
 | `make test-cov` | Run tests with coverage (enforces 80%+) |
 | `make lint` | Check with ruff |
 | `make fmt` | Auto-fix lint and formatting issues with ruff |
-| `make validate-config` | Validate all 5 district YAML configs |
+| `make validate-config` | Validate all district + tier YAML configs |
 | `make ui` | Start the Streamlit web UI |
 | `make docs` | Build MkDocs documentation site |
 | `make docs-serve` | Live preview docs at http://localhost:8000 |

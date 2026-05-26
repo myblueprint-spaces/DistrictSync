@@ -7,6 +7,29 @@ global_config:
   school_year_sources:
     student_schedule: "StudentSchedule.txt"
   homeroom_grades: ["IT", "PR", "PK", "TK", "KG", "01", "02", "03", "04", "05", "06", "07"]
+  # By default this base config produces the 5 standard rostering CSVs. The
+  # CourseInfo + StudentCourses templates below are defined so districts can
+  # opt into them via an override config (see myBlueprint+_mapping.yaml) by
+  # extending `enabled_entities`. Districts that want only a subset can
+  # override this list — e.g. myBlueprint+_minimal drops the rostering entities.
+  enabled_entities:
+    - Students
+    - Staff
+    - Family
+    - Classes
+    - Enrollments
+  # MyEd BC course-code conventions used by the CourseInfo + StudentCourses
+  # entities. Inert when those entities aren't enabled.
+  excluded_course_code_patterns:
+    - "^.{5}-K"      # kindergarten variants
+    - "^.{5}0\\d"    # early-grade variants (0X)
+    - "^X"           # X-prefix courses
+    - "^ATT"         # attendance bookkeeping
+  excluded_course_flavors:
+    - HUB
+    - HOL
+    - DL
+    - "---"
 
 mappings:
   Students:
@@ -96,3 +119,67 @@ mappings:
         "student_id_col": "Student ID"
         "staff_id_col": "Teacher ID"
       "School ID": "School Number"
+
+  # ------------------------------------------------------------------------
+  # myBlueprint+ entities (CourseInfo + StudentCourses)
+  # ------------------------------------------------------------------------
+  # Defined but not enabled by default. To produce these CSVs, use a config
+  # that extends `enabled_entities` (e.g. myBlueprint+_mapping.yaml or
+  # myBlueprint+_minimal_mapping.yaml).
+  CourseInfo:
+    source_files:
+      course_info: "CourseInformation.txt"
+    field_map:
+      "Course Code": "Course Code"
+      "Alternate Course Code":
+        value: ""
+      "School ID": "School Number"
+      "Course Name": "Title"
+      "Course Description":
+        value: ""
+      "Discipline":
+        value: ""
+      "Department":
+        value: ""
+      "Type":
+        value: ""
+      "Grade": "Grade Level"
+      "MaxGrade":
+        value: ""
+      "Credit Value": "Credit Value"
+      "IntegrationId":
+        value: ""
+      "Year Offered":
+        value: ""
+
+  # StudentCourses joins course history + selection + info. The transformer
+  # implements all logic; field_map values are ignored — the keys exist only
+  # to set the output column order. source_files order matters: course_info
+  # is first so the pipeline's primary_df.empty check doesn't skip the entity
+  # when history is empty (CourseInformation.txt is the most reliable source).
+  StudentCourses:
+    source_files:
+      course_info: "CourseInformation.txt"
+      course_history: "StudentCourseHistory.txt"
+      course_selection: "StudentCourseSelection.txt"
+    field_map:
+      "Student ID":
+        value: ""
+      "Course Code":
+        value: ""
+      "IntegrationId":
+        value: ""
+      "Course Name":
+        value: ""
+      "Completion Date":
+        value: ""
+      "Final Mark":
+        value: ""
+      "Credits Earned":
+        value: ""
+      "Alternate Course Code":
+        value: ""
+      "Potential Credits Earned":
+        value: ""
+      "Term Grade":
+        value: ""

@@ -67,6 +67,8 @@ class DataQualityReport:
             "Family": ["Student User ID", "Email"],
             "Classes": ["Class ID"],
             "Enrollments": ["Class ID", "User ID", "Role"],
+            "CourseInfo": ["Course Code", "School ID"],
+            "StudentCourses": ["Student ID", "Course Code", "Completion Date"],
         }
         keys = key_map.get(name)
         if keys is None:

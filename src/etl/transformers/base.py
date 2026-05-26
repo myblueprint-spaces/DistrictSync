@@ -8,7 +8,7 @@ and the generic field_map application are defined once here.
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
 
@@ -132,6 +132,52 @@ class BaseTransformer(ABC):
                 values = df[col].astype(str).str.strip().str.upper()
                 return df[~values.isin(exclusion_set)].copy()  # type: ignore[return-value]
         return df
+
+    @staticmethod
+    def filter_excluded_course_code_patterns(
+        df: pd.DataFrame,
+        patterns: list[str],
+        column: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Drop rows whose course code matches any regex in `patterns`.
+
+        Patterns are combined into a single case-insensitive alternation
+        and applied to the trimmed string value. When `column` is None,
+        checks `course code` then `district course code` (first found
+        wins), matching `filter_excluded_course_codes`. Patterns are
+        expected to be pre-validated at config load time.
+        """
+        if not patterns or df.empty:
+            return df
+        combined = "|".join(f"(?:{p})" for p in patterns)
+        candidate_cols = [column] if column else [COURSE_CODE, DISTRICT_COURSE_CODE]
+        for col in candidate_cols:
+            if col and col in df.columns:
+                values = df[col].astype(str).str.strip()
+                matches = values.str.contains(combined, regex=True, case=False, na=False)
+                return df[~matches].copy()  # type: ignore[return-value]
+        return df
+
+    @staticmethod
+    def clean_course_code_flavor(code: Any, flavors: list[str]) -> str:
+        """Truncate course code to first 7 chars if it contains any flavor substring.
+
+        Mirrors the PowerShell Get-CleanedCourseCode helper. Matching is
+        case-insensitive substring (e.g., "DL" matches "MATH-DL01" -> "MATH-DL").
+        Returns the original code as a string when no flavor matches, or ""
+        for NaN/None inputs.
+        """
+        if code is None or (isinstance(code, float) and pd.isna(code)):
+            return ""
+        code_str = str(code)
+        if not code_str or not flavors:
+            return code_str
+        upper = code_str.upper()
+        for flavor in flavors:
+            f = str(flavor).strip().upper()
+            if f and f in upper:
+                return code_str[:7]
+        return code_str
 
     @staticmethod
     def normalize_source_config(source_config: Any) -> dict[str, str]:

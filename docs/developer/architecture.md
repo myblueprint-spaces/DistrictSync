@@ -28,10 +28,22 @@ GDE files
 └────────────┘
        │
        ▼
-5 CSV files (Students, Staff, Family, Classes, Enrollments)
+CSV files (5–7 depending on tier — see Output tiers below)
 ```
 
 `src/main.py` orchestrates the three stages. It also handles CLI flags (`--dry-run`, `--diff`, `--quality`, `--sftp`) and calls `_sftp_upload()` after a successful write. After each run, anomaly detection checks whether any entity's record count dropped more than 20% compared to the previous run. Each run writes a machine-readable `__DISTRICTSYNC_RUN__` JSON log tag consumed by the Run History UI page.
+
+### Output tiers
+
+The base `myedbc_mapping.yaml` defines **all 7 entity templates** but a `global_config.enabled_entities` list controls which ones actually run. Three preset tiers ship in `config/mappings/`:
+
+| Config | Enabled entities |
+|---|---|
+| `myedbc` (and inheriting district configs) | Students, Staff, Family, Classes, Enrollments |
+| `myBlueprint+` | All 7 (above + CourseInfo + StudentCourses) |
+| `myBlueprint+_minimal` | Students, CourseInfo, StudentCourses |
+
+When `enabled_entities` is empty/missing, every mapping in the config is enabled (backward compat). The pipeline filters the entity loop by this list immediately after computing `entity_order`.
 
 ---
 
@@ -55,11 +67,13 @@ Each entity type has its own transformer class that implements `BaseTransformer.
 
 ```
 TRANSFORMER_REGISTRY = {
-    "Students":    StudentTransformer(),
-    "Staff":       StaffTransformer(),
-    "Family":      FamilyTransformer(),
-    "Classes":     ClassTransformer(),
-    "Enrollments": EnrollmentTransformer(),
+    "Students":       StudentTransformer(),
+    "Staff":          StaffTransformer(),
+    "Family":         FamilyTransformer(),
+    "Classes":        ClassTransformer(),
+    "Enrollments":    EnrollmentTransformer(),
+    "CourseInfo":     CourseInfoTransformer(),       # myBlueprint+ tier
+    "StudentCourses": StudentCoursesTransformer(),   # myBlueprint+ tier
 }
 ```
 

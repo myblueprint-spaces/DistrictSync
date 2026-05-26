@@ -60,7 +60,7 @@ No. The schedule is optional. You can use the **Convert** page in the web UI to 
 
 **Q: How are files uploaded via SFTP?**
 
-All 5 output CSVs are zipped into a single dated file (e.g., `districtsync_2026-04-08.zip`) and uploaded as one file. This applies to both scheduled runs and ad-hoc uploads from the Convert page.
+All enabled output CSVs (5 for standard rostering, up to 7 with myBlueprint+) are zipped into a single dated file (e.g., `districtsync_2026-04-08.zip`) and uploaded as one file. This applies to both scheduled runs and ad-hoc uploads from the Convert page.
 
 **Q: Can I change the schedule or SFTP settings after setup?**
 

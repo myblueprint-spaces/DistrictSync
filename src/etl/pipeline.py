@@ -81,6 +81,8 @@ def _emit_run_log(
         "Family": len(outputs.get("Family", [])),
         "Classes": len(outputs.get("Classes", [])),
         "Enrollments": len(outputs.get("Enrollments", [])),
+        "CourseInfo": len(outputs.get("CourseInfo", [])),
+        "StudentCourses": len(outputs.get("StudentCourses", [])),
         "sftp_attempted": sftp_attempted,
         "sftp_ok": sftp_ok,
         "error": error,
@@ -158,6 +160,13 @@ def run_pipeline(
         field_orders: dict[str, list[str]] = {}
 
         entity_order = global_config.get("entity_order") or list(mappings.keys())
+        # `enabled_entities` (when non-empty) filters which mappings actually run.
+        # This lets the base config define more entity templates than it
+        # activates by default — districts opt in by listing them.
+        enabled = global_config.get("enabled_entities") or []
+        if enabled:
+            enabled_set = set(enabled)
+            entity_order = [e for e in entity_order if e in enabled_set]
         for entity_name in entity_order:
             entity_cfg = mappings.get(entity_name, {})
             source_config = entity_cfg.get("source_files", {})

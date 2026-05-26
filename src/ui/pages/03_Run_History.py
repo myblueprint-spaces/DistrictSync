@@ -79,6 +79,8 @@ if runs:
                 "Family": r.get("Family", "—"),
                 "Classes": r.get("Classes", "—"),
                 "Enrollments": r.get("Enrollments", "—"),
+                "CourseInfo": r.get("CourseInfo", "—"),
+                "StudentCourses": r.get("StudentCourses", "—"),
                 "SFTP": "✅" if r.get("sftp_ok") else ("❌" if r.get("sftp_attempted") else "—"),
                 "Error": r.get("error", ""),
             }
