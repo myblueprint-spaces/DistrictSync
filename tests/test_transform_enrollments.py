@@ -92,9 +92,7 @@ class TestEnrollmentsTransform:
         # Homeroom Class IDs follow "{school}_{homeroom}_{year}" — distinct from
         # subject Class IDs which use Master Timetable ID. The demographic fixture
         # places S001/S002/S006 in grades K/3/1 at school 100, homeroom A1.
-        homeroom_rows = student_enrollments[
-            student_enrollments["Class ID"].astype(str).str.contains("_A1_")
-        ]
+        homeroom_rows = student_enrollments[student_enrollments["Class ID"].astype(str).str.contains("_A1_")]
         assert {"S001", "S002", "S006"}.issubset(set(homeroom_rows["User ID"].astype(str)))
 
     def test_school_id_column_renamed(

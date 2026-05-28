@@ -172,7 +172,9 @@ if st.session_state.me_step == 1:
             try:
                 existing = _load_resolved_config(selected_existing)
                 existing_enabled = existing.get("global_config", {}).get("enabled_entities") or []
-                default_entities = [e for e in existing_enabled if e in ALL_ENTITY_OPTIONS] or DEFAULT_ROSTERING_ENTITIES
+                default_entities = [
+                    e for e in existing_enabled if e in ALL_ENTITY_OPTIONS
+                ] or DEFAULT_ROSTERING_ENTITIES
             except Exception:
                 default_entities = DEFAULT_ROSTERING_ENTITIES
 
@@ -214,18 +216,17 @@ if st.session_state.me_step == 1:
                     st.session_state.me_mode = "create"
                     _go(2)
                     st.rerun()
-    elif selected_existing is not None:
-        if st.button("Continue →", type="primary"):
-            if not enabled_entities:
-                st.error("Select at least one output CSV.")
-            else:
-                cfg_dict = _load_resolved_config(selected_existing)
-                cfg_dict.setdefault("global_config", {})["enabled_entities"] = enabled_entities
-                st.session_state.me_config = cfg_dict
-                st.session_state.me_district_id = selected_existing.replace("myedbc", "")
-                st.session_state.me_mode = "edit"
-                _go(2)
-                st.rerun()
+    elif selected_existing is not None and st.button("Continue →", type="primary"):
+        if not enabled_entities:
+            st.error("Select at least one output CSV.")
+        else:
+            cfg_dict = _load_resolved_config(selected_existing)
+            cfg_dict.setdefault("global_config", {})["enabled_entities"] = enabled_entities
+            st.session_state.me_config = cfg_dict
+            st.session_state.me_district_id = selected_existing.replace("myedbc", "")
+            st.session_state.me_mode = "edit"
+            _go(2)
+            st.rerun()
 
 # ===================================================================
 # STEP 2 — Source Files
