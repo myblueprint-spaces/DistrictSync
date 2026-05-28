@@ -134,6 +134,12 @@ if st.session_state.me_step == 1:
         "you only need to change what's different for your district."
     )
 
+    # All entities the pipeline knows how to produce. The 5 "rostering"
+    # entities are the SpacesEDU standard; CourseInfo + StudentCourses
+    # are the myBlueprint+ additions.
+    ALL_ENTITY_OPTIONS = ["Students", "Staff", "Family", "Classes", "Enrollments", "CourseInfo", "StudentCourses"]
+    DEFAULT_ROSTERING_ENTITIES = ["Students", "Staff", "Family", "Classes", "Enrollments"]
+
     mode = st.radio(
         "What would you like to do?",
         ["Create a new district configuration", "Edit an existing configuration"],
@@ -147,32 +153,76 @@ if st.session_state.me_step == 1:
             help="Used as the config filename. Use your district number, e.g. sd40, sd99.",
             key="me_new_district_id",
         )
+        default_entities = DEFAULT_ROSTERING_ENTITIES
+        selected_existing = None
+    else:
+        configs = _get_available_configs()
+        if not configs:
+            st.warning("No mapping configs found.")
+            district_id = None
+            selected_existing = None
+            default_entities = DEFAULT_ROSTERING_ENTITIES
+        else:
+            selected_existing = st.selectbox("Select configuration to edit", configs, key="me_edit_select")
+            district_id = None
+            # Pull the existing config's enabled_entities so the multiselect
+            # reflects whatever was already saved (e.g. mbp_core's 3-entity
+            # set, mbp_all's full 7). Falls back to the rostering default
+            # when the field is missing or empty.
+            try:
+                existing = _load_resolved_config(selected_existing)
+                existing_enabled = existing.get("global_config", {}).get("enabled_entities") or []
+                default_entities = [e for e in existing_enabled if e in ALL_ENTITY_OPTIONS] or DEFAULT_ROSTERING_ENTITIES
+            except Exception:
+                default_entities = DEFAULT_ROSTERING_ENTITIES
 
+    # Shared output-CSV selector — shown for both create and edit so the
+    # user controls which entities the pipeline runs. Disabling Family
+    # (for example) doesn't remove the Family field_map from the YAML
+    # but does skip the entity at run time.
+    st.markdown("---")
+    st.markdown("#### Output CSVs")
+    enabled_entities = st.multiselect(
+        "Which CSV files should this configuration generate?",
+        options=ALL_ENTITY_OPTIONS,
+        default=default_entities,
+        help=(
+            "The 5 SpacesEDU rostering files are enabled by default. "
+            "Add CourseInfo and StudentCourses to also generate the myBlueprint+ course CSVs."
+        ),
+        key="me_enabled_entities",
+    )
+
+    if "Create" in mode:
         if st.button("Continue →", type="primary"):
             if not district_id:
                 st.error("Please enter a district identifier.")
             elif not district_id.replace("_", "").replace("-", "").isalnum():
                 st.error("District ID must be letters, numbers, underscores, or hyphens only.")
+            elif not enabled_entities:
+                st.error("Select at least one output CSV.")
             else:
                 existing = _get_available_configs()
                 full_id = f"{district_id}myedbc"
                 if full_id in existing:
                     st.warning(f"Configuration `{full_id}` already exists. Use 'Edit existing' to modify it.")
                 else:
-                    st.session_state.me_config = _load_resolved_config("myedbc")
+                    cfg_dict = _load_resolved_config("myedbc")
+                    cfg_dict.setdefault("global_config", {})["enabled_entities"] = enabled_entities
+                    st.session_state.me_config = cfg_dict
                     st.session_state.me_district_id = district_id
                     st.session_state.me_mode = "create"
                     _go(2)
                     st.rerun()
-    else:
-        configs = _get_available_configs()
-        if not configs:
-            st.warning("No mapping configs found.")
-        else:
-            selected = st.selectbox("Select configuration to edit", configs, key="me_edit_select")
-            if st.button("Continue →", type="primary"):
-                st.session_state.me_config = _load_resolved_config(selected)
-                st.session_state.me_district_id = selected.replace("myedbc", "")
+    elif selected_existing is not None:
+        if st.button("Continue →", type="primary"):
+            if not enabled_entities:
+                st.error("Select at least one output CSV.")
+            else:
+                cfg_dict = _load_resolved_config(selected_existing)
+                cfg_dict.setdefault("global_config", {})["enabled_entities"] = enabled_entities
+                st.session_state.me_config = cfg_dict
+                st.session_state.me_district_id = selected_existing.replace("myedbc", "")
                 st.session_state.me_mode = "edit"
                 _go(2)
                 st.rerun()
@@ -783,26 +833,36 @@ elif st.session_state.me_step == 7:
 
     col1, col2 = st.columns(2)
     with col1:
+        st.markdown("**Output CSVs**")
+        enabled_entities_review = gc.get("enabled_entities") or [
+            "Students",
+            "Staff",
+            "Family",
+            "Classes",
+            "Enrollments",
+        ]
+        st.markdown(", ".join(f"`{e}`" for e in enabled_entities_review))
+
         st.markdown("**Source Files**")
         all_files = _get_all_source_files(config)
         for role, filename in all_files.items():
             label = SOURCE_FILE_ROLES.get(role, {}).get("label", role)
-            st.text(f"  {label}: {filename}")
+            st.markdown(f"- {label}: `{filename}`")
 
         st.markdown("**Academic Calendar**")
-        st.text(f"  Homeroom grades: {', '.join(gc.get('homeroom_grades', []))}")
-        st.text(f"  Start: {gc.get('academic_start_month_day', '08-25')}")
-        st.text(f"  End: {gc.get('academic_end_month_day', '07-25')}")
+        st.markdown(f"- Homeroom grades: `{', '.join(gc.get('homeroom_grades', []))}`")
+        st.markdown(f"- Start: `{gc.get('academic_start_month_day', '08-25')}`")
+        st.markdown(f"- End: `{gc.get('academic_end_month_day', '07-25')}`")
 
     with col2:
-        for entity in ["Students", "Staff", "Family", "Classes", "Enrollments"]:
+        for entity in enabled_entities_review:
             with st.expander(f"{entity} Field Mapping"):
                 fm = config.get("mappings", {}).get(entity, {}).get("field_map", {})
+                if not fm:
+                    st.markdown("_No field mapping defined._")
+                    continue
                 for field_name, field_val in fm.items():
-                    if isinstance(field_val, dict):
-                        st.text(f"  {field_name}: {field_val}")
-                    else:
-                        st.text(f"  {field_name}: {field_val}")
+                    st.markdown(f"- **{field_name}**: `{field_val}`")
 
     st.divider()
 

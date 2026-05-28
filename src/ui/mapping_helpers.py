@@ -209,8 +209,8 @@ def get_field_metadata() -> dict[str, list[dict[str, Any]]]:
             },
             {
                 "name": "PreRegSchoolCode",
-                "label": "Previous school number",
-                "help": "The school the student transferred from (if applicable).",
+                "label": "Next school code",
+                "help": "The school the student is pre-registered to attend next (if applicable).",
                 "widget": "column_select",
                 "required": False,
             },

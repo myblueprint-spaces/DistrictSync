@@ -83,18 +83,20 @@ with col1:
     st.subheader("What it does")
     st.markdown(
         "DistrictSync reads the standard General Data Extract (GDE) files from MyEducation BC and "
-        "produces the CSV files required by SpacesEDU's Advanced CSV import format. "
+        "produces the CSV files required by the SpacesEDU / myBlueprint+ Advanced CSV format. "
         "It runs automatically every night and uploads results via SFTP."
     )
 
     st.markdown("""
-| Input (MyEdBC GDE) | Output (SpacesEDU) |
+| Input (MyEdBC GDE) | Output (SpacesEDU / myBlueprint+) |
 |---|---|
 | Student Demographic | `Students.csv` |
 | Staff Information – Enhanced | `Staff.csv` |
 | Emergency Contact Information | `Family.csv` |
 | Student Schedule + Course Information | `Classes.csv` |
 | Student Schedule + Class Information – Enhanced | `Enrollments.csv` |
+| Course Information | `CourseInfo.csv` *(myBlueprint+)* |
+| Student Course History + Selection + Course Information | `StudentCourses.csv` *(myBlueprint+)* |
 """)
 
 with col2:

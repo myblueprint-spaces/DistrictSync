@@ -47,7 +47,7 @@ mappings:
       "EnrollStatus": #auto detected from Enrollment Status or Withdrawal Date fields
       "SchoolCode": "School Number"
       "Homeroom": "Homeroom"
-      "PreRegSchoolCode": "Previous school number"
+      "PreRegSchoolCode": "Next school code"
       "Preferred First Name": "Usual First Name"
       "Preferred Last Name": "Usual surname"
       "Community Hours":
