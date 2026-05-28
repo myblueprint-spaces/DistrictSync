@@ -263,14 +263,14 @@ class TestCourseInfoEntityIntegration:
         ]
         assert cfg.global_config.excluded_course_flavors == ["HUB", "HOL", "DL", "---"]
 
-    def test_myblueprintplus_enables_courseinfo(self):
+    def test_mbp_all_enables_courseinfo(self):
         from src.config.loader import load_config
 
-        cfg = load_config("myBlueprint+")
+        cfg = load_config("mbp_all")
         assert "CourseInfo" in cfg.global_config.enabled_entities
 
-    def test_myblueprintplus_minimal_enables_courseinfo(self):
+    def test_mbp_core_enables_courseinfo(self):
         from src.config.loader import load_config
 
-        cfg = load_config("myBlueprint+_minimal")
+        cfg = load_config("mbp_core")
         assert "CourseInfo" in cfg.global_config.enabled_entities

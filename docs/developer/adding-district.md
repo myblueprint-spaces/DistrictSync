@@ -146,14 +146,14 @@ these CSVs, use (or inherit from) one of the myBlueprint+ tier configs:
 
 | Config | What it produces |
 |---|---|
-| `myBlueprint+` | 5 rostering CSVs + `CourseInfo.csv` + `StudentCourses.csv` |
-| `myBlueprint+_minimal` | `Students.csv` + `CourseInfo.csv` + `StudentCourses.csv` only |
+| `mbp_all` | 5 rostering CSVs + `CourseInfo.csv` + `StudentCourses.csv` (full tier) |
+| `mbp_core` | `Students.csv` + `CourseInfo.csv` + `StudentCourses.csv` only (minimal tier) |
 
 Both are thin overrides that inherit MyEd BC file naming from `myedbc` and
 just override `enabled_entities`:
 
 ```yaml
-# config/mappings/myBlueprint+_mapping.yaml
+# config/mappings/mbp_all_mapping.yaml
 _base: myedbc
 sis: MyEducationBC
 district_name: myBlueprint+ (full)
@@ -324,5 +324,5 @@ Then without `--dry-run` to verify the output CSVs, and with `--quality` to spot
 | `sd48myedbc` | `myedbc` | Student Demographic Enhanced, Staff Information (non-enhanced) |
 | `sd51myedbc` | `myedbc` | Contact SpacesEDU for file naming details |
 | `sd74myedbc` | `myedbc` | Student Course Selection, Staff Information, Parent Information, Class Info Enhanced |
-| `myBlueprint+` | `myedbc` | Tier override — enables CourseInfo + StudentCourses in addition to the 5 rostering CSVs |
-| `myBlueprint+_minimal` | `myedbc` | Tier override — enables only Students + CourseInfo + StudentCourses |
+| `mbp_all` | `myedbc` | Tier override (full myBlueprint+) — enables CourseInfo + StudentCourses in addition to the 5 rostering CSVs |
+| `mbp_core` | `myedbc` | Tier override (minimal myBlueprint+) — enables only Students + CourseInfo + StudentCourses |

@@ -240,8 +240,8 @@ The number of output files depends on which config you're using — see the [Out
 | Config | CSVs produced |
 |---|---|
 | `myedbc` (and inheriting district configs `sd40myedbc`, `sd48myedbc`, …) | `Students.csv`, `Staff.csv`, `Family.csv`, `Classes.csv`, `Enrollments.csv` |
-| `myBlueprint+` | All 5 above + `CourseInfo.csv` + `StudentCourses.csv` |
-| `myBlueprint+_minimal` | `Students.csv`, `CourseInfo.csv`, `StudentCourses.csv` only |
+| `mbp_all` | All 5 above + `CourseInfo.csv` + `StudentCourses.csv` (full myBlueprint+ tier) |
+| `mbp_core` | `Students.csv`, `CourseInfo.csv`, `StudentCourses.csv` only (minimal myBlueprint+ tier) |
 
 ---
 

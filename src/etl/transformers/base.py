@@ -95,6 +95,26 @@ class BaseTransformer(ABC):
         return "teacher" if val == "y" else "administrator"
 
     @staticmethod
+    def normalize_iso_date(value: Any) -> str:
+        """Convert various date formats to ISO 8601 (yyyy-mm-dd).
+
+        Accepts dd-MMM-yyyy (e.g. '15-Sep-2024'), already-ISO yyyy-mm-dd,
+        and m/d/yyyy / d/m/yyyy. Returns the original trimmed string if
+        no format matches, or '' for NaN/None/empty inputs.
+        """
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ""
+        s = str(value).strip()
+        if not s or s.lower() == "nan":
+            return ""
+        for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+        return s
+
+    @staticmethod
     def truncate_name(name: str, max_len: int = 100) -> str:
         """Gracefully truncate a string, breaking at word boundaries."""
         if len(name) <= max_len:

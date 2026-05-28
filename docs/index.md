@@ -61,8 +61,8 @@ Which CSVs DistrictSync produces is controlled by `enabled_entities` in the conf
 | Config | Outputs |
 |---|---|
 | `myedbc` (and inheriting district configs `sd40myedbc`, `sd48myedbc`, …) | The 5 rostering CSVs |
-| `myBlueprint+` | 5 rostering CSVs + `CourseInfo.csv` + `StudentCourses.csv` |
-| `myBlueprint+_minimal` | `Students.csv` + `CourseInfo.csv` + `StudentCourses.csv` only |
+| `mbp_all` | 5 rostering CSVs + `CourseInfo.csv` + `StudentCourses.csv` (full myBlueprint+ tier) |
+| `mbp_core` | `Students.csv` + `CourseInfo.csv` + `StudentCourses.csv` only (minimal myBlueprint+ tier) |
 
 A district with non-standard file naming AND the myBlueprint+ tier composes the two — create a child config with `_base:` pointing to the district config and override `enabled_entities`.
 

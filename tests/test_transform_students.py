@@ -65,6 +65,33 @@ class TestStudentsTransform:
         # S005: bad date → Inactive (filtered)
         assert len(result) == 2
 
+    def test_date_of_birth_normalized_to_iso(self, students_mapping, global_config):
+        """dd-MMM-yyyy dates from MyEd BC GDE should be normalized to yyyy-mm-dd
+        in the output so they match the format used by Classes.csv.
+        """
+        df = pd.DataFrame(
+            {
+                "student number": ["S001", "S002", "S003"],
+                "legal first name": ["A", "B", "C"],
+                "legal surname": ["X", "Y", "Z"],
+                "date of birth": ["15-Sep-2010", "2011-03-04", ""],
+                "grade": ["5", "6", "7"],
+                "school number": ["100", "100", "100"],
+                "homeroom": ["A", "B", "C"],
+                "previous school number": ["", "", ""],
+                "usual first name": ["", "", ""],
+                "usual surname": ["", "", ""],
+                "student email address": ["", "", ""],
+                "enrolment status": ["Active", "Active", "Active"],
+            }
+        )
+        raw_data = {"StudentDemographicInformation.txt": df}
+        result = self.transformer.transform(df, students_mapping, "Students", raw_data, global_config)
+        dobs = result["Date of Birth"].tolist()
+        assert dobs[0] == "2010-09-15"  # dd-MMM-yyyy → ISO
+        assert dobs[1] == "2011-03-04"  # already ISO, pass-through
+        assert dobs[2] == ""  # empty stays empty
+
     def test_email_generation_when_format_configured(self, global_config):
         df = pd.DataFrame(
             {

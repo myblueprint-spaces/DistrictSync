@@ -140,6 +140,7 @@ class StudentCoursesTransformer(BaseTransformer):
             section = self._str(record.get("section"))
             raw_completion = self._str(record.get("dl completion date"))
             raw_start = self._str(record.get("dl start date"))
+            iso_completion = self.normalize_iso_date(raw_completion)
 
             cleaned = self._derive_history_code(course_code, full_code, section, flavors)
             is_pass = self._parse_mark_passing(mark_str)
@@ -156,7 +157,7 @@ class StudentCoursesTransformer(BaseTransformer):
                     "Course Code": cleaned,
                     "IntegrationId": "",
                     "Course Name": title,
-                    "Completion Date": raw_completion,
+                    "Completion Date": iso_completion,
                     "Final Mark": mark_str,
                     "Credits Earned": credits,
                     "Alternate Course Code": "",

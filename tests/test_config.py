@@ -237,14 +237,14 @@ class TestLoadConfig:
         assert "Students" in cfg.mappings
         assert len(cfg.global_config.homeroom_grades) > 0
 
-    def test_myblueprint_plus_config(self):
-        cfg = load_config("myBlueprint+")
+    def test_mbp_all_config(self):
+        cfg = load_config("mbp_all")
         assert "Students" in cfg.mappings
         assert "CourseInfo" in cfg.mappings
         assert "StudentCourses" in cfg.mappings
 
-    def test_myblueprint_plus_minimal_config(self):
-        cfg = load_config("myBlueprint+_minimal")
+    def test_mbp_core_config(self):
+        cfg = load_config("mbp_core")
         assert "Students" in cfg.mappings
         assert "CourseInfo" in cfg.mappings
         assert "StudentCourses" in cfg.mappings
@@ -505,8 +505,8 @@ class TestEnabledEntities:
             "Enrollments",
         ]
 
-    def test_myblueprintplus_enables_all_seven(self):
-        cfg = load_config("myBlueprint+")
+    def test_mbp_all_enables_all_seven(self):
+        cfg = load_config("mbp_all")
         assert set(cfg.global_config.enabled_entities) == {
             "Students",
             "Staff",
@@ -517,8 +517,8 @@ class TestEnabledEntities:
             "StudentCourses",
         }
 
-    def test_myblueprintplus_minimal_excludes_rostering(self):
-        cfg = load_config("myBlueprint+_minimal")
+    def test_mbp_core_excludes_rostering(self):
+        cfg = load_config("mbp_core")
         assert cfg.global_config.enabled_entities == [
             "Students",
             "CourseInfo",

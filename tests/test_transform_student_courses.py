@@ -112,7 +112,7 @@ class TestHistoryPass:
         assert row["Course Code"] == "MAT10"
         assert row["Course Name"] == "Math 10"
         assert row["Final Mark"] == "85"
-        assert row["Completion Date"] == "30-Jan-2025"
+        assert row["Completion Date"] == "2025-01-30"
         assert row["Credits Earned"] == 4
         assert row["Potential Credits Earned"] == 4
 
@@ -725,16 +725,16 @@ class TestStudentCoursesConfigIntegration:
         assert sources["course_selection"] == "StudentCourseSelection.txt"
         assert sources["course_info"] == "CourseInformation.txt"
 
-    def test_myblueprintplus_enables_studentcourses(self):
+    def test_mbp_all_enables_studentcourses(self):
         from src.config.loader import load_config
 
-        cfg = load_config("myBlueprint+")
+        cfg = load_config("mbp_all")
         assert "StudentCourses" in cfg.global_config.enabled_entities
 
-    def test_myblueprintplus_minimal_enables_studentcourses(self):
+    def test_mbp_core_enables_studentcourses(self):
         from src.config.loader import load_config
 
-        cfg = load_config("myBlueprint+_minimal")
+        cfg = load_config("mbp_core")
         assert "StudentCourses" in cfg.global_config.enabled_entities
 
     def test_registry_returns_dedicated_transformer(self):

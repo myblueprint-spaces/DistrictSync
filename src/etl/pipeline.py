@@ -33,11 +33,21 @@ ANOMALY_THRESHOLD = 0.20  # Warn if any entity drops >20% vs previous output
 
 
 def extract_required_files(config) -> list[str]:
-    """Extract all unique source filenames from a validated MappingConfig."""
-    files = set()
-    for entity_cfg in config.mappings.values():
+    """Extract all unique source filenames from a validated MappingConfig.
+
+    Respects ``enabled_entities``: source files for disabled entities are
+    excluded. ``school_year_sources`` are only included when also referenced
+    by an enabled entity — when they aren't, ``determine_school_year``
+    falls back to the calendar-date heuristic in BaseTransformer.
+    """
+    enabled_attr = getattr(config.global_config, "enabled_entities", None)
+    enabled = set(enabled_attr) if isinstance(enabled_attr, list) and enabled_attr else None
+
+    files: set[str] = set()
+    for entity_name, entity_cfg in config.mappings.items():
+        if enabled is not None and entity_name not in enabled:
+            continue
         files.update(entity_cfg.source_files.values())
-    files.update(config.global_config.school_year_sources.values())
     return list(files)
 
 

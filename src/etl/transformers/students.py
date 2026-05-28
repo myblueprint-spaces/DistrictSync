@@ -23,7 +23,10 @@ class StudentTransformer(BaseTransformer):
         result["EnrollStatus"] = working["EnrollStatus"]
         self._generate_emails(working, result, field_map)
 
-        return self.apply_field_map(working, result, field_map, "Students", context)
+        result = self.apply_field_map(working, result, field_map, "Students", context)
+        if "Date of Birth" in result.columns:
+            result["Date of Birth"] = result["Date of Birth"].apply(self.normalize_iso_date)
+        return result
 
     @staticmethod
     def _determine_enrollment_status(working: pd.DataFrame) -> None:

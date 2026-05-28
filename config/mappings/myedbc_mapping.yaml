@@ -9,9 +9,9 @@ global_config:
   homeroom_grades: ["IT", "PR", "PK", "TK", "KG", "01", "02", "03", "04", "05", "06", "07"]
   # By default this base config produces the 5 standard rostering CSVs. The
   # CourseInfo + StudentCourses templates below are defined so districts can
-  # opt into them via an override config (see myBlueprint+_mapping.yaml) by
+  # opt into them via an override config (see mbp_all_mapping.yaml) by
   # extending `enabled_entities`. Districts that want only a subset can
-  # override this list — e.g. myBlueprint+_minimal drops the rostering entities.
+  # override this list — e.g. mbp_core drops the rostering entities.
   enabled_entities:
     - Students
     - Staff
@@ -124,8 +124,8 @@ mappings:
   # myBlueprint+ entities (CourseInfo + StudentCourses)
   # ------------------------------------------------------------------------
   # Defined but not enabled by default. To produce these CSVs, use a config
-  # that extends `enabled_entities` (e.g. myBlueprint+_mapping.yaml or
-  # myBlueprint+_minimal_mapping.yaml).
+  # that extends `enabled_entities` (e.g. mbp_all_mapping.yaml or
+  # mbp_core_mapping.yaml).
   CourseInfo:
     source_files:
       course_info: "CourseInformation.txt"

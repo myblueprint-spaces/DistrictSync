@@ -40,8 +40,8 @@ The base `myedbc_mapping.yaml` defines **all 7 entity templates** but a `global_
 | Config | Enabled entities |
 |---|---|
 | `myedbc` (and inheriting district configs) | Students, Staff, Family, Classes, Enrollments |
-| `myBlueprint+` | All 7 (above + CourseInfo + StudentCourses) |
-| `myBlueprint+_minimal` | Students, CourseInfo, StudentCourses |
+| `mbp_all` | All 7 (above + CourseInfo + StudentCourses) — full myBlueprint+ tier |
+| `mbp_core` | Students, CourseInfo, StudentCourses — minimal myBlueprint+ tier |
 
 When `enabled_entities` is empty/missing, every mapping in the config is enabled (backward compat). The pipeline filters the entity loop by this list immediately after computing `entity_order`.
 
