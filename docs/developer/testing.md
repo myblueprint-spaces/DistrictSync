@@ -159,7 +159,7 @@ CI also runs the following quality gates on each push:
 | Format check | `ruff format --check src/ tests/` |
 | Type check | `mypy src/ --exclude 'src/ui'` (UI pages excluded) |
 | Security scan | `bandit -r src/ -q` |
-| Config validation | `make validate-config` (all 5 district YAML configs) |
+| Config validation | `make validate-config` (all district + tier YAML configs) |
 
 !!! note "Testing district configs with non-standard filenames"
     When writing E2E tests for district configs that use non-standard filenames (e.g., SD40's CSV files with SD-40_ prefix), create fixture files in `tmp_path` using the exact filenames the district config expects. See `tests/test_pipeline_e2e_districts.py` for examples.

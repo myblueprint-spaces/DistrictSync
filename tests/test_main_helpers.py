@@ -24,13 +24,14 @@ from src.main import (
 
 
 class TestExtractRequiredFiles:
-    def test_collects_all_source_files(self):
+    def test_collects_all_source_files_when_no_enabled_filter(self):
         config = MagicMock()
         entity1 = MagicMock()
         entity1.source_files = {"primary": "StudentDemo.txt", "schedule": "StudentSchedule.txt"}
         entity2 = MagicMock()
         entity2.source_files = {"primary": "StaffInfo.txt"}
         config.mappings = {"Students": entity1, "Staff": entity2}
+        config.global_config.enabled_entities = []
         config.global_config.school_year_sources = {"primary": "StudentSchedule.txt"}
 
         files = extract_required_files(config)
@@ -43,10 +44,43 @@ class TestExtractRequiredFiles:
         entity2 = MagicMock()
         entity2.source_files = {"primary": "Same.txt"}
         config.mappings = {"A": entity1, "B": entity2}
+        config.global_config.enabled_entities = []
         config.global_config.school_year_sources = {"primary": "Same.txt"}
 
         files = extract_required_files(config)
         assert len(files) == 1
+
+    def test_filters_by_enabled_entities(self):
+        """Disabled entities' source files must not appear — and a
+        school_year_source not used by any enabled entity is dropped
+        (determine_school_year falls back to the calendar-date heuristic)."""
+        config = MagicMock()
+        students = MagicMock()
+        students.source_files = {"primary": "StudentDemo.txt"}
+        staff = MagicMock()
+        staff.source_files = {"primary": "StaffInfo.txt"}
+        classes = MagicMock()
+        classes.source_files = {"primary": "StudentSchedule.txt", "info": "ClassInfo.txt"}
+        config.mappings = {"Students": students, "Staff": staff, "Classes": classes}
+        config.global_config.enabled_entities = ["Students"]
+        config.global_config.school_year_sources = {"primary": "StudentSchedule.txt"}
+
+        files = extract_required_files(config)
+        assert set(files) == {"StudentDemo.txt"}
+
+    def test_real_mbp_core_config_only_requires_three_files(self):
+        """End-to-end check against the actual mbp_core_mapping.yaml."""
+        from src.config.loader import load_config
+
+        cfg = load_config("mbp_core")
+        files = set(extract_required_files(cfg))
+        # mbp_core enables Students + CourseInfo + StudentCourses
+        assert files == {
+            "StudentDemographicInformation.txt",
+            "CourseInformation.txt",
+            "StudentCourseHistory.txt",
+            "StudentCourseSelection.txt",
+        }
 
 
 # -----------------------------------------------------------------------

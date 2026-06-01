@@ -33,11 +33,21 @@ ANOMALY_THRESHOLD = 0.20  # Warn if any entity drops >20% vs previous output
 
 
 def extract_required_files(config) -> list[str]:
-    """Extract all unique source filenames from a validated MappingConfig."""
-    files = set()
-    for entity_cfg in config.mappings.values():
+    """Extract all unique source filenames from a validated MappingConfig.
+
+    Respects ``enabled_entities``: source files for disabled entities are
+    excluded. ``school_year_sources`` are only included when also referenced
+    by an enabled entity — when they aren't, ``determine_school_year``
+    falls back to the calendar-date heuristic in BaseTransformer.
+    """
+    enabled_attr = getattr(config.global_config, "enabled_entities", None)
+    enabled = set(enabled_attr) if isinstance(enabled_attr, list) and enabled_attr else None
+
+    files: set[str] = set()
+    for entity_name, entity_cfg in config.mappings.items():
+        if enabled is not None and entity_name not in enabled:
+            continue
         files.update(entity_cfg.source_files.values())
-    files.update(config.global_config.school_year_sources.values())
     return list(files)
 
 
@@ -81,6 +91,8 @@ def _emit_run_log(
         "Family": len(outputs.get("Family", [])),
         "Classes": len(outputs.get("Classes", [])),
         "Enrollments": len(outputs.get("Enrollments", [])),
+        "CourseInfo": len(outputs.get("CourseInfo", [])),
+        "StudentCourses": len(outputs.get("StudentCourses", [])),
         "sftp_attempted": sftp_attempted,
         "sftp_ok": sftp_ok,
         "error": error,
@@ -158,6 +170,13 @@ def run_pipeline(
         field_orders: dict[str, list[str]] = {}
 
         entity_order = global_config.get("entity_order") or list(mappings.keys())
+        # `enabled_entities` (when non-empty) filters which mappings actually run.
+        # This lets the base config define more entity templates than it
+        # activates by default — districts opt in by listing them.
+        enabled = global_config.get("enabled_entities") or []
+        if enabled:
+            enabled_set = set(enabled)
+            entity_order = [e for e in entity_order if e in enabled_set]
         for entity_name in entity_order:
             entity_cfg = mappings.get(entity_name, {})
             source_config = entity_cfg.get("source_files", {})

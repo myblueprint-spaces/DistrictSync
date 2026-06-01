@@ -22,7 +22,7 @@ class TestGetTransformer:
             assert name in TRANSFORMER_REGISTRY
 
     def test_unknown_entity_returns_default_transformer(self):
-        transformer = get_transformer("CourseInfo")
+        transformer = get_transformer("UnregisteredEntity")
         assert isinstance(transformer, DefaultTransformer)
 
     def test_unknown_entity_does_not_raise(self):

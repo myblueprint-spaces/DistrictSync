@@ -116,12 +116,22 @@ SOURCE_FILE_ROLES = {
     "course_info": {
         "label": "Course Information",
         "help": "Course codes, titles, descriptions, credit values",
-        "entities": ["Classes"],
+        "entities": ["Classes", "CourseInfo", "StudentCourses"],
     },
     "class_info": {
         "label": "Class Information (Enhanced)",
         "help": "Class sections with teacher, period, and schedule details. Used for blended class detection.",
         "entities": ["Classes"],
+    },
+    "course_history": {
+        "label": "Student Course History",
+        "help": "Past course enrollments with final marks and completion dates.",
+        "entities": ["StudentCourses"],
+    },
+    "course_selection": {
+        "label": "Student Course Selection",
+        "help": "Future/planned course selections that have not yet been completed.",
+        "entities": ["StudentCourses"],
     },
 }
 
@@ -199,8 +209,8 @@ def get_field_metadata() -> dict[str, list[dict[str, Any]]]:
             },
             {
                 "name": "PreRegSchoolCode",
-                "label": "Previous school number",
-                "help": "The school the student transferred from (if applicable).",
+                "label": "Next school code",
+                "help": "The school the student is pre-registered to attend next (if applicable).",
                 "widget": "column_select",
                 "required": False,
             },
@@ -301,6 +311,53 @@ def get_field_metadata() -> dict[str, list[dict[str, Any]]]:
                 "help": "",
                 "widget": "column_select",
                 "required": True,
+            },
+        ],
+        # CourseInfo is opt-in; not yet rendered by the Mapping Editor wizard
+        # (the wizard's STEPS list does not include it). Metadata is defined
+        # here so future wizard work can pick it up without rediscovery.
+        "CourseInfo": [
+            {
+                "name": "Course Code",
+                "label": "Course code",
+                "help": "The primary course identifier from your course catalog.",
+                "widget": "column_select",
+                "required": True,
+            },
+            {
+                "name": "School ID",
+                "label": "School number",
+                "help": "Which school offers this course.",
+                "widget": "column_select",
+                "required": True,
+            },
+            {
+                "name": "Course Name",
+                "label": "Course title",
+                "help": "The full display name of the course.",
+                "widget": "column_select",
+                "required": True,
+            },
+            {
+                "name": "Grade",
+                "label": "Grade level",
+                "help": "Intended grade for the course.",
+                "widget": "column_select",
+                "required": False,
+            },
+            {
+                "name": "Credit Value",
+                "label": "Credit value",
+                "help": "How many credits this course is worth.",
+                "widget": "column_select",
+                "required": False,
+            },
+            {
+                "name": "Alternate Course Code",
+                "label": "Alternate code",
+                "help": "Usually left blank.",
+                "widget": "fixed_or_column",
+                "required": False,
             },
         ],
     }

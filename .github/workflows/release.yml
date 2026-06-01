@@ -28,7 +28,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install -r requirements.txt pyinstaller streamlit
+      - run: pip install -r requirements.txt pyinstaller
       # Streamlit pages are exec()'d at runtime so PyInstaller's static
       # analyzer starting at src/main.py never sees them. --paths=.
       # plus --collect-submodules=src + explicit --hidden-import for
@@ -61,6 +61,8 @@ jobs:
           --hidden-import=src.etl.transformers.students
           --hidden-import=src.etl.transformers.staff
           --hidden-import=src.etl.transformers.family
+          --hidden-import=src.etl.transformers.course_info
+          --hidden-import=src.etl.transformers.student_courses
           --hidden-import=src.etl.transformers.registry
           --hidden-import=src.etl.transformers.context
           src/main.py
@@ -99,6 +101,8 @@ jobs:
           --hidden-import=src.etl.transformers.students
           --hidden-import=src.etl.transformers.staff
           --hidden-import=src.etl.transformers.family
+          --hidden-import=src.etl.transformers.course_info
+          --hidden-import=src.etl.transformers.student_courses
           --hidden-import=src.etl.transformers.registry
           --hidden-import=src.etl.transformers.context
           src/main.py
@@ -136,6 +140,8 @@ jobs:
           --hidden-import=src.etl.transformers.students
           --hidden-import=src.etl.transformers.staff
           --hidden-import=src.etl.transformers.family
+          --hidden-import=src.etl.transformers.course_info
+          --hidden-import=src.etl.transformers.student_courses
           --hidden-import=src.etl.transformers.registry
           --hidden-import=src.etl.transformers.context
           src/main.py

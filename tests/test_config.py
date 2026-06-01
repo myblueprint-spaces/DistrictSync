@@ -227,16 +227,27 @@ class TestDeepMerge:
 # load_config against real YAML files
 # -----------------------------------------------------------------------
 class TestLoadConfig:
-    @pytest.mark.parametrize("sis_type", ["myedbc", "sd48myedbc", "sd51myedbc", "sd74myedbc"])
+    @pytest.mark.parametrize(
+        "sis_type",
+        ["myedbc", "sd40myedbc", "sd48myedbc", "sd51myedbc", "sd74myedbc"],
+    )
     def test_all_standard_configs_valid(self, sis_type):
         cfg = load_config(sis_type)
         assert cfg.sis == "MyEducationBC"
         assert "Students" in cfg.mappings
         assert len(cfg.global_config.homeroom_grades) > 0
 
-    def test_myblueprint_plus_config(self):
-        cfg = load_config("myBlueprint+")
+    def test_mbp_all_config(self):
+        cfg = load_config("mbp_all")
         assert "Students" in cfg.mappings
+        assert "CourseInfo" in cfg.mappings
+        assert "StudentCourses" in cfg.mappings
+
+    def test_mbp_core_config(self):
+        cfg = load_config("mbp_core")
+        assert "Students" in cfg.mappings
+        assert "CourseInfo" in cfg.mappings
+        assert "StudentCourses" in cfg.mappings
 
     def test_nonexistent_config_raises(self):
         with pytest.raises(FileNotFoundError):
@@ -363,3 +374,165 @@ class TestDistrictConfigEquivalence:
             cfg = load_config(sis)
             for entity in ("Students", "Staff", "Family", "Classes", "Enrollments"):
                 assert entity in cfg.mappings, f"{sis} missing {entity}"
+
+
+# -----------------------------------------------------------------------
+# CourseInfo / StudentCourses global_config fields + enabled_entities
+# -----------------------------------------------------------------------
+class TestMyBlueprintPlusGlobalConfig:
+    """Verify global_config fields supporting the CourseInfo / StudentCourses entities."""
+
+    def test_defaults_empty(self):
+        cfg = GlobalConfig()
+        assert cfg.excluded_course_code_patterns == []
+        assert cfg.excluded_course_flavors == []
+        assert cfg.enabled_entities == []
+
+    def test_accepts_values(self):
+        cfg = GlobalConfig(
+            excluded_course_code_patterns=["^.{5}-K", r"^.{5}0\d", "^X", "^ATT"],
+            excluded_course_flavors=["HUB", "HOL", "DL", "---"],
+            enabled_entities=["Students", "CourseInfo", "StudentCourses"],
+        )
+        assert cfg.excluded_course_code_patterns == ["^.{5}-K", r"^.{5}0\d", "^X", "^ATT"]
+        assert cfg.excluded_course_flavors == ["HUB", "HOL", "DL", "---"]
+        assert cfg.enabled_entities == ["Students", "CourseInfo", "StudentCourses"]
+
+    def test_invalid_regex_rejected_at_load(self):
+        with pytest.raises(ValidationError, match="Invalid regex"):
+            GlobalConfig(excluded_course_code_patterns=["^[unterminated"])
+
+    def test_roundtrip_via_to_raw_dict(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            global_config=GlobalConfig(
+                excluded_course_code_patterns=["^X", "^ATT"],
+                excluded_course_flavors=["HUB", "DL"],
+                enabled_entities=["Students", "Staff"],
+            ),
+            mappings={
+                "Students": EntityConfig(
+                    source_files={"student_demographic": "Demo.txt"},
+                    field_map={"User ID": "Student Number"},
+                ),
+            },
+        )
+        raw = cfg.to_raw_dict()
+        assert raw["global_config"]["excluded_course_code_patterns"] == ["^X", "^ATT"]
+        assert raw["global_config"]["excluded_course_flavors"] == ["HUB", "DL"]
+        assert raw["global_config"]["enabled_entities"] == ["Students", "Staff"]
+
+    def test_roundtrip_defaults_when_unset(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            mappings={
+                "Students": EntityConfig(
+                    source_files={"student_demographic": "Demo.txt"},
+                    field_map={"User ID": "Student Number"},
+                ),
+            },
+        )
+        raw = cfg.to_raw_dict()
+        assert raw["global_config"]["excluded_course_code_patterns"] == []
+        assert raw["global_config"]["excluded_course_flavors"] == []
+        assert raw["global_config"]["enabled_entities"] == []
+
+    def test_base_myedbc_carries_patterns_and_flavors(self):
+        """Patterns + flavors are MyEd BC conventions — they live in the base config
+        so any inheriting district that enables CourseInfo / StudentCourses gets them
+        for free."""
+        cfg = load_config("myedbc")
+        assert cfg.global_config.excluded_course_code_patterns == [
+            "^.{5}-K",
+            r"^.{5}0\d",
+            "^X",
+            "^ATT",
+        ]
+        assert cfg.global_config.excluded_course_flavors == ["HUB", "HOL", "DL", "---"]
+
+    def test_yaml_load_with_new_fields(self, tmp_path):
+        """End-to-end: YAML with the new fields parses and validates."""
+        yaml_text = """
+version: "1.9"
+sis: test
+global_config:
+  excluded_course_code_patterns:
+    - "^.{5}-K"
+    - "^.{5}0\\\\d"
+    - "^X"
+    - "^ATT"
+  excluded_course_flavors: ["HUB", "HOL", "DL", "---"]
+  enabled_entities: ["Students", "CourseInfo"]
+mappings:
+  Students:
+    source_files:
+      student_demographic: "Demo.txt"
+    field_map:
+      "User ID": "Student Number"
+"""
+        (tmp_path / "test_mapping.yaml").write_text(yaml_text)
+        cfg = load_config("test", config_dir=tmp_path)
+        assert cfg.global_config.excluded_course_code_patterns == ["^.{5}-K", r"^.{5}0\d", "^X", "^ATT"]
+        assert cfg.global_config.excluded_course_flavors == ["HUB", "HOL", "DL", "---"]
+        assert cfg.global_config.enabled_entities == ["Students", "CourseInfo"]
+
+
+# -----------------------------------------------------------------------
+# enabled_entities behavior
+# -----------------------------------------------------------------------
+class TestEnabledEntities:
+    """`enabled_entities` controls which mappings the pipeline actually produces."""
+
+    def test_base_myedbc_enables_only_rostering(self):
+        """The base config defines 7 entity templates but enables only the 5 rostering ones."""
+        cfg = load_config("myedbc")
+        assert set(cfg.mappings.keys()) >= {
+            "Students",
+            "Staff",
+            "Family",
+            "Classes",
+            "Enrollments",
+            "CourseInfo",
+            "StudentCourses",
+        }
+        assert cfg.global_config.enabled_entities == [
+            "Students",
+            "Staff",
+            "Family",
+            "Classes",
+            "Enrollments",
+        ]
+
+    def test_mbp_all_enables_all_seven(self):
+        cfg = load_config("mbp_all")
+        assert set(cfg.global_config.enabled_entities) == {
+            "Students",
+            "Staff",
+            "Family",
+            "Classes",
+            "Enrollments",
+            "CourseInfo",
+            "StudentCourses",
+        }
+
+    def test_mbp_core_excludes_rostering(self):
+        cfg = load_config("mbp_core")
+        assert cfg.global_config.enabled_entities == [
+            "Students",
+            "CourseInfo",
+            "StudentCourses",
+        ]
+
+    def test_district_configs_inherit_rostering_default(self):
+        """sd40/48/51/74 inherit `enabled_entities` from the base — still the 5 rostering entities."""
+        for sis in ("sd40myedbc", "sd48myedbc", "sd51myedbc", "sd74myedbc"):
+            cfg = load_config(sis)
+            assert cfg.global_config.enabled_entities == [
+                "Students",
+                "Staff",
+                "Family",
+                "Classes",
+                "Enrollments",
+            ], f"{sis} should still produce only the 5 rostering CSVs"

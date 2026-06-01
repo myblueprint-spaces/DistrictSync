@@ -6,6 +6,7 @@ rather than cryptic KeyErrors deep in the pipeline.
 """
 
 import logging
+import re
 from typing import Any, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
@@ -170,6 +171,12 @@ class GlobalConfig(BaseModel):
     academic_start_month_day: str = "08-25"
     academic_end_month_day: str = "07-25"
     excluded_course_codes: list[str] = Field(default_factory=list)
+    excluded_course_code_patterns: list[str] = Field(default_factory=list)
+    excluded_course_flavors: list[str] = Field(default_factory=list)
+    # Subset of entity names from `mappings:` that should actually be produced.
+    # Empty list means "all defined mappings are enabled" (backward-compatible).
+    # Lets one config file define more entity templates than it activates.
+    enabled_entities: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -177,6 +184,15 @@ class GlobalConfig(BaseModel):
         if data is None:
             return {}
         return data
+
+    @model_validator(mode="after")
+    def check_course_code_patterns(self):
+        for pat in self.excluded_course_code_patterns:
+            try:
+                re.compile(pat)
+            except re.error as exc:
+                raise ValueError(f"Invalid regex in excluded_course_code_patterns: {pat!r} ({exc})") from exc
+        return self
 
 
 class MappingConfig(BaseModel):
@@ -227,6 +243,9 @@ class MappingConfig(BaseModel):
             "academic_start_month_day": self.global_config.academic_start_month_day,
             "academic_end_month_day": self.global_config.academic_end_month_day,
             "excluded_course_codes": list(self.global_config.excluded_course_codes),
+            "excluded_course_code_patterns": list(self.global_config.excluded_course_code_patterns),
+            "excluded_course_flavors": list(self.global_config.excluded_course_flavors),
+            "enabled_entities": list(self.global_config.enabled_entities),
         }
 
         return {"mappings": mappings_raw, "global_config": global_raw}

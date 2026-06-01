@@ -217,9 +217,11 @@ A successful run ends with:
 
 ```
 INFO - ETL process completed successfully.
-INFO - Committed 5 output file(s) to C:\DistrictSync\output
-INFO - SFTP upload complete: 5 file(s) uploaded
+INFO - Committed output file(s) to C:\DistrictSync\output
+INFO - SFTP upload complete
 ```
+
+The number of output files depends on which config you're using — see the [Output CSVs](#output-csvs) section below.
 
 ---
 
@@ -227,11 +229,19 @@ INFO - SFTP upload complete: 5 file(s) uploaded
 
 1. **03:00 AM** — Task Scheduler / cron starts `DistrictSync`
 2. Tool reads GDE files from the input directory
-3. Transforms data into 5 CSV files
+3. Transforms data into the CSV files enabled by your config (5 for standard rostering, 7 with myBlueprint+, or a subset)
 4. Checks for anomalies — if any entity's record count has dropped more than 20% compared to the previous run, a warning is logged
-5. Writes all 5 CSVs atomically (all succeed or none are committed)
-6. Zips all 5 CSVs into a single dated file (`districtsync_YYYY-MM-DD.zip`) and uploads to SpacesEDU via SFTP
+5. Writes all enabled CSVs atomically (all succeed or none are committed)
+6. Zips them into a single dated file (`districtsync_YYYY-MM-DD.zip`) and uploads to SpacesEDU via SFTP
 7. Writes a detailed log entry to `etl_tool.log`
+
+### Output CSVs
+
+| Config | CSVs produced |
+|---|---|
+| `myedbc` (and inheriting district configs `sd40myedbc`, `sd48myedbc`, …) | `Students.csv`, `Staff.csv`, `Family.csv`, `Classes.csv`, `Enrollments.csv` |
+| `mbp_all` | All 5 above + `CourseInfo.csv` + `StudentCourses.csv` (full myBlueprint+ tier) |
+| `mbp_core` | `Students.csv`, `CourseInfo.csv`, `StudentCourses.csv` only (minimal myBlueprint+ tier) |
 
 ---
 

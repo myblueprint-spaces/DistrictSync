@@ -137,6 +137,78 @@ global_config:
   academic_end_month_day: "06-30"
 ```
 
+### Opting into CourseInfo / StudentCourses (myBlueprint+ tier)
+
+The `CourseInfo` and `StudentCourses` entity templates live in the base
+`myedbc_mapping.yaml`, but the base config does not enable them by default
+— its `enabled_entities` lists only the 5 rostering entities. To produce
+these CSVs, use (or inherit from) one of the myBlueprint+ tier configs:
+
+| Config | What it produces |
+|---|---|
+| `mbp_all` | 5 rostering CSVs + `CourseInfo.csv` + `StudentCourses.csv` (full tier) |
+| `mbp_core` | `Students.csv` + `CourseInfo.csv` + `StudentCourses.csv` only (minimal tier) |
+
+Both are thin overrides that inherit MyEd BC file naming from `myedbc` and
+just override `enabled_entities`:
+
+```yaml
+# config/mappings/mbp_all_mapping.yaml
+_base: myedbc
+sis: MyEducationBC
+district_name: myBlueprint+ (full)
+
+global_config:
+  enabled_entities:
+    - Students
+    - Staff
+    - Family
+    - Classes
+    - Enrollments
+    - CourseInfo
+    - StudentCourses
+```
+
+The MyEd BC exclusion patterns and course-code flavor suffixes are defined
+in the base config and inherited automatically:
+
+```yaml
+# config/mappings/myedbc_mapping.yaml (base)
+global_config:
+  excluded_course_code_patterns:
+    - "^.{5}-K"      # kindergarten variants
+    - "^.{5}0\\d"    # early-grade variants (0X)
+    - "^X"           # X-prefix courses
+    - "^ATT"         # attendance bookkeeping
+  excluded_course_flavors: [HUB, HOL, DL, "---"]
+```
+
+### Combining district file naming with myBlueprint+ tier
+
+For a real district that has both non-standard file naming AND wants the
+myBlueprint+ CSVs, create a child config that inherits the district config
+and just overrides `enabled_entities`:
+
+```yaml
+# config/mappings/sd48_mybplus_mapping.yaml
+_base: sd48myedbc
+district_name: SD48 + myBlueprint+
+
+global_config:
+  enabled_entities:
+    - Students
+    - Staff
+    - Family
+    - Classes
+    - Enrollments
+    - CourseInfo
+    - StudentCourses
+```
+
+The Mapping Editor wizard currently configures the 5 standard entities only.
+To opt a district into the myBlueprint+ tier, use one of the tier configs
+above or edit YAML directly.
+
 ---
 
 ## Step 4 — Validate the new config
@@ -245,10 +317,12 @@ Then without `--dry-run` to verify the output CSVs, and with `--quality` to spot
 
 ## District config reference
 
-| Config name | `_base` | Key differences |
-|-------------|---------|----------------|
-| `myedbc` | (none — base) | Standard MyEdBC filenames |
+| Config name | `_base` | Purpose |
+|-------------|---------|---------|
+| `myedbc` | (none — base) | Standard MyEdBC filenames; defines all 7 entity templates; enables the 5 rostering entities by default |
 | `sd40myedbc` | `myedbc` | CSV files with SD-40_/SD40- prefix; Student Schedule is headerless (`file_headers:` used) |
 | `sd48myedbc` | `myedbc` | Student Demographic Enhanced, Staff Information (non-enhanced) |
 | `sd51myedbc` | `myedbc` | Contact SpacesEDU for file naming details |
 | `sd74myedbc` | `myedbc` | Student Course Selection, Staff Information, Parent Information, Class Info Enhanced |
+| `mbp_all` | `myedbc` | Tier override (full myBlueprint+) — enables CourseInfo + StudentCourses in addition to the 5 rostering CSVs |
+| `mbp_core` | `myedbc` | Tier override (minimal myBlueprint+) — enables only Students + CourseInfo + StudentCourses |

@@ -95,10 +95,25 @@ html, body, [data-testid="stAppViewContainer"] {{
 [data-testid="stSidebar"] [data-baseweb="textarea"] > div {{
     background-color: #ffffff !important;
 }}
-/* Dropdown popup options (rendered via portal but may inherit sidebar scope) */
-[data-baseweb="popover"] [role="option"],
+/* Dropdown popup container — rendered via portal at <body> root, so it
+   doesn't inherit page-scoped styles. Force a white background and dark
+   text on options so dropdowns are readable even when the OS / browser
+   defaults to a dark UI theme. */
+[data-baseweb="popover"] [data-baseweb="menu"],
+[data-baseweb="popover"] [data-baseweb="list"],
+[data-baseweb="popover"] ul {{
+    background-color: #ffffff !important;
+}}
+[data-baseweb="popover"] [role="option"] {{
+    background-color: #ffffff !important;
+    color: {MB_TEXT} !important;
+}}
 [data-baseweb="popover"] [role="option"] * {{
     color: {MB_TEXT} !important;
+}}
+[data-baseweb="popover"] [role="option"]:hover,
+[data-baseweb="popover"] [role="option"][aria-selected="true"] {{
+    background-color: {MB_LIGHT_BG} !important;
 }}
 /* Inline code in sidebar (e.g. "Config: `1.0` | SIS: ..." metadata line) —
    the sweeping sidebar white-text rule hides the value otherwise. */
@@ -179,9 +194,101 @@ html, body, [data-testid="stAppViewContainer"] {{
     border-color: {MB_DARK} !important;
 }}
 
-/* ── Success / info banners ── */
+/* ── Secondary / default buttons ──
+   Without this rule, non-primary buttons in the main content area inherit
+   Streamlit's dark-mode defaults (dark bg + dark text), making the label
+   invisible. Force a light card-style appearance so text is always
+   readable. Scoped to the main view so the sidebar's white-text rule
+   still wins for sidebar buttons. */
+[data-testid="stMain"] [data-testid="stButton"] button:not([kind="primary"]),
+[data-testid="stMain"] [data-testid="stBaseButton-secondary"] {{
+    background: #ffffff !important;
+    color: {MB_TEXT} !important;
+    border: 1px solid {MB_BORDER} !important;
+    border-radius: 0.5rem;
+}}
+[data-testid="stMain"] [data-testid="stButton"] button:not([kind="primary"]):hover,
+[data-testid="stMain"] [data-testid="stBaseButton-secondary"]:hover {{
+    background: {MB_LIGHT_BG} !important;
+    color: {MB_DARK} !important;
+    border-color: {MB_PRIMARY} !important;
+}}
+
+/* ── Success / info / warning / error banners ──
+   Streamlit's default text colour for st.warning / st.info / st.error /
+   st.success can match the banner background under some themes (e.g.
+   white-on-yellow for warnings), making the message unreadable. Force
+   the body text dark so the message is always visible. */
 [data-testid="stAlert"][data-baseweb="notification"] {{
     border-radius: 0.5rem;
+}}
+[data-testid="stAlert"] [data-testid="stMarkdownContainer"],
+[data-testid="stAlert"] [data-testid="stMarkdownContainer"] * {{
+    color: {MB_TEXT} !important;
+}}
+
+/* ── Main-content form widgets ──
+   Mirrors the sidebar rules but for the main view. Text inputs, number
+   inputs, textareas, and selectbox values default to dark text on white
+   so they're never invisible regardless of OS theme. The popover rules
+   above already handle dropdown option lists. */
+[data-testid="stMain"] [data-baseweb="select"],
+[data-testid="stMain"] [data-baseweb="select"] *,
+[data-testid="stMain"] [data-baseweb="input"],
+[data-testid="stMain"] [data-baseweb="input"] *,
+[data-testid="stMain"] [data-baseweb="textarea"],
+[data-testid="stMain"] [data-baseweb="textarea"] * {{
+    color: {MB_TEXT} !important;
+}}
+[data-testid="stMain"] [data-baseweb="select"] > div,
+[data-testid="stMain"] [data-baseweb="input"] > div,
+[data-testid="stMain"] [data-baseweb="textarea"] > div {{
+    background-color: #ffffff !important;
+}}
+
+/* ── Widget labels (the small caption above text inputs / radios /
+   selectboxes / file uploaders / etc.) and radio / checkbox option
+   labels. Streamlit derives these from the active theme, which can
+   land as white-on-white when the OS / browser prefers a dark theme.
+   Pin them to the body text colour in the main view so they're
+   always readable.
+
+   Note on radio / checkbox: Streamlit renders each option as a
+   `<label data-baseweb="radio">` containing the input + text, so the
+   selector must target the [data-baseweb="radio"] element itself (and
+   its descendants), not nested labels — there aren't any. Same for
+   checkbox. The earlier rule targeted "label inside [data-baseweb=
+   radio]" and never matched. */
+[data-testid="stMain"] [data-testid="stWidgetLabel"],
+[data-testid="stMain"] [data-testid="stWidgetLabel"] *,
+[data-testid="stMain"] [data-testid="stRadio"],
+[data-testid="stMain"] [data-testid="stRadio"] *,
+[data-testid="stMain"] [data-testid="stCheckbox"],
+[data-testid="stMain"] [data-testid="stCheckbox"] *,
+[data-testid="stMain"] [data-baseweb="radio"],
+[data-testid="stMain"] [data-baseweb="radio"] *,
+[data-testid="stMain"] [data-baseweb="checkbox"],
+[data-testid="stMain"] [data-baseweb="checkbox"] *,
+[data-testid="stMain"] [data-testid="stFileUploaderDropzone"] *,
+[data-testid="stMain"] [data-testid="stText"],
+[data-testid="stMain"] [data-testid="stText"] *,
+[data-testid="stMain"] pre,
+[data-testid="stMain"] pre * {{
+    color: {MB_TEXT} !important;
+}}
+
+/* ── Tab buttons (st.tabs) ──
+   The Help page uses tabs to switch between Installation / FAQ /
+   Troubleshooting etc. Without an explicit rule the tab labels follow
+   the system theme and become invisible on the light background. */
+[data-baseweb="tab-list"] [data-baseweb="tab"],
+[data-baseweb="tab-list"] [data-baseweb="tab"] * {{
+    color: {MB_TEXT} !important;
+}}
+[data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"],
+[data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"] * {{
+    color: {MB_PRIMARY} !important;
+    font-weight: 600;
 }}
 
 /* ── Metric labels ── */

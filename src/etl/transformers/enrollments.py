@@ -32,7 +32,7 @@ class EnrollmentTransformer(BaseTransformer):
 
         final: list[pd.DataFrame] = []
 
-        self._homeroom_enrollments(final, student_demo_df, homeroom_grades, student_id_col, staff_id_col, context)
+        self._homeroom_enrollments(final, student_demo_df, homeroom_grades, staff_id_col, context)
         self._subject_enrollments(final, schedule_df, homeroom_grades, student_id_col, staff_id_col, field_map, context)
         self._classinfo_coteacher_enrollments(final, staff_id_col, context)
 
@@ -68,7 +68,6 @@ class EnrollmentTransformer(BaseTransformer):
         final: list[pd.DataFrame],
         student_demo_df: pd.DataFrame,
         homeroom_grades: list,
-        student_id_col: str,
         staff_id_col: str,
         context: TransformContext,
     ) -> None:
@@ -81,6 +80,15 @@ class EnrollmentTransformer(BaseTransformer):
         students_field_map = context.get_students_config().get("field_map", {})
         grade_col = students_field_map.get("Grade", {}).get("column", "grade").lower()
         homeroom_col = students_field_map.get("Homeroom", "homeroom").lower()
+        # The demographic file's student-ID column comes from Students config —
+        # MyEd BC's StudentDemographicInformation uses "Student Number" while
+        # StudentSchedule uses "Student ID", so the Enrollments staff/student
+        # ID config (which targets the schedule) can't be reused here.
+        user_id_config = students_field_map.get("User ID", "student number")
+        if isinstance(user_id_config, dict):
+            demo_student_col = str(user_id_config.get("column", "student number")).lower()
+        else:
+            demo_student_col = str(user_id_config).lower()
 
         if grade_col in student_demo_df.columns:
             student_demo_df[grade_col] = student_demo_df[grade_col].apply(self.grade_to_ceds)
@@ -100,8 +108,8 @@ class EnrollmentTransformer(BaseTransformer):
                 return
 
             # Student homeroom enrollments
-            student_enroll = valid[["Class ID", student_id_col, SCHOOL_NUMBER]].copy()
-            student_enroll.rename(columns={student_id_col: "User ID"}, inplace=True)
+            student_enroll = valid[["Class ID", demo_student_col, SCHOOL_NUMBER]].copy()
+            student_enroll.rename(columns={demo_student_col: "User ID"}, inplace=True)
             student_enroll["Role"] = "student"
             final.append(student_enroll)
             logger.info(f"[Enrollments] Created {len(student_enroll)} student homeroom enrollments")
