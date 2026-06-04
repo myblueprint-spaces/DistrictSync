@@ -190,8 +190,14 @@ def run_conversion(
 
     transformer = DataTransformer()
     sy_sources = global_config.get("school_year_sources", {})
-    sy = transformer.determine_school_year(raw_data, sy_sources)
-    transformer.set_school_year(sy)
+    start_md = global_config["academic_start_month_day"]
+    end_md = global_config["academic_end_month_day"]
+    rollover_md = global_config.get("academic_year_rollover_month_day") or end_md
+    naming = global_config.get("school_year_naming") or "end"
+    sy = transformer.determine_school_year(
+        raw_data, sy_sources, rollover_month_day=rollover_md, school_year_naming=naming
+    )
+    transformer.set_school_year(sy, start_md, end_md)
 
     outputs: dict[str, pd.DataFrame] = {}
     entity_order = global_config.get("entity_order") or list(mappings.keys())

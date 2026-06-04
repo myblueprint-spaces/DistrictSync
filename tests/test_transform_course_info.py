@@ -83,7 +83,7 @@ def myedbc_course_info_df():
 class TestCourseInfoTransform:
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_excluded_patterns_filtered_out(self, myedbc_course_info_df, course_info_mapping, myedbc_global_config):
         raw_data = {"CourseInformation.txt": myedbc_course_info_df}
@@ -232,7 +232,7 @@ class TestCourseInfoStartGrade:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     @staticmethod
     def _df():

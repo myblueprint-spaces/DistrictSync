@@ -38,13 +38,6 @@ mappings:
       staff_info: SD-40_StaffInformation.csv
       student_demographic: SD-40_StudentDemographic.csv
       class_info: SD-40_ClassInformation.csv
-    field_map:
-      "Start Date":
-        value: "2025-08-25"
-        use_academic_year: false
-      "End Date":
-        value: "2026-07-25"
-        use_academic_year: false
     headers:
       SD40-StudentSchedule.csv:
       - School Year

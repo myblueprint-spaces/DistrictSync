@@ -87,7 +87,7 @@ def _run(transformer, sc_mapping, global_config, history=None, selection=None, i
 @pytest.fixture
 def transformer():
     t = DataTransformer()
-    t.set_school_year(2025)
+    t.set_school_year(2025, "08-25", "07-25")
     return t
 
 

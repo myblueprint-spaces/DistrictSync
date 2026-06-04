@@ -35,7 +35,7 @@ class TestDefaultTransformer:
     @pytest.fixture()
     def context(self):
         ctx = TransformContext()
-        ctx.set_school_year(2025)
+        ctx.set_school_year(2025, "08-25", "07-25")
         return ctx
 
     def test_applies_field_map_string_columns(self, context):

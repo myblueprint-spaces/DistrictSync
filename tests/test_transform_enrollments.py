@@ -12,7 +12,7 @@ from src.etl.transformer import DataTransformer
 class TestEnrollmentsTransform:
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def _run_classes_then_enrollments(self, schedule_df, classes_mapping, enrollments_mapping, global_config, raw_data):
         """Classes must be transformed first to populate homeroom_classes_df and blended maps."""
@@ -110,7 +110,7 @@ class TestEnrollmentsTransform:
 class TestEnrollmentsBlended:
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_blended_teacher_enrollments(
         self, blended_schedule_df, classes_mapping, enrollments_mapping, global_config, raw_data_with_blended
@@ -142,7 +142,7 @@ class TestClassInfoCoTeacherEnrollments:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_coteacher_attached_via_section_letter(
         self,
@@ -303,7 +303,7 @@ class TestEnrollmentsExcludedCourseCodes:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_attendance_enrollments_suppressed(
         self, student_schedule_df, classes_mapping, enrollments_mapping, global_config, raw_data

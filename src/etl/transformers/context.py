@@ -28,10 +28,22 @@ class TransformContext:
     blended_class_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
     blended_teacher_map: dict[str, list[str]] = field(default_factory=dict)
 
-    def set_school_year(self, year: int, start_month_day: str = "08-25", end_month_day: str = "07-25") -> None:
+    def set_school_year(self, year: int, start_month_day: str, end_month_day: str) -> None:
+        """Set school_year (MyEd BC end-year convention) and compute academic bounds.
+
+        ``year`` is the calendar year the academic period ENDS in — matching
+        MyEd BC's "School Year" column convention (where "2026" means the
+        2025-2026 academic year). academic_start uses ``year - 1``;
+        academic_end uses ``year``.
+
+        Both month-day parameters are REQUIRED — there are no in-code defaults.
+        Callers must source these from the validated YAML config (or pass them
+        explicitly in tests) so non-BC SIS configs cannot silently fall back
+        to BC values.
+        """
         self.school_year = year
-        self.academic_start = f"{year}-{start_month_day}"
-        self.academic_end = f"{year + 1}-{end_month_day}"
+        self.academic_start = f"{year - 1}-{start_month_day}"
+        self.academic_end = f"{year}-{end_month_day}"
 
     def get_teacher_id_col(self) -> str:
         """Extract teacher ID column name from Enrollments config. Used by multiple entities."""

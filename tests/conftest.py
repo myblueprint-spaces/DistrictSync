@@ -88,7 +88,7 @@ def streamlit_server():
 def transformer():
     """Fresh DataTransformer with school year pre-set."""
     t = DataTransformer()
-    t.set_school_year(2025)
+    t.set_school_year(2025, "08-25", "07-25")
     return t
 
 
