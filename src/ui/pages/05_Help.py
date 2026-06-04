@@ -20,6 +20,12 @@ st.set_page_config(page_title="Help — DistrictSync", page_icon="❓", layout="
 inject_brand_css()
 header("Help & Documentation", "How DistrictSync works and what to expect")
 
+st.info(
+    "📖 The [SpacesEDU Help Centre article](https://help.spacesedu.com/en-ca/article/mx56qo) covers the "
+    "setup basics. This page has the complete documentation — installation, SFTP, how it works, FAQ, "
+    "troubleshooting, and developer guides — in the tabs below."
+)
+
 DOCS_DIR = Path("docs")
 
 # Fallback paths relative to the script (for PyInstaller bundles)

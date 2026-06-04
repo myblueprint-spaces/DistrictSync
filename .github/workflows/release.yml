@@ -194,7 +194,7 @@ jobs:
             | Linux   | `DistrictSync-linux`       | `chmod +x` before first run |
             | macOS   | `DistrictSync-macos`       | Allow in System Settings > Privacy & Security |
 
-            See the [Documentation Site](https://${{ github.repository_owner }}.github.io/DistrictSync/) for setup instructions.
+            See the [SpacesEDU Help Centre article](https://help.spacesedu.com/en-ca/article/mx56qo) for setup basics. The web UI's **Help & Docs** page has the complete documentation.
           files: |
             artifacts/DistrictSync-windows.exe
             artifacts/DistrictSync-linux
