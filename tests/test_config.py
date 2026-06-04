@@ -402,6 +402,32 @@ class TestMyBlueprintPlusGlobalConfig:
         with pytest.raises(ValidationError, match="Invalid regex"):
             GlobalConfig(excluded_course_code_patterns=["^[unterminated"])
 
+    def test_course_start_grade_default(self):
+        assert GlobalConfig().course_start_grade == 10
+
+    @pytest.mark.parametrize("grade", [8, 9, 10])
+    def test_course_start_grade_accepts_valid(self, grade):
+        assert GlobalConfig(course_start_grade=grade).course_start_grade == grade
+
+    @pytest.mark.parametrize("grade", [7, 11, 0, 13])
+    def test_course_start_grade_rejects_out_of_range(self, grade):
+        with pytest.raises(ValidationError, match="course_start_grade"):
+            GlobalConfig(course_start_grade=grade)
+
+    def test_course_start_grade_roundtrip_via_to_raw_dict(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            global_config=GlobalConfig(course_start_grade=8),
+            mappings={
+                "Students": EntityConfig(
+                    source_files={"student_demographic": "Demo.txt"},
+                    field_map={"User ID": "Student Number"},
+                ),
+            },
+        )
+        assert cfg.to_raw_dict()["global_config"]["course_start_grade"] == 8
+
     def test_roundtrip_via_to_raw_dict(self):
         cfg = MappingConfig(
             version="1.9",
@@ -444,13 +470,15 @@ class TestMyBlueprintPlusGlobalConfig:
         so any inheriting district that enables CourseInfo / StudentCourses gets them
         for free."""
         cfg = load_config("myedbc")
+        # The numeric early-grade pattern is no longer hard-coded — it is derived
+        # from course_start_grade at transform time (default grades 10-12).
         assert cfg.global_config.excluded_course_code_patterns == [
             "^.{5}-K",
-            r"^.{5}0\d",
             "^X",
             "^ATT",
         ]
         assert cfg.global_config.excluded_course_flavors == ["HUB", "HOL", "DL", "---"]
+        assert cfg.global_config.course_start_grade == 10
 
     def test_yaml_load_with_new_fields(self, tmp_path):
         """End-to-end: YAML with the new fields parses and validates."""

@@ -107,7 +107,7 @@ def _get_detected_cols_for_entity(entity: str, config: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 # Progress bar
 # ---------------------------------------------------------------------------
-STEPS = ["Start", "Files", "Calendar", "Students", "Staff & Family", "Classes", "Save"]
+STEPS = ["Start", "Files", "Calendar", "Students", "Staff & Family", "Classes and Courses", "Save"]
 step_progress(st.session_state.me_step, total=len(STEPS))
 step_cols = st.columns(len(STEPS))
 for i, (col, label) in enumerate(zip(step_cols, STEPS), start=1):
@@ -658,12 +658,13 @@ elif st.session_state.me_step == 5:
             st.rerun()
 
 # ===================================================================
-# STEP 6 — Classes & Enrollments
+# STEP 6 — Classes and Courses
 # ===================================================================
 elif st.session_state.me_step == 6:
-    st.subheader("Step 6 — Classes & Enrollments")
+    st.subheader("Step 6 — Classes and Courses")
 
     config = st.session_state.me_config
+    gc = config.get("global_config", {})
     schedule_file = ""
     for entity_cfg in config.get("mappings", {}).values():
         sf = entity_cfg.get("source_files", {})
@@ -776,6 +777,26 @@ elif st.session_state.me_step == 6:
         key="me_enroll_teacher",
     )
 
+    # --- High school course grade (CourseInfo / StudentCourses only) ---
+    show_course_grade = bool({"CourseInfo", "StudentCourses"} & set(gc.get("enabled_entities", [])))
+    course_start_grade = gc.get("course_start_grade", 10)
+    if show_course_grade:
+        st.markdown("---")
+        st.markdown("#### High School Course Grade")
+        st.caption(
+            "The CourseInfo and StudentCourses files include senior courses only "
+            "(grades 10-12) by default. Lower the start grade to also include grade 8 "
+            "or 9 courses. Courses below the selected grade are never included."
+        )
+        grade_options = [10, 9, 8]
+        course_start_grade = st.selectbox(
+            "Lowest grade to include in course files",
+            options=grade_options,
+            index=grade_options.index(course_start_grade) if course_start_grade in grade_options else 0,
+            format_func=lambda g: f"Grade {g} and up",
+            key="me_course_start_grade",
+        )
+
     # Navigation
     col1, col2 = st.columns([1, 5])
     with col1:
@@ -814,6 +835,10 @@ elif st.session_state.me_step == 6:
                 "School ID": "School Number",
             }
             config["mappings"]["Enrollments"]["field_map"] = new_enroll_fm
+
+            # Persist the high school course grade floor (drives the derived
+            # early-grade exclusion for CourseInfo / StudentCourses).
+            gc["course_start_grade"] = course_start_grade
 
             _go(7)
             st.rerun()
@@ -854,6 +879,8 @@ elif st.session_state.me_step == 7:
         st.markdown(f"- Homeroom grades: `{', '.join(gc.get('homeroom_grades', []))}`")
         st.markdown(f"- Start: `{gc.get('academic_start_month_day', '08-25')}`")
         st.markdown(f"- End: `{gc.get('academic_end_month_day', '07-25')}`")
+        if {"CourseInfo", "StudentCourses"} & set(enabled_entities_review):
+            st.markdown(f"- Course files lowest grade: `Grade {gc.get('course_start_grade', 10)} and up`")
 
     with col2:
         for entity in enabled_entities_review:

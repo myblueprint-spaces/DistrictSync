@@ -459,6 +459,11 @@ elif st.session_state.wizard_step == 2:
         st.success(f"Config loaded — SIS: `{loaded.sis}` | Version: `{loaded.version}`")
         if gc.homeroom_grades:
             st.info(f"Homeroom grades: {', '.join(gc.homeroom_grades)}")
+        # Surface the high school course grade floor when this config produces
+        # the course files (CourseInfo / StudentCourses). Edit it in the
+        # Mapping Editor's "Classes and Courses" step.
+        if {"CourseInfo", "StudentCourses"} & set(gc.enabled_entities):
+            st.info(f"High school course grade: Grade {gc.course_start_grade} and up")
     except Exception as e:
         st.error(f"Could not load config `{selected}`: {e}")
 

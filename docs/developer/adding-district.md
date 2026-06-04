@@ -175,13 +175,23 @@ in the base config and inherited automatically:
 ```yaml
 # config/mappings/myedbc_mapping.yaml (base)
 global_config:
+  # Lowest grade included in the CourseInfo + StudentCourses CSVs. Default 10
+  # (grades 10-12). Set to 8 or 9 to also include those grade levels — never
+  # lower. The numeric early-grade exclusion regex is derived from this value,
+  # so it is no longer listed as a literal pattern below.
+  course_start_grade: 10
   excluded_course_code_patterns:
     - "^.{5}-K"      # kindergarten variants
-    - "^.{5}0\\d"    # early-grade variants (0X)
     - "^X"           # X-prefix courses
     - "^ATT"         # attendance bookkeeping
   excluded_course_flavors: [HUB, HOL, DL, "---"]
 ```
+
+`course_start_grade` is the editable knob for the senior-course grade floor
+(it is also exposed in the Mapping Editor's Calendar step when CourseInfo or
+StudentCourses is enabled). MyEd BC encodes the grade in the course code, so
+the transformer turns this value into an early-grade exclusion pattern
+(`^.{5}0[0-9]` for 10, `^.{5}0[0-8]` for 9, `^.{5}0[0-7]` for 8).
 
 ### Combining district file naming with myBlueprint+ tier
 

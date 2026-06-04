@@ -19,7 +19,7 @@ class CourseInfoTransformer(BaseTransformer):
     def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         working = self.normalize_columns(df)
 
-        patterns = context.global_config.get("excluded_course_code_patterns", [])
+        patterns = self.effective_course_code_patterns(context.global_config)
         working = self.filter_excluded_course_code_patterns(working, patterns)
 
         result = pd.DataFrame()

@@ -1,2 +1,9 @@
 [client]
 toolbarMode = "minimal"
+
+# Pin the light base theme so canvas-rendered widgets (st.dataframe) and other
+# theme-derived elements stay readable against the light brand styling, even
+# when the browser/OS prefers a dark theme. Mirrored by --theme.base=light in
+# src/ui/launcher.py for the frozen exe (which doesn't bundle this file).
+[theme]
+base = "light"

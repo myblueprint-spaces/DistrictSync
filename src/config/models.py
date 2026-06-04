@@ -173,6 +173,12 @@ class GlobalConfig(BaseModel):
     excluded_course_codes: list[str] = Field(default_factory=list)
     excluded_course_code_patterns: list[str] = Field(default_factory=list)
     excluded_course_flavors: list[str] = Field(default_factory=list)
+    # Lowest grade to include in the CourseInfo / StudentCourses CSVs. MyEd BC
+    # encodes the grade in the course code; courses below this grade are
+    # dropped. Default 10 (grades 10-12). Set to 8 or 9 to include those
+    # grade levels too — never lower. Drives a derived early-grade exclusion
+    # pattern at transform time (see BaseTransformer.early_grade_exclusion_pattern).
+    course_start_grade: int = 10
     # Subset of entity names from `mappings:` that should actually be produced.
     # Empty list means "all defined mappings are enabled" (backward-compatible).
     # Lets one config file define more entity templates than it activates.
@@ -192,6 +198,8 @@ class GlobalConfig(BaseModel):
                 re.compile(pat)
             except re.error as exc:
                 raise ValueError(f"Invalid regex in excluded_course_code_patterns: {pat!r} ({exc})") from exc
+        if self.course_start_grade not in (8, 9, 10):
+            raise ValueError(f"course_start_grade must be 8, 9, or 10 (got {self.course_start_grade!r})")
         return self
 
 
@@ -245,6 +253,7 @@ class MappingConfig(BaseModel):
             "excluded_course_codes": list(self.global_config.excluded_course_codes),
             "excluded_course_code_patterns": list(self.global_config.excluded_course_code_patterns),
             "excluded_course_flavors": list(self.global_config.excluded_course_flavors),
+            "course_start_grade": self.global_config.course_start_grade,
             "enabled_entities": list(self.global_config.enabled_entities),
         }
 

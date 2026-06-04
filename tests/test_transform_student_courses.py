@@ -11,7 +11,9 @@ import pytest
 
 from src.etl.transformer import DataTransformer
 
-MYEDBC_PATTERNS = [r"^.{5}-K", r"^.{5}0\d", r"^X", r"^ATT"]
+# The numeric early-grade exclusion is derived from course_start_grade
+# (default 10) by the transformer, not listed as a literal pattern.
+MYEDBC_PATTERNS = [r"^.{5}-K", r"^X", r"^ATT"]
 MYEDBC_FLAVORS = ["HUB", "HOL", "DL", "---"]
 
 STUDENT_COURSES_FIELD_MAP = {
@@ -687,6 +689,64 @@ class TestColumnNormalization:
         result = _run(transformer, sc_mapping, myedbc_global_config, history=history, info=info)
         assert len(result) == 1
         assert result.iloc[0]["Course Name"] == "Math 10"
+
+
+class TestStudentCoursesStartGrade:
+    """course_start_grade gates which grade levels reach StudentCourses.
+
+    Grades are read from the 6th-7th chars of the course code ("0X" for
+    single-digit grades). Default 10 keeps only 10-12; 8 or 9 admits those
+    grades. Applies to both the history and selection passes.
+    """
+
+    @staticmethod
+    def _history_rows():
+        return _history(
+            [
+                {
+                    "student number": "S001",
+                    "school number": "6262013",
+                    "course code": code,
+                    "full course code": code,
+                    "section": "",
+                    "final mark": "85",
+                    "dl start date": "15-Sep-2024",
+                    "dl completion date": "30-Jan-2025",
+                }
+                for code in ("MAT--07", "MAT--08", "MAT--09", "MEN--10")
+            ]
+        )
+
+    def _run_grade(self, transformer, sc_mapping, start_grade):
+        gc = {"excluded_course_code_patterns": MYEDBC_PATTERNS, "excluded_course_flavors": MYEDBC_FLAVORS}
+        if start_grade is not None:
+            gc["course_start_grade"] = start_grade
+        result = _run(transformer, sc_mapping, gc, history=self._history_rows())
+        return set(result["Course Code"])
+
+    def test_default_keeps_only_senior(self, transformer, sc_mapping):
+        assert self._run_grade(transformer, sc_mapping, None) == {"MEN--10"}
+
+    def test_start_grade_9(self, transformer, sc_mapping):
+        assert self._run_grade(transformer, sc_mapping, 9) == {"MAT--09", "MEN--10"}
+
+    def test_start_grade_8(self, transformer, sc_mapping):
+        assert self._run_grade(transformer, sc_mapping, 8) == {"MAT--08", "MAT--09", "MEN--10"}
+
+    def test_start_grade_8_applies_to_selection_pass(self, transformer, sc_mapping):
+        selection = _selection(
+            [
+                {"student number": "S002", "school number": "6262013", "course code": code, "dl start date": ""}
+                for code in ("MAT--07", "MAT--08", "MEN--10")
+            ]
+        )
+        gc = {
+            "excluded_course_code_patterns": MYEDBC_PATTERNS,
+            "excluded_course_flavors": MYEDBC_FLAVORS,
+            "course_start_grade": 8,
+        }
+        result = _run(transformer, sc_mapping, gc, selection=selection)
+        assert set(result["Course Code"]) == {"MAT--08", "MEN--10"}
 
 
 class TestStudentCoursesConfigIntegration:

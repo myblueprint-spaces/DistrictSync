@@ -11,7 +11,9 @@ import pytest
 
 from src.etl.transformer import DataTransformer
 
-MYEDBC_PATTERNS = [r"^.{5}-K", r"^.{5}0\d", r"^X", r"^ATT"]
+# The numeric early-grade exclusion is no longer a literal pattern — it is
+# derived from course_start_grade (default 10) by the transformer.
+MYEDBC_PATTERNS = [r"^.{5}-K", r"^X", r"^ATT"]
 
 COURSE_INFO_FIELD_MAP = {
     "Course Code": "Course Code",
@@ -164,18 +166,21 @@ class TestCourseInfoTransform:
         assert mat10["Grade"] == "10"
         assert mat10["Credit Value"] == "4"
 
-    def test_no_patterns_configured_keeps_everything(self, myedbc_course_info_df, course_info_mapping):
-        """When excluded_course_code_patterns is empty, nothing is filtered (only dedup applies)."""
+    def test_no_junk_patterns_keeps_everything_except_grade_floor(self, myedbc_course_info_df, course_info_mapping):
+        """Empty excluded_course_code_patterns disables the junk filters (K/X/ATT),
+        but the default course_start_grade (10) still drops early-grade codes."""
         global_config = {"excluded_course_code_patterns": []}
         raw_data = {"CourseInformation.txt": myedbc_course_info_df}
         result = self.transformer.transform(
             myedbc_course_info_df, course_info_mapping, "CourseInfo", raw_data, global_config
         )
-        # 8 input rows, 1 dedupe (the second MAT10) — 7 expected
-        assert len(result) == 7
-        # XGEN12, ATT--AM, etc. are still there
+        # 8 input rows, 1 dedupe (the second MAT10), 1 grade-floor drop (MAT1003) — 6 expected
+        assert len(result) == 6
+        # Junk-pattern rows survive (no patterns configured)...
         codes = set(result["Course Code"])
-        assert {"XGEN12", "ATT--AM", "MAT1003", "ABCDE-KO"} <= codes
+        assert {"XGEN12", "ATT--AM", "ABCDE-KO"} <= codes
+        # ...but the early-grade code is removed by the default grade-10 floor.
+        assert "MAT1003" not in codes
 
     def test_empty_input_returns_empty(self, course_info_mapping, myedbc_global_config):
         empty = pd.DataFrame(columns=["course code", "school number", "title", "grade level", "credit value"])
@@ -215,6 +220,59 @@ class TestCourseInfoTransform:
         assert len(result) == 1
         assert pd.isna(result.iloc[0]["Grade"])
         assert pd.isna(result.iloc[0]["Credit Value"])
+
+
+class TestCourseInfoStartGrade:
+    """course_start_grade controls the lowest grade kept in CourseInfo.
+
+    MyEd BC course codes encode the grade in chars 6-7, so single-digit
+    grades appear as "0X" (e.g. MAT--08). The default (10) keeps only 10-12;
+    lowering it to 8 or 9 admits those grade levels but never anything lower.
+    """
+
+    def setup_method(self):
+        self.transformer = DataTransformer()
+        self.transformer.set_school_year(2025)
+
+    @staticmethod
+    def _df():
+        # Seven-char MyEd-style codes encoding grades 07-10.
+        return pd.DataFrame(
+            {
+                "course code": ["MAT--07", "MAT--08", "MAT--09", "MEN--10"],
+                "school number": ["6262013"] * 4,
+                "title": ["Math 7", "Math 8", "Math 9", "Math 10"],
+                "grade level": ["07", "08", "09", "10"],
+                "credit value": ["4", "4", "4", "4"],
+            }
+        )
+
+    def _run(self, start_grade):
+        gc = {"excluded_course_code_patterns": MYEDBC_PATTERNS, "course_start_grade": start_grade}
+        df = self._df()
+        raw_data = {"CourseInformation.txt": df}
+        result = self.transformer.transform(df, {"field_map": COURSE_INFO_FIELD_MAP}, "CourseInfo", raw_data, gc)
+        return list(result["Course Code"])
+
+    def test_default_grade_10_keeps_only_senior(self):
+        # No course_start_grade set -> defaults to 10.
+        gc = {"excluded_course_code_patterns": MYEDBC_PATTERNS}
+        df = self._df()
+        raw_data = {"CourseInformation.txt": df}
+        result = self.transformer.transform(df, {"field_map": COURSE_INFO_FIELD_MAP}, "CourseInfo", raw_data, gc)
+        assert list(result["Course Code"]) == ["MEN--10"]
+
+    def test_start_grade_9_includes_grade_9(self):
+        codes = self._run(9)
+        assert "MAT--09" in codes
+        assert "MEN--10" in codes
+        assert "MAT--08" not in codes
+        assert "MAT--07" not in codes
+
+    def test_start_grade_8_includes_grades_8_and_9(self):
+        codes = self._run(8)
+        assert set(codes) == {"MAT--08", "MAT--09", "MEN--10"}
+        assert "MAT--07" not in codes
 
 
 class TestCourseInfoEntityIntegration:
@@ -257,11 +315,11 @@ class TestCourseInfoEntityIntegration:
         cfg = load_config("myedbc")
         assert cfg.global_config.excluded_course_code_patterns == [
             r"^.{5}-K",
-            r"^.{5}0\d",
             r"^X",
             r"^ATT",
         ]
         assert cfg.global_config.excluded_course_flavors == ["HUB", "HOL", "DL", "---"]
+        assert cfg.global_config.course_start_grade == 10
 
     def test_mbp_all_enables_courseinfo(self):
         from src.config.loader import load_config
