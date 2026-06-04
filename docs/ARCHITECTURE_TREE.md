@@ -1,0 +1,175 @@
+# Architecture Tree
+
+> Single-source index of the codebase: every source file with a one-line description. **Read this first to locate relevant files instead of exploring blindly.** Keep it current — adding/moving/removing a file requires updating this index in the same change (enforced in CI via `make check-tree`).
+
+_Last generated from `main` @ c669404._
+
+---
+
+## Entry point
+
+- `src/main.py` — CLI entry point: parses argparse flags and dispatches to `run_pipeline` or SFTP subcommands (`--sftp-configure`, `--sftp-test`, `--sftp-show`); re-exports pipeline symbols for backward compatibility; PyInstaller `__main__` target.
+
+---
+
+## src/etl/  (ETL pipeline)
+
+- `src/etl/extractor.py` — `DataExtractor`: loads each GDE file (CSV/TXT) with multi-encoding fallback (UTF-8 → Latin1 → CP1252) and auto-delimiter detection; normalises column names immediately after load; raises `ExtractionError` on unparse-able files.
+- `src/etl/transformer.py` — `DataTransformer` facade: backward-compatible wrapper that delegates to entity-specific transformers via `TransformContext` and `BlendedClassDetector`; exposes school-year / homeroom state properties for direct test access.
+- `src/etl/pipeline.py` — Core ETL orchestration (`run_pipeline`, `extract_required_files`): coordinates Extractor → Transformer → Loader, anomaly detection, diff, quality report, structured JSON run-log, and optional SFTP upload; lives here (not `main.py`) so it is importable by UI and tests.
+- `src/etl/loader.py` — `DataLoader`: writes DataFrames as UTF-8 BOM CSVs with YAML-defined field ordering; `save_all()` uses an atomic stage-then-commit pattern (`.tmp_<timestamp>/`) so a mid-write failure leaves existing output intact.
+- `src/etl/column_names.py` — Canonical string constants for GDE source-column names (e.g. `MASTER_TIMETABLE_ID`, `STAFF_SOURCEID`, `COURSE_CODE`) to avoid magic strings across transformers.
+
+### src/etl/transformers/
+
+- `src/etl/transformers/base.py` — `BaseTransformer` ABC: CEDS grade mapping, `ALLOWED_TRANSFORMS` security allowlist, `apply_field_map()`, `assign_class_ids()`, `filter_excluded_course_codes()`, `filter_excluded_course_code_patterns()`, `clean_course_code_flavor()`, and other utilities shared by all entity transformers.
+- `src/etl/transformers/context.py` — `TransformContext` dataclass: mutable shared state for one pipeline run (school year, academic dates, raw data frames, homeroom/blended maps) passed between entity transformers.
+- `src/etl/transformers/registry.py` — `TRANSFORMER_REGISTRY` dict and `get_transformer()`: maps entity names to singleton transformer instances; falls back to `DefaultTransformer` (field-map-only) for any unregistered entity.
+- `src/etl/transformers/students.py` — `StudentTransformer`: filters to active-only students (enrollment status or 4-format withdrawal-date check), generates template emails, normalises ISO dates for Date of Birth.
+- `src/etl/transformers/staff.py` — `StaffTransformer`: optionally merges staff info with a roster file to resolve `staff sourceid`, then applies field map with `map_role` transform (Y → teacher, else → administrator).
+- `src/etl/transformers/family.py` — `FamilyTransformer`: thin field-map-only transformer for parent/guardian emergency-contact GDE rows.
+- `src/etl/transformers/classes.py` — `ClassTransformer`: orchestrates blended detection, homeroom class generation (configured grades), subject class generation (schedule + course + staff join), and emits blended classes from context; deduplicates on Class ID.
+- `src/etl/transformers/enrollments.py` — `EnrollmentTransformer`: builds homeroom enrollments (from student demographic), subject enrollments (from schedule), and co-teacher/blended teacher enrollments (from class info context); deduplicates on (Class ID, User ID, Role).
+- `src/etl/transformers/blended.py` — `BlendedClassDetector`: identifies same-teacher/same-time-slot sections with 2+ grade levels; populates `context.blended_class_map`, `blended_class_metadata`, and `blended_teacher_map`; falls back to deduplicated schedule when ClassInfo is absent.
+- `src/etl/transformers/course_info.py` — `CourseInfoTransformer`: filters course rows by `excluded_course_code_patterns` regex list, applies field map, deduplicates on (Course Code, School ID); produces the myBlueprint+ CourseInfo CSV.
+- `src/etl/transformers/student_courses.py` — `StudentCoursesTransformer`: ports SD62 PowerShell history/selection join logic; two-pass (history then selection), section-stripping + flavor-truncation course-code cleaning, two-tier CourseInfo lookup; produces the myBlueprint+ StudentCourses CSV.
+
+---
+
+## src/config/
+
+- `src/config/models.py` — Pydantic v2 models for YAML mapping validation: `MappingConfig`, `GlobalConfig`, `EntityConfig`, and 8 discriminated field-mapping types (`FieldTransform`, `FieldFixedValue`, `FieldAcademicYear`, `FieldAppendYear`, `FieldEmailFormat`, `FieldNameConfig`, `FieldIdRolePair`, `FieldDirect`); `classify_field()` dispatcher; `to_raw_dict()` for pipeline consumption.
+- `src/config/loader.py` — `load_config(sis_type)`: discovers YAML from user-overrides dir then bundled dir; resolves `_base` inheritance via recursive deep-merge with cycle detection; validates via Pydantic; exposes `available_configs()` for the UI district picker.
+- `src/config/app_config.py` — `AppConfig` dataclass: persists non-sensitive runtime settings (paths, SIS type, schedule, SFTP host/port/user) to `~/.districtsync/config.json` with OS-safe permissions; SFTP password is never stored here (keyring only).
+
+---
+
+## src/quality/
+
+- `src/quality/report.py` — `DataQualityReport` / `EntityReport`: checks missing/empty fields (warns at >50% threshold), entity-specific duplicate detection, orphaned enrollments (class or user not found in outputs), and grade distribution anomalies.
+
+---
+
+## src/sftp/
+
+- `src/sftp/uploader.py` — `SFTPUploader`: connects via paramiko SSHClient to a host from the `ALLOWED_SFTP_HOSTS` allowlist; stores/retrieves passwords from the OS keyring (`KEYRING_SERVICE = "DistrictSync_SFTP"`); zips all CSVs into `districtsync_YYYY-MM-DD.zip` before upload; exposes `test_connection()` and `upload_csvs()`.
+
+---
+
+## src/scheduler/
+
+- `src/scheduler/windows.py` — Windows Task Scheduler integration: `register_task()` / `query_task()` / `delete_task()` via `schtasks.exe`; validates all inputs through `validators.py` before any subprocess call; supports both frozen-exe and dev-Python modes.
+- `src/scheduler/linux.py` — Linux/macOS cron integration: `register_cron()` / `delete_cron()` append/remove a sentinel-tagged crontab entry via the system `crontab` command; uses `shlex.quote()` for safe shell escaping.
+
+---
+
+## src/utils/
+
+- `src/utils/validators.py` — Centralised security validators: `ALLOWED_SFTP_HOSTS` allowlist, `validate_sis_type()`, `validate_task_name()`, `validate_run_time()`, `validate_sftp_host()`, `quote_for_shell()`; all user-supplied values flowing into subprocess or SFTP must pass through here.
+- `src/utils/logger.py` — `get_logger()`: configures logging from `config/logging.conf` (or falls back to `basicConfig`) writing to the canonical absolute path `~/.districtsync/etl_tool.log` so logs persist across PyInstaller restarts and scheduled-task runs.
+- `src/utils/helpers.py` — General-purpose utilities: `normalize_columns()`, `ensure_directory()`, `validate_csv()`, `validate_path()`, `safe_float_conversion()`, `district_slug()`, `build_zip_name()`.
+- `src/utils/paths.py` — Single source of truth for path resolution: `bundle_root()`, `bundle_config_dir()`, `bundle_mappings_dir()`, `user_data_dir()`, `user_mappings_dir()`, `user_log_file()`; works identically in source-install and frozen-exe (PyInstaller `_MEIPASS`) environments.
+
+---
+
+## src/ui/
+
+- `src/ui/Home.py` — Streamlit multi-page app entry point (`streamlit run src/ui/Home.py`): renders status dashboard (configured/unconfigured banner, last Windows scheduled-task run, SFTP status); auto-discovers pages/ subdirectory.
+- `src/ui/brand.py` — myBlueprint/SpacesEDU brand styles: `inject_brand_css()` injects corporate colour palette and card styles; `header()` renders the branded page heading with wordmark; `step_progress()` renders a numbered step bar.
+- `src/ui/launcher.py` — PyInstaller UI launcher: locates `Home.py` inside the frozen bundle and invokes Streamlit programmatically with `--server.headless=false`; used when the binary is launched without CLI arguments.
+- `src/ui/mapping_helpers.py` — Mapping Editor support library: `detect_columns()` (headerless heuristic), `get_field_metadata()` (field descriptions/types), `build_override_dict()` (diff vs base config), `save_mapping_yaml()`, `column_selectbox()` widget, `SOURCE_FILE_ROLES` and `CEDS_GRADES` constants.
+
+### src/ui/pages/
+
+- `src/ui/pages/01_Setup_Wizard.py` — 5-step guided setup wizard: file paths → district config selection → schedule time → SFTP configuration → summary/activation; registers Windows/Linux scheduler; shows management dashboard post-activation.
+- `src/ui/pages/02_Convert.py` — Ad-hoc conversion page: accepts uploaded GDE files, runs `run_pipeline()`, renders quality report, diff vs previous output, and offers ZIP download and optional SFTP upload.
+- `src/ui/pages/03_Run_History.py` — Run History page: parses `__DISTRICTSYNC_RUN__` JSON log lines from `~/.districtsync/etl_tool.log` into a tabular view; falls back to raw log tail when no structured lines exist.
+- `src/ui/pages/04_Mapping_Editor.py` — 7-step visual Mapping Editor: guides non-technical users through entity selection, file upload + column detection, field mapping, academic calendar, and name/email config; saves a minimal `_base`-inheriting override YAML to `~/.districtsync/mappings/`.
+- `src/ui/pages/05_Help.py` — Help page: renders `docs/` markdown files (partner guides + developer docs) in the Streamlit UI; single source of truth shared with the MkDocs static site.
+
+---
+
+## config/mappings/
+
+- `config/mappings/myedbc_mapping.yaml` — Base config (v1.9): defines all 7 entity templates (Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses); `enabled_entities` defaults to the 5 standard rostering CSVs; sets homeroom grades, school-year source, and course-code exclusion patterns.
+- `config/mappings/sd40myedbc_mapping.yaml` — SD40 New Westminster override (`_base: myedbc`): CSV source file names, headerless schedule with injected column headers, `{student number}@newwestschools.ca` email, `excluded_course_codes` for ATT--AM/PM/Daily attendance rows.
+- `config/mappings/sd48myedbc_mapping.yaml` — SD48 Sea to Sky override (`_base: myedbc`): remaps to `StudentDemographicEnhanced.txt` and `StaffInformation.txt`; no other deviations from base.
+- `config/mappings/sd51myedbc_mapping.yaml` — SD51 Boundary override (`_base: myedbc`): `StudentDemographicEnhanced.txt`, `{student number}@sd51.bc.ca` email, fixed hardcoded academic start/end dates (bypasses auto-detection).
+- `config/mappings/sd74myedbc_mapping.yaml` — SD74 Gold Trail override (`_base: myedbc`): swapped legal/usual name fields, `{student number}@sd74.bc.ca` email, `studentcourseselection.txt` as schedule source, `ClassInfoEnhanced.txt`, `ParentInformation.txt`, fixed academic dates.
+- `config/mappings/mbp_all_mapping.yaml` — myBlueprint+ full tier (`_base: myedbc`): extends `enabled_entities` to all 7 (adds CourseInfo + StudentCourses on top of the standard 5 rostering CSVs).
+- `config/mappings/mbp_core_mapping.yaml` — myBlueprint+ minimal tier (`_base: myedbc`): `enabled_entities` = [Students, CourseInfo, StudentCourses] only; for districts that need course history/selection but not full class rosters.
+
+---
+
+## Root
+
+- `pyproject.toml` — Project metadata (name=districtsync, version=2.5.5), setuptools build config, pytest settings (addopts, benchmarks deselected, coverage omits), ruff lint/format rules, mypy config, bandit exclusions.
+- `Makefile` — Developer shortcuts: `install`, `test`, `test-cov`, `lint`, `fmt`, `ui`, `build-win`, `clean`, `validate-config`, `docs`, `docs-serve`.
+- `requirements.txt` — Runtime dependencies: pandas, PyYAML, python-dateutil, pydantic, paramiko, keyring, streamlit.
+- `requirements-dev.txt` — Dev/CI dependencies: extends requirements.txt with pytest, pytest-cov, ruff, mypy, bandit, types-paramiko, types-PyYAML, hypothesis, pytest-benchmark, and optional UI-test extras (playwright, pytest-sftpserver).
+- `mkdocs.yml` — MkDocs configuration: site name, GitHub repo URL, navigation structure (partner guides + developer docs), Material theme, auto-deploy to GitHub Pages on release tag.
+- `README.md` — Project overview, quick-start instructions, supported districts, and links to full documentation.
+
+---
+
+## tests/
+
+- `tests/conftest.py` — Shared fixtures (synthetic DataFrames, YAML configs, `DataTransformer` instances) for all tests; also hosts the `streamlit_server` session fixture for UI smoke tests.
+- `tests/snapshots/generate_synthetic.py` — Script to regenerate synthetic SD74 GDE input files in `tests/snapshots/input/` (run once after schema changes).
+- `tests/snapshots/` — Frozen SD74 snapshot data: `input/` holds 6 synthetic GDE files (StudentDemographic, Staff, Family, Classes, Schedule, CourseInfo); `output/` holds 5 golden CSV files (Students, Staff, Family, Classes, Enrollments) locked against regression.
+- `tests/test_config.py` — Config model and loader: Pydantic validation of YAML structure, `classify_field()` dispatch, `_base` inheritance deep-merge, cycle detection.
+- `tests/test_config_loader_multi_dir.py` — Two-tier config discovery: user-dir override wins over bundled, `_base` resolution across search dirs, `available_configs()` deduplication.
+- `tests/test_pipeline_e2e.py` — Full ETL e2e with synthetic on-disk GDE files: verifies output CSV structure and data for the standard myedbc config.
+- `tests/test_pipeline_e2e_districts.py` — District-specific e2e: verifies sd48 and sd74 district configs produce all 5 expected CSVs from synthetic GDE files using district-specific filenames.
+- `tests/test_regression_sd74.py` — SD74 golden-file regression: runs the pipeline against `tests/snapshots/input/` and diffs against `tests/snapshots/output/` (schema + values).
+- `tests/test_contract.py` — Output schema contract: asserts every district config produces exactly the required SpacesEDU Advanced CSV column set — no missing columns, no unexpected extras.
+- `tests/test_transform_students.py` — Students transformer: enrollment-status filtering, active-student logic, email generation, Date of Birth normalisation.
+- `tests/test_transform_staff.py` — Staff transformer: field mapping, roster merge for `staff sourceid`, role mapping.
+- `tests/test_transform_family.py` — Family transformer: field mapping from emergency-contact GDE rows.
+- `tests/test_transform_classes.py` — Classes transformer: homeroom generation, subject class creation, blended class integration.
+- `tests/test_transform_enrollments.py` — Enrollments transformer: homeroom/subject/co-teacher enrollments, deduplication on (Class ID, User ID, Role).
+- `tests/test_transform_course_info.py` — CourseInfo transformer: course-code pattern exclusion, deduplication on (Course Code, School ID); uses synthetic MyEd BC CourseInformation data.
+- `tests/test_transform_student_courses.py` — StudentCourses transformer: history/selection join logic, W-mark skipping, section-stripping, flavor truncation, CourseInfo two-tier lookup.
+- `tests/test_transform_base.py` — BaseTransformer shared utilities: `filter_excluded_course_code_patterns()` and `clean_course_code_flavor()` (other helpers are covered indirectly by entity tests).
+- `tests/test_blended_classes.py` — Blended class detection: detection correctness, naming convention, grade-range merging, validation.
+- `tests/test_class_generation.py` — Class ID and class name generation, 100-char name truncation.
+- `tests/test_grade_mapping.py` — CEDS grade-code mapping (`grade_to_ceds`), edge cases and unknown grades.
+- `tests/test_email_generation.py` — Student email template rendering (`format` field type), various template patterns.
+- `tests/test_enrollment_status.py` — Enrollment status determination: Active/PreReg/Inactive via `enrolment status` column and 4-format withdrawal-date fallback.
+- `tests/test_role_mapping.py` — Staff role mapping (Y → teacher, else → administrator) and User ID / User Role pair generation.
+- `tests/test_school_year.py` — School year determination from schedule data and calendar-date heuristic; academic start/end date calculation; datetime mock patterns.
+- `tests/test_extractor.py` — `DataExtractor` multi-encoding/delimiter fallback, headerless file injection, `ExtractionError` on unparse-able files.
+- `tests/test_loader.py` — `DataLoader` CSV output, field ordering, atomic `save_all()` commit/rollback behaviour.
+- `tests/test_quality_report.py` — `DataQualityReport` checks: missing fields, duplicates, orphaned enrollments, grade distribution.
+- `tests/test_validators.py` — All validators in `src/utils/validators.py`: SIS type, task name, run time, SFTP host allowlist, shell quoting.
+- `tests/test_app_config.py` — `AppConfig` load/save round-trip, unknown-field tolerance, default values.
+- `tests/test_main_helpers.py` — Pipeline helper functions: `_check_anomalies`, `_emit_run_log`, `extract_required_files`, `_sftp_upload`, `_print_diff`.
+- `tests/test_cli.py` — CLI flags: `--dry-run`, `--diff`, `--quality`, `--version` (calls `run_pipeline()` directly, bypasses argparse).
+- `tests/test_sftp_uploader.py` — `SFTPUploader` with mocked paramiko and keyring: store/retrieve password, `test_connection()`, `upload_csvs()` zip-and-put flow.
+- `tests/test_sftp_cli.py` — SFTP CLI subcommands: `--sftp-configure` (env var + stdin password sources), `--sftp-test`, `--sftp-show`, host allowlist rejection, flag mutual-exclusion.
+- `tests/test_sftp_integration.py` — Live SFTP integration using `pytest-sftpserver` (real paramiko transport); skipped automatically if the package is absent.
+- `tests/test_schedulers.py` — Windows Task Scheduler and Linux cron wrappers with all subprocess calls mocked.
+- `tests/test_registry.py` — Transformer registry: known entity lookup, `DefaultTransformer` fallback for unregistered entities.
+- `tests/test_source_config.py` — Source-config normalisation (`normalize_source_config`) and `get_source_file()` retrieval from context.
+- `tests/test_helpers.py` — `src/utils/helpers.py` utilities: `normalize_columns()`, `ensure_directory()`, `district_slug()`, `build_zip_name()`, etc.
+- `tests/test_paths.py` — `src/utils/paths.py` path helpers under both source-install and frozen-bundle (`sys.frozen`) scenarios.
+- `tests/test_benchmarks.py` — Performance benchmarks on a synthetic 5 000-student dataset (deselected from normal run; invoke with `-m benchmark`).
+- `tests/test_property_based.py` — Hypothesis property-based tests: invariants on grade mapping, email generation, and other pure functions to catch edge cases hand-written tests miss.
+- `tests/test_ui_smoke.py` — Playwright headless Chrome smoke tests: each Streamlit page loads without crashing and renders key structural elements; requires the `streamlit_server` fixture.
+
+---
+
+## docs/
+
+- `docs/index.md` — MkDocs home page: hero section with SpacesEDU branding, product summary, and quick-links to partner/developer guides.
+- `docs/partner/installation.md` — Partner installation guide: prerequisites, download, Setup Wizard walkthrough (~15–20 min), Windows/Linux task-scheduler setup.
+- `docs/partner/faq.md` — Frequently asked questions: run frequency, supported districts, file naming, SFTP behaviour, data privacy.
+- `docs/partner/troubleshooting.md` — Troubleshooting guide: no-output causes, encoding errors, SFTP failures, schedule not firing, log file locations.
+- `docs/partner/how-classes-work.md` — Explains the three class types (homeroom, subject, blended) and how each is detected from GDE data.
+- `docs/partner/headless-sftp-setup.md` — Headless / Docker SFTP setup: configuring SFTP credentials entirely from the CLI (`--sftp-configure`, `--sftp-test`, `--sftp-show`) without a browser.
+- `docs/developer/architecture.md` — Architecture overview: ETL pipeline diagram, extractor/transformer/loader responsibilities, config-driven design, blended class logic.
+- `docs/developer/setup.md` — Developer setup: Python version, clone, `pip install`, running tests, linting, type checking, Streamlit UI, PyInstaller build.
+- `docs/developer/testing.md` — Testing guide: test categories (unit, e2e, snapshot, property-based, benchmark, UI smoke), coverage requirements, mocking patterns.
+- `docs/developer/release.md` — Release process: version bump, tag push, GitHub Actions automated build (3 platform binaries), GitHub Release creation, MkDocs deploy.
+- `docs/developer/adding-district.md` — Step-by-step guide for adding a new district YAML config with `_base` inheritance and non-standard file names/column mappings.
+- `docs/developer/adding-transformer.md` — Guide for adding a custom entity transformer class and registering it in the registry.

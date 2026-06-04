@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-DistrictSync is a Python ETL tool that converts MyEducation BC General Data Extracts (GDEs) into SpacesEDU Advanced CSV format. It processes GDE files (CSV or TXT, varies by district) and produces 5 output CSV files (Students, Staff, Family, Classes, Enrollments). Distributed as single-file executables via PyInstaller for non-technical school district users running on district servers with task schedulers.
+DistrictSync is a Python ETL tool that converts MyEducation BC General Data Extracts (GDEs) into SpacesEDU / myBlueprint+ Advanced CSV format. It processes GDE files (CSV or TXT, varies by district) and produces up to 7 output CSVs: the 5 SpacesEDU rostering files (Students, Staff, Family, Classes, Enrollments) plus 2 optional myBlueprint+ files (CourseInfo, StudentCourses), selected per-config via `global_config.enabled_entities` (see **Output Targeting** below). Distributed as single-file executables via PyInstaller for non-technical school district users running on district servers with task schedulers.
 
 ## Commands
 
@@ -30,7 +30,7 @@ python -m pytest tests/ -v                    # all tests
 python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=80  # with coverage
 ```
 
-294 tests, 91% coverage. Coverage omits `src/utils/logger.py` and `src/ui/*` (configured in `pyproject.toml`). Benchmarks deselected by default (`-m 'not benchmark'` in addopts).
+640 tests; CI coverage gate 80% (`--cov-fail-under=80`). Coverage omits `src/utils/logger.py` and `src/ui/*` (configured in `pyproject.toml`). Benchmarks deselected by default (`-m 'not benchmark'` in addopts).
 
 ### Lint + Format
 ```bash
@@ -56,7 +56,7 @@ bandit -r src/ -q
 
 ### Validate configs
 ```bash
-make validate-config  # validates all 5 district configs: myedbc, sd40, sd48, sd51, sd74
+make validate-config  # validates all 7 configs: myedbc, sd40, sd48, sd51, sd74, mbp_all, mbp_core
 ```
 
 ### Streamlit web UI
@@ -107,6 +107,8 @@ Entity-specific transformers using Strategy Pattern with a registry:
 - `classes.py` — Homeroom generation + subject classes + blended class integration
 - `enrollments.py` — Student + teacher enrollment rows from schedule data; `.copy()` before mutations
 - `blended.py` — Blended class detection (same teacher/time with 2+ grade levels -> merged class). Falls back to deduplicated schedule when ClassInfo lacks required columns.
+- `course_info.py` — (myBlueprint+, opt-in) Course catalog from CourseInformation.txt; pattern-excludes K/early-grade/X/ATT codes; uses `apply_field_map` (config-driven).
+- `student_courses.py` — (myBlueprint+, opt-in) Per-student transcript joining course history + selection + info; retake/in-progress/passed dedup. NOTE: currently hardcodes source columns and bypasses its `field_map` for input — see **Configurable Columns** (tech debt).
 
 ### Loader (`src/etl/loader.py`)
 Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. `save_all()` uses atomic transactional writes: stages to `.tmp_<timestamp>/`, commits all on success, rolls back on failure.
@@ -150,7 +152,7 @@ All field mappings are in YAML files under `config/mappings/`. The `--sis` CLI a
 
 `global_config.excluded_course_codes` (list[str]) filters schedule + class_info rows by Course Code (case-insensitive, trimmed) before class/enrollment/blended generation. SD40 uses `["ATT--AM", "ATT--PM"]` to drop MyEd BC's internal attendance-only sections. Applied in `base.filter_excluded_course_codes()` and called from `classes.py`, `enrollments.py`, and `blended.py` (the schedule-fallback path).
 
-5 district configs: `myedbc` (base), `sd40myedbc` (New Westminster — CSV files, headerless schedule), `sd48myedbc` (Sea to Sky), `sd51myedbc` (Boundary), `sd74myedbc` (Gold Trail). All use `_base: myedbc` inheritance.
+Base `myedbc` defines all 7 entity templates; configs select which to emit via `global_config.enabled_entities` (see **Output Targeting**). 5 SpacesEDU district configs — `myedbc` (base), `sd40myedbc` (New Westminster — CSV files, headerless schedule), `sd48myedbc` (Sea to Sky), `sd51myedbc` (Boundary), `sd74myedbc` (Gold Trail) — each `_base: myedbc` and inherit the 5 rostering entities. 2 myBlueprint+ tier configs — `mbp_all` (all 7) and `mbp_core` (Students + CourseInfo + StudentCourses) — also `_base: myedbc`, overriding `enabled_entities`.
 
 ## Key Data Flow
 
@@ -184,6 +186,42 @@ MkDocs deploys to GitHub Pages automatically on release tag push.
 - **`to_raw_dict()`** — `MappingConfig.to_raw_dict()` converts validated config back to raw dicts for the transformer pipeline
 - **Entity order gotcha** — `global_config.entity_order` defaults to `[]` (not None). Use `global_config.get("entity_order") or list(mappings.keys())`
 
+## Engineering Principles (non-negotiable)
+
+Priority order: **SOLID > DRY > KISS > YAGNI**. Keep layers isolated (UI / ETL-business / config-data).
+- **Fail loudly.** Never swallow an exception to hide a config/column mismatch. The homeroom-enrollments bug (PR #12) was a caught `KeyError` that silently dropped rows — validate expected columns at transformer entry and raise/warn with an actionable message instead.
+- **Validate at boundaries.** Pydantic validates configs at load; GDE inputs are untrusted — check for required columns rather than `KeyError`-ing mid-transform.
+- **Single source of truth.** Never duplicate config, types, or constants across files.
+
+## Configurable Columns (core rule)
+
+GDE/source column names MUST come from the district `field_map` — never hardcoded in transformer code. Districts rename columns, so the mapping layer is the single source of truth.
+- Map outputs via `BaseTransformer.apply_field_map(...)`. For direct column access, resolve the name from the entity's `field_map` with a sensible default — no inline literals like `record.get("final mark")`.
+- The ONLY sanctioned hardcoded column names are the shared structural join keys in `src/etl/column_names.py` (`SCHOOL_NUMBER`, `MASTER_TIMETABLE_ID`, …). Add new shared keys there, not as scattered literals.
+- Known debt: `student_courses.py` bypasses this (hardcodes ~10 source columns and ignores its `field_map` for input — the field_map there only sets output column order). Migrate to config-driven columns; see `docs/DECISIONS.md`.
+
+## Output Targeting (`enabled_entities`)
+
+`global_config.enabled_entities` decides which entities run → which CSVs are produced (empty/absent = all mappings, for back-compat). `entity_order` controls *ordering*; `enabled_entities` controls *inclusion*.
+- All 7 entity definitions (5 SpacesEDU rostering + `CourseInfo` + `StudentCourses`) live in the base `myedbc_mapping.yaml`. Configs **select** via `enabled_entities`; they do **not** redefine entities.
+- Tiers: `mbp_all` = all 7 (myBlueprint+), `mbp_core` = Students + the 2 course CSVs. SpacesEDU district configs (sd40/48/51/74) inherit the 5 rostering entities only.
+- **Per-district myBlueprint+** = a thin config with `_base: <district>` + an `enabled_entities` that includes `CourseInfo`/`StudentCourses`. It inherits BOTH the district's column mappings AND the base entity definitions — which is *why* the entity defs live in the base.
+- Adding a new output entity is multi-file — follow the checklist in `docs/developer/adding-transformer.md` (registry, base field_map+source_files, quality key_map, PyInstaller hidden-imports, enabled_entities, tests, ARCHITECTURE_TREE).
+
+## Harness Discipline
+
+- **Read `docs/ARCHITECTURE_TREE.md` first** to locate files — don't explore the tree blindly. It's the single-source index (one line per source file).
+- **Keep it current:** adding/moving/removing an indexed source file (`src/**/*.py`, `config/mappings/*.yaml`) requires updating `docs/ARCHITECTURE_TREE.md` in the same change — with a one-line description. Enforced by `scripts/check_architecture_tree.py`, wired as a **`PostToolUse(Write)` nudge + `Stop` backstop** in `.claude/settings.json` (also `make check-tree`/CI): the script checks presence/staleness and prompts on a new/undocumented file; **the agent that created the file authors the description** (a script can't write meaningful context). Requires `python` on PATH; Claude Code will ask each dev to approve the project hooks on first use.
+- **Record non-trivial decisions** as dated one-liners in `docs/DECISIONS.md`, and consult it before re-litigating a past choice.
+
+## Development Workflow
+
+Substantial work (new subsystem, cross-cutting refactor, shared-contract/pattern/standard change, security boundary, or >~3 files) follows the staged pipeline in **`docs/WORKFLOW.md`**: triage → discuss/brainstorm → plan (`.claude/plans/`) → adversarial plan-review → spec → **user approval** → implement (isolated branch) → verify (tests + SD74 snapshot + `check-tree` + lint/type/security) → land & archive → **retrospect**. Small/mechanical changes take the lightweight path (implement + verify), still updating ARCHITECTURE_TREE/DECISIONS.
+
+Two rules are non-negotiable:
+- **Slice small, land complete.** Every unit must be finishable by one specialist agent in a single ≤1M-context session and leave **no half-done state or new tech debt** — if it doesn't fit, decompose further.
+- **The harness is living.** Stage 9 feeds learnings back into STANDARDS/CLAUDE.md, the `.claude/agents/` role library, and `docs/WORKFLOW.md` itself, so each task makes the next smarter. The orchestrator selects whichever specialist role(s) fit the task (starter set: `plan-reviewer`, `implementer-architect`).
+
 ## Testing Conventions
 
 - Tests in `tests/` directory, one file per concern (not one-to-one with source files)
@@ -191,4 +229,4 @@ MkDocs deploys to GitHub Pages automatically on release tag push.
 - Tests use pandas DataFrames directly — no file I/O in unit tests
 - Mock datetime for school year tests: patch `src.etl.transformers.base.datetime`
 - Config tests validate against real YAML files and test Pydantic model behavior
-- CI: ruff check + ruff format + mypy (non-UI) + bandit + pytest (80% coverage gate) + config validation (all 5 districts)
+- CI: ruff check + ruff format + mypy (non-UI) + bandit + pytest (80% coverage gate) + config validation (all 7 configs)
