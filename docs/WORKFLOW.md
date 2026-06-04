@@ -42,6 +42,7 @@ The orchestrator **selects the role(s) that fit the task** and may spawn several
 Starter library (`.claude/agents/`):
 - **`plan-reviewer`** — adversarially critiques a plan (correctness, SOLID/patterns, risk, **sizing & completeness**, over-engineering/YAGNI, harness impact) and writes findings back into the plan file.
 - **`implementer-architect`** — implements an approved spec to standard, in an isolated worktree, landing one slice complete.
+- **`architect-reviewer`** — audits the *implemented* diff against the in-scope `ENGINEERING_STANDARDS` dimensions (performant, secure, efficient, extensible) at Verify. Peer to `plan-reviewer`, but for code.
 
 Also available without new files: built-in **`Explore`** (fan-out search), **`Plan`** (drafting), and any `code-reviewer` agent for diff review. **Add new role files as needs emerge** — the library is meant to grow (Stage 9).
 
@@ -55,14 +56,26 @@ Also available without new files: built-in **`Explore`** (fan-out search), **`Pl
 | 1 | **Discuss & brainstorm** | orchestrator + **user** | crystal-clear scope; tangents→ROADMAP, decisions→DECISIONS |
 | 2 | **Draft plan** | orchestrator / `Plan` | `.claude/plans/NNNN-<slug>.md` from `TEMPLATE.md`, **sliced into ≤1-session units** |
 | 3 | **Review the plan** | `plan-reviewer` (+ others as fit) | critique written into the plan's *Review* section; iterate until it passes the gate |
-| 4 | **Spec** | orchestrator | plan upgraded to implementation-ready spec **per slice**: file-by-file changes, signatures, test list, acceptance criteria |
+| 4 | **Spec** | orchestrator | plan upgraded to implementation-ready spec **per slice**: file-by-file changes, signatures, test list, acceptance criteria, **+ the in-scope `ENGINEERING_STANDARDS` dimensions & target bar** |
 | 5 | **Approval gate** | **user** | sign-off on the spec — *no code before this* |
 | 6 | **Implement** | `implementer-architect` | one slice/session, isolated worktree/branch; upholds CLAUDE.md; updates ARCHITECTURE_TREE inline |
-| 7 | **Verify** | implementer + a reviewer | full tests **+ SD74 snapshot + `check-tree` + ruff/mypy/bandit** green; run **`/simplify`** (reuse/efficiency cleanup) + **`/code-review`** (bug check) on the slice diff, applying low-risk cleanups in-scope; review pass confirms spec match |
+| 7 | **Verify** | implementer + `architect-reviewer` | full tests **+ SD74 snapshot + `check-tree` + ruff/mypy/bandit** green; run **`/simplify`** + **`/code-review`** on the diff (low-risk cleanups in-scope); **`architect-reviewer` audits against the in-scope `ENGINEERING_STANDARDS` dimensions**; confirm spec match |
 | 8 | **Land & archive** | orchestrator | conventional commit/PR; move plan → `docs/archive/<year>/`; append DECISIONS |
 | 9 | **Retrospect & evolve** | orchestrator | harvest learnings into the harness (see below) |
 
 **Stage 3 gate — a plan may not pass review until:** it is correct & sound (SOLID/patterns), each slice is **session-sized and lands complete with no debt**, the right path was chosen, risks + test strategy are stated, and any harness impact (new STANDARD/agent/doc) is noted. The reviewer writes a verdict + required changes into the plan; the orchestrator iterates.
+
+---
+
+## Definition of Done
+
+A slice is **done** — and may land (Stage 8) — only when **all** hold:
+1. **Acceptance criteria met** (the spec's checklist).
+2. **In-scope `ENGINEERING_STANDARDS` dimensions pass** the `architect-reviewer` audit — performant, secure, efficient, extensible, for what this slice touches.
+3. **All gates green:** tests + SD74 snapshot + `check-tree` + ruff/mypy/bandit + `/simplify`/`/code-review`.
+4. **No new tech debt.**
+
+Iterate to meet this **fixed** bar, then **stop** — it terminates because the bar is *finite*, not "is it perfect?". Genuinely separate future work → `ROADMAP.md` (backlog, *not* debt).
 
 ---
 

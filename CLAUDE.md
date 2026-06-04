@@ -193,6 +193,8 @@ Priority order: **SOLID > DRY > KISS > YAGNI**. Keep layers isolated (UI / ETL-b
 - **Validate at boundaries.** Pydantic validates configs at load; GDE inputs are untrusted — check for required columns rather than `KeyError`-ing mid-transform.
 - **Single source of truth.** Never duplicate config, types, or constants across files.
 
+The **full, reusable quality bar** — every dimension an implementation is held to (performance/caching, security/secrets, privacy/PII, resilience, concurrency, data integrity, observability, extensibility, i18n, …) — lives in **`docs/ENGINEERING_STANDARDS.md`**, a *growing catch-all*. Per change, apply the **relevant** dimensions *fully* (never skip a relevant one; don't gold-plate irrelevant ones); you may **add** dimensions and may **justify a novel pattern** rather than be confined to known ones.
+
 ## Configurable Columns (core rule)
 
 GDE/source column names MUST come from the district `field_map` — never hardcoded in transformer code. Districts rename columns, so the mapping layer is the single source of truth.
@@ -216,12 +218,14 @@ GDE/source column names MUST come from the district `field_map` — never hardco
 
 ## Development Workflow
 
-Substantial work (new subsystem, cross-cutting refactor, shared-contract/pattern/standard change, security boundary, or ~8+ files) follows the staged pipeline in **`docs/WORKFLOW.md`**: triage → discuss/brainstorm → plan (`.claude/plans/`) → adversarial plan-review → spec → **user approval** → implement (isolated branch) → verify (tests + SD74 snapshot + `check-tree` + lint/type/security + `/simplify`) → land & archive → **retrospect**. Small/mechanical changes take the lightweight path (implement + verify), still updating ARCHITECTURE_TREE/DECISIONS. **Triage continuously:** the moment a conversation is shaping into substantial work, stop free-coding — ask clarifying questions, enter plan mode, then follow the pipeline.
+Substantial work (new subsystem, cross-cutting refactor, shared-contract/pattern/standard change, security boundary, or ~8+ files) follows the staged pipeline in **`docs/WORKFLOW.md`**: triage → discuss/brainstorm → plan (`.claude/plans/`) → adversarial plan-review → spec → **user approval** → implement (isolated branch) → verify (tests + SD74 snapshot + `check-tree` + lint/type/security + `/simplify` + **architect-review vs `ENGINEERING_STANDARDS`**) → land & archive → **retrospect**. Small/mechanical changes take the lightweight path (implement + verify), still updating ARCHITECTURE_TREE/DECISIONS. **Triage continuously:** the moment a conversation is shaping into substantial work, stop free-coding — ask clarifying questions, enter plan mode, then follow the pipeline.
 
 Three rules are non-negotiable:
 - **Slice small, land complete.** Every unit must be finishable by one specialist agent in a single ≤1M-context session and leave **no half-done state or new tech debt** — if it doesn't fit, decompose further.
 - **Delegate liberally.** Use subagents freely and in parallel (no resource constraints) to preserve the orchestrator's context; the orchestrator picks whichever role(s) fit from the growing `.claude/agents/` library.
-- **The harness is living.** Stage 9 feeds learnings back into STANDARDS/CLAUDE.md, the `.claude/agents/` role library, and `docs/WORKFLOW.md` itself, so each task makes the next smarter. The orchestrator selects whichever specialist role(s) fit the task (starter set: `plan-reviewer`, `implementer-architect`).
+- **The harness is living.** Stage 9 feeds learnings back into STANDARDS/CLAUDE.md, the `.claude/agents/` role library, and `docs/WORKFLOW.md` itself, so each task makes the next smarter. The orchestrator selects whichever specialist role(s) fit the task (starter set: `plan-reviewer`, `implementer-architect`, `architect-reviewer`).
+
+**Definition of Done** — a slice may land only when all hold: acceptance criteria met · in-scope `ENGINEERING_STANDARDS` dimensions pass the `architect-reviewer` audit · all gates green (tests + SD74 snapshot + `check-tree` + lint/type/security) · **no new tech debt**. Iterate to this *fixed* bar, then stop; genuinely separate work → `ROADMAP.md` (backlog, not debt).
 
 ## Testing Conventions
 
