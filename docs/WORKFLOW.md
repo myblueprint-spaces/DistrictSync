@@ -35,6 +35,20 @@ When unsure, default to full; the plan-reviewer (Stage 3) confirms the path was 
 
 ---
 
+## Context, parallelism & handoff
+
+Keep the **orchestrator's context lean** so it rarely hits the compaction wall mid-work:
+- **Delegate the token-heavy work to subagents** (exploration, implementation, review) — they burn *their* context and return digests. This is the main defense.
+- **Run in parallel git worktrees** when useful (e.g. implementer + reviewer at once) — isolated checkouts, no clobbering. *(Boris Cherny calls parallel worktrees his "biggest productivity unlock.")*
+- **`/clear` between unrelated tasks** — don't carry one feature's context into the next.
+
+If context still runs low, **don't fear auto-compaction** — Claude Code summarizes and continues the same session. But it's *lossy*, so:
+- **Keep the plan file current as you go** — the plan + `DECISIONS.md` + `ARCHITECTURE_TREE.md` are the real memory.
+- For **long** work, a **fresh session resuming from the plan** beats a deeply-compacted context — `/clear` (or open a new session) and pick up from the plan checklist. No manual "handover" of the orchestrator is needed: a fresh agent upholds quality by reading the plan + DECISIONS + tree + standards.
+- Prefer `/compact` **proactively** (with focus, e.g. *"preserve the plan checklist + test commands"*) over hitting the wall. (Auto-compaction has **no configurable threshold** — it just triggers near-full; the real lever is delegation + slicing.)
+
+---
+
 ## Roles — a library, not a fixed pair
 
 The orchestrator **selects the role(s) that fit the task** and may spawn several or compose them. It is not locked to a fixed sequence of agents.
@@ -64,6 +78,11 @@ Also available without new files: built-in **`Explore`** (fan-out search), **`Pl
 | 9 | **Retrospect & evolve** | orchestrator | harvest learnings into the harness (see below) |
 
 **Stage 3 gate — a plan may not pass review until:** it is correct & sound (SOLID/patterns), each slice is **session-sized and lands complete with no debt**, the right path was chosen, risks + test strategy are stated, and any harness impact (new STANDARD/agent/doc) is noted. The reviewer writes a verdict + required changes into the plan; the orchestrator iterates.
+
+**Keep the docs current — it's part of each stage (no hooks needed beyond the tree check):**
+- **Implement (6):** update `ARCHITECTURE_TREE.md` for any file add/move/remove (also hook-nudged); touch `CLAUDE.md` only for a genuinely new gotcha/command/pattern — *concisely; index, don't duplicate code*.
+- **Land (8):** append a dated one-liner to `DECISIONS.md` for non-trivial choices; update `ROADMAP.md` if scope shifted.
+- **Retrospect (9):** promote durable learnings into `ENGINEERING_STANDARDS.md` / `CLAUDE.md` / agent files.
 
 ---
 
