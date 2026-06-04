@@ -7,7 +7,7 @@ rather than cryptic KeyErrors deep in the pipeline.
 
 import logging
 import re
-from typing import Any, Optional, Union
+from typing import Any, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -168,11 +168,40 @@ class GlobalConfig(BaseModel):
     school_year_sources: dict[str, str] = Field(default_factory=dict)
     homeroom_grades: list[str] = Field(default_factory=list)
     entity_order: list[str] = Field(default_factory=list)
-    academic_start_month_day: str = "08-25"
-    academic_end_month_day: str = "07-25"
+    # Academic-period dates have NO Python default — the value must come from a
+    # mapping YAML (either directly or via `_base:` inheritance). This makes the
+    # source of truth the YAML and prevents non-BC districts from silently
+    # inheriting BC-specific defaults. ``check_dates_required_for_classes``
+    # rejects configs that enable Classes without these set.
+    academic_start_month_day: Optional[str] = None
+    academic_end_month_day: Optional[str] = None
+    # Date past which the today's-date fallback for school_year rolls forward
+    # to the next academic year. Only used when no source file has a 'school
+    # year' column. When None, falls back to ``academic_end_month_day`` at the
+    # pipeline layer.
+    academic_year_rollover_month_day: Optional[str] = None
+    # How a bare ``YYYY`` value in the source 'school year' column should be
+    # interpreted. The pipeline internally uses end-year semantics, so this
+    # affects parsing only:
+    #
+    # - ``"end"`` (default): a bare ``2026`` means the academic year ENDING
+    #   in 2026 (i.e. 2025-2026). MyEd BC / BC convention.
+    # - ``"start"``: a bare ``2025`` means the academic year STARTING in 2025
+    #   (i.e. 2025-2026). Common Ontario / US convention. The parser will
+    #   translate to end-year semantics (year + 1) before use.
+    #
+    # Ranges like ``2025/2026`` or ``2025-2026`` are unambiguous and ignore
+    # this setting (second year always wins).
+    school_year_naming: Literal["end", "start"] = "end"
     excluded_course_codes: list[str] = Field(default_factory=list)
     excluded_course_code_patterns: list[str] = Field(default_factory=list)
     excluded_course_flavors: list[str] = Field(default_factory=list)
+    # Lowest grade to include in the CourseInfo / StudentCourses CSVs. MyEd BC
+    # encodes the grade in the course code; courses below this grade are
+    # dropped. Default 10 (grades 10-12). Set to 8 or 9 to include those
+    # grade levels too — never lower. Drives a derived early-grade exclusion
+    # pattern at transform time (see BaseTransformer.early_grade_exclusion_pattern).
+    course_start_grade: int = 10
     # Subset of entity names from `mappings:` that should actually be produced.
     # Empty list means "all defined mappings are enabled" (backward-compatible).
     # Lets one config file define more entity templates than it activates.
@@ -192,6 +221,26 @@ class GlobalConfig(BaseModel):
                 re.compile(pat)
             except re.error as exc:
                 raise ValueError(f"Invalid regex in excluded_course_code_patterns: {pat!r} ({exc})") from exc
+        if self.course_start_grade not in (8, 9, 10):
+            raise ValueError(f"course_start_grade must be 8, 9, or 10 (got {self.course_start_grade!r})")
+        return self
+
+    @model_validator(mode="after")
+    def check_month_day_fields(self):
+        """Validate MM-DD format for month-day config fields that are set.
+
+        None is allowed at this layer — ``MappingConfig.check_dates_required_for_classes``
+        decides whether a None value is acceptable given which entities will run.
+        """
+        for fname in ("academic_start_month_day", "academic_end_month_day", "academic_year_rollover_month_day"):
+            value = getattr(self, fname)
+            if value is None:
+                continue
+            if not re.fullmatch(r"\d{2}-\d{2}", value):
+                raise ValueError(f"{fname} must be in MM-DD format (got {value!r})")
+            month, day = map(int, value.split("-"))
+            if not (1 <= month <= 12 and 1 <= day <= 31):
+                raise ValueError(f"{fname} has invalid month/day: {value!r}")
         return self
 
 
@@ -215,6 +264,36 @@ class MappingConfig(BaseModel):
             self._missing_standard_entities = missing
         if extra:
             self._extra_entities = extra
+        return self
+
+    @model_validator(mode="after")
+    def check_dates_required_for_classes(self):
+        """If Classes is enabled, academic period dates must be set in the YAML.
+
+        Run AFTER `_base:` inheritance is resolved (load_config merges before
+        instantiating MappingConfig). Districts inheriting from a base that
+        sets the dates (e.g. myedbc) pass automatically; standalone non-BC
+        configs that forget to set them fail loudly so they don't silently
+        get BC defaults.
+        """
+        enabled = (
+            set(self.global_config.enabled_entities)
+            if self.global_config.enabled_entities
+            else set(self.mappings.keys())
+        )
+        if "Classes" not in enabled or "Classes" not in self.mappings:
+            return self
+        gc = self.global_config
+        missing = [name for name in ("academic_start_month_day", "academic_end_month_day") if getattr(gc, name) is None]
+        if missing:
+            raise ValueError(
+                f"global_config is missing required field(s) {missing} — these have NO Python defaults. "
+                f"Set them in your mapping YAML, e.g.:\n"
+                f"  global_config:\n"
+                f'    academic_start_month_day: "08-25"\n'
+                f'    academic_end_month_day: "07-25"\n'
+                f"or inherit from a base config that defines them (e.g. `_base: myedbc`)."
+            )
         return self
 
     def get_entity(self, name: str) -> Optional[EntityConfig]:
@@ -242,9 +321,12 @@ class MappingConfig(BaseModel):
             "entity_order": list(self.global_config.entity_order),
             "academic_start_month_day": self.global_config.academic_start_month_day,
             "academic_end_month_day": self.global_config.academic_end_month_day,
+            "academic_year_rollover_month_day": self.global_config.academic_year_rollover_month_day,
+            "school_year_naming": self.global_config.school_year_naming,
             "excluded_course_codes": list(self.global_config.excluded_course_codes),
             "excluded_course_code_patterns": list(self.global_config.excluded_course_code_patterns),
             "excluded_course_flavors": list(self.global_config.excluded_course_flavors),
+            "course_start_grade": self.global_config.course_start_grade,
             "enabled_entities": list(self.global_config.enabled_entities),
         }
 

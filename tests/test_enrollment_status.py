@@ -11,7 +11,7 @@ class TestEnrollmentStatusFromField:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def _transform_students(self, df, raw_data=None, global_config=None):
         if raw_data is None:
@@ -87,7 +87,7 @@ class TestEnrollmentStatusFromWithdrawDate:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def _transform_students(self, df):
         raw_data = {"StudentDemographicInformation.txt": df}
@@ -138,7 +138,7 @@ class TestEnrollmentStatusNoColumn:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_defaults_to_active(self):
         df = pd.DataFrame({"student number": ["S001", "S002"]})

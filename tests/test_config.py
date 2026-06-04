@@ -335,11 +335,17 @@ class TestDistrictConfigEquivalence:
         students_fm = cfg.get_raw_field_map("Students")
         assert students_fm["Email Address"] == {"format": "{student number}@sd51.bc.ca"}
 
-    def test_sd51_fixed_dates(self):
+    def test_sd51_inherits_auto_dates(self):
+        """SD51 no longer hardcodes Start/End Date — auto-detection from end-year
+        convention produces the correct academic period (2025-2026 for "2026"
+        school year). The override was a workaround for the now-fixed
+        start-year/end-year bug in context.set_school_year.
+        """
         cfg = load_config("sd51myedbc")
         classes_fm = cfg.get_raw_field_map("Classes")
-        assert classes_fm["Start Date"] == {"value": "2025-08-25", "use_academic_year": False}
-        assert classes_fm["End Date"] == {"value": "2026-07-25", "use_academic_year": False}
+        # Inherited from myedbc base, which uses auto-detection.
+        assert classes_fm["Start Date"] == {"use_academic_year": True}
+        assert classes_fm["End Date"] == {"use_academic_year": True}
 
     def test_sd74_different_schedule_file(self):
         cfg = load_config("sd74myedbc")
@@ -402,6 +408,32 @@ class TestMyBlueprintPlusGlobalConfig:
         with pytest.raises(ValidationError, match="Invalid regex"):
             GlobalConfig(excluded_course_code_patterns=["^[unterminated"])
 
+    def test_course_start_grade_default(self):
+        assert GlobalConfig().course_start_grade == 10
+
+    @pytest.mark.parametrize("grade", [8, 9, 10])
+    def test_course_start_grade_accepts_valid(self, grade):
+        assert GlobalConfig(course_start_grade=grade).course_start_grade == grade
+
+    @pytest.mark.parametrize("grade", [7, 11, 0, 13])
+    def test_course_start_grade_rejects_out_of_range(self, grade):
+        with pytest.raises(ValidationError, match="course_start_grade"):
+            GlobalConfig(course_start_grade=grade)
+
+    def test_course_start_grade_roundtrip_via_to_raw_dict(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            global_config=GlobalConfig(course_start_grade=8),
+            mappings={
+                "Students": EntityConfig(
+                    source_files={"student_demographic": "Demo.txt"},
+                    field_map={"User ID": "Student Number"},
+                ),
+            },
+        )
+        assert cfg.to_raw_dict()["global_config"]["course_start_grade"] == 8
+
     def test_roundtrip_via_to_raw_dict(self):
         cfg = MappingConfig(
             version="1.9",
@@ -444,13 +476,15 @@ class TestMyBlueprintPlusGlobalConfig:
         so any inheriting district that enables CourseInfo / StudentCourses gets them
         for free."""
         cfg = load_config("myedbc")
+        # The numeric early-grade pattern is no longer hard-coded — it is derived
+        # from course_start_grade at transform time (default grades 10-12).
         assert cfg.global_config.excluded_course_code_patterns == [
             "^.{5}-K",
-            r"^.{5}0\d",
             "^X",
             "^ATT",
         ]
         assert cfg.global_config.excluded_course_flavors == ["HUB", "HOL", "DL", "---"]
+        assert cfg.global_config.course_start_grade == 10
 
     def test_yaml_load_with_new_fields(self, tmp_path):
         """End-to-end: YAML with the new fields parses and validates."""

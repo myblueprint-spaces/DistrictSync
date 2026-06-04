@@ -49,6 +49,12 @@ def main() -> None:
         "--browser.gatherUsageStats=false",
         "--client.toolbarMode=minimal",
         "--server.port=8501",
+        # Pin the light base theme. Without this, Streamlit follows the
+        # browser/OS preference, and a dark-mode OS renders canvas widgets
+        # (st.dataframe) and other theme-derived elements dark — unreadable
+        # against the light brand styling. .streamlit/config.toml isn't
+        # bundled in the frozen exe, so the flag is the reliable path.
+        "--theme.base=light",
     ]
     sys.exit(stcli.main())
 

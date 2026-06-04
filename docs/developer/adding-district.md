@@ -137,6 +137,43 @@ global_config:
   academic_end_month_day: "06-30"
 ```
 
+### School year naming convention (non-BC districts)
+
+The pipeline internally uses **end-year semantics**: ``school_year = 2026``
+means the academic year ending in 2026 (2025-2026). This matches the MyEd BC
+"School Year" column convention.
+
+For districts whose source files use **start-year semantics** instead — e.g.
+Ontario or many US SIS exports where a bare ``2025`` means the academic year
+**starting** in 2025 — set ``school_year_naming: start`` in the
+``global_config``:
+
+```yaml
+global_config:
+  school_year_naming: start  # bare 'YYYY' in the source = academic year STARTING in YYYY
+```
+
+The parser translates start-year values to end-year by adding 1 before use,
+so all downstream behavior (class ID suffix, academic_start, academic_end)
+remains consistent.
+
+Range formats like ``2025/2026`` or ``2025-2026`` are unambiguous and ignore
+this setting — the second year is always taken as the end. Default is
+``end`` (BC / MyEd BC).
+
+### School year fallback rollover
+
+When no source file has a ``school year`` column, the pipeline falls back to
+the system date. The rollover month-day controls when "today" should be
+treated as belonging to the **next** academic year (rather than the current
+one). Default ``07-25`` means anything from July 25 onwards rolls forward.
+Districts that upload upcoming-year exports earlier can lower it:
+
+```yaml
+global_config:
+  academic_year_rollover_month_day: "07-01"  # July onwards = next academic year
+```
+
 ### Opting into CourseInfo / StudentCourses (myBlueprint+ tier)
 
 The `CourseInfo` and `StudentCourses` entity templates live in the base
@@ -175,13 +212,23 @@ in the base config and inherited automatically:
 ```yaml
 # config/mappings/myedbc_mapping.yaml (base)
 global_config:
+  # Lowest grade included in the CourseInfo + StudentCourses CSVs. Default 10
+  # (grades 10-12). Set to 8 or 9 to also include those grade levels — never
+  # lower. The numeric early-grade exclusion regex is derived from this value,
+  # so it is no longer listed as a literal pattern below.
+  course_start_grade: 10
   excluded_course_code_patterns:
     - "^.{5}-K"      # kindergarten variants
-    - "^.{5}0\\d"    # early-grade variants (0X)
     - "^X"           # X-prefix courses
     - "^ATT"         # attendance bookkeeping
   excluded_course_flavors: [HUB, HOL, DL, "---"]
 ```
+
+`course_start_grade` is the editable knob for the senior-course grade floor
+(it is also exposed in the Mapping Editor's Calendar step when CourseInfo or
+StudentCourses is enabled). MyEd BC encodes the grade in the course code, so
+the transformer turns this value into an early-grade exclusion pattern
+(`^.{5}0[0-9]` for 10, `^.{5}0[0-8]` for 9, `^.{5}0[0-7]` for 8).
 
 ### Combining district file naming with myBlueprint+ tier
 
@@ -323,6 +370,7 @@ Then without `--dry-run` to verify the output CSVs, and with `--quality` to spot
 | `sd40myedbc` | `myedbc` | CSV files with SD-40_/SD40- prefix; Student Schedule is headerless (`file_headers:` used) |
 | `sd48myedbc` | `myedbc` | Student Demographic Enhanced, Staff Information (non-enhanced) |
 | `sd51myedbc` | `myedbc` | Contact SpacesEDU for file naming details |
+| `sd54myedbc` | `myedbc` | Bulkley Valley — lowercase filenames; Staff non-Enhanced; Emergency Contact + Class Info Enhanced; ATT--AM/PM/Daily excluded |
 | `sd74myedbc` | `myedbc` | Student Course Selection, Staff Information, Parent Information, Class Info Enhanced |
 | `mbp_all` | `myedbc` | Tier override (full myBlueprint+) — enables CourseInfo + StudentCourses in addition to the 5 rostering CSVs |
 | `mbp_core` | `myedbc` | Tier override (minimal myBlueprint+) — enables only Students + CourseInfo + StudentCourses |

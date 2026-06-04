@@ -12,19 +12,23 @@ Distributed as single-file executables for district servers. Runs daily via Wind
 | **Linux** | [DistrictSync-linux](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-linux) | `chmod +x` before first run |
 | **macOS** | [DistrictSync-macos](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos) | Allow in System Settings > Privacy & Security |
 
-See the **[Documentation Site](https://sh4npeiris.github.io/DistrictSync/)** for full setup instructions, troubleshooting, and FAQ.
+For setup basics, see the **[SpacesEDU Help Centre article](https://help.spacesedu.com/en-ca/article/mx56qo)**. The article covers the essentials; the built-in **Help & Docs** page in the web UI has the complete documentation — installation, headless/Docker SFTP, how it works, FAQ, troubleshooting, and developer guides.
 
 ## What It Does
 
-Reads the standard GDE export files from MyEducation BC and produces 5 CSV files for SpacesEDU:
+Reads the standard GDE export files from MyEducation BC and produces the CSV files required by SpacesEDU / myBlueprint+. The 5 standard rostering files are always produced; the two myBlueprint+ course files are produced when enabled in the district config:
 
-| Input (MyEdBC GDE) | Output (SpacesEDU) |
+| Input (MyEdBC GDE) | Output (SpacesEDU / myBlueprint+) |
 |---|---|
 | Student Demographic | `Students.csv` |
 | Staff Information – Enhanced | `Staff.csv` |
 | Emergency Contact Information | `Family.csv` |
 | Student Schedule + Course Information | `Classes.csv` |
 | Student Schedule + Class Information – Enhanced | `Enrollments.csv` |
+| Course Information | `CourseInfo.csv` *(myBlueprint+)* |
+| Student Course History + Selection + Course Information | `StudentCourses.csv` *(myBlueprint+)* |
+
+The myBlueprint+ course files (`CourseInfo.csv`, `StudentCourses.csv`) include senior courses (grades 10–12) by default. Lower the start grade to **8** or **9** per district via `course_start_grade` in the mapping config (or the **Classes and Courses** step of the Mapping Editor).
 
 File names vary by district — each district's mapping config specifies its actual filenames and formats.
 
@@ -66,10 +70,12 @@ New district configs can be created via the **Mapping Editor** in the web UI, or
 
 ## Web UI
 
-A browser-based interface for setup, ad-hoc conversions, and monitoring:
+A browser-based interface for setup, ad-hoc conversions, and monitoring. The packaged executable **opens the web UI automatically** when launched without arguments (double-click on Windows) — no Python or extra install required.
+
+To run from source:
 
 ```bash
-pip install streamlit
+pip install -r requirements.txt
 streamlit run src/ui/Home.py
 ```
 
@@ -98,6 +104,6 @@ Debug logs written to `etl_tool.log`. Console shows WARNING+ only. Structured `_
 
 ## Support
 
-Contact **support@myBlueprint.ca** with:
+Contact **hello@spacesedu.com** with:
 - A zipped copy of your `data/input/` folder
 - The `etl_tool.log` file

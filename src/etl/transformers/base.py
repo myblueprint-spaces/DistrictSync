@@ -6,8 +6,9 @@ and the generic field_map application are defined once here.
 """
 
 import logging
+import re
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Optional
 
 import pandas as pd
@@ -179,6 +180,40 @@ class BaseTransformer(ABC):
         return df
 
     @staticmethod
+    def early_grade_exclusion_pattern(start_grade: Any) -> Optional[str]:
+        """Regex that drops MyEd BC course codes for grades below `start_grade`.
+
+        MyEd BC encodes the grade in the 6th-7th characters of the course code
+        as a two-digit number; single-digit grades 01-09 appear as "0X".
+        This builds a pattern matching "0" followed by any digit strictly below
+        `start_grade`, so grades >= start_grade (including 10-12, which begin
+        with "1") survive. With start_grade=10 the result is equivalent to the
+        legacy ``^.{5}0\\d`` pattern (excludes 00-09). Returns None when
+        start_grade <= 1 (nothing to exclude).
+        """
+        try:
+            sg = int(start_grade)
+        except (TypeError, ValueError):
+            sg = 10
+        sg = min(sg, 10)
+        if sg <= 1:
+            return None
+        return rf"^.{{5}}0[0-{sg - 1}]"
+
+    @classmethod
+    def effective_course_code_patterns(cls, global_config: dict) -> list[str]:
+        """Configured exclusion patterns plus the grade floor derived from
+        `course_start_grade` (default 10). Used by the CourseInfo and
+        StudentCourses transformers so the minimum grade is a single,
+        editable knob rather than a hand-written regex.
+        """
+        patterns = list(global_config.get("excluded_course_code_patterns", []))
+        early = cls.early_grade_exclusion_pattern(global_config.get("course_start_grade", 10))
+        if early:
+            patterns.append(early)
+        return patterns
+
+    @staticmethod
     def clean_course_code_flavor(code: Any, flavors: list[str]) -> str:
         """Truncate course code to first 7 chars if it contains any flavor substring.
 
@@ -315,9 +350,27 @@ class BaseTransformer(ABC):
 
     @staticmethod
     def generate_student_email(row: pd.Series, format_str: str) -> str:
+        """Interpolate row values into a lowercased email format string.
+
+        StudentTransformer lowercases ``format_str`` before calling, so any
+        template like ``{Legal Surname}.{Usual First Name}@sd54.bc.ca``
+        becomes ``{legal surname}.{usual first name}@sd54.bc.ca`` — matching
+        the lowercased column names. String row values are similarly
+        normalised (lowercased, whitespace trimmed, internal spaces collapsed)
+        so double-barrelled surnames like "Goodrick Hill" produce a
+        deliverable local part ("goodrickhill"). NaN/None values become "".
+        """
         try:
-            row_lower = {str(k).lower(): v for k, v in row.to_dict().items()}
-            return format_str.format(**row_lower)
+            normalised: dict[str, Any] = {}
+            for k, v in row.to_dict().items():
+                key = str(k).lower()
+                if pd.isna(v):
+                    normalised[key] = ""
+                elif isinstance(v, str):
+                    normalised[key] = v.strip().lower().replace(" ", "")
+                else:
+                    normalised[key] = v
+            return format_str.format(**normalised)
         except KeyError as e:
             logger.warning(f"Could not generate email. Missing key: {e}")
             return ""
@@ -342,19 +395,79 @@ class BaseTransformer(ABC):
             return str(student_val)
         return "UNKNOWN_ID"
 
-    def determine_school_year(self, all_data: dict[str, pd.DataFrame], source_config: Any) -> int:
+    def determine_school_year(
+        self,
+        all_data: dict[str, pd.DataFrame],
+        source_config: Any,
+        rollover_month_day: str,
+        today: Optional[date] = None,
+        school_year_naming: str = "end",
+    ) -> int:
+        """Return the academic year's END year (MyEd BC "School Year" convention).
+
+        The pipeline always works in end-year semantics internally. Source
+        formats are detected and translated:
+
+        - ``YYYY/YYYY`` or ``YYYY-YYYY`` → second year (unambiguous)
+        - ``YYYY`` → depends on ``school_year_naming``:
+
+            - ``"end"`` (default, MyEd BC): treat as end year, return as-is
+            - ``"start"`` (Ontario / US): treat as start year, return ``year + 1``
+
+        Falls back to ``today`` (or now) when no source has a recognised
+        value. Past ``rollover_month_day`` (default 07-25, the typical
+        academic_end) the fallback rolls forward to the next academic
+        year — accommodating districts that load upcoming-year exports a
+        few weeks before the new year officially starts. Districts that
+        upload even earlier can lower the rollover via the
+        ``academic_year_rollover_month_day`` global_config field.
+        """
         normalized = self.normalize_source_config(source_config)
         for _role, filename in normalized.items():
             df = all_data.get(filename)
             if df is not None and "school year" in df.columns:
-                years = df["school year"].dropna().astype(str).str[:4].unique()
-                if len(years) > 0:
-                    try:
-                        return int(years[0])
-                    except ValueError:
-                        pass
-        now = datetime.now()
-        return now.year if now.month >= 8 else now.year - 1
+                for raw in df["school year"].dropna().astype(str).str.strip().unique():
+                    parsed = self._parse_school_year_to_end(str(raw), school_year_naming)
+                    if parsed is not None:
+                        return parsed
+
+        return self._fallback_school_year(today or datetime.now().date(), rollover_month_day)
+
+    @staticmethod
+    def _parse_school_year_to_end(raw: str, naming: str = "end") -> Optional[int]:
+        """Parse a 'school year' cell value to the academic-period END year.
+
+        - ``YYYY/YYYY`` or ``YYYY-YYYY`` → second year (range is unambiguous;
+          ``naming`` is ignored)
+        - ``YYYY`` with ``naming="end"`` → year as-is
+        - ``YYYY`` with ``naming="start"`` → ``year + 1``
+        - anything else → None
+        """
+        raw = raw.strip()
+        parts = re.split(r"[/-]", raw)
+        if len(parts) == 2 and all(p.isdigit() and len(p) == 4 for p in parts):
+            return int(parts[1])
+        if raw.isdigit() and len(raw) == 4:
+            year = int(raw)
+            return year + 1 if naming == "start" else year
+        return None
+
+    @staticmethod
+    def _fallback_school_year(today: date, rollover_month_day: str) -> int:
+        """End-year fallback when no 'school year' source column is found.
+
+        Returns ``today.year`` before the rollover (still in current academic
+        year ending this calendar year) and ``today.year + 1`` from the
+        rollover onwards (next academic year about to start, ending next
+        calendar year).
+        """
+        try:
+            month, day = map(int, rollover_month_day.split("-"))
+            rollover = date(today.year, month, day)
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid academic_year_rollover_month_day '{rollover_month_day}'; using 08-01 cutoff.")
+            rollover = date(today.year, 8, 1)
+        return today.year if today < rollover else today.year + 1
 
     # -----------------------------------------------------------------------
     # Generic field-map application (used by Students, Staff, Family)

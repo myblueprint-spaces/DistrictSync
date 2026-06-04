@@ -157,11 +157,21 @@ def run_pipeline(
 
         raw_data = extractor.load_data(required_files, file_headers=file_headers)
 
-        # Determine school year
+        # Determine school year — NO in-code defaults. Validation guarantees
+        # academic_start_month_day and academic_end_month_day are set when
+        # Classes is enabled; rollover falls back to academic_end_month_day
+        # when not separately configured.
         sy_sources_config = global_config.get("school_year_sources", {})
-        sy = transformer.determine_school_year(raw_data, sy_sources_config)
-        start_md = global_config.get("academic_start_month_day", "08-25")
-        end_md = global_config.get("academic_end_month_day", "07-25")
+        start_md = global_config["academic_start_month_day"]
+        end_md = global_config["academic_end_month_day"]
+        rollover_md = global_config.get("academic_year_rollover_month_day") or end_md
+        naming = global_config.get("school_year_naming") or "end"
+        sy = transformer.determine_school_year(
+            raw_data,
+            sy_sources_config,
+            rollover_month_day=rollover_md,
+            school_year_naming=naming,
+        )
         transformer.set_school_year(sy, start_md, end_md)
         logger.info(
             f"Using school year {sy}, academic start={transformer.academic_start}, end={transformer.academic_end}"
