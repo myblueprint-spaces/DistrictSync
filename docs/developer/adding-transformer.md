@@ -51,6 +51,7 @@ class CourseTransformer(BaseTransformer):
 
 Key conventions:
 
+- **Source columns come from config, never hardcoded.** Resolve every GDE column name from the entity's `field_map` (via `apply_field_map`, or read it from `field_map` with a default) — districts rename columns, so the mapping is the single source of truth. Do **not** inline literals like `record.get("final mark")`. The only sanctioned hardcoded columns are the shared join keys in `src/etl/column_names.py`.
 - Call `self.normalize_columns(df)` first — this ensures all column lookups are lowercase.
 - Work on a copy so you don't mutate the input DataFrame.
 - Use `self.apply_field_map()` for standard field mappings, then add custom logic on top.
@@ -117,17 +118,17 @@ mappings:
         value: "12345"
 ```
 
-Add "Courses" to `global_config.entity_order` if order matters:
+Enable the entity in `global_config.enabled_entities` for **every config that should emit it** — this is what gates whether the CSV is produced. An entity that isn't listed is silently skipped, so a new entity not added here will never generate. (`entity_order` controls output *ordering*; `enabled_entities` controls *inclusion*.)
 
 ```yaml
 global_config:
-  entity_order:
+  enabled_entities:
     - Students
     - Staff
     - Family
     - Classes
     - Enrollments
-    - Courses
+    - Courses          # <- add here, or the CSV will not be produced
 ```
 
 ---
@@ -235,3 +236,18 @@ The `source_files` mapping in YAML uses role names (like `"staff_info"`, `"stude
 ## Headerless source files
 
 If a source file has no header row (e.g., SD40's Student Schedule), the district config can inject column names via `file_headers:`. Your transformer does not need to handle this — the extractor injects the headers before the DataFrame reaches `context.raw_data`. Just use the injected column names in your `field_map` as normal.
+
+---
+
+## Step 5 — Wire it up everywhere (checklist)
+
+Adding an entity touches more than the transformer. Don't miss:
+
+- [ ] `src/etl/transformers/registry.py` — register the transformer class.
+- [ ] base `config/mappings/myedbc_mapping.yaml` — add the entity's `field_map` + `source_files` (define it **once** in base; configs select it via `enabled_entities`).
+- [ ] `global_config.enabled_entities` — add the entity to every config that should emit it.
+- [ ] `src/quality/report.py` — add a dedup key for the entity (else the quality report can't check it).
+- [ ] PyInstaller hidden-imports — add the new module in `Makefile` (`build-win`) **and** `.github/workflows/release.yml` so the frozen `.exe` ships it.
+- [ ] `make validate-config` list (Makefile) — include any new config.
+- [ ] `tests/test_transform_<entity>.py` — unit tests (and snapshot coverage if relevant).
+- [ ] `docs/ARCHITECTURE_TREE.md` — add the new file(s) with a one-line description (enforced by `make check-tree`).

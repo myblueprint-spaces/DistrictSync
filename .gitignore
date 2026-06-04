@@ -25,7 +25,11 @@ htmlcov/
 .hypothesis/
 
 # Claude Code + MCP tooling
-.claude/
+# Local Claude state stays ignored; SHARE the harness: agent role library, plans, shared settings.
+.claude/*
+!.claude/agents/
+!.claude/plans/
+!.claude/settings.json
 .playwright-mcp/
 
 # Scratch / local debugging artifacts
