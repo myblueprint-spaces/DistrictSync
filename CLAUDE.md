@@ -216,10 +216,11 @@ GDE/source column names MUST come from the district `field_map` — never hardco
 
 ## Development Workflow
 
-Substantial work (new subsystem, cross-cutting refactor, shared-contract/pattern/standard change, security boundary, or >~3 files) follows the staged pipeline in **`docs/WORKFLOW.md`**: triage → discuss/brainstorm → plan (`.claude/plans/`) → adversarial plan-review → spec → **user approval** → implement (isolated branch) → verify (tests + SD74 snapshot + `check-tree` + lint/type/security) → land & archive → **retrospect**. Small/mechanical changes take the lightweight path (implement + verify), still updating ARCHITECTURE_TREE/DECISIONS.
+Substantial work (new subsystem, cross-cutting refactor, shared-contract/pattern/standard change, security boundary, or ~8+ files) follows the staged pipeline in **`docs/WORKFLOW.md`**: triage → discuss/brainstorm → plan (`.claude/plans/`) → adversarial plan-review → spec → **user approval** → implement (isolated branch) → verify (tests + SD74 snapshot + `check-tree` + lint/type/security + `/simplify`) → land & archive → **retrospect**. Small/mechanical changes take the lightweight path (implement + verify), still updating ARCHITECTURE_TREE/DECISIONS. **Triage continuously:** the moment a conversation is shaping into substantial work, stop free-coding — ask clarifying questions, enter plan mode, then follow the pipeline.
 
-Two rules are non-negotiable:
+Three rules are non-negotiable:
 - **Slice small, land complete.** Every unit must be finishable by one specialist agent in a single ≤1M-context session and leave **no half-done state or new tech debt** — if it doesn't fit, decompose further.
+- **Delegate liberally.** Use subagents freely and in parallel (no resource constraints) to preserve the orchestrator's context; the orchestrator picks whichever role(s) fit from the growing `.claude/agents/` library.
 - **The harness is living.** Stage 9 feeds learnings back into STANDARDS/CLAUDE.md, the `.claude/agents/` role library, and `docs/WORKFLOW.md` itself, so each task makes the next smarter. The orchestrator selects whichever specialist role(s) fit the task (starter set: `plan-reviewer`, `implementer-architect`).
 
 ## Testing Conventions

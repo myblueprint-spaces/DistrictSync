@@ -8,17 +8,19 @@ Descriptions are authored by humans/agents — this script does not write them.
 In-scope = tracked + staged + **untracked-not-ignored** files matching the globs,
 so a file just created via Write (not yet `git add`-ed) is caught immediately.
 
-Usage:
-    python scripts/check_architecture_tree.py          # human/CI: stdout, exit 1 on problems
-    python scripts/check_architecture_tree.py --hook    # Claude Code hook: silent on success;
-                                                        # on problems, stderr + exit 2 (nudges/blocks the agent)
+Modes:
+    python scripts/check_architecture_tree.py                # human/CI: stdout, exit 1 on problems
+    python scripts/check_architecture_tree.py --hook          # Stop hook: full scan, silent OK, stderr+exit 2 on problems
+    python scripts/check_architecture_tree.py --hook-write     # PostToolUse(Write) hook: reads the written path from
+                                                              # stdin; nudges ONLY if it's a new, in-scope, undocumented
+                                                              # file (silent on overwrites / out-of-scope / already-indexed)
 
-Wired in `.claude/settings.json` as a PostToolUse(Write) nudge + a Stop backstop;
-also runnable via `make check-tree` and in CI. See CLAUDE.md -> Harness Discipline.
+Wired in `.claude/settings.json`. Also runnable in CI. See CLAUDE.md -> Harness Discipline.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -72,7 +74,44 @@ def evaluate() -> tuple[list[str], str]:
     return (problems, f"OK: docs/ARCHITECTURE_TREE.md indexes all {len(files)} in-scope files.")
 
 
+def _written_path_from_stdin() -> str | None:
+    """Extract tool_input.file_path from the Claude Code hook JSON on stdin."""
+    try:
+        data = json.loads(sys.stdin.read() or "{}")
+    except (ValueError, OSError):
+        return None
+    path = (data.get("tool_input") or {}).get("file_path")
+    return path or None
+
+
+def _check_written_file() -> int:
+    """PostToolUse(Write): nudge ONLY if the just-written file is a new, in-scope, undocumented file.
+
+    The hook's file_path may be absolute in any slash/style (Windows, MSYS, forward-slash),
+    so match it as a suffix of the repo-relative in-scope paths rather than via relpath.
+    """
+    path = _written_path_from_stdin()
+    if not path:
+        return 0
+    norm = path.replace("\\", "/")
+    rel = next((s for s in in_scope_files() if norm == s or norm.endswith("/" + s)), None)
+    if rel is None:
+        return 0  # out of scope, or an excluded/__init__ file
+    text = TREE_PATH.read_text(encoding="utf-8") if TREE_PATH.exists() else ""
+    if rel in text:
+        return 0  # already documented
+    print(
+        f"New file `{rel}` is not in docs/ARCHITECTURE_TREE.md.\n"
+        f"Add `- `{rel}` — <one-line description>.` under the right section (CLAUDE.md -> Harness Discipline).",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def main(argv: list[str]) -> int:
+    if "--hook-write" in argv:
+        return _check_written_file()
+
     hook_mode = "--hook" in argv
     problems, summary = evaluate()
     if problems:

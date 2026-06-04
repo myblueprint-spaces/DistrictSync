@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/check_architecture_tree.py --hook"
+            "command": "python scripts/check_architecture_tree.py --hook-write"
           }
         ]
       }

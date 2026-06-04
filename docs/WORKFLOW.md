@@ -1,5 +1,12 @@
 # Agent Development Workflow
 
+> ### 👋 New here? Read this first
+> This repo is built and maintained with an **agent-assisted workflow**:
+> - **Small/local change?** Just make it — tests must pass, and the architecture-tree hook will prompt you to document any new source file in `docs/ARCHITECTURE_TREE.md`.
+> - **Substantial change?** (new subsystem, cross-cutting refactor, shared-contract change, or **~8+ files**) — don't free-code. The agent will **pause, ask questions, enter plan mode**, and run the pipeline below: a plan in `.claude/plans/`, an adversarial review, a spec **you approve**, implementation in an isolated branch, verification, then a retrospect that improves this harness.
+> - **Your map of the codebase** is `docs/ARCHITECTURE_TREE.md` (one line per file) — read it before diving into source. Specialist **roles** the agent delegates to live in `.claude/agents/` and grow over time.
+> - **Decisions** → `docs/DECISIONS.md`. **Backlog** → `docs/ROADMAP.md`.
+
 How agents **and** human devs take *substantial* work from idea → landed change while keeping quality high and the harness self-improving. CLAUDE.md links here; this is the source of truth for process.
 
 > **One-line:** Triage → Discuss → Plan → Review the plan → Spec → **Approve** → Implement → Verify → Land → **Retrospect**. Small changes skip to Implement+Verify.
@@ -8,9 +15,11 @@ How agents **and** human devs take *substantial* work from idea → landed chang
 
 ## 0. Triage — does this need the full pipeline?
 
-**Full pipeline** for *substantial* work: a new subsystem, a cross-cutting refactor, a change to a shared contract/pattern/standard, a security boundary, or anything touching more than ~3 files or a pattern documented in CLAUDE.md / STANDARDS.
+**Full pipeline** for *substantial* work: a new subsystem, a cross-cutting refactor, a change to a shared contract/pattern/standard, a security boundary, or anything touching **roughly 8+ files** (or a pattern documented in CLAUDE.md / STANDARDS).
 
 **Lightweight path** for small/local/mechanical changes: go straight to **Implement → Verify**, still updating `ARCHITECTURE_TREE.md` and `DECISIONS.md` as needed.
+
+**Triage continuously, not just up front.** A conversation often *grows* into a substantial change. The moment a request is shaping up to cross the bar above (≈8 files, or any qualitative trigger), **stop free-coding**: ask the user clarifying questions until scope is crystal-clear, then **enter plan mode (Stage 2)** and follow the pipeline — don't keep ad-hoc editing.
 
 When unsure, default to full; the plan-reviewer (Stage 3) confirms the path was right.
 
@@ -21,6 +30,7 @@ When unsure, default to full; the plan-reviewer (Stage 3) confirms the path was 
 - **Slice small, land complete.** Every unit of work must be finishable by **one specialist agent in a single ≤1M-token-context session** and land **vertically complete** — no half-done state, no `TODO`/debt left behind. If it doesn't fit, decompose further *before* implementing. This is a hard gate, not a guideline.
 - **No new tech debt.** A landed slice leaves the codebase at least as clean as it found it: tests added, docs/ARCHITECTURE_TREE updated, no dead code, no silenced errors.
 - **The harness is living.** Any task may improve STANDARDS / CLAUDE.md / the `.claude/agents/` role library / this workflow. Stage 9 is how that happens; treat harness improvements as first-class output, not a chore.
+- **Delegate liberally to preserve orchestrator context.** Use subagents freely and in parallel — **no resource constraints** — so the orchestrator's own context stays lean for synthesis and decisions (fan out reads, reviews, and implementation to specialists). The orchestrator picks whichever role(s) fit from the `.claude/agents/` library; as the library grows it has more specialists to choose from.
 - Plus the CLAUDE.md non-negotiables: SOLID > DRY > KISS > YAGNI · fail loudly · validate at boundaries · configurable-over-hardcoded · single source of truth.
 
 ---
@@ -48,7 +58,7 @@ Also available without new files: built-in **`Explore`** (fan-out search), **`Pl
 | 4 | **Spec** | orchestrator | plan upgraded to implementation-ready spec **per slice**: file-by-file changes, signatures, test list, acceptance criteria |
 | 5 | **Approval gate** | **user** | sign-off on the spec — *no code before this* |
 | 6 | **Implement** | `implementer-architect` | one slice/session, isolated worktree/branch; upholds CLAUDE.md; updates ARCHITECTURE_TREE inline |
-| 7 | **Verify** | implementer + a reviewer | full tests **+ SD74 snapshot + `check-tree` + ruff/mypy/bandit** green; review pass confirms spec match |
+| 7 | **Verify** | implementer + a reviewer | full tests **+ SD74 snapshot + `check-tree` + ruff/mypy/bandit** green; run **`/simplify`** (reuse/efficiency cleanup) + **`/code-review`** (bug check) on the slice diff, applying low-risk cleanups in-scope; review pass confirms spec match |
 | 8 | **Land & archive** | orchestrator | conventional commit/PR; move plan → `docs/archive/<year>/`; append DECISIONS |
 | 9 | **Retrospect & evolve** | orchestrator | harvest learnings into the harness (see below) |
 
