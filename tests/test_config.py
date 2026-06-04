@@ -335,11 +335,17 @@ class TestDistrictConfigEquivalence:
         students_fm = cfg.get_raw_field_map("Students")
         assert students_fm["Email Address"] == {"format": "{student number}@sd51.bc.ca"}
 
-    def test_sd51_fixed_dates(self):
+    def test_sd51_inherits_auto_dates(self):
+        """SD51 no longer hardcodes Start/End Date — auto-detection from end-year
+        convention produces the correct academic period (2025-2026 for "2026"
+        school year). The override was a workaround for the now-fixed
+        start-year/end-year bug in context.set_school_year.
+        """
         cfg = load_config("sd51myedbc")
         classes_fm = cfg.get_raw_field_map("Classes")
-        assert classes_fm["Start Date"] == {"value": "2025-08-25", "use_academic_year": False}
-        assert classes_fm["End Date"] == {"value": "2026-07-25", "use_academic_year": False}
+        # Inherited from myedbc base, which uses auto-detection.
+        assert classes_fm["Start Date"] == {"use_academic_year": True}
+        assert classes_fm["End Date"] == {"use_academic_year": True}
 
     def test_sd74_different_schedule_file(self):
         cfg = load_config("sd74myedbc")

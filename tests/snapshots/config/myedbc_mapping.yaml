@@ -7,6 +7,9 @@ global_config:
   school_year_sources:
     student_schedule: "StudentSchedule.txt"
   homeroom_grades: ["IT", "PR", "PK", "TK", "KG", "01", "02", "03", "04", "05", "06", "07"]
+  # Required when Classes is enabled (no Python defaults).
+  academic_start_month_day: "08-25"
+  academic_end_month_day: "07-25"
 
 mappings:
   Students:

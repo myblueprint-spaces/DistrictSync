@@ -8,7 +8,7 @@ from src.etl.transformer import DataTransformer
 class TestStudentsTransform:
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_full_student_transform(self, student_demographic_df, students_mapping, global_config, raw_data):
         result = self.transformer.transform(

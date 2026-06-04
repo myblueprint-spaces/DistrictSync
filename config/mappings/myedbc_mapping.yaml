@@ -7,6 +7,24 @@ global_config:
   school_year_sources:
     student_schedule: "StudentSchedule.txt"
   homeroom_grades: ["IT", "PR", "PK", "TK", "KG", "01", "02", "03", "04", "05", "06", "07"]
+  # Academic-period dates (BC / MyEd BC). These are the SINGLE source of truth —
+  # the pipeline has no in-code fallbacks. Districts inheriting this config
+  # (SD40/SD48/SD51/SD54/SD74) receive these via deep merge.
+  # NON-BC districts should NOT inherit from myedbc; create a separate base
+  # config (e.g. ontario_powerschool.yaml) with the dates appropriate to that
+  # region's school year. A config that enables the Classes entity but lacks
+  # these dates fails validation at load time.
+  academic_start_month_day: "08-25"
+  academic_end_month_day: "07-25"
+  # Date past which the today's-date fallback for school_year rolls forward
+  # to the next academic year. Only matters when no source file has a
+  # 'school year' column. Districts that upload upcoming-year exports
+  # earlier can lower this (e.g. "07-01").
+  academic_year_rollover_month_day: "07-25"
+  # MyEd BC convention: a bare 'YYYY' in the source 'school year' column is
+  # the year the academic period ENDS in. Non-BC districts whose source
+  # files use start-year semantics should set this to "start".
+  school_year_naming: "end"
   # By default this base config produces the 5 standard rostering CSVs. The
   # CourseInfo + StudentCourses templates below are defined so districts can
   # opt into them via an override config (see mbp_all_mapping.yaml) by

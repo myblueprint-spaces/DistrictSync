@@ -46,7 +46,7 @@ jobs:
         run: |
           python -c "
           from src.config.loader import load_config
-          for name in ['myedbc', 'sd40myedbc', 'sd48myedbc', 'sd51myedbc', 'sd74myedbc']:
+          for name in ['myedbc', 'sd40myedbc', 'sd48myedbc', 'sd51myedbc', 'sd54myedbc', 'sd74myedbc']:
               load_config(name)
               print(f'{name}: OK')
           "
