@@ -110,7 +110,11 @@ with col2:
     st.page_link("pages/04_Mapping_Editor.py", label="Mapping Editor", icon="🗺️")
     st.caption("Create or customize district data configurations")
     st.page_link("pages/05_Help.py", label="Help & Docs", icon="❓")
-    st.caption("Output format, how it works, troubleshooting")
+    st.caption("Full documentation: output format, how it works, troubleshooting")
 
 st.divider()
+st.markdown(
+    "📖 **Documentation** is built into this app on the **Help & Docs** page (sidebar). "
+    "For setup basics, see the [SpacesEDU Help Centre article](https://help.spacesedu.com/en-ca/article/mx56qo)."
+)
 st.caption("SpacesEDU by myBlueprint · DistrictSync · support@myBlueprint.ca")
