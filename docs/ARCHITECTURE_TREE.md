@@ -119,10 +119,12 @@ _Last generated from `main` @ c669404._
 - `tests/conftest.py` — Shared fixtures (synthetic DataFrames, YAML configs, `DataTransformer` instances) for all tests; also hosts the `streamlit_server` session fixture for UI smoke tests.
 - `tests/snapshots/generate_synthetic.py` — Script to regenerate synthetic SD74 GDE input files in `tests/snapshots/input/` (run once after schema changes).
 - `tests/snapshots/` — Frozen SD74 snapshot data: `input/` holds 6 synthetic GDE files (StudentDemographic, Staff, Family, Classes, Schedule, CourseInfo); `output/` holds 5 golden CSV files (Students, Staff, Family, Classes, Enrollments) locked against regression.
+- `tests/snapshots/mbp_input/` — Small hand-authored synthetic GDEs for the `mbponly` course tier (CourseInformation, StudentCourseHistory, StudentCourseSelection); consumed by `test_pipeline_e2e_mbponly.py`.
 - `tests/test_config.py` — Config model and loader: Pydantic validation of YAML structure, `classify_field()` dispatch, `_base` inheritance deep-merge, cycle detection.
 - `tests/test_config_loader_multi_dir.py` — Two-tier config discovery: user-dir override wins over bundled, `_base` resolution across search dirs, `available_configs()` deduplication.
 - `tests/test_pipeline_e2e.py` — Full ETL e2e with synthetic on-disk GDE files: verifies output CSV structure and data for the standard myedbc config.
 - `tests/test_pipeline_e2e_districts.py` — District-specific e2e: verifies sd48 and sd74 district configs produce all 5 expected CSVs from synthetic GDE files using district-specific filenames.
+- `tests/test_pipeline_e2e_mbponly.py` — `mbponly` tier e2e smoke test: runs the pipeline against `tests/snapshots/mbp_input/` and asserts it emits only CourseInfo.csv + StudentCourses.csv (no rostering CSVs) with the right schema and required-files set.
 - `tests/test_regression_sd74.py` — SD74 golden-file regression: runs the pipeline against `tests/snapshots/input/` and diffs against `tests/snapshots/output/` (schema + values).
 - `tests/test_contract.py` — Output schema contract: asserts every district config produces exactly the required SpacesEDU Advanced CSV column set — no missing columns, no unexpected extras.
 - `tests/test_transform_students.py` — Students transformer: enrollment-status filtering, active-student logic, email generation, Date of Birth normalisation.
