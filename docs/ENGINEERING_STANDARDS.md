@@ -5,7 +5,7 @@ A **project-agnostic, ever-growing catch-all** of engineering quality dimensions
 ## How to use this (meta-rules)
 
 - **Select, don't skip.** For a given change, the architect picks the dimensions that are *relevant* and meets each one **fully** — no debt. Don't gold-plate irrelevant dimensions (that's its own waste — respect `KISS`/`YAGNI`), but **never skip a relevant one.** Relevance is a per-change judgment.
-- **No "N/A here" annotations.** Do **not** mark a dimension irrelevant *to a codebase* in this file — a stack can grow into it later, and a permanent cap would mislead a future agent. Decide relevance at the moment of the change, not in the doc.
+- **No hard "N/A" caps in the dimensions table.** Don't mark a dimension *permanently* irrelevant — a stack grows into things, and a cap would mislead a future agent. *Current* applicability for this repo lives in the **Current scope** section at the bottom as a **non-capping, growing snapshot**; ultimate relevance is always a per-change judgment.
 - **Additive, not subtractive.** You may **add** dimensions/standards as you discover them; **don't remove** existing ones. This is meant to become "every standard we can think of."
 - **Not confined — to this list or to known patterns.** Exceed the list when a change warrants it. Prefer established design patterns, but you **may invent a novel pattern** when it adds clear value — justify the problem, why existing patterns fall short, and the benefit, and record it in `DECISIONS.md`. Unconventional ≠ wrong.
 - **The spec names the in-scope dimensions.** Stage 4 records which dimensions apply to a slice and the target bar; Stage 7 audits against them; "done" = they pass (see **Definition of Done** in `WORKFLOW.md`).
@@ -40,3 +40,33 @@ A **project-agnostic, ever-growing catch-all** of engineering quality dimensions
 - **Implement (Stage 6):** `implementer-architect` builds to those dimensions the first time (and may justify a novel pattern).
 - **Verify (Stage 7):** `architect-reviewer` audits the diff against the in-scope dimensions — performant, secure, efficient, extensible.
 - **Definition of Done:** acceptance criteria met **+** in-scope dimensions pass **+** all gates green **+** **no new tech debt.** Iterate to meet this *fixed* bar, then stop. (Genuinely separate future work → `ROADMAP.md` — that's backlog, not debt.)
+
+---
+
+## Current scope (this codebase — a living snapshot, **not a cap**)
+
+This is the **one project-specific part** of this doc — everything above is universal. *When reusing this file in another project, keep the rest and rewrite just this section.* It records which dimensions are **LIVE in DistrictSync today** so agents know where to focus by default. **Guidance, not a gate:** relevance is still a per-change judgment (per the meta-rules), and this list **grows as the stack grows** — never use a `NOT-YET` here to skip a dimension genuinely relevant to a change.
+
+**Stack today:** file-based ETL (GDE CSV/TXT → 5–7 CSVs), pandas, Pydantic YAML config; **no DB, no web API/server** (batch tool); SFTP egress + OS keyring; Streamlit UI; PyInstaller exe; `schtasks`/cron; **handles student PII**.
+
+| Dimension | Scope now | In this codebase |
+|---|---|---|
+| Correctness & resilience | **LIVE** | encoding fallback, atomic writes+rollback, graceful skip; retries/backoff LIGHT (SFTP only) |
+| Structure & design | **LIVE** | Strategy/registry, `_base` inheritance, Pydantic |
+| DRY & reuse | **LIVE** | `column_names.py`, shared `BaseTransformer` |
+| Performance & efficiency | **LIGHT** | pandas memory, kill O(n²), vectorize, memoize lookups · **DB/API tuning NOT-YET** (no DB/API) |
+| Security | **LIVE** | keyring, host allowlist, `ALLOWED_TRANSFORMS`, scheduler-input validation, bandit · **user authn/authz NOT-YET** (no server) |
+| Privacy & data governance | **LIVE — top priority** | student PII: no real data in repo, never logged, TLS via SFTP; FERPA-adjacent |
+| Extensibility & maintainability | **LIVE** | config-driven core (`enabled_entities`) |
+| API & interface design | **LIGHT** | contracts = output-CSV schema + YAML config schema (version those); no HTTP API |
+| Observability & ops | **LIVE** | `__DISTRICTSYNC_RUN__` records, anomaly detection; no PII in logs |
+| Resources & concurrency | **LIGHT** | context managers, temp-dir cleanup · concurrency NOT-YET (single-threaded; keep transformer singletons stateless) |
+| Data integrity | **LIVE** | atomic writes, schema validation, orphaned-enrollment check |
+| Internationalization | **LIGHT** | encoding fallback, date formats (DOB→ISO); timezones minimal |
+| Configuration & deployment | **LIVE** | YAML + `~/.districtsync`, reproducible PyInstaller builds, GH Actions |
+| Accessibility & UX | **LIGHT** | Streamlit UI only |
+| Cost & efficiency | **NOT-YET** | district servers, not cloud-metered; watch memory on large GDEs |
+| Testing | **LIVE** | 640 tests, SD74 snapshot regression, 80% gate |
+| Docs & traceability | **LIVE** | `ARCHITECTURE_TREE.md`, `DECISIONS.md`, MkDocs |
+
+**As the stack grows, promote rows here (and note it in `DECISIONS.md`):** add a DB → Performance(DB) + Data-integrity(transactions/migrations) go LIVE · add a web API/service → API design + Security(authn/authz, rate-limiting) + tracing go LIVE · add concurrency/threads/a queue → Resources & concurrency goes LIVE · move to metered cloud → Cost goes LIVE.
