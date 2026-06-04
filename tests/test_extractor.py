@@ -155,3 +155,87 @@ class TestEncodingFallback:
         names = result["contacts.txt"]["name"].tolist()
         assert len(names) == 1
         assert "o" in names[0].lower()  # at minimum the ASCII part survived
+
+    def test_utf8_with_stray_cp1252_byte_stays_utf8(self, tmp_path):
+        """A UTF-8 file with a few stray CP1252 bytes must NOT fall back to latin1.
+
+        Falling back to latin1 would mojibake every genuine accented character in
+        the file. Instead the valid UTF-8 text is preserved and only the stray byte
+        becomes the replacement character.
+        """
+        # Mostly valid UTF-8 (José, naïve) with a stray CP1252 en-dash (0x96) and
+        # smart quotes (0x93/0x94) pasted into a free-text memo field.
+        good = "Name,Memo\nJosé Muñoz,naïve note\n".encode()
+        junk = b"Ana,picks up 3" + b"\x96" + b"4pm " + b"\x93" + b"ok" + b"\x94" + b"\n"
+        (tmp_path / "demo.txt").write_bytes(good + junk)
+
+        extractor = DataExtractor(str(tmp_path))
+        result = extractor.load_data(["demo.txt"])
+
+        names = result["demo.txt"]["name"].tolist()
+        # Genuine accented characters survive intact (not mojibaked to "JosÃ©")
+        assert "José Muñoz" in names
+        assert "naïve" in result["demo.txt"]["memo"].tolist()[0]
+
+    def test_embedded_tab_in_comma_field_parses_on_commas(self, tmp_path):
+        """A comma file with a stray tab inside a field must still parse on commas.
+
+        The delimiter is chosen from the (tab-free) header, so an embedded tab in a
+        data field cannot trick the loader into treating the file as tab-delimited.
+        """
+        content = "School Number,Student Number,Note\n100,123,hello\tworld\n100,124,fine\n"
+        (tmp_path / "data.txt").write_text(content, encoding="utf-8")
+
+        extractor = DataExtractor(str(tmp_path))
+        result = extractor.load_data(["data.txt"])
+
+        df = result["data.txt"]
+        assert list(df.columns) == ["school number", "student number", "note"]
+        assert len(df) == 2
+        assert df["note"].tolist()[0] == "hello\tworld"
+
+    def test_unquoted_trailing_comma_field_is_recovered(self, tmp_path):
+        """MyEd BC emits the trailing Section column unquoted; a comma inside it must
+        be recovered (merged back), not dropped or split into a phantom column.
+        """
+        header = "School Number,Student Number,Course Code,Full Course Code,Section\n"
+        # Last column "6B,R-B O3" is unquoted and contains a comma → 6 fields, not 5.
+        bad_row = '"203496020","xxxx","XLDCA06","XLDCA06---CKG-6B,R-B O3",6B,R-B O3\n'
+        good_row = '"203496021","yyyy","XMA-11","XMA-11---A",11A\n'
+        (tmp_path / "history.txt").write_text(header + bad_row + good_row, encoding="utf-8")
+
+        extractor = DataExtractor(str(tmp_path))
+        result = extractor.load_data(["history.txt"])
+
+        df = result["history.txt"]
+        # Both rows kept, no phantom 6th column.
+        assert list(df.columns) == [
+            "school number",
+            "student number",
+            "course code",
+            "full course code",
+            "section",
+        ]
+        assert len(df) == 2
+        sections = df["section"].tolist()
+        assert sections[0] == "6B,R-B O3"  # overflow merged back into the last column
+        assert sections[1] == "11A"
+        # The quoted Full Course Code with its internal comma is untouched.
+        assert df["full course code"].tolist()[0] == "XLDCA06---CKG-6B,R-B O3"
+
+    def test_numeric_code_column_with_blanks_keeps_integer_text(self, tmp_path):
+        """A code column containing blanks must not be coerced to float (no '.0').
+
+        pandas types a numeric-looking column with any blank as float64, turning
+        7575029 into 7575029.0. Reading every column as str avoids this.
+        """
+        content = "Student Number,PreRegSchoolCode\n1,7575029\n2,\n3,7575030\n"
+        (tmp_path / "students.txt").write_text(content, encoding="utf-8")
+
+        extractor = DataExtractor(str(tmp_path))
+        result = extractor.load_data(["students.txt"])
+
+        codes = result["students.txt"]["preregschoolcode"].fillna("").tolist()
+        assert codes[0] == "7575029"  # not "7575029.0"
+        assert codes[1] == ""
+        assert codes[2] == "7575030"
