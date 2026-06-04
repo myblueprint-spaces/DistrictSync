@@ -57,7 +57,7 @@ class StudentCoursesTransformer(BaseTransformer):
         if history_df.empty and selection_df.empty:
             return pd.DataFrame(columns=self.OUTPUT_COLUMNS)
 
-        patterns = context.global_config.get("excluded_course_code_patterns", [])
+        patterns = self.effective_course_code_patterns(context.global_config)
         flavors = context.global_config.get("excluded_course_flavors", [])
 
         info_exact, info_prefix = self._build_info_lookups(info_df)

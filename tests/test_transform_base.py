@@ -164,6 +164,40 @@ class TestCleanCourseCodeFlavor:
         # Empty / whitespace-only entries in the flavor list shouldn't match everything
         assert BaseTransformer.clean_course_code_flavor("MAT10", ["", "  "]) == "MAT10"
 
+
+class TestEarlyGradeExclusionPattern:
+    def test_default_grade_10_matches_legacy_pattern(self):
+        # Grade 10 floor is equivalent to the legacy "^.{5}0\\d" (excludes 00-09).
+        assert BaseTransformer.early_grade_exclusion_pattern(10) == r"^.{5}0[0-9]"
+
+    def test_grade_9(self):
+        assert BaseTransformer.early_grade_exclusion_pattern(9) == r"^.{5}0[0-8]"
+
+    def test_grade_8(self):
+        assert BaseTransformer.early_grade_exclusion_pattern(8) == r"^.{5}0[0-7]"
+
+    def test_non_numeric_falls_back_to_10(self):
+        assert BaseTransformer.early_grade_exclusion_pattern("oops") == r"^.{5}0[0-9]"
+
+    def test_value_above_10_clamped(self):
+        assert BaseTransformer.early_grade_exclusion_pattern(12) == r"^.{5}0[0-9]"
+
+    def test_one_or_below_returns_none(self):
+        assert BaseTransformer.early_grade_exclusion_pattern(1) is None
+
+
+class TestEffectiveCourseCodePatterns:
+    def test_appends_derived_early_grade_pattern(self):
+        gc = {"excluded_course_code_patterns": [r"^X"], "course_start_grade": 8}
+        assert BaseTransformer.effective_course_code_patterns(gc) == [r"^X", r"^.{5}0[0-7]"]
+
+    def test_defaults_to_grade_10_when_unset(self):
+        gc = {"excluded_course_code_patterns": [r"^X", r"^ATT"]}
+        assert BaseTransformer.effective_course_code_patterns(gc) == [r"^X", r"^ATT", r"^.{5}0[0-9]"]
+
+    def test_empty_config(self):
+        assert BaseTransformer.effective_course_code_patterns({}) == [r"^.{5}0[0-9]"]
+
     def test_first_matching_flavor_wins(self):
         # "ENXHUBDL" has both HUB and DL — either way truncates to 7 chars
         assert BaseTransformer.clean_course_code_flavor("ENXHUBDL", SD62_FLAVORS) == "ENXHUBD"

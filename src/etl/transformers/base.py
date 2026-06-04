@@ -179,6 +179,40 @@ class BaseTransformer(ABC):
         return df
 
     @staticmethod
+    def early_grade_exclusion_pattern(start_grade: Any) -> Optional[str]:
+        """Regex that drops MyEd BC course codes for grades below `start_grade`.
+
+        MyEd BC encodes the grade in the 6th-7th characters of the course code
+        as a two-digit number; single-digit grades 01-09 appear as "0X".
+        This builds a pattern matching "0" followed by any digit strictly below
+        `start_grade`, so grades >= start_grade (including 10-12, which begin
+        with "1") survive. With start_grade=10 the result is equivalent to the
+        legacy ``^.{5}0\\d`` pattern (excludes 00-09). Returns None when
+        start_grade <= 1 (nothing to exclude).
+        """
+        try:
+            sg = int(start_grade)
+        except (TypeError, ValueError):
+            sg = 10
+        sg = min(sg, 10)
+        if sg <= 1:
+            return None
+        return rf"^.{{5}}0[0-{sg - 1}]"
+
+    @classmethod
+    def effective_course_code_patterns(cls, global_config: dict) -> list[str]:
+        """Configured exclusion patterns plus the grade floor derived from
+        `course_start_grade` (default 10). Used by the CourseInfo and
+        StudentCourses transformers so the minimum grade is a single,
+        editable knob rather than a hand-written regex.
+        """
+        patterns = list(global_config.get("excluded_course_code_patterns", []))
+        early = cls.early_grade_exclusion_pattern(global_config.get("course_start_grade", 10))
+        if early:
+            patterns.append(early)
+        return patterns
+
+    @staticmethod
     def clean_course_code_flavor(code: Any, flavors: list[str]) -> str:
         """Truncate course code to first 7 chars if it contains any flavor substring.
 

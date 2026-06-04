@@ -317,13 +317,78 @@ hr {{
     margin: 1.5rem 0;
 }}
 
-/* ── Code blocks ── */
+/* ── Inline code ── */
 code {{
     background: #EFF6FF;
     color: {MB_DARK};
     border-radius: 0.3rem;
     padding: 0.15em 0.4em;
     font-size: 0.88em;
+}}
+
+/* ── Code blocks (st.code) ──
+   st.code() renders a <pre> inside [data-testid="stCode"] that carries a
+   dark syntax-theme background. The body-text rule above forces the text
+   dark, so without a light block background the content is dark-on-dark and
+   unreadable (e.g. the Setup Wizard "Review & Save" summary, the Mapping
+   Editor YAML preview). Pin the block background light and keep the text
+   dark so st.code output is always legible. */
+[data-testid="stMain"] [data-testid="stCode"],
+[data-testid="stMain"] [data-testid="stCode"] pre,
+[data-testid="stMain"] pre {{
+    background: #F1F5F9 !important;
+    border: 1px solid {MB_BORDER};
+    border-radius: 0.5rem;
+}}
+[data-testid="stMain"] [data-testid="stCode"] code,
+[data-testid="stMain"] [data-testid="stCode"] code * {{
+    background: transparent !important;
+    padding: 0 !important;
+    color: {MB_TEXT} !important;
+}}
+
+/* ── Native form controls (radio / checkbox / scrollbars) ──
+   Without an explicit color-scheme, a dark-mode OS/browser renders the
+   unselected radio as a solid dark filled circle (looks "selected"). Pin
+   light rendering and brand the accent so selected = blue, unselected =
+   hollow. */
+html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
+    color-scheme: light;
+}}
+[data-testid="stMain"] input[type="radio"],
+[data-testid="stMain"] input[type="checkbox"] {{
+    accent-color: {MB_PRIMARY};
+}}
+
+/* ── Expander header + body (st.expander) ──
+   The dark theme paints the expander summary with a near-black secondary
+   background and the body-text rule forces the label dark — dark-on-dark.
+   Pin the header + body light so the label and toggle icon are readable
+   (Setup Wizard manage view, Mapping Editor "View Generated YAML"). */
+[data-testid="stMain"] [data-testid="stExpander"] details,
+[data-testid="stMain"] [data-testid="stExpander"] summary {{
+    background-color: #ffffff !important;
+}}
+[data-testid="stMain"] [data-testid="stExpander"] summary,
+[data-testid="stMain"] [data-testid="stExpander"] summary * {{
+    color: {MB_TEXT} !important;
+}}
+
+/* ── File uploader dropzone ──
+   The dropzone defaults to a dark secondary background; the widget-label
+   rule forces its helper text ("200MB per file • TXT, CSV") dark, leaving it
+   invisible. Pin the dropzone background light. */
+[data-testid="stMain"] [data-testid="stFileUploaderDropzone"] {{
+    background-color: #F8FAFC !important;
+}}
+
+/* ── Page links in the main content (Home page "Navigation" column) ──
+   These inherit the theme link/text colour, which lands white-on-light under
+   a dark browser theme. Pin to the brand blue so they read as links. */
+[data-testid="stMain"] [data-testid="stPageLink"] a,
+[data-testid="stMain"] [data-testid="stPageLink-NavLink"],
+[data-testid="stMain"] [data-testid="stPageLink-NavLink"] * {{
+    color: {MB_PRIMARY} !important;
 }}
 
 /* ── Progress bar ── */
