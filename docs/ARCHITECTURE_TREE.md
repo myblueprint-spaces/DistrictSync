@@ -95,9 +95,11 @@ _Last generated from `main` @ c669404._
 - `config/mappings/sd40myedbc_mapping.yaml` — SD40 New Westminster override (`_base: myedbc`): CSV source file names, headerless schedule with injected column headers, `{student number}@newwestschools.ca` email, `excluded_course_codes` for ATT--AM/PM/Daily attendance rows.
 - `config/mappings/sd48myedbc_mapping.yaml` — SD48 Sea to Sky override (`_base: myedbc`): remaps to `StudentDemographicEnhanced.txt` and `StaffInformation.txt`; no other deviations from base.
 - `config/mappings/sd51myedbc_mapping.yaml` — SD51 Boundary override (`_base: myedbc`): `StudentDemographicEnhanced.txt`, `{student number}@sd51.bc.ca` email, fixed hardcoded academic start/end dates (bypasses auto-detection).
+- `config/mappings/sd54myedbc_mapping.yaml` — SD54 Bulkley Valley override (`_base: myedbc`): lowercase source file names (`studentschedule.txt`, `courseinformation.txt`, `staffinformation.txt`, `classinformationenhanced.txt`), non-Enhanced `staffinformation.txt` for Staff, `EmergencyContactInformationEnhanced.txt` for Family, `{legal surname}.{usual first name}@sd54.bc.ca` email, `excluded_course_codes` for ATT--AM/PM/Daily; academic dates auto-derive from the schedule School Year (end-year convention).
 - `config/mappings/sd74myedbc_mapping.yaml` — SD74 Gold Trail override (`_base: myedbc`): swapped legal/usual name fields, `{student number}@sd74.bc.ca` email, `studentcourseselection.txt` as schedule source, `ClassInfoEnhanced.txt`, `ParentInformation.txt`, fixed academic dates.
 - `config/mappings/mbp_all_mapping.yaml` — myBlueprint+ full tier (`_base: myedbc`): extends `enabled_entities` to all 7 (adds CourseInfo + StudentCourses on top of the standard 5 rostering CSVs).
 - `config/mappings/mbp_core_mapping.yaml` — myBlueprint+ minimal tier (`_base: myedbc`): `enabled_entities` = [Students, CourseInfo, StudentCourses] only; for districts that need course history/selection but not full class rosters.
+- `config/mappings/mbponly_mapping.yaml` — myBlueprint+ courses-only tier (`_base: myedbc`): `enabled_entities` = [CourseInfo, StudentCourses] only (no Students); requires only CourseInformation.txt + StudentCourseHistory.txt + StudentCourseSelection.txt.
 
 ---
 
@@ -117,10 +119,12 @@ _Last generated from `main` @ c669404._
 - `tests/conftest.py` — Shared fixtures (synthetic DataFrames, YAML configs, `DataTransformer` instances) for all tests; also hosts the `streamlit_server` session fixture for UI smoke tests.
 - `tests/snapshots/generate_synthetic.py` — Script to regenerate synthetic SD74 GDE input files in `tests/snapshots/input/` (run once after schema changes).
 - `tests/snapshots/` — Frozen SD74 snapshot data: `input/` holds 6 synthetic GDE files (StudentDemographic, Staff, Family, Classes, Schedule, CourseInfo); `output/` holds 5 golden CSV files (Students, Staff, Family, Classes, Enrollments) locked against regression.
+- `tests/snapshots/mbp_input/` — Small hand-authored synthetic GDEs for the `mbponly` course tier (CourseInformation, StudentCourseHistory, StudentCourseSelection); consumed by `test_pipeline_e2e_mbponly.py`.
 - `tests/test_config.py` — Config model and loader: Pydantic validation of YAML structure, `classify_field()` dispatch, `_base` inheritance deep-merge, cycle detection.
 - `tests/test_config_loader_multi_dir.py` — Two-tier config discovery: user-dir override wins over bundled, `_base` resolution across search dirs, `available_configs()` deduplication.
 - `tests/test_pipeline_e2e.py` — Full ETL e2e with synthetic on-disk GDE files: verifies output CSV structure and data for the standard myedbc config.
 - `tests/test_pipeline_e2e_districts.py` — District-specific e2e: verifies sd48 and sd74 district configs produce all 5 expected CSVs from synthetic GDE files using district-specific filenames.
+- `tests/test_pipeline_e2e_mbponly.py` — `mbponly` tier e2e smoke test: runs the pipeline against `tests/snapshots/mbp_input/` and asserts it emits only CourseInfo.csv + StudentCourses.csv (no rostering CSVs) with the right schema and required-files set.
 - `tests/test_regression_sd74.py` — SD74 golden-file regression: runs the pipeline against `tests/snapshots/input/` and diffs against `tests/snapshots/output/` (schema + values).
 - `tests/test_contract.py` — Output schema contract: asserts every district config produces exactly the required SpacesEDU Advanced CSV column set — no missing columns, no unexpected extras.
 - `tests/test_transform_students.py` — Students transformer: enrollment-status filtering, active-student logic, email generation, Date of Birth normalisation.

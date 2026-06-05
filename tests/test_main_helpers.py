@@ -82,6 +82,19 @@ class TestExtractRequiredFiles:
             "StudentCourseSelection.txt",
         }
 
+    def test_real_mbponly_config_requires_only_course_files(self):
+        """mbponly emits only the two course CSVs, so no demographic GDE is needed."""
+        from src.config.loader import load_config
+
+        cfg = load_config("mbponly")
+        files = set(extract_required_files(cfg))
+        # CourseInfo + StudentCourses only — no StudentDemographicInformation.txt
+        assert files == {
+            "CourseInformation.txt",
+            "StudentCourseHistory.txt",
+            "StudentCourseSelection.txt",
+        }
+
 
 # -----------------------------------------------------------------------
 # _check_anomalies

@@ -19,7 +19,7 @@ ui:
 	streamlit run src/ui/Home.py
 
 validate-config:
-	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc','sd40myedbc','sd48myedbc','sd51myedbc','sd54myedbc','sd74myedbc','mbp_all','mbp_core']]"
+	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc','sd40myedbc','sd48myedbc','sd51myedbc','sd54myedbc','sd74myedbc','mbp_all','mbp_core','mbponly']]"
 
 # Build Windows .exe locally (must run on Windows).
 # Mirrors .github/workflows/release.yml:build-windows so local builds
