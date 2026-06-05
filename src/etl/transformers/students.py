@@ -26,7 +26,27 @@ class StudentTransformer(BaseTransformer):
         result = self.apply_field_map(working, result, field_map, "Students", context)
         if "Date of Birth" in result.columns:
             result["Date of Birth"] = result["Date of Birth"].apply(self.normalize_iso_date)
+        self._coalesce_required_names(result)
         return result
+
+    @staticmethod
+    def _coalesce_required_names(result: pd.DataFrame) -> None:
+        """Fill blank First/Last Name from the preferred-name columns, in place.
+
+        First Name and Last Name are required by the Advanced CSV spec. Some
+        districts (e.g. SD74) map the primary name to the Usual/preferred columns,
+        which can be blank, and map the Preferred-name output to the populated Legal
+        columns. When that leaves a required name blank but a preferred-name value is
+        available, fall back to it so the required field is never empty needlessly.
+        """
+        for primary, fallback in (
+            ("First Name", "Preferred First Name"),
+            ("Last Name", "Preferred Last Name"),
+        ):
+            if primary not in result.columns or fallback not in result.columns:
+                continue
+            is_blank = result[primary].isna() | result[primary].astype(str).str.strip().str.lower().isin(["", "nan"])
+            result.loc[is_blank, primary] = result.loc[is_blank, fallback]
 
     @staticmethod
     def _determine_enrollment_status(working: pd.DataFrame) -> None:

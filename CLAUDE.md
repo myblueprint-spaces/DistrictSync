@@ -56,7 +56,7 @@ bandit -r src/ -q
 
 ### Validate configs
 ```bash
-make validate-config  # validates all 7 configs: myedbc, sd40, sd48, sd51, sd74, mbp_all, mbp_core
+make validate-config  # validates all 9 configs: myedbc, sd40, sd48, sd51, sd54, sd74, mbp_all, mbp_core, mbponly
 ```
 
 ### Streamlit web UI
@@ -152,7 +152,7 @@ All field mappings are in YAML files under `config/mappings/`. The `--sis` CLI a
 
 `global_config.excluded_course_codes` (list[str]) filters schedule + class_info rows by Course Code (case-insensitive, trimmed) before class/enrollment/blended generation. SD40 uses `["ATT--AM", "ATT--PM"]` to drop MyEd BC's internal attendance-only sections. Applied in `base.filter_excluded_course_codes()` and called from `classes.py`, `enrollments.py`, and `blended.py` (the schedule-fallback path).
 
-Base `myedbc` defines all 7 entity templates; configs select which to emit via `global_config.enabled_entities` (see **Output Targeting**). 5 SpacesEDU district configs — `myedbc` (base), `sd40myedbc` (New Westminster — CSV files, headerless schedule), `sd48myedbc` (Sea to Sky), `sd51myedbc` (Boundary), `sd74myedbc` (Gold Trail) — each `_base: myedbc` and inherit the 5 rostering entities. 2 myBlueprint+ tier configs — `mbp_all` (all 7) and `mbp_core` (Students + CourseInfo + StudentCourses) — also `_base: myedbc`, overriding `enabled_entities`.
+Base `myedbc` defines all 7 entity templates; configs select which to emit via `global_config.enabled_entities` (see **Output Targeting**). 6 SpacesEDU district configs — `myedbc` (base), `sd40myedbc` (New Westminster — CSV files, headerless schedule), `sd48myedbc` (Sea to Sky), `sd51myedbc` (Boundary), `sd54myedbc` (Bulkley Valley), `sd74myedbc` (Gold Trail) — each `_base: myedbc` and inherit the 5 rostering entities. 3 myBlueprint+ tier configs — `mbp_all` (all 7), `mbp_core` (Students + CourseInfo + StudentCourses), and `mbponly` (CourseInfo + StudentCourses only) — also `_base: myedbc`, overriding `enabled_entities`.
 
 ## Key Data Flow
 
