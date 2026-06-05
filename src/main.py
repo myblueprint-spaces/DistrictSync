@@ -18,6 +18,7 @@ import sys
 from src.config.app_config import AppConfig
 from src.etl.pipeline import (
     ANOMALY_THRESHOLD,
+    PipelineResult,
     _check_anomalies,
     _emit_run_log,
     _print_diff,
@@ -31,6 +32,7 @@ from src.utils.validators import validate_sftp_host, validate_sis_type
 
 __all__ = [
     "ANOMALY_THRESHOLD",
+    "PipelineResult",
     "SFTP_PASSWORD_ENV_VAR",
     "_check_anomalies",
     "_emit_run_log",
@@ -45,6 +47,7 @@ logger = get_logger(__name__)
 # Keep the re-export references alive (used via __all__).
 _ = (
     ANOMALY_THRESHOLD,
+    PipelineResult,
     extract_required_files,
     run_pipeline,
     _check_anomalies,
@@ -257,7 +260,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     try:
-        run_pipeline(
+        result = run_pipeline(
             sis,
             args.input,
             args.output,
@@ -272,3 +275,23 @@ if __name__ == "__main__":
         print(f"\nError: {e}")
         print("Check etl_tool.log for details. Contact support@myBlueprint.ca for help.")
         sys.exit(1)
+
+    # Exit code 3: SFTP was requested and attempted but delivery failed.
+    # The ETL output (CSV files) is already written and intact — only the
+    # upload to SpacesEDU failed.  Non-zero exit lets Task Scheduler flag
+    # the run as failed so operators are not left with a false green.
+    #
+    # Exit code inventory:
+    #   0 — success (ETL complete; SFTP succeeded or not requested)
+    #   1 — ETL / argument / validation error (run did not complete)
+    #   2 — stdin empty / mutual-exclusion flag error
+    #   3 — SFTP delivery failure (ETL succeeded; upload did not)
+    if result.sftp_attempted and not result.sftp_ok:
+        # _sftp_upload already logged at ERROR level with the host; re-emit
+        # a brief summary here so the Task Scheduler "Last Run Result" note
+        # is clearly non-zero.
+        logger.error(
+            "Run exiting with code 3: SFTP upload was attempted but failed. "
+            "Output CSVs are present on disk. Check logs for details."
+        )
+        sys.exit(3)

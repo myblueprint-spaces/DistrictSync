@@ -13,6 +13,7 @@ import json
 import logging
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,16 @@ from src.sftp.uploader import SFTPUploader
 logger = logging.getLogger(__name__)
 
 ANOMALY_THRESHOLD = 0.20  # Warn if any entity drops >20% vs previous output
+
+
+@dataclass
+class PipelineResult:
+    """Structured return value from run_pipeline."""
+
+    entity_counts: dict[str, int] = field(default_factory=dict)
+    sftp_attempted: bool = False
+    sftp_ok: bool = False
+    anomalies: list[str] = field(default_factory=list)
 
 
 def extract_required_files(config) -> list[str]:
@@ -109,8 +120,13 @@ def run_pipeline(
     diff: bool = False,
     quality: bool = False,
     sftp: bool = False,
-) -> None:
-    """Core ETL pipeline with optional dry-run, diff, quality, and SFTP modes."""
+) -> PipelineResult:
+    """Core ETL pipeline with optional dry-run, diff, quality, and SFTP modes.
+
+    Returns a :class:`PipelineResult` whose ``sftp_attempted`` / ``sftp_ok``
+    fields let callers (e.g. ``src/main.py``) decide whether to exit non-zero
+    when delivery failed.
+    """
     t0 = time.monotonic()
     outputs: dict[str, pd.DataFrame] = {}
     sftp_attempted = False
@@ -251,6 +267,13 @@ def run_pipeline(
         elapsed = time.monotonic() - t0
         _emit_run_log("success", elapsed, outputs, sftp_attempted=sftp_attempted, sftp_ok=sftp_ok, anomalies=anomalies)
 
+        return PipelineResult(
+            entity_counts={name: len(df) for name, df in outputs.items()},
+            sftp_attempted=sftp_attempted,
+            sftp_ok=sftp_ok,
+            anomalies=anomalies,
+        )
+
     except SystemExit:
         raise
     except Exception as e:
@@ -261,7 +284,13 @@ def run_pipeline(
 
 
 def _sftp_upload(output_path: str, sis_type: str | None = None) -> bool:
-    """Upload generated CSV files via SFTP. Returns True on success."""
+    """Upload generated CSV files via SFTP. Returns True on success.
+
+    Never raises — exceptions are caught and logged at ERROR level so the
+    caller (``run_pipeline``) can propagate ``sftp_ok=False`` to ``main.py``
+    which then decides to exit non-zero.  The already-written CSVs are NOT
+    touched on failure.
+    """
     try:
         cfg = AppConfig.load()
         if not cfg.sftp_is_configured():
@@ -271,17 +300,26 @@ def _sftp_upload(output_path: str, sis_type: str | None = None) -> bool:
             )
             return False
 
+        host = cfg.sftp_host or "<unknown host>"
         uploader = SFTPUploader(
-            host=cfg.sftp_host,
+            host=host,
             port=cfg.sftp_port,
             username=cfg.sftp_username,
             remote_path=cfg.sftp_remote_path,
         )
         uploaded = uploader.upload_csvs(Path(output_path), sis_type=sis_type)
-        logger.info(f"SFTP upload complete: {len(uploaded)} file(s) — {uploaded}")
-        return len(uploaded) > 0
+        if uploaded:
+            logger.info(f"SFTP upload complete: {len(uploaded)} file(s) — {uploaded}")
+            return True
+        # upload_csvs returned an empty list (e.g. no CSVs found) — treat as failure
+        logger.error(f"SFTP upload FAILED — output files were NOT delivered to {host} (no files were transferred)")
+        return False
     except Exception as e:
-        logger.error(f"SFTP upload failed: {e}")
+        try:
+            host = AppConfig.load().sftp_host or "<unknown host>"
+        except Exception:
+            host = "<unknown host>"
+        logger.error(f"SFTP upload FAILED — output files were NOT delivered to {host}: {e}")
         return False
 
 

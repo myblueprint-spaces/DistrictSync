@@ -2,6 +2,12 @@
 
 Dated, one-line records of non-trivial decisions. **Append newest at the top.** Consult before re-litigating a past choice (see CLAUDE.md → Harness Discipline).
 
+## 2026-06-05 — Plan 0002 Slice 4 (unattended SFTP + schedule hardening)
+
+- **Scheduled task runs as the interactive setup user with stored Windows password** (`/RU /RP /RL HIGHEST`) so it survives reboots; SYSTEM rejected — SYSTEM cannot read the per-user OS keyring where the SFTP password is stored.
+- **SFTP secrets stay in the per-user OS keyring; the task's run-as account must equal the setup account** — the Setup Wizard enforces this by resolving `current_run_as_user()` and registering the task as that account.
+- **A requested SFTP upload that fails exits code 3** (ETL output CSVs still written), so delivery failures surface visibly in Task Scheduler's "Last Run Result" and in Run History, not silently as a green exit 0.
+
 ## 2026-06-04 — Harness / standards
 
 - **Output targeting via `enabled_entities`.** All 7 entity definitions live in base `myedbc_mapping.yaml`; configs select which to emit via `global_config.enabled_entities`. Tiers `mbp_all` (7) and `mbp_core` (Students + 2 course CSVs) are thin overrides. Rationale: defines entity templates once (DRY) and lets a per-district myBlueprint+ config (`_base: <district>` + `enabled_entities`) inherit both the district's columns and the base entity defs. Chosen over "the new config carries the new sections" (would duplicate defs and hit YAML's single-`_base` limit). Ratified after PR #12 review.

@@ -41,9 +41,18 @@
 
 ## Task Scheduler does not run the task
 
+**Task does not run after a reboot / server restart**
+- The Setup Wizard (schedule step) automatically registers the task to **run whether the user is logged on or not** with **Highest Privileges**, using the Windows account password you enter during setup.
+- If the task still doesn't run after a reboot, the Windows password entered at setup was likely incorrect. A wrong password causes `schtasks` to report an error in the wizard — if you dismissed the error, re-run the Setup Wizard to re-register the task with the correct password.
+- If you left the password blank during setup, the task was registered for **logged-on-only** operation (the wizard warns you at that point). Enter the password to enable unattended runs.
+
 **"Access denied" or task shows "Last Run Result: 0x1"**
-- The task must be configured to **Run whether user is logged on or not** and with **Highest Privileges**.
-- Delete the task (`schtasks /Delete /F /TN DistrictSync_Daily`) and re-run the Setup Wizard as Administrator.
+- Re-run the Setup Wizard and enter your Windows account password on the schedule step. This re-registers the task with `/RU <user> /RP <password> /RL HIGHEST` so it runs unattended.
+
+**Task shows a non-zero "Last Run Result" (e.g. code 3 / 0x3)**
+- Exit code 3 means the ETL conversion **succeeded** and the output files were written, but the **SFTP delivery to SpacesEDU failed**. The CSV files are intact in your output folder.
+- Open the **Run History** page in the DistrictSync wizard or check `~/.districtsync/etl_tool.log` for an `ERROR` line beginning `SFTP upload FAILED —` to find the cause (network, credentials, host).
+- Re-run `--sftp-test` (or Setup Wizard → Step 4) to verify your SFTP credentials are still valid.
 
 **Task runs but nothing happens**
 - Open the Run History page in the DistrictSync wizard. Scheduled runs

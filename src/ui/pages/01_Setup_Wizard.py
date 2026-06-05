@@ -56,8 +56,26 @@ def _go(step: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _register_schedule(cfg: AppConfig) -> None:
-    """Register the OS schedule and update cfg.schedule_registered."""
+def _register_schedule(
+    cfg: AppConfig,
+    *,
+    run_as_user: str | None = None,
+    run_as_password: str | None = None,
+) -> bool:
+    """Register the OS schedule and update cfg.schedule_registered.
+
+    Args:
+        cfg: Current application config (schedule fields must be set before calling).
+        run_as_user: Windows account the task should run as. Defaults to the
+            current interactive user when ``run_as_password`` is supplied.
+        run_as_password: Windows account password. When truthy the task is
+            registered to run whether or not the user is logged on. When
+            omitted/blank the task is registered with default (logged-on-only)
+            scope, and a warning is displayed.
+
+    Returns:
+        True if the schedule was successfully registered, False otherwise.
+    """
     import sys as _sys
 
     exe_path = Path(_sys.executable)  # The running Python / frozen exe
@@ -73,6 +91,8 @@ def _register_schedule(cfg: AppConfig) -> None:
             output_dir=Path(cfg.output_dir),
             run_time=cfg.schedule_time,
             sftp=cfg.sftp_enabled,
+            run_as_user=run_as_user,
+            run_as_password=run_as_password or None,
         )
     else:
         from src.scheduler.linux import register_cron
@@ -89,7 +109,11 @@ def _register_schedule(cfg: AppConfig) -> None:
     if ok:
         cfg.schedule_registered = True
         cfg.save()
-        st.success("Schedule registered successfully.")
+        if not run_as_password and _sys.platform == "win32":
+            st.warning(
+                "No Windows password provided — the task will only run while you are logged in to this server. "
+                "For unattended operation across reboots, re-run setup with the password."
+            )
     else:
         # Parse common errors into user-friendly messages
         if "Access is denied" in msg or "access denied" in msg.lower():
@@ -98,6 +122,8 @@ def _register_schedule(cfg: AppConfig) -> None:
             )
         else:
             st.error(f"Failed to register schedule: {msg}")
+
+    return ok
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -512,6 +538,28 @@ elif st.session_state.wizard_step == 3:
         run_time = st.time_input("Daily run time (24-hour)", value=current_time)
         st.info(f"The tool will run every day at **{run_time.strftime('%H:%M')}** local server time.")
 
+        if sys.platform == "win32":
+            from src.scheduler.windows import current_run_as_user
+
+            _run_as = current_run_as_user()
+            st.caption(f"The task will run as: **{_run_as}**")
+            schedule_password = st.text_input(
+                "Windows account password",
+                type="password",
+                key="wizard_schedule_password",
+                help=(
+                    "Lets the scheduled task run after a server reboot with no one logged in. "
+                    "Used once to register the task with Windows Task Scheduler — "
+                    "DistrictSync does not store it."
+                ),
+            )
+            # Persist for Step 5's register call (password not stored in cfg)
+            st.session_state["_wizard_run_as_user"] = _run_as
+            st.session_state["_wizard_run_as_password"] = schedule_password or None
+        else:
+            st.session_state["_wizard_run_as_user"] = None
+            st.session_state["_wizard_run_as_password"] = None
+
     col1, col2 = st.columns([1, 5])
     with col1:
         if st.button("← Back"):
@@ -523,6 +571,9 @@ elif st.session_state.wizard_step == 3:
                 cfg.schedule_time = run_time.strftime("%H:%M")
             else:
                 cfg.schedule_time = ""
+                # Clear any stored run-as creds when schedule is disabled
+                st.session_state.pop("_wizard_run_as_user", None)
+                st.session_state.pop("_wizard_run_as_password", None)
             cfg.save()
             _go(4)
             st.rerun()
@@ -612,10 +663,29 @@ elif st.session_state.wizard_step == 4:
                     cfg.sftp_remote_path = sftp_remote_path
                     if sftp_password:
                         try:
+                            from src.scheduler.windows import current_run_as_user as _cur_user
                             from src.sftp.uploader import SFTPUploader
 
-                            SFTPUploader(sftp_host, int(sftp_port), sftp_username, sftp_remote_path).store_password(
-                                sftp_password
+                            _uploader = SFTPUploader(sftp_host, int(sftp_port), sftp_username, sftp_remote_path)
+                            _uploader.store_password(sftp_password)
+                            # Keyring round-trip: verify the credential is readable by
+                            # this account (the scheduled task runs as the same account).
+                            _read_back = _uploader.get_stored_password()
+                            try:
+                                _account = _cur_user()
+                            except Exception:
+                                _account = "this account"
+                            if _read_back:
+                                st.success(f"Verified: SFTP credentials are stored and readable by **{_account}**.")
+                            else:
+                                st.error(
+                                    "Could not read back the stored SFTP credential on this account — "
+                                    "SFTP uploads may fail. Re-enter and try again."
+                                )
+                                st.stop()
+                            st.caption(
+                                "The scheduled task runs as this same Windows account, "
+                                "which is why its credential store must hold these credentials."
                             )
                         except Exception as e:
                             st.error(
@@ -668,7 +738,18 @@ elif st.session_state.wizard_step == 5:
         if st.button(save_label, type="primary"):
             cfg.save()
             if cfg.schedule_time:
-                _register_schedule(cfg)
+                _run_as_user = st.session_state.get("_wizard_run_as_user")
+                _run_as_password = st.session_state.get("_wizard_run_as_password")
+                registered = _register_schedule(
+                    cfg,
+                    run_as_user=_run_as_user,
+                    run_as_password=_run_as_password,
+                )
+                if not registered:
+                    # Error already shown by _register_schedule — stay on this step
+                    st.stop()
+                # Clean up transient password from session state (not persisted)
+                st.session_state.pop("_wizard_run_as_password", None)
             else:
                 cfg.schedule_registered = False
                 cfg.save()
@@ -677,9 +758,29 @@ elif st.session_state.wizard_step == 5:
 
     st.divider()
     if cfg.schedule_registered:
-        st.success(
-            f"Schedule is active — runs daily at {cfg.schedule_time}. "
-            "You can close this window; the tool will run automatically."
+        if sys.platform == "win32":
+            from src.scheduler.windows import current_run_as_user as _cur_user
+
+            try:
+                _task_user = _cur_user()
+            except Exception:
+                _task_user = "the configured Windows account"
+        else:
+            _task_user = None
+
+        if _task_user:
+            st.success(
+                f"Schedule registered. The task will run **as {_task_user}, whether or not you're logged in**, "
+                f"daily at {cfg.schedule_time}."
+            )
+        else:
+            st.success(f"Schedule registered — runs daily at {cfg.schedule_time}.")
+
+        st.markdown(
+            f"- Make sure fresh GDE files land in `{cfg.input_dir}` before **{cfg.schedule_time}** "
+            "each day, or the run will re-deliver the previous output.\n"
+            "- If uploads ever stop, check **Run History** — failed SFTP deliveries are logged there "
+            "and the scheduled task will report a non-zero result."
         )
 
     # Dry-run test — always available when config is complete
