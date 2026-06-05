@@ -70,10 +70,10 @@ mappings:
       #   - status column auto-resolved from the alias
       #     ["Enrollment status", "Enrolment status"] (first present in the
       #     frame; covers both real two-L and one-L exports). None -> date-only.
-      #   - withdraw_date_column: "Withdraw date" (a past date is a HARD
-      #     override to Inactive even when status is active).
       #   - active_values: ["Active"] (PreReg/Inactive/etc. excluded, per
-      #     docs/partner/faq.md). A past withdraw date still overrides to Inactive.
+      #     docs/partner/faq.md). Status wins when present.
+      #   - withdraw_date_column: "Withdraw date" — only a FALLBACK for rows
+      #     with no status value (past/unparseable -> Inactive).
       # Override per-district with a dict, e.g. to roster upcoming-year PreRegs:
       #   EnrollStatus: {active_values: ["Active", "PreReg"]}
       "EnrollStatus":

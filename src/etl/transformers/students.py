@@ -63,9 +63,9 @@ class StudentTransformer(BaseTransformer):
         Source column names (status / withdraw date) and the active-value set
         resolve from the Students ``EnrollStatus`` config (Configurable
         Columns); MyEd BC defaults apply when unconfigured. ``PreReg`` is
-        excluded by default (overridable via ``active_values``); a past withdraw
-        date is a hard override to Inactive. See
-        ``BaseTransformer.compute_enroll_status``.
+        excluded by default (overridable via ``active_values``). The live status
+        value wins; the withdraw date is only a fallback for rows with no status
+        value. See ``BaseTransformer.compute_enroll_status``.
         """
         working["EnrollStatus"] = self.compute_enroll_status(working, field_map)
 

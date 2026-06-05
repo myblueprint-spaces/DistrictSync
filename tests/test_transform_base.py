@@ -322,8 +322,10 @@ class TestComputeEnrollStatus:
         df = pd.DataFrame({"enrollment status": ["Withdrawn"], "student number": ["S1"]})
         assert list(_status(df)) == ["Inactive"]
 
-    def test_conflict_active_status_past_withdraw_is_inactive(self):
-        """Hard override: active status + past withdraw date → Inactive."""
+    def test_active_status_wins_over_past_withdraw(self):
+        """Status wins: an active status keeps the row even with a past withdraw
+        date (e.g. a re-enrolled student whose prior withdraw date lingers). The
+        withdraw date is only a fallback for rows with no status value."""
         df = pd.DataFrame(
             {
                 "enrolment status": ["Active", "Active"],
@@ -331,7 +333,19 @@ class TestComputeEnrollStatus:
                 "student number": ["A", "B"],
             }
         )
-        assert list(_status(df)) == ["Active", "Inactive"]
+        assert list(_status(df)) == ["Active", "Active"]
+
+    def test_blank_status_falls_back_to_withdraw_date(self):
+        """A blank status value falls back to the withdraw-date column, per row."""
+        df = pd.DataFrame(
+            {
+                "enrolment status": ["Active", "", ""],
+                "withdraw date": ["", "", "15-Jan-2020"],
+                "student number": ["A", "B", "C"],
+            }
+        )
+        # A: active status; B: blank status + no date → Active; C: blank status + past date → Inactive
+        assert list(_status(df)) == ["Active", "Active", "Inactive"]
 
     def test_future_withdraw_date_does_not_override_active(self):
         df = pd.DataFrame(
@@ -369,12 +383,13 @@ class TestComputeEnrollStatus:
     def test_custom_status_and_withdraw_column_names(self):
         df = pd.DataFrame(
             {
-                "status": ["Active", "Active"],
+                "status": ["Active", ""],
                 "left on": ["", "2020-01-01"],
                 "student number": ["A", "B"],
             }
         )
         fm = {"EnrollStatus": {"status_column": "Status", "withdraw_date_column": "Left On"}}
+        # A: active by the custom status column; B: blank status → custom withdraw-date fallback → Inactive
         assert list(_status(df, fm)) == ["Active", "Inactive"]
 
     def test_empty_frame_returns_empty_series(self):

@@ -41,7 +41,7 @@ def _global_config(base_mapping, **overrides):
 # ---------------------------------------------------------------------------
 #
 # Active   homeroom: S001 (K, A1), S002 (3, A1), S005 (4, B2)
-# Inactive homeroom: S010 (Inactive, A1), S011 (past withdraw, B2)
+# Inactive homeroom: S010 (Inactive status, A1), S011 (no status -> past withdraw fallback, B2)
 # Active   subject : S003 (10), S004 (12)
 # Inactive subject : S012 (10, withdrawn)  -> in schedule but NOT in roster
 #
@@ -78,7 +78,7 @@ def _demographic(all_active: bool = False) -> pd.DataFrame:
         ("S002", "Bob", "B", "3", "100", "A1", "Active", "", "Harper", "T001"),
         ("S010", "Cara", "C", "1", "100", "A1", "Inactive", "", "Harper", "T001"),
         ("S005", "Hank", "H", "4", "100", "B2", "Active", "", "Reed", "T002"),
-        ("S011", "Dan", "D", "2", "100", "B2", "Active", "15-Jan-2020", "Reed", "T002"),
+        ("S011", "Dan", "D", "2", "100", "B2", "", "15-Jan-2020", "Reed", "T002"),
         ("S003", "Eve", "E", "10", "200", "C3", "Active", "", "Liu", "T003"),
         ("S004", "Fay", "F", "12", "200", "C4", "Active", "", "Singh", "T004"),
         ("S012", "Gus", "G", "10", "200", "C3", "Withdrawn", "", "Liu", "T003"),

@@ -193,18 +193,20 @@ class BaseTransformer(ABC):
 
     @classmethod
     def compute_enroll_status(cls, df: pd.DataFrame, students_field_map: dict[str, Any]) -> pd.Series:
-        """Per-row enrollment label in {``"Active"``, ``"PreReg"``, ``"Inactive"``}.
+        """Per-row enrollment label (``"Active"`` / ``"Inactive"`` / any ``active_values``).
 
-        Resolution (single source of truth for "is this student active"):
+        Single source of truth for "is this student active". The live status
+        value **wins**; the withdraw date is only a fallback:
 
-        1. If the resolved status column is present → label is the trimmed
-           value when it is in ``active_values``, else ``"Inactive"``.
-        2. Else if the withdraw-date column is present → ``"Inactive"`` for a
+        1. If the row has a **non-blank status value** (resolved status column) →
+           status decides: the trimmed value when it is in ``active_values``,
+           else ``"Inactive"``. The withdraw date is NOT consulted — an
+           authoritative live status beats a lingering withdraw date (e.g. a
+           re-enrolled student whose prior withdraw date is still on the record).
+        2. Else (no status column, or a blank status value on that row) → fall
+           back to the withdraw-date column: ``"Inactive"`` for a
            past/unparseable date, ``"Active"`` otherwise.
-        3. Else → ``"Active"`` (with one warning; nothing to detect on).
-
-        A past (or unparseable) withdraw date is then a **hard override**: it
-        downgrades any row to ``"Inactive"`` regardless of the status branch.
+        3. Else (neither column present) → ``"Active"`` (with one warning).
         """
         if df.empty:
             return pd.Series([], dtype="object")
@@ -212,35 +214,45 @@ class BaseTransformer(ABC):
         status_column, withdraw_date_column, active_values = cls.resolve_active_config(students_field_map, df.columns)
         allowed = set(active_values)
         today = datetime.now().date()
+        has_withdraw = withdraw_date_column in df.columns
+
+        # Withdraw-date label — used for any row without a usable status value.
+        if has_withdraw:
+            classified = df[withdraw_date_column].apply(lambda v: cls._classify_withdraw(v, today))
+            date_label = classified.apply(lambda t: "Inactive" if t[0] else "Active")
+        else:
+            classified = None
+            date_label = pd.Series("Active", index=df.index, dtype="object")
 
         if status_column is not None:
-
-            def _label_from_status(value: Any) -> str:
-                trimmed = str(value).strip()
-                return trimmed if trimmed in allowed else "Inactive"
-
-            labels = df[status_column].apply(_label_from_status)
-        elif withdraw_date_column in df.columns:
-            labels = pd.Series("Active", index=df.index, dtype="object")
+            status_vals = df[status_column].astype(str).str.strip()
+            has_status = status_vals.ne("") & status_vals.str.lower().ne("nan")
+            status_label = status_vals.apply(lambda v: v if v in allowed else "Inactive")
+            labels = status_label.where(has_status, date_label)
+            date_used = ~has_status
+        elif has_withdraw:
+            labels = date_label
+            date_used = pd.Series(True, index=df.index, dtype=bool)
         else:
             logger.warning(
                 "[Students] Could not find an enrollment-status or withdraw-date column "
                 f"(status aliases {list(cls.DEFAULT_STATUS_COLUMN_ALIASES)}, "
                 f"withdraw column '{withdraw_date_column}'). Defaulting all rows to 'Active'."
             )
-            return pd.Series("Active", index=df.index, dtype="object")
+            return date_label
 
-        # Hard override: a past/unparseable withdraw date wins over status.
-        if withdraw_date_column in df.columns:
-            classified = df[withdraw_date_column].apply(lambda v: cls._classify_withdraw(v, today))
-            withdrawn = classified.apply(lambda t: t[0])
-            unparseable = [str(v).strip() for v, (_, bad) in zip(df[withdraw_date_column], classified) if bad]
+        # Warn about unparseable withdraw dates only where the date was actually used.
+        if has_withdraw and classified is not None:
+            unparseable = [
+                str(v).strip()
+                for v, (_, bad), used in zip(df[withdraw_date_column], classified, date_used)
+                if bad and used
+            ]
             if unparseable:
                 logger.warning(
                     f"[Students] Could not parse {len(unparseable)} withdraw date(s); "
                     f"treated as Inactive. Sample formats: {set(unparseable[:10])}"
                 )
-            labels = labels.mask(withdrawn, "Inactive")
 
         return labels
 
