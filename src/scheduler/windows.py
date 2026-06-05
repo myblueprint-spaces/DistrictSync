@@ -20,15 +20,57 @@ Usage::
 
 from __future__ import annotations
 
+import getpass
 import logging
+import os
 
 # subprocess is required to invoke schtasks.exe.
 import subprocess  # nosec B404
 from pathlib import Path
 
-from src.utils.validators import validate_run_time, validate_sis_type, validate_task_name
+from src.utils.validators import (
+    validate_run_as_user,
+    validate_run_time,
+    validate_sis_type,
+    validate_task_name,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def current_run_as_user() -> str:
+    """Resolve the account the scheduled task should run as.
+
+    Returns ``DOMAIN\\user`` from ``%USERDOMAIN%`` / ``%USERNAME%`` when both
+    environment variables are present and non-empty, otherwise falls back to
+    :func:`getpass.getuser`. This is the interactive user who runs setup — the
+    same account whose Windows Credential Manager holds the SFTP password.
+    """
+    domain = os.environ.get("USERDOMAIN", "")
+    username = os.environ.get("USERNAME", "")
+    if domain and username:
+        return f"{domain}\\{username}"
+    return getpass.getuser()
+
+
+def _redact_cmd(cmd: list[str]) -> str:
+    """Join *cmd* for display, masking the password that follows ``/RP``.
+
+    The schtasks ``/RP <password>`` value is replaced with ``***`` so the
+    run-as password never reaches a log or an error message. The raw list is
+    never logged directly — every echo of the command goes through here.
+    """
+    redacted: list[str] = []
+    mask_next = False
+    for arg in cmd:
+        if mask_next:
+            redacted.append("***")
+            mask_next = False
+            continue
+        redacted.append(arg)
+        if arg == "/RP":
+            mask_next = True
+    return " ".join(redacted)
 
 
 def _build_task_command(
@@ -37,6 +79,10 @@ def _build_task_command(
     input_dir: Path,
     output_dir: Path,
     sftp: bool,
+    *,
+    run_as_user: str | None = None,
+    run_as_password: str | None = None,
+    run_highest: bool = True,
 ) -> str:
     """Construct the /TR command that Task Scheduler will execute.
 
@@ -48,7 +94,13 @@ def _build_task_command(
         Without the chdir, Python can't find the src package; without
         the -m flag, Python treats --sis as a script path and errors
         out with 0x80070002 (ERROR_FILE_NOT_FOUND).
+
+    The ``run_as_user`` / ``run_as_password`` / ``run_highest`` parameters do
+    not affect the ``/TR`` command itself — they are consumed by
+    :func:`register_task` to build the ``/RU /RP /RL`` flags — but are accepted
+    here so the two functions share one call contract.
     """
+    del run_as_user, run_as_password, run_highest  # consumed by register_task
     is_python = exe_path.name.lower().startswith("python")
 
     if is_python:
@@ -86,6 +138,10 @@ def register_task(
     output_dir: Path,
     run_time: str,
     sftp: bool = False,
+    *,
+    run_as_user: str | None = None,
+    run_as_password: str | None = None,
+    run_highest: bool = True,
 ) -> tuple[bool, str]:
     """Create or replace a Windows scheduled task.
 
@@ -98,6 +154,19 @@ def register_task(
         output_dir: Directory to write CSV files.
         run_time:  Daily run time in "HH:MM" 24-hour format.
         sftp:      If True, appends ``--sftp`` flag to the task command.
+        run_as_user: Windows account the task runs as. Defaults to the current
+                   interactive user (:func:`current_run_as_user`) when a
+                   password is supplied. Validated via
+                   :func:`validate_run_as_user`.
+        run_as_password: The ``run_as_user`` account's Windows password. When
+                   provided, the task is registered to run **whether the user
+                   is logged on or not** (``schtasks /RU /RP``). When omitted,
+                   the task is created with default scope (runs only while the
+                   user is logged on) and no ``/RU /RP /RL`` flags are emitted —
+                   this preserves backward compatibility for existing callers
+                   and dev-mode scheduling. The password is never logged.
+        run_highest: When True and a password is supplied, run with highest
+                   privileges (``/RL HIGHEST``). Ignored without a password.
 
     Returns:
         (success, message)
@@ -107,7 +176,16 @@ def register_task(
     sis_type = validate_sis_type(sis_type)
     validate_run_time(run_time)
 
-    task_run = _build_task_command(exe_path, sis_type, input_dir, output_dir, sftp)
+    task_run = _build_task_command(
+        exe_path,
+        sis_type,
+        input_dir,
+        output_dir,
+        sftp,
+        run_as_user=run_as_user,
+        run_as_password=run_as_password,
+        run_highest=run_highest,
+    )
 
     schtasks_args = [
         "schtasks",
@@ -123,8 +201,21 @@ def register_task(
         run_time,
     ]
 
+    # Run-as: only when a password is supplied. Supplying /RP (and omitting
+    # /IT) is what makes Task Scheduler run the task whether or not the user
+    # is logged on. Without a password we leave the command unchanged so
+    # existing callers and dev-mode scheduling behave exactly as before.
+    if run_as_password:
+        resolved_user = validate_run_as_user(run_as_user or current_run_as_user())
+        schtasks_args += ["/RU", resolved_user, "/RP", run_as_password]
+        if run_highest:
+            schtasks_args += ["/RL", "HIGHEST"]
+
     logger.info(f"Registering Windows scheduled task: {task_name} at {run_time}")
-    # Inputs validated by src/utils/validators.py before reaching here.
+    # Command is logged redacted so the /RP password never reaches the log.
+    logger.debug(f"schtasks command: {_redact_cmd(schtasks_args)}")
+    # Inputs validated by src/utils/validators.py before reaching here; passed
+    # as an argument list (no shell=True) so the password cannot be re-parsed.
     result = subprocess.run(  # nosec B603
         schtasks_args,
         capture_output=True,
@@ -135,7 +226,9 @@ def register_task(
     if success:
         logger.info(f"Task '{task_name}' registered successfully")
     else:
-        logger.error(f"Failed to register task '{task_name}': {message}")
+        # Surface the schtasks stderr (e.g. wrong password) to the caller. The
+        # echoed command is redacted; the password is not in it.
+        logger.error(f"Failed to register task '{task_name}' (command: {_redact_cmd(schtasks_args)}): {message}")
     return success, message
 
 
