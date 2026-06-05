@@ -60,3 +60,17 @@ class TransformContext:
 
     def get_students_config(self) -> dict[str, Any]:
         return self.global_config.get("mappings", {}).get("Students", {})
+
+    def get_demo_student_col(self) -> str:
+        """Demographic student-ID column, resolved from the Students ``User ID`` config.
+
+        The demographic file uses a different student-ID column than the
+        schedule (MyEd BC: "Student Number" vs "Student ID"), so the
+        schedule-targeted Enrollments ID config can't be reused. This is the
+        same value space as ``active_student_ids``; used by Classes (homeroom)
+        and Enrollments (homeroom) to filter to the active roster.
+        """
+        user_id_config = self.get_students_config().get("field_map", {}).get("User ID", "student number")
+        if isinstance(user_id_config, dict):
+            return str(user_id_config.get("column", "student number")).lower()
+        return str(user_id_config).lower()

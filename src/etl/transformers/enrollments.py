@@ -80,15 +80,9 @@ class EnrollmentTransformer(BaseTransformer):
         students_field_map = context.get_students_config().get("field_map", {})
         grade_col = students_field_map.get("Grade", {}).get("column", "grade").lower()
         homeroom_col = students_field_map.get("Homeroom", "homeroom").lower()
-        # The demographic file's student-ID column comes from Students config —
-        # MyEd BC's StudentDemographicInformation uses "Student Number" while
-        # StudentSchedule uses "Student ID", so the Enrollments staff/student
-        # ID config (which targets the schedule) can't be reused here.
-        user_id_config = students_field_map.get("User ID", "student number")
-        if isinstance(user_id_config, dict):
-            demo_student_col = str(user_id_config.get("column", "student number")).lower()
-        else:
-            demo_student_col = str(user_id_config).lower()
+        # The demographic student-ID column comes from Students config (not the
+        # schedule-targeted Enrollments ID config) — see get_demo_student_col.
+        demo_student_col = context.get_demo_student_col()
 
         if grade_col in student_demo_df.columns:
             student_demo_df[grade_col] = student_demo_df[grade_col].apply(self.grade_to_ceds)
