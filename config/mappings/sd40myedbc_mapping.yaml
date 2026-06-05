@@ -6,7 +6,7 @@ sis: MyEducationBC
 district_name: SD40 - New Westminster School District
 global_config:
   school_year_sources:
-    student_schedule: SD40-StudentSchedule.csv
+    student_schedule: SD-40_StudentSchedule.csv
   # SD40 tracks attendance in MyEd BC via dedicated ATT--* rows.
   # These are SIS-internal bookkeeping (AM/PM/Daily check-ins) and
   # shouldn't surface as separate classes in SpacesEDU.
@@ -33,13 +33,13 @@ mappings:
       emergency_contacts: SD-40_StudentEmergencyContact.csv
   Classes:
     source_files:
-      student_schedule: SD40-StudentSchedule.csv
+      student_schedule: SD-40_StudentSchedule.csv
       course_info: SD-40_CourseInformation.csv
       staff_info: SD-40_StaffInformation.csv
       student_demographic: SD-40_StudentDemographic.csv
       class_info: SD-40_ClassInformation.csv
     headers:
-      SD40-StudentSchedule.csv:
+      SD-40_StudentSchedule.csv:
       - School Year
       - School Number
       - Student Number
@@ -62,7 +62,7 @@ mappings:
       - Enrolment Status
   Enrollments:
     source_files:
-      student_schedule: SD40-StudentSchedule.csv
+      student_schedule: SD-40_StudentSchedule.csv
       student_demographic: SD-40_StudentDemographic.csv
     field_map:
       User ID:
@@ -70,7 +70,7 @@ mappings:
       Role:
         student_id_col: Student Number
     headers:
-      SD40-StudentSchedule.csv:
+      SD-40_StudentSchedule.csv:
       - School Year
       - School Number
       - Student Number
