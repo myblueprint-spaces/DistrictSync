@@ -107,7 +107,7 @@ class BaseTransformer(ABC):
     # SD40's injected headers ("Enrolment Status"). None when neither present.
     DEFAULT_STATUS_COLUMN_ALIASES: tuple[str, ...] = ("enrollment status", "enrolment status")
     DEFAULT_WITHDRAW_DATE_COLUMN: str = "withdraw date"
-    DEFAULT_ACTIVE_VALUES: tuple[str, ...] = ("Active", "PreReg")
+    DEFAULT_ACTIVE_VALUES: tuple[str, ...] = ("Active",)
     _WITHDRAW_DATE_FORMATS: tuple[str, ...] = ("%d-%b-%Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y")
 
     @classmethod

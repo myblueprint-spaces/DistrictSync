@@ -72,9 +72,10 @@ mappings:
       #     frame; covers both real two-L and one-L exports). None -> date-only.
       #   - withdraw_date_column: "Withdraw date" (a past date is a HARD
       #     override to Inactive even when status is active).
-      #   - active_values: ["Active", "PreReg"] (PreReg is retained).
-      # Override per-district with a dict, e.g.:
-      #   EnrollStatus: {status_column: "Status", active_values: ["Active"]}
+      #   - active_values: ["Active"] (PreReg/Inactive/etc. excluded, per
+      #     docs/partner/faq.md). A past withdraw date still overrides to Inactive.
+      # Override per-district with a dict, e.g. to roster upcoming-year PreRegs:
+      #   EnrollStatus: {active_values: ["Active", "PreReg"]}
       "EnrollStatus":
       "SchoolCode": "School Number"
       "Homeroom": "Homeroom"

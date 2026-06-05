@@ -257,7 +257,7 @@ class TestResolveActiveConfig:
         status, withdraw, active = BaseTransformer.resolve_active_config({"EnrollStatus": None}, cols)
         assert status == "enrollment status"  # two-L preferred (listed first)
         assert withdraw == "withdraw date"
-        assert active == ["Active", "PreReg"]
+        assert active == ["Active"]  # PreReg excluded by default (faq.md)
 
     def test_defaults_pick_one_l_alias_when_only_one_present(self):
         cols = ["student number", "enrolment status"]
@@ -300,10 +300,18 @@ class TestComputeEnrollStatus:
         df = pd.DataFrame({"enrolment status": ["Withdrawn"], "student number": ["S1"]})
         assert list(_status(df)) == ["Inactive"]
 
-    def test_prereg_is_active(self):
+    def test_prereg_inactive_by_default(self):
+        # PreReg is not in DEFAULT_ACTIVE_VALUES → labeled Inactive, dropped by the mask (faq.md).
         df = pd.DataFrame({"enrolment status": ["PreReg"], "student number": ["S1"]})
-        assert list(_status(df)) == ["PreReg"]
-        assert list(_mask(df)) == [True]
+        assert list(_status(df)) == ["Inactive"]
+        assert list(_mask(df)) == [False]
+
+    def test_prereg_active_when_opted_in(self):
+        # A district can opt PreReg back in via active_values.
+        df = pd.DataFrame({"enrolment status": ["PreReg"], "student number": ["S1"]})
+        fm = {"EnrollStatus": {"active_values": ["Active", "PreReg"]}}
+        assert list(_status(df, fm)) == ["PreReg"]
+        assert list(_mask(df, fm)) == [True]
 
     def test_date_only_back_compat(self):
         df = pd.DataFrame({"withdraw date": ["", "15-Jan-2020", "2099-12-31"], "student number": ["A", "B", "C"]})
