@@ -156,9 +156,9 @@ Base `myedbc` defines all 7 entity templates; configs select which to emit via `
 
 ## Key Data Flow
 
-- **Students** — Filtered to active-only (enrollment status "Active"/"PreReg", or no withdrawal date). Withdrawal dates parsed in 4 formats.
+- **Students** — Filtered to active-only via the config-driven predicate in `BaseTransformer` (`is_active_mask`): status ∈ `active_values` (default `["Active"]`; PreReg/etc. excluded, `EnrollStatus.active_values` overrides) AND no past withdraw date (hard override, 4 formats). Publishes the active roster to `context.active_student_ids`.
 - **Classes** — Join schedule + course info + staff info + optionally class info (for blended). Homeroom classes auto-generated for configured grades. Class names truncated to 100 chars.
-- **Enrollments** — Homeroom + subject + blended teacher enrollments. Deduplicated on Class ID + User ID + Role. Invalid teacher IDs ("nan", blank) filtered out.
+- **Enrollments** — Homeroom + subject + blended teacher enrollments. Deduplicated on Class ID + User ID + Role. Invalid teacher IDs ("nan", blank) filtered out. **Zero-orphan invariant:** student rows (homeroom + subject) + homeroom-class creation are filtered to `context.active_student_ids` via `BaseTransformer.filter_to_active`, so no enrollment/class references a student absent from `Students.csv`; teacher rows are not filtered.
 - **Anomaly detection** — Warns if any entity drops >20% vs previous run output
 - **Structured logging** — `__DISTRICTSYNC_RUN__` JSON emitted after each run with timing, counts, SFTP status
 - All entity transformations use pandas DataFrames with `.copy()` to avoid mutation side effects

@@ -37,6 +37,8 @@ Status: `NEXT` (queued) · `LATER` · `PLAN <NNNN>` (plan drafted) · `DONE`.
 | T3.8 | DRY idioms: `resolve_column()` helper (×12), shared `DATE_FORMATS` (×3), `step_labels()` in brand.py (×2), `footer()` (×4), `sys.path` bootstrap (×6). | DRY | LATER |
 | T3.9 | Document `_deep_merge` list-replace semantics (contradicts "extend enabled_entities" prose). | KISS | NEXT |
 | T3.10 | `classify_field` is not idempotent — re-validating an `EntityConfig` that already holds typed `Field*` values (e.g. a freshly-constructed `MappingConfig(mappings={"X": EntityConfig(...)})`) stringifies them (the `not isinstance(raw, dict)` → `str(raw)` branch). Harmless on the real `load_config` raw-dict path; surfaced building configs in code (plan 0003). Likely subsumed by T1.1 (which deletes `classify_field`); otherwise make it a no-op for already-typed values. | Fail-loudly | LATER |
+| T3.11 | **`Family.csv` active filtering.** Family references `Student Number` from `EmergencyContactInformation` (not the demographic), so it can still emit contacts for withdrawn students — plan 0003's zero-orphan invariant covers Enrollments/Classes but not Family. Filter Family student refs to `context.active_student_ids` too. | Data integrity | LATER |
+| T3.12 | **`StudentCourses` active filtering.** Transcripts are not filtered to the active roster (out of scope for plan 0003). Decide whether inactive students' course history should be emitted; if not, filter to `active_student_ids`. | Data integrity | LATER |
 
 ## Process / hygiene (non-architecture)
 
@@ -45,3 +47,5 @@ Status: `NEXT` (queued) · `LATER` · `PLAN <NNNN>` (plan drafted) · `DONE`.
 | `.gitattributes` (`* text=auto eol=lf`) + one normalization commit to end CRLF churn. | NEXT |
 | Verify `PreRegSchoolCode` → "Next school code" against a real GDE header; add a test (else it silently blanks). | NEXT |
 | Refine the 3 flagged `ARCHITECTURE_TREE.md` descriptions (`launcher.py`, `helpers.build_zip_name`, `tests/snapshots/config/`). | NEXT |
+| Surface schedule students absent from the demographic (e.g. SD48 `2644905`) as a data-quality warning — plan 0003's active filter silently drops their enrollment; a genuinely-active such student is a source gap worth flagging. | NEXT |
+| Decide whether cross-school duplicate student rows in `Students.csv` (same `User ID`, different `SchoolCode` — ~1,263 on SD48) are intended for the SpacesEDU import, or should be deduped/documented. Pre-existing; surfaced in plan 0003. | NEXT |

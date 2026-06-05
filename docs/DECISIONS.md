@@ -2,6 +2,12 @@
 
 Dated, one-line records of non-trivial decisions. **Append newest at the top.** Consult before re-litigating a past choice (see CLAUDE.md → Harness Discipline).
 
+## 2026-06-05 — Plan 0003 verification + import model (full-snapshot, upsert)
+
+- **Verified end-to-end on real SD48 GDE data** (after rebasing onto the post-mbponly/extractor main): roster 7,922 → 7,543 (−379 = 50 inactive-without-withdraw-date leak + 329 PreReg, all verifiably non-active); orphaned student enrollments 405 → 0 on a full `--sis sd48myedbc` run (not just fixtures), stable under the rewritten extractor. SD74 snapshot byte-identical.
+- **GDEs are full snapshots, not deltas.** Of 6,278 students in the SD48 schedule, all but 1 are present in the demographic extract — so the orphans were withdrawn/inactive students *in* the extract (removed by the active rule), not active students missing from a delta. The 1 exception (`2644905` — in the schedule, absent from the demographic) is a source-data gap → ROADMAP.
+- **SpacesEDU import is upsert/unenroll-style** (`docs/partner/faq.md`): it preserves existing classes, adds new enrollments, and *unenrolls* students who drop out of `Enrollments.csv`. So dropping a withdrawn student's enrollment cleanly **unenrolls** them — which is *why* the zero-orphan filter is correct (the intended outcome), not merely "avoids import errors".
+
 ## 2026-06-05 — Zero-orphan enrollments (plan 0003, Slice 2)
 
 - **Zero-orphan invariant via a published active roster.** `StudentTransformer` publishes its filtered output's `User ID` set to `context.active_student_ids` (so `active_student_ids == set(Students.User ID)` by construction); `classes.py` (homeroom) and `enrollments.py` (homeroom + subject) then filter their *student* rows to that set. Result: no enrollment or homeroom class references a student absent from `Students.csv`. Verified on an SD48-shaped fixture: 3 orphans (2 homeroom + 1 subject) → 0. The single filter helper is `BaseTransformer.filter_to_active(df, student_col, context, caller)` — both consumers call it (DRY); chosen over re-deriving "is active" at each read site (would drift from the roster). Demographic `Student Number` and schedule `Student ID` share the pupil-number value space; both sides normalized with `astype(str).str.strip()`.
