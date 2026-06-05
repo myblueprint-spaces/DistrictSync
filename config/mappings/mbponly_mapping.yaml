@@ -1,0 +1,19 @@
+# mbponly — only the two myBlueprint+ CSVs (CourseInfo + StudentCourses).
+#
+# Use case: a district that is already using OneRoster for students, and wants to use
+# the tool to feed myBlueprint+ course information and student courses ONLY — no student
+# roster, staff, family, or class enrollments. Unlike mbp_core (which also
+# emits Students), this emits nothing but CourseInfo.csv and StudentCourses.csv,
+# so the only GDEs required are CourseInformation.txt, StudentCourseHistory.txt,
+# and StudentCourseSelection.txt (see extract_required_files, which filters by
+# enabled_entities). All column mappings and course-code rules are inherited
+# from the base myedbc config unchanged.
+_base: myedbc
+version: '1.0'
+sis: MyEducationBC
+district_name: myBlueprint+ only
+
+global_config:
+  enabled_entities:
+    - CourseInfo
+    - StudentCourses

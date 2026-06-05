@@ -1,0 +1,2 @@
+School Year,School Number,Student Number,Student Legal Last Name,Student Legal First Name,Grade,Teacher Name,Semester,Course Code,How Taken Description,Section,Master Timetable ID,DL Start Date,DL Course Active Date,DL Completion Date,Teacher ID
+2025,7479001,4000002,Sample,Studentb,10,"Teach, Erfirst",S1,MEN--10,,S1,MST00000A0001,05-Sep-2026,,,T100
