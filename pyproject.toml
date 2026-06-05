@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "districtsync"
-version = "2.5.5"
+version = "3.1.1"
 authors = [{name = "Shan Peiris", email = "shan.peiris@myblueprint.ca"}]
 description = "SIS Data ETL Tool - Converts General Data Extracts to SpacesEDU Advanced CSV"
 readme = "README.md"

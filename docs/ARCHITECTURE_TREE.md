@@ -95,6 +95,7 @@ _Last generated from `main` @ c669404._
 - `config/mappings/sd40myedbc_mapping.yaml` — SD40 New Westminster override (`_base: myedbc`): CSV source file names, headerless schedule with injected column headers, `{student number}@newwestschools.ca` email, `excluded_course_codes` for ATT--AM/PM/Daily attendance rows.
 - `config/mappings/sd48myedbc_mapping.yaml` — SD48 Sea to Sky override (`_base: myedbc`): remaps to `StudentDemographicEnhanced.txt` and `StaffInformation.txt`; no other deviations from base.
 - `config/mappings/sd51myedbc_mapping.yaml` — SD51 Boundary override (`_base: myedbc`): `StudentDemographicEnhanced.txt`, `{student number}@sd51.bc.ca` email, fixed hardcoded academic start/end dates (bypasses auto-detection).
+- `config/mappings/sd54myedbc_mapping.yaml` — SD54 Bulkley Valley override (`_base: myedbc`): lowercase source filenames (`studentschedule.txt`, `courseinformation.txt`, `staffinformation.txt`, `classinformationenhanced.txt`), `{legal surname}.{usual first name}@sd54.bc.ca` email, `excluded_course_codes` for ATT--AM/PM/Daily; academic dates auto-derive from schedule School Year (no overrides).
 - `config/mappings/sd74myedbc_mapping.yaml` — SD74 Gold Trail override (`_base: myedbc`): swapped legal/usual name fields, `{student number}@sd74.bc.ca` email, `studentcourseselection.txt` as schedule source, `ClassInfoEnhanced.txt`, `ParentInformation.txt`, fixed academic dates.
 - `config/mappings/mbp_all_mapping.yaml` — myBlueprint+ full tier (`_base: myedbc`): extends `enabled_entities` to all 7 (adds CourseInfo + StudentCourses on top of the standard 5 rostering CSVs).
 - `config/mappings/mbp_core_mapping.yaml` — myBlueprint+ minimal tier (`_base: myedbc`): `enabled_entities` = [Students, CourseInfo, StudentCourses] only; for districts that need course history/selection but not full class rosters.
@@ -103,7 +104,7 @@ _Last generated from `main` @ c669404._
 
 ## Root
 
-- `pyproject.toml` — Project metadata (name=districtsync, version=2.5.5), setuptools build config, pytest settings (addopts, benchmarks deselected, coverage omits), ruff lint/format rules, mypy config, bandit exclusions.
+- `pyproject.toml` — Project metadata (name=districtsync, version=3.1.1), setuptools build config, pytest settings (addopts, benchmarks deselected, coverage omits), ruff lint/format rules, mypy config, bandit exclusions.
 - `Makefile` — Developer shortcuts: `install`, `test`, `test-cov`, `lint`, `fmt`, `ui`, `build-win`, `clean`, `validate-config`, `docs`, `docs-serve`.
 - `requirements.txt` — Runtime dependencies: pandas, PyYAML, python-dateutil, pydantic, paramiko, keyring, streamlit.
 - `requirements-dev.txt` — Dev/CI dependencies: extends requirements.txt with pytest, pytest-cov, ruff, mypy, bandit, types-paramiko, types-PyYAML, hypothesis, pytest-benchmark, and optional UI-test extras (playwright, pytest-sftpserver).
