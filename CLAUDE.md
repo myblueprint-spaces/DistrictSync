@@ -122,7 +122,7 @@ Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. 
 
 ### Web UI (`src/ui/`)
 Multi-page Streamlit app. `Home.py` is the landing page with status dashboard. Pages:
-- `pages/01_Setup_Wizard.py` — 5-step wizard (schedule + SFTP optional). Shows management dashboard post-setup. District names from YAML `district_name` field.
+- `pages/01_Setup_Wizard.py` — 5-step wizard (schedule + SFTP optional). Schedule step (Windows) collects the Windows account password and displays the run-as account (`current_run_as_user()`); passes them to `register_task` so the task runs unattended (blank password → logged-on-only with a visible warning). Step 4 verifies the SFTP credential is readable on this account via `SFTPUploader.get_stored_password()`. Success message reflects the actual run-as account. District names from YAML `district_name` field.
 - `pages/02_Convert.py` — Ad-hoc conversion with session_state persistence, quality report, missing file warnings. Uses `load_config()` with `_base` inheritance.
 - `pages/03_Run_History.py` — Parses `__DISTRICTSYNC_RUN__` JSON log tags for tabular run history
 - `pages/04_Mapping_Editor.py` — 7-step visual wizard for creating/editing district mapping configs without YAML. Uses `mapping_helpers.py` for column detection, override diff, YAML generation.
@@ -130,8 +130,8 @@ Multi-page Streamlit app. `Home.py` is the landing page with status dashboard. P
 
 ### Supporting modules
 - `src/config/app_config.py` — Runtime config (`~/.districtsync/config.json`); SFTP non-sensitive settings. Unix file permissions (0o700/0o600).
-- `src/sftp/uploader.py` — `SFTPUploader` with paramiko SSHClient + OS keyring (both top-level imports). Zips all CSVs into `districtsync_YYYY-MM-DD.zip` before upload. Host restricted to `ALLOWED_SFTP_HOSTS` (3 SpacesEDU servers). Credential setup: wizard Step 4 (`src/ui/pages/01_Setup_Wizard.py`) **and** headless CLI (`--sftp-configure` / `--sftp-test` / `--sftp-show` in `src/main.py`).
-- `src/scheduler/windows.py` — `schtasks.exe` wrapper with input validation via `validators.py`
+- `src/sftp/uploader.py` — `SFTPUploader` with paramiko SSHClient + OS keyring (both top-level imports). Zips all CSVs into `districtsync_YYYY-MM-DD.zip` before upload. Host restricted to `ALLOWED_SFTP_HOSTS` (3 SpacesEDU servers). Credential setup: wizard Step 4 (`src/ui/pages/01_Setup_Wizard.py`) **and** headless CLI (`--sftp-configure` / `--sftp-test` / `--sftp-show` in `src/main.py`). Exposes `get_stored_password() -> str | None` (keyring read used by wizard Step 4 to verify credentials are readable by the current account).
+- `src/scheduler/windows.py` — `schtasks.exe` wrapper with input validation via `validators.py`; `register_task` accepts `run_as_user`/`run_as_password`/`run_highest=True` kwargs — when a password is supplied the task is registered with `/RU <user> /RP <pw> /RL HIGHEST` (runs whether or not the user is logged on); password is redacted to `***` in all logs; `current_run_as_user()` returns `DOMAIN\user`
 - `src/scheduler/linux.py` — crontab wrapper with `shlex.quote()` and sentinel comment
 - `src/etl/column_names.py` — Column name constants (avoid magic strings across transformers)
 - `src/utils/validators.py` — Centralized security: SIS type validation, task name validation, run time validation, SFTP host allowlist, shell quoting
@@ -161,6 +161,8 @@ Base `myedbc` defines all 7 entity templates; configs select which to emit via `
 - **Enrollments** — Homeroom + subject + blended teacher enrollments. Deduplicated on Class ID + User ID + Role. Invalid teacher IDs ("nan", blank) filtered out. **Zero-orphan invariant:** student rows (homeroom + subject) + homeroom-class creation are filtered to `context.active_student_ids` via `BaseTransformer.filter_to_active`, so no enrollment/class references a student absent from `Students.csv`; teacher rows are not filtered.
 - **Anomaly detection** — Warns if any entity drops >20% vs previous run output
 - **Structured logging** — `__DISTRICTSYNC_RUN__` JSON emitted after each run with timing, counts, SFTP status
+- **`run_pipeline` returns `PipelineResult`** (`entity_counts`, `sftp_attempted`, `sftp_ok`, `anomalies`); a requested SFTP upload that fails logs ERROR (`"SFTP upload FAILED — output files were NOT delivered to <host>"`) and `main` exits code **3** (ETL output still written, not rolled back)
+- **Exit codes** — `0` success · `1` ETL/arg/validation error · `2` stdin empty or mutually-exclusive flags · `3` SFTP delivery failed (ETL output present)
 - All entity transformations use pandas DataFrames with `.copy()` to avoid mutation side effects
 
 ## Security

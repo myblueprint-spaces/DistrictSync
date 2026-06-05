@@ -70,6 +70,15 @@ class SFTPUploader:
             logger.error(f"Failed to retrieve SFTP password: {exc}")
             return None
 
+    def get_stored_password(self) -> str | None:
+        """Return the stored SFTP password, or None if not found / unreadable.
+
+        Public wrapper around :meth:`_get_password` for use in the setup wizard
+        to verify the keyring round-trip without re-implementing the storage key
+        logic in the UI layer.
+        """
+        return self._get_password()
+
     # ------------------------------------------------------------------
     # Connection helpers
     # ------------------------------------------------------------------

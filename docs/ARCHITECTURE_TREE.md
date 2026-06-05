@@ -8,7 +8,7 @@ _Last generated from `main` @ c669404._
 
 ## Entry point
 
-- `src/main.py` — CLI entry point: parses argparse flags and dispatches to `run_pipeline` or SFTP subcommands (`--sftp-configure`, `--sftp-test`, `--sftp-show`); re-exports pipeline symbols for backward compatibility; PyInstaller `__main__` target.
+- `src/main.py` — CLI entry point: parses argparse flags and dispatches to `run_pipeline` or SFTP subcommands (`--sftp-configure`, `--sftp-test`, `--sftp-show`); exits code 3 when SFTP delivery fails (`PipelineResult.sftp_attempted and not sftp_ok`); re-exports pipeline symbols for backward compatibility; PyInstaller `__main__` target.
 
 ---
 
@@ -16,7 +16,7 @@ _Last generated from `main` @ c669404._
 
 - `src/etl/extractor.py` — `DataExtractor`: loads each GDE file (CSV/TXT) with multi-encoding fallback (UTF-8 → Latin1 → CP1252) and auto-delimiter detection; normalises column names immediately after load; raises `ExtractionError` on unparse-able files.
 - `src/etl/transformer.py` — `DataTransformer` facade: backward-compatible wrapper that delegates to entity-specific transformers via `TransformContext` and `BlendedClassDetector`; exposes school-year / homeroom state properties for direct test access.
-- `src/etl/pipeline.py` — Core ETL orchestration (`run_pipeline`, `extract_required_files`): coordinates Extractor → Transformer → Loader, anomaly detection, diff, quality report, structured JSON run-log, and optional SFTP upload; lives here (not `main.py`) so it is importable by UI and tests.
+- `src/etl/pipeline.py` — Core ETL orchestration (`run_pipeline`, `extract_required_files`): coordinates Extractor → Transformer → Loader, anomaly detection, diff, quality report, structured JSON run-log, and optional SFTP upload; returns `PipelineResult` dataclass (`entity_counts`, `sftp_attempted`, `sftp_ok`, `anomalies`); logs ERROR and propagates failure so `main` can exit 3 on SFTP failure; importable by UI and tests.
 - `src/etl/loader.py` — `DataLoader`: writes DataFrames as UTF-8 BOM CSVs with YAML-defined field ordering; `save_all()` uses an atomic stage-then-commit pattern (`.tmp_<timestamp>/`) so a mid-write failure leaves existing output intact.
 - `src/etl/column_names.py` — Canonical string constants for GDE source-column names (e.g. `MASTER_TIMETABLE_ID`, `STAFF_SOURCEID`, `COURSE_CODE`) to avoid magic strings across transformers.
 
@@ -52,13 +52,13 @@ _Last generated from `main` @ c669404._
 
 ## src/sftp/
 
-- `src/sftp/uploader.py` — `SFTPUploader`: connects via paramiko SSHClient to a host from the `ALLOWED_SFTP_HOSTS` allowlist; stores/retrieves passwords from the OS keyring (`KEYRING_SERVICE = "DistrictSync_SFTP"`); zips all CSVs into `districtsync_YYYY-MM-DD.zip` before upload; exposes `test_connection()` and `upload_csvs()`.
+- `src/sftp/uploader.py` — `SFTPUploader`: connects via paramiko SSHClient to a host from the `ALLOWED_SFTP_HOSTS` allowlist; stores/retrieves passwords from the OS keyring (`KEYRING_SERVICE = "DistrictSync_SFTP"`); zips all CSVs into `districtsync_YYYY-MM-DD.zip` before upload; exposes `test_connection()`, `upload_csvs()`, and `get_stored_password() -> str | None` (keyring read used to verify credentials are readable by the scheduled-task account).
 
 ---
 
 ## src/scheduler/
 
-- `src/scheduler/windows.py` — Windows Task Scheduler integration: `register_task()` / `query_task()` / `delete_task()` via `schtasks.exe`; validates all inputs through `validators.py` before any subprocess call; supports both frozen-exe and dev-Python modes.
+- `src/scheduler/windows.py` — Windows Task Scheduler integration: `register_task()` / `query_task()` / `delete_task()` via `schtasks.exe`; when `run_as_password` is supplied, registers with `/RU <user> /RP <pw> /RL HIGHEST` (runs unattended whether or not the user is logged on); `current_run_as_user()` returns `DOMAIN\user`; password is redacted to `***` in all logs; validates all inputs through `validators.py` before any subprocess call.
 - `src/scheduler/linux.py` — Linux/macOS cron integration: `register_cron()` / `delete_cron()` append/remove a sentinel-tagged crontab entry via the system `crontab` command; uses `shlex.quote()` for safe shell escaping.
 
 ---
@@ -81,7 +81,7 @@ _Last generated from `main` @ c669404._
 
 ### src/ui/pages/
 
-- `src/ui/pages/01_Setup_Wizard.py` — 5-step guided setup wizard: file paths → district config selection → schedule time → SFTP configuration → summary/activation; registers Windows/Linux scheduler; shows management dashboard post-activation.
+- `src/ui/pages/01_Setup_Wizard.py` — 5-step guided setup wizard: file paths → district config selection → schedule time (Windows: collects account password, displays run-as user, passes to `register_task` for unattended operation; blank password → logged-on-only warning) → SFTP configuration (Step 4 verifies credential readability via `get_stored_password()`) → summary/activation with accurate run-as copy; shows management dashboard post-activation.
 - `src/ui/pages/02_Convert.py` — Ad-hoc conversion page: accepts uploaded GDE files, runs `run_pipeline()`, renders quality report, diff vs previous output, and offers ZIP download and optional SFTP upload.
 - `src/ui/pages/03_Run_History.py` — Run History page: parses `__DISTRICTSYNC_RUN__` JSON log lines from `~/.districtsync/etl_tool.log` into a tabular view; falls back to raw log tail when no structured lines exist.
 - `src/ui/pages/04_Mapping_Editor.py` — 7-step visual Mapping Editor: guides non-technical users through entity selection, file upload + column detection, field mapping, academic calendar, and name/email config; saves a minimal `_base`-inheriting override YAML to `~/.districtsync/mappings/`.
@@ -154,6 +154,8 @@ _Last generated from `main` @ c669404._
 - `tests/test_sftp_cli.py` — SFTP CLI subcommands: `--sftp-configure` (env var + stdin password sources), `--sftp-test`, `--sftp-show`, host allowlist rejection, flag mutual-exclusion.
 - `tests/test_sftp_integration.py` — Live SFTP integration using `pytest-sftpserver` (real paramiko transport); skipped automatically if the package is absent.
 - `tests/test_schedulers.py` — Windows Task Scheduler and Linux cron wrappers with all subprocess calls mocked.
+- `tests/test_scheduler_runas.py` — Unit tests for `register_task` run-as behavior: asserts `/RU /RP /RL HIGHEST` flags when a password is supplied, omitted when not (back-compat), password never appears in captured logs (only `***`), and `validate_run_as_user` accepts/rejects correctly.
+- `tests/test_sftp_exit.py` — CLI exit-code tests for SFTP failure path: asserts exit 3 when SFTP is attempted and fails (with output CSVs still present on disk), exit 0 on success or when `--sftp` is absent, and exit 0 on `--dry-run --sftp` (no upload attempted).
 - `tests/test_registry.py` — Transformer registry: known entity lookup, `DefaultTransformer` fallback for unregistered entities.
 - `tests/test_source_config.py` — Source-config normalisation (`normalize_source_config`) and `get_source_file()` retrieval from context.
 - `tests/test_helpers.py` — `src/utils/helpers.py` utilities: `normalize_columns()`, `ensure_directory()`, `district_slug()`, `build_zip_name()`, etc.

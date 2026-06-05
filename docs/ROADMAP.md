@@ -49,3 +49,13 @@ Status: `NEXT` (queued) · `LATER` · `PLAN <NNNN>` (plan drafted) · `DONE`.
 | Refine the 3 flagged `ARCHITECTURE_TREE.md` descriptions (`launcher.py`, `helpers.build_zip_name`, `tests/snapshots/config/`). | NEXT |
 | Surface schedule students absent from the demographic (e.g. SD48 `2644905`) as a data-quality warning — plan 0003's active filter silently drops their enrollment; a genuinely-active such student is a source gap worth flagging. | NEXT |
 | Decide whether cross-school duplicate student rows in `Students.csv` (same `User ID`, different `SchoolCode` — ~1,263 on SD48) are intended for the SpacesEDU import, or should be deduped/documented. Pre-existing; surfaced in plan 0003. | NEXT |
+| **Unattended scheduled-run reliability** — task runs as setup user with stored password (`/RU /RP /RL HIGHEST`); SFTP failure exits 3; wizard verifies keyring readability. | **DONE** (plan 0002) |
+
+## Scheduled-run reliability follow-ons (LATER)
+
+| Item | Rationale |
+|------|-----------|
+| Service-account / machine-scope secret storage so SYSTEM or a gMSA can run the task (decouples the task from the interactive user's session entirely). | Non-goal for plan 0002; requires reworking `SFTPUploader` to support non-keyring secret sources. |
+| Active alerting (email / Teams webhook) on SFTP failure instead of log-only — so admins are notified without checking Task Scheduler. | Log + exit-code 3 is sufficient for now; push-alerting is a separate integration concern. |
+| Auto-run `--sftp-test` at the end of Setup Wizard to confirm delivery works before the first scheduled run. | Low-effort win deferred to keep Slice 3 scope tight; no blocking reason. |
+| Wizard pre-validates the Windows password before finishing (call `schtasks /Query` or a lightweight auth check) to catch typos earlier. | Currently relies on `schtasks /Create` failing loudly; a pre-check would give a tighter feedback loop. |
