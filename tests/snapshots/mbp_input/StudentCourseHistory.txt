@@ -1,0 +1,3 @@
+School Number,Student Number,Student Legal Last Name,Student Legal First Name,Course Code,Drop Date,How Taken Description,Course Repeat Indicator,Final Mark,Completed Date,DL Start Date,DL Course Active Date,DL Completion Date,District Name,School Name,Full Course Code,Section
+7479001,4000001,Sample,Studenta,MMA--10,,,N,75,30-Jan-2025,05-Sep-2024,,30-Jan-2025,Demo District,Demo School,MMA--10-S1 - A,S1 - A
+7479001,4000001,Sample,Studenta,XGEN-12,,,N,90,30-Jan-2025,05-Sep-2024,,30-Jan-2025,Demo District,Demo School,XGEN-12-S1 - A,S1 - A

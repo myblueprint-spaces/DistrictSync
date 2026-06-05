@@ -640,6 +640,13 @@ class TestEnabledEntities:
             "StudentCourses",
         ]
 
+    def test_mbponly_enables_courses_only(self):
+        cfg = load_config("mbponly")
+        assert cfg.global_config.enabled_entities == [
+            "CourseInfo",
+            "StudentCourses",
+        ]
+
     def test_district_configs_inherit_rostering_default(self):
         """sd40/48/51/74 inherit `enabled_entities` from the base — still the 5 rostering entities."""
         for sis in ("sd40myedbc", "sd48myedbc", "sd51myedbc", "sd74myedbc"):

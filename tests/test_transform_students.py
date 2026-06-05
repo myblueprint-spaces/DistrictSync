@@ -99,6 +99,50 @@ class TestStudentsTransform:
         assert dobs[1] == "2011-03-04"  # already ISO, pass-through
         assert dobs[2] == ""  # empty stays empty
 
+    def test_blank_required_name_coalesces_from_preferred(self, global_config):
+        """When the config maps First/Last Name to sparse columns (SD74-style:
+        primary ← Usual, Preferred ← Legal), a blank required name falls back to the
+        preferred-name value so the Advanced-CSV-required field is never empty.
+        """
+        df = pd.DataFrame(
+            {
+                "student number": ["S001", "S002", "S003"],
+                "legal first name": ["Logan", "Sophia", "Mia"],
+                "legal surname": ["Thompson", "Thomas", "Wilson"],
+                "usual first name": ["Lo", "", ""],  # only S001 has a preferred first name
+                "usual surname": ["", "", ""],  # nobody has a preferred surname
+                "date of birth": ["2010-01-01", "2010-01-01", "2010-01-01"],
+                "grade": ["5", "6", "7"],
+                "school number": ["100", "100", "100"],
+                "homeroom": ["A", "B", "C"],
+                "previous school number": ["", "", ""],
+                "student email address": ["", "", ""],
+                "enrolment status": ["Active", "Active", "Active"],
+            }
+        )
+        # SD74-style swap: primary name ← Usual columns, Preferred name ← Legal columns.
+        mapping = {
+            "source_files": {"student_demographic": "StudentDemographicInformation.txt"},
+            "field_map": {
+                "User ID": "Student Number",
+                "First Name": "Usual First Name",
+                "Last Name": "Usual surname",
+                "Grade": {"column": "Grade", "transform": "grade_to_ceds"},
+                "EnrollStatus": None,
+                "Preferred First Name": "Legal First Name",
+                "Preferred Last Name": "Legal Surname",
+            },
+        }
+        raw_data = {"StudentDemographicInformation.txt": df}
+        result = self.transformer.transform(df, mapping, "Students", raw_data, global_config)
+
+        # First Name: keep the preferred where present (Lo), else fall back to Legal.
+        assert result["First Name"].tolist() == ["Lo", "Sophia", "Mia"]
+        # Last Name: Usual surname is blank for all → fall back to Legal surname.
+        assert result["Last Name"].tolist() == ["Thompson", "Thomas", "Wilson"]
+        # The preferred columns themselves are untouched.
+        assert result["Preferred First Name"].tolist() == ["Logan", "Sophia", "Mia"]
+
     def test_email_generation_when_format_configured(self, global_config):
         df = pd.DataFrame(
             {

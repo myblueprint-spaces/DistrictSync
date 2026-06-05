@@ -52,7 +52,16 @@ Use `--sis` to select a district-specific mapping:
 | `sd40myedbc` | SD40 (New Westminster) |
 | `sd48myedbc` | SD48 (Sea to Sky) |
 | `sd51myedbc` | SD51 (Boundary) |
+| `sd54myedbc` | SD54 (Bulkley Valley) |
 | `sd74myedbc` | SD74 (Gold Trail) |
+
+For districts feeding **myBlueprint+** course data, three tier configs select which CSVs to emit (all inherit `_base: myedbc`):
+
+| Flag | Emits |
+|------|-------|
+| `mbp_all` | All 7 (5 rostering + CourseInfo + StudentCourses) |
+| `mbp_core` | Students + CourseInfo + StudentCourses |
+| `mbponly` | CourseInfo + StudentCourses only |
 
 New district configs can be created via the **Mapping Editor** in the web UI, or by hand in `config/mappings/`. Configs support `_base` inheritance — override only what differs from the default.
 

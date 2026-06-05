@@ -25,6 +25,7 @@ class StudentTransformer(BaseTransformer):
         result = self.apply_field_map(working, result, field_map, "Students", context)
         if "Date of Birth" in result.columns:
             result["Date of Birth"] = result["Date of Birth"].apply(self.normalize_iso_date)
+        self._coalesce_required_names(result)
 
         # Publish the active roster (zero-orphan invariant). `result` is already
         # filtered to active-only, so this IS the Students.csv `User ID` set by
@@ -37,20 +38,40 @@ class StudentTransformer(BaseTransformer):
 
         return result
 
+    @staticmethod
+    def _coalesce_required_names(result: pd.DataFrame) -> None:
+        """Fill blank First/Last Name from the preferred-name columns, in place.
+
+        First Name and Last Name are required by the Advanced CSV spec. Some
+        districts (e.g. SD74) map the primary name to the Usual/preferred columns,
+        which can be blank, and map the Preferred-name output to the populated Legal
+        columns. When that leaves a required name blank but a preferred-name value is
+        available, fall back to it so the required field is never empty needlessly.
+        """
+        for primary, fallback in (
+            ("First Name", "Preferred First Name"),
+            ("Last Name", "Preferred Last Name"),
+        ):
+            if primary not in result.columns or fallback not in result.columns:
+                continue
+            is_blank = result[primary].isna() | result[primary].astype(str).str.strip().str.lower().isin(["", "nan"])
+            result.loc[is_blank, primary] = result.loc[is_blank, fallback]
+
     def _determine_enrollment_status(self, working: pd.DataFrame, field_map: dict[str, Any]) -> None:
         """Set the 'EnrollStatus' column in-place via the shared base predicate.
 
         Source column names (status / withdraw date) and the active-value set
         resolve from the Students ``EnrollStatus`` config (Configurable
         Columns); MyEd BC defaults apply when unconfigured. ``PreReg`` is
-        retained as active; a past withdraw date is a hard override to
-        Inactive. See ``BaseTransformer.compute_enroll_status``.
+        excluded by default (overridable via ``active_values``); a past withdraw
+        date is a hard override to Inactive. See
+        ``BaseTransformer.compute_enroll_status``.
         """
         working["EnrollStatus"] = self.compute_enroll_status(working, field_map)
 
     @classmethod
     def _filter_active(cls, working: pd.DataFrame, field_map: dict[str, Any]) -> pd.DataFrame:
-        """Keep rows whose EnrollStatus is not Inactive (Active + PreReg).
+        """Keep rows whose EnrollStatus is not Inactive (Active by default).
 
         Logs the dropped count with a per-source-status breakdown so a district
         can see *why* rows were removed (e.g. Withdrawn vs Graduate) when a
