@@ -98,6 +98,21 @@ class ClassTransformer(BaseTransformer):
             student_demo_df[teacher_id_col] = student_demo_df[teacher_id_col].astype(str).str.strip()
 
         students_field_map = context.get_students_config().get("field_map", {})
+
+        # Drop inactive students before building homerooms so no homeroom class
+        # is created solely from withdrawn/inactive students (zero-orphan
+        # invariant). The demographic student-ID column comes from Students
+        # config `User ID` (e.g. "Student Number") — the same value space as the
+        # published active roster. Mirrors enrollments.py's demo_student_col.
+        user_id_config = students_field_map.get("User ID", "student number")
+        if isinstance(user_id_config, dict):
+            demo_student_col = str(user_id_config.get("column", "student number")).lower()
+        else:
+            demo_student_col = str(user_id_config).lower()
+        student_demo_df = self.filter_to_active(student_demo_df, demo_student_col, context, caller="Classes")
+        if student_demo_df.empty:
+            return
+
         grade_config = students_field_map.get("Grade", {})
         grade_col = grade_config.get("column", "grade").lower() if isinstance(grade_config, dict) else "grade"
         student_demo_df[grade_col] = student_demo_df[grade_col].apply(self.grade_to_ceds)

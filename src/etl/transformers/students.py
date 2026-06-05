@@ -25,6 +25,16 @@ class StudentTransformer(BaseTransformer):
         result = self.apply_field_map(working, result, field_map, "Students", context)
         if "Date of Birth" in result.columns:
             result["Date of Birth"] = result["Date of Birth"].apply(self.normalize_iso_date)
+
+        # Publish the active roster (zero-orphan invariant). `result` is already
+        # filtered to active-only, so this IS the Students.csv `User ID` set by
+        # construction — Classes (homeroom) and Enrollments (homeroom + subject)
+        # filter their student rows against it so none references a non-rostered
+        # student. Same value space as the schedule's `Student ID` (pupil
+        # numbers); normalized so the cross-frame join matches.
+        if "User ID" in result.columns:
+            context.active_student_ids = set(result["User ID"].astype(str).str.strip())
+
         return result
 
     def _determine_enrollment_status(self, working: pd.DataFrame, field_map: dict[str, Any]) -> None:

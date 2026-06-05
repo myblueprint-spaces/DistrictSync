@@ -254,6 +254,40 @@ class BaseTransformer(ABC):
         return cls.compute_enroll_status(df, students_field_map) != "Inactive"
 
     @staticmethod
+    def filter_to_active(
+        df: pd.DataFrame,
+        student_col: str,
+        context: TransformContext,
+        caller: str = "Enrollments",
+    ) -> pd.DataFrame:
+        """Keep only rows whose ``student_col`` is in the active roster.
+
+        Single source of truth for the zero-orphan filter: both the homeroom
+        (demographic) and subject (schedule) student-row derivations route
+        through here so no emitted student row references a ``User ID`` absent
+        from ``Students.csv``. The roster is ``context.active_student_ids`` —
+        published by :class:`StudentTransformer` from its filtered output.
+
+        Matching normalizes both sides with ``astype(str).str.strip()`` because
+        the demographic ``Student Number`` and schedule ``Student ID`` carry the
+        same pupil-number values but may differ in incidental whitespace.
+
+        Fail-safe (never filter-to-empty): when the roster is empty (Students
+        disabled or ran later) or ``student_col`` is absent, log a WARNING and
+        return ``df`` unchanged rather than dropping every row. ``caller`` names
+        the consumer in that warning.
+
+        Returns a new frame (copy) so callers own it and can mutate columns
+        without a ``SettingWithCopyWarning``, matching the other ``filter_*``
+        helpers here.
+        """
+        if not context.active_student_ids or student_col not in df.columns:
+            logger.warning(f"[{caller}] active_student_ids empty — skipping active filter")
+            return df
+        normalized = df[student_col].astype(str).str.strip()
+        return df[normalized.isin(context.active_student_ids)].copy()  # type: ignore[return-value]
+
+    @staticmethod
     def normalize_iso_date(value: Any) -> str:
         """Convert various date formats to ISO 8601 (yyyy-mm-dd).
 

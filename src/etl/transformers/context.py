@@ -21,6 +21,13 @@ class TransformContext:
     raw_data: dict[str, pd.DataFrame] = field(default_factory=dict)
     global_config: dict[str, Any] = field(default_factory=dict)
 
+    # Active roster: normalized `User ID` strings of the students retained by
+    # StudentTransformer (its filtered output). Published by Students and read
+    # by Classes (homeroom) + Enrollments (homeroom + subject) to guarantee no
+    # output row references a student absent from Students.csv (zero-orphan
+    # invariant). Empty until Students runs — consumers must guard for that.
+    active_student_ids: set[str] = field(default_factory=set)
+
     # Cross-entity state: populated by ClassTransformer, consumed by EnrollmentTransformer
     homeroom_classes_df: pd.DataFrame = field(default_factory=pd.DataFrame)
     class_info_df: pd.DataFrame = field(default_factory=pd.DataFrame)

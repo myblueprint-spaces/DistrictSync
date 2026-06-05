@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 
 from src.etl.transformers.base import BaseTransformer
+from src.etl.transformers.context import TransformContext
 
 SD62_PATTERNS = [r"^.{5}-K", r"^.{5}0\d", r"^X", r"^ATT"]
 SD62_FLAVORS = ["HUB", "HOL", "DL", "---"]
@@ -371,6 +372,60 @@ class TestComputeEnrollStatus:
     def test_empty_frame_returns_empty_series(self):
         df = pd.DataFrame({"enrolment status": pd.Series([], dtype="object")})
         assert list(_status(df)) == []
+
+
+class TestFilterToActive:
+    """`filter_to_active` — single source of truth for the zero-orphan filter.
+
+    Both the homeroom (demographic) and subject (schedule) student-row
+    derivations route through this helper, so no emitted student row references
+    a `User ID` absent from Students.csv.
+    """
+
+    def _ctx(self, ids):
+        ctx = TransformContext()
+        ctx.active_student_ids = set(ids)
+        return ctx
+
+    def test_keeps_only_active_rows(self):
+        df = pd.DataFrame({"student number": ["S001", "S002", "S003"], "x": [1, 2, 3]})
+        out = BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001", "S003"}))
+        assert list(out["student number"]) == ["S001", "S003"]
+
+    def test_normalizes_whitespace_both_sides(self):
+        # Frame values carry incidental whitespace; the roster set is trimmed.
+        df = pd.DataFrame({"student number": [" S001 ", "S002"], "x": [1, 2]})
+        out = BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001"}))
+        assert list(out["x"]) == [1]
+
+    def test_empty_roster_returns_unchanged_and_warns(self, caplog):
+        df = pd.DataFrame({"student number": ["S001", "S002"]})
+        with caplog.at_level("WARNING"):
+            out = BaseTransformer.filter_to_active(df, "student number", self._ctx(set()), caller="Classes")
+        # Never filter-to-empty: all rows survive.
+        assert len(out) == 2
+        assert any("active_student_ids empty" in r.message for r in caplog.records)
+        assert any("[Classes]" in r.message for r in caplog.records)
+
+    def test_missing_column_returns_unchanged_and_warns(self, caplog):
+        df = pd.DataFrame({"other col": ["S001"]})
+        with caplog.at_level("WARNING"):
+            out = BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001"}))
+        assert len(out) == 1
+        assert any("active_student_ids empty" in r.message for r in caplog.records)
+
+    def test_returns_copy_safe_to_mutate(self):
+        df = pd.DataFrame({"student number": ["S001", "S002"], "grade": ["K", "1"]})
+        out = BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001"}))
+        out.loc[out.index[0], "grade"] = "MUTATED"
+        # Source frame is untouched (no shared view).
+        assert "MUTATED" not in df["grade"].values
+
+    def test_caller_label_in_warning(self, caplog):
+        df = pd.DataFrame({"student number": ["S001"]})
+        with caplog.at_level("WARNING"):
+            BaseTransformer.filter_to_active(df, "student number", self._ctx(set()), caller="Enrollments")
+        assert any("[Enrollments]" in r.message for r in caplog.records)
 
 
 class TestPastWithdrawDate:
