@@ -66,7 +66,16 @@ mappings:
       "Grade":
         column: "Grade"
         transform: "grade_to_ceds"
-      "EnrollStatus": #auto detected from Enrollment Status or Withdrawal Date fields
+      # Active-student detection. `null` keeps MyEd BC defaults:
+      #   - status column auto-resolved from the alias
+      #     ["Enrollment status", "Enrolment status"] (first present in the
+      #     frame; covers both real two-L and one-L exports). None -> date-only.
+      #   - withdraw_date_column: "Withdraw date" (a past date is a HARD
+      #     override to Inactive even when status is active).
+      #   - active_values: ["Active", "PreReg"] (PreReg is retained).
+      # Override per-district with a dict, e.g.:
+      #   EnrollStatus: {status_column: "Status", active_values: ["Active"]}
+      "EnrollStatus":
       "SchoolCode": "School Number"
       "Homeroom": "Homeroom"
       "PreRegSchoolCode": "Next school code"

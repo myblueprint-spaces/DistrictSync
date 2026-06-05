@@ -35,20 +35,21 @@ class TestEnrollmentStatusFromField:
         assert len(result) == 1
 
     def test_prereg_kept(self):
-        """PreReg students should NOT be filtered out."""
+        """PreReg students are RETAINED (active).
+
+        Inverted from the pre-fix behavior (which filtered PreReg out via a
+        ``== "Active"`` filter). PreReg is in the default ``active_values``;
+        the active mask is ``label != "Inactive"``, so PreReg survives.
+        See DECISIONS: "PreReg retained as active".
+        """
         df = pd.DataFrame(
             {
                 "enrolment status": ["PreReg"],
                 "student number": ["S001"],
             }
         )
-        # PreReg is kept as-is, but the filter keeps only "Active" —
-        # so PreReg WILL be filtered. Let's verify current behavior.
         result = self._transform_students(df)
-        # Current code: only "Active" and "PreReg" are kept as-is,
-        # but filter is `working["EnrollStatus"] == "Active"`.
-        # So PreReg is actually filtered OUT. This documents current behavior.
-        assert len(result) == 0
+        assert len(result) == 1
 
     def test_inactive_filtered(self):
         df = pd.DataFrame(

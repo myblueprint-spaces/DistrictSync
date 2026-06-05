@@ -14,9 +14,11 @@ class TestStudentsTransform:
         result = self.transformer.transform(
             student_demographic_df, students_mapping, "Students", raw_data, global_config
         )
-        # All 6 Active students kept (PreReg Grace is filtered because filter is == "Active")
-        active_count = len(student_demographic_df[student_demographic_df["enrolment status"] == "Active"])
-        assert len(result) == active_count
+        # Inverted from pre-fix: PreReg Grace (S007) is now RETAINED alongside
+        # the 6 Active rows — PreReg is in the default active_values and the
+        # mask is `label != "Inactive"`. See DECISIONS: "PreReg retained".
+        active_or_prereg = student_demographic_df["enrolment status"].isin(["Active", "PreReg"])
+        assert len(result) == int(active_or_prereg.sum())
 
         # Verify expected output columns from field_map
         for field in students_mapping["field_map"]:
@@ -33,7 +35,12 @@ class TestStudentsTransform:
         assert "07" in grades  # 7 → 07
 
     def test_inactive_students_excluded(self, students_mapping, global_config):
-        """Students with Inactive status should not appear in output."""
+        """Students with Inactive status should not appear in output.
+
+        Exercises the one-L ``"enrolment status"`` spelling, which the
+        predicate's status-column alias still honors (the alias covers both
+        the one-L repo/SD40 spelling and the two-L real MyEd export header).
+        """
         df = pd.DataFrame(
             {
                 "student number": ["S001", "S002", "S003"],

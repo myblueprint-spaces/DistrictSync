@@ -95,6 +95,164 @@ class BaseTransformer(ABC):
         val = str(teaching_flag).strip().lower()
         return "teacher" if val == "y" else "administrator"
 
+    # -----------------------------------------------------------------------
+    # Active-student detection (single source of truth — used by Students for
+    # roster filtering and, in a later slice, by Classes/Enrollments to drop
+    # orphan rows). Source column names resolve from the Students field_map
+    # (Configurable Columns rule); MyEd BC defaults apply when unconfigured.
+    # -----------------------------------------------------------------------
+    # Default status-column alias. Resolution picks the first spelling present
+    # in the (normalized, lower-cased) frame: real two-L MyEd exports
+    # ("Enrollment status") AND the one-L spelling used by the repo fixtures /
+    # SD40's injected headers ("Enrolment Status"). None when neither present.
+    DEFAULT_STATUS_COLUMN_ALIASES: tuple[str, ...] = ("enrollment status", "enrolment status")
+    DEFAULT_WITHDRAW_DATE_COLUMN: str = "withdraw date"
+    DEFAULT_ACTIVE_VALUES: tuple[str, ...] = ("Active", "PreReg")
+    _WITHDRAW_DATE_FORMATS: tuple[str, ...] = ("%d-%b-%Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y")
+
+    @classmethod
+    def resolve_active_config(
+        cls,
+        students_field_map: dict[str, Any],
+        df_columns: Any,
+    ) -> tuple[Optional[str], str, list[str]]:
+        """Resolve (status_column, withdraw_date_column, active_values).
+
+        Reads the Students ``EnrollStatus`` config. When it is a dict, pulls
+        ``status_column`` / ``withdraw_date_column`` / ``active_values`` (any
+        absent key falls back to the default). When it is the bare-null
+        sentinel (or absent), MyEd BC defaults apply:
+
+        - ``status_column``: first of :attr:`DEFAULT_STATUS_COLUMN_ALIASES`
+          **present in** ``df_columns`` (``None`` if neither → date-only).
+        - ``withdraw_date_column``: :attr:`DEFAULT_WITHDRAW_DATE_COLUMN`.
+        - ``active_values``: list(:attr:`DEFAULT_ACTIVE_VALUES`).
+
+        A *configured* ``status_column`` string is honored verbatim (lower-cased
+        to match normalized frames) and still presence-checked against the
+        frame; it resolves to ``None`` when absent so detection falls through
+        to the withdraw-date branch rather than raising.
+        """
+        present = {str(c).strip().lower() for c in df_columns}
+        config = students_field_map.get("EnrollStatus")
+
+        status_column: Optional[str] = None
+        withdraw_date_column = cls.DEFAULT_WITHDRAW_DATE_COLUMN
+        active_values = list(cls.DEFAULT_ACTIVE_VALUES)
+        configured_status_col = False
+
+        if isinstance(config, dict):
+            raw_status = config.get("status_column")
+            if raw_status:
+                status_column = str(raw_status).strip().lower()
+                configured_status_col = True
+            raw_withdraw = config.get("withdraw_date_column")
+            if raw_withdraw:
+                withdraw_date_column = str(raw_withdraw).strip().lower()
+            raw_active = config.get("active_values")
+            if raw_active:
+                active_values = [str(v) for v in raw_active]
+
+        if not configured_status_col:
+            status_column = next((alias for alias in cls.DEFAULT_STATUS_COLUMN_ALIASES if alias in present), None)
+        elif status_column not in present:
+            # Configured but absent from this frame — fall through to date branch.
+            status_column = None
+
+        return status_column, withdraw_date_column, active_values
+
+    @classmethod
+    def _classify_withdraw(cls, value: Any, today: date) -> tuple[bool, bool]:
+        """Classify a withdraw-date cell as ``(is_withdrawn, was_unparseable)``.
+
+        - Blank / NaN → ``(False, False)`` (no withdrawal).
+        - Parses to a date on/before ``today`` → ``(True, False)``.
+        - Parses to a future date → ``(False, False)`` (still enrolled).
+        - Non-blank but unparseable → ``(True, True)`` (fail-safe to Inactive;
+          the caller aggregates these into one warning).
+        """
+        if pd.isna(value) or str(value).strip() == "":
+            return False, False
+        date_str = str(value).strip()
+        for fmt in cls._WITHDRAW_DATE_FORMATS:
+            try:
+                return datetime.strptime(date_str, fmt).date() <= today, False
+            except ValueError:
+                continue
+        return True, True
+
+    @classmethod
+    def past_withdraw_date(cls, value: Any, today: date) -> bool:
+        """True when ``value`` is a past/unparseable withdraw date.
+
+        Thin per-value predicate over :meth:`_classify_withdraw` (a blank or
+        future date is not a withdrawal). Exposed for reuse by callers that
+        need the boolean directly.
+        """
+        return cls._classify_withdraw(value, today)[0]
+
+    @classmethod
+    def compute_enroll_status(cls, df: pd.DataFrame, students_field_map: dict[str, Any]) -> pd.Series:
+        """Per-row enrollment label in {``"Active"``, ``"PreReg"``, ``"Inactive"``}.
+
+        Resolution (single source of truth for "is this student active"):
+
+        1. If the resolved status column is present → label is the trimmed
+           value when it is in ``active_values``, else ``"Inactive"``.
+        2. Else if the withdraw-date column is present → ``"Inactive"`` for a
+           past/unparseable date, ``"Active"`` otherwise.
+        3. Else → ``"Active"`` (with one warning; nothing to detect on).
+
+        A past (or unparseable) withdraw date is then a **hard override**: it
+        downgrades any row to ``"Inactive"`` regardless of the status branch.
+        """
+        if df.empty:
+            return pd.Series([], dtype="object")
+
+        status_column, withdraw_date_column, active_values = cls.resolve_active_config(students_field_map, df.columns)
+        allowed = set(active_values)
+        today = datetime.now().date()
+
+        if status_column is not None:
+
+            def _label_from_status(value: Any) -> str:
+                trimmed = str(value).strip()
+                return trimmed if trimmed in allowed else "Inactive"
+
+            labels = df[status_column].apply(_label_from_status)
+        elif withdraw_date_column in df.columns:
+            labels = pd.Series("Active", index=df.index, dtype="object")
+        else:
+            logger.warning(
+                "[Students] Could not find an enrollment-status or withdraw-date column "
+                f"(status aliases {list(cls.DEFAULT_STATUS_COLUMN_ALIASES)}, "
+                f"withdraw column '{withdraw_date_column}'). Defaulting all rows to 'Active'."
+            )
+            return pd.Series("Active", index=df.index, dtype="object")
+
+        # Hard override: a past/unparseable withdraw date wins over status.
+        if withdraw_date_column in df.columns:
+            classified = df[withdraw_date_column].apply(lambda v: cls._classify_withdraw(v, today))
+            withdrawn = classified.apply(lambda t: t[0])
+            unparseable = [str(v).strip() for v, (_, bad) in zip(df[withdraw_date_column], classified) if bad]
+            if unparseable:
+                logger.warning(
+                    f"[Students] Could not parse {len(unparseable)} withdraw date(s); "
+                    f"treated as Inactive. Sample formats: {set(unparseable[:10])}"
+                )
+            labels = labels.mask(withdrawn, "Inactive")
+
+        return labels
+
+    @classmethod
+    def is_active_mask(cls, df: pd.DataFrame, students_field_map: dict[str, Any]) -> pd.Series:
+        """Boolean mask of active rows: ``compute_enroll_status(...) != "Inactive"``.
+
+        Label and mask share one function, so a district that drops ``"Active"``
+        from ``active_values`` is honored (no implicit union with ``"Active"``).
+        """
+        return cls.compute_enroll_status(df, students_field_map) != "Inactive"
+
     @staticmethod
     def normalize_iso_date(value: Any) -> str:
         """Convert various date formats to ISO 8601 (yyyy-mm-dd).

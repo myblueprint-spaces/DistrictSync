@@ -22,10 +22,10 @@ _Last generated from `main` @ c669404._
 
 ### src/etl/transformers/
 
-- `src/etl/transformers/base.py` — `BaseTransformer` ABC: CEDS grade mapping, `ALLOWED_TRANSFORMS` security allowlist, `apply_field_map()`, `assign_class_ids()`, `filter_excluded_course_codes()`, `filter_excluded_course_code_patterns()`, `clean_course_code_flavor()`, and other utilities shared by all entity transformers.
+- `src/etl/transformers/base.py` — `BaseTransformer` ABC: CEDS grade mapping, `ALLOWED_TRANSFORMS` security allowlist, `apply_field_map()`, `assign_class_ids()`, `filter_excluded_course_codes()`, `filter_excluded_course_code_patterns()`, `clean_course_code_flavor()`, the config-driven active-student predicate (`resolve_active_config()` / `compute_enroll_status()` / `is_active_mask()` / `past_withdraw_date()`), and other utilities shared by all entity transformers.
 - `src/etl/transformers/context.py` — `TransformContext` dataclass: mutable shared state for one pipeline run (school year, academic dates, raw data frames, homeroom/blended maps) passed between entity transformers.
 - `src/etl/transformers/registry.py` — `TRANSFORMER_REGISTRY` dict and `get_transformer()`: maps entity names to singleton transformer instances; falls back to `DefaultTransformer` (field-map-only) for any unregistered entity.
-- `src/etl/transformers/students.py` — `StudentTransformer`: filters to active-only students (enrollment status or 4-format withdrawal-date check), generates template emails, normalises ISO dates for Date of Birth.
+- `src/etl/transformers/students.py` — `StudentTransformer`: filters to active students (Active + PreReg) via the shared `BaseTransformer` active predicate (config-resolved status column / withdraw-date hard override), logging a per-status drop breakdown; generates template emails; normalises ISO dates for Date of Birth.
 - `src/etl/transformers/staff.py` — `StaffTransformer`: optionally merges staff info with a roster file to resolve `staff sourceid`, then applies field map with `map_role` transform (Y → teacher, else → administrator).
 - `src/etl/transformers/family.py` — `FamilyTransformer`: thin field-map-only transformer for parent/guardian emergency-contact GDE rows.
 - `src/etl/transformers/classes.py` — `ClassTransformer`: orchestrates blended detection, homeroom class generation (configured grades), subject class generation (schedule + course + staff join), and emits blended classes from context; deduplicates on Class ID.
@@ -38,7 +38,7 @@ _Last generated from `main` @ c669404._
 
 ## src/config/
 
-- `src/config/models.py` — Pydantic v2 models for YAML mapping validation: `MappingConfig`, `GlobalConfig`, `EntityConfig`, and 8 discriminated field-mapping types (`FieldTransform`, `FieldFixedValue`, `FieldAcademicYear`, `FieldAppendYear`, `FieldEmailFormat`, `FieldNameConfig`, `FieldIdRolePair`, `FieldDirect`); `classify_field()` dispatcher; `to_raw_dict()` for pipeline consumption.
+- `src/config/models.py` — Pydantic v2 models for YAML mapping validation: `MappingConfig`, `GlobalConfig`, `EntityConfig`, and the discriminated field-mapping variants (`FieldTransform`, `FieldFixedValue`, `FieldAcademicYear`, `FieldAppendYear`, `FieldEmailFormat`, `FieldNameConfig`, `FieldIdRolePair`, `FieldEnrollStatus` [strict, `extra="forbid"`], plus bare `str`/`null`); `classify_field()` dispatcher; `to_raw_dict()`/`get_raw_field_map()` for pipeline consumption.
 - `src/config/loader.py` — `load_config(sis_type)`: discovers YAML from user-overrides dir then bundled dir; resolves `_base` inheritance via recursive deep-merge with cycle detection; validates via Pydantic; exposes `available_configs()` for the UI district picker.
 - `src/config/app_config.py` — `AppConfig` dataclass: persists non-sensitive runtime settings (paths, SIS type, schedule, SFTP host/port/user) to `~/.districtsync/config.json` with OS-safe permissions; SFTP password is never stored here (keyring only).
 
@@ -95,6 +95,7 @@ _Last generated from `main` @ c669404._
 - `config/mappings/sd40myedbc_mapping.yaml` — SD40 New Westminster override (`_base: myedbc`): CSV source file names, headerless schedule with injected column headers, `{student number}@newwestschools.ca` email, `excluded_course_codes` for ATT--AM/PM/Daily attendance rows.
 - `config/mappings/sd48myedbc_mapping.yaml` — SD48 Sea to Sky override (`_base: myedbc`): remaps to `StudentDemographicEnhanced.txt` and `StaffInformation.txt`; no other deviations from base.
 - `config/mappings/sd51myedbc_mapping.yaml` — SD51 Boundary override (`_base: myedbc`): `StudentDemographicEnhanced.txt`, `{student number}@sd51.bc.ca` email, fixed hardcoded academic start/end dates (bypasses auto-detection).
+- `config/mappings/sd54myedbc_mapping.yaml` — SD54 Bulkley Valley override (`_base: myedbc`): lowercase source filenames (`studentschedule.txt`, `courseinformation.txt`, `staffinformation.txt`, `classinformationenhanced.txt`), `EmergencyContactInformationEnhanced.txt` for Family, `{legal surname}.{usual first name}@sd54.bc.ca` email, `excluded_course_codes` for ATT--AM/PM/Daily; academic dates auto-derive from the schedule's School Year.
 - `config/mappings/sd74myedbc_mapping.yaml` — SD74 Gold Trail override (`_base: myedbc`): swapped legal/usual name fields, `{student number}@sd74.bc.ca` email, `studentcourseselection.txt` as schedule source, `ClassInfoEnhanced.txt`, `ParentInformation.txt`, fixed academic dates.
 - `config/mappings/mbp_all_mapping.yaml` — myBlueprint+ full tier (`_base: myedbc`): extends `enabled_entities` to all 7 (adds CourseInfo + StudentCourses on top of the standard 5 rostering CSVs).
 - `config/mappings/mbp_core_mapping.yaml` — myBlueprint+ minimal tier (`_base: myedbc`): `enabled_entities` = [Students, CourseInfo, StudentCourses] only; for districts that need course history/selection but not full class rosters.

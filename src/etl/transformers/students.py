@@ -1,7 +1,6 @@
 """Student entity transformer — enrollment status, active filtering, email generation."""
 
 import logging
-from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -18,8 +17,8 @@ class StudentTransformer(BaseTransformer):
         result = pd.DataFrame()
         field_map = mapping.get("field_map", {})
 
-        self._determine_enrollment_status(working)
-        working = self._filter_active(working)
+        self._determine_enrollment_status(working, field_map)
+        working = self._filter_active(working, field_map)
         result["EnrollStatus"] = working["EnrollStatus"]
         self._generate_emails(working, result, field_map)
 
@@ -28,55 +27,46 @@ class StudentTransformer(BaseTransformer):
             result["Date of Birth"] = result["Date of Birth"].apply(self.normalize_iso_date)
         return result
 
-    @staticmethod
-    def _determine_enrollment_status(working: pd.DataFrame) -> None:
-        """Set 'EnrollStatus' column on working DataFrame in-place."""
-        if "enrolment status" in working.columns:
-            working["EnrollStatus"] = working["enrolment status"].apply(
-                lambda x: str(x).strip() if str(x).strip() in ["Active", "PreReg"] else "Inactive"
-            )
-        elif "withdraw date" in working.columns:
-            today = datetime.now().date()
-            unparseable_dates = []
+    def _determine_enrollment_status(self, working: pd.DataFrame, field_map: dict[str, Any]) -> None:
+        """Set the 'EnrollStatus' column in-place via the shared base predicate.
 
-            def check_withdraw_date(x):
-                if pd.isna(x) or str(x).strip() == "":
-                    return "Active"
-                try:
-                    date_str = str(x).strip()
-                    for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
-                        try:
-                            withdraw_date = datetime.strptime(date_str, fmt).date()
-                            return "Inactive" if withdraw_date <= today else "Active"
-                        except ValueError:
-                            continue
-                    unparseable_dates.append(date_str)
-                    return "Inactive"
-                except (TypeError, ValueError, AttributeError):
-                    return "Inactive"
+        Source column names (status / withdraw date) and the active-value set
+        resolve from the Students ``EnrollStatus`` config (Configurable
+        Columns); MyEd BC defaults apply when unconfigured. ``PreReg`` is
+        retained as active; a past withdraw date is a hard override to
+        Inactive. See ``BaseTransformer.compute_enroll_status``.
+        """
+        working["EnrollStatus"] = self.compute_enroll_status(working, field_map)
 
-            working["EnrollStatus"] = working["withdraw date"].apply(check_withdraw_date)
+    @classmethod
+    def _filter_active(cls, working: pd.DataFrame, field_map: dict[str, Any]) -> pd.DataFrame:
+        """Keep rows whose EnrollStatus is not Inactive (Active + PreReg).
 
-            if unparseable_dates:
-                unique_formats = set(unparseable_dates[:10])
-                logger.warning(
-                    f"[Students] Could not parse {len(unparseable_dates)} withdraw date(s). "
-                    f"Sample formats: {unique_formats}"
-                )
-        else:
-            logger.warning(
-                "[Students] Could not find 'enrolment status' or 'withdraw date' column. Defaulting to 'Active'."
-            )
-            working["EnrollStatus"] = "Active"
+        Logs the dropped count with a per-source-status breakdown so a district
+        can see *why* rows were removed (e.g. Withdrawn vs Graduate) when a
+        status column is present.
+        """
+        inactive_mask = working["EnrollStatus"] == "Inactive"
+        dropped: pd.DataFrame = working[inactive_mask].copy()  # type: ignore[assignment]
+        active: pd.DataFrame = working[~inactive_mask].copy()  # type: ignore[assignment]
+        if len(dropped) > 0:
+            breakdown = cls._status_breakdown(dropped, field_map)
+            suffix = f" Breakdown: {breakdown}." if breakdown else ""
+            logger.info(f"[Students] Filtered out {len(dropped)} inactive students.{suffix}")
+        return active
 
-    @staticmethod
-    def _filter_active(working: pd.DataFrame) -> pd.DataFrame:
-        initial_count = len(working)
-        working = working[working["EnrollStatus"] == "Active"].copy()  # type: ignore[assignment]
-        filtered_count = initial_count - len(working)
-        if filtered_count > 0:
-            logger.info(f"[Students] Filtered out {filtered_count} inactive students.")
-        return working
+    @classmethod
+    def _status_breakdown(cls, dropped: pd.DataFrame, field_map: dict[str, Any]) -> dict[str, int]:
+        """Count dropped rows by their raw source-status value.
+
+        Returns an empty dict when no status column is present (date-only
+        path), in which case the log omits the breakdown.
+        """
+        status_column, _, _ = cls.resolve_active_config(field_map, dropped.columns)
+        if status_column is None or dropped.empty:
+            return {}
+        counts = dropped[status_column].astype(str).str.strip().value_counts()
+        return {str(k): int(v) for k, v in counts.items()}
 
     def _generate_emails(self, working: pd.DataFrame, result: pd.DataFrame, field_map: dict[str, Any]) -> None:
         email_config = field_map.get("Email Address", {})

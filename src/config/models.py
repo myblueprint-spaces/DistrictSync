@@ -9,7 +9,7 @@ import logging
 import re
 from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,23 @@ class FieldIdRolePair(BaseModel):
     staff_id_col: str
 
 
+class FieldEnrollStatus(BaseModel):
+    """Active-student detection overrides for the Students ``EnrollStatus`` field.
+
+    All keys are optional — a bare ``null`` keeps MyEd BC defaults (status
+    column auto-resolved from an alias, withdraw-date hard override,
+    ``active_values=["Active","PreReg"]``). ``extra="forbid"`` makes an
+    unknown/typo'd key fail loudly at config load (the bug this closes: the
+    previous raw-dict passthrough only warned).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status_column: Optional[str] = None
+    withdraw_date_column: Optional[str] = None
+    active_values: Optional[list[str]] = None
+
+
 # Union of all field mapping types
 FieldMapping = Union[
     str,  # Direct column name
@@ -86,6 +103,7 @@ FieldMapping = Union[
     FieldEmailFormat,
     FieldNameConfig,
     FieldIdRolePair,
+    FieldEnrollStatus,
 ]
 
 
@@ -117,6 +135,12 @@ def classify_field(raw: Any) -> FieldMapping:
         return FieldIdRolePair(**raw)
     if "primary teacher flag" in raw or "teacher last name" in raw:
         return FieldNameConfig(**raw)
+    # EnrollStatus active-detection overrides. Keyed on its distinct fields
+    # (collision-free vs the branches above) and BEFORE the warn-passthrough
+    # fallback so an unknown/typo'd key raises (extra="forbid") instead of
+    # silently passing through.
+    if "active_values" in raw or "status_column" in raw or "withdraw_date_column" in raw:
+        return FieldEnrollStatus(**raw)
     if "column" in raw:
         return FieldTransform(**raw)
 
@@ -367,6 +391,15 @@ class MappingConfig(BaseModel):
                 }
             elif isinstance(val, FieldIdRolePair):
                 raw[key] = {"student_id_col": val.student_id_col, "staff_id_col": val.staff_id_col}
+            elif isinstance(val, FieldEnrollStatus):
+                es: dict[str, Any] = {}
+                if val.status_column is not None:
+                    es["status_column"] = val.status_column
+                if val.withdraw_date_column is not None:
+                    es["withdraw_date_column"] = val.withdraw_date_column
+                if val.active_values is not None:
+                    es["active_values"] = list(val.active_values)
+                raw[key] = es
             else:
                 raw[key] = val
         return raw

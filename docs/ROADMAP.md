@@ -36,6 +36,7 @@ Status: `NEXT` (queued) · `LATER` · `PLAN <NNNN>` (plan drafted) · `DONE`.
 | T3.7 | `04_Mapping_Editor.py`: model wizard state as a `WizardState` dataclass (no `session_state` dict-drilling / attr-vs-dict mix); remove dead create/edit branch. | KISS | LATER |
 | T3.8 | DRY idioms: `resolve_column()` helper (×12), shared `DATE_FORMATS` (×3), `step_labels()` in brand.py (×2), `footer()` (×4), `sys.path` bootstrap (×6). | DRY | LATER |
 | T3.9 | Document `_deep_merge` list-replace semantics (contradicts "extend enabled_entities" prose). | KISS | NEXT |
+| T3.10 | `classify_field` is not idempotent — re-validating an `EntityConfig` that already holds typed `Field*` values (e.g. a freshly-constructed `MappingConfig(mappings={"X": EntityConfig(...)})`) stringifies them (the `not isinstance(raw, dict)` → `str(raw)` branch). Harmless on the real `load_config` raw-dict path; surfaced building configs in code (plan 0003). Likely subsumed by T1.1 (which deletes `classify_field`); otherwise make it a no-op for already-typed values. | Fail-loudly | LATER |
 
 ## Process / hygiene (non-architecture)
 
