@@ -80,15 +80,9 @@ class EnrollmentTransformer(BaseTransformer):
         students_field_map = context.get_students_config().get("field_map", {})
         grade_col = students_field_map.get("Grade", {}).get("column", "grade").lower()
         homeroom_col = students_field_map.get("Homeroom", "homeroom").lower()
-        # The demographic file's student-ID column comes from Students config —
-        # MyEd BC's StudentDemographicInformation uses "Student Number" while
-        # StudentSchedule uses "Student ID", so the Enrollments staff/student
-        # ID config (which targets the schedule) can't be reused here.
-        user_id_config = students_field_map.get("User ID", "student number")
-        if isinstance(user_id_config, dict):
-            demo_student_col = str(user_id_config.get("column", "student number")).lower()
-        else:
-            demo_student_col = str(user_id_config).lower()
+        # The demographic student-ID column comes from Students config (not the
+        # schedule-targeted Enrollments ID config) — see get_demo_student_col.
+        demo_student_col = context.get_demo_student_col()
 
         if grade_col in student_demo_df.columns:
             student_demo_df[grade_col] = student_demo_df[grade_col].apply(self.grade_to_ceds)
@@ -107,14 +101,18 @@ class EnrollmentTransformer(BaseTransformer):
             if valid.empty:
                 return
 
-            # Student homeroom enrollments
-            student_enroll = valid[["Class ID", demo_student_col, SCHOOL_NUMBER]].copy()
-            student_enroll.rename(columns={demo_student_col: "User ID"}, inplace=True)
+            # Student homeroom enrollments — filtered to the active roster so no
+            # row references a student absent from Students.csv (zero-orphan
+            # invariant). Teacher rows below derive from the UNfiltered `valid`
+            # and are therefore byte-identical to the pre-filter output.
+            active_students = self.filter_to_active(valid, demo_student_col, context, caller="Enrollments")
+            student_enroll = active_students[["Class ID", demo_student_col, SCHOOL_NUMBER]].copy()
+            student_enroll.rename(columns={demo_student_col: "User ID"}, inplace=True)  # type: ignore[call-overload]
             student_enroll["Role"] = "student"
-            final.append(student_enroll)
+            final.append(student_enroll)  # type: ignore[arg-type]
             logger.info(f"[Enrollments] Created {len(student_enroll)} student homeroom enrollments")
 
-            # Teacher homeroom enrollments
+            # Teacher homeroom enrollments (unfiltered `valid` — students-only filter)
             teacher_id_y_col = staff_id_col + "_y"
             if teacher_id_y_col in valid.columns:
                 teacher_enroll = valid.drop_duplicates(subset=["Class ID"])[
@@ -160,18 +158,22 @@ class EnrollmentTransformer(BaseTransformer):
 
         non_homeroom = self._assign_class_ids(non_homeroom, field_map, context)  # type: ignore[assignment]
 
-        # Student subject enrollments
+        # Student subject enrollments — filtered to the active roster (schedule
+        # `Student ID`, same pupil-number value space as the roster). Teacher
+        # derivations below use the UNfiltered `non_homeroom`, so teacher rows
+        # stay byte-identical to the pre-filter output (students-only filter).
         if student_id_col in non_homeroom.columns and "Class ID" in non_homeroom.columns:
-            student_enroll = non_homeroom[["Class ID", student_id_col, SCHOOL_NUMBER]].copy()
+            active_students = self.filter_to_active(non_homeroom, student_id_col, context, caller="Enrollments")
+            student_enroll = active_students[["Class ID", student_id_col, SCHOOL_NUMBER]].copy()
             student_enroll.rename(columns={student_id_col: "User ID"}, inplace=True)  # type: ignore[call-overload]
             student_enroll["Role"] = "student"
             final.append(student_enroll)  # type: ignore[arg-type]
             logger.info(f"[Enrollments] Created {len(student_enroll)} student subject enrollments")
 
-        # Blended teacher enrollments
+        # Blended teacher enrollments (context-derived; unaffected by the filter)
         self._blended_teacher_enrollments(final, context)
 
-        # Non-blended teacher enrollments
+        # Non-blended teacher enrollments (unfiltered `non_homeroom` — students-only filter)
         non_blended = non_homeroom[~non_homeroom["Class ID"].isin(context.blended_teacher_map.keys())]
         if staff_id_col in non_blended.columns and "Class ID" in non_blended.columns:
             teacher_enroll = non_blended[["Class ID", staff_id_col, SCHOOL_NUMBER]].copy()

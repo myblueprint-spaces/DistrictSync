@@ -10,6 +10,7 @@ from src.config.models import (
     FieldAcademicYear,
     FieldAppendYear,
     FieldEmailFormat,
+    FieldEnrollStatus,
     FieldFixedValue,
     FieldIdRolePair,
     FieldNameConfig,
@@ -90,6 +91,43 @@ class TestClassifyField:
         result = classify_field(42)
         assert result == "42"
 
+    def test_enroll_status_null_is_sentinel(self):
+        """Bare-null EnrollStatus stays the auto-detect sentinel (None)."""
+        assert classify_field(None) is None
+
+    def test_enroll_status_dict_validates(self):
+        """A dict with any active-detection key classifies as FieldEnrollStatus."""
+        result = classify_field(
+            {
+                "status_column": "Status",
+                "withdraw_date_column": "Left On",
+                "active_values": ["Active", "PreReg", "Active No Primary"],
+            }
+        )
+        assert isinstance(result, FieldEnrollStatus)
+        assert result.status_column == "Status"
+        assert result.withdraw_date_column == "Left On"
+        assert result.active_values == ["Active", "PreReg", "Active No Primary"]
+
+    def test_enroll_status_partial_dict_validates(self):
+        """A partial dict (one key) still classifies; absent keys stay None."""
+        result = classify_field({"active_values": ["Active"]})
+        assert isinstance(result, FieldEnrollStatus)
+        assert result.active_values == ["Active"]
+        assert result.status_column is None
+        assert result.withdraw_date_column is None
+
+    def test_enroll_status_unknown_key_raises(self):
+        """An unknown/typo'd EnrollStatus key fails loudly (extra='forbid').
+
+        Closes the prior bug where a recognizable-but-malformed EnrollStatus
+        dict only warned and passed through. A dict routed into the branch by a
+        valid key (``active_values``) that ALSO carries an unknown key
+        (``withdraw_colum`` typo) must raise.
+        """
+        with pytest.raises(ValidationError):
+            classify_field({"active_values": ["Active"], "withdraw_colum": "Left"})
+
 
 # -----------------------------------------------------------------------
 # EntityConfig
@@ -120,6 +158,49 @@ class TestEntityConfig:
             field_map={"Name": "title"},
         )
         assert cfg.source_files["student_schedule"] == "Schedule.txt"
+
+    def test_enroll_status_null_field_map(self):
+        """EnrollStatus: null in an entity field_map stays the None sentinel."""
+        cfg = EntityConfig(
+            source_files={"student_demographic": "Demo.txt"},
+            field_map={"User ID": "Student Number", "EnrollStatus": None},
+        )
+        assert cfg.field_map["EnrollStatus"] is None
+
+    def test_enroll_status_dict_field_map_roundtrips(self):
+        """An EnrollStatus override dict survives validation + raw round-trip.
+
+        Built from a raw dict (the real `load_config` path: raw YAML →
+        MappingConfig), so the value classifies to FieldEnrollStatus and the
+        transformer pipeline receives the raw dict back via get_raw_field_map.
+        """
+        cfg = MappingConfig(
+            **{
+                "version": "1.9",
+                "sis": "test",
+                "mappings": {
+                    "Students": {
+                        "source_files": {"student_demographic": "Demo.txt"},
+                        "field_map": {
+                            "User ID": "Student Number",
+                            "EnrollStatus": {"status_column": "Status", "active_values": ["Active"]},
+                        },
+                    },
+                },
+            }
+        )
+        assert isinstance(cfg.mappings["Students"].field_map["EnrollStatus"], FieldEnrollStatus)
+        raw = cfg.get_raw_field_map("Students")
+        assert raw["EnrollStatus"] == {"status_column": "Status", "active_values": ["Active"]}
+
+    def test_enroll_status_malformed_field_map_raises(self):
+        """A recognizable EnrollStatus override with a typo'd key fails loudly
+        when the entity field_map is validated (extra='forbid')."""
+        with pytest.raises(ValidationError):
+            EntityConfig(
+                source_files={"student_demographic": "Demo.txt"},
+                field_map={"EnrollStatus": {"status_column": "Status", "withdraw_colum": "Left"}},
+            )
 
 
 # -----------------------------------------------------------------------

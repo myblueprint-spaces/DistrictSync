@@ -34,20 +34,21 @@ class TestEnrollmentStatusFromField:
         result = self._transform_students(df)
         assert len(result) == 1
 
-    def test_prereg_kept(self):
-        """PreReg students should NOT be filtered out."""
+    def test_prereg_excluded(self):
+        """PreReg students are EXCLUDED by default (per docs/partner/faq.md).
+
+        PreReg is not in the default ``active_values`` (``["Active"]``), so its
+        label is ``"Inactive"`` and the ``label != "Inactive"`` mask drops it.
+        Districts that roster upcoming-year pre-registrations can opt in via
+        ``EnrollStatus.active_values``. See DECISIONS: "PreReg excluded by default".
+        """
         df = pd.DataFrame(
             {
                 "enrolment status": ["PreReg"],
                 "student number": ["S001"],
             }
         )
-        # PreReg is kept as-is, but the filter keeps only "Active" —
-        # so PreReg WILL be filtered. Let's verify current behavior.
         result = self._transform_students(df)
-        # Current code: only "Active" and "PreReg" are kept as-is,
-        # but filter is `working["EnrollStatus"] == "Active"`.
-        # So PreReg is actually filtered OUT. This documents current behavior.
         assert len(result) == 0
 
     def test_inactive_filtered(self):
@@ -61,7 +62,7 @@ class TestEnrollmentStatusFromField:
         assert len(result) == 0
 
     def test_other_status_becomes_inactive(self):
-        """Any status other than Active/PreReg → Inactive → filtered."""
+        """Any status other than Active (the default active_values) → Inactive → filtered."""
         df = pd.DataFrame(
             {
                 "enrolment status": ["Withdrawn", "Transferred", "Suspended"],

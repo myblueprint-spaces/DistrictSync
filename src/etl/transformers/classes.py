@@ -98,6 +98,15 @@ class ClassTransformer(BaseTransformer):
             student_demo_df[teacher_id_col] = student_demo_df[teacher_id_col].astype(str).str.strip()
 
         students_field_map = context.get_students_config().get("field_map", {})
+
+        # Drop inactive students before building homerooms so no homeroom class
+        # is created solely from withdrawn/inactive students (zero-orphan invariant).
+        student_demo_df = self.filter_to_active(
+            student_demo_df, context.get_demo_student_col(), context, caller="Classes"
+        )
+        if student_demo_df.empty:
+            return
+
         grade_config = students_field_map.get("Grade", {})
         grade_col = grade_config.get("column", "grade").lower() if isinstance(grade_config, dict) else "grade"
         student_demo_df[grade_col] = student_demo_df[grade_col].apply(self.grade_to_ceds)

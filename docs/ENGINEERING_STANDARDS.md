@@ -61,7 +61,7 @@ This is the **one project-specific part** of this doc — everything above is un
 | API & interface design | **LIGHT** | contracts = output-CSV schema + YAML config schema (version those); no HTTP API |
 | Observability & ops | **LIVE** | `__DISTRICTSYNC_RUN__` records, anomaly detection; no PII in logs |
 | Resources & concurrency | **LIGHT** | context managers, temp-dir cleanup · concurrency NOT-YET (single-threaded; keep transformer singletons stateless) |
-| Data integrity | **LIVE** | atomic writes, schema validation, orphaned-enrollment check |
+| Data integrity | **LIVE** | atomic writes, schema validation, orphaned-enrollment check, **active-roster referential integrity** (enrollments + homeroom classes filtered to `Students.csv` — plan 0003) |
 | Internationalization | **LIGHT** | encoding fallback, date formats (DOB→ISO); timezones minimal |
 | Configuration & deployment | **LIVE** | YAML + `~/.districtsync`, reproducible PyInstaller builds, GH Actions |
 | Accessibility & UX | **LIGHT** | Streamlit UI only |

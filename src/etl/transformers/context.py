@@ -21,6 +21,13 @@ class TransformContext:
     raw_data: dict[str, pd.DataFrame] = field(default_factory=dict)
     global_config: dict[str, Any] = field(default_factory=dict)
 
+    # Active roster: normalized `User ID` strings of the students retained by
+    # StudentTransformer (its filtered output). Published by Students and read
+    # by Classes (homeroom) + Enrollments (homeroom + subject) to guarantee no
+    # output row references a student absent from Students.csv (zero-orphan
+    # invariant). Empty until Students runs — consumers must guard for that.
+    active_student_ids: set[str] = field(default_factory=set)
+
     # Cross-entity state: populated by ClassTransformer, consumed by EnrollmentTransformer
     homeroom_classes_df: pd.DataFrame = field(default_factory=pd.DataFrame)
     class_info_df: pd.DataFrame = field(default_factory=pd.DataFrame)
@@ -53,3 +60,17 @@ class TransformContext:
 
     def get_students_config(self) -> dict[str, Any]:
         return self.global_config.get("mappings", {}).get("Students", {})
+
+    def get_demo_student_col(self) -> str:
+        """Demographic student-ID column, resolved from the Students ``User ID`` config.
+
+        The demographic file uses a different student-ID column than the
+        schedule (MyEd BC: "Student Number" vs "Student ID"), so the
+        schedule-targeted Enrollments ID config can't be reused. This is the
+        same value space as ``active_student_ids``; used by Classes (homeroom)
+        and Enrollments (homeroom) to filter to the active roster.
+        """
+        user_id_config = self.get_students_config().get("field_map", {}).get("User ID", "student number")
+        if isinstance(user_id_config, dict):
+            return str(user_id_config.get("column", "student number")).lower()
+        return str(user_id_config).lower()
