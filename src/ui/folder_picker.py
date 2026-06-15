@@ -20,6 +20,8 @@ This module is intentionally pure/OS-only: it does NOT import Streamlit, so it
 stays unit-testable and reusable.
 """
 
+from __future__ import annotations
+
 import logging
 
 logger = logging.getLogger(__name__)
