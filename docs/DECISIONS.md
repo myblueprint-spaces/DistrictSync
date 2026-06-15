@@ -2,6 +2,14 @@
 
 Dated, one-line records of non-trivial decisions. **Append newest at the top.** Consult before re-litigating a past choice (see CLAUDE.md → Harness Discipline).
 
+## 2026-06-15 — Windows scheduled-task registration via Task Scheduler XML
+
+- **Register via `schtasks /Create /XML`, not inline `/TR`.** `schtasks` caps the `/TR` value at 261 chars; the source-mode command (`cmd /c "cd /d "<repo>" && "<python>" -m src.main --sis … --input "…" --output "…" --sftp"`) hit 458 chars on this dev box and failed. XML has no length cap, sets `<WorkingDirectory>` natively (kills the brittle nested-quote `cmd /c "cd /d …"` wrapper), and carries the schedule/principal/run-level. Public API of `register_task`/`query_task`/`delete_task`/`current_run_as_user` unchanged; validation-before-OS-call and `/RP` password redaction preserved.
+- **Password stays out of the XML; run-level moves into it.** The run-as password is still passed via `schtasks /RP` on the command line (never written to the temp XML); `/RU /RP /XML` is a valid documented combination. The old `/RL HIGHEST` flag is replaced by `<RunLevel>HighestAvailable</RunLevel>` (password mode) / `LeastPrivilege` (no-password → `<LogonType>InteractiveToken</LogonType>`, matching the prior logged-on-only default).
+- **XML written as UTF-16-with-BOM** (`encoding="utf-16"` + `<?xml … encoding="UTF-16"?>`) — `schtasks /Create /XML` accepted it first try on Windows 11 (no iteration needed); UTF-16 chosen for cross-version compatibility. Temp file is always removed in a `finally`.
+- **Hand-built XML string with `xml.sax.saxutils.escape` on every interpolated value** (paths/user/args) rather than ElementTree — deterministic, testable output with explicit escaping at the boundary (validate-at-boundary). Daily trigger uses a fixed past `StartBoundary` date (`2024-01-01`) so the emitted XML is deterministic and never triggers a catch-up run (`<StartWhenAvailable>false</StartWhenAvailable>`).
+- **Verified LIVE on this Windows 11 box** end-to-end (register→query→delete) with a deliberately long input/output path: old `/TR` would have been 458 chars (>261) and failed; XML registered `SUCCESS`, queried `Ready` with the full command line intact, deleted cleanly.
+
 ## 2026-06-05 — Plan 0003 verification + import model (full-snapshot, upsert)
 
 - **Verified end-to-end on real SD48 GDE data** (after rebasing onto the post-mbponly/extractor main): roster 7,922 → 7,543 (−379 = 50 inactive-without-withdraw-date leak + 329 PreReg, all verifiably non-active); orphaned student enrollments 405 → 0 on a full `--sis sd48myedbc` run (not just fixtures), stable under the rewritten extractor. SD74 snapshot byte-identical.

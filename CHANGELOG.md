@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Per-release download links and auto-generated commit notes live on the
 [GitHub Releases](https://github.com/myblueprint-spaces/DistrictSync/releases) page.
 
+## [Unreleased]
+
+### Fixed
+
+- Windows scheduled-task registration now uses Task Scheduler XML instead of an
+  inline `/TR` command, removing schtasks' 261-character limit (which blocked
+  source-mode scheduling and very long install paths) and the brittle
+  `cmd /c "cd /d …"` quoting.
+
 ## [3.2.0] - 2026-06-15
 
 Config-driven active-student filtering. This release changes the **default**
