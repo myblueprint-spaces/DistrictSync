@@ -54,6 +54,8 @@ jobs:
           --hidden-import=src.ui.brand
           --hidden-import=src.ui.mapping_helpers
           --hidden-import=src.ui.launcher
+          --hidden-import=src.ui.folder_picker
+          --hidden-import=tkinter
           --hidden-import=src.etl.transformers.base
           --hidden-import=src.etl.transformers.classes
           --hidden-import=src.etl.transformers.enrollments
@@ -94,6 +96,7 @@ jobs:
           --hidden-import=keyring.backends.SecretService
           --hidden-import=keyring.backends.libsecret
           --hidden-import=src.scheduler.linux
+          --hidden-import=src.ui.folder_picker
           --hidden-import=src.etl.transformers.base
           --hidden-import=src.etl.transformers.classes
           --hidden-import=src.etl.transformers.enrollments
@@ -133,6 +136,7 @@ jobs:
           --hidden-import=pydantic_core
           --hidden-import=keyring.backends.macOS
           --hidden-import=src.scheduler.linux
+          --hidden-import=src.ui.folder_picker
           --hidden-import=src.etl.transformers.base
           --hidden-import=src.etl.transformers.classes
           --hidden-import=src.etl.transformers.enrollments

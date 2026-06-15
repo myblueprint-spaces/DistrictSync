@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Per-release download links and auto-generated commit notes live on the
 [GitHub Releases](https://github.com/myblueprint-spaces/DistrictSync/releases) page.
 
+## [Unreleased]
+
+### Added
+
+- Setup Wizard Step 1 now has a 📁 Browse button beside the input/output
+  directory fields that opens the native folder picker (the text box still
+  accepts manual entry/paste).
+
 ## [3.2.0] - 2026-06-15
 
 Config-driven active-student filtering. This release changes the **default**

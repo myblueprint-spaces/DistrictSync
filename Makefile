@@ -59,6 +59,8 @@ build-win:
 	  --hidden-import=src.ui.brand \
 	  --hidden-import=src.ui.mapping_helpers \
 	  --hidden-import=src.ui.launcher \
+	  --hidden-import=src.ui.folder_picker \
+	  --hidden-import=tkinter \
 	  --hidden-import=src.etl.transformers.base \
 	  --hidden-import=src.etl.transformers.classes \
 	  --hidden-import=src.etl.transformers.enrollments \

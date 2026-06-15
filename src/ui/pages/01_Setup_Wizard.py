@@ -51,6 +51,23 @@ def _go(step: int) -> None:
     st.session_state.wizard_step = step
 
 
+def _browse_into(state_key: str) -> None:
+    """Open the native folder picker and write the chosen path into session.
+
+    Runs as a button ``on_click`` callback (before the text widgets are
+    re-instantiated), so writing the widget-keyed session value is allowed.
+    A ``None`` return means the user cancelled or no GUI is available — in that
+    case we leave the existing value untouched and let them type/paste instead.
+    """
+    from src.ui.folder_picker import pick_directory
+
+    current = st.session_state.get(state_key, "")
+    initial = current if current and Path(current).is_dir() else None
+    picked = pick_directory(initialdir=initial)
+    if picked:
+        st.session_state[state_key] = picked
+
+
 # ---------------------------------------------------------------------------
 # Helper — schedule registration
 # ---------------------------------------------------------------------------
@@ -390,18 +407,48 @@ if st.session_state.wizard_step == 1:
         "Both paths must already exist on this machine."
     )
 
-    input_dir = st.text_input(
-        "GDE Input Directory",
-        value=cfg.input_dir or "",
-        placeholder=r"C:\DistrictSync\input",
-        help="Directory where MyEducation BC places the GDE .txt files",
-    )
-    output_dir = st.text_input(
-        "CSV Output Directory",
-        value=cfg.output_dir or "",
-        placeholder=r"C:\DistrictSync\output",
-        help="Directory where the generated CSV files will be written",
-    )
+    st.session_state.setdefault("wizard_input_dir", cfg.input_dir or "")
+    st.session_state.setdefault("wizard_output_dir", cfg.output_dir or "")
+
+    st.markdown("**GDE Input Directory**")
+    in_field, in_browse = st.columns([5, 1])
+    with in_field:
+        input_dir = st.text_input(
+            "GDE Input Directory",
+            key="wizard_input_dir",
+            placeholder=r"C:\DistrictSync\input",
+            help="Directory where MyEducation BC places the GDE .txt files",
+            label_visibility="collapsed",
+        )
+    with in_browse:
+        st.button(
+            "📁 Browse",
+            on_click=_browse_into,
+            args=("wizard_input_dir",),
+            use_container_width=True,
+            key="browse_input_dir",
+        )
+
+    st.markdown("**CSV Output Directory**")
+    out_field, out_browse = st.columns([5, 1])
+    with out_field:
+        output_dir = st.text_input(
+            "CSV Output Directory",
+            key="wizard_output_dir",
+            placeholder=r"C:\DistrictSync\output",
+            help="Directory where the generated CSV files will be written",
+            label_visibility="collapsed",
+        )
+    with out_browse:
+        st.button(
+            "📁 Browse",
+            on_click=_browse_into,
+            args=("wizard_output_dir",),
+            use_container_width=True,
+            key="browse_output_dir",
+        )
+
+    st.caption("Tip: use 📁 Browse to pick a folder, or type / paste a path directly.")
 
     if st.button("Validate & Continue →", type="primary"):
         errors = []
