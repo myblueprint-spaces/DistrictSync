@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/check_architecture_tree.py --hook-write"
+            "command": "python \"C:/Users/shan.peiris/Documents/Integrations/DistrictSync/scripts/claugentic-check_architecture_tree.py\" --hook-write"
           }
         ]
       }
@@ -16,10 +16,21 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/check_architecture_tree.py --hook"
+            "command": "python \"C:/Users/shan.peiris/Documents/Integrations/DistrictSync/scripts/claugentic-check_architecture_tree.py\" --hook"
           }
         ]
       }
     ]
+  },
+  "extraKnownMarketplaces": {
+    "sh4npeiris": {
+      "source": {
+        "source": "github",
+        "repo": "sh4npeiris/claugentic-dev-harness"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "claugentic-dev-harness@sh4npeiris": true
   }
 }

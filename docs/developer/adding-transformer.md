@@ -250,4 +250,4 @@ Adding an entity touches more than the transformer. Don't miss:
 - [ ] PyInstaller hidden-imports — add the new module in `Makefile` (`build-win`) **and** `.github/workflows/release.yml` so the frozen `.exe` ships it.
 - [ ] `make validate-config` list (Makefile) — include any new config.
 - [ ] `tests/test_transform_<entity>.py` — unit tests (and snapshot coverage if relevant).
-- [ ] `docs/ARCHITECTURE_TREE.md` — add the new file(s) with a one-line description (enforced by `make check-tree`).
+- [ ] `docs/claugentic-ARCHITECTURE_TREE.md` — add the new file(s) with a one-line description (enforced by the tree-check hook).
