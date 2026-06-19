@@ -156,7 +156,7 @@ Base `myedbc` defines all 7 entity templates; configs select which to emit via `
 
 ## Key Data Flow
 
-- **Students** — Filtered to active-only via the config-driven predicate in `BaseTransformer` (`is_active_mask`): status ∈ `active_values` (default `["Active"]`; PreReg/etc. excluded, `EnrollStatus.active_values` overrides) AND no past withdraw date (hard override, 4 formats). Publishes the active roster to `context.active_student_ids`.
+- **Students** — Filtered to active via the config-driven predicate in `BaseTransformer` (`is_active_mask`): status ∈ `active_values` (default `["Active", "PreReg"]`, the Advanced CSV spec's expected values; Inactive/etc. excluded, `EnrollStatus.active_values` overrides). Status wins when present; the withdraw date is only a fallback for rows with **no** status value (past/unparseable → Inactive, 4 formats). Publishes the active roster to `context.active_student_ids`.
 - **Classes** — Join schedule + course info + staff info + optionally class info (for blended). Homeroom classes auto-generated for configured grades. Class names truncated to 100 chars.
 - **Enrollments** — Homeroom + subject + blended teacher enrollments. Deduplicated on Class ID + User ID + Role. Invalid teacher IDs ("nan", blank) filtered out. **Zero-orphan invariant:** student rows (homeroom + subject) + homeroom-class creation are filtered to `context.active_student_ids` via `BaseTransformer.filter_to_active`, so no enrollment/class references a student absent from `Students.csv`; teacher rows are not filtered.
 - **Anomaly detection** — Warns if any entity drops >20% vs previous run output
