@@ -187,6 +187,7 @@ MkDocs deploys to GitHub Pages automatically on release tag push.
 - **Pydantic validation** — all YAML configs validated at startup before any ETL processing begins
 - **`to_raw_dict()`** — `MappingConfig.to_raw_dict()` converts validated config back to raw dicts for the transformer pipeline
 - **Entity order gotcha** — `global_config.entity_order` defaults to `[]` (not None). Use `global_config.get("entity_order") or list(mappings.keys())`
+- **Streamlit Arrow gotcha** — any `st.dataframe` column that mixes numbers with a string sentinel (`"—"`/`"?"`) makes pyarrow infer `int64` and raise `ArrowInvalid` (Streamlit auto-recovers but logs a noisy traceback). Coerce such display columns to a uniform `str` (see `02_Convert._compute_diff`, `03_Run_History._fmt`)
 
 ## Engineering Principles (non-negotiable)
 

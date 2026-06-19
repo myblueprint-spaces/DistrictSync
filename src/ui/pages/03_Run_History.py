@@ -67,20 +67,27 @@ with open(log_file, encoding="utf-8", errors="replace") as f:
 if runs:
     st.subheader(f"Last {min(len(runs), 50)} Runs")
 
+    def _fmt(value: object) -> str:
+        """Render a count/duration as a uniform string so Streamlit's Arrow
+        serializer never sees a mixed number/str column. A column that mixes
+        ints (runs that produced the entity) with the "—" sentinel (runs that
+        didn't) makes pyarrow infer int64 and fail on the em-dash."""
+        return "—" if value is None else str(value)
+
     rows = []
     for r in runs[-50:][::-1]:  # newest first
         rows.append(
             {
                 "Date / Time": r.get("timestamp", "—"),
                 "Status": "✅ Success" if r.get("status") == "success" else "❌ Failed",
-                "Duration (s)": r.get("duration_s", "—"),
-                "Students": r.get("Students", "—"),
-                "Staff": r.get("Staff", "—"),
-                "Family": r.get("Family", "—"),
-                "Classes": r.get("Classes", "—"),
-                "Enrollments": r.get("Enrollments", "—"),
-                "CourseInfo": r.get("CourseInfo", "—"),
-                "StudentCourses": r.get("StudentCourses", "—"),
+                "Duration (s)": _fmt(r.get("duration_s")),
+                "Students": _fmt(r.get("Students")),
+                "Staff": _fmt(r.get("Staff")),
+                "Family": _fmt(r.get("Family")),
+                "Classes": _fmt(r.get("Classes")),
+                "Enrollments": _fmt(r.get("Enrollments")),
+                "CourseInfo": _fmt(r.get("CourseInfo")),
+                "StudentCourses": _fmt(r.get("StudentCourses")),
                 "SFTP": "✅" if r.get("sftp_ok") else ("❌" if r.get("sftp_attempted") else "—"),
                 "Error": r.get("error", ""),
             }
