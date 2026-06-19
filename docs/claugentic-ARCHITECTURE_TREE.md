@@ -77,6 +77,7 @@ _Last generated from `main` @ c669404._
 
 - `src/ui/Home.py` — Streamlit multi-page app entry point (`streamlit run src/ui/Home.py`): renders status dashboard (configured/unconfigured banner, last Windows scheduled-task run, SFTP status); auto-discovers pages/ subdirectory.
 - `src/ui/brand.py` — myBlueprint/SpacesEDU brand styles: `inject_brand_css()` injects corporate colour palette and card styles; `header()` renders the branded page heading with wordmark; `step_progress()` renders a numbered step bar.
+- `src/ui/folder_picker.py` — `pick_directory()`: native OS folder-selection dialog (tkinter `askdirectory`, lazily imported) for the local Setup Wizard's path inputs; returns `None` on cancel/no-GUI so callers fall back to manual text entry.
 - `src/ui/launcher.py` — PyInstaller UI launcher: locates `src/ui/Home.py` inside the frozen bundle and invokes Streamlit programmatically with `--server.headless=false`; used when the binary is launched without CLI arguments.
 - `src/ui/mapping_helpers.py` — Mapping Editor support library: `detect_columns()` (headerless heuristic), `get_field_metadata()` (field descriptions/types), `build_override_dict()` (diff vs base config), `save_mapping_yaml()`, `column_selectbox()` widget, `SOURCE_FILE_ROLES` and `CEDS_GRADES` constants.
 
