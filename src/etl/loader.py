@@ -21,6 +21,15 @@ class DataLoader:
     existing output is left untouched.
     """
 
+    # CSVs are written UTF-8 **with BOM** (``utf-8-sig``) so districts can open
+    # them in Excel without mojibake. The exception: feeds consumed by a strict
+    # machine parser that treats the BOM as part of the (case-sensitive) first
+    # header. SpacesEDU's standalone StudentAttendance import is one — a BOM
+    # turns ``School Number`` into ``﻿School Number``, so the file is
+    # rejected ("Unexpected file" + cascading "Invalid date format"). These
+    # entities are written as plain UTF-8 (no BOM).
+    _NO_BOM_ENTITIES: frozenset[str] = frozenset({"StudentAttendance"})
+
     def __init__(self, output_path: Optional[str] = None):
         if output_path:
             self.output_path = Path(output_path)
@@ -102,7 +111,8 @@ class DataLoader:
             if missing_cols:
                 raise ValueError(f"Cannot write {entity_name}.csv — columns missing from output: {missing_cols}")
             output_file = directory / f"{entity_name}.csv"
-            df[field_order].to_csv(output_file, index=False, encoding="utf-8-sig")
+            encoding = "utf-8" if entity_name in self._NO_BOM_ENTITIES else "utf-8-sig"
+            df[field_order].to_csv(output_file, index=False, encoding=encoding)
             label = "Staged" if staging else "Saved"
             logger.info(f"{label} {entity_name}.csv ({len(df)} rows) → {output_file}")
         except Exception as ex:

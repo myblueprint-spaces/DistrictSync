@@ -29,6 +29,22 @@ class TestDataLoader:
         loaded = pd.read_csv(tmp_path / "Test.csv")
         assert list(loaded.columns) == ["A", "B", "C"]
 
+    def test_studentattendance_written_without_bom(self, tmp_path):
+        """StudentAttendance.csv must be plain UTF-8 (no BOM): SpacesEDU's strict
+        attendance parser treats a BOM as part of the case-sensitive first header
+        and rejects the file. Other entities keep the utf-8-sig BOM for Excel."""
+        loader = DataLoader(str(tmp_path))
+        df = pd.DataFrame({"School Number": ["123"]})
+
+        loader.save_to_csv(df, "StudentAttendance", ["School Number"])
+        loader.save_to_csv(df, "Students", ["School Number"])
+
+        attendance = (tmp_path / "StudentAttendance.csv").read_bytes()
+        rostering = (tmp_path / "Students.csv").read_bytes()
+        assert not attendance.startswith(b"\xef\xbb\xbf"), "StudentAttendance.csv must have no BOM"
+        assert attendance.startswith(b"School Number"), "first header must be clean (no BOM glued on)"
+        assert rostering.startswith(b"\xef\xbb\xbf"), "rostering CSVs keep the BOM for Excel"
+
     def test_creates_output_directory(self, tmp_path):
         output_dir = tmp_path / "nested" / "output"
         DataLoader(str(output_dir))
