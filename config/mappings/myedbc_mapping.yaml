@@ -114,12 +114,13 @@ mappings:
       #   - status column auto-resolved from the alias
       #     ["Enrollment status", "Enrolment status"] (first present in the
       #     frame; covers both real two-L and one-L exports). None -> date-only.
-      #   - active_values: ["Active"] (PreReg/Inactive/etc. excluded, per
-      #     docs/partner/faq.md). Status wins when present.
+      #   - active_values: ["Active", "PreReg"] (the Advanced CSV spec's expected
+      #     EnrollStatus values; Inactive/etc. excluded). Status wins when present.
       #   - withdraw_date_column: "Withdraw date" — only a FALLBACK for rows
       #     with no status value (past/unparseable -> Inactive).
-      # Override per-district with a dict, e.g. to roster upcoming-year PreRegs:
-      #   EnrollStatus: {active_values: ["Active", "PreReg"]}
+      # Override per-district with a dict, e.g. to also retain cross-enrolled
+      # students, or to drop PreRegs:
+      #   EnrollStatus: {active_values: ["Active", "PreReg", "Active No Primary"]}
       "EnrollStatus":
       "SchoolCode": "School Number"
       "Homeroom": "Homeroom"

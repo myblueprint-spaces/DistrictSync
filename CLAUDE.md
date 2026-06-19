@@ -156,7 +156,7 @@ Base `myedbc` defines all 7 entity templates; configs select which to emit via `
 
 ## Key Data Flow
 
-- **Students** — Filtered to active-only via the config-driven predicate in `BaseTransformer` (`is_active_mask`): status ∈ `active_values` (default `["Active"]`; PreReg/etc. excluded, `EnrollStatus.active_values` overrides) AND no past withdraw date (hard override, 4 formats). Publishes the active roster to `context.active_student_ids`.
+- **Students** — Filtered to active via the config-driven predicate in `BaseTransformer` (`is_active_mask`): status ∈ `active_values` (default `["Active", "PreReg"]`, the Advanced CSV spec's expected values; Inactive/etc. excluded, `EnrollStatus.active_values` overrides). Status wins when present; the withdraw date is only a fallback for rows with **no** status value (past/unparseable → Inactive, 4 formats). Publishes the active roster to `context.active_student_ids`.
 - **Classes** — Join schedule + course info + staff info + optionally class info (for blended). Homeroom classes auto-generated for configured grades. Class names truncated to 100 chars.
 - **Enrollments** — Homeroom + subject + blended teacher enrollments. Deduplicated on Class ID + User ID + Role. Invalid teacher IDs ("nan", blank) filtered out. **Zero-orphan invariant:** student rows (homeroom + subject) + homeroom-class creation are filtered to `context.active_student_ids` via `BaseTransformer.filter_to_active`, so no enrollment/class references a student absent from `Students.csv`; teacher rows are not filtered.
 - **Anomaly detection** — Warns if any entity drops >20% vs previous run output
@@ -187,6 +187,7 @@ MkDocs deploys to GitHub Pages automatically on release tag push.
 - **Pydantic validation** — all YAML configs validated at startup before any ETL processing begins
 - **`to_raw_dict()`** — `MappingConfig.to_raw_dict()` converts validated config back to raw dicts for the transformer pipeline
 - **Entity order gotcha** — `global_config.entity_order` defaults to `[]` (not None). Use `global_config.get("entity_order") or list(mappings.keys())`
+- **Streamlit Arrow gotcha** — any `st.dataframe` column that mixes numbers with a string sentinel (`"—"`/`"?"`) makes pyarrow infer `int64` and raise `ArrowInvalid` (Streamlit auto-recovers but logs a noisy traceback). Coerce such display columns to a uniform `str` (see `02_Convert._compute_diff`, `03_Run_History._fmt`)
 
 ## Engineering Principles (non-negotiable)
 

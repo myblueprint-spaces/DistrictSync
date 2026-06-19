@@ -34,13 +34,13 @@ class TestEnrollmentStatusFromField:
         result = self._transform_students(df)
         assert len(result) == 1
 
-    def test_prereg_excluded(self):
-        """PreReg students are EXCLUDED by default (per docs/partner/faq.md).
+    def test_prereg_included(self):
+        """PreReg students are INCLUDED by default (Advanced CSV spec).
 
-        PreReg is not in the default ``active_values`` (``["Active"]``), so its
-        label is ``"Inactive"`` and the ``label != "Inactive"`` mask drops it.
-        Districts that roster upcoming-year pre-registrations can opt in via
-        ``EnrollStatus.active_values``. See DECISIONS: "PreReg excluded by default".
+        The default ``active_values`` is ``["Active", "PreReg"]`` — both expected
+        ``EnrollStatus`` values per the Advanced CSV spec — so a PreReg row is
+        retained. Districts can opt PreReg out via ``EnrollStatus.active_values``.
+        See DECISIONS: "PreReg included by default".
         """
         df = pd.DataFrame(
             {
@@ -49,7 +49,7 @@ class TestEnrollmentStatusFromField:
             }
         )
         result = self._transform_students(df)
-        assert len(result) == 0
+        assert len(result) == 1
 
     def test_inactive_filtered(self):
         df = pd.DataFrame(

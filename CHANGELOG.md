@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Per-release download links and auto-generated commit notes live on the
 [GitHub Releases](https://github.com/myblueprint-spaces/DistrictSync/releases) page.
 
+## [Unreleased]
+
+### Fixed
+
+- Windows scheduled-task registration now uses Task Scheduler XML instead of an
+  inline `/TR` command, removing schtasks' 261-character limit (which blocked
+  source-mode scheduling and very long install paths) and the brittle
+  `cmd /c "cd /d …"` quoting.
+- **PreReg students are included by default again.** Restores the default
+  `active_values` to `["Active", "PreReg"]` — the Advanced CSV spec's expected
+  `EnrollStatus` values. v3.2.0 had narrowed the default to `["Active"]`, which
+  silently dropped pre-registered students from `Students.csv`, `Classes.csv`,
+  and `Enrollments.csv` — a breaking change against the spec. The fix lives in
+  code (`BaseTransformer.DEFAULT_ACTIVE_VALUES`); districts can still opt PreReg
+  out — or add statuses such as `Active No Primary` — via
+  `EnrollStatus.active_values`. The withdraw-date logic is unchanged (status wins
+  when present; the date is only a fallback for rows with no status value).
+
 ## [3.2.0] - 2026-06-15
 
 Config-driven active-student filtering. This release changes the **default**
