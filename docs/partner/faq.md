@@ -32,7 +32,7 @@ Yes — use the `--dry-run` flag. It prints a summary of how many rows each enti
 
 **Q: Why are some students missing from the output?**
 
-Only students with `Enrolment Status = Active` are included. Students with status `PreReg`, `Inactive`, or with a past withdrawal date are excluded. Run `--quality` to see a breakdown.
+Students with `Enrolment Status = Active` or `PreReg` are included. Students with status `Inactive` (or any other status), or — when the file has no status column — those with a past withdrawal date, are excluded. Run `--quality` to see a breakdown.
 
 **Q: What does "blended class" mean?**
 

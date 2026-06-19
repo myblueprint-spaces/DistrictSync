@@ -14,11 +14,11 @@ class TestStudentsTransform:
         result = self.transformer.transform(
             student_demographic_df, students_mapping, "Students", raw_data, global_config
         )
-        # PreReg Grace (S007) is EXCLUDED by default (faq.md) — only the 6 Active
-        # rows are retained. PreReg is not in the default active_values.
-        # See DECISIONS: "PreReg excluded by default".
-        active_only = student_demographic_df["enrolment status"] == "Active"
-        assert len(result) == int(active_only.sum())
+        # Active + PreReg are both retained by default (Advanced CSV spec) — PreReg
+        # Grace (S007) stays; only Inactive/other statuses are dropped.
+        # See DECISIONS: "PreReg included by default".
+        active_or_prereg = student_demographic_df["enrolment status"].isin(["Active", "PreReg"])
+        assert len(result) == int(active_or_prereg.sum())
 
         # Verify expected output columns from field_map
         for field in students_mapping["field_map"]:
