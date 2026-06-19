@@ -19,7 +19,7 @@ ui:
 	streamlit run src/ui/Home.py
 
 validate-config:
-	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc','sd40myedbc','sd48myedbc','sd51myedbc','sd54myedbc','sd74myedbc','mbp_all','mbp_core','mbponly']]"
+	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc','sd40myedbc','sd48myedbc','sd51myedbc','sd54myedbc','sd74myedbc','mbp_all','mbp_core','mbponly','sd51attendance']]"
 
 # Build Windows .exe locally (must run on Windows).
 # Mirrors .github/workflows/release.yml:build-windows so local builds
@@ -68,6 +68,7 @@ build-win:
 	  --hidden-import=src.etl.transformers.family \
 	  --hidden-import=src.etl.transformers.course_info \
 	  --hidden-import=src.etl.transformers.student_courses \
+	  --hidden-import=src.etl.transformers.student_attendance \
 	  --hidden-import=src.etl.transformers.registry \
 	  --hidden-import=src.etl.transformers.context \
 	  src/main.py

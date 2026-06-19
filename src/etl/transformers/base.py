@@ -30,6 +30,7 @@ class BaseTransformer(ABC):
             "grade_to_ceds",
             "map_role",
             "truncate_name",
+            "format_dd_mmm_yyyy",
         }
     )
 
@@ -315,6 +316,29 @@ class BaseTransformer(ABC):
         for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
             try:
                 return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+        return s
+
+    @staticmethod
+    def format_dd_mmm_yyyy(value: Any) -> str:
+        """Convert various MyEd date formats to ``DD-MMM-YYYY`` (e.g. '18-Sep-2024').
+
+        The SpacesEDU StudentAttendance contract requires the ``DD-MMM-YYYY``
+        shape. Accepts dd-MMM-yyyy (already correct), ISO yyyy-mm-dd, and
+        m/d/yyyy / d/m/yyyy. Returns the original trimmed string unchanged when
+        no format matches (fail-visible — a malformed date stays inspectable
+        rather than silently blanked), or '' for NaN/None/empty/"nan" inputs.
+        Mirrors :meth:`normalize_iso_date` but for the day-first output shape.
+        """
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ""
+        s = str(value).strip()
+        if not s or s.lower() == "nan":
+            return ""
+        for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(s, fmt).strftime("%d-%b-%Y")
             except ValueError:
                 continue
         return s

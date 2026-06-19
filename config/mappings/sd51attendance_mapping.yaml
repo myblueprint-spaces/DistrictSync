@@ -1,0 +1,14 @@
+# SD51 attendance-only tier — generates ONLY StudentAttendance.csv, fully
+# independent of the rostering (advanced-CSV) pipeline. Inherits all of SD51's
+# settings AND the base StudentAttendance entity + global_config.attendance
+# config, then narrows enabled_entities to just StudentAttendance (deep-merge
+# REPLACES the list). Needs only the two absence GDEs in the input folder —
+# no rostering GDEs required.
+#
+#   python -m src.main --sis sd51attendance --input data/input --output data/output
+#
+_base: sd51myedbc
+
+global_config:
+  enabled_entities:
+    - StudentAttendance

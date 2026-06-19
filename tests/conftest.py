@@ -145,6 +145,98 @@ def enrollments_mapping(base_mapping):
     return base_mapping["mappings"]["Enrollments"]
 
 
+@pytest.fixture
+def student_attendance_mapping(base_mapping):
+    """SD51-shaped StudentAttendance mapping: BOTH bands declared.
+
+    The base now declares NO `source_files` for StudentAttendance — each
+    district selects the band(s) it runs by which roles it declares. This
+    fixture starts from the base entity (headers + 28-col field_map) and adds
+    both `source_files` roles, exactly as SD51 does, so the transformer resolves
+    both bands by role. Single-band variants override `source_files` below.
+    """
+    mapping = dict(base_mapping["mappings"]["StudentAttendance"])
+    mapping["source_files"] = {
+        "daily_absences": "StudentDailyAbsences.txt",
+        "period_absences": "StudentPeriodAbsences.txt",
+    }
+    return mapping
+
+
+@pytest.fixture
+def student_attendance_daily_only_mapping(student_attendance_mapping):
+    """StudentAttendance mapping declaring ONLY the K-7 daily band."""
+    mapping = dict(student_attendance_mapping)
+    mapping["source_files"] = {"daily_absences": "StudentDailyAbsences.txt"}
+    return mapping
+
+
+@pytest.fixture
+def student_attendance_period_only_mapping(student_attendance_mapping):
+    """StudentAttendance mapping declaring ONLY the 8-12 period band."""
+    mapping = dict(student_attendance_mapping)
+    mapping["source_files"] = {"period_absences": "StudentPeriodAbsences.txt"}
+    return mapping
+
+
+@pytest.fixture
+def attendance_global_config(base_mapping):
+    """global_config carrying the real `attendance.daily` derivation block.
+
+    Mirrors how the pipeline passes global_config to the transformer; the
+    StudentAttendance transformer reads `global_config.attendance.daily`.
+    """
+    return dict(base_mapping.get("global_config", {}))
+
+
+@pytest.fixture
+def student_daily_absences_df():
+    """Synthetic Student Daily Absences (K-7) — headers already injected/normalized.
+
+    Columns use the normalized (lowercase) names the extractor produces after
+    injecting the headerless file's `headers:` list. NO real PII.
+    """
+    return pd.DataFrame(
+        {
+            "school number": ["100", "100", "100", "100", "100"],
+            "student number": ["S1", "S2", "S3", "S4", "S5"],
+            "absence date": ["18-Sep-2024", "18-Sep-2024", "19-Sep-2024", "20-Sep-2024", "20-Sep-2024"],
+            "absent code am": ["A", "A", "T", "A", ""],  # last row blank -> dropped
+            "authorized am": ["N", "Y", "N", "N", ""],
+            "portion absent": [1.0, 0.5, 1.0, 0.25, 0.0],
+        }
+    )
+
+
+@pytest.fixture
+def student_period_absences_df():
+    """Synthetic Student Period Absences (8-12) — headers injected/normalized.
+
+    Per-period PASS-THROUGH band: one output row per row here, category passed
+    through as-is. Columns use the normalized (lowercase) names the extractor
+    produces after injecting the headerless `StudentPeriodAbsences.txt` headers.
+    Includes a non-accepted category (`OffSite`) that must survive, a blank
+    category and a blank student-number row (both dropped), and two identical
+    rows (no dedup -> two output rows). NO real PII.
+    """
+    return pd.DataFrame(
+        {
+            "school number": ["100", "100", "100", "100", "100", "100", "100"],
+            "student number": ["P1", "P1", "P2", "P3", "P4", "", "P5"],
+            "absence date": [
+                "2024-09-18",  # ISO -> reformatted to 18-Sep-2024
+                "2024-09-18",  # identical to row 0 -> NOT deduped
+                "19-Sep-2024",
+                "19-Sep-2024",
+                "20-Sep-2024",
+                "20-Sep-2024",  # blank student number -> dropped
+                "20-Sep-2024",  # blank category -> dropped
+            ],
+            "absence category": ["A", "A", "L", "OffSite", "AD", "A", ""],
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # Synthetic GDE DataFrames
 # ---------------------------------------------------------------------------

@@ -5,6 +5,21 @@ version: 1.9
 sis: MyEducationBC
 district_name: SD51 - Boundary School District
 
+global_config:
+  # SD51 has no enabled_entities of its own and deep-merge REPLACES lists, so
+  # this MUST list the full set — the base 5 rostering entities PLUS the opt-in
+  # StudentAttendance — or the rostering entities would vanish. SD51 runs BOTH
+  # attendance bands; it declares both `source_files` roles under the
+  # `mappings.StudentAttendance` entry below (the base declares none, so each
+  # district selects the band(s) it runs by which roles it declares).
+  enabled_entities:
+    - Students
+    - Staff
+    - Family
+    - Classes
+    - Enrollments
+    - StudentAttendance
+
 mappings:
   Students:
     source_files:
@@ -25,3 +40,11 @@ mappings:
   Enrollments:
     source_files:
       student_demographic: "StudentDemographicEnhanced.txt"
+
+  # SD51 runs both attendance bands. Declaring both source_files roles selects
+  # both bands; the transformer resolves each by role (order-independent), so
+  # `daily_absences` first keeps the K-7 daily file as the pipeline's primary.
+  StudentAttendance:
+    source_files:
+      daily_absences: "StudentDailyAbsences.txt"
+      period_absences: "StudentPeriodAbsences.txt"

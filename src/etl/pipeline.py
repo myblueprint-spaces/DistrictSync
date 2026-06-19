@@ -104,6 +104,7 @@ def _emit_run_log(
         "Enrollments": len(outputs.get("Enrollments", [])),
         "CourseInfo": len(outputs.get("CourseInfo", [])),
         "StudentCourses": len(outputs.get("StudentCourses", [])),
+        "StudentAttendance": len(outputs.get("StudentAttendance", [])),
         "sftp_attempted": sftp_attempted,
         "sftp_ok": sftp_ok,
         "error": error,

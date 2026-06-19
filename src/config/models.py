@@ -230,6 +230,13 @@ class GlobalConfig(BaseModel):
     # Empty list means "all defined mappings are enabled" (backward-compatible).
     # Lets one config file define more entity templates than it activates.
     enabled_entities: list[str] = Field(default_factory=list)
+    # StudentAttendance derivation knobs — read at runtime by
+    # `StudentAttendanceTransformer`. Kept as an OPEN, lightly-typed dict (not a
+    # nested model) so SpacesEDU/SD51 can tune the category map, portion→row
+    # thresholds, and source-column names WITHOUT a code release, and so a later
+    # slice can add the 8-12 (Enhanced Period) keys without a model change.
+    # Empty/absent when the entity is not enabled (inert).
+    attendance: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -352,6 +359,7 @@ class MappingConfig(BaseModel):
             "excluded_course_flavors": list(self.global_config.excluded_course_flavors),
             "course_start_grade": self.global_config.course_start_grade,
             "enabled_entities": list(self.global_config.enabled_entities),
+            "attendance": dict(self.global_config.attendance),
         }
 
         return {"mappings": mappings_raw, "global_config": global_raw}

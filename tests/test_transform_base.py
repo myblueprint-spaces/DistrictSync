@@ -122,6 +122,37 @@ class TestFilterExcludedCourseCodePatterns:
         assert list(out["course code"]) == ["MAT10"]
 
 
+class TestFormatDdMmmYyyy:
+    """`format_dd_mmm_yyyy` — DD-MMM-YYYY output for the SpacesEDU attendance feed.
+
+    Mirrors `normalize_iso_date` but produces the day-first shape required by
+    the StudentAttendance contract.
+    """
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("18-Sep-2024", "18-Sep-2024"),  # already correct shape
+            ("2024-09-18", "18-Sep-2024"),  # ISO
+            ("09/18/2024", "18-Sep-2024"),  # m/d/yyyy
+            ("18/09/2024", "18-Sep-2024"),  # d/m/yyyy
+        ],
+    )
+    def test_parses_known_formats(self, value, expected):
+        assert BaseTransformer.format_dd_mmm_yyyy(value) == expected
+
+    @pytest.mark.parametrize("value", ["", None, np.nan, "nan", "NaN", "  "])
+    def test_blank_like_returns_empty(self, value):
+        assert BaseTransformer.format_dd_mmm_yyyy(value) == ""
+
+    def test_unparseable_returned_unchanged(self):
+        # Fail-visible: a malformed date stays inspectable, not silently blanked.
+        assert BaseTransformer.format_dd_mmm_yyyy("not-a-date") == "not-a-date"
+
+    def test_is_in_allowed_transforms(self):
+        assert "format_dd_mmm_yyyy" in BaseTransformer.ALLOWED_TRANSFORMS
+
+
 class TestCleanCourseCodeFlavor:
     def test_empty_flavors_returns_code_unchanged(self):
         assert BaseTransformer.clean_course_code_flavor("MATH-DL01", []) == "MATH-DL01"
