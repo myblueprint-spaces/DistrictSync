@@ -58,7 +58,7 @@ _Last generated from `main` @ c669404._
 
 ## src/scheduler/
 
-- `src/scheduler/windows.py` — Windows Task Scheduler integration: `register_task()` / `query_task()` / `delete_task()` via `schtasks.exe`; when `run_as_password` is supplied, registers with `/RU <user> /RP <pw> /RL HIGHEST` (runs unattended whether or not the user is logged on); `current_run_as_user()` returns `DOMAIN\user`; password is redacted to `***` in all logs; validates all inputs through `validators.py` before any subprocess call.
+- `src/scheduler/windows.py` — Windows Task Scheduler integration: `register_task()` / `query_task()` / `delete_task()` via `schtasks.exe`; registers via **Task Scheduler XML** (`schtasks /Create /XML`, no 261-char `/TR` limit and no `cmd /c "cd /d …"` wrapper — `_build_task_xml()` sets `<WorkingDirectory>`/schedule/principal natively, every interpolated value XML-escaped); when `run_as_password` is supplied, registers with `/RU <user> /RP <pw>` + `<LogonType>Password</LogonType>` and `<RunLevel>HighestAvailable</RunLevel>` (runs unattended whether or not the user is logged on; password never written to the XML); `current_run_as_user()` returns `DOMAIN\user`; password is redacted to `***` in all logs; validates all inputs through `validators.py` before any subprocess call.
 - `src/scheduler/linux.py` — Linux/macOS cron integration: `register_cron()` / `delete_cron()` append/remove a sentinel-tagged crontab entry via the system `crontab` command; uses `shlex.quote()` for safe shell escaping.
 
 ---

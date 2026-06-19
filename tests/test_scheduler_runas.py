@@ -1,9 +1,13 @@
 """Tests for the Windows scheduler run-as / password-redaction behaviour.
 
-Covers Slice 1 of the unattended-SFTP-schedule hardening:
-  - register_task emits /RU /RP /RL HIGHEST when a password is supplied
-  - register_task stays byte-for-byte backward compatible without a password
-  - the run-as password is never written to logs (redacted to ***)
+Covers the unattended-SFTP-schedule hardening, re-expressed against the
+Task Scheduler XML registration model:
+  - register_task passes /RU <user> /RP <pw> on the command line when a
+    password is supplied (the run level now lives in the XML's <RunLevel>,
+    not in a /RL flag)
+  - register_task stays backward compatible without a password (no /RU /RP)
+  - the run-as password is never written to logs (redacted to ***) nor to the
+    generated XML
   - current_run_as_user() resolution + fallback
   - validate_run_as_user() accepts DOMAIN\\user / user, rejects bad input
 
@@ -13,8 +17,18 @@ All subprocess calls are mocked — no OS scheduler interaction needed.
 import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from xml.etree import ElementTree as ET
 
 import pytest
+
+# Task Scheduler XML namespace used by all generated documents.
+_NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+
+
+def _xml_arg(args: list[str]) -> str:
+    """Return the temp-XML path that follows ``/XML`` in a schtasks arg list."""
+    return args[args.index("/XML") + 1]
+
 
 # -----------------------------------------------------------------------
 # register_task with a run-as password
@@ -23,11 +37,18 @@ import pytest
 
 class TestRegisterTaskRunAs:
     @patch("src.scheduler.windows.subprocess.run")
-    def test_password_emits_ru_rp_rl_highest(self, mock_run):
-        """A supplied password adds /RU <user> /RP <pw> /RL HIGHEST in order."""
+    def test_password_emits_ru_rp_and_xml_highest(self, mock_run):
+        """A supplied password adds /RU <user> /RP <pw>; HighestAvailable lives in the XML."""
         from src.scheduler.windows import register_task
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="SUCCESS", stderr="")
+        captured: dict[str, str] = {}
+
+        def _capture(args, **_kwargs):
+            with open(_xml_arg(args), encoding="utf-16") as fh:
+                captured["xml"] = fh.read()
+            return MagicMock(returncode=0, stdout="SUCCESS", stderr="")
+
+        mock_run.side_effect = _capture
 
         ok, _ = register_task(
             task_name="DistrictSync_Daily",
@@ -42,17 +63,21 @@ class TestRegisterTaskRunAs:
 
         assert ok is True
         args = mock_run.call_args[0][0]
+        # XML registration; the run level is NOT a /RL command flag any more.
+        assert "/XML" in args
+        assert "/RL" not in args
         # /RU is immediately followed by the resolved user.
-        ru_idx = args.index("/RU")
-        assert args[ru_idx + 1] == "CORP\\jane"
+        assert args[args.index("/RU") + 1] == "CORP\\jane"
         # /RP is immediately followed by the raw password.
-        rp_idx = args.index("/RP")
-        assert args[rp_idx + 1] == "s3cr3t!"
-        # /RL is immediately followed by HIGHEST.
-        rl_idx = args.index("/RL")
-        assert args[rl_idx + 1] == "HIGHEST"
+        assert args[args.index("/RP") + 1] == "s3cr3t!"
         # No /IT — that would force logged-on-only and defeat the purpose.
         assert "/IT" not in args
+        # The XML carries Password logon + HighestAvailable; never the password.
+        root = ET.fromstring(captured["xml"])  # nosec B314
+        assert root.find(".//t:Principal/t:LogonType", _NS).text == "Password"
+        assert root.find(".//t:Principal/t:RunLevel", _NS).text == "HighestAvailable"
+        assert root.find(".//t:Principal/t:UserId", _NS).text == "CORP\\jane"
+        assert "s3cr3t!" not in captured["xml"]
 
     @patch("src.scheduler.windows.current_run_as_user", return_value="WORKGROUP\\bob")
     @patch("src.scheduler.windows.subprocess.run")
@@ -76,11 +101,18 @@ class TestRegisterTaskRunAs:
         assert args[args.index("/RU") + 1] == "WORKGROUP\\bob"
 
     @patch("src.scheduler.windows.subprocess.run")
-    def test_run_highest_false_omits_rl(self, mock_run):
-        """run_highest=False keeps /RU /RP but drops /RL."""
+    def test_run_highest_false_uses_least_privilege_in_xml(self, mock_run):
+        """run_highest=False keeps /RU /RP and sets <RunLevel>LeastPrivilege in the XML."""
         from src.scheduler.windows import register_task
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
+        captured: dict[str, str] = {}
+
+        def _capture(args, **_kwargs):
+            with open(_xml_arg(args), encoding="utf-16") as fh:
+                captured["xml"] = fh.read()
+            return MagicMock(returncode=0, stdout="OK", stderr="")
+
+        mock_run.side_effect = _capture
 
         register_task(
             task_name="DistrictSync_Daily",
@@ -98,6 +130,8 @@ class TestRegisterTaskRunAs:
         assert "/RU" in args
         assert "/RP" in args
         assert "/RL" not in args
+        root = ET.fromstring(captured["xml"])  # nosec B314
+        assert root.find(".//t:Principal/t:RunLevel", _NS).text == "LeastPrivilege"
 
     @patch("src.scheduler.windows.subprocess.run")
     def test_invalid_run_as_user_raises(self, mock_run):
@@ -166,8 +200,9 @@ class TestRegisterTaskBackwardCompat:
         assert "/RU" not in args
         assert "/RP" not in args
         assert "/RL" not in args
-        # The base command is exactly what it was before this slice.
+        # The base command still starts the same way; registration is via /XML.
         assert args[:3] == ["schtasks", "/Create", "/F"]
+        assert "/XML" in args
 
 
 # -----------------------------------------------------------------------

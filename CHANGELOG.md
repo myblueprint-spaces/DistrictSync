@@ -11,6 +11,10 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Fixed
 
+- Windows scheduled-task registration now uses Task Scheduler XML instead of an
+  inline `/TR` command, removing schtasks' 261-character limit (which blocked
+  source-mode scheduling and very long install paths) and the brittle
+  `cmd /c "cd /d …"` quoting.
 - **PreReg students are included by default again.** Restores the default
   `active_values` to `["Active", "PreReg"]` — the Advanced CSV spec's expected
   `EnrollStatus` values. v3.2.0 had narrowed the default to `["Active"]`, which
