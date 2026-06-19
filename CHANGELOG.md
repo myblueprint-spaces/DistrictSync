@@ -9,6 +9,12 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Added
+
+- Setup Wizard Step 1 now has a 📁 Browse button beside the input/output
+  directory fields that opens the native folder picker (the text box still
+  accepts manual entry/paste).
+
 ### Fixed
 
 - Windows scheduled-task registration now uses Task Scheduler XML instead of an
