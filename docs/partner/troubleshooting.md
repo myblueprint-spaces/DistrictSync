@@ -128,6 +128,33 @@ Check the **SpacesEDU import report** for details. See also [FAQ — What happen
 
 ---
 
+## A student appears in the wrong class
+
+A student shows up in an old or incorrect class in SpacesEDU even though MyEdBC was updated.
+
+**The fix depends on the student's grade**, because different GDE files drive placement for different grades:
+
+| Student's grade | Class placement comes from | So the field to fix is in… |
+|-----------------|----------------------------|----------------------------|
+| K–7 (homeroom grades) | **Student Demographic** — the `Homeroom` and `Teacher name` columns | the Student Demographic GDE |
+| 8–12 | **Student Schedule** — the course-section rows | the Student Schedule GDE |
+
+DistrictSync rebuilds every class and enrollment **from scratch on each run** — it never remembers a previous run. So if the output still places a student in the wrong class, the **current** input file named above still contains that placement. The fix is always the same shape: correct it in MyEdBC → re-export that GDE → re-run.
+
+**Homeroom-grade students (K–7) are the common surprise.** Their class is named `<Homeroom> - <Teacher name> (<year>)` (e.g. `10 Eng6/7 - Bali-Kainth, P. (2026)`), taken **straight from the Student Demographic `Homeroom` and `Teacher name` columns** — *not* from who teaches their courses. If a student was moved to a new homeroom but still appears in the old one, the **`Homeroom` field on their demographic record was never updated in MyEdBC**. Moving them in the schedule (their course teachers) will *not* fix it — and re-exporting only the Student Schedule will *not* fix it. Update the homeroom assignment in MyEdBC, then re-export the Student Demographic file.
+
+> **A stale GDE cannot be auto-detected.** DistrictSync faithfully transforms whatever it is handed; it has no way to know an export is out of date. The only built-in guard is the >20 % record-drop warning (above), which won't catch scattered individual changes. Keeping exports current — especially the Student Schedule at **semester rollover**, when secondary timetables change wholesale — is an operational responsibility.
+
+---
+
+## A student isn't getting the expected homeroom class
+
+Homeroom classes are only created for grades listed in the config's `homeroom_grades` (compared after CEDS normalization). DistrictSync maps several MyEdBC grade codes onto a homeroom grade automatically — for example `KF` and `EL` both normalize to `KG`.
+
+**Any grade code the tool doesn't recognize falls through to `UG` (ungraded)** and is treated as a non-homeroom grade, so that student is routed through the *subject-class* (schedule) path and gets no homeroom. If a district introduces a new grade code and its students unexpectedly have no homeroom, the code is likely missing from the grade map — contact SpacesEDU to have it added.
+
+---
+
 ## Log location
 
 Every ETL run — wizard, scheduled task, and CLI — writes to a single

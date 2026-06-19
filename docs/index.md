@@ -68,7 +68,7 @@ A district with non-standard file naming AND the myBlueprint+ tier composes the 
 
 ### Key features
 
-- **Active student filtering** — only Active students exported; PreReg and Inactive excluded
+- **Active student filtering** — Active and PreReg students exported; Inactive and other statuses excluded
 - **CEDS grade mapping** — BC grade codes (K, 1–12) mapped to CEDS standard format
 - **Blended class detection** — same teacher/time/multi-grade sections merged automatically
 - **Homeroom generation** — elementary homeroom classes auto-generated from demographics

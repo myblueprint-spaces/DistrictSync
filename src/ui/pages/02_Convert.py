@@ -118,7 +118,11 @@ def _compute_diff(
         rows.append(
             {
                 "Entity": name,
-                "Previous": len(old_df),
+                # Keep "Previous" a uniform string: it shares this column with the
+                # "—"/"?" sentinels above. A mixed int/str object column makes
+                # pyarrow (Streamlit's Arrow serializer) infer int64 and fail on
+                # the em-dash. Delta is computed from the int before stringifying.
+                "Previous": str(len(old_df)),
                 "New": len(new_df),
                 "Delta": f"{'+' if delta >= 0 else ''}{delta}",
                 "Added columns": ", ".join(added) or "—",
