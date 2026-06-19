@@ -12,6 +12,7 @@ from src.etl.transformers.course_info import CourseInfoTransformer
 from src.etl.transformers.enrollments import EnrollmentTransformer
 from src.etl.transformers.family import FamilyTransformer
 from src.etl.transformers.staff import StaffTransformer
+from src.etl.transformers.student_attendance import StudentAttendanceTransformer
 from src.etl.transformers.student_courses import StudentCoursesTransformer
 from src.etl.transformers.students import StudentTransformer
 
@@ -43,6 +44,7 @@ TRANSFORMER_REGISTRY: dict[str, BaseTransformer] = {
     "Enrollments": EnrollmentTransformer(),
     "CourseInfo": CourseInfoTransformer(),
     "StudentCourses": StudentCoursesTransformer(),
+    "StudentAttendance": StudentAttendanceTransformer(),
 }
 
 

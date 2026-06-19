@@ -175,3 +175,101 @@ class TestUploadCsvs:
             uploader.upload_csvs(tmp_path)
 
         assert sorted(captured_local) == ["Staff.csv", "Students.csv"]
+
+
+class TestUploadStudentAttendance:
+    """StudentAttendance.csv ships standalone, outside the rostering zip."""
+
+    def test_attendance_delivered_standalone_and_excluded_from_zip(self, tmp_path):
+        """Rostering CSVs zip together; StudentAttendance.csv is put separately."""
+        import zipfile
+
+        (tmp_path / "Students.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
+        (tmp_path / "Enrollments.csv").write_text("class,user\nC1,1\n", encoding="utf-8")
+        (tmp_path / "StudentAttendance.csv").write_text(
+            "School Number,Absence Date,Absence Category,Student Number\n,01-Sep-2025,A,1\n",
+            encoding="utf-8",
+        )
+
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        mock_sftp = MagicMock()
+        mock_client = MagicMock()
+
+        # Capture the namelist of any ZIP put, and all remote paths.
+        zipped_names: list[str] = []
+
+        def capture_put(local, remote):
+            if str(local).endswith(".zip"):
+                with zipfile.ZipFile(local) as zf:
+                    zipped_names.extend(zf.namelist())
+
+        mock_sftp.put.side_effect = capture_put
+
+        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
+            uploaded = uploader.upload_csvs(tmp_path)
+
+        # The zip contains the rostering CSVs but NOT the attendance file.
+        assert sorted(zipped_names) == ["Enrollments.csv", "Students.csv"]
+        assert "StudentAttendance.csv" not in zipped_names
+
+        # Two puts: the rostering zip + the standalone attendance file.
+        assert mock_sftp.put.call_count == 2
+        remote_paths = [call.args[1] for call in mock_sftp.put.call_args_list]
+        assert any(p.endswith("/StudentAttendance.csv") for p in remote_paths)
+        assert "/upload/StudentAttendance.csv" in remote_paths
+
+        # Return value reports both the zipped CSVs and the standalone file.
+        assert "StudentAttendance.csv" in uploaded
+        assert "Students.csv" in uploaded
+        assert "Enrollments.csv" in uploaded
+        mock_client.close.assert_called_once()
+
+    def test_no_standalone_put_when_attendance_absent(self, tmp_path):
+        """Districts without an attendance file: zip-only, behaviour unchanged."""
+        import zipfile
+
+        (tmp_path / "Students.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
+        (tmp_path / "Staff.csv").write_text("id,role\n1,teacher\n", encoding="utf-8")
+
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        mock_sftp = MagicMock()
+        mock_client = MagicMock()
+
+        zipped_names: list[str] = []
+
+        def capture_put(local, remote):
+            with zipfile.ZipFile(local) as zf:
+                zipped_names.extend(zf.namelist())
+
+        mock_sftp.put.side_effect = capture_put
+
+        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
+            uploaded = uploader.upload_csvs(tmp_path)
+
+        # Single put (the zip), and the zip holds every rostering CSV.
+        assert mock_sftp.put.call_count == 1
+        assert mock_sftp.put.call_args.args[1].endswith(".zip")
+        assert sorted(zipped_names) == ["Staff.csv", "Students.csv"]
+        assert sorted(uploaded) == ["Staff.csv", "Students.csv"]
+
+    def test_attendance_only_no_empty_zip(self, tmp_path):
+        """Only StudentAttendance.csv present: deliver it standalone, no empty zip."""
+        (tmp_path / "StudentAttendance.csv").write_text(
+            "School Number,Absence Date,Absence Category,Student Number\n,01-Sep-2025,A,1\n",
+            encoding="utf-8",
+        )
+
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        mock_sftp = MagicMock()
+        mock_client = MagicMock()
+
+        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
+            uploaded = uploader.upload_csvs(tmp_path)
+
+        # Exactly one put — the standalone attendance file, no empty zip.
+        assert mock_sftp.put.call_count == 1
+        remote_path = mock_sftp.put.call_args.args[1]
+        assert remote_path == "/upload/StudentAttendance.csv"
+        assert not remote_path.endswith(".zip")
+        assert uploaded == ["StudentAttendance.csv"]
+        mock_client.close.assert_called_once()

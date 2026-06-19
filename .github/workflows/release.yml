@@ -65,6 +65,7 @@ jobs:
           --hidden-import=src.etl.transformers.family
           --hidden-import=src.etl.transformers.course_info
           --hidden-import=src.etl.transformers.student_courses
+          --hidden-import=src.etl.transformers.student_attendance
           --hidden-import=src.etl.transformers.registry
           --hidden-import=src.etl.transformers.context
           src/main.py
@@ -106,6 +107,7 @@ jobs:
           --hidden-import=src.etl.transformers.family
           --hidden-import=src.etl.transformers.course_info
           --hidden-import=src.etl.transformers.student_courses
+          --hidden-import=src.etl.transformers.student_attendance
           --hidden-import=src.etl.transformers.registry
           --hidden-import=src.etl.transformers.context
           src/main.py
@@ -146,6 +148,7 @@ jobs:
           --hidden-import=src.etl.transformers.family
           --hidden-import=src.etl.transformers.course_info
           --hidden-import=src.etl.transformers.student_courses
+          --hidden-import=src.etl.transformers.student_attendance
           --hidden-import=src.etl.transformers.registry
           --hidden-import=src.etl.transformers.context
           src/main.py

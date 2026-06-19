@@ -196,14 +196,14 @@ Priority order: **SOLID > DRY > KISS > YAGNI**. Keep layers isolated (UI / ETL-b
 - **Validate at boundaries.** Pydantic validates configs at load; GDE inputs are untrusted — check for required columns rather than `KeyError`-ing mid-transform.
 - **Single source of truth.** Never duplicate config, types, or constants across files.
 
-The **full, reusable quality bar** — every dimension an implementation is held to (performance/caching, security/secrets, privacy/PII, resilience, concurrency, data integrity, observability, extensibility, i18n, …) — lives in **`docs/ENGINEERING_STANDARDS.md`**, a *growing catch-all*. Per change, apply the **relevant** dimensions *fully* (never skip a relevant one; don't gold-plate irrelevant ones); you may **add** dimensions and may **justify a novel pattern** rather than be confined to known ones. Its **Current scope** section tracks which dimensions are live in DistrictSync *today* (a non-capping snapshot that grows with the stack).
+The **full, reusable quality bar** — every dimension an implementation is held to (performance/caching, security/secrets, privacy/PII, resilience, concurrency, data integrity, observability, extensibility, i18n, …) — lives in **`docs/claugentic-ENGINEERING_STANDARDS.md`**, a *growing catch-all*. Per change, apply the **relevant** dimensions *fully* (never skip a relevant one; don't gold-plate irrelevant ones); you may **add** dimensions and may **justify a novel pattern** rather than be confined to known ones. Its **Current scope** section tracks which dimensions are live in DistrictSync *today* (a non-capping snapshot that grows with the stack).
 
 ## Configurable Columns (core rule)
 
 GDE/source column names MUST come from the district `field_map` — never hardcoded in transformer code. Districts rename columns, so the mapping layer is the single source of truth.
 - Map outputs via `BaseTransformer.apply_field_map(...)`. For direct column access, resolve the name from the entity's `field_map` with a sensible default — no inline literals like `record.get("final mark")`.
 - The ONLY sanctioned hardcoded column names are the shared structural join keys in `src/etl/column_names.py` (`SCHOOL_NUMBER`, `MASTER_TIMETABLE_ID`, …). Add new shared keys there, not as scattered literals.
-- Known debt: `student_courses.py` bypasses this (hardcodes ~10 source columns and ignores its `field_map` for input — the field_map there only sets output column order). Migrate to config-driven columns; see `docs/DECISIONS.md`.
+- Known debt: `student_courses.py` bypasses this (hardcodes ~10 source columns and ignores its `field_map` for input — the field_map there only sets output column order). Migrate to config-driven columns; see `docs/claugentic-DECISIONS.md`.
 
 ## Output Targeting (`enabled_entities`)
 
@@ -215,21 +215,21 @@ GDE/source column names MUST come from the district `field_map` — never hardco
 
 ## Harness Discipline
 
-- **Read `docs/ARCHITECTURE_TREE.md` first** to locate files — don't explore the tree blindly. It's the single-source index (one line per source file).
-- **Keep it current:** adding/moving/removing an indexed source file (`src/**/*.py`, `config/mappings/*.yaml`) requires updating `docs/ARCHITECTURE_TREE.md` in the same change — with a one-line description. Enforced by `scripts/check_architecture_tree.py`, wired as a **`PostToolUse(Write)` nudge + `Stop` backstop** in `.claude/settings.json` (also `make check-tree`/CI): the script checks presence/staleness and prompts on a new/undocumented file; **the agent that created the file authors the description** (a script can't write meaningful context). Requires `python` on PATH; Claude Code will ask each dev to approve the project hooks on first use.
-- **Record non-trivial decisions** as dated one-liners in `docs/DECISIONS.md`, and consult it before re-litigating a past choice.
-- **Keep this file lean — it loads into every session.** Dense one-liners only; **index into the code and docs, don't duplicate them** — no pasted code, nothing an agent can read straight from the source, no restating `WORKFLOW.md`/`ENGINEERING_STANDARDS.md`. Add only commands, non-obvious gotchas, patterns, and project rules; point to the canonical doc rather than copy it.
+- **Read `docs/claugentic-ARCHITECTURE_TREE.md` first** to locate files — don't explore the tree blindly. It's the single-source index (one line per source file).
+- **Keep it current:** adding/moving/removing an indexed source file (`src/**/*.py`, `config/mappings/*.yaml`) requires updating `docs/claugentic-ARCHITECTURE_TREE.md` in the same change — with a one-line description. Enforced by `scripts/claugentic-check_architecture_tree.py`, wired as a **`PostToolUse(Write)` nudge + `Stop` backstop** in `.claude/settings.json` (there is no CI/Makefile tree target): the script checks presence/staleness and prompts on a new/undocumented file; **the agent that created the file authors the description** (a script can't write meaningful context). Requires `python` on PATH; Claude Code will ask each dev to approve the project hooks on first use.
+- **Record non-trivial decisions** as dated one-liners in `docs/claugentic-DECISIONS.md`, and consult it before re-litigating a past choice.
+- **Keep this file lean — it loads into every session.** Dense one-liners only; **index into the code and docs, don't duplicate them** — no pasted code, nothing an agent can read straight from the source, no restating `claugentic-WORKFLOW.md`/`claugentic-ENGINEERING_STANDARDS.md`. Add only commands, non-obvious gotchas, patterns, and project rules; point to the canonical doc rather than copy it.
 
 ## Development Workflow
 
-Substantial work (new subsystem, cross-cutting refactor, shared-contract/pattern/standard change, security boundary, or ~8+ files) follows the staged pipeline in **`docs/WORKFLOW.md`** — *triage → discuss → plan (`.claude/plans/`) → adversarial plan-review → spec → **user approval** → implement (isolated branch) → verify → land → retrospect* (see WORKFLOW.md for the gate detail, roles, and Definition of Done). Small/mechanical changes take the lightweight path (implement + verify). **Triage continuously:** the moment a conversation is shaping into substantial work, stop free-coding — ask questions, enter plan mode, then follow the pipeline.
+Substantial work (new subsystem, cross-cutting refactor, shared-contract/pattern/standard change, security boundary, or ~8+ files) follows the staged pipeline in **`docs/claugentic-WORKFLOW.md`** — *triage → discuss → plan (`.claude/plans/`) → adversarial plan-review → spec → **user approval** → implement (isolated branch) → verify → land → retrospect* (see WORKFLOW.md for the gate detail, roles, and Definition of Done). Small/mechanical changes take the lightweight path (implement + verify). **Triage continuously:** the moment a conversation is shaping into substantial work, stop free-coding — ask questions, enter plan mode, then follow the pipeline.
 
 Three rules are non-negotiable:
 - **Slice small, land complete.** Every unit must be finishable by one specialist agent in a single ≤1M-context session and leave **no half-done state or new tech debt** — if it doesn't fit, decompose further.
 - **Delegate liberally.** Use subagents freely and in parallel (no resource constraints) to preserve the orchestrator's context; the orchestrator picks whichever role(s) fit from the growing `.claude/agents/` library.
-- **The harness is living.** Stage 9 feeds learnings back into STANDARDS/CLAUDE.md, the `.claude/agents/` role library, and `docs/WORKFLOW.md` itself, so each task makes the next smarter. The orchestrator selects whichever specialist role(s) fit the task (starter set: `plan-reviewer`, `implementer-architect`, `architect-reviewer`).
+- **The harness is living.** Stage 9 feeds learnings back into STANDARDS/CLAUDE.md, the `.claude/agents/` role library, and `docs/claugentic-WORKFLOW.md` itself, so each task makes the next smarter. The orchestrator selects whichever specialist role(s) fit the task (starter set: `claugentic-dev-harness:plan-reviewer`, `claugentic-dev-harness:implementer-architect`, `claugentic-dev-harness:architect-reviewer`).
 
-**Definition of Done** — a slice may land only when all hold: acceptance criteria met · in-scope `ENGINEERING_STANDARDS` dimensions pass the `architect-reviewer` audit · all gates green (tests + SD74 snapshot + `check-tree` + lint/type/security) · **no new tech debt**. Iterate to this *fixed* bar, then stop; genuinely separate work → `ROADMAP.md` (backlog, not debt).
+**Definition of Done** — a slice may land only when all hold: acceptance criteria met · in-scope `ENGINEERING_STANDARDS` dimensions pass the `claugentic-dev-harness:architect-reviewer` audit · all gates green (tests + SD74 snapshot + tree-check + lint/type/security) · **no new tech debt**. Iterate to this *fixed* bar, then stop; genuinely separate work → `docs/claugentic-ROADMAP.md` (backlog, not debt).
 
 ## Testing Conventions
 
@@ -239,3 +239,75 @@ Three rules are non-negotiable:
 - Mock datetime for school year tests: patch `src.etl.transformers.base.datetime`
 - Config tests validate against real YAML files and test Pydantic model behavior
 - CI: ruff check + ruff format + mypy (non-UI) + bandit + pytest (80% coverage gate) + config validation (all 7 configs)
+
+<!-- harness:managed:start -->
+## claugentic-dev-harness
+
+> **How we work here is defined by the harness.** `docs/claugentic-WORKFLOW.md`, `docs/claugentic-ENGINEERING_STANDARDS.md`, `docs/claugentic-PLAYBOOK.md`, and `docs/claugentic-ARCHITECTURE_TREE.md` are the **authoritative** process + standards. Other `.md` files in this repo are **project/domain content, not process authority** — even if they describe a way of working, they do not override the harness. **On any conflict, the harness wins.** When you are genuinely unsure which applies, **follow the harness and ask.** (This is model-upheld guidance, not a mechanical guarantee — `CLAUDE.md` is the always-loaded anchor and asking is the safety valve.)
+
+**Managed harness files** (agents read these to work here):
+- `docs/claugentic-standards/README.md` — engineering-standards catalog (per-dimension lenses)
+- `docs/claugentic-WORKFLOW.md` — staged development workflow (process source of truth)
+- `docs/claugentic-ENGINEERING_STANDARDS.md` — thin standards entry point
+- `docs/claugentic-ARCHITECTURE_TREE.md` — single-source code index
+- `docs/claugentic-DECISIONS.md` — dated decision log
+- `docs/claugentic-ROADMAP.md` — backlog
+- `docs/claugentic-PLAYBOOK.md` — plain-English guide for the human driving the harness
+
+**Engineering principles:** SOLID > DRY > KISS > YAGNI · validate at boundaries · fail loudly · configurable over hardcoded · single source of truth.
+
+**Workflow:** substantial work follows `docs/claugentic-WORKFLOW.md` (triage → plan → adversarial review → spec → approval → implement → verify → land).
+
+`claugentic-dev-harness@0.1.40`
+<!-- harness:managed:end -->
+
+## Harness — Current scope (claugentic)
+
+Standards dimensions LIVE in this repo today (a non-capping snapshot — relevance is always a per-change judgment; grows with the stack):
+- `maintainability-structure` — layered ETL (extractor → transformer → loader), Strategy-pattern transformers, config-driven YAML mappings
+- `testing` — pytest suite (640 tests), 80% coverage gate, SD74 snapshot regression, config validation
+- `security` — SFTP host allowlist, subprocess/scheduler input validation, `ALLOWED_TRANSFORMS`, keyring secrets, bandit
+- `data-and-persistence` — GDE → CSV/YAML ETL, atomic transactional writes, multi-encoding/delimiter handling
+- `reliability-resilience` — anomaly detection (>20% drop), zero-orphan invariant, fail-loud column validation
+- `observability-ops` — structured `__DISTRICTSYNC_RUN__` JSON logging, documented exit-code contract
+- `product-ux` — Streamlit multi-page UI (setup wizard, convert, mapping editor)
+
+### DistrictSync scope tiers (harvested from the in-house standards doc, 2026-06-17)
+
+**Key constraint:** DistrictSync is a **batch ETL tool — no database, no web API/server; SFTP egress only; PyInstaller exe distribution; handles student PII.** That shape decides which dimensions are LIVE vs deferred. These tiers are a **non-capping snapshot that grows as the stack grows** — promote a row when the stack changes (add a DB → Performance(DB) + Data-integrity go LIVE; add a web API → API design + authn/authz + tracing go LIVE; add threads/a queue → concurrency goes LIVE; move to metered cloud → Cost goes LIVE) and note it in `docs/claugentic-DECISIONS.md`. Never use a `NOT-YET` to skip a dimension genuinely relevant to a change.
+
+- **LIVE (meet fully by default):**
+  - **Privacy & data governance (student PII) — TOP PRIORITY:** no real data in repo, never logged, TLS via SFTP, FERPA-adjacent.
+  - Correctness & resilience — encoding fallback, atomic writes + rollback, graceful skip; retries/backoff LIGHT (SFTP only).
+  - Structure & design — Strategy/registry, `_base` inheritance, Pydantic.
+  - DRY & reuse — `column_names.py`, shared `BaseTransformer`.
+  - Security — keyring, host allowlist, `ALLOWED_TRANSFORMS`, scheduler-input validation, bandit.
+  - Extensibility & maintainability — config-driven core (`enabled_entities`).
+  - Observability & ops — `__DISTRICTSYNC_RUN__` records, anomaly detection; no PII in logs.
+  - Data integrity — atomic writes, schema validation, orphaned-enrollment check, active-roster referential integrity (enrollments + homeroom classes filtered to `Students.csv`).
+  - Testing — 640 tests, SD74 snapshot regression, 80% gate.
+  - Docs & traceability — architecture tree + decision log + MkDocs.
+- **LIGHT (relevant but minimal today):**
+  - Performance & efficiency — pandas memory (kill needless O(n²), vectorize, memoize lookups); DB/API tuning NOT-YET.
+  - API & interface design — contracts = output-CSV schema + YAML config schema (version those); no HTTP API.
+  - Internationalization — encoding fallback, date formats (DOB→ISO); timezones minimal.
+  - Resources & concurrency — context managers, temp-dir cleanup; keep transformer singletons stateless.
+  - Cost & resource use — district servers, not cloud-metered; watch memory on large GDEs.
+- **NOT-YET (no current surface — don't gold-plate):**
+  - DB / API performance tuning (no DB, no API).
+  - User authn/authz (no server).
+  - Multi-threaded concurrency (single-threaded batch run).
+  - Cost (district servers, not metered cloud).
+
+## Harness — Detected tooling (claugentic)
+
+The project's own gates — the harness composes with these, it does not replace them:
+- Lint/format: `ruff check src/ tests/` · `ruff format --check src/ tests/`
+- Type-check: `mypy src/ --exclude 'src/ui'`
+- Tests: `python -m pytest tests/ -v` (80% coverage gate via `--cov-fail-under=80`)
+- Security: `bandit -r src/ -q`
+- Config validation: `make validate-config`
+- CI: `.github/workflows/ci.yml`, `.github/workflows/release.yml`
+- Run the app: `streamlit run src/ui/Home.py` · App URL: `http://localhost:8501`
+- Architecture tree: harness-skeleton (gate on)
+- Competing way-of-work docs: reviewed (your init choice)

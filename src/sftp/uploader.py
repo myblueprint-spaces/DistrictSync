@@ -144,7 +144,15 @@ class SFTPUploader:
         zip_name: str | None = None,
         sis_type: str | None = None,
     ) -> list[str]:
-        """Zip all CSV files in *output_dir* and upload the single ZIP via SFTP.
+        """Zip the rostering CSVs in *output_dir* and upload via SFTP.
+
+        ``StudentAttendance.csv``, when present, is SpacesEDU's attendance feed
+        and must arrive as a **standalone file outside the rostering zip** (their
+        nightly check looks for it by name, and it must not pollute the advanced
+        -CSV bundle). It is therefore excluded from the zip and uploaded with its
+        own ``sftp.put`` to the same remote directory. Every other district has
+        no such file today, so ``zip_files == csv_files`` and behaviour is
+        byte-identical to the all-csvs-in-one-zip path.
 
         Args:
             output_dir: Local directory containing the generated CSV files.
@@ -157,7 +165,8 @@ class SFTPUploader:
                 ``zip_name``. Ignored when ``zip_name`` is provided explicitly.
 
         Returns:
-            List of CSV filenames included in the uploaded ZIP.
+            List of CSV filenames delivered — the zipped rostering CSVs plus any
+            standalone ``StudentAttendance.csv``.
 
         Raises:
             RuntimeError: If the connection could not be established.
@@ -175,24 +184,47 @@ class SFTPUploader:
             logger.warning(f"No CSV files found in {output_dir}")
             return []
 
-        # Create a temporary ZIP containing all CSVs
-        with tempfile.TemporaryDirectory() as tmpdir:
-            zip_path = Path(tmpdir) / zip_name
-            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for csv_file in csv_files:
-                    zf.write(csv_file, csv_file.name)
-            logger.info(f"Created ZIP: {zip_name} with {len(csv_files)} file(s) ({zip_path.stat().st_size:,} bytes)")
+        # SpacesEDU's attendance feed ships standalone, outside the rostering zip.
+        attendance_files = [f for f in csv_files if f.name == "StudentAttendance.csv"]
+        zip_files = [f for f in csv_files if f.name != "StudentAttendance.csv"]
 
+        delivered: list[str] = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
             client, sftp = self._connect()
             try:
-                remote_file = f"{self.remote_path.rstrip('/')}/{zip_name}"
-                logger.info(f"Uploading {zip_name} -> {remote_file}")
-                sftp.put(str(zip_path), remote_file)
-                logger.info(f"Uploaded {zip_name} ({zip_path.stat().st_size:,} bytes)")
+                # Build + upload the rostering zip only when there are rostering
+                # CSVs — skip it on the attendance-only edge so we never deliver
+                # an empty archive (the attendance file is still sent below).
+                if zip_files:
+                    zip_path = Path(tmpdir) / zip_name
+                    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for csv_file in zip_files:
+                            zf.write(csv_file, csv_file.name)
+                    zip_size = zip_path.stat().st_size
+                    logger.info(f"Created ZIP: {zip_name} with {len(zip_files)} file(s) ({zip_size:,} bytes)")
+
+                    remote_file = f"{self.remote_path.rstrip('/')}/{zip_name}"
+                    logger.info(f"Uploading {zip_name} -> {remote_file}")
+                    sftp.put(str(zip_path), remote_file)
+                    logger.info(f"Uploaded {zip_name} ({zip_size:,} bytes)")
+                    delivered.extend(f.name for f in zip_files)
+
+                # Deliver each StudentAttendance.csv standalone (same logging
+                # style + failure semantics as the zip put, so a failed put
+                # propagates and preserves the pipeline's exit-code-3 contract).
+                for att_file in attendance_files:
+                    att_size = att_file.stat().st_size
+                    remote_att = f"{self.remote_path.rstrip('/')}/{att_file.name}"
+                    logger.info(f"Uploading {att_file.name} -> {remote_att} ({att_size:,} bytes)")
+                    sftp.put(str(att_file), remote_att)
+                    logger.info(f"Uploaded {att_file.name} ({att_size:,} bytes)")
+                    delivered.append(att_file.name)
+
                 sftp.close()
-                return [f.name for f in csv_files]
+                return delivered
             except Exception as exc:
-                logger.error(f"Failed to upload {zip_name}: {exc}")
+                logger.error(f"Failed to upload to {self.host}: {exc}")
                 raise
             finally:
                 client.close()

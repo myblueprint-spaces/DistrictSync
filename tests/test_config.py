@@ -648,8 +648,13 @@ class TestEnabledEntities:
         ]
 
     def test_district_configs_inherit_rostering_default(self):
-        """sd40/48/51/74 inherit `enabled_entities` from the base — still the 5 rostering entities."""
-        for sis in ("sd40myedbc", "sd48myedbc", "sd51myedbc", "sd74myedbc"):
+        """sd40/48/74 inherit `enabled_entities` from the base — still the 5 rostering entities.
+
+        SD51 is excluded here because it opts into StudentAttendance (its own
+        full enabled_entities list, since deep-merge replaces lists) — see
+        ``test_sd51_enables_student_attendance``.
+        """
+        for sis in ("sd40myedbc", "sd48myedbc", "sd74myedbc"):
             cfg = load_config(sis)
             assert cfg.global_config.enabled_entities == [
                 "Students",
@@ -658,3 +663,19 @@ class TestEnabledEntities:
                 "Classes",
                 "Enrollments",
             ], f"{sis} should still produce only the 5 rostering CSVs"
+
+    def test_sd51_enables_student_attendance(self):
+        """SD51 lists the full set (base 5 rostering + opt-in StudentAttendance).
+
+        Deep-merge REPLACES lists, so SD51 must restate the rostering entities
+        alongside StudentAttendance or they would vanish.
+        """
+        cfg = load_config("sd51myedbc")
+        assert cfg.global_config.enabled_entities == [
+            "Students",
+            "Staff",
+            "Family",
+            "Classes",
+            "Enrollments",
+            "StudentAttendance",
+        ]
