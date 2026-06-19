@@ -22,6 +22,7 @@ stays unit-testable and reusable.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,11 @@ def pick_directory(initialdir: str | None = None) -> str | None:
         root = tk.Tk()
         try:
             root.withdraw()  # Hide the empty root window; show only the dialog.
-            root.wm_attributes("-topmost", 1)  # Bring the dialog to the front.
+            # Cosmetic only — bring the dialog to the front. Some window managers
+            # don't support "-topmost" and raise TclError; that must NOT abort the
+            # picker (the dialog opens fine without it), so suppress it.
+            with contextlib.suppress(Exception):
+                root.wm_attributes("-topmost", 1)
             selected = filedialog.askdirectory(
                 initialdir=initialdir or None,
                 title="Select folder",

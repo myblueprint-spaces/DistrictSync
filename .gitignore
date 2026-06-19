@@ -57,3 +57,7 @@ data/output/
 
 # MkDocs build output
 site/
+
+# Local reference docs (partner/SIS spec PDFs & DOCXs — kept locally, not in git)
+/*.pdf
+/*.docx
