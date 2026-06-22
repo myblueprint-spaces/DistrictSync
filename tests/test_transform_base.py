@@ -8,6 +8,7 @@ config-driven active-student predicate (`compute_enroll_status`,
 transformer tests.
 """
 
+import logging
 from datetime import date, datetime
 from unittest.mock import patch
 
@@ -499,3 +500,22 @@ class TestPastWithdrawDate:
 
     def test_unparseable_is_treated_as_withdrawn(self):
         assert BaseTransformer.past_withdraw_date("garbage", date(2025, 6, 1)) is True
+
+
+class TestActiveStatusPathLogging:
+    """Each run logs (INFO) which signal decided 'active' — the status column or
+    the withdraw date — so an unattended run self-documents its resolution path
+    (the cheap observability that would have made the SD40 May-6 diagnosis instant).
+    """
+
+    def test_logs_status_column_path(self, caplog):
+        df = pd.DataFrame({"enrollment status": ["Active"], "student number": ["S1"]})
+        with caplog.at_level(logging.INFO, logger="src.etl.transformers.base"):
+            _status(df)
+        assert any("via status column 'enrollment status'" in r.message for r in caplog.records)
+
+    def test_logs_withdraw_date_path(self, caplog):
+        df = pd.DataFrame({"withdraw date": ["2020-01-01"], "student number": ["S1"]})
+        with caplog.at_level(logging.INFO, logger="src.etl.transformers.base"):
+            _status(df)
+        assert any("via withdraw-date column 'withdraw date'" in r.message for r in caplog.records)

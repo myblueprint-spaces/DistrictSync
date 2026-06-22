@@ -226,12 +226,20 @@ class BaseTransformer(ABC):
             date_label = pd.Series("Active", index=df.index, dtype="object")
 
         if status_column is not None:
+            logger.info(
+                f"[Students] Active-status resolved via status column '{status_column}' "
+                f"(active values {active_values}); withdraw date used only as a per-row fallback."
+            )
             status_vals = df[status_column].astype(str).str.strip()
             has_status = status_vals.ne("") & status_vals.str.lower().ne("nan")
             status_label = status_vals.apply(lambda v: v if v in allowed else "Inactive")
             labels = status_label.where(has_status, date_label)
             date_used = ~has_status
         elif has_withdraw:
+            logger.info(
+                f"[Students] No status column present; active-status resolved via "
+                f"withdraw-date column '{withdraw_date_column}'."
+            )
             labels = date_label
             date_used = pd.Series(True, index=df.index, dtype=bool)
         else:
