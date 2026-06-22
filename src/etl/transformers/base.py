@@ -30,7 +30,7 @@ class BaseTransformer(ABC):
             "grade_to_ceds",
             "map_role",
             "truncate_name",
-            "format_dd_mmm_yyyy",
+            "normalize_iso_date",
         }
     )
 
@@ -300,48 +300,85 @@ class BaseTransformer(ABC):
         normalized = df[student_col].astype(str).str.strip()
         return df[normalized.isin(context.active_student_ids)].copy()  # type: ignore[return-value]
 
-    @staticmethod
-    def normalize_iso_date(value: Any) -> str:
+    # Recognized GDE input date formats, tried in order. Districts vary, so input
+    # date parsing is deliberately flexible; OUTPUT shape is chosen by the caller.
+    _INPUT_DATE_FORMATS: tuple[str, ...] = ("%d-%b-%Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y")
+
+    # Friendly date-format tokens -> strftime directives. Zero-padded only (Windows
+    # strftime has no portable non-padded directive). Longest token per letter
+    # family first so the alternation regex matches `yyyy` before `yy`, etc.
+    _DATE_FORMAT_TOKENS: tuple[tuple[str, str], ...] = (
+        ("yyyy", "%Y"),
+        ("yy", "%y"),
+        ("MMMM", "%B"),
+        ("MMM", "%b"),
+        ("MM", "%m"),
+        ("dd", "%d"),
+    )
+    _DATE_FORMAT_TOKEN_RE = re.compile("|".join(tok for tok, _ in _DATE_FORMAT_TOKENS))
+    _DATE_FORMAT_TOKEN_MAP: dict[str, str] = dict(_DATE_FORMAT_TOKENS)
+
+    @classmethod
+    def _coerce_date(cls, value: Any) -> tuple[str, Optional[datetime]]:
+        """Parse *value* against the recognized input formats.
+
+        Returns ``(trimmed_string, parsed_datetime_or_None)``. Blank/NaN/"nan"
+        inputs yield ``("", None)``; an unparseable non-blank value yields
+        ``(s, None)`` so callers can pass the original through (fail-visible).
+        """
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return "", None
+        s = str(value).strip()
+        if not s or s.lower() == "nan":
+            return "", None
+        for fmt in cls._INPUT_DATE_FORMATS:
+            try:
+                return s, datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        return s, None
+
+    @classmethod
+    def normalize_iso_date(cls, value: Any) -> str:
         """Convert various date formats to ISO 8601 (yyyy-mm-dd).
 
         Accepts dd-MMM-yyyy (e.g. '15-Sep-2024'), already-ISO yyyy-mm-dd,
         and m/d/yyyy / d/m/yyyy. Returns the original trimmed string if
         no format matches, or '' for NaN/None/empty inputs.
         """
-        if value is None or (isinstance(value, float) and pd.isna(value)):
-            return ""
-        s = str(value).strip()
-        if not s or s.lower() == "nan":
-            return ""
-        for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
-            try:
-                return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
-            except ValueError:
-                continue
-        return s
+        s, parsed = cls._coerce_date(value)
+        return parsed.strftime("%Y-%m-%d") if parsed is not None else s
 
-    @staticmethod
-    def format_dd_mmm_yyyy(value: Any) -> str:
-        """Convert various MyEd date formats to ``DD-MMM-YYYY`` (e.g. '18-Sep-2024').
+    @classmethod
+    def format_date(cls, value: Any, strftime_format: str) -> str:
+        """Reformat a flexible GDE date to *strftime_format* (a strftime string).
 
-        The SpacesEDU StudentAttendance contract requires the ``DD-MMM-YYYY``
-        shape. Accepts dd-MMM-yyyy (already correct), ISO yyyy-mm-dd, and
-        m/d/yyyy / d/m/yyyy. Returns the original trimmed string unchanged when
-        no format matches (fail-visible — a malformed date stays inspectable
-        rather than silently blanked), or '' for NaN/None/empty/"nan" inputs.
-        Mirrors :meth:`normalize_iso_date` but for the day-first output shape.
+        Same parse grid as :meth:`normalize_iso_date`; the original trimmed
+        string passes through unchanged when no input format matches
+        (fail-visible), and blank/NaN inputs return ''. ``strftime_format`` is
+        the already-translated strftime string (see
+        :meth:`friendly_date_format_to_strftime`).
         """
-        if value is None or (isinstance(value, float) and pd.isna(value)):
-            return ""
-        s = str(value).strip()
-        if not s or s.lower() == "nan":
-            return ""
-        for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
-            try:
-                return datetime.strptime(s, fmt).strftime("%d-%b-%Y")
-            except ValueError:
-                continue
-        return s
+        s, parsed = cls._coerce_date(value)
+        return parsed.strftime(strftime_format) if parsed is not None else s
+
+    @classmethod
+    def friendly_date_format_to_strftime(cls, fmt: str) -> str:
+        """Translate a friendly date format (e.g. ``yyyy-MM-dd``) to a strftime string.
+
+        Supported tokens: ``yyyy`` ``yy`` ``MMMM`` ``MMM`` ``MM`` ``dd`` plus
+        literal separators. Fails loud (``ValueError``) on any unrecognized
+        alphabetic token (e.g. a lowercase ``mm`` typo) so a misconfigured
+        district date format is caught at the boundary instead of silently
+        producing a constant/garbled date.
+        """
+        residue = cls._DATE_FORMAT_TOKEN_RE.sub("", fmt)
+        if any(c.isalpha() for c in residue):
+            raise ValueError(
+                f"Unsupported date_format {fmt!r}. Use tokens yyyy, yy, MMMM, MMM, MM, dd "
+                "with separators — e.g. 'yyyy-MM-dd' or 'dd-MMM-yyyy'."
+            )
+        return cls._DATE_FORMAT_TOKEN_RE.sub(lambda m: cls._DATE_FORMAT_TOKEN_MAP[m.group(0)], fmt)
 
     @staticmethod
     def truncate_name(name: str, max_len: int = 100) -> str:

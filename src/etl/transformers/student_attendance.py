@@ -3,8 +3,14 @@
 Produces the 4-column ``StudentAttendance.csv`` SpacesEDU requires (exact
 case-sensitive header order): School Number, Absence Date, Absence Category,
 Student Number. The SpacesEDU contract permits dropping every optional field
-after Student Number, so only those four required columns are emitted. The
-output is the UNION of two independent bands, each resolved
+after Student Number, so only those four required columns are emitted.
+``Absence Date`` is written in the format set by
+``global_config.attendance.date_format`` (friendly tokens, e.g. ``yyyy-MM-dd``),
+defaulting to ISO ``yyyy-MM-dd`` — the shape SpacesEDU's attendance importer
+requires — which a district may override. Input GDE dates in any recognized
+format (``dd-MMM-yyyy`` / ISO / ``m/d/yyyy`` / ``d/m/yyyy``) are parsed and
+reformatted to it. The output is the UNION of two independent bands, each
+resolved
 from ``context.raw_data`` BY ITS ``source_files`` ROLE (``daily_absences`` /
 ``period_absences``) — order-independent, not by the pipeline's positional
 primary frame. A district may declare only ``daily_absences``, only
@@ -57,6 +63,16 @@ class StudentAttendanceTransformer(BaseTransformer):
     def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         rows: list[dict[str, str]] = []
 
+        # Output date shape for Absence Date — configurable per district via
+        # global_config.attendance.date_format (friendly tokens; default ISO
+        # yyyy-MM-dd, which SpacesEDU's attendance importer requires). Resolved +
+        # validated ONCE here (fail-loud on an unsupported token) and reused for
+        # both bands; input GDE dates in any recognized format are parsed and
+        # reformatted to this shape.
+        attendance_cfg = context.global_config.get("attendance") or {}
+        date_format = attendance_cfg.get("date_format") or "yyyy-MM-dd"
+        strftime_fmt = self.friendly_date_format_to_strftime(date_format)
+
         # Both bands are resolved from raw_data BY ROLE (order-independent), not
         # from the positional `df` the pipeline passes as the primary source. A
         # district may declare only `daily_absences`, only `period_absences`, or
@@ -70,14 +86,14 @@ class StudentAttendanceTransformer(BaseTransformer):
         daily = self._daily_frame(mapping, context)
         if not daily.empty:
             daily_cfg = self._daily_config(context.global_config)
-            rows.extend(self._build_daily_rows(daily, mapping, daily_cfg, context))
+            rows.extend(self._build_daily_rows(daily, mapping, daily_cfg, context, strftime_fmt))
 
         # 8-12 Period band. Read via role `period_absences`. Empty/absent -> no
         # period rows; its config is required ONLY when its data is present.
         period = self._period_frame(mapping, context)
         if not period.empty:
             period_cfg = self._period_config(context.global_config)
-            rows.extend(self._build_period_rows(period, period_cfg))
+            rows.extend(self._build_period_rows(period, period_cfg, strftime_fmt))
 
         return self._frame(rows)
 
@@ -160,6 +176,7 @@ class StudentAttendanceTransformer(BaseTransformer):
         mapping: dict[str, Any],
         daily_cfg: dict[str, Any],
         context: TransformContext,
+        strftime_fmt: str,
     ) -> list[dict[str, str]]:
         if working.empty:
             return []
@@ -189,7 +206,7 @@ class StudentAttendanceTransformer(BaseTransformer):
 
             row = {
                 "School Number": self._str(record.get(school_col)),
-                "Absence Date": self.format_dd_mmm_yyyy(record.get(date_col)),
+                "Absence Date": self.format_date(record.get(date_col), strftime_fmt),
                 "Absence Category": category,
                 "Student Number": self._str(record.get(student_col)),
             }
@@ -200,7 +217,9 @@ class StudentAttendanceTransformer(BaseTransformer):
     # ------------------------------------------------------------------
     # 8-12 Period Absences band (per-period PASS-THROUGH — no derivation)
     # ------------------------------------------------------------------
-    def _build_period_rows(self, period: pd.DataFrame, period_cfg: dict[str, Any]) -> list[dict[str, str]]:
+    def _build_period_rows(
+        self, period: pd.DataFrame, period_cfg: dict[str, Any], strftime_fmt: str
+    ) -> list[dict[str, str]]:
         """Emit ONE output row per period-absence row (no AM/PM collapse, no dedup).
 
         The GDE ``Absence Category`` already carries the final code, so it is
@@ -226,7 +245,7 @@ class StudentAttendanceTransformer(BaseTransformer):
             rows.append(
                 {
                     "School Number": self._str(record.get(school_col)),
-                    "Absence Date": self.format_dd_mmm_yyyy(record.get(date_col)),
+                    "Absence Date": self.format_date(record.get(date_col), strftime_fmt),
                     "Absence Category": category,
                     "Student Number": student,
                 }

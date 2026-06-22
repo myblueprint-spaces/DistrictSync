@@ -19,6 +19,7 @@ if str(_root) not in sys.path:
 
 from src.config.app_config import AppConfig  # noqa: E402
 from src.config.loader import available_configs, load_config  # noqa: E402
+from src.etl.loader import DataLoader  # noqa: E402
 from src.etl.pipeline import extract_required_files  # noqa: E402
 from src.etl.transformer import DataTransformer  # noqa: E402
 from src.quality.report import DataQualityReport  # noqa: E402
@@ -233,8 +234,10 @@ def run_conversion(
 def create_zip(outputs: dict[str, pd.DataFrame]) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Per-entity encoding (DataLoader is the single source of truth): BOM-strict
+        # feeds like StudentAttendance are written without the BOM.
         for name, df in outputs.items():
-            zf.writestr(f"{name}.csv", df.to_csv(index=False, encoding="utf-8-sig"))
+            zf.writestr(f"{name}.csv", df.to_csv(index=False, encoding=DataLoader.csv_encoding(name)))
     return buf.getvalue()
 
 
@@ -368,7 +371,7 @@ if outputs:
         with col:
             st.download_button(
                 label=f"{name}.csv",
-                data=df.to_csv(index=False, encoding="utf-8-sig"),
+                data=df.to_csv(index=False, encoding=DataLoader.csv_encoding(name)),
                 file_name=f"{name}.csv",
                 mime="text/csv",
             )
@@ -395,8 +398,11 @@ if outputs:
                 try:
                     with tempfile.TemporaryDirectory() as tmpdir:
                         tmp_path = Path(tmpdir)
+                        # Write via DataLoader so the per-entity encoding matches the
+                        # CLI exactly — StudentAttendance.csv goes out without the BOM
+                        # that SpacesEDU's strict attendance importer rejects.
                         for name, df in outputs.items():
-                            df.to_csv(tmp_path / f"{name}.csv", index=False, encoding="utf-8-sig")
+                            df.to_csv(tmp_path / f"{name}.csv", index=False, encoding=DataLoader.csv_encoding(name))
                         uploader = SFTPUploader(
                             host=_app_cfg.sftp_host,
                             port=_app_cfg.sftp_port,
