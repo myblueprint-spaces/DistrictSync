@@ -12,6 +12,8 @@ same path the pipeline uses, including the runtime `global_config.attendance`
 config injection. Synthetic data only — NO real PII.
 """
 
+import copy
+
 import pandas as pd
 import pytest
 
@@ -210,22 +212,22 @@ class TestOutputShape:
         s1 = result[result["Student Number"] == "S1"].iloc[0]
         assert s1["School Number"] == "100"
         assert s1["Absence Category"] == "A"
-        assert s1["Absence Date"] == "18-Sep-2024"
+        assert s1["Absence Date"] == "2024-09-18"
 
-    def test_absence_date_formatted_dd_mmm_yyyy(self, student_attendance_mapping, attendance_global_config):
-        # ISO input must be reformatted to DD-MMM-YYYY by the transform.
+    def test_absence_date_formatted_iso(self, student_attendance_mapping, attendance_global_config):
+        # A dd-MMM-yyyy GDE date must be reformatted to ISO yyyy-MM-dd by the transform.
         df = pd.DataFrame(
             {
                 "school number": ["100"],
                 "student number": ["S1"],
-                "absence date": ["2024-09-18"],
+                "absence date": ["18-Sep-2024"],
                 "absent code am": ["A"],
                 "authorized am": ["N"],
                 "portion absent": [0.5],
             }
         )
         result = _run(df, student_attendance_mapping, attendance_global_config)
-        assert list(result["Absence Date"]) == ["18-Sep-2024"]
+        assert list(result["Absence Date"]) == ["2024-09-18"]
 
     def test_no_dedup_two_identical_full_day_rows_survive(self, student_attendance_mapping, attendance_global_config):
         df = pd.DataFrame(
@@ -275,6 +277,79 @@ class TestFailLoud:
             _run(df, student_attendance_mapping, {})
 
 
+class TestConfigurableDateFormat:
+    """`global_config.attendance.date_format` controls the Absence Date output shape.
+
+    Default (base config) is ISO `yyyy-MM-dd`; a district may override. Input GDE
+    dates in any recognized format are still parsed regardless of the setting.
+    """
+
+    @staticmethod
+    def _gc_with_format(attendance_global_config, date_format):
+        gc = copy.deepcopy(attendance_global_config)
+        gc["attendance"]["date_format"] = date_format
+        return gc
+
+    def test_default_is_iso(self, student_attendance_mapping, attendance_global_config):
+        # Base config carries no override -> ISO yyyy-MM-dd.
+        df = pd.DataFrame(
+            {
+                "school number": ["100"],
+                "student number": ["S1"],
+                "absence date": ["18-Sep-2024"],
+                "absent code am": ["A"],
+                "authorized am": ["N"],
+                "portion absent": [0.5],
+            }
+        )
+        result = _run(df, student_attendance_mapping, attendance_global_config)
+        assert list(result["Absence Date"]) == ["2024-09-18"]
+
+    def test_daily_override_changes_output(self, student_attendance_mapping, attendance_global_config):
+        gc = self._gc_with_format(attendance_global_config, "dd-MMM-yyyy")
+        df = pd.DataFrame(
+            {
+                "school number": ["100"],
+                "student number": ["S1"],
+                "absence date": ["2024-09-18"],  # ISO input -> reformatted to the override
+                "absent code am": ["A"],
+                "authorized am": ["N"],
+                "portion absent": [0.5],
+            }
+        )
+        result = _run(df, student_attendance_mapping, gc)
+        assert list(result["Absence Date"]) == ["18-Sep-2024"]
+
+    def test_period_override_changes_output(self, student_attendance_mapping, attendance_global_config):
+        gc = self._gc_with_format(attendance_global_config, "dd-MMM-yyyy")
+        period = pd.DataFrame(
+            {
+                "school number": ["100"],
+                "student number": ["P1"],
+                "absence date": ["2024-09-18"],
+                "absence category": ["A"],
+            }
+        )
+        result = _run(_empty_daily(), student_attendance_mapping, gc, period)
+        assert list(result["Absence Date"]) == ["18-Sep-2024"]
+
+    def test_unsupported_format_raises(self, student_attendance_mapping, attendance_global_config):
+        # A lowercase `mm` typo fails loud before any rows are built.
+        gc = self._gc_with_format(attendance_global_config, "yyyy-mm-dd")
+        df = pd.DataFrame(
+            {
+                "school number": ["100"],
+                "student number": ["S1"],
+                "absence date": ["2024-09-18"],
+                "absent code am": ["A"],
+                "authorized am": ["N"],
+                "portion absent": [0.5],
+            }
+        )
+        with pytest.raises(ValueError, match="Unsupported date_format"):
+            _run(df, student_attendance_mapping, gc)
+
+
 class TestEmptyInput:
     def test_empty_frame_returns_4_col_empty(self, student_attendance_mapping, attendance_global_config):
         empty = pd.DataFrame(
@@ -301,6 +376,15 @@ class TestStudentAttendanceConfigIntegration:
     def test_base_field_order_is_4_columns(self):
         cfg = load_config("myedbc")
         assert list(cfg.mappings["StudentAttendance"].field_map.keys()) == EXPECTED_COLUMNS
+
+    def test_base_carries_attendance_date_format_default(self):
+        cfg = load_config("myedbc")
+        assert cfg.global_config.attendance["date_format"] == "yyyy-MM-dd"
+
+    def test_sd51_inherits_attendance_date_format_default(self):
+        # SD51 uses the default ISO shape (no per-district override).
+        cfg = load_config("sd51myedbc")
+        assert cfg.global_config.attendance["date_format"] == "yyyy-MM-dd"
 
     def test_base_carries_daily_attendance_config(self):
         cfg = load_config("myedbc")
@@ -389,17 +473,17 @@ class TestPeriodPassThrough:
         result = _run(_empty_daily(), student_attendance_mapping, attendance_global_config, student_period_absences_df)
         assert "OffSite" in set(result["Absence Category"])
 
-    def test_date_formatted_dd_mmm_yyyy(self, student_attendance_mapping, attendance_global_config):
+    def test_date_formatted_iso(self, student_attendance_mapping, attendance_global_config):
         period = pd.DataFrame(
             {
                 "school number": ["100"],
                 "student number": ["P1"],
-                "absence date": ["2024-09-18"],  # ISO input
+                "absence date": ["18-Sep-2024"],  # dd-MMM-yyyy input
                 "absence category": ["A"],
             }
         )
         result = _run(_empty_daily(), student_attendance_mapping, attendance_global_config, period)
-        assert list(result["Absence Date"]) == ["18-Sep-2024"]
+        assert list(result["Absence Date"]) == ["2024-09-18"]
 
     def test_exactly_four_columns_all_populated(
         self, student_attendance_mapping, attendance_global_config, student_period_absences_df
@@ -423,7 +507,7 @@ class TestPeriodPassThrough:
         assert row["School Number"] == "200"
         assert row["Student Number"] == "P9"
         assert row["Absence Category"] == "AD"
-        assert row["Absence Date"] == "18-Sep-2024"
+        assert row["Absence Date"] == "2024-09-18"
 
     def test_no_dedup_two_identical_period_rows_survive(self, student_attendance_mapping, attendance_global_config):
         period = pd.DataFrame(

@@ -122,35 +122,77 @@ class TestFilterExcludedCourseCodePatterns:
         assert list(out["course code"]) == ["MAT10"]
 
 
-class TestFormatDdMmmYyyy:
-    """`format_dd_mmm_yyyy` — DD-MMM-YYYY output for the SpacesEDU attendance feed.
+class TestNormalizeIsoDate:
+    """`normalize_iso_date` — ISO `yyyy-mm-dd` output (the SpacesEDU attendance date shape).
 
-    Mirrors `normalize_iso_date` but produces the day-first shape required by
-    the StudentAttendance contract.
+    Accepts dd-MMM-yyyy / already-ISO / m/d/yyyy / d/m/yyyy and normalizes to ISO,
+    so input GDE dates in any recognized format land as `yyyy-MM-dd`.
     """
 
     @pytest.mark.parametrize(
         "value,expected",
         [
-            ("18-Sep-2024", "18-Sep-2024"),  # already correct shape
-            ("2024-09-18", "18-Sep-2024"),  # ISO
-            ("09/18/2024", "18-Sep-2024"),  # m/d/yyyy
-            ("18/09/2024", "18-Sep-2024"),  # d/m/yyyy
+            ("2024-09-18", "2024-09-18"),  # already ISO
+            ("18-Sep-2024", "2024-09-18"),  # dd-MMM-yyyy
+            ("09/18/2024", "2024-09-18"),  # m/d/yyyy
+            ("18/09/2024", "2024-09-18"),  # d/m/yyyy
         ],
     )
     def test_parses_known_formats(self, value, expected):
-        assert BaseTransformer.format_dd_mmm_yyyy(value) == expected
+        assert BaseTransformer.normalize_iso_date(value) == expected
 
     @pytest.mark.parametrize("value", ["", None, np.nan, "nan", "NaN", "  "])
     def test_blank_like_returns_empty(self, value):
-        assert BaseTransformer.format_dd_mmm_yyyy(value) == ""
+        assert BaseTransformer.normalize_iso_date(value) == ""
 
     def test_unparseable_returned_unchanged(self):
         # Fail-visible: a malformed date stays inspectable, not silently blanked.
-        assert BaseTransformer.format_dd_mmm_yyyy("not-a-date") == "not-a-date"
+        assert BaseTransformer.normalize_iso_date("not-a-date") == "not-a-date"
 
     def test_is_in_allowed_transforms(self):
-        assert "format_dd_mmm_yyyy" in BaseTransformer.ALLOWED_TRANSFORMS
+        assert "normalize_iso_date" in BaseTransformer.ALLOWED_TRANSFORMS
+
+
+class TestFriendlyDateFormatToStrftime:
+    """`friendly_date_format_to_strftime` — friendly tokens -> strftime, fail-loud on typos."""
+
+    @pytest.mark.parametrize(
+        "friendly,strftime_fmt",
+        [
+            ("yyyy-MM-dd", "%Y-%m-%d"),
+            ("dd-MMM-yyyy", "%d-%b-%Y"),
+            ("MM/dd/yyyy", "%m/%d/%Y"),
+            ("dd/MM/yy", "%d/%m/%y"),
+            ("dd MMMM yyyy", "%d %B %Y"),
+        ],
+    )
+    def test_translates_supported_tokens(self, friendly, strftime_fmt):
+        assert BaseTransformer.friendly_date_format_to_strftime(friendly) == strftime_fmt
+
+    @pytest.mark.parametrize("bad", ["yyyy-mm-dd", "yyyy-MM-DD", "yyyy-Mon-dd", "garbage"])
+    def test_unsupported_token_raises(self, bad):
+        # A lowercase `mm`/`DD` typo or any unknown token fails loud at the boundary.
+        with pytest.raises(ValueError, match="Unsupported date_format"):
+            BaseTransformer.friendly_date_format_to_strftime(bad)
+
+
+class TestFormatDate:
+    """`format_date` — flexible input parse -> arbitrary strftime output shape."""
+
+    def test_dd_mmm_yyyy_output(self):
+        fmt = BaseTransformer.friendly_date_format_to_strftime("dd-MMM-yyyy")
+        assert BaseTransformer.format_date("2024-09-18", fmt) == "18-Sep-2024"
+
+    def test_iso_output(self):
+        fmt = BaseTransformer.friendly_date_format_to_strftime("yyyy-MM-dd")
+        assert BaseTransformer.format_date("18-Sep-2024", fmt) == "2024-09-18"
+
+    @pytest.mark.parametrize("value", ["", None, np.nan, "nan", "  "])
+    def test_blank_like_returns_empty(self, value):
+        assert BaseTransformer.format_date(value, "%Y-%m-%d") == ""
+
+    def test_unparseable_returned_unchanged(self):
+        assert BaseTransformer.format_date("not-a-date", "%Y-%m-%d") == "not-a-date"
 
 
 class TestCleanCourseCodeFlavor:

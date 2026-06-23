@@ -53,7 +53,7 @@ _Last generated from `main` @ c669404._
 
 ## src/sftp/
 
-- `src/sftp/uploader.py` — `SFTPUploader`: connects via paramiko SSHClient to a host from the `ALLOWED_SFTP_HOSTS` allowlist; stores/retrieves passwords from the OS keyring (`KEYRING_SERVICE = "DistrictSync_SFTP"`); zips all CSVs into `districtsync_YYYY-MM-DD.zip` before upload; exposes `test_connection()`, `upload_csvs()`, and `get_stored_password()` (keyring read used to verify credentials are readable by the scheduled-task account).
+- `src/sftp/uploader.py` — `SFTPUploader`: paramiko SSHClient to an `ALLOWED_SFTP_HOSTS` host; passwords via OS keyring (`KEYRING_SERVICE`); zips the **rostering** CSVs into `districtsync_<sis>_YYYY-MM-DD.zip` and uploads any `StudentAttendance.csv` standalone outside the zip to the same remote dir (SpacesEDU checks it by name); exposes `test_connection()`, `upload_csvs()`, `get_stored_password()`.
 
 ---
 

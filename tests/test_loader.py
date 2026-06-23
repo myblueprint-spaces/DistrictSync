@@ -85,6 +85,13 @@ class TestDataLoader:
         assert attendance.startswith(b"School Number"), "first header must be clean (no BOM glued on)"
         assert rostering.startswith(b"\xef\xbb\xbf"), "rostering CSVs keep the BOM for Excel"
 
+    def test_csv_encoding_rule(self):
+        # Single source of truth for per-entity encoding (used by the loader AND
+        # the Streamlit ad-hoc page so both write byte-identical files).
+        assert DataLoader.csv_encoding("StudentAttendance") == "utf-8"
+        assert DataLoader.csv_encoding("Students") == "utf-8-sig"
+        assert DataLoader.csv_encoding("Enrollments") == "utf-8-sig"
+
     def test_creates_output_directory(self, tmp_path):
         output_dir = tmp_path / "nested" / "output"
         DataLoader(str(output_dir))
