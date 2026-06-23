@@ -224,7 +224,7 @@ def student_period_absences_df():
             "school number": ["100", "100", "100", "100", "100", "100", "100"],
             "student number": ["P1", "P1", "P2", "P3", "P4", "", "P5"],
             "absence date": [
-                "2024-09-18",  # ISO -> reformatted to 18-Sep-2024
+                "2024-09-18",  # already ISO -> stays 2024-09-18
                 "2024-09-18",  # identical to row 0 -> NOT deduped
                 "19-Sep-2024",
                 "19-Sep-2024",

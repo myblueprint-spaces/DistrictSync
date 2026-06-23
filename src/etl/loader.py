@@ -30,6 +30,18 @@ class DataLoader:
     # entities are written as plain UTF-8 (no BOM).
     _NO_BOM_ENTITIES: frozenset[str] = frozenset({"StudentAttendance"})
 
+    @classmethod
+    def csv_encoding(cls, entity_name: str) -> str:
+        """Return the CSV encoding for *entity_name*.
+
+        Plain ``utf-8`` for BOM-strict feeds (``_NO_BOM_ENTITIES``, e.g.
+        SpacesEDU's standalone ``StudentAttendance``); ``utf-8-sig`` (BOM,
+        Excel-friendly) for everything else. Public and the single source of
+        truth so the Streamlit ad-hoc page writes byte-identical files to the
+        pipeline instead of hardcoding ``utf-8-sig``.
+        """
+        return "utf-8" if entity_name in cls._NO_BOM_ENTITIES else "utf-8-sig"
+
     def __init__(self, output_path: Optional[str] = None):
         if output_path:
             self.output_path = Path(output_path)
@@ -111,8 +123,7 @@ class DataLoader:
             if missing_cols:
                 raise ValueError(f"Cannot write {entity_name}.csv — columns missing from output: {missing_cols}")
             output_file = directory / f"{entity_name}.csv"
-            encoding = "utf-8" if entity_name in self._NO_BOM_ENTITIES else "utf-8-sig"
-            df[field_order].to_csv(output_file, index=False, encoding=encoding)
+            df[field_order].to_csv(output_file, index=False, encoding=self.csv_encoding(entity_name))
             label = "Staged" if staging else "Saved"
             logger.info(f"{label} {entity_name}.csv ({len(df)} rows) → {output_file}")
         except Exception as ex:

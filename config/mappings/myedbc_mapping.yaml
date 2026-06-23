@@ -60,6 +60,13 @@ global_config:
   # Source column names are the NORMALIZED (lowercase) names injected by the
   # entity `headers:` blocks below.
   attendance:
+    # Output format for the Absence Date column — configurable per district.
+    # Friendly tokens: yyyy, yy, MMMM, MMM, MM, dd (e.g. "yyyy-MM-dd",
+    # "dd-MMM-yyyy") with literal separators; an unsupported token fails loud.
+    # Default ISO "yyyy-MM-dd" is the shape SpacesEDU's attendance importer
+    # requires. Input GDE dates in any recognized format are parsed and
+    # reformatted to this — input recognition is unaffected by this setting.
+    date_format: "yyyy-MM-dd"
     daily:
       daily_school_col: "school number"
       daily_student_col: "student number"
@@ -335,9 +342,9 @@ mappings:
         - Flavour
     field_map:
       "School Number": "School Number"
-      "Absence Date":
-        column: "Absence Date"
-        transform: "format_dd_mmm_yyyy"
+      # Placeholder (transformer builds rows directly). The Absence Date OUTPUT
+      # format is governed by global_config.attendance.date_format, not here.
+      "Absence Date": "Absence Date"
       "Absence Category":
         value: ""
       "Student Number": "Student Number"
