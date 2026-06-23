@@ -63,10 +63,17 @@ def extract_required_files(config) -> list[str]:
 
 
 class TransformOutputs(NamedTuple):
-    """Result of :func:`run_transform` — transformed frames plus their CSV column order."""
+    """Result of :func:`run_transform` — transformed frames plus their CSV column order.
+
+    ``data_errors`` is the run's fail-loud field-transform ledger (a separate
+    axis from ETL success): non-fatal per-row / column-level transform problems
+    recorded by ``BaseTransformer.apply_field_map`` instead of being silently
+    swallowed. Empty on a clean run.
+    """
 
     outputs: dict[str, pd.DataFrame]
     field_orders: dict[str, list[str]]
+    data_errors: list[dict]
 
 
 def run_transform(
@@ -82,6 +89,9 @@ def run_transform(
     state stays isolated). Honors ``enabled_entities`` (inclusion) and
     ``entity_order`` (ordering); skips entities whose primary source frame is
     empty; collects each emitted entity's field order from its ``field_map`` keys.
+    The returned :class:`TransformOutputs` also carries ``data_errors`` — the
+    shared context's fail-loud field-transform ledger accumulated across every
+    entity (empty on a clean run).
     """
     transformer = DataTransformer()
 
@@ -143,7 +153,9 @@ def run_transform(
         outputs[entity_name] = transformed
         field_orders[entity_name] = list(entity_cfg.get("field_map", {}).keys())
 
-    return TransformOutputs(outputs, field_orders)
+    # The shared per-run TransformContext accumulates fail-loud field-transform
+    # errors across every entity; surface them on the same axis as the outputs.
+    return TransformOutputs(outputs, field_orders, transformer.data_errors)
 
 
 def compute_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list[str]:
@@ -199,8 +211,15 @@ def _emit_run_log(
     sftp_ok: bool = False,
     error: str = "",
     anomalies: list[str] | None = None,
+    data_errors: dict[str, Any] | None = None,
 ) -> None:
-    """Write a structured __DISTRICTSYNC_RUN__ log line for the Run History page."""
+    """Write a structured __DISTRICTSYNC_RUN__ log line for the Run History page.
+
+    ``data_errors`` is a compact summary (``{"total": N, "by_field": {...}}``)
+    of non-fatal field-transform problems — a separate axis from ``status``
+    (which stays ``success``/``failed`` for the ETL run itself). Run History
+    renders it as "Completed with N data errors". Absent/empty on a clean run.
+    """
     entry = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "status": status,
@@ -217,8 +236,27 @@ def _emit_run_log(
         "sftp_ok": sftp_ok,
         "error": error,
         "anomalies": anomalies or [],
+        "data_errors": data_errors or {},
     }
     logger.info(f"__DISTRICTSYNC_RUN__ {json.dumps(entry)}")
+
+
+def _summarize_data_errors(data_errors: list[dict]) -> dict[str, Any]:
+    """Collapse the per-(entity, field) error ledger into a compact run-log summary.
+
+    ``{"total": <sum of failed_rows>, "by_field": {"<Entity>.<Field>": <rows>}}``.
+    Returns an empty dict for a clean run (nothing to surface).
+    """
+    if not data_errors:
+        return {}
+    by_field: dict[str, int] = {}
+    total = 0
+    for rec in data_errors:
+        key = f"{rec.get('entity', '?')}.{rec.get('field', '?')}"
+        rows = int(rec.get("failed_rows", 0))
+        by_field[key] = by_field.get(key, 0) + rows
+        total += rows
+    return {"total": total, "by_field": by_field}
 
 
 def run_pipeline(
@@ -281,9 +319,33 @@ def run_pipeline(
 
         raw_data = extractor.load_data(required_files, file_headers=file_headers)
 
+        # Fail loud on NO USABLE INPUT. A scheduled, unattended run that received
+        # no usable required input (wrong folder, truncated export, locked file)
+        # must not masquerade as a clean run. The guard keys off INPUT presence
+        # (`raw_data`), independent of `run_transform`'s per-entity skip-on-empty
+        # — so a partial run (some files present) proceeds, and a period-only
+        # attendance run (period file non-empty, daily absent) does NOT fire it.
+        if not raw_data or all(df.empty for df in raw_data.values()):
+            empty_or_missing = [name for name, df in raw_data.items() if df.empty] or list(required_files)
+            raise RuntimeError(
+                "No usable required input was loaded — every required file is "
+                f"missing or empty: {empty_or_missing}. Check the input folder, "
+                "the export job, and that the files are not locked."
+            )
+
         # Shared transform-orchestration (school-year + per-entity loop +
         # enabled_entities filter + field-order collection).
-        outputs, field_orders = run_transform(raw_data, mappings, global_config)
+        outputs, field_orders, data_errors = run_transform(raw_data, mappings, global_config)
+
+        # Surface fail-loud field-transform errors (a separate axis from ETL
+        # status): consolidated ERROR + a compact run-log summary. The run still
+        # completed + delivered, so `status` stays `success`.
+        data_errors_summary = _summarize_data_errors(data_errors)
+        if data_errors_summary:
+            logger.error(
+                f"Completed with {data_errors_summary['total']} data error(s) across "
+                f"{len(data_errors_summary['by_field'])} field(s): {data_errors_summary['by_field']}"
+            )
 
         # Check for anomalies before writing
         if outputs and not dry_run:
@@ -318,7 +380,15 @@ def run_pipeline(
 
         # Emit structured run log
         elapsed = time.monotonic() - t0
-        _emit_run_log("success", elapsed, outputs, sftp_attempted=sftp_attempted, sftp_ok=sftp_ok, anomalies=anomalies)
+        _emit_run_log(
+            "success",
+            elapsed,
+            outputs,
+            sftp_attempted=sftp_attempted,
+            sftp_ok=sftp_ok,
+            anomalies=anomalies,
+            data_errors=data_errors_summary,
+        )
 
         return PipelineResult(
             entity_counts={name: len(df) for name, df in outputs.items()},

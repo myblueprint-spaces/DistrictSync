@@ -28,6 +28,19 @@ class TransformContext:
     # invariant). Empty until Students runs — consumers must guard for that.
     active_student_ids: set[str] = field(default_factory=set)
 
+    # Per-run data-error ledger (separate axis from ETL success/failure). Each
+    # entry records a non-fatal field-transform problem surfaced loudly rather
+    # than silently swallowed: a per-row transform exception (that one cell is
+    # blanked, the rest of the column survives) or a column-level error (unknown
+    # transform / structural failure → that column blanked). Appended by
+    # `BaseTransformer.apply_field_map`; surfaced by `run_pipeline` into the
+    # run-log `data_errors` summary and Run History ("Completed with N data
+    # errors"). The ETL `status` stays `success` — the run still completes +
+    # delivers. Intended-blank (absent config column) is NOT an error and is
+    # NOT recorded here. Entry shape:
+    #   {"entity": str, "field": str, "failed_rows": int, "sample": str}
+    data_errors: list[dict[str, Any]] = field(default_factory=list)
+
     # Cross-entity state: populated by ClassTransformer, consumed by EnrollmentTransformer
     homeroom_classes_df: pd.DataFrame = field(default_factory=pd.DataFrame)
     class_info_df: pd.DataFrame = field(default_factory=pd.DataFrame)

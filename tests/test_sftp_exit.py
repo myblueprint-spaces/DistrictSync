@@ -13,6 +13,7 @@ Verifies that:
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -271,6 +272,33 @@ class TestSftpFailureExitCode:
 
         error_messages = [r.message for r in caplog.records if r.levelno >= logging.ERROR]
         assert any("sftp.app.spacesedu.com" in msg for msg in error_messages)
+
+    def test_sftp_fail_run_log_status_success_sftp_flags(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The run-log of an ETL-OK-but-SFTP-failed run carries
+        status="success", sftp_attempted=True, sftp_ok=False — the exact
+        boolean source the Run History "ETL OK · SFTP FAILED" Status cell reads.
+        (ETL completed + wrote the CSVs; only delivery failed — a separate axis.)
+        """
+        mock_cfg = _make_mock_app_config()
+        with (
+            patch("src.etl.pipeline.AppConfig.load", return_value=mock_cfg),
+            patch("src.etl.pipeline.SFTPUploader") as mock_uploader_cls,
+            caplog.at_level(logging.INFO, logger="src.etl.pipeline"),
+        ):
+            mock_uploader = MagicMock()
+            mock_uploader.upload_csvs.side_effect = ConnectionError("Network unreachable")
+            mock_uploader_cls.return_value = mock_uploader
+
+            run_pipeline("myedbc", str(gde_input), str(gde_output), sftp=True)
+
+        run_logs = [r.message for r in caplog.records if "__DISTRICTSYNC_RUN__" in r.message]
+        assert run_logs, "expected a structured run-log line"
+        payload = json.loads(run_logs[-1].split("__DISTRICTSYNC_RUN__ ")[1])
+        assert payload["status"] == "success"
+        assert payload["sftp_attempted"] is True
+        assert payload["sftp_ok"] is False
 
 
 # ---------------------------------------------------------------------------

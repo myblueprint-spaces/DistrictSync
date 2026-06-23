@@ -272,7 +272,7 @@ def _run_ui_path(gde_sources: dict[str, bytes], tmp_path: Path) -> Path:
     mappings = raw["mappings"]
     global_config = raw["global_config"]
     raw_data = DataExtractor("").load_from_bytes(gde_sources, _file_headers(CONFIG))
-    outputs, field_orders = run_transform(raw_data, mappings, global_config)
+    outputs, field_orders, _ = run_transform(raw_data, mappings, global_config)
     DataLoader(str(output_dir)).save_all(outputs, field_orders)
     return output_dir
 

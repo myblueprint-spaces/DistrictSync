@@ -282,6 +282,27 @@ class TestEmitRunLog:
         payload = json.loads(log_lines[0].split("__DISTRICTSYNC_RUN__ ")[1])
         assert payload["anomalies"] == ["Students dropped 50%"]
 
+    def test_clean_run_has_empty_data_errors(self, caplog):
+        """A run with no field-transform errors carries an empty data_errors map."""
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            _emit_run_log("success", 1.0, {})
+
+        log_lines = [r.message for r in caplog.records if "__DISTRICTSYNC_RUN__" in r.message]
+        payload = json.loads(log_lines[0].split("__DISTRICTSYNC_RUN__ ")[1])
+        assert payload["data_errors"] == {}
+
+    def test_emits_data_errors_summary_status_stays_success(self, caplog):
+        """When field-transform errors occurred the summary is carried, but the
+        ETL status stays `success` — data_errors is a separate axis."""
+        summary = {"total": 3, "by_field": {"Students.Grade": 3}}
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            _emit_run_log("success", 1.0, {}, data_errors=summary)
+
+        log_lines = [r.message for r in caplog.records if "__DISTRICTSYNC_RUN__" in r.message]
+        payload = json.loads(log_lines[0].split("__DISTRICTSYNC_RUN__ ")[1])
+        assert payload["status"] == "success"
+        assert payload["data_errors"] == summary
+
 
 # -----------------------------------------------------------------------
 # _sftp_upload
@@ -377,10 +398,12 @@ class TestRunTransform:
         result = run_transform(raw_data, mappings, self._global_config())
 
         assert isinstance(result, TransformOutputs)
-        # Unpacks cleanly into (outputs, field_orders)
-        outputs, field_orders = result
+        # Unpacks cleanly into (outputs, field_orders, data_errors)
+        outputs, field_orders, data_errors = result
         assert "Widgets" in outputs
         assert list(outputs["Widgets"].columns) == ["Out"]
+        # A clean run records no field-transform errors.
+        assert data_errors == []
 
     def test_honors_enabled_entities(self):
         """A disabled entity is absent from outputs even though its source file
@@ -395,7 +418,7 @@ class TestRunTransform:
         }
         gc = self._global_config(enabled_entities=["Widgets"])
 
-        outputs, _ = run_transform(raw_data, mappings, gc)
+        outputs = run_transform(raw_data, mappings, gc).outputs
 
         assert set(outputs.keys()) == {"Widgets"}
         assert "Gadgets" not in outputs
@@ -411,7 +434,7 @@ class TestRunTransform:
         }
         gc = self._global_config(entity_order=["Gadgets", "Widgets"])
 
-        outputs, _ = run_transform(raw_data, mappings, gc)
+        outputs = run_transform(raw_data, mappings, gc).outputs
 
         assert list(outputs.keys()) == ["Gadgets", "Widgets"]
 
@@ -426,7 +449,7 @@ class TestRunTransform:
             "gadgets.txt": pd.DataFrame({"in_col": []}),  # empty primary
         }
 
-        outputs, field_orders = run_transform(raw_data, mappings, self._global_config())
+        outputs, field_orders, _ = run_transform(raw_data, mappings, self._global_config())
 
         assert "Widgets" in outputs
         assert "Gadgets" not in outputs
@@ -438,7 +461,7 @@ class TestRunTransform:
         mappings = {"Widgets": self._entity("not_uploaded.txt", {"Out": "in_col"})}
         raw_data: dict[str, pd.DataFrame] = {}
 
-        outputs, _ = run_transform(raw_data, mappings, self._global_config())
+        outputs = run_transform(raw_data, mappings, self._global_config()).outputs
 
         assert outputs == {}
 
@@ -452,6 +475,6 @@ class TestRunTransform:
         }
         raw_data = {"widgets.txt": pd.DataFrame({"a": ["1"], "b": ["2"], "c": ["3"]})}
 
-        _, field_orders = run_transform(raw_data, mappings, self._global_config())
+        field_orders = run_transform(raw_data, mappings, self._global_config()).field_orders
 
         assert field_orders["Widgets"] == ["First", "Second", "Third"]

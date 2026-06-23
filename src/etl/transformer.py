@@ -83,6 +83,11 @@ class DataTransformer:
     def blended_teacher_map(self, value):
         self._context.blended_teacher_map = value
 
+    @property
+    def data_errors(self) -> list[dict[str, Any]]:
+        """Per-run fail-loud field-transform error ledger (see TransformContext)."""
+        return self._context.data_errors
+
     # --- Core methods ---
 
     def set_school_year(self, year: int, start_month_day: str, end_month_day: str) -> None:

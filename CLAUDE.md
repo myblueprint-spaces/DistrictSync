@@ -162,7 +162,8 @@ Base `myedbc` defines all 7 entity templates; configs select which to emit via `
 - **Anomaly detection** — Warns if any entity drops >20% vs previous run output
 - **Structured logging** — `__DISTRICTSYNC_RUN__` JSON emitted after each run with timing, counts, SFTP status
 - **`run_pipeline` returns `PipelineResult`** (`entity_counts`, `sftp_attempted`, `sftp_ok`, `anomalies`); a requested SFTP upload that fails logs ERROR (`"SFTP upload FAILED — output files were NOT delivered to <host>"`) and `main` exits code **3** (ETL output still written, not rolled back)
-- **Exit codes** — `0` success · `1` ETL/arg/validation error · `2` stdin empty or mutually-exclusive flags · `3` SFTP delivery failed (ETL output present)
+- **Exit codes** — `0` success · `1` ETL/arg/validation error · `2` stdin empty or mutually-exclusive flags · `3` SFTP delivery failed (ETL output present). **No usable required input at all** (every required file missing/empty, checked right after `extractor.load_data`) → exit **1**; a *partial* run with some empty sources stays exit **0** by design (per-entity skip-on-empty is legitimate).
+- **Fail-loud field transforms** — `apply_field_map` is **row-resilient**: a row whose transform raises blanks only **that cell** (valid rows keep their value), an unknown-transform / column-level error blanks **that column**; every failure is recorded to `context.data_errors` → surfaced as the run-log `data_errors` summary (`{total, by_field}`) + Run History "Completed with N data errors". Data errors are a **separate axis** — ETL `status` stays `success` and the run still delivers (never silently swallowed, never fails the run for one bad row).
 - All entity transformations use pandas DataFrames with `.copy()` to avoid mutation side effects
 
 ## Security

@@ -245,6 +245,7 @@ if st.button("Run Conversion", type="primary"):
     if result and result.outputs:
         st.session_state.convert_outputs = result.outputs
         st.session_state.convert_field_orders = result.field_orders
+        st.session_state.convert_data_errors = result.data_errors
         # Run quality report
         report = DataQualityReport().analyze(result.outputs)
         st.session_state.convert_quality = report.to_text()
@@ -252,6 +253,7 @@ if st.button("Run Conversion", type="primary"):
         st.error("No output produced. Check that the correct district config is selected.")
         st.session_state.pop("convert_outputs", None)
         st.session_state.pop("convert_field_orders", None)
+        st.session_state.pop("convert_data_errors", None)
         st.session_state.pop("convert_quality", None)
 
 # Display results from session state (persists across re-renders)
@@ -259,6 +261,18 @@ outputs = st.session_state.get("convert_outputs")
 field_orders = st.session_state.get("convert_field_orders", {})
 if outputs:
     st.success(f"Generated {len(outputs)} output file(s)")
+
+    # Surface transform data-errors loudly: a bad row blanks only that cell and the
+    # file is still produced, but never show a clean green when cells were dropped.
+    _data_errors = st.session_state.get("convert_data_errors") or []
+    if _data_errors:
+        _total = sum(int(e.get("failed_rows", 0)) for e in _data_errors)
+        _fields = ", ".join(f"{e.get('entity', '?')}.{e.get('field', '?')}" for e in _data_errors)
+        st.warning(
+            f"⚠️ Completed with {_total} data error(s) across {len(_data_errors)} "
+            f"field(s) ({_fields}) — those values could not be transformed and were left "
+            "blank. The rest of the file was generated; check the log for details."
+        )
 
     # Quality report
     quality_text = st.session_state.get("convert_quality", "")
