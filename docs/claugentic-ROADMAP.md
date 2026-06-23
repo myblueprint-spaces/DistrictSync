@@ -11,6 +11,8 @@ The prioritized backlog the claugentic harness works through. `/claugentic-dev-h
 
 - **`append_year_to_id` (class-ID) field is not row-resilient** (follow-up to 0006, 2026-06-23) — in `apply_field_map` the `transform:` path now blanks only a failing row's cell, but the `append_year_to_id` branch (`base.py` ~737) uses `working.apply(..., axis=1)`; if `generate_class_id` raises on one row the whole column blanks (recorded loudly as a column-level data-error, not silent). Make it per-row resilient like the transform path for consistency.
 
+- **Stale unmanaged output files** (found 2026-06-23 while planning 0007) — `DataLoader.save_all` only manages files it writes this run; a CSV left by a prior run whose entity was later dropped from `enabled_entities` persists in the output dir and could ship a stale entity. Pre-existing and orthogonal to the 0007 atomic-commit fix. Decide whether to prune-on-commit (remove managed-but-no-longer-emitted CSVs).
+
 ## Project-tracked backlog (harvested from the in-house harness, 2026-06-17)
 
 Sourced from the full-codebase architect review (6-agent pass, 2026-06-04). Status markers: `NEXT` (queued) · `LATER` · `PLAN <NNNN>` (plan drafted). Each item runs through the workflow in its own session, sliced to land complete with no tech debt.
