@@ -69,6 +69,21 @@ class TestDataLoader:
         with pytest.raises(ValueError, match="columns missing.*NonExistent"):
             loader.save_to_csv(df, "Students", ["Name", "Grade", "NonExistent"])
 
+    def test_select_ordered_returns_contract_columns_in_order(self):
+        """``select_ordered`` is the single source of column selection shared by
+        the disk/SFTP write (``_write_csv``) and the UI download/zip path."""
+        df = pd.DataFrame({"B": [1], "A": [2], "C": [3], "Extra": [9]})
+        result = DataLoader.select_ordered(df, ["A", "B", "C"], "Test")
+        assert list(result.columns) == ["A", "B", "C"]  # ordered + extras dropped
+
+    def test_select_ordered_raises_value_error_not_key_error(self):
+        """A missing column raises the SAME clean ``ValueError`` everywhere (never a
+        raw ``KeyError`` from ``df[field_order]``) — so the download handler's
+        ``except ValueError`` guard catches it on every write path."""
+        df = pd.DataFrame({"Name": ["Alice"], "Grade": ["05"]})
+        with pytest.raises(ValueError, match="columns missing.*Email"):
+            DataLoader.select_ordered(df, ["Name", "Grade", "Email"], "Students")
+
     def test_utf8_bom_written(self, tmp_path):
         loader = DataLoader(str(tmp_path))
         df = pd.DataFrame({"Name": ["René"], "Grade": ["05"]})

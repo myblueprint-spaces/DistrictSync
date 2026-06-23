@@ -94,6 +94,45 @@ class DataLoader:
         self._write_csv(df, entity_name, field_order, self.output_path, staging=False)
 
     # ------------------------------------------------------------------
+    # Column selection + validation (single source of truth)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def select_ordered(df: pd.DataFrame, field_order: list[str], entity_name: str) -> pd.DataFrame:
+        """Return ``df`` restricted to ``field_order`` (exact contract columns,
+        in order), failing **loud** if any ordered column is absent.
+
+        This is the ONE place column selection + the missing-column check live,
+        so every write path — the disk/SFTP write (``_write_csv``) and the UI
+        download/zip path (``02_Convert.create_zip`` + the per-CSV buttons) —
+        raises the SAME ``ValueError`` instead of a raw ``KeyError`` from
+        ``df[field_order]``. A ``field_order`` comes from ``field_map`` keys,
+        which are not guaranteed to materialize as frame columns (the documented
+        ``student_courses.py`` partial-transform debt), so this guard is reachable
+        on the download path too — it must surface cleanly, not as a traceback.
+        """
+        missing_cols = [c for c in field_order if c not in df.columns]
+        if missing_cols:
+            raise ValueError(f"Cannot write {entity_name}.csv — columns missing from output: {missing_cols}")
+        # ``.loc[:, list]`` selects the columns in order as a DataFrame (a list key
+        # to ``df[...]`` does too at runtime, but the typed overload is ambiguous).
+        return df.loc[:, field_order]
+
+    # ------------------------------------------------------------------
+    # Encoding policy (single source of truth for the BOM rule)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def csv_encoding(cls, entity_name: str) -> str:
+        """Return the CSV encoding for ``entity_name`` — the ONE place the BOM
+        rule lives. ``utf-8-sig`` (BOM, Excel-friendly) by default; plain
+        ``utf-8`` (no BOM) for ``_NO_BOM_ENTITIES`` whose strict downstream
+        parser rejects a BOM-prefixed first header. Both the disk write path
+        (``_write_csv``) and the UI download/zip path call this, so the two
+        never diverge again (the StudentAttendance-BOM class of bug)."""
+        return "utf-8" if entity_name in cls._NO_BOM_ENTITIES else "utf-8-sig"
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -107,12 +146,10 @@ class DataLoader:
         staging: bool,
     ) -> None:
         try:
-            missing_cols = [c for c in field_order if c not in df.columns]
-            if missing_cols:
-                raise ValueError(f"Cannot write {entity_name}.csv — columns missing from output: {missing_cols}")
+            ordered = self.select_ordered(df, field_order, entity_name)
             output_file = directory / f"{entity_name}.csv"
-            encoding = "utf-8" if entity_name in self._NO_BOM_ENTITIES else "utf-8-sig"
-            df[field_order].to_csv(output_file, index=False, encoding=encoding)
+            encoding = self.csv_encoding(entity_name)
+            ordered.to_csv(output_file, index=False, encoding=encoding)
             label = "Staged" if staging else "Saved"
             logger.info(f"{label} {entity_name}.csv ({len(df)} rows) → {output_file}")
         except Exception as ex:

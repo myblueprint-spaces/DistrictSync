@@ -20,6 +20,12 @@ class DataExtractor:
     """
     Responsible for loading each GDE file (CSV/TXT) into a pandas DataFrame.
     Normalizes column names (strip + lowercase) immediately after loading.
+
+    Two public entrypoints share one bytes-based parsing core (`_load_bytes`):
+    `load_data` (disk) reads each present file's bytes and dispatches to the core;
+    `load_from_bytes` (in-memory, e.g. browser uploads) dispatches directly. Both
+    inherit the same encoding-detection, delimiter-detection, and malformed-row
+    repair behaviour.
     """
 
     def __init__(self, input_path: str):
@@ -33,7 +39,8 @@ class DataExtractor:
         """
         Try to load each file with multiple encodings and delimiters.
         Returns a dict: { filename → DataFrame }.
-        If loading fails, returns an empty DataFrame for that key.
+        A file that is not present on disk yields an empty DataFrame for that key.
+        A file that exists but cannot be parsed raises `ExtractionError`.
         """
         file_headers = file_headers or {}
         data: dict[str, pd.DataFrame] = {}
@@ -47,38 +54,76 @@ class DataExtractor:
                 data[filename] = pd.DataFrame()
                 continue
 
-            # Check if explicit headers are provided (for headerless files)
-            explicit_names = file_headers.get(filename)
-            if explicit_names:
-                logger.info(f"Using explicit headers for {filename} ({len(explicit_names)} columns)")
-
-            # Pick the delimiter from the (clean) header line rather than relying on
-            # "first parse that doesn't raise". A free-text field containing stray
-            # delimiter characters can otherwise trick the loader into accepting the
-            # wrong delimiter and silently loading the whole file as one garbage column.
-            sep = self._detect_delimiter(file_path)
-            logger.info(f"Detected delimiter for {filename}: {'auto' if sep is None else repr(sep)}")
-
-            # Pick the text encoding by inspecting the bytes rather than "first that
-            # doesn't raise" — latin1 never raises, so a UTF-8 file with a few stray
-            # bytes would otherwise fall through to latin1 and mojibake every accented
-            # character in the file.
-            encoding, encoding_errors = self._detect_encoding(file_path)
-            logger.info(f"Detected encoding for {filename}: {encoding} (errors={encoding_errors})")
-
-            loaded_df = self._read_with_fallback(file_path, sep, encoding, encoding_errors, explicit_names)
-
-            if loaded_df is None:
-                raise ExtractionError(f"File exists but could not be parsed with any encoding/delimiter: {file_path}")
-            else:
-                # Normalize column names here
-                data[filename] = normalize_columns(loaded_df)
-                logger.info(f"Successfully loaded {filename}: {len(data[filename])} rows")
+            # Read the bytes once and dispatch to the shared bytes-core: disk and
+            # in-memory uploads parse through exactly the same encoding/delimiter/
+            # repair logic.
+            raw = file_path.read_bytes()
+            data[filename] = self._load_bytes(filename, raw, file_headers.get(filename))
 
         return data
 
+    def load_from_bytes(
+        self,
+        sources: dict[str, bytes],
+        file_headers: Optional[dict[str, list[str]]] = None,
+    ) -> dict[str, pd.DataFrame]:
+        """
+        Parse already-in-memory GDE files (e.g. browser uploads) through the same
+        core as `load_data`. Returns a dict: { name → DataFrame }.
+
+        Only the supplied keys are parsed — a referenced-but-not-supplied source is
+        simply absent from the result (downstream code uses
+        `.get(name, pd.DataFrame())`, so the absence is treated as "skip this
+        entity"; this method must NOT back-fill empty frames for missing keys).
+        Content that cannot be parsed raises `ExtractionError`, matching disk.
+        """
+        file_headers = file_headers or {}
+        data: dict[str, pd.DataFrame] = {}
+        for name, raw in sources.items():
+            logger.info(f"Attempting to load (in-memory): {name}")
+            data[name] = self._load_bytes(name, raw, file_headers.get(name))
+        return data
+
+    def _load_bytes(
+        self,
+        name: str,
+        raw: bytes,
+        explicit_names: Optional[list[str]],
+    ) -> pd.DataFrame:
+        """Parse one GDE file's raw bytes into a normalized DataFrame.
+
+        Shared by `load_data` (disk) and `load_from_bytes` (uploads). Raises
+        `ExtractionError` when the bytes cannot be parsed by any encoding/delimiter.
+        """
+        if explicit_names:
+            logger.info(f"Using explicit headers for {name} ({len(explicit_names)} columns)")
+
+        # Pick the delimiter from the (clean) header line rather than relying on
+        # "first parse that doesn't raise". A free-text field containing stray
+        # delimiter characters can otherwise trick the loader into accepting the
+        # wrong delimiter and silently loading the whole file as one garbage column.
+        sep = self._detect_delimiter(raw)
+        logger.info(f"Detected delimiter for {name}: {'auto' if sep is None else repr(sep)}")
+
+        # Pick the text encoding by inspecting the bytes rather than "first that
+        # doesn't raise" — latin1 never raises, so a UTF-8 file with a few stray
+        # bytes would otherwise fall through to latin1 and mojibake every accented
+        # character in the file.
+        encoding, encoding_errors = self._detect_encoding(raw)
+        logger.info(f"Detected encoding for {name}: {encoding} (errors={encoding_errors})")
+
+        loaded_df = self._read_with_fallback(name, raw, sep, encoding, encoding_errors, explicit_names)
+
+        if loaded_df is None:
+            raise ExtractionError(f"File exists but could not be parsed with any encoding/delimiter: {name}")
+
+        # Normalize column names here
+        normalized = normalize_columns(loaded_df)
+        logger.info(f"Successfully loaded {name}: {len(normalized)} rows")
+        return normalized
+
     @staticmethod
-    def _detect_delimiter(file_path: Path) -> Optional[str]:
+    def _detect_delimiter(raw: bytes) -> Optional[str]:
         """
         Choose a delimiter by counting candidates in the first physical line.
 
@@ -87,19 +132,14 @@ class DataExtractor:
         most frequent of comma/tab, or None (let pandas auto-detect) when neither
         appears — e.g. a single-column file.
         """
-        try:
-            with open(file_path, "rb") as fh:
-                first_line = fh.readline()
-        except OSError:
-            return None
-
+        first_line = raw.split(b"\n", 1)[0]
         header = first_line.decode("latin1", errors="replace")
         counts = {",": header.count(","), "\t": header.count("\t")}
         best = max(counts, key=lambda k: counts[k])
         return best if counts[best] > 0 else None
 
     @staticmethod
-    def _detect_encoding(file_path: Path) -> tuple[str, str]:
+    def _detect_encoding(raw: bytes) -> tuple[str, str]:
         """
         Pick a text encoding by inspecting the bytes, returning (encoding, errors).
 
@@ -110,11 +150,6 @@ class DataExtractor:
         - A genuinely legacy-encoded file (a large share of bytes break UTF-8) →
           cp1252 if it decodes cleanly, otherwise latin1 (which always decodes).
         """
-        try:
-            raw = file_path.read_bytes()
-        except OSError:
-            return ("utf-8", "strict")
-
         try:
             raw.decode("utf-8")
             return ("utf-8", "strict")
@@ -136,14 +171,15 @@ class DataExtractor:
 
     @staticmethod
     def _read_with_fallback(
-        file_path: Path,
+        name: str,
+        raw: bytes,
         sep: Optional[str],
         encoding: str,
         encoding_errors: str,
         explicit_names: Optional[list[str]],
     ) -> Optional[pd.DataFrame]:
         """
-        Read the file with the detected delimiter and encoding.
+        Read the file's bytes with the detected delimiter and encoding.
 
         The fast C engine is tried first. If it reports malformed rows (too many
         fields), the file is re-read with the python engine and a repair hook that
@@ -178,41 +214,41 @@ class DataExtractor:
                 warnings.simplefilter("always")
                 df = None
                 try:
-                    df = pd.read_csv(file_path, engine="c", on_bad_lines="warn", low_memory=False, **base_kwargs)
+                    df = pd.read_csv(io.BytesIO(raw), engine="c", on_bad_lines="warn", low_memory=False, **base_kwargs)
                 except (pd.errors.ParserError, UnicodeDecodeError, ValueError, csv.Error) as e:
-                    logger.debug(f"C-engine read failed for {file_path.name}: {e}")
+                    logger.debug(f"C-engine read failed for {name}: {e}")
 
             if df is not None:
                 bad_lines = any(issubclass(w.category, pd.errors.ParserWarning) for w in caught)
                 if not bad_lines:
-                    logger.info(f"Loaded {file_path.name} with encoding={encoding}, sep={repr(sep)}, engine=c")
+                    logger.info(f"Loaded {name} with encoding={encoding}, sep={repr(sep)}, engine=c")
                     return df
                 expected_cols = df.shape[1]
                 del df
                 logger.info(
-                    f"{file_path.name}: malformed rows detected (extra delimiters in an unquoted "
+                    f"{name}: malformed rows detected (extra delimiters in an unquoted "
                     f"field); recovering by merging the overflow into the last column."
                 )
                 return DataExtractor._read_repaired(
-                    file_path, sep, encoding, encoding_errors, explicit_names, expected_cols
+                    name, raw, sep, encoding, encoding_errors, explicit_names, expected_cols
                 )
 
         # No usable C-engine result (sep is None, or the C engine raised). Fall back
         # to the tolerant python engine, which can also auto-detect the delimiter.
         try:
-            df = pd.read_csv(file_path, engine="python", on_bad_lines="warn", **base_kwargs)
+            df = pd.read_csv(io.BytesIO(raw), engine="python", on_bad_lines="warn", **base_kwargs)
             logger.info(
-                f"Loaded {file_path.name} with encoding={encoding}, "
-                f"sep={'auto' if sep is None else repr(sep)}, engine=python"
+                f"Loaded {name} with encoding={encoding}, sep={'auto' if sep is None else repr(sep)}, engine=python"
             )
             return df
         except (pd.errors.ParserError, UnicodeDecodeError, ValueError, csv.Error) as e:
-            logger.debug(f"Python-engine read failed for {file_path.name}: {e}")
+            logger.debug(f"Python-engine read failed for {name}: {e}")
             return None
 
     @staticmethod
     def _read_repaired(
-        file_path: Path,
+        name: str,
+        raw: bytes,
         sep: str,
         encoding: str,
         encoding_errors: str,
@@ -229,19 +265,29 @@ class DataExtractor:
         ``Section`` column unquoted, e.g. ``6B,R-B O3``). The cleaned rows are written
         to an in-memory buffer that pandas then reads normally, preserving its usual
         blank→NaN handling and ``dtype=str``.
+
+        The bytes are decoded with the detected ``(encoding, encoding_errors)`` and
+        fed to ``csv.reader`` via a ``StringIO`` — equivalent to the disk path that
+        opened the file with ``newline=""`` (a decoded in-memory string already
+        presents universal-newline-free physical rows to ``csv.reader``).
         """
+        try:
+            text = raw.decode(encoding, errors=encoding_errors)
+        except (LookupError, UnicodeDecodeError) as e:
+            logger.debug(f"Repair-pass decode failed for {name}: {e}")
+            return None
+
         buffer = io.StringIO()
         writer = csv.writer(buffer, delimiter=sep)
         repaired = 0
         try:
-            with open(file_path, encoding=encoding, errors=encoding_errors, newline="") as fh:
-                for fields in csv.reader(fh, delimiter=sep):
-                    if len(fields) > expected_cols:
-                        fields = fields[: expected_cols - 1] + [sep.join(fields[expected_cols - 1 :])]
-                        repaired += 1
-                    writer.writerow(fields)
-        except (OSError, csv.Error) as e:
-            logger.debug(f"Repair pass failed for {file_path.name}: {e}")
+            for fields in csv.reader(io.StringIO(text, newline=""), delimiter=sep):
+                if len(fields) > expected_cols:
+                    fields = fields[: expected_cols - 1] + [sep.join(fields[expected_cols - 1 :])]
+                    repaired += 1
+                writer.writerow(fields)
+        except csv.Error as e:
+            logger.debug(f"Repair pass failed for {name}: {e}")
             return None
 
         buffer.seek(0)
@@ -252,11 +298,10 @@ class DataExtractor:
         try:
             df = pd.read_csv(buffer, engine="c", **read_kwargs)
         except (pd.errors.ParserError, ValueError, csv.Error) as e:
-            logger.debug(f"Repaired-buffer read failed for {file_path.name}: {e}")
+            logger.debug(f"Repaired-buffer read failed for {name}: {e}")
             return None
 
         logger.info(
-            f"Loaded {file_path.name} with encoding={encoding}, sep={repr(sep)}, "
-            f"engine=c (repaired {repaired} malformed row(s))"
+            f"Loaded {name} with encoding={encoding}, sep={repr(sep)}, engine=c (repaired {repaired} malformed row(s))"
         )
         return df

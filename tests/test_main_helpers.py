@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
+from src.etl.pipeline import TransformOutputs, compute_anomalies, run_transform
 from src.main import (
     _check_anomalies,
     _emit_run_log,
@@ -144,6 +145,93 @@ class TestCheckAnomalies:
         warnings = _check_anomalies(outputs, tmp_path)
         assert warnings == []
 
+    def test_cli_wrapper_adds_anomaly_prefix_and_logs(self, tmp_path, caplog):
+        """_check_anomalies is a thin CLI renderer over compute_anomalies: it
+        prefixes 'ANOMALY:' and logs each shared base message at WARNING."""
+        prev = tmp_path / "Students.csv"
+        prev.write_text("id\n" + "\n".join(str(i) for i in range(100)) + "\n", encoding="utf-8")
+
+        outputs = {"Students": pd.DataFrame({"id": range(50)})}
+        with caplog.at_level(logging.WARNING, logger="src.etl.pipeline"):
+            warnings = _check_anomalies(outputs, tmp_path)
+
+        # The shared base message (no prefix) plus the CLI's 'ANOMALY:' prefix.
+        base = compute_anomalies(outputs, tmp_path)
+        assert base == ["Students dropped from 100 to 50 rows (50% decrease)"]
+        assert warnings == [f"ANOMALY: {base[0]}"]
+        assert any("ANOMALY: Students dropped from 100 to 50" in r.message for r in caplog.records)
+
+
+# -----------------------------------------------------------------------
+# compute_anomalies (shared compute — single source consumed by CLI + UI)
+# -----------------------------------------------------------------------
+
+
+class TestComputeAnomalies:
+    """Unit tests for the pure, surface-agnostic anomaly compute.
+
+    compute_anomalies returns the SAME plain warning-string list that both the
+    CLI (_check_anomalies wrapper) and the Convert page consume — no logging,
+    no printing, no 'ANOMALY:' prefix. Each surface adds its own presentation.
+    """
+
+    def test_detects_large_drop(self, tmp_path):
+        # Previous: 100 rows. New: 50 rows (50% drop, above the 20% threshold).
+        prev = tmp_path / "Students.csv"
+        prev.write_text("id\n" + "\n".join(str(i) for i in range(100)) + "\n", encoding="utf-8")
+
+        outputs = {"Students": pd.DataFrame({"id": range(50)})}
+        warnings = compute_anomalies(outputs, tmp_path)
+
+        # Plain base message — NO 'ANOMALY:' prefix, NO logging side-effects.
+        assert warnings == ["Students dropped from 100 to 50 rows (50% decrease)"]
+        assert not warnings[0].startswith("ANOMALY:")
+
+    def test_no_previous_output_returns_empty(self, tmp_path):
+        outputs = {"Students": pd.DataFrame({"id": range(100)})}
+        assert compute_anomalies(outputs, tmp_path) == []
+
+    def test_no_false_positive_under_threshold(self, tmp_path):
+        # Previous: 100 rows. New: 85 rows (15% drop, below the 20% threshold).
+        prev = tmp_path / "Students.csv"
+        prev.write_text("id\n" + "\n".join(str(i) for i in range(100)) + "\n", encoding="utf-8")
+
+        outputs = {"Students": pd.DataFrame({"id": range(85)})}
+        assert compute_anomalies(outputs, tmp_path) == []
+
+    def test_skips_unreadable_previous_file(self, tmp_path):
+        # A directory where a CSV is expected raises on open → skipped, not raised.
+        (tmp_path / "Students.csv").mkdir()
+
+        outputs = {"Students": pd.DataFrame({"id": range(10)})}
+        assert compute_anomalies(outputs, tmp_path) == []
+
+    def test_empty_previous_file_is_not_an_anomaly(self, tmp_path):
+        # Header-only previous file (0 data rows) is a missing baseline, not a drop.
+        prev = tmp_path / "Students.csv"
+        prev.write_text("id\n", encoding="utf-8")
+
+        outputs = {"Students": pd.DataFrame({"id": range(10)})}
+        assert compute_anomalies(outputs, tmp_path) == []
+
+    def test_result_is_the_shared_list_both_surfaces_consume(self, tmp_path):
+        """Both surfaces derive their warnings from this exact list: the CLI
+        wrapper prefixes each base message; the Convert page renders each base
+        message verbatim as 'Anomaly detected: {msg}'."""
+        prev = tmp_path / "Students.csv"
+        prev.write_text("id\n" + "\n".join(str(i) for i in range(100)) + "\n", encoding="utf-8")
+
+        outputs = {"Students": pd.DataFrame({"id": range(40)})}
+        base = compute_anomalies(outputs, tmp_path)
+
+        assert base == ["Students dropped from 100 to 40 rows (60% decrease)"]
+        # CLI surface: thin wrapper prefixes 'ANOMALY:' over the shared base list.
+        assert _check_anomalies(outputs, tmp_path) == [f"ANOMALY: {base[0]}"]
+        # UI surface renders the SAME base message (st.warning(f"Anomaly detected: {msg}")).
+        assert [f"Anomaly detected: {msg}" for msg in base] == [
+            "Anomaly detected: Students dropped from 100 to 40 rows (60% decrease)"
+        ]
+
 
 # -----------------------------------------------------------------------
 # _emit_run_log
@@ -250,3 +338,120 @@ class TestPrintDiff:
         _print_diff(outputs, str(tmp_path))
         captured = capsys.readouterr()
         assert "Staff" in captured.out
+
+
+# -----------------------------------------------------------------------
+# run_transform
+# -----------------------------------------------------------------------
+
+
+class TestRunTransform:
+    """Unit tests for the shared transform-orchestration extracted from run_pipeline.
+
+    These use unregistered entity names so the generic DefaultTransformer (plain
+    field_map application) runs — keeping the test focused on run_transform's
+    orchestration (school-year set, enabled_entities, entity_order, empty-primary
+    skip, field_orders collection) rather than any specific entity's logic.
+    """
+
+    @staticmethod
+    def _global_config(**overrides):
+        cfg = {
+            "academic_start_month_day": "09-01",
+            "academic_end_month_day": "06-30",
+        }
+        cfg.update(overrides)
+        return cfg
+
+    @staticmethod
+    def _entity(source_file, field_map):
+        return {
+            "source_files": {"primary": source_file},
+            "field_map": field_map,
+        }
+
+    def test_returns_transformoutputs_namedtuple(self):
+        mappings = {"Widgets": self._entity("widgets.txt", {"Out": "in_col"})}
+        raw_data = {"widgets.txt": pd.DataFrame({"in_col": ["a", "b"]})}
+
+        result = run_transform(raw_data, mappings, self._global_config())
+
+        assert isinstance(result, TransformOutputs)
+        # Unpacks cleanly into (outputs, field_orders)
+        outputs, field_orders = result
+        assert "Widgets" in outputs
+        assert list(outputs["Widgets"].columns) == ["Out"]
+
+    def test_honors_enabled_entities(self):
+        """A disabled entity is absent from outputs even though its source file
+        is present in raw_data."""
+        mappings = {
+            "Widgets": self._entity("widgets.txt", {"Out": "in_col"}),
+            "Gadgets": self._entity("gadgets.txt", {"Out": "in_col"}),
+        }
+        raw_data = {
+            "widgets.txt": pd.DataFrame({"in_col": ["a"]}),
+            "gadgets.txt": pd.DataFrame({"in_col": ["b"]}),
+        }
+        gc = self._global_config(enabled_entities=["Widgets"])
+
+        outputs, _ = run_transform(raw_data, mappings, gc)
+
+        assert set(outputs.keys()) == {"Widgets"}
+        assert "Gadgets" not in outputs
+
+    def test_respects_entity_order(self):
+        mappings = {
+            "Widgets": self._entity("widgets.txt", {"Out": "in_col"}),
+            "Gadgets": self._entity("gadgets.txt", {"Out": "in_col"}),
+        }
+        raw_data = {
+            "widgets.txt": pd.DataFrame({"in_col": ["a"]}),
+            "gadgets.txt": pd.DataFrame({"in_col": ["b"]}),
+        }
+        gc = self._global_config(entity_order=["Gadgets", "Widgets"])
+
+        outputs, _ = run_transform(raw_data, mappings, gc)
+
+        assert list(outputs.keys()) == ["Gadgets", "Widgets"]
+
+    def test_skips_entity_with_empty_primary_source(self):
+        """An entity whose primary source frame is empty is skipped, not emitted."""
+        mappings = {
+            "Widgets": self._entity("widgets.txt", {"Out": "in_col"}),
+            "Gadgets": self._entity("gadgets.txt", {"Out": "in_col"}),
+        }
+        raw_data = {
+            "widgets.txt": pd.DataFrame({"in_col": ["a"]}),
+            "gadgets.txt": pd.DataFrame({"in_col": []}),  # empty primary
+        }
+
+        outputs, field_orders = run_transform(raw_data, mappings, self._global_config())
+
+        assert "Widgets" in outputs
+        assert "Gadgets" not in outputs
+        assert "Gadgets" not in field_orders
+
+    def test_skips_entity_with_missing_primary_source(self):
+        """A referenced-but-absent primary source defaults to an empty frame and
+        is skipped (no back-filling)."""
+        mappings = {"Widgets": self._entity("not_uploaded.txt", {"Out": "in_col"})}
+        raw_data: dict[str, pd.DataFrame] = {}
+
+        outputs, _ = run_transform(raw_data, mappings, self._global_config())
+
+        assert outputs == {}
+
+    def test_field_orders_derived_from_field_map_keys(self):
+        """field_orders for each emitted entity is exactly its field_map key order."""
+        mappings = {
+            "Widgets": self._entity(
+                "widgets.txt",
+                {"First": "a", "Second": "b", "Third": "c"},
+            )
+        }
+        raw_data = {"widgets.txt": pd.DataFrame({"a": ["1"], "b": ["2"], "c": ["3"]})}
+
+        _, field_orders = run_transform(raw_data, mappings, self._global_config())
+
+        assert field_orders["Widgets"] == ["First", "Second", "Third"]

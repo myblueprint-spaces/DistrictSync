@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pandas as pd
 
@@ -62,8 +62,103 @@ def extract_required_files(config) -> list[str]:
     return list(files)
 
 
-def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list[str]:
-    """Compare output row counts against previous run; return warning strings."""
+class TransformOutputs(NamedTuple):
+    """Result of :func:`run_transform` — transformed frames plus their CSV column order."""
+
+    outputs: dict[str, pd.DataFrame]
+    field_orders: dict[str, list[str]]
+
+
+def run_transform(
+    raw_data: dict[str, pd.DataFrame],
+    mappings: dict,
+    global_config: dict,
+) -> TransformOutputs:
+    """Shared transform-orchestration: school-year determination + the per-entity loop.
+
+    Behaviour-preserving extraction of the canonical orchestration block from
+    ``run_pipeline``. Constructs a fresh :class:`DataTransformer` (both callers
+    already build a new transformer per run, so the per-run ``TransformContext``
+    state stays isolated). Honors ``enabled_entities`` (inclusion) and
+    ``entity_order`` (ordering); skips entities whose primary source frame is
+    empty; collects each emitted entity's field order from its ``field_map`` keys.
+    """
+    transformer = DataTransformer()
+
+    outputs: dict[str, pd.DataFrame] = {}
+    field_orders: dict[str, list[str]] = {}
+
+    # Determine school year — NO in-code defaults. Validation guarantees
+    # academic_start_month_day and academic_end_month_day are set when
+    # Classes is enabled; rollover falls back to academic_end_month_day
+    # when not separately configured.
+    sy_sources_config = global_config.get("school_year_sources", {})
+    start_md = global_config["academic_start_month_day"]
+    end_md = global_config["academic_end_month_day"]
+    rollover_md = global_config.get("academic_year_rollover_month_day") or end_md
+    naming = global_config.get("school_year_naming") or "end"
+    sy = transformer.determine_school_year(
+        raw_data,
+        sy_sources_config,
+        rollover_month_day=rollover_md,
+        school_year_naming=naming,
+    )
+    transformer.set_school_year(sy, start_md, end_md)
+    logger.info(f"Using school year {sy}, academic start={transformer.academic_start}, end={transformer.academic_end}")
+
+    entity_order = global_config.get("entity_order") or list(mappings.keys())
+    # `enabled_entities` (when non-empty) filters which mappings actually run.
+    # This lets the base config define more entity templates than it
+    # activates by default — districts opt in by listing them.
+    enabled = global_config.get("enabled_entities") or []
+    if enabled:
+        enabled_set = set(enabled)
+        entity_order = [e for e in entity_order if e in enabled_set]
+    for entity_name in entity_order:
+        entity_cfg = mappings.get(entity_name, {})
+        source_config = entity_cfg.get("source_files", {})
+
+        if not source_config:
+            logger.warning(f"No source_files for entity '{entity_name}' in the mapping; skipping.")
+            continue
+
+        source_files = list(source_config.values()) if isinstance(source_config, dict) else source_config
+        if not source_files:
+            logger.warning(f"No valid source files for entity '{entity_name}'; skipping.")
+            continue
+
+        primary_source = source_files[0]
+        primary_df = raw_data.get(primary_source, pd.DataFrame())
+
+        if primary_df.empty:
+            logger.warning(f"Primary source file '{primary_source}' is empty for '{entity_name}'; skipping.")
+            continue
+
+        transformed = transformer.transform(primary_df, entity_cfg, entity_name, raw_data, global_config)
+
+        if transformed.empty:
+            logger.warning(f"No data transformed for entity '{entity_name}'; skipping.")
+            continue
+
+        outputs[entity_name] = transformed
+        field_orders[entity_name] = list(entity_cfg.get("field_map", {}).keys())
+
+    return TransformOutputs(outputs, field_orders)
+
+
+def compute_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list[str]:
+    """Pure row-count-drop compute shared by the CLI and the Convert page.
+
+    Compares each output entity's row count against its previous run's CSV in
+    ``output_dir`` and returns a plain per-entity warning string for every
+    entity that dropped by more than :data:`ANOMALY_THRESHOLD`. The base
+    message — ``"{entity} dropped from {prev} to {new} rows ({pct}% decrease)"``
+    — carries NO surface-specific presentation (no ``ANOMALY:`` prefix, no
+    logging/printing); each caller adds its own (CLI logs, UI renders).
+
+    Entities with no previous file, an unreadable previous file, or an empty
+    previous file are skipped — a missing baseline is fine, not an anomaly.
+    """
     warnings: list[str] = []
     for entity, df in outputs.items():
         prev_path = output_dir / f"{entity}.csv"
@@ -77,9 +172,22 @@ def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list
             continue
         if prev_count > 0 and len(df) < prev_count * (1 - ANOMALY_THRESHOLD):
             pct = ((prev_count - len(df)) / prev_count) * 100
-            msg = f"ANOMALY: {entity} dropped from {prev_count} to {len(df)} rows ({pct:.0f}% decrease)"
-            logger.warning(msg)
-            warnings.append(msg)
+            warnings.append(f"{entity} dropped from {prev_count} to {len(df)} rows ({pct:.0f}% decrease)")
+    return warnings
+
+
+def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list[str]:
+    """CLI renderer over :func:`compute_anomalies`: prefix ``ANOMALY:`` and log.
+
+    Thin wrapper that adds the CLI's existing presentation to each shared base
+    warning — the ``ANOMALY:``-prefixed ``logger.warning`` lines — and returns
+    the prefixed strings (consumed by the structured run-log's ``anomalies``).
+    """
+    warnings: list[str] = []
+    for msg in compute_anomalies(outputs, output_dir):
+        prefixed = f"ANOMALY: {msg}"
+        logger.warning(prefixed)
+        warnings.append(prefixed)
     return warnings
 
 
@@ -160,7 +268,6 @@ def run_pipeline(
         global_config: dict[str, Any] = raw["global_config"]
 
         extractor = DataExtractor(input_path)
-        transformer = DataTransformer()
         loader = DataLoader(output_path)
 
         required_files = extract_required_files(config)
@@ -174,64 +281,9 @@ def run_pipeline(
 
         raw_data = extractor.load_data(required_files, file_headers=file_headers)
 
-        # Determine school year — NO in-code defaults. Validation guarantees
-        # academic_start_month_day and academic_end_month_day are set when
-        # Classes is enabled; rollover falls back to academic_end_month_day
-        # when not separately configured.
-        sy_sources_config = global_config.get("school_year_sources", {})
-        start_md = global_config["academic_start_month_day"]
-        end_md = global_config["academic_end_month_day"]
-        rollover_md = global_config.get("academic_year_rollover_month_day") or end_md
-        naming = global_config.get("school_year_naming") or "end"
-        sy = transformer.determine_school_year(
-            raw_data,
-            sy_sources_config,
-            rollover_month_day=rollover_md,
-            school_year_naming=naming,
-        )
-        transformer.set_school_year(sy, start_md, end_md)
-        logger.info(
-            f"Using school year {sy}, academic start={transformer.academic_start}, end={transformer.academic_end}"
-        )
-
-        field_orders: dict[str, list[str]] = {}
-
-        entity_order = global_config.get("entity_order") or list(mappings.keys())
-        # `enabled_entities` (when non-empty) filters which mappings actually run.
-        # This lets the base config define more entity templates than it
-        # activates by default — districts opt in by listing them.
-        enabled = global_config.get("enabled_entities") or []
-        if enabled:
-            enabled_set = set(enabled)
-            entity_order = [e for e in entity_order if e in enabled_set]
-        for entity_name in entity_order:
-            entity_cfg = mappings.get(entity_name, {})
-            source_config = entity_cfg.get("source_files", {})
-
-            if not source_config:
-                logger.warning(f"No source_files for entity '{entity_name}' in the mapping; skipping.")
-                continue
-
-            source_files = list(source_config.values()) if isinstance(source_config, dict) else source_config
-            if not source_files:
-                logger.warning(f"No valid source files for entity '{entity_name}'; skipping.")
-                continue
-
-            primary_source = source_files[0]
-            primary_df = raw_data.get(primary_source, pd.DataFrame())
-
-            if primary_df.empty:
-                logger.warning(f"Primary source file '{primary_source}' is empty for '{entity_name}'; skipping.")
-                continue
-
-            transformed = transformer.transform(primary_df, entity_cfg, entity_name, raw_data, global_config)
-
-            if transformed.empty:
-                logger.warning(f"No data transformed for entity '{entity_name}'; skipping.")
-                continue
-
-            outputs[entity_name] = transformed
-            field_orders[entity_name] = list(entity_cfg.get("field_map", {}).keys())
+        # Shared transform-orchestration (school-year + per-entity loop +
+        # enabled_entities filter + field-order collection).
+        outputs, field_orders = run_transform(raw_data, mappings, global_config)
 
         # Check for anomalies before writing
         if outputs and not dry_run:
