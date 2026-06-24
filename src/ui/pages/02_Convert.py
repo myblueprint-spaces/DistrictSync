@@ -19,14 +19,17 @@ if str(_root) not in sys.path:
 
 from src.config.app_config import AppConfig  # noqa: E402
 from src.config.loader import available_configs, load_config  # noqa: E402
+from src.etl.extractor import DataExtractor  # noqa: E402
 from src.etl.loader import DataLoader  # noqa: E402
-from src.etl.pipeline import extract_required_files  # noqa: E402
-from src.etl.transformer import DataTransformer  # noqa: E402
+from src.etl.pipeline import (  # noqa: E402
+    TransformOutputs,
+    compute_anomalies,
+    extract_required_files,
+    run_transform,
+)
 from src.quality.report import DataQualityReport  # noqa: E402
 from src.ui.brand import header, inject_brand_css  # noqa: E402
-from src.utils.helpers import build_zip_name, normalize_columns  # noqa: E402
-
-ANOMALY_THRESHOLD = 0.20
+from src.utils.helpers import build_zip_name  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Load app config (for district pre-selection, diff, SFTP)
@@ -37,59 +40,6 @@ _app_cfg = AppConfig.load()
 def get_available_configs() -> list[str]:
     """List all districts from user dir + bundled defaults."""
     return available_configs()
-
-
-# ---------------------------------------------------------------------------
-# Robust file loader (matches DataExtractor encoding/delimiter grid)
-# ---------------------------------------------------------------------------
-
-
-def _load_uploaded_file(
-    buf: io.BytesIO,
-    filename: str,
-    file_headers: dict[str, list[str]],
-) -> pd.DataFrame:
-    """Load an uploaded file with multi-encoding + delimiter detection.
-
-    Handles headerless files when *filename* is in *file_headers*.
-    """
-    buf.seek(0)
-    content = buf.read()
-    explicit_names = file_headers.get(filename)
-
-    encodings = ["utf-8", "latin1", "cp1252"]
-    delimiters = [",", "\t", None]  # None = Python engine auto-detect
-
-    for enc in encodings:
-        for sep in delimiters:
-            try:
-                kwargs: dict = {
-                    "sep": sep,
-                    "encoding": enc,
-                    "on_bad_lines": "warn",
-                    "low_memory": False,
-                }
-                if sep is None:
-                    kwargs["engine"] = "python"
-                if explicit_names:
-                    kwargs["header"] = None
-                    kwargs["names"] = explicit_names
-
-                df = pd.read_csv(io.BytesIO(content), **kwargs)
-                if len(df.columns) > 1 and not df.empty:
-                    return normalize_columns(df)
-            # Try the next encoding/delimiter combo before falling back to UTF-8 replace.
-            except Exception:  # nosec B112
-                continue
-
-    # Last resort: force UTF-8 with error replacement
-    df = pd.read_csv(
-        io.BytesIO(content),
-        encoding="utf-8",
-        encoding_errors="replace",
-        on_bad_lines="warn",
-    )
-    return normalize_columns(df)
 
 
 # ---------------------------------------------------------------------------
@@ -134,33 +84,6 @@ def _compute_diff(
 
 
 # ---------------------------------------------------------------------------
-# Anomaly detection (adapted from _check_anomalies in src/main.py)
-# ---------------------------------------------------------------------------
-
-
-def _check_anomalies_ui(
-    outputs: dict[str, pd.DataFrame],
-    output_dir: Path,
-) -> list[str]:
-    """Compare row counts vs previous output; return warning strings."""
-    warnings: list[str] = []
-    for entity, df in outputs.items():
-        prev_path = output_dir / f"{entity}.csv"
-        if not prev_path.exists():
-            continue
-        try:
-            with open(prev_path, encoding="utf-8") as f:
-                prev_count = sum(1 for _ in f) - 1
-        # Skip unreadable previous output files — missing baseline is fine.
-        except Exception:  # nosec B112
-            continue
-        if prev_count > 0 and len(df) < prev_count * (1 - ANOMALY_THRESHOLD):
-            pct = ((prev_count - len(df)) / prev_count) * 100
-            warnings.append(f"{entity} dropped from {prev_count:,} to {len(df):,} rows ({pct:.0f}% decrease)")
-    return warnings
-
-
-# ---------------------------------------------------------------------------
 # Conversion pipeline
 # ---------------------------------------------------------------------------
 
@@ -168,8 +91,17 @@ def _check_anomalies_ui(
 def run_conversion(
     uploaded_files: dict[str, io.BytesIO],
     config_name: str,
-) -> dict[str, pd.DataFrame]:
-    """Run the ETL conversion using validated config with _base inheritance."""
+) -> TransformOutputs | None:
+    """Run the ETL conversion using validated config with _base inheritance.
+
+    Thin adapter over the shared engine: reads uploads → ``load_from_bytes``
+    (same bytes-core as the CLI: encoding detection + malformed-row repair) →
+    ``run_transform`` (school-year determination, ``enabled_entities`` filter,
+    per-entity loop, field-order collection). Returns the shared
+    :class:`TransformOutputs` (frames + per-entity field order) so the page
+    writes through ``DataLoader`` byte-for-byte identically to the CLI, or
+    ``None`` if nothing could be loaded.
+    """
     config = load_config(config_name)
     raw = config.to_raw_dict()
     mappings = raw.get("mappings", {})
@@ -181,63 +113,48 @@ def run_conversion(
         for filename, header_list in entity_cfg.get("headers", {}).items():
             file_headers[filename] = header_list
 
-    raw_data: dict[str, pd.DataFrame] = {}
+    # Parse uploads through the SAME bytes-core the CLI uses (encoding detection +
+    # malformed-row repair). Read each upload into bytes and hand them to
+    # DataExtractor.load_from_bytes — keyed by the original filename so config
+    # source_files resolve identically to a disk run.
+    sources: dict[str, bytes] = {}
     for filename, file_buf in uploaded_files.items():
-        try:
-            df = _load_uploaded_file(file_buf, filename, file_headers)
-            raw_data[filename] = df
-        except Exception as e:
-            st.warning(f"Could not load `{filename}`: {e}")
+        file_buf.seek(0)
+        sources[filename] = file_buf.getvalue()
+
+    try:
+        raw_data = DataExtractor("").load_from_bytes(sources, file_headers)
+    except Exception as e:
+        st.error(f"Could not load uploaded files: {e}")
+        return None
 
     if not raw_data:
         st.error("No files could be loaded.")
-        return {}
-
-    transformer = DataTransformer()
-    sy_sources = global_config.get("school_year_sources", {})
-    start_md = global_config["academic_start_month_day"]
-    end_md = global_config["academic_end_month_day"]
-    rollover_md = global_config.get("academic_year_rollover_month_day") or end_md
-    naming = global_config.get("school_year_naming") or "end"
-    sy = transformer.determine_school_year(
-        raw_data, sy_sources, rollover_month_day=rollover_md, school_year_naming=naming
-    )
-    transformer.set_school_year(sy, start_md, end_md)
-
-    outputs: dict[str, pd.DataFrame] = {}
-    entity_order = global_config.get("entity_order") or list(mappings.keys())
+        return None
 
     with st.status("Converting...", expanded=True) as status:
-        for entity_name in entity_order:
-            st.write(f"Processing {entity_name}...")
-            entity_cfg = mappings.get(entity_name, {})
-            source_config = entity_cfg.get("source_files", {})
-            if not source_config:
-                continue
-            source_files = list(source_config.values()) if isinstance(source_config, dict) else source_config
-            if not source_files:
-                continue
-            primary_df = raw_data.get(source_files[0], pd.DataFrame())
-            if primary_df.empty:
-                continue
-            transformed = transformer.transform(primary_df, entity_cfg, entity_name, raw_data, global_config)
-            if not transformed.empty:
-                field_order = list(entity_cfg.get("field_map", {}).keys())
-                ordered = [c for c in field_order if c in transformed.columns]
-                extra = [c for c in transformed.columns if c not in field_order]
-                outputs[entity_name] = transformed[ordered + extra]
+        # Shared transform-orchestration — the SAME engine the CLI runs, so the
+        # Convert page can never diverge (honors enabled_entities + field order).
+        result = run_transform(raw_data, mappings, global_config)
         status.update(label="Conversion complete", state="complete")
 
-    return outputs
+    return result
 
 
-def create_zip(outputs: dict[str, pd.DataFrame]) -> bytes:
+def create_zip(outputs: dict[str, pd.DataFrame], field_orders: dict[str, list[str]]) -> bytes:
+    """Zip every output CSV using the SAME per-entity encoding + column selection
+    as the disk/SFTP write path (``DataLoader``). ``csv_encoding`` is the single
+    source of truth for the BOM rule (no BOM for StudentAttendance, BOM for the
+    rest); ``DataLoader.select_ordered`` writes strictly the contract columns and
+    raises the same ``ValueError`` (not a raw ``KeyError``) on a missing column,
+    so the download path fails loud exactly like the disk/SFTP write."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Per-entity encoding (DataLoader is the single source of truth): BOM-strict
-        # feeds like StudentAttendance are written without the BOM.
         for name, df in outputs.items():
-            zf.writestr(f"{name}.csv", df.to_csv(index=False, encoding=DataLoader.csv_encoding(name)))
+            field_order = field_orders.get(name, list(df.columns))
+            encoding = DataLoader.csv_encoding(name)
+            ordered = DataLoader.select_ordered(df, field_order, name)
+            zf.writestr(f"{name}.csv", ordered.to_csv(index=False, encoding=encoding))
     return buf.getvalue()
 
 
@@ -282,6 +199,7 @@ if "convert_last_district" not in st.session_state:
 if st.session_state.convert_last_district != selected:
     st.session_state.convert_last_district = selected
     st.session_state.pop("convert_outputs", None)
+    st.session_state.pop("convert_field_orders", None)
     st.session_state.pop("convert_quality", None)
 
 # Step 1: Upload
@@ -323,21 +241,38 @@ if expected:
 # Step 2: Convert
 st.subheader("2. Convert")
 if st.button("Run Conversion", type="primary"):
-    outputs = run_conversion(uploaded_map, selected)
-    if outputs:
-        st.session_state.convert_outputs = outputs
+    result = run_conversion(uploaded_map, selected)
+    if result and result.outputs:
+        st.session_state.convert_outputs = result.outputs
+        st.session_state.convert_field_orders = result.field_orders
+        st.session_state.convert_data_errors = result.data_errors
         # Run quality report
-        report = DataQualityReport().analyze(outputs)
+        report = DataQualityReport().analyze(result.outputs)
         st.session_state.convert_quality = report.to_text()
     else:
         st.error("No output produced. Check that the correct district config is selected.")
         st.session_state.pop("convert_outputs", None)
+        st.session_state.pop("convert_field_orders", None)
+        st.session_state.pop("convert_data_errors", None)
         st.session_state.pop("convert_quality", None)
 
 # Display results from session state (persists across re-renders)
 outputs = st.session_state.get("convert_outputs")
+field_orders = st.session_state.get("convert_field_orders", {})
 if outputs:
     st.success(f"Generated {len(outputs)} output file(s)")
+
+    # Surface transform data-errors loudly: a bad row blanks only that cell and the
+    # file is still produced, but never show a clean green when cells were dropped.
+    _data_errors = st.session_state.get("convert_data_errors") or []
+    if _data_errors:
+        _total = sum(int(e.get("failed_rows", 0)) for e in _data_errors)
+        _fields = ", ".join(f"{e.get('entity', '?')}.{e.get('field', '?')}" for e in _data_errors)
+        st.warning(
+            f"⚠️ Completed with {_total} data error(s) across {len(_data_errors)} "
+            f"field(s) ({_fields}) — those values could not be transformed and were left "
+            "blank. The rest of the file was generated; check the log for details."
+        )
 
     # Quality report
     quality_text = st.session_state.get("convert_quality", "")
@@ -357,32 +292,42 @@ if outputs:
             st.dataframe(df.head(50), width="stretch")
 
     st.subheader("4. Download")
-    zip_data = create_zip(outputs)
-    st.download_button(
-        label="Download All CSVs (ZIP)",
-        data=zip_data,
-        file_name=build_zip_name(selected),
-        mime="application/zip",
-        type="primary",
-    )
+    # The download path writes through the SAME encoding + column-order rules as
+    # the CLI/SFTP path (DataLoader.csv_encoding + strict df[field_order]). A
+    # missing field-map column surfaces here as a loud, actionable error rather
+    # than a silent partial CSV — fail loud, matching the scheduled run.
+    try:
+        zip_data = create_zip(outputs, field_orders)
+        st.download_button(
+            label="Download All CSVs (ZIP)",
+            data=zip_data,
+            file_name=build_zip_name(selected),
+            mime="application/zip",
+            type="primary",
+        )
 
-    cols = st.columns(min(len(outputs), 5))
-    for col, (name, df) in zip(cols, outputs.items()):
-        with col:
-            st.download_button(
-                label=f"{name}.csv",
-                data=df.to_csv(index=False, encoding=DataLoader.csv_encoding(name)),
-                file_name=f"{name}.csv",
-                mime="text/csv",
-            )
+        cols = st.columns(min(len(outputs), 5))
+        for col, (name, df) in zip(cols, outputs.items()):
+            field_order = field_orders.get(name, list(df.columns))
+            ordered = DataLoader.select_ordered(df, field_order, name)
+            with col:
+                st.download_button(
+                    label=f"{name}.csv",
+                    data=ordered.to_csv(index=False, encoding=DataLoader.csv_encoding(name)),
+                    file_name=f"{name}.csv",
+                    mime="text/csv",
+                )
+    except ValueError as e:
+        st.error(f"Cannot build download — a required output column is missing: {e}")
 
     # Step 5: SFTP upload (only shown when configured)
     if _app_cfg.sftp_is_configured():
         st.subheader("5. Upload via SFTP")
 
-        # Anomaly warnings
+        # Anomaly warnings — shared compute (src.etl.pipeline.compute_anomalies),
+        # single-sourced with the CLI; the page adds only its own presentation.
         if _app_cfg.output_dir and Path(_app_cfg.output_dir).is_dir():
-            anomalies = _check_anomalies_ui(outputs, Path(_app_cfg.output_dir))
+            anomalies = compute_anomalies(outputs, Path(_app_cfg.output_dir))
             if anomalies:
                 for msg in anomalies:
                     st.warning(f"Anomaly detected: {msg}")
@@ -394,15 +339,20 @@ if outputs:
         if st.button("Upload via SFTP", type="secondary"):
             from src.sftp.uploader import SFTPUploader
 
-            with st.spinner("Uploading..."):
+            with st.spinner("Uploading..."), tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                # Write through the SAME atomic DataLoader path the CLI
+                # uses — identical per-entity encoding (no BOM for
+                # StudentAttendance) and strict column order. A missing
+                # field-map column raises ValueError HERE (staging), before
+                # any upload — surface it as a write/validation failure, not
+                # a mislabeled "upload failed".
                 try:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        tmp_path = Path(tmpdir)
-                        # Write via DataLoader so the per-entity encoding matches the
-                        # CLI exactly — StudentAttendance.csv goes out without the BOM
-                        # that SpacesEDU's strict attendance importer rejects.
-                        for name, df in outputs.items():
-                            df.to_csv(tmp_path / f"{name}.csv", index=False, encoding=DataLoader.csv_encoding(name))
+                    DataLoader(tmpdir).save_all(outputs, field_orders)
+                except ValueError as e:
+                    st.error(f"Cannot prepare upload — a required output column is missing: {e}")
+                else:
+                    try:
                         uploader = SFTPUploader(
                             host=_app_cfg.sftp_host,
                             port=_app_cfg.sftp_port,
@@ -410,11 +360,11 @@ if outputs:
                             remote_path=_app_cfg.sftp_remote_path,
                         )
                         uploaded_files_list = uploader.upload_csvs(tmp_path, sis_type=selected)
-                    st.success(
-                        f"Uploaded ZIP with {len(uploaded_files_list)} file(s): {', '.join(uploaded_files_list)}"
-                    )
-                except Exception as e:
-                    st.error(f"SFTP upload failed: {e}")
+                        st.success(
+                            f"Uploaded ZIP with {len(uploaded_files_list)} file(s): {', '.join(uploaded_files_list)}"
+                        )
+                    except Exception as e:
+                        st.error(f"SFTP upload failed: {e}")
 
 st.divider()
 st.caption("SpacesEDU by myBlueprint · DistrictSync · support@myBlueprint.ca")

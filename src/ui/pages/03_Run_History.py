@@ -74,12 +74,33 @@ if runs:
         didn't) makes pyarrow infer int64 and fail on the em-dash."""
         return "—" if value is None else str(value)
 
+    def _status_cell(r: dict) -> str:
+        """At-a-glance Status that never contradicts the exit code (display-only).
+
+        The run-log `status` stays `success`/`failed` for the ETL run itself;
+        SFTP delivery and data-error counts are separate axes already in the
+        record. Surface them in the amber Status cell so a run that ETL-succeeded
+        but failed to deliver, or completed with field-transform errors, is not
+        shown as a plain green ✅ (the dedicated SFTP column already flags the
+        delivery boolean; this keeps the headline Status honest)."""
+        if r.get("status") != "success":
+            return "❌ Failed"
+        sftp_failed = bool(r.get("sftp_attempted")) and not r.get("sftp_ok")
+        total_data_errors = (r.get("data_errors") or {}).get("total", 0)
+        if sftp_failed and total_data_errors:
+            return f"⚠️ ETL OK · SFTP FAILED · {total_data_errors} data errors"
+        if sftp_failed:
+            return "⚠️ ETL OK · SFTP FAILED"
+        if total_data_errors:
+            return f"⚠️ Completed with {total_data_errors} data errors"
+        return "✅ Success"
+
     rows = []
     for r in runs[-50:][::-1]:  # newest first
         rows.append(
             {
                 "Date / Time": r.get("timestamp", "—"),
-                "Status": "✅ Success" if r.get("status") == "success" else "❌ Failed",
+                "Status": _status_cell(r),
                 "Duration (s)": _fmt(r.get("duration_s")),
                 "Students": _fmt(r.get("Students")),
                 "Staff": _fmt(r.get("Staff")),

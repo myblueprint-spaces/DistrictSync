@@ -753,7 +753,34 @@ class BaseTransformer(ABC):
         entity: str,
         context: TransformContext,
     ) -> pd.DataFrame:
-        """Apply the generic YAML field_map to produce output columns."""
+        """Apply the generic YAML field_map to produce output columns.
+
+        Fail-loud, never silent, never fails the run (data errors are a
+        separate axis from ETL success). NOTE: only the ``transform:`` path is
+        per-row resilient — other computed branches (e.g. ``append_year_to_id``)
+        blank the whole column on any row failure (recorded as a column-level
+        error, still never silent):
+
+        - **Per-row resilience (``transform:`` path).** A ``transform:`` is applied
+          per-row; a row whose ``func`` raises gets ``pd.NA`` in **that cell only**
+          while every other row keeps its correct value. Those per-row failures are
+          recorded.
+        - **Column-level errors** — an unknown transform name (config error), the
+          ``append_year_to_id`` row-wise branch, or any structural failure — blank
+          the whole column and continue (do NOT raise), recorded the same loud way.
+          The ``append_year_to_id`` branch is deliberately **column-level**, not
+          per-row: its helper ``generate_class_id`` performs no fallible
+          operation (a ``row.get`` plus an f-string — it cannot raise on a single
+          row), so a per-row try/except would defend a failure that cannot occur
+          and only add a second near-duplicate resilience loop. Promote it to
+          per-row ONLY if ``generate_class_id`` ever gains a parse/IO step that
+          can raise on one row (Plan 0008, won't-fix-by-decision).
+        - Every recorded failure appends a record to ``context.data_errors`` and
+          logs at ERROR; ``run_pipeline`` surfaces a summary into the run-log
+          (``data_errors``) and Run History — never swallowed.
+        - **Intended blank** (the config column is simply absent from the frame)
+          is NOT an error: it stays ``pd.NA`` and is NOT recorded.
+        """
         for tgt_field, src_info in field_map.items():
             try:
                 if tgt_field in result.columns:
@@ -778,25 +805,91 @@ class BaseTransformer(ABC):
                         series = working[column_name]
                         if transform_name:
                             if transform_name not in self.ALLOWED_TRANSFORMS:
+                                # Config error (unknown transform). Blank this
+                                # column + record loudly; do NOT raise — config
+                                # fail-fast validation of ALLOWED_TRANSFORMS is a
+                                # separate backlog item (T2.4).
                                 raise ValueError(
                                     f"Unknown transform '{transform_name}' for field '{tgt_field}'. "
                                     f"Allowed: {sorted(self.ALLOWED_TRANSFORMS)}"
                                 )
                             func = getattr(self, transform_name)
-                            result[tgt_field] = series.apply(func)
+                            result[tgt_field] = self._apply_transform_resilient(
+                                series, func, entity, tgt_field, context
+                            )
                         else:
                             result[tgt_field] = series
                     else:
+                        # Intended blank: the config column is absent from the
+                        # frame. NOT an error — do not record.
                         result[tgt_field] = pd.NA
                 else:
                     col = str(src_info).lower()
                     if col in working.columns:
                         result[tgt_field] = working[col]
                     else:
+                        # Intended blank (direct mapping, column absent). NOT an
+                        # error — do not record.
                         result[tgt_field] = pd.NA
 
             except Exception as ex:
-                logger.exception(f"Error transforming {entity}.{tgt_field}: {ex}")
+                # Column-level error (unknown transform or any structural
+                # failure). Blank the column, record loudly, continue — never
+                # silently swallow, never fail the run.
+                logger.error(f"Error transforming {entity}.{tgt_field}: {ex}")
+                self._record_data_error(context, entity, tgt_field, failed_rows=len(working), sample=str(ex))
                 result[tgt_field] = pd.NA
 
         return result
+
+    def _apply_transform_resilient(
+        self,
+        series: pd.Series,
+        func: Any,
+        entity: str,
+        tgt_field: str,
+        context: TransformContext,
+    ) -> list[Any]:
+        """Apply ``func`` per-row so a single bad row blanks only that cell.
+
+        A row whose ``func`` raises gets ``pd.NA`` for that cell; every other
+        row keeps its correctly-transformed value. Per-row failures are
+        aggregated into ``context.data_errors`` and logged at ERROR — never
+        silently swallowed, never aborting the whole column or the run.
+        """
+        out: list[Any] = []
+        failures = 0
+        first_sample = ""
+        for value in series:
+            try:
+                out.append(func(value))
+            except Exception as ex:  # noqa: BLE001 — per-row isolation; recorded below
+                out.append(pd.NA)
+                failures += 1
+                if not first_sample:
+                    first_sample = f"{value!r}: {ex}"
+        if failures:
+            logger.error(
+                f"Error transforming {entity}.{tgt_field}: {failures} row(s) failed "
+                f"(blanked that cell only) — sample {first_sample}"
+            )
+            self._record_data_error(context, entity, tgt_field, failed_rows=failures, sample=first_sample)
+        return out
+
+    @staticmethod
+    def _record_data_error(
+        context: TransformContext,
+        entity: str,
+        field_name: str,
+        failed_rows: int,
+        sample: str,
+    ) -> None:
+        """Append one fail-loud data-error record to the run's shared ledger."""
+        context.data_errors.append(
+            {
+                "entity": entity,
+                "field": field_name,
+                "failed_rows": failed_rows,
+                "sample": sample,
+            }
+        )

@@ -113,6 +113,8 @@ Entity-specific transformers using Strategy Pattern with a registry:
 ### Loader (`src/etl/loader.py`)
 Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. `save_all()` uses atomic transactional writes: stages to `.tmp_<timestamp>/`, commits all on success, rolls back on failure.
 
+`save_all` commit is **backup-and-restore atomic** (`_commit_staged`): each existing target is moved into `.bak_<ts>/` then the staged file promoted with `os.replace` (atomic same-fs overwrite, not `shutil.move` — fixes the Windows copy2+unlink within-file tear); any mid-commit failure rolls back (restore originals / remove new files) so the output dir is **never left torn**. Rollback runs inside the `except` and re-raises *before* the `finally` rmtrees `.bak_<ts>/` (restore-before-cleanup invariant).
+
 ### Config (`src/config/`)
 - `models.py` — Pydantic v2 models for YAML mapping validation. 8 field mapping types detected by `classify_field()`: direct mapping, transform, fixed value, academic year, append year, email format, name config, ID-role pair. EntityConfig also supports `headers` dict for headerless files.
 - `loader.py` — YAML loading with `_base` inheritance (deep merge, cycle detection) and Pydantic validation. `load_config(sis_type)` returns a validated `MappingConfig`.
@@ -162,7 +164,8 @@ Base `myedbc` defines all 7 entity templates; configs select which to emit via `
 - **Anomaly detection** — Warns if any entity drops >20% vs previous run output
 - **Structured logging** — `__DISTRICTSYNC_RUN__` JSON emitted after each run with timing, counts, SFTP status
 - **`run_pipeline` returns `PipelineResult`** (`entity_counts`, `sftp_attempted`, `sftp_ok`, `anomalies`); a requested SFTP upload that fails logs ERROR (`"SFTP upload FAILED — output files were NOT delivered to <host>"`) and `main` exits code **3** (ETL output still written, not rolled back)
-- **Exit codes** — `0` success · `1` ETL/arg/validation error · `2` stdin empty or mutually-exclusive flags · `3` SFTP delivery failed (ETL output present)
+- **Exit codes** — `0` success · `1` ETL/arg/validation error · `2` stdin empty or mutually-exclusive flags · `3` SFTP delivery failed (ETL output present). **No usable required input at all** (every required file missing/empty, checked right after `extractor.load_data`) → exit **1**; a *partial* run with some empty sources stays exit **0** by design (per-entity skip-on-empty is legitimate).
+- **Fail-loud field transforms** — `apply_field_map` is **row-resilient**: a row whose transform raises blanks only **that cell** (valid rows keep their value), an unknown-transform / column-level error blanks **that column**; every failure is recorded to `context.data_errors` → surfaced as the run-log `data_errors` summary (`{total, by_field}`) + Run History "Completed with N data errors". Data errors are a **separate axis** — ETL `status` stays `success` and the run still delivers (never silently swallowed, never fails the run for one bad row).
 - All entity transformations use pandas DataFrames with `.copy()` to avoid mutation side effects
 
 ## Security
@@ -212,6 +215,7 @@ GDE/source column names MUST come from the district `field_map` — never hardco
 - Tiers: `mbp_all` = all 7 (myBlueprint+), `mbp_core` = Students + the 2 course CSVs. SpacesEDU district configs (sd40/48/51/74) inherit the 5 rostering entities only.
 - **Per-district myBlueprint+** = a thin config with `_base: <district>` + an `enabled_entities` that includes `CourseInfo`/`StudentCourses`. It inherits BOTH the district's column mappings AND the base entity definitions — which is *why* the entity defs live in the base.
 - Adding a new output entity is multi-file — follow the checklist in `docs/developer/adding-transformer.md` (registry, base field_map+source_files, quality key_map, PyInstaller hidden-imports, enabled_entities, tests, ARCHITECTURE_TREE).
+- **Stale entity CSVs (output-dir entity files not produced by the current run) are ARCHIVED into `archive_<ts>/`, NOT deleted** — `DataLoader.archive_stale_outputs` moves them aside via `os.replace` (non-destructive; excluded from SFTP's top-level `*.csv` glob, so they can't ship). Any future *delete*/prune must still derive from `enabled_entities`, never `mappings.keys()` — `_base` inheritance puts inherited-but-disabled entities (e.g. `CourseInfo`/`StudentCourses`) in `mappings.keys()`, so a `mappings.keys()`-keyed delete would erase a different config's legitimate CSV sharing the output dir (cross-config data loss). See `docs/claugentic-DECISIONS.md` (Plan 0008).
 
 ## Harness Discipline
 

@@ -544,6 +544,128 @@ class TestPastWithdrawDate:
         assert BaseTransformer.past_withdraw_date("garbage", date(2025, 6, 1)) is True
 
 
+class TestApplyFieldMapFailLoud:
+    """`apply_field_map` is row-resilient + loud (never silent, never
+    whole-column-for-one-bad-row, never fails the run).
+
+    A single bad row blanks only its own cell while every other row keeps its
+    correct value; column-level errors (unknown transform / structural failure)
+    blank the column and are recorded; intended-blank (absent config column) is
+    NOT recorded. Every recorded failure lands in `context.data_errors`.
+    """
+
+    class _ConcreteTransformer(BaseTransformer):
+        """Concrete BaseTransformer (the ABC requires a `transform` impl) used to
+        exercise `apply_field_map` directly."""
+
+        def transform(self, df, mapping, context):  # pragma: no cover — unused
+            return df
+
+    class _RaisingTransformer(_ConcreteTransformer):
+        """A transformer whose extra allow-listed transform raises on the
+        sentinel value 'BAD' but returns a clean value for everything else."""
+
+        ALLOWED_TRANSFORMS = frozenset(BaseTransformer.ALLOWED_TRANSFORMS | {"explode_on_bad"})
+
+        @staticmethod
+        def explode_on_bad(value):  # noqa: D401 — test helper
+            if str(value) == "BAD":
+                raise ValueError("boom on BAD")
+            return f"ok:{value}"
+
+    def _ctx(self):
+        return TransformContext()
+
+    def test_single_bad_row_blanks_only_that_cell_and_records(self):
+        t = self._RaisingTransformer()
+        ctx = self._ctx()
+        working = pd.DataFrame({"src": ["A", "BAD", "C"]})
+        result = pd.DataFrame(index=working.index)
+
+        out = t.apply_field_map(
+            working,
+            result,
+            {"Out": {"column": "src", "transform": "explode_on_bad"}},
+            "Students",
+            ctx,
+        )
+
+        # Valid rows keep their correct value; only the bad row's cell is NA.
+        assert out["Out"].iloc[0] == "ok:A"
+        assert pd.isna(out["Out"].iloc[1])
+        assert out["Out"].iloc[2] == "ok:C"
+
+        # Exactly one (entity, field) failure recorded, with the bad sample.
+        assert len(ctx.data_errors) == 1
+        rec = ctx.data_errors[0]
+        assert rec["entity"] == "Students"
+        assert rec["field"] == "Out"
+        assert rec["failed_rows"] == 1
+        assert "BAD" in rec["sample"]
+
+    def test_unknown_transform_blanks_column_and_records_no_raise(self):
+        t = self._ConcreteTransformer()
+        ctx = self._ctx()
+        working = pd.DataFrame({"src": ["A", "B"]})
+        result = pd.DataFrame(index=working.index)
+
+        # Must NOT raise — unknown transform is a column-level error: blank +
+        # record (config fail-fast validation is a separate backlog item).
+        out = t.apply_field_map(
+            working,
+            result,
+            {"Out": {"column": "src", "transform": "no_such_transform"}},
+            "Staff",
+            ctx,
+        )
+
+        assert out["Out"].isna().all()
+        assert len(ctx.data_errors) == 1
+        rec = ctx.data_errors[0]
+        assert rec["entity"] == "Staff"
+        assert rec["field"] == "Out"
+        assert "no_such_transform" in rec["sample"]
+
+    def test_absent_config_column_is_blank_not_recorded(self):
+        t = self._ConcreteTransformer()
+        ctx = self._ctx()
+        working = pd.DataFrame({"present": ["A", "B"]})
+        result = pd.DataFrame(index=working.index)
+
+        # Direct-mapping column absent → intended blank, NOT an error.
+        out = t.apply_field_map(working, result, {"Out": "missing_col"}, "Students", ctx)
+        assert out["Out"].isna().all()
+
+        # Dict-mapping column absent → also intended blank, NOT an error.
+        out = t.apply_field_map(
+            working,
+            pd.DataFrame(index=working.index),
+            {"Out2": {"column": "also_missing", "transform": "grade_to_ceds"}},
+            "Students",
+            ctx,
+        )
+        assert out["Out2"].isna().all()
+
+        assert ctx.data_errors == []
+
+    def test_all_valid_input_records_nothing_and_output_unchanged(self):
+        t = self._RaisingTransformer()
+        ctx = self._ctx()
+        working = pd.DataFrame({"src": ["A", "B", "C"]})
+        result = pd.DataFrame(index=working.index)
+
+        out = t.apply_field_map(
+            working,
+            result,
+            {"Out": {"column": "src", "transform": "explode_on_bad"}},
+            "Students",
+            ctx,
+        )
+
+        assert list(out["Out"]) == ["ok:A", "ok:B", "ok:C"]
+        assert ctx.data_errors == []
+
+
 class TestActiveStatusPathLogging:
     """Each run logs (INFO) which signal decided 'active' — the status column or
     the withdraw date — so an unattended run self-documents its resolution path
