@@ -8,7 +8,7 @@ version = "3.2.0"
 authors = [{name = "Shan Peiris", email = "shan.peiris@myblueprint.ca"}]
 description = "SIS Data ETL Tool - Converts General Data Extracts to SpacesEDU Advanced CSV"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.13"
 license = {text = "MIT"}
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -98,10 +98,8 @@ ignore = [
 known-first-party = ["src"]
 
 [tool.mypy]
-# Type-check target. Must be >= 3.12 so mypy can parse modern third-party stubs
-# (e.g. numpy >= 2.2 use PEP 695 `type` statements, rejected under an older target).
-# Runtime 3.9+ support is still verified by the pytest matrix in ci.yml.
-python_version = "3.12"
+# Matches the single supported Python (see requires-python above + ci.yml).
+python_version = "3.13"
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_unused_ignores = false  # pandas-stubs type errors differ across versions
