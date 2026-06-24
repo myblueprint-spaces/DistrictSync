@@ -127,7 +127,7 @@ class ClassTransformer(BaseTransformer):
         hc = unique_homerooms.copy()
         hc["Class ID"] = (
             hc[SCHOOL_NUMBER].astype(str)
-            + "_"  # type: ignore[operator]  # pandas-stubs types Series[str]+str differently across versions
+            + "_"
             + hc[homeroom_col].fillna("UnassignedHomeroom").astype(str)
             + f"_{context.school_year}"
         )
