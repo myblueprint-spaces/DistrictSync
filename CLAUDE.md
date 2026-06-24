@@ -262,7 +262,7 @@ Three rules are non-negotiable:
 
 **Workflow:** substantial work follows `docs/claugentic-WORKFLOW.md` (triage → plan → adversarial review → spec → approval → implement → verify → land).
 
-`claugentic-dev-harness@0.1.40`
+`claugentic-dev-harness@0.2.4`
 <!-- harness:managed:end -->
 
 ## Harness — Current scope (claugentic)
