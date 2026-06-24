@@ -12,10 +12,8 @@ requests>=2.28
 
 # Linting / formatting / type checking
 ruff>=0.15
-# Type-check tooling - kept UNCAPPED on purpose. mypy targets python_version=3.12
-# (pyproject [tool.mypy]), which parses modern numpy/pandas stubs. A prior numpy<2.3 /
-# mypy<1.15 cap (added for an earlier 3.9 target) dragged in older pandas-stubs whose
-# Series[str] + str typing false-positives on classes.py under the 3.12 target; do not re-add.
+# Type-check tooling - latest, uncapped. The project targets a single Python (3.13;
+# see requires-python + ci.yml). Do not cap to old versions.
 mypy>=1.0
 pandas-stubs>=2.0
 types-paramiko>=3.0
