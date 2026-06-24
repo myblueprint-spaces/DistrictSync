@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pandas as pd
 
@@ -62,8 +62,115 @@ def extract_required_files(config) -> list[str]:
     return list(files)
 
 
-def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list[str]:
-    """Compare output row counts against previous run; return warning strings."""
+class TransformOutputs(NamedTuple):
+    """Result of :func:`run_transform` — transformed frames plus their CSV column order.
+
+    ``data_errors`` is the run's fail-loud field-transform ledger (a separate
+    axis from ETL success): non-fatal per-row / column-level transform problems
+    recorded by ``BaseTransformer.apply_field_map`` instead of being silently
+    swallowed. Empty on a clean run.
+    """
+
+    outputs: dict[str, pd.DataFrame]
+    field_orders: dict[str, list[str]]
+    data_errors: list[dict]
+
+
+def run_transform(
+    raw_data: dict[str, pd.DataFrame],
+    mappings: dict,
+    global_config: dict,
+) -> TransformOutputs:
+    """Shared transform-orchestration: school-year determination + the per-entity loop.
+
+    Behaviour-preserving extraction of the canonical orchestration block from
+    ``run_pipeline``. Constructs a fresh :class:`DataTransformer` (both callers
+    already build a new transformer per run, so the per-run ``TransformContext``
+    state stays isolated). Honors ``enabled_entities`` (inclusion) and
+    ``entity_order`` (ordering); skips entities whose primary source frame is
+    empty; collects each emitted entity's field order from its ``field_map`` keys.
+    The returned :class:`TransformOutputs` also carries ``data_errors`` — the
+    shared context's fail-loud field-transform ledger accumulated across every
+    entity (empty on a clean run).
+    """
+    transformer = DataTransformer()
+
+    outputs: dict[str, pd.DataFrame] = {}
+    field_orders: dict[str, list[str]] = {}
+
+    # Determine school year — NO in-code defaults. Validation guarantees
+    # academic_start_month_day and academic_end_month_day are set when
+    # Classes is enabled; rollover falls back to academic_end_month_day
+    # when not separately configured.
+    sy_sources_config = global_config.get("school_year_sources", {})
+    start_md = global_config["academic_start_month_day"]
+    end_md = global_config["academic_end_month_day"]
+    rollover_md = global_config.get("academic_year_rollover_month_day") or end_md
+    naming = global_config.get("school_year_naming") or "end"
+    sy = transformer.determine_school_year(
+        raw_data,
+        sy_sources_config,
+        rollover_month_day=rollover_md,
+        school_year_naming=naming,
+    )
+    transformer.set_school_year(sy, start_md, end_md)
+    logger.info(f"Using school year {sy}, academic start={transformer.academic_start}, end={transformer.academic_end}")
+
+    entity_order = global_config.get("entity_order") or list(mappings.keys())
+    # `enabled_entities` (when non-empty) filters which mappings actually run.
+    # This lets the base config define more entity templates than it
+    # activates by default — districts opt in by listing them.
+    enabled = global_config.get("enabled_entities") or []
+    if enabled:
+        enabled_set = set(enabled)
+        entity_order = [e for e in entity_order if e in enabled_set]
+    for entity_name in entity_order:
+        entity_cfg = mappings.get(entity_name, {})
+        source_config = entity_cfg.get("source_files", {})
+
+        if not source_config:
+            logger.warning(f"No source_files for entity '{entity_name}' in the mapping; skipping.")
+            continue
+
+        source_files = list(source_config.values()) if isinstance(source_config, dict) else source_config
+        if not source_files:
+            logger.warning(f"No valid source files for entity '{entity_name}'; skipping.")
+            continue
+
+        primary_source = source_files[0]
+        primary_df = raw_data.get(primary_source, pd.DataFrame())
+
+        if primary_df.empty:
+            logger.warning(f"Primary source file '{primary_source}' is empty for '{entity_name}'; skipping.")
+            continue
+
+        transformed = transformer.transform(primary_df, entity_cfg, entity_name, raw_data, global_config)
+
+        if transformed.empty:
+            logger.warning(f"No data transformed for entity '{entity_name}'; skipping.")
+            continue
+
+        outputs[entity_name] = transformed
+        field_orders[entity_name] = list(entity_cfg.get("field_map", {}).keys())
+
+    # The shared per-run TransformContext accumulates fail-loud field-transform
+    # errors across every entity; surface them on the same axis as the outputs.
+    return TransformOutputs(outputs, field_orders, transformer.data_errors)
+
+
+def compute_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list[str]:
+    """Pure row-count-drop compute shared by the CLI and the Convert page.
+
+    Compares each output entity's row count against its previous run's CSV in
+    ``output_dir`` and returns a plain per-entity warning string for every
+    entity that dropped by more than :data:`ANOMALY_THRESHOLD`. The base
+    message — ``"{entity} dropped from {prev} to {new} rows ({pct}% decrease)"``
+    — carries NO surface-specific presentation (no ``ANOMALY:`` prefix, no
+    logging/printing); each caller adds its own (CLI logs, UI renders).
+
+    Entities with no previous file, an unreadable previous file, or an empty
+    previous file are skipped — a missing baseline is fine, not an anomaly.
+    """
     warnings: list[str] = []
     for entity, df in outputs.items():
         prev_path = output_dir / f"{entity}.csv"
@@ -77,9 +184,22 @@ def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list
             continue
         if prev_count > 0 and len(df) < prev_count * (1 - ANOMALY_THRESHOLD):
             pct = ((prev_count - len(df)) / prev_count) * 100
-            msg = f"ANOMALY: {entity} dropped from {prev_count} to {len(df)} rows ({pct:.0f}% decrease)"
-            logger.warning(msg)
-            warnings.append(msg)
+            warnings.append(f"{entity} dropped from {prev_count} to {len(df)} rows ({pct:.0f}% decrease)")
+    return warnings
+
+
+def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list[str]:
+    """CLI renderer over :func:`compute_anomalies`: prefix ``ANOMALY:`` and log.
+
+    Thin wrapper that adds the CLI's existing presentation to each shared base
+    warning — the ``ANOMALY:``-prefixed ``logger.warning`` lines — and returns
+    the prefixed strings (consumed by the structured run-log's ``anomalies``).
+    """
+    warnings: list[str] = []
+    for msg in compute_anomalies(outputs, output_dir):
+        prefixed = f"ANOMALY: {msg}"
+        logger.warning(prefixed)
+        warnings.append(prefixed)
     return warnings
 
 
@@ -91,8 +211,15 @@ def _emit_run_log(
     sftp_ok: bool = False,
     error: str = "",
     anomalies: list[str] | None = None,
+    data_errors: dict[str, Any] | None = None,
 ) -> None:
-    """Write a structured __DISTRICTSYNC_RUN__ log line for the Run History page."""
+    """Write a structured __DISTRICTSYNC_RUN__ log line for the Run History page.
+
+    ``data_errors`` is a compact summary (``{"total": N, "by_field": {...}}``)
+    of non-fatal field-transform problems — a separate axis from ``status``
+    (which stays ``success``/``failed`` for the ETL run itself). Run History
+    renders it as "Completed with N data errors". Absent/empty on a clean run.
+    """
     entry = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "status": status,
@@ -109,8 +236,27 @@ def _emit_run_log(
         "sftp_ok": sftp_ok,
         "error": error,
         "anomalies": anomalies or [],
+        "data_errors": data_errors or {},
     }
     logger.info(f"__DISTRICTSYNC_RUN__ {json.dumps(entry)}")
+
+
+def _summarize_data_errors(data_errors: list[dict]) -> dict[str, Any]:
+    """Collapse the per-(entity, field) error ledger into a compact run-log summary.
+
+    ``{"total": <sum of failed_rows>, "by_field": {"<Entity>.<Field>": <rows>}}``.
+    Returns an empty dict for a clean run (nothing to surface).
+    """
+    if not data_errors:
+        return {}
+    by_field: dict[str, int] = {}
+    total = 0
+    for rec in data_errors:
+        key = f"{rec.get('entity', '?')}.{rec.get('field', '?')}"
+        rows = int(rec.get("failed_rows", 0))
+        by_field[key] = by_field.get(key, 0) + rows
+        total += rows
+    return {"total": total, "by_field": by_field}
 
 
 def run_pipeline(
@@ -160,7 +306,6 @@ def run_pipeline(
         global_config: dict[str, Any] = raw["global_config"]
 
         extractor = DataExtractor(input_path)
-        transformer = DataTransformer()
         loader = DataLoader(output_path)
 
         required_files = extract_required_files(config)
@@ -174,64 +319,33 @@ def run_pipeline(
 
         raw_data = extractor.load_data(required_files, file_headers=file_headers)
 
-        # Determine school year — NO in-code defaults. Validation guarantees
-        # academic_start_month_day and academic_end_month_day are set when
-        # Classes is enabled; rollover falls back to academic_end_month_day
-        # when not separately configured.
-        sy_sources_config = global_config.get("school_year_sources", {})
-        start_md = global_config["academic_start_month_day"]
-        end_md = global_config["academic_end_month_day"]
-        rollover_md = global_config.get("academic_year_rollover_month_day") or end_md
-        naming = global_config.get("school_year_naming") or "end"
-        sy = transformer.determine_school_year(
-            raw_data,
-            sy_sources_config,
-            rollover_month_day=rollover_md,
-            school_year_naming=naming,
-        )
-        transformer.set_school_year(sy, start_md, end_md)
-        logger.info(
-            f"Using school year {sy}, academic start={transformer.academic_start}, end={transformer.academic_end}"
-        )
+        # Fail loud on NO USABLE INPUT. A scheduled, unattended run that received
+        # no usable required input (wrong folder, truncated export, locked file)
+        # must not masquerade as a clean run. The guard keys off INPUT presence
+        # (`raw_data`), independent of `run_transform`'s per-entity skip-on-empty
+        # — so a partial run (some files present) proceeds, and a period-only
+        # attendance run (period file non-empty, daily absent) does NOT fire it.
+        if not raw_data or all(df.empty for df in raw_data.values()):
+            empty_or_missing = [name for name, df in raw_data.items() if df.empty] or list(required_files)
+            raise RuntimeError(
+                "No usable required input was loaded — every required file is "
+                f"missing or empty: {empty_or_missing}. Check the input folder, "
+                "the export job, and that the files are not locked."
+            )
 
-        field_orders: dict[str, list[str]] = {}
+        # Shared transform-orchestration (school-year + per-entity loop +
+        # enabled_entities filter + field-order collection).
+        outputs, field_orders, data_errors = run_transform(raw_data, mappings, global_config)
 
-        entity_order = global_config.get("entity_order") or list(mappings.keys())
-        # `enabled_entities` (when non-empty) filters which mappings actually run.
-        # This lets the base config define more entity templates than it
-        # activates by default — districts opt in by listing them.
-        enabled = global_config.get("enabled_entities") or []
-        if enabled:
-            enabled_set = set(enabled)
-            entity_order = [e for e in entity_order if e in enabled_set]
-        for entity_name in entity_order:
-            entity_cfg = mappings.get(entity_name, {})
-            source_config = entity_cfg.get("source_files", {})
-
-            if not source_config:
-                logger.warning(f"No source_files for entity '{entity_name}' in the mapping; skipping.")
-                continue
-
-            source_files = list(source_config.values()) if isinstance(source_config, dict) else source_config
-            if not source_files:
-                logger.warning(f"No valid source files for entity '{entity_name}'; skipping.")
-                continue
-
-            primary_source = source_files[0]
-            primary_df = raw_data.get(primary_source, pd.DataFrame())
-
-            if primary_df.empty:
-                logger.warning(f"Primary source file '{primary_source}' is empty for '{entity_name}'; skipping.")
-                continue
-
-            transformed = transformer.transform(primary_df, entity_cfg, entity_name, raw_data, global_config)
-
-            if transformed.empty:
-                logger.warning(f"No data transformed for entity '{entity_name}'; skipping.")
-                continue
-
-            outputs[entity_name] = transformed
-            field_orders[entity_name] = list(entity_cfg.get("field_map", {}).keys())
+        # Surface fail-loud field-transform errors (a separate axis from ETL
+        # status): consolidated ERROR + a compact run-log summary. The run still
+        # completed + delivered, so `status` stays `success`.
+        data_errors_summary = _summarize_data_errors(data_errors)
+        if data_errors_summary:
+            logger.error(
+                f"Completed with {data_errors_summary['total']} data error(s) across "
+                f"{len(data_errors_summary['by_field'])} field(s): {data_errors_summary['by_field']}"
+            )
 
         # Check for anomalies before writing
         if outputs and not dry_run:
@@ -266,7 +380,15 @@ def run_pipeline(
 
         # Emit structured run log
         elapsed = time.monotonic() - t0
-        _emit_run_log("success", elapsed, outputs, sftp_attempted=sftp_attempted, sftp_ok=sftp_ok, anomalies=anomalies)
+        _emit_run_log(
+            "success",
+            elapsed,
+            outputs,
+            sftp_attempted=sftp_attempted,
+            sftp_ok=sftp_ok,
+            anomalies=anomalies,
+            data_errors=data_errors_summary,
+        )
 
         return PipelineResult(
             entity_counts={name: len(df) for name, df in outputs.items()},

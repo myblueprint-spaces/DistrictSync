@@ -113,6 +113,8 @@ Entity-specific transformers using Strategy Pattern with a registry:
 ### Loader (`src/etl/loader.py`)
 Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. `save_all()` uses atomic transactional writes: stages to `.tmp_<timestamp>/`, commits all on success, rolls back on failure.
 
+`save_all` commit is **backup-and-restore atomic** (`_commit_staged`): each existing target is moved into `.bak_<ts>/` then the staged file promoted with `os.replace` (atomic same-fs overwrite, not `shutil.move` — fixes the Windows copy2+unlink within-file tear); any mid-commit failure rolls back (restore originals / remove new files) so the output dir is **never left torn**. Rollback runs inside the `except` and re-raises *before* the `finally` rmtrees `.bak_<ts>/` (restore-before-cleanup invariant).
+
 ### Config (`src/config/`)
 - `models.py` — Pydantic v2 models for YAML mapping validation. 8 field mapping types detected by `classify_field()`: direct mapping, transform, fixed value, academic year, append year, email format, name config, ID-role pair. EntityConfig also supports `headers` dict for headerless files.
 - `loader.py` — YAML loading with `_base` inheritance (deep merge, cycle detection) and Pydantic validation. `load_config(sis_type)` returns a validated `MappingConfig`.
@@ -162,7 +164,8 @@ Base `myedbc` defines all 7 entity templates; configs select which to emit via `
 - **Anomaly detection** — Warns if any entity drops >20% vs previous run output
 - **Structured logging** — `__DISTRICTSYNC_RUN__` JSON emitted after each run with timing, counts, SFTP status
 - **`run_pipeline` returns `PipelineResult`** (`entity_counts`, `sftp_attempted`, `sftp_ok`, `anomalies`); a requested SFTP upload that fails logs ERROR (`"SFTP upload FAILED — output files were NOT delivered to <host>"`) and `main` exits code **3** (ETL output still written, not rolled back)
-- **Exit codes** — `0` success · `1` ETL/arg/validation error · `2` stdin empty or mutually-exclusive flags · `3` SFTP delivery failed (ETL output present)
+- **Exit codes** — `0` success · `1` ETL/arg/validation error · `2` stdin empty or mutually-exclusive flags · `3` SFTP delivery failed (ETL output present). **No usable required input at all** (every required file missing/empty, checked right after `extractor.load_data`) → exit **1**; a *partial* run with some empty sources stays exit **0** by design (per-entity skip-on-empty is legitimate).
+- **Fail-loud field transforms** — `apply_field_map` is **row-resilient**: a row whose transform raises blanks only **that cell** (valid rows keep their value), an unknown-transform / column-level error blanks **that column**; every failure is recorded to `context.data_errors` → surfaced as the run-log `data_errors` summary (`{total, by_field}`) + Run History "Completed with N data errors". Data errors are a **separate axis** — ETL `status` stays `success` and the run still delivers (never silently swallowed, never fails the run for one bad row).
 - All entity transformations use pandas DataFrames with `.copy()` to avoid mutation side effects
 
 ## Security
