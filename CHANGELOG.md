@@ -9,18 +9,40 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-06-24
+
+Adds the SpacesEDU **StudentAttendance** export, unifies the CLI and web-UI
+conversion engines, and hardens output writes. The v3.2.0 **PreReg** default is
+also restored — review the "Fixed" note before rolling out to a district.
+
 ### Added
 
+- **SpacesEDU StudentAttendance export.** New `StudentAttendance.csv` output
+  (first enabled for SD51) with a configurable Absence Date format (ISO
+  `YYYY-MM-DD` by default).
+- **Active-status resolution logging.** The students transformer now logs which
+  signal — the enrolment status column vs the withdraw date — resolved each
+  student's active status, making roster decisions easier to diagnose.
 - Setup Wizard Step 1 now has a 📁 Browse button beside the input/output
   directory fields that opens the native folder picker (the text box still
   accepts manual entry/paste).
 
+### Changed
+
+- **Unified conversion engine.** The CLI (`python -m src.main`) and the Streamlit
+  web UI now run conversion through one shared engine, locking byte-for-byte
+  parity between their output CSVs.
+- **Fail-loud field transforms + honest run status.** A failing field transform
+  now blanks only the affected cell (or column) and records the error to a
+  per-run `data_errors` summary surfaced in Run History and the Convert page,
+  instead of silently dropping rows. A run with no usable required input now
+  exits non-zero.
+- **Stale entity CSVs are archived, not deleted.** Output-directory CSVs not
+  produced by the current run are moved into `archive_<ts>/` (non-destructive,
+  and excluded from SFTP upload) rather than removed.
+
 ### Fixed
 
-- Windows scheduled-task registration now uses Task Scheduler XML instead of an
-  inline `/TR` command, removing schtasks' 261-character limit (which blocked
-  source-mode scheduling and very long install paths) and the brittle
-  `cmd /c "cd /d …"` quoting.
 - **PreReg students are included by default again.** Restores the default
   `active_values` to `["Active", "PreReg"]` — the Advanced CSV spec's expected
   `EnrollStatus` values. v3.2.0 had narrowed the default to `["Active"]`, which
@@ -30,6 +52,18 @@ Per-release download links and auto-generated commit notes live on the
   out — or add statuses such as `Active No Primary` — via
   `EnrollStatus.active_values`. The withdraw-date logic is unchanged (status wins
   when present; the date is only a fallback for rows with no status value).
+- **Atomic `save_all` commit.** Output files are committed with a
+  backup-and-restore step so a mid-commit failure rolls back and the output
+  directory is never left torn.
+- Windows scheduled-task registration now uses Task Scheduler XML instead of an
+  inline `/TR` command, removing schtasks' 261-character limit (which blocked
+  source-mode scheduling and very long install paths) and the brittle
+  `cmd /c "cd /d …"` quoting.
+- `StudentAttendance.csv` is written without the UTF-8 BOM.
+- Setup Wizard folder picker keeps working when the window manager does not
+  support `-topmost`.
+- Streamlit no longer logs noisy Arrow tracebacks for display columns that mix
+  numbers with a string sentinel (coerced to a uniform string).
 
 ## [3.2.0] - 2026-06-15
 
@@ -73,6 +107,7 @@ roster contents, so review the "Changed" notes before rolling out to a district.
 - myBlueprint+ output tiers (`CourseInfo`, `StudentCourses`) and `enabled_entities`
   output targeting. See the GitHub release for details.
 
+[3.3.0]: https://github.com/myblueprint-spaces/DistrictSync/releases/tag/v3.3.0
 [3.2.0]: https://github.com/myblueprint-spaces/DistrictSync/releases/tag/v3.2.0
 [3.1.1]: https://github.com/myblueprint-spaces/DistrictSync/releases/tag/v3.1.1
 [3.1.0]: https://github.com/myblueprint-spaces/DistrictSync/releases/tag/v3.1.0
