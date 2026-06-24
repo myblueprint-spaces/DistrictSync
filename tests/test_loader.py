@@ -284,3 +284,134 @@ class TestAtomicWriteRollback:
         family = pd.read_csv(tmp_path / "Family.csv")
         assert family["Email"].iloc[0] == "john@test.ca"
         self._no_temp_or_backup_dirs(tmp_path)
+
+
+class TestDetectStaleOutputs:
+    """Item 3 (Plan 0008): pure, non-destructive stale-output detection.
+
+    Lists entity CSVs in the output dir not produced this run; deletes NOTHING.
+    The destructive (archive) decision lives in ``archive_stale_outputs`` —
+    detection stays a pure, registry-keyed helper that is independently tested.
+    """
+
+    def test_detects_stale_entities_only_and_deletes_nothing(self, tmp_path):
+        loader = DataLoader(str(tmp_path))
+        # Pre-seed: two recognized entity CSVs (one a cross-config myBlueprint+
+        # file), an unrelated non-entity file.
+        (tmp_path / "Classes.csv").write_text("stale-classes", encoding="utf-8")
+        (tmp_path / "CourseInfo.csv").write_text("stale-courseinfo", encoding="utf-8")
+        (tmp_path / "notes.txt").write_text("hand-written notes", encoding="utf-8")
+
+        # This run emitted Students + Staff (no CSVs on disk for them — detection
+        # keys off what is present + not emitted).
+        stale = loader.detect_stale_outputs({"Students", "Staff"})
+
+        # Sorted, entity-only: Classes + CourseInfo; notes.txt excluded.
+        assert stale == ["Classes.csv", "CourseInfo.csv"]
+
+        # NON-DESTRUCTIVE: every pre-seeded file still exists on disk.
+        assert (tmp_path / "Classes.csv").exists()
+        assert (tmp_path / "CourseInfo.csv").exists()
+        assert (tmp_path / "notes.txt").exists()
+
+
+class TestArchiveStaleOutputs:
+    """Item 3 (Plan 0008, post-approval revision): archive stale outputs.
+
+    Stale entity CSVs are MOVED into ``archive_<ts>/`` (non-destructive) rather
+    than deleted — so the cross-config foot-gun under ``_base`` inheritance can't
+    cause data loss. The archive subdir is excluded from SFTP's top-level
+    ``*.csv`` glob, so a stale CSV can no longer ship.
+    """
+
+    @staticmethod
+    def _archive_dirs(tmp_path):
+        return [p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("archive_")]
+
+    def test_archives_stale_entities_and_excludes_from_sftp_glob(self, tmp_path):
+        loader = DataLoader(str(tmp_path))
+        # Pre-seed: two recognized entity CSVs (one a cross-config myBlueprint+
+        # file) + an unrelated non-entity file.
+        (tmp_path / "Classes.csv").write_text("stale-classes", encoding="utf-8")
+        (tmp_path / "CourseInfo.csv").write_text("stale-courseinfo", encoding="utf-8")
+        (tmp_path / "notes.txt").write_text("hand-written notes", encoding="utf-8")
+
+        # This run emitted Students + Staff (neither on disk).
+        archived = loader.archive_stale_outputs({"Students", "Staff"})
+
+        # Returns the sorted stale entity filenames actually moved.
+        assert archived == ["Classes.csv", "CourseInfo.csv"]
+
+        # Exactly one archive_* subdir was created.
+        archive_dirs = self._archive_dirs(tmp_path)
+        assert len(archive_dirs) == 1, f"expected one archive_* dir, got {archive_dirs}"
+        archive_dir = archive_dirs[0]
+
+        # Both stale CSVs are GONE from the top level and PRESENT in the archive.
+        assert not (tmp_path / "Classes.csv").exists()
+        assert not (tmp_path / "CourseInfo.csv").exists()
+        assert (archive_dir / "Classes.csv").read_text(encoding="utf-8") == "stale-classes"
+        assert (archive_dir / "CourseInfo.csv").read_text(encoding="utf-8") == "stale-courseinfo"
+
+        # The unrelated file is untouched at the top level.
+        assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "hand-written notes"
+
+        # SFTP delivers `output_dir.glob("*.csv")` (top-level, non-recursive):
+        # the archived names must no longer appear there.
+        top_level_csvs = sorted(p.name for p in tmp_path.glob("*.csv"))
+        assert "Classes.csv" not in top_level_csvs
+        assert "CourseInfo.csv" not in top_level_csvs
+
+    def test_emitted_entity_csv_is_never_archived(self, tmp_path):
+        loader = DataLoader(str(tmp_path))
+        (tmp_path / "Students.csv").write_text("fresh", encoding="utf-8")
+        (tmp_path / "Classes.csv").write_text("stale", encoding="utf-8")
+
+        archived = loader.archive_stale_outputs({"Students"})
+
+        # Students emitted → kept at top level; only Classes archived.
+        assert archived == ["Classes.csv"]
+        assert (tmp_path / "Students.csv").read_text(encoding="utf-8") == "fresh"
+        assert not (tmp_path / "Classes.csv").exists()
+
+    def test_clean_run_creates_no_archive_dir_and_returns_empty(self, tmp_path):
+        loader = DataLoader(str(tmp_path))
+        (tmp_path / "Classes.csv").write_text("fresh", encoding="utf-8")
+
+        archived = loader.archive_stale_outputs({"Classes"})
+
+        assert archived == []
+        # No archive dir is created when there is nothing stale.
+        assert self._archive_dirs(tmp_path) == []
+        # The emitted CSV stays in place.
+        assert (tmp_path / "Classes.csv").read_text(encoding="utf-8") == "fresh"
+
+    def test_archive_move_failure_is_best_effort_and_does_not_raise(self, tmp_path):
+        """A per-file move failure is logged and skipped — never raised — so an
+        archive hiccup can't turn an already committed + delivered run into a
+        failure, and a single failure does not abort the rest of the loop.
+        (Mirrors the 0007 ``os.replace``-injection discipline.)"""
+        loader = DataLoader(str(tmp_path))
+        (tmp_path / "Classes.csv").write_text("stale-classes", encoding="utf-8")
+        (tmp_path / "CourseInfo.csv").write_text("stale-courseinfo", encoding="utf-8")
+
+        real_replace = os.replace
+
+        def fail_on_classes(src, dst):
+            if Path(src).name == "Classes.csv":
+                raise OSError("simulated archive move failure")
+            real_replace(src, dst)
+
+        with patch("src.etl.loader.os.replace", side_effect=fail_on_classes):
+            archived = loader.archive_stale_outputs({"Students", "Staff"})
+
+        # Did not raise; only the successfully-moved file is returned.
+        assert archived == ["CourseInfo.csv"]
+
+        # The failed move left Classes.csv in place (bytes not lost); the loop
+        # continued and still archived CourseInfo.csv.
+        assert (tmp_path / "Classes.csv").read_text(encoding="utf-8") == "stale-classes"
+        archive_dirs = self._archive_dirs(tmp_path)
+        assert len(archive_dirs) == 1
+        assert (archive_dirs[0] / "CourseInfo.csv").read_text(encoding="utf-8") == "stale-courseinfo"
+        assert not (archive_dirs[0] / "Classes.csv").exists()

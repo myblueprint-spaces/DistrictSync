@@ -189,6 +189,97 @@ class DataLoader:
         return "utf-8" if entity_name in cls._NO_BOM_ENTITIES else "utf-8-sig"
 
     # ------------------------------------------------------------------
+    # Stale-output detection + archival (NON-DESTRUCTIVE)
+    # ------------------------------------------------------------------
+
+    def detect_stale_outputs(self, emitted: set[str]) -> list[str]:
+        """Return sorted entity CSV filenames in the output dir NOT produced this run.
+
+        Lists every ``<EntityName>.csv`` present in ``output_path`` whose stem is a
+        recognized entity name (the transformer registry — the single source of
+        the known-entity set) but is **not** in ``emitted`` (the entities this run
+        wrote). Such a file is possibly stale — left by a prior or different run
+        whose entity is no longer produced — and would ship unrefreshed in the
+        next SFTP zip.
+
+        **DETECTION ONLY — deletes nothing.** Pure, registry-keyed detection,
+        independently testable; the destructive decision lives in
+        :meth:`archive_stale_outputs`, which uses this. A broad registry known-set
+        is safe HERE precisely because nothing is removed (the caller archives,
+        never deletes — see :meth:`archive_stale_outputs`).
+
+        Args:
+            emitted: Entity names this run produced (e.g. ``set(outputs)``).
+
+        Returns:
+            Sorted list of stale ``<EntityName>.csv`` filenames (empty if none).
+        """
+        from src.etl.transformers.registry import TRANSFORMER_REGISTRY
+
+        known_entities = set(TRANSFORMER_REGISTRY)
+        stale: list[str] = []
+        for csv_path in self.output_path.glob("*.csv"):
+            stem = csv_path.stem
+            if stem in known_entities and stem not in emitted:
+                stale.append(csv_path.name)
+        return sorted(stale)
+
+    def archive_stale_outputs(self, emitted: set[str]) -> list[str]:
+        """Move stale entity CSVs aside into ``archive_<ts>/`` — **non-destructive**.
+
+        Detects stale entity CSVs via :meth:`detect_stale_outputs` (output-dir
+        ``<EntityName>.csv`` files this run did NOT produce). If none, returns
+        ``[]`` and creates **no** archive directory. Otherwise lazily creates
+        ``<output_dir>/archive_<timestamp>/`` and **moves** each stale file into
+        it with ``os.replace`` (atomic same-filesystem rename — both the source
+        and the archive subdir are children of ``output_path``).
+
+        **Archives, never deletes — for cross-config safety.** Under ``_base``
+        config inheritance the safe allow-list for a *delete* is unknowable
+        (a registry/``mappings.keys()`` set would erase a DIFFERENT config's
+        inherited-but-disabled entity CSV sharing this dir; an ``enabled_entities``
+        set would miss a config-dropped entity AND wipe an enabled entity's
+        last-good CSV on an empty-input run). Moving the file aside surfaces the
+        stale entity without any data-loss path: the original bytes are preserved
+        in the archive subdir, recoverable by hand.
+
+        **Excluded from SFTP delivery.** The SFTP uploader globs
+        ``output_dir.glob("*.csv")`` — **top-level only, non-recursive** — so a
+        file inside the ``archive_<ts>/`` SUBfolder is automatically left out of
+        the next zip (a stale CSV can no longer ship).
+
+        **Best-effort — never fails the run.** The roster has already been
+        committed and (if requested) delivered before this runs, so a per-file
+        move hiccup is logged at ERROR and skipped rather than raised — an archive
+        problem must not turn a successful run into a failure.
+
+        Args:
+            emitted: Entity names this run produced (e.g. ``set(outputs)``).
+
+        Returns:
+            Sorted list of stale ``<EntityName>.csv`` filenames actually moved into
+            the archive subdir (empty if there was nothing stale).
+        """
+        stale = self.detect_stale_outputs(emitted)
+        if not stale:
+            return []
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        archive_dir = self.output_path / f"archive_{timestamp}"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+
+        archived: list[str] = []
+        for name in stale:
+            try:
+                os.replace(self.output_path / name, archive_dir / name)
+                archived.append(name)
+            except OSError as ex:
+                # Best-effort: an archive hiccup must not fail an already
+                # committed + delivered run. Log loud and continue.
+                logger.error(f"Failed to archive stale output {name}: {ex}")
+        return archived
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
