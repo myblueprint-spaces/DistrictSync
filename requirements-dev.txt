@@ -12,7 +12,13 @@ requests>=2.28
 
 # Linting / formatting / type checking
 ruff>=0.15
-mypy>=1.0
+# Pin type-check tooling to versions compatible with python_version=3.9 (pyproject [tool.mypy]).
+# CI installs unpinned-latest, which broke the type-check step on 2026-06-22 (main was green
+# 2026-06-19): mypy 1.15+ dropped 3.9 as a target ("must be 3.10 or higher"), and numpy 2.4+
+# ships PEP 695 `type` stubs mypy rejects under a <3.12 target. These caps restore the known-good
+# combo (mypy 1.14.x + numpy 2.2.x); the failure is in numpy's stub, not our code.
+mypy>=1.0,<1.15
+numpy<2.3
 pandas-stubs>=2.0
 types-paramiko>=3.0
 types-PyYAML>=6.0
