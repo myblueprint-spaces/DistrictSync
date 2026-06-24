@@ -768,6 +768,13 @@ class BaseTransformer(ABC):
         - **Column-level errors** — an unknown transform name (config error), the
           ``append_year_to_id`` row-wise branch, or any structural failure — blank
           the whole column and continue (do NOT raise), recorded the same loud way.
+          The ``append_year_to_id`` branch is deliberately **column-level**, not
+          per-row: its helper ``generate_class_id`` performs no fallible
+          operation (a ``row.get`` plus an f-string — it cannot raise on a single
+          row), so a per-row try/except would defend a failure that cannot occur
+          and only add a second near-duplicate resilience loop. Promote it to
+          per-row ONLY if ``generate_class_id`` ever gains a parse/IO step that
+          can raise on one row (Plan 0008, won't-fix-by-decision).
         - Every recorded failure appends a record to ``context.data_errors`` and
           logs at ERROR; ``run_pipeline`` surfaces a summary into the run-log
           (``data_errors``) and Run History — never swallowed.

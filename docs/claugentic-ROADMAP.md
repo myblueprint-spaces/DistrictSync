@@ -7,12 +7,6 @@ The prioritized backlog the claugentic harness works through. `/claugentic-dev-h
 - **Config-driven columns tech debt** — `src/etl/transformers/student_courses.py` hardcodes ~10 source column names and bypasses its `field_map` for input (the field_map there only sets output column order). Migrate to fully config-driven source columns. _(Already tracked in the project's own `docs/DECISIONS.md`; surfaced here by the init harvest of `docs/WORKFLOW.md`.)_
 - **Consider consolidating the two harnesses** — this repo now runs both its in-house harness and claugentic in parallel (two architecture trees, two tree-gate hooks). Decide whether to converge on one to reduce duplicate gates/maintenance. _(init observation, 2026-06-17.)_
 
-- **Period-only attendance silently produces no output** (bug, found 2026-06-23 while planning 0006) — `run_transform`'s skip-on-empty-primary checks only the *positional first* source file, but `StudentAttendanceTransformer` resolves its daily/period bands *by role*. A period-only `sd51attendance` district (daily file empty/absent, period file present) gets the entity wrongly skipped -> no `StudentAttendance.csv`, run exits 0. Fix: make the skip-on-empty check role-aware (test all source files, not just `[0]`).
-
-- **`append_year_to_id` (class-ID) field is not row-resilient** (follow-up to 0006, 2026-06-23) — in `apply_field_map` the `transform:` path now blanks only a failing row's cell, but the `append_year_to_id` branch (`base.py` ~737) uses `working.apply(..., axis=1)`; if `generate_class_id` raises on one row the whole column blanks (recorded loudly as a column-level data-error, not silent). Make it per-row resilient like the transform path for consistency.
-
-- **Stale unmanaged output files** (found 2026-06-23 while planning 0007) — `DataLoader.save_all` only manages files it writes this run; a CSV left by a prior run whose entity was later dropped from `enabled_entities` persists in the output dir and could ship a stale entity. Pre-existing and orthogonal to the 0007 atomic-commit fix. Decide whether to prune-on-commit (remove managed-but-no-longer-emitted CSVs).
-
 ## Project-tracked backlog (harvested from the in-house harness, 2026-06-17)
 
 Sourced from the full-codebase architect review (6-agent pass, 2026-06-04). Status markers: `NEXT` (queued) · `LATER` · `PLAN <NNNN>` (plan drafted). Each item runs through the workflow in its own session, sliced to land complete with no tech debt.

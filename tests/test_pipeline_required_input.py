@@ -22,7 +22,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.etl.pipeline import run_pipeline
+from src.etl.pipeline import run_pipeline, run_transform
 
 # ---------------------------------------------------------------------------
 # Required-input GDE columns (minimal, mirrors test_sftp_exit.py)
@@ -179,12 +179,10 @@ class TestPeriodOnlyAttendanceDoesNotFire:
         ``raw_data`` → the no-usable-input guard does NOT fire (no false
         failure). The run completes normally (exit 0).
 
-        NOTE: this run produces no StudentAttendance output TODAY because
-        ``run_transform``'s positional-primary skip drops the entity when the
-        daily file (its listed-first source) is empty — a separate latent bug
-        the input guard neither masks nor fixes (it keys off INPUT presence,
-        not produced output, per the plan Resolution). The assertion here is
-        only that the guard does NOT turn this supported scenario into a crash.
+        Scope: this test only asserts the INPUT guard does not turn this
+        supported scenario into a crash. That StudentAttendance IS produced
+        (Plan 0008's all-sources-empty skip fix) is covered separately by
+        ``TestRunTransformAllSourcesEmptySkip``.
         """
         input_dir = tmp_path / "input"
         input_dir.mkdir()
@@ -248,3 +246,124 @@ class TestPartialInputStillRuns:
         # Did not raise; Students written from the one present file.
         assert (gde_output / "Students.csv").exists()
         assert result.entity_counts.get("Students", 0) > 0
+
+
+# ---------------------------------------------------------------------------
+# Item 1 (Plan 0008) — run_transform skips an entity ONLY when ALL its source
+# frames are empty, not when the positional-first one is. A role-resolved
+# entity (StudentAttendance) whose listed-first band (daily) is empty but whose
+# second band (period) is populated must still be produced.
+# ---------------------------------------------------------------------------
+
+
+def _sd51attendance_raw() -> tuple[dict, dict]:
+    """Return (mappings, global_config) for the `sd51attendance` tier.
+
+    Built from the real validated config so the StudentAttendance entity carries
+    its actual `source_files` (daily_absences first, period_absences second) and
+    `enabled_entities = [StudentAttendance]`.
+    """
+    from src.config.loader import load_config
+
+    raw = load_config("sd51attendance").to_raw_dict()
+    return raw["mappings"], raw["global_config"]
+
+
+def _period_frame() -> pd.DataFrame:
+    """A populated 8-12 Student Period Absences frame (header-injected columns).
+
+    Matches the 17 headers the extractor injects for the headerless
+    StudentPeriodAbsences.txt; only School Number / Student Number / Absence Date
+    / Absence Category are functionally used by the transformer.
+    """
+    return pd.DataFrame(
+        {
+            "School Number": ["100", "100"],
+            "Student Number": ["S001", "S002"],
+            "Student Legal Last Name": ["Last", "Last"],
+            "Student Legal First Name": ["First", "First"],
+            "Grade": ["10", "11"],
+            "Homeroom": ["A1", "A1"],
+            "Teacher Name": ["Teacher", "Teacher"],
+            "Absence Date": ["2024-09-18", "2024-09-19"],
+            "Course Code": ["MAT10", "ENG11"],
+            "Absence Category": ["A", "L"],
+            "Absence Sub Allocation Code": ["", ""],
+            "Authorized Absence Code": ["", ""],
+            "Master Timetable ID": ["MT001", "MT002"],
+            "Section Letter": ["A", "B"],
+            "Teacher ID": ["T001", "T002"],
+            "School Course Code": ["SCC", "SCC"],
+            "Flavour": ["FL", "FL"],
+        }
+    )
+
+
+class TestRunTransformAllSourcesEmptySkip:
+    def test_period_only_attendance_is_produced(self) -> None:
+        """REPRODUCE-FIRST (Item 1): daily band empty, period band populated.
+
+        sd51attendance lists `daily_absences` (StudentDailyAbsences.txt) FIRST,
+        so the positional-first source frame is the EMPTY daily file. Under the
+        old positional-primary skip the entity was dropped → StudentAttendance
+        absent from outputs (run exits 0, silently no file). After the fix the
+        skip only fires when ALL source frames are empty, so the populated period
+        band keeps the entity alive and it IS produced.
+
+        Asserts FAIL on the unchanged code (StudentAttendance absent).
+        """
+        mappings, global_config = _sd51attendance_raw()
+        raw_data = {
+            "StudentDailyAbsences.txt": pd.DataFrame(),  # empty (absent daily band)
+            "StudentPeriodAbsences.txt": _period_frame(),  # populated period band
+        }
+
+        result = run_transform(raw_data, mappings, global_config)
+
+        assert "StudentAttendance" in result.outputs, (
+            "period-only attendance must still produce StudentAttendance "
+            "(skip should fire only when ALL source frames are empty)"
+        )
+        assert len(result.outputs["StudentAttendance"]) == 2
+
+    def test_all_sources_empty_entity_is_skipped(self) -> None:
+        """Both attendance bands empty → the entity is skipped (new all-empty
+        branch), no StudentAttendance output, no crash."""
+        mappings, global_config = _sd51attendance_raw()
+        raw_data = {
+            "StudentDailyAbsences.txt": pd.DataFrame(),
+            "StudentPeriodAbsences.txt": pd.DataFrame(),
+        }
+
+        result = run_transform(raw_data, mappings, global_config)
+
+        assert "StudentAttendance" not in result.outputs
+
+    def test_empty_primary_non_attendance_entity_still_skipped(self) -> None:
+        """Empty-primary net (Item 1 risk): a non-attendance multi-source entity
+        (Enrollments) with an empty schedule (its primary) but a populated
+        demographic secondary now reaches `transform`, which returns empty on an
+        empty schedule → the `transformed.empty` guard still skips it. No crash,
+        no Enrollments file."""
+        from src.config.loader import load_config
+
+        raw = load_config("myedbc").to_raw_dict()
+        mappings, global_config = raw["mappings"], raw["global_config"]
+        global_config["enabled_entities"] = ["Enrollments"]
+
+        raw_data = {
+            "StudentSchedule.txt": pd.DataFrame(),  # empty primary (schedule)
+            "StudentDemographicInformation.txt": pd.DataFrame(
+                {
+                    "Student Number": ["S001"],
+                    "School Number": ["100"],
+                    "Grade": ["10"],
+                    "Homeroom": ["A1"],
+                    "Teacher ID": ["T001"],
+                }
+            ),
+        }
+
+        result = run_transform(raw_data, mappings, global_config)
+
+        assert "Enrollments" not in result.outputs

@@ -215,6 +215,7 @@ GDE/source column names MUST come from the district `field_map` — never hardco
 - Tiers: `mbp_all` = all 7 (myBlueprint+), `mbp_core` = Students + the 2 course CSVs. SpacesEDU district configs (sd40/48/51/74) inherit the 5 rostering entities only.
 - **Per-district myBlueprint+** = a thin config with `_base: <district>` + an `enabled_entities` that includes `CourseInfo`/`StudentCourses`. It inherits BOTH the district's column mappings AND the base entity definitions — which is *why* the entity defs live in the base.
 - Adding a new output entity is multi-file — follow the checklist in `docs/developer/adding-transformer.md` (registry, base field_map+source_files, quality key_map, PyInstaller hidden-imports, enabled_entities, tests, ARCHITECTURE_TREE).
+- **Stale entity CSVs (output-dir entity files not produced by the current run) are ARCHIVED into `archive_<ts>/`, NOT deleted** — `DataLoader.archive_stale_outputs` moves them aside via `os.replace` (non-destructive; excluded from SFTP's top-level `*.csv` glob, so they can't ship). Any future *delete*/prune must still derive from `enabled_entities`, never `mappings.keys()` — `_base` inheritance puts inherited-but-disabled entities (e.g. `CourseInfo`/`StudentCourses`) in `mappings.keys()`, so a `mappings.keys()`-keyed delete would erase a different config's legitimate CSV sharing the output dir (cross-config data loss). See `docs/claugentic-DECISIONS.md` (Plan 0008).
 
 ## Harness Discipline
 

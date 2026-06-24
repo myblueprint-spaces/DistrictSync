@@ -87,8 +87,10 @@ def run_transform(
     ``run_pipeline``. Constructs a fresh :class:`DataTransformer` (both callers
     already build a new transformer per run, so the per-run ``TransformContext``
     state stays isolated). Honors ``enabled_entities`` (inclusion) and
-    ``entity_order`` (ordering); skips entities whose primary source frame is
-    empty; collects each emitted entity's field order from its ``field_map`` keys.
+    ``entity_order`` (ordering); skips an entity only when ALL of its source
+    frames are empty (a role-resolved entity may have an empty positional-first
+    source yet a populated secondary band); collects each emitted entity's field
+    order from its ``field_map`` keys.
     The returned :class:`TransformOutputs` also carries ``data_errors`` — the
     shared context's fail-loud field-transform ledger accumulated across every
     entity (empty on a clean run).
@@ -137,12 +139,17 @@ def run_transform(
             logger.warning(f"No valid source files for entity '{entity_name}'; skipping.")
             continue
 
-        primary_source = source_files[0]
-        primary_df = raw_data.get(primary_source, pd.DataFrame())
-
-        if primary_df.empty:
-            logger.warning(f"Primary source file '{primary_source}' is empty for '{entity_name}'; skipping.")
+        # Skip only when EVERY source frame is empty. The positional-first frame
+        # is still passed as the primary, but an entity that resolves its bands
+        # BY ROLE (e.g. StudentAttendance — daily/period order-independent) must
+        # not be dropped just because its listed-first source is empty: a
+        # period-only district lists `daily_absences` first, so an empty daily
+        # frame would otherwise skip a fully-populated period band.
+        source_frames = [raw_data.get(sf, pd.DataFrame()) for sf in source_files]
+        if all(df.empty for df in source_frames):
+            logger.warning(f"All source files {source_files} are empty for '{entity_name}'; skipping.")
             continue
+        primary_df = source_frames[0]  # may be empty for a role-resolved entity (period-only attendance)
 
         transformed = transformer.transform(primary_df, entity_cfg, entity_name, raw_data, global_config)
 
@@ -354,6 +361,19 @@ def run_pipeline(
         # Write all outputs transactionally (all-or-nothing commit)
         if not dry_run and outputs:
             loader.save_all(outputs, field_orders)
+
+            # Archive (non-destructive) entity CSVs left in the output dir that
+            # this run did NOT produce — they were not refreshed and would ship
+            # stale in the next SFTP zip. Moving them into archive_<ts>/ (a
+            # SUBfolder) excludes them from SFTP's top-level *.csv glob without
+            # deleting anything — auto-delete is unsafe under _base inheritance
+            # (see DataLoader.archive_stale_outputs). No exit/run-log change.
+            archived = loader.archive_stale_outputs(set(outputs))
+            if archived:
+                logger.info(
+                    f"Archived {len(archived)} stale entity CSV(s) not produced by this run into "
+                    f"archive_<ts>/ (excluded from SFTP): {archived}"
+                )
 
             # SFTP upload (only on a successful, non-dry-run write)
             if sftp:
