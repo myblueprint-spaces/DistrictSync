@@ -76,7 +76,7 @@ jobs:
           --hidden-import=src.etl.transformers.registry
           --hidden-import=src.etl.transformers.context
           src/main.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: DistrictSync-windows
           path: dist/DistrictSync.exe
@@ -122,7 +122,7 @@ jobs:
           --hidden-import=src.etl.transformers.registry
           --hidden-import=src.etl.transformers.context
           src/main.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: DistrictSync-linux
           path: dist/DistrictSync
@@ -167,7 +167,7 @@ jobs:
           --hidden-import=src.etl.transformers.registry
           --hidden-import=src.etl.transformers.context
           src/main.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: DistrictSync-macos
           path: dist/DistrictSync
