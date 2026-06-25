@@ -1,17 +1,67 @@
-"""Windows Task Scheduler integration via ``schtasks.exe``.
+"""Windows Task Scheduler integration via PowerShell ``Register-ScheduledTask``.
 
 Creates a daily scheduled task that runs the DistrictSync CLI at a
-specified time.  No third-party dependencies — uses subprocess only.
+specified time. No third-party dependencies — uses ``subprocess`` to drive
+``powershell.exe`` and the in-box ``ScheduledTasks`` module (Win8+/Server
+2012+), the modern Task Scheduler COM API. Registration has no command-length
+cap (unlike ``schtasks /TR``'s 261-char limit) and performs robust credential
+validation + "Log on as a batch job" grant for the unattended (stored-password)
+path.
 
-Registration uses Task Scheduler **XML** (``schtasks /Create /XML``) rather
-than an inline ``/TR`` command. ``/TR`` is capped at 261 characters by
-``schtasks``; the source-mode command (which must ``cd`` into the project
-root and invoke ``python -m src.main`` with quoted input/output paths)
-routinely exceeds that limit. XML has no length cap, sets the working
-directory natively via ``<WorkingDirectory>`` (no brittle
-``cmd /c "cd /d ..."`` wrapper), and carries the schedule, principal, and
-run level. The run-as password is never written into the XML — it is passed
-to ``schtasks`` via ``/RP`` on the command line and redacted from all logs.
+**Secure invocation contract:**
+
+  - A **fixed, auditable PowerShell script** (:func:`_build_register_script`) is
+    handed to ``powershell.exe -EncodedCommand <base64>`` (the script
+    UTF-16LE-base64-encoded by :func:`register_task`) — **no script file ever
+    touches disk**. ``-EncodedCommand`` is used rather than piping the script to
+    ``-Command -`` over stdin because, observed live on this dev box (Win11, PS
+    5.1), a multi-line ``try {…} catch {…}`` block read line-by-line from stdin
+    silently no-ops (exit 0, no output, registers nothing); ``-EncodedCommand``
+    parses the script as one unit, so the fail-loud ``try/catch`` works.
+    The script references **only** ``$env:DSYNC_*`` variables; it never
+    interpolates dynamic values into its own text, eliminating PowerShell
+    string-injection from district paths.
+  - All dynamic values (task name, user, run time, exe, args, working dir, and
+    — password path only — the password) are passed via the **child process
+    environment** (:func:`_build_env`), a **fresh copy** of ``os.environ``;
+    ``os.environ`` itself is never mutated. The password therefore never
+    appears on the command line / argv (a hardening win over the legacy
+    ``schtasks /RP <pw>`` model, which was visible to all users via the process
+    list) and is never logged. The script never echoes ``$env:DSYNC_TASK_PW``.
+
+**Unattended path (password supplied):** the script forces
+``TASK_LOGON_PASSWORD`` **explicitly** via
+``New-ScheduledTaskPrincipal -LogonType Password -RunLevel Highest`` (or
+``-RunLevel Limited`` when *run_highest* is False), then
+``Register-ScheduledTask -InputObject $task -User -Password`` stores the
+credential. The explicit principal is the documented way to *force* the
+stored-password logon rather than rely on parameter-set inference (which can
+silently degrade to ``S4U``/``Interactive`` on some PowerShell 5.1 builds —
+the failure class the prior ``schtasks /XML`` regression taught). ``S4U`` is
+never used: it runs logged-off but has **no network token**, which would break
+the SFTP egress the daily run depends on.
+
+**Logged-on-only path (no password):** the principal is
+``-LogonType Interactive -RunLevel Limited`` and ``Register-ScheduledTask``
+runs without ``-User/-Password`` → an interactive-token task, matching the
+prior logged-on-only default. *run_highest* is **ignored** without a password
+(today's semantics), so ``run_highest=True`` + no password still yields
+``Limited``.
+
+**Readable errors:** the script's ``catch`` emits the bare exception message
+via ``[Console]::Error.WriteLine`` (not ``Write-Error``, which PowerShell
+CLIXML-serializes on a redirected stderr into a noisy ``#< CLIXML`` blob that
+echoes the whole script). :func:`_clean_ps_stderr` is a defensive Python
+fallback that decodes the human message out of any CLIXML that still arrives
+(extracting only the ``<S S="Error">`` text, never the echoed script body), so
+the caller and the Setup Wizard always get a clean one-liner. :func:`is_elevated`
+lets the wizard tell an un-elevated "Access is denied" (run as administrator)
+apart from an elevated one (a credential / batch-logon-right problem).
+
+``delete_task`` / ``query_task`` deliberately remain on ``schtasks.exe`` —
+they are read-only / name-only, have no command-length or credential surface,
+and are fully tested; migrating them would expand blast radius for no benefit
+(possible ROADMAP consistency follow-up).
 
 Usage::
 
@@ -30,17 +80,16 @@ Usage::
 
 from __future__ import annotations
 
+import base64
 import getpass
 import logging
 import os
+import re
 
-# subprocess is required to invoke schtasks.exe.
+# subprocess is required to invoke powershell.exe / schtasks.exe.
 import subprocess  # nosec B404
-import tempfile
+import sys
 from pathlib import Path
-
-# Used only to ESCAPE values we write into XML (output side); no XML is parsed here.
-from xml.sax.saxutils import escape as _xml_escape  # nosec B406
 
 from src.utils.validators import (
     validate_run_as_user,
@@ -51,13 +100,78 @@ from src.utils.validators import (
 
 logger = logging.getLogger(__name__)
 
-# Task Scheduler XML namespace + schema version (Task Scheduler 1.2).
-_TASK_XML_NS = "http://schemas.microsoft.com/windows/2004/02/mit/task"
-_TASK_XML_VERSION = "1.2"
-# Fixed past date for the daily trigger's StartBoundary. A daily trigger with
-# a past start boundary fires every day at the configured time; the fixed date
-# keeps the emitted XML deterministic (testable) and avoids any catch-up run.
-_START_DATE = "2024-01-01"
+# Canonical failure-message substrings returned by register_task (the message
+# contract the wizard's error classifier keys off — see Slice 2). Any change
+# here must be reflected in the classifier and its tests.
+_MSG_NO_POWERSHELL = "PowerShell not found"
+_MSG_NO_MODULE = "ScheduledTasks module not available"
+
+# A cmdlet-not-found PowerShell error (no ScheduledTasks module, pre-Win8)
+# surfaces one of these phrasings in stderr.
+_CMDLET_MISSING_MARKERS = (
+    "is not recognized as the name of a cmdlet",
+    "CommandNotFoundException",
+)
+
+# Marker that PowerShell CLIXML-serialized a stderr stream (the noisy
+# ``#< CLIXML … <Objs>…`` blob produced when ``Write-Error`` writes to a
+# redirected stderr). _clean_ps_stderr decodes the human message out of it.
+_CLIXML_MARKER = "#< CLIXML"
+
+# Bounded match for the human-readable error text inside a CLIXML <S> node.
+# Only the error message is extracted — never the echoed script body — so the
+# ``$env:DSYNC_TASK_PW`` literal and the rest of the program cannot leak out.
+_CLIXML_ERROR_NODE_RE = re.compile(r'<S\s+S="Error">(.*?)</S>', re.DOTALL)
+
+
+def _clean_ps_stderr(text: str) -> str:
+    """Return a clean, human-readable one-liner from PowerShell stderr.
+
+    When ``Write-Error`` (the legacy ``catch``) writes to a redirected stderr,
+    PowerShell 5.1 serializes it as a CLIXML blob — ``#< CLIXML`` followed by an
+    ``<Objs>…</Objs>`` document whose **first** ``<S S="Error">`` node holds the
+    human message and whose **subsequent** ``<S S="Error">`` nodes **echo the
+    failing script** (the ``At line:N``, ``+   <code>``, ``CategoryInfo``,
+    ``FullyQualifiedErrorId`` lines), with literal ``_x000D_`` / ``_x000A_`` for
+    CR / LF. This is defensive: the script now emits plain text via
+    ``[Console]::Error.WriteLine``, but a CLIXML blob can still arrive from a
+    different cmdlet/host, so we decode it here too.
+
+    Security: only the **first** error node — the message line — is returned;
+    the later nodes that echo the script body (which contains the literal
+    ``$env:DSYNC_TASK_PW`` reference, not its value, plus the rest of the
+    program) are **never** returned. Parsing is a bounded regex over the error
+    nodes, not an XML parser fed untrusted input.
+
+    Non-CLIXML text is returned stripped, unchanged.
+    """
+    if _CLIXML_MARKER not in text:
+        return text.strip()
+
+    parts = _CLIXML_ERROR_NODE_RE.findall(text)
+    if not parts:
+        # CLIXML present but no error node we recognize — return a safe,
+        # generic message rather than echo the raw blob (which carries the
+        # script body). Fail loud without leaking.
+        return "PowerShell registration failed (error detail unavailable)."
+
+    # Only the FIRST error node is the message; the rest echo the script body.
+    decoded = parts[0]
+    # CLIXML encodes control chars as _x00NN_ entities; decode + drop the line
+    # breaks (the message node is a single logical line).
+    decoded = decoded.replace("_x000D_", "").replace("_x000A_", "")
+    # Strip the leading positional prefix PowerShell prepends to a piped error
+    # record (e.g. "Register-ScheduledTask : Access is denied." → "Access is
+    # denied."). Only strip when a "<cmd> : " prefix is actually present so a
+    # message that legitimately contains a colon is not truncated.
+    decoded = re.sub(r"^\S.*?\s:\s", "", decoded, count=1).strip()
+    # Defense-in-depth: if the first node still carries a DSYNC_* reference (the
+    # script body collapsed into node 0 — not a shape PS 5.1 emits, but the CLIXML
+    # branch is untrusted), drop it rather than echo it. The password VALUE never
+    # reaches stderr by construction; this guards even the variable name leaking.
+    if "DSYNC_" in decoded:
+        return "PowerShell registration failed (error detail unavailable)."
+    return decoded
 
 
 def current_run_as_user() -> str:
@@ -75,67 +189,124 @@ def current_run_as_user() -> str:
     return getpass.getuser()
 
 
-def _redact_cmd(cmd: list[str]) -> str:
-    """Join *cmd* for display, masking the password that follows ``/RP``.
+def is_elevated() -> bool:
+    """Return True if the current process is running with administrator rights.
 
-    The schtasks ``/RP <password>`` value is replaced with ``***`` so the
-    run-as password never reaches a log or an error message. The raw list is
-    never logged directly — every echo of the command goes through here.
+    On Windows, queries ``shell32.IsUserAnAdmin()`` (returns non-zero when the
+    caller's token has the Administrators group enabled). Any failure — missing
+    API, non-Windows ``ctypes.windll``, unexpected error — resolves to ``False``
+    (treat unknown as "not elevated"). Off Windows there is no equivalent admin
+    concept here, so it always returns ``False``.
+
+    Used by the Setup Wizard to distinguish an *un*-elevated "Access is denied"
+    (→ tell the user to run as administrator) from an elevated one (→ a
+    credential / batch-logon-right problem, not an elevation problem), so the
+    wizard stops sending an already-elevated admin in circles.
     """
-    redacted: list[str] = []
-    mask_next = False
-    for arg in cmd:
-        if mask_next:
-            redacted.append("***")
-            mask_next = False
-            continue
-        redacted.append(arg)
-        if arg == "/RP":
-            mask_next = True
-    return " ".join(redacted)
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
+    except Exception:
+        return False
 
 
-def _build_task_xml(
+def _build_register_script(*, has_password: bool) -> str:
+    """Return the FIXED PowerShell registration script for the given path.
+
+    The script is a constant string — it references only ``$env:DSYNC_*``
+    variables and **never** interpolates a dynamic value into its own text, so
+    there is no PowerShell string-injection surface and the exact text is
+    auditable. It never echoes ``$env:DSYNC_TASK_PW``.
+
+    Two variants:
+
+      - *has_password* True → unattended: an **explicit**
+        ``New-ScheduledTaskPrincipal -LogonType Password`` forces the
+        stored-credential (``TASK_LOGON_PASSWORD``) logon, then
+        ``Register-ScheduledTask -InputObject $task -User -Password`` stores it.
+        ``-RunLevel`` is chosen by the env var ``$env:DSYNC_RUNLEVEL``
+        (``Highest`` / ``Limited``).
+      - *has_password* False → logged-on-only: ``-LogonType Interactive
+        -RunLevel Limited`` and ``Register-ScheduledTask`` with no
+        ``-User/-Password`` (interactive-token task; never ``S4U``).
+
+    The run time is parsed with ``InvariantCulture`` so a non-en-US district
+    locale cannot break ``'HH:mm'`` parsing. ``-StartWhenAvailable:$false``
+    preserves the no-catch-up-run guarantee; the battery flags / ``PT2H``
+    execution time limit / ``IgnoreNew`` multiple-instances policy preserve
+    parity with the prior XML registration. ``$ProgressPreference =
+    'SilentlyContinue'`` suppresses the cmdlets' progress stream so it cannot
+    pollute the captured stderr the caller surfaces.
+    """
+    common = (
+        "$ErrorActionPreference = 'Stop'\n"
+        "$ProgressPreference = 'SilentlyContinue'\n"
+        "try {\n"
+        "  $act = New-ScheduledTaskAction -Execute $env:DSYNC_EXE "
+        "-Argument $env:DSYNC_ARGS -WorkingDirectory $env:DSYNC_WORKDIR\n"
+        "  $at = [DateTime]::ParseExact($env:DSYNC_RUNTIME,'HH:mm',"
+        "[System.Globalization.CultureInfo]::InvariantCulture)\n"
+        "  $trg = New-ScheduledTaskTrigger -Daily -At $at\n"
+        "  $set = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew "
+        "-ExecutionTimeLimit (New-TimeSpan -Hours 2) "
+        "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
+        "-StartWhenAvailable:$false\n"
+    )
+    if has_password:
+        principal_and_register = (
+            "  $prn = New-ScheduledTaskPrincipal -UserId $env:DSYNC_USER "
+            "-LogonType Password -RunLevel $env:DSYNC_RUNLEVEL\n"
+            "  $task = New-ScheduledTask -Action $act -Trigger $trg "
+            "-Settings $set -Principal $prn\n"
+            "  Register-ScheduledTask -TaskName $env:DSYNC_TASKNAME "
+            "-InputObject $task -User $env:DSYNC_USER "
+            "-Password $env:DSYNC_TASK_PW -Force | Out-Null\n"
+        )
+    else:
+        principal_and_register = (
+            "  $prn = New-ScheduledTaskPrincipal -UserId $env:DSYNC_USER "
+            "-LogonType Interactive -RunLevel Limited\n"
+            "  $task = New-ScheduledTask -Action $act -Trigger $trg "
+            "-Settings $set -Principal $prn\n"
+            "  Register-ScheduledTask -TaskName $env:DSYNC_TASKNAME "
+            "-InputObject $task -Force | Out-Null\n"
+        )
+    # The catch writes the bare exception message to stderr via
+    # [Console]::Error.WriteLine — NOT Write-Error. Write-Error to a redirected
+    # stderr is CLIXML-serialized by PowerShell (a ``#< CLIXML … <Objs>…`` blob
+    # that buries the human message under the echoed script + XML noise);
+    # [Console]::Error.WriteLine emits plain text so the caller surfaces a clean
+    # one-liner (e.g. "Access is denied."). ``exit 1`` keeps the failure loud.
+    tail = "  Write-Output 'DSYNC_OK'\n} catch {\n  [Console]::Error.WriteLine($_.Exception.Message)\n  exit 1\n}\n"
+    return common + principal_and_register + tail
+
+
+def _build_action_args(
     exe_path: Path,
     sis_type: str,
     input_dir: Path,
     output_dir: Path,
     sftp: bool,
-    run_time: str,
-    *,
-    run_as_user: str | None = None,
-    run_as_password: str | None = None,
-    run_highest: bool = True,
-) -> str:
-    """Build a Task Scheduler 1.2 XML document for the daily DistrictSync run.
+) -> tuple[str, Path]:
+    """Resolve the action command line + working directory for the two modes.
 
-    Two execution modes (detected by the exe name, matching the historical
-    behaviour):
+    Returns ``(arguments, working_dir)``:
 
-      - Python interpreter (dev / source install): ``<Command>`` is the
-        ``python.exe`` path, ``<Arguments>`` is ``-m src.main --sis X
-        --input "Y" --output "Z" [--sftp]``, and ``<WorkingDirectory>`` is the
-        project root — so Python finds the ``src`` package without a
-        ``cmd /c "cd /d ..."`` wrapper. Without ``-m`` Python would treat
-        ``--sis`` as a script path and fail with 0x80070002.
-      - Frozen PyInstaller binary (e.g. DistrictSync.exe): ``<Command>`` is the
-        exe, ``<Arguments>`` omits ``-m src.main``, and ``<WorkingDirectory>``
-        is the exe's parent directory.
+      - Python interpreter (dev / source install): ``arguments`` is
+        ``-m src.main --sis X --input "Y" --output "Z" [--sftp]`` and
+        ``working_dir`` is the project root — so Python finds the ``src``
+        package. Without ``-m`` Python would treat ``--sis`` as a script path
+        and fail with 0x80070002.
+      - Frozen PyInstaller binary (e.g. DistrictSync.exe): ``arguments`` omits
+        ``-m src.main`` and ``working_dir`` is the exe's parent directory.
 
-    Principal:
-      - With a ``run_as_password``: ``<UserId>`` is the resolved run-as user,
-        ``<LogonType>Password</LogonType>`` (runs whether or not the user is
-        logged on), ``<RunLevel>`` is ``HighestAvailable`` when *run_highest*
-        else ``LeastPrivilege``.
-      - Without a password: ``<UserId>`` is the current interactive user,
-        ``<LogonType>InteractiveToken</LogonType>``, ``<RunLevel>`` is
-        ``LeastPrivilege`` (logged-on-only default; *run_highest* is ignored
-        without a password, matching the prior ``/TR`` behaviour).
-
-    Every interpolated value (paths, user id, arguments) is XML-escaped at this
-    boundary to prevent XML injection and to correctly carry ``&``/``<``/``>``
-    in paths. The password is never placed in the XML — it is passed to
-    ``schtasks`` via ``/RP`` by :func:`register_task`.
+    Paths are wrapped in quotes inside the single ``arguments`` string so a
+    space-bearing district path survives as one token; the string is passed to
+    PowerShell via the ``DSYNC_ARGS`` env var (never interpolated into the
+    script body).
     """
     is_python = exe_path.name.lower().startswith("python")
 
@@ -164,63 +335,43 @@ def _build_task_xml(
         ]
     if sftp:
         arg_parts.append("--sftp")
-    arguments = " ".join(arg_parts)
+    return " ".join(arg_parts), working_dir
 
+
+def _build_env(
+    *,
+    task_name: str,
+    user: str,
+    run_time: str,
+    exe_path: Path,
+    arguments: str,
+    working_dir: Path,
+    run_as_password: str | None,
+    run_highest: bool,
+) -> dict[str, str]:
+    """Build the child process environment for the PowerShell registration.
+
+    Returns a **fresh copy** of ``os.environ`` with the ``DSYNC_*`` keys added —
+    ``os.environ`` itself is never mutated, so the password never enters the
+    parent process environment. ``DSYNC_RUNTIME`` carries the **raw** ``"HH:mm"``
+    string (``validate_run_time`` returns a ``(hour, minute)`` tuple — the
+    string is what the PowerShell ``ParseExact`` expects, not the tuple).
+    ``DSYNC_TASK_PW`` is present only on the password path; ``DSYNC_RUNLEVEL``
+    is only meaningful there (the no-password script hardcodes ``Limited``).
+    """
+    env: dict[str, str] = {
+        **os.environ,
+        "DSYNC_TASKNAME": task_name,
+        "DSYNC_USER": user,
+        "DSYNC_RUNTIME": run_time,
+        "DSYNC_EXE": str(exe_path),
+        "DSYNC_ARGS": arguments,
+        "DSYNC_WORKDIR": str(working_dir),
+    }
     if run_as_password:
-        user_id = validate_run_as_user(run_as_user or current_run_as_user())
-        logon_type = "Password"
-        run_level = "HighestAvailable" if run_highest else "LeastPrivilege"
-    else:
-        user_id = current_run_as_user()
-        logon_type = "InteractiveToken"
-        run_level = "LeastPrivilege"
-
-    # XML-escape every interpolated value at this boundary (validate-at-boundary).
-    command_x = _xml_escape(str(exe_path))
-    arguments_x = _xml_escape(arguments)
-    working_dir_x = _xml_escape(str(working_dir))
-    user_id_x = _xml_escape(user_id)
-    start_boundary_x = _xml_escape(f"{_START_DATE}T{run_time}:00")
-
-    return (
-        '<?xml version="1.0" encoding="UTF-16"?>\n'
-        f'<Task version="{_TASK_XML_VERSION}" xmlns="{_TASK_XML_NS}">\n'
-        "  <RegistrationInfo>\n"
-        "    <Description>DistrictSync daily run</Description>\n"
-        "  </RegistrationInfo>\n"
-        "  <Triggers>\n"
-        "    <CalendarTrigger>\n"
-        f"      <StartBoundary>{start_boundary_x}</StartBoundary>\n"
-        "      <Enabled>true</Enabled>\n"
-        "      <ScheduleByDay>\n"
-        "        <DaysInterval>1</DaysInterval>\n"
-        "      </ScheduleByDay>\n"
-        "    </CalendarTrigger>\n"
-        "  </Triggers>\n"
-        "  <Principals>\n"
-        '    <Principal id="Author">\n'
-        f"      <UserId>{user_id_x}</UserId>\n"
-        f"      <LogonType>{logon_type}</LogonType>\n"
-        f"      <RunLevel>{run_level}</RunLevel>\n"
-        "    </Principal>\n"
-        "  </Principals>\n"
-        "  <Settings>\n"
-        "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n"
-        "    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n"
-        "    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n"
-        "    <StartWhenAvailable>false</StartWhenAvailable>\n"
-        "    <Enabled>true</Enabled>\n"
-        "    <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>\n"
-        "  </Settings>\n"
-        '  <Actions Context="Author">\n'
-        "    <Exec>\n"
-        f"      <Command>{command_x}</Command>\n"
-        f"      <Arguments>{arguments_x}</Arguments>\n"
-        f"      <WorkingDirectory>{working_dir_x}</WorkingDirectory>\n"
-        "    </Exec>\n"
-        "  </Actions>\n"
-        "</Task>\n"
-    )
+        env["DSYNC_TASK_PW"] = run_as_password
+        env["DSYNC_RUNLEVEL"] = "Highest" if run_highest else "Limited"
+    return env
 
 
 def register_task(
@@ -236,15 +387,17 @@ def register_task(
     run_as_password: str | None = None,
     run_highest: bool = True,
 ) -> tuple[bool, str]:
-    """Create or replace a Windows scheduled task via Task Scheduler XML.
+    """Create or replace a Windows scheduled task via PowerShell.
 
-    The schedule, working directory, principal, and run level are carried in a
-    Task Scheduler 1.2 XML document registered with ``schtasks /Create /XML``
-    (no inline ``/TR`` command, so the 261-character ``/TR`` limit no longer
-    applies). The XML is written to a temporary file as UTF-16-with-BOM
-    (the encoding ``schtasks`` expects) and deleted after the call. The XML
-    contains **no** password; when a password is supplied it is passed via
-    ``schtasks /RP`` on the command line and redacted from all logs.
+    A fixed PowerShell script (the ``ScheduledTasks`` module) is passed to
+    ``powershell.exe -EncodedCommand`` (UTF-16LE-base64); all dynamic values —
+    including the password — are passed via the **child process environment**,
+    never on the command line and never interpolated into the script text. No
+    script file touches disk. ``-EncodedCommand`` (not ``-Command -``/stdin) is
+    used because, observed live on this dev box (Win11, PS 5.1), a multi-line
+    ``try/catch`` read line-by-line from stdin silently no-ops (exit 0, registers
+    nothing); ``-EncodedCommand`` parses the script as one unit so the fail-loud
+    ``try/catch`` works.
 
     Args:
         task_name: Name displayed in Task Scheduler (e.g. "DistrictSync_Daily").
@@ -261,91 +414,113 @@ def register_task(
                    :func:`validate_run_as_user`.
         run_as_password: The ``run_as_user`` account's Windows password. When
                    provided, the task is registered to run **whether the user
-                   is logged on or not** (``<LogonType>Password</LogonType>``
-                   in the XML + ``schtasks /RU /RP``). When omitted, the task
-                   runs only while the user is logged on
-                   (``<LogonType>InteractiveToken</LogonType>``) and no
-                   ``/RU /RP`` flags are emitted — preserving backward
-                   compatibility for existing callers and dev-mode scheduling.
-                   The password is never logged or written to the XML.
+                   is logged on or not** (explicit ``-LogonType Password``
+                   principal + ``Register-ScheduledTask -User -Password``).
+                   When omitted, the task runs only while the user is logged on
+                   (``-LogonType Interactive``) and no credential is stored —
+                   preserving backward compatibility for existing callers and
+                   dev-mode scheduling. The password is passed only via the
+                   child env var ``DSYNC_TASK_PW``; it is never logged, never on
+                   the command line, and never echoed by the script.
         run_highest: When True and a password is supplied, run with highest
-                   privileges (``<RunLevel>HighestAvailable</RunLevel>``).
-                   Ignored without a password.
+                   privileges (``-RunLevel Highest``). Ignored without a
+                   password (the logged-on-only path is always ``Limited``).
 
     Returns:
-        (success, message)
+        (success, message). On failure the *message* contains
+        ``"PowerShell not found"`` (no ``powershell.exe``),
+        ``"ScheduledTasks module not available"`` (no ScheduledTasks module),
+        or the raw PowerShell exception text passed through verbatim (so the
+        wizard classifier can match Windows' own "Access is denied" / "The user
+        name or password is incorrect" / logon-right wording). The password
+        value and the ``DSYNC_TASK_PW`` literal never appear in the message.
     """
-    # Validate all user-supplied values before touching the OS
+    # Validate all user-supplied values before touching the OS.
     task_name = validate_task_name(task_name)
     sis_type = validate_sis_type(sis_type)
     validate_run_time(run_time)
 
-    task_xml = _build_task_xml(
-        exe_path,
-        sis_type,
-        input_dir,
-        output_dir,
-        sftp,
-        run_time,
-        run_as_user=run_as_user,
+    has_password = bool(run_as_password)
+    if has_password:
+        user = validate_run_as_user(run_as_user or current_run_as_user())
+    else:
+        user = current_run_as_user()
+
+    arguments, working_dir = _build_action_args(exe_path, sis_type, input_dir, output_dir, sftp)
+    script = _build_register_script(has_password=has_password)
+    # PowerShell -EncodedCommand expects UTF-16LE-base64. The script is a fixed
+    # string referencing only $env:DSYNC_* — no dynamic value is ever encoded
+    # into it (those flow via the child env), so the encoded blob carries no
+    # secret and no untrusted input.
+    encoded_script = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    child_env = _build_env(
+        task_name=task_name,
+        user=user,
+        run_time=run_time,
+        exe_path=exe_path,
+        arguments=arguments,
+        working_dir=working_dir,
         run_as_password=run_as_password,
         run_highest=run_highest,
     )
 
-    # schtasks /Create /XML is encoding-sensitive: the documented export format
-    # is UTF-16 with a BOM, and the declaration above states encoding="UTF-16".
-    # Write to a temp file (delete=False so it is closed before schtasks reads
-    # it on Windows) and always remove it in the finally block.
-    xml_fd, xml_path = tempfile.mkstemp(suffix=".xml", prefix="districtsync_task_")
+    logger.info(f"Registering Windows scheduled task: {task_name} at {run_time}")
+
     try:
-        with os.fdopen(xml_fd, "w", encoding="utf-16") as fh:
-            fh.write(task_xml)
-
-        schtasks_args = [
-            "schtasks",
-            "/Create",
-            "/F",
-            "/TN",
-            task_name,
-            "/XML",
-            xml_path,
-        ]
-        # Run-as: only when a password is supplied. /RU + /RP + /XML is a valid,
-        # documented combination — /SC, /ST and /RL all come from the XML now.
-        # Without a password we leave the command unchanged so existing callers
-        # and dev-mode scheduling behave exactly as before (InteractiveToken).
-        if run_as_password:
-            resolved_user = validate_run_as_user(run_as_user or current_run_as_user())
-            schtasks_args += ["/RU", resolved_user, "/RP", run_as_password]
-
-        logger.info(f"Registering Windows scheduled task: {task_name} at {run_time}")
-        # Command is logged redacted so the /RP password never reaches the log.
-        # The temp-file path in the command is safe to log.
-        logger.debug(f"schtasks command: {_redact_cmd(schtasks_args)}")
-        # Inputs validated by src/utils/validators.py before reaching here;
-        # passed as an argument list (no shell=True) so the password cannot be
-        # re-parsed.
-        result = subprocess.run(  # nosec B603
-            schtasks_args,
+        # Inputs validated above; the encoded script is a fixed string referencing
+        # only $env:DSYNC_* (no untrusted-value interpolation); passed as a list
+        # with shell=False so nothing is re-parsed; the password reaches the child
+        # only via env, never argv. powershell.exe is a trusted Windows binary
+        # resolved from PATH (B607). Safe by construction.
+        result = subprocess.run(  # nosec B603,B607
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                encoded_script,
+            ],
+            env=child_env,
             capture_output=True,
             text=True,
         )
-    finally:
-        # Always remove the temp XML, even if writing or schtasks failed.
-        try:
-            os.remove(xml_path)
-        except OSError:
-            logger.warning(f"Could not remove temp task XML: {xml_path}")
+    except FileNotFoundError:
+        # powershell.exe absent from PATH — fail loud, never crash the caller.
+        logger.error(f"Failed to register task '{task_name}': {_MSG_NO_POWERSHELL}")
+        return False, _MSG_NO_POWERSHELL
 
-    success = result.returncode == 0
-    message = (result.stdout + result.stderr).strip()
+    stdout = (result.stdout or "").strip()
+    # _clean_ps_stderr strips any PowerShell CLIXML serialization down to the
+    # human error line BEFORE the marker match below, so canonical markers still
+    # match and the echoed script body (which contains the literal
+    # $env:DSYNC_TASK_PW reference) never reaches the caller. The script's catch
+    # already emits plain text via [Console]::Error.WriteLine; this is the
+    # defensive fallback for any CLIXML arriving from another cmdlet/host.
+    stderr = _clean_ps_stderr(result.stderr or "")
+    success = result.returncode == 0 and "DSYNC_OK" in stdout
+
     if success:
         logger.info(f"Task '{task_name}' registered successfully")
+        return True, stdout
+
+    # Map a missing ScheduledTasks module (pre-Win8) to a distinct, actionable
+    # message; otherwise surface the cleaned PowerShell exception text so the
+    # wizard classifier can match Windows' own credential/logon wording.
+    if any(marker in stderr for marker in _CMDLET_MISSING_MARKERS):
+        message = _MSG_NO_MODULE
     else:
-        # Surface the schtasks stderr (e.g. wrong password) to the caller. The
-        # echoed command is redacted; the password is not in it.
-        logger.error(f"Failed to register task '{task_name}' (command: {_redact_cmd(schtasks_args)}): {message}")
-    return success, message
+        message = stderr or stdout or "PowerShell registration failed with no output."
+
+    # stderr is cleaned (de-CLIXML'd) but otherwise surfaced as-is. register_task
+    # never adds the password to the message or logs — the script never echoes
+    # $env:DSYNC_TASK_PW, the value is not in argv, and _clean_ps_stderr drops the
+    # echoed script body; tested on the failure path. (We do not re-scrub
+    # PowerShell's own exception text; the cmdlets are not known to echo the
+    # supplied -Password/-User, but that is not asserted as a guarantee.)
+    logger.error(f"Failed to register task '{task_name}': {message}")
+    return False, message
 
 
 def delete_task(task_name: str) -> tuple[bool, str]:

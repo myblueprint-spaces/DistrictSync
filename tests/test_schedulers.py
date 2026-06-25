@@ -2,232 +2,263 @@
 
 All subprocess calls are mocked — no OS scheduler interaction needed.
 
-Windows registration uses Task Scheduler XML (``schtasks /Create /XML``),
-so these tests assert against the generated XML document and the
-``/XML`` command form rather than a legacy inline ``/TR`` string.
+Windows registration uses PowerShell ``Register-ScheduledTask`` (the
+``ScheduledTasks`` module): a fixed script is handed to ``powershell.exe
+-EncodedCommand`` (UTF-16LE-base64) and all dynamic values flow through the
+child process environment, so these tests assert against the argv, the decoded
+script, and the child env rather than a legacy ``schtasks`` command form.
+``delete_task`` / ``query_task`` stay on ``schtasks.exe`` (read-only /
+name-only) — their tests are unchanged.
 """
 
-import os
+import base64
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from xml.etree import ElementTree as ET
 
 import pytest
 
-# Task Scheduler XML namespace used by all generated documents.
-_NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+
+def _argv(mock_run) -> list[str]:
+    """The argv list passed to the (mocked) subprocess.run."""
+    return mock_run.call_args[0][0]
 
 
-def _xml_arg(args: list[str]) -> str:
-    """Return the temp-XML path that follows ``/XML`` in a schtasks arg list."""
-    return args[args.index("/XML") + 1]
+def _ps_script(mock_run) -> str:
+    """The PowerShell script, decoded from the ``-EncodedCommand`` argv value."""
+    argv = _argv(mock_run)
+    encoded = argv[argv.index("-EncodedCommand") + 1]
+    return base64.b64decode(encoded).decode("utf-16-le")
+
+
+def _child_env(mock_run) -> dict:
+    """The ``env=`` dict passed to subprocess.run."""
+    return mock_run.call_args[1]["env"]
 
 
 # -----------------------------------------------------------------------
-# Windows scheduler tests — _build_task_xml
+# Windows scheduler tests — _build_register_script (the fixed PS string)
 # -----------------------------------------------------------------------
 
 
-class TestBuildTaskXML:
-    def _parse(self, xml: str) -> ET.Element:
-        return ET.fromstring(xml)  # nosec B314 — parsing our own generated XML
+class TestBuildRegisterScript:
+    def test_password_variant_is_explicit_password_principal(self):
+        from src.scheduler.windows import _build_register_script
 
-    def test_well_formed_and_namespaced(self):
-        from src.scheduler.windows import _build_task_xml
+        script = _build_register_script(has_password=True)
+        # Explicit stored-password principal — not parameter-set inference.
+        assert "New-ScheduledTaskPrincipal -UserId $env:DSYNC_USER -LogonType Password" in script
+        assert "-RunLevel $env:DSYNC_RUNLEVEL" in script
+        # The credential is stored via -User/-Password on Register-ScheduledTask.
+        assert "Register-ScheduledTask -TaskName $env:DSYNC_TASKNAME -InputObject $task" in script
+        assert "-User $env:DSYNC_USER -Password $env:DSYNC_TASK_PW -Force" in script
+        # S4U is never used.
+        assert "S4U" not in script
 
-        xml = _build_task_xml(
-            Path("C:/DistrictSync/DistrictSync.exe"),
-            "myedbc",
-            Path("C:/input"),
-            Path("C:/output"),
-            False,
-            "03:00",
+    def test_no_password_variant_is_interactive_limited_not_s4u(self):
+        from src.scheduler.windows import _build_register_script
+
+        script = _build_register_script(has_password=False)
+        assert "New-ScheduledTaskPrincipal -UserId $env:DSYNC_USER -LogonType Interactive -RunLevel Limited" in script
+        # No credential parameters, no password reference, no S4U.
+        assert "-Password" not in script
+        assert "DSYNC_TASK_PW" not in script
+        assert "S4U" not in script
+
+    def test_settings_parity_with_prior_xml(self):
+        from src.scheduler.windows import _build_register_script
+
+        for has_pw in (True, False):
+            script = _build_register_script(has_password=has_pw)
+            assert "-MultipleInstances IgnoreNew" in script
+            assert "-ExecutionTimeLimit (New-TimeSpan -Hours 2)" in script
+            assert "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries" in script
+            assert "-StartWhenAvailable:$false" in script
+
+    def test_run_time_parsed_with_invariant_culture(self):
+        from src.scheduler.windows import _build_register_script
+
+        script = _build_register_script(has_password=True)
+        assert "[DateTime]::ParseExact($env:DSYNC_RUNTIME,'HH:mm'" in script
+        assert "[System.Globalization.CultureInfo]::InvariantCulture" in script
+
+    def test_script_references_env_not_literals(self):
+        from src.scheduler.windows import _build_register_script
+
+        script = _build_register_script(has_password=True)
+        # Action/trigger/settings all read from env, never an interpolated value.
+        assert "New-ScheduledTaskAction -Execute $env:DSYNC_EXE -Argument $env:DSYNC_ARGS" in script
+        assert "-WorkingDirectory $env:DSYNC_WORKDIR" in script
+        assert "New-ScheduledTaskTrigger -Daily -At $at" in script
+
+    def test_catch_emits_plain_text_not_write_error(self):
+        """The catch uses [Console]::Error.WriteLine — NOT Write-Error.
+
+        Write-Error to a redirected stderr is CLIXML-serialized by PowerShell
+        (a noisy ``#< CLIXML`` blob that echoes the whole script); the bare
+        [Console]::Error.WriteLine emits a clean plain-text one-liner.
+        """
+        from src.scheduler.windows import _build_register_script
+
+        for has_pw in (True, False):
+            script = _build_register_script(has_password=has_pw)
+            assert "[Console]::Error.WriteLine($_.Exception.Message)" in script
+            assert "Write-Error" not in script
+            # The success path is unchanged.
+            assert "Write-Output 'DSYNC_OK'" in script
+            assert "exit 1" in script
+
+
+# -----------------------------------------------------------------------
+# _clean_ps_stderr — de-CLIXML the PowerShell error surface
+# -----------------------------------------------------------------------
+
+
+# A real PowerShell 5.1 CLIXML stderr blob from a failed Register-ScheduledTask
+# (Write-Error to a redirected stderr). It echoes the whole failing script and
+# buries "Access is denied." inside <S S="Error"> nodes with _x000D_/_x000A_
+# line breaks. _clean_ps_stderr must return ONLY the human message.
+_REAL_CLIXML_STDERR = (
+    "#< CLIXML\r\n"
+    '<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+    '<S S="Error">Register-ScheduledTask : Access is denied._x000D__x000A_</S>'
+    '<S S="Error">At line:9 char:3_x000D__x000A_</S>'
+    '<S S="Error">+   Register-ScheduledTask -TaskName $env:DSYNC_TASKNAME -InputObject $task -User _x000D__x000A_</S>'
+    '<S S="Error">+   $env:DSYNC_USER -Password $env:DSYNC_TASK_PW -Force | Out-Null_x000D__x000A_</S>'
+    '<S S="Error">+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~_x000D__x000A_</S>'
+    '<S S="Error">    + CategoryInfo          : PermissionDenied: (PS_ScheduledTask:Root/Microsoft/...) [Register-ScheduledTask], CimException_x000D__x000A_</S>'
+    '<S S="Error">    + FullyQualifiedErrorId : HRESULT 0x80070005,Register-ScheduledTask_x000D__x000A_</S>'
+    "</Objs>"
+)
+
+
+class TestCleanPsStderr:
+    def test_clixml_blob_yields_clean_access_denied_no_leak(self):
+        from src.scheduler.windows import _clean_ps_stderr
+
+        cleaned = _clean_ps_stderr(_REAL_CLIXML_STDERR)
+
+        # The human message survives ...
+        assert "Access is denied" in cleaned
+        # ... and the CLIXML noise / echoed script body / secret literal do not.
+        assert "CLIXML" not in cleaned
+        assert "<Objs" not in cleaned
+        assert "Register-ScheduledTask -TaskName" not in cleaned
+        assert "DSYNC_TASK_PW" not in cleaned
+        assert "_x000D_" not in cleaned
+
+    def test_clixml_strips_leading_positional_prefix(self):
+        from src.scheduler.windows import _clean_ps_stderr
+
+        cleaned = _clean_ps_stderr(_REAL_CLIXML_STDERR)
+        # The "Register-ScheduledTask : " positional prefix is stripped.
+        assert not cleaned.startswith("Register-ScheduledTask")
+
+    def test_plain_text_passes_through_stripped(self):
+        from src.scheduler.windows import _clean_ps_stderr
+
+        assert _clean_ps_stderr("  Access is denied.  ") == "Access is denied."
+
+    def test_clixml_without_error_node_is_safe_generic(self):
+        from src.scheduler.windows import _clean_ps_stderr
+
+        cleaned = _clean_ps_stderr("#< CLIXML\r\n<Objs></Objs>")
+        # No error node → a safe generic message, never the raw blob.
+        assert "CLIXML" not in cleaned
+        assert "<Objs" not in cleaned
+
+    def test_first_node_with_dsync_ref_is_dropped_not_echoed(self):
+        """Defense-in-depth: if the script body collapses into node 0, drop it.
+
+        Not a shape PS 5.1 emits (the message line is node 0; script echoes are
+        nodes 1+), but the CLIXML branch is untrusted — a first node still
+        carrying a ``DSYNC_*`` reference must yield the safe generic message,
+        never echo the variable name.
+        """
+        from src.scheduler.windows import _clean_ps_stderr
+
+        # Node 0 carries a DSYNC_ ref that SURVIVES the positional-prefix strip
+        # (it sits after the "<cmd> : " separator), so the guard — not the prefix
+        # regex — is what must drop it.
+        blob = (
+            "#< CLIXML\r\n"
+            '<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+            '<S S="Error">Register-ScheduledTask : failed binding $env:DSYNC_TASK_PW</S></Objs>'
         )
-        root = self._parse(xml)
-        assert root.tag == "{http://schemas.microsoft.com/windows/2004/02/mit/task}Task"
-        assert root.attrib["version"] == "1.2"
-        assert xml.startswith('<?xml version="1.0" encoding="UTF-16"?>')
+        cleaned = _clean_ps_stderr(blob)
+        assert "DSYNC_" not in cleaned
+        assert "$env" not in cleaned
 
-    def test_daily_trigger_with_run_time(self):
-        from src.scheduler.windows import _build_task_xml
+    def test_canonical_marker_still_matches_after_clean(self):
+        """register_task de-CLIXMLs before the marker match — Access is denied survives."""
+        from pathlib import Path
 
-        xml = _build_task_xml(
-            Path("C:/DistrictSync/DistrictSync.exe"),
-            "myedbc",
-            Path("C:/input"),
-            Path("C:/output"),
-            False,
-            "16:45",
-        )
-        root = self._parse(xml)
-        start = root.find(".//t:CalendarTrigger/t:StartBoundary", _NS)
-        assert start is not None
-        assert start.text is not None and start.text.endswith("T16:45:00")
-        days = root.find(".//t:ScheduleByDay/t:DaysInterval", _NS)
-        assert days is not None and days.text == "1"
+        from src.scheduler.windows import register_task
 
-    def test_python_source_mode(self):
-        """python.exe → Command=python, Arguments has -m src.main, WD=project root, no cmd /c."""
+        with patch("src.scheduler.windows.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr=_REAL_CLIXML_STDERR)
+            ok, msg = register_task(
+                task_name="DistrictSync_Daily",
+                exe_path=Path("C:/DistrictSync.exe"),
+                sis_type="myedbc",
+                input_dir=Path("C:/input"),
+                output_dir=Path("C:/output"),
+                run_time="03:00",
+                run_as_user="jane",
+                run_as_password="s3cr3t!",
+            )
+        assert ok is False
+        assert "Access is denied" in msg
+        # The cleaned message must not leak the script body or the secret literal.
+        assert "CLIXML" not in msg
+        assert "Register-ScheduledTask -TaskName" not in msg
+        assert "DSYNC_TASK_PW" not in msg
+        assert "s3cr3t!" not in msg
+
+
+# -----------------------------------------------------------------------
+# is_elevated — administrator detection (used by the wizard classifier)
+# -----------------------------------------------------------------------
+
+
+class TestIsElevated:
+    def test_win32_admin_true(self):
         from src.scheduler import windows
-        from src.scheduler.windows import _build_task_xml
 
-        xml = _build_task_xml(
-            Path("C:/Python313/python.exe"),
-            "myedbc",
-            Path("C:/input"),
-            Path("C:/output"),
-            True,
-            "03:00",
-        )
-        root = self._parse(xml)
-        command = root.find(".//t:Exec/t:Command", _NS)
-        arguments = root.find(".//t:Exec/t:Arguments", _NS)
-        working_dir = root.find(".//t:Exec/t:WorkingDirectory", _NS)
-        assert command is not None and command.text == str(Path("C:/Python313/python.exe"))
-        assert arguments is not None and arguments.text is not None
-        assert "-m src.main" in arguments.text
-        assert "--sis myedbc" in arguments.text
-        assert "--sftp" in arguments.text
-        assert "cmd /c" not in arguments.text
-        assert "cd /d" not in arguments.text
-        expected_root = Path(windows.__file__).resolve().parents[2]
-        assert working_dir is not None and working_dir.text == str(expected_root)
+        fake_ctypes = MagicMock()
+        fake_ctypes.windll.shell32.IsUserAnAdmin.return_value = 1
+        with (
+            patch.object(windows.sys, "platform", "win32"),
+            patch.dict("sys.modules", {"ctypes": fake_ctypes}),
+        ):
+            assert windows.is_elevated() is True
 
-    def test_frozen_mode(self):
-        """Frozen exe → Command=exe, Arguments has no -m, WD=exe parent."""
-        from src.scheduler.windows import _build_task_xml
+    def test_win32_admin_false(self):
+        from src.scheduler import windows
 
-        xml = _build_task_xml(
-            Path("C:/DistrictSync/DistrictSync.exe"),
-            "myedbc",
-            Path("C:/input"),
-            Path("C:/output"),
-            False,
-            "03:00",
-        )
-        root = self._parse(xml)
-        command = root.find(".//t:Exec/t:Command", _NS)
-        arguments = root.find(".//t:Exec/t:Arguments", _NS)
-        working_dir = root.find(".//t:Exec/t:WorkingDirectory", _NS)
-        assert command is not None and command.text == str(Path("C:/DistrictSync/DistrictSync.exe"))
-        assert arguments is not None and arguments.text is not None
-        assert "-m" not in arguments.text.split()
-        assert "src.main" not in arguments.text
-        assert "--sftp" not in arguments.text
-        assert working_dir is not None and working_dir.text == str(Path("C:/DistrictSync/DistrictSync.exe").parent)
+        fake_ctypes = MagicMock()
+        fake_ctypes.windll.shell32.IsUserAnAdmin.return_value = 0
+        with (
+            patch.object(windows.sys, "platform", "win32"),
+            patch.dict("sys.modules", {"ctypes": fake_ctypes}),
+        ):
+            assert windows.is_elevated() is False
 
-    def test_sftp_absent_when_flag_false(self):
-        from src.scheduler.windows import _build_task_xml
+    def test_win32_error_is_false(self):
+        from src.scheduler import windows
 
-        xml = _build_task_xml(
-            Path("C:/DistrictSync/DistrictSync.exe"),
-            "myedbc",
-            Path("C:/input"),
-            Path("C:/output"),
-            False,
-            "03:00",
-        )
-        arguments = self._parse(xml).find(".//t:Exec/t:Arguments", _NS)
-        assert arguments is not None and arguments.text is not None
-        assert "--sftp" not in arguments.text
+        fake_ctypes = MagicMock()
+        fake_ctypes.windll.shell32.IsUserAnAdmin.side_effect = OSError("boom")
+        with (
+            patch.object(windows.sys, "platform", "win32"),
+            patch.dict("sys.modules", {"ctypes": fake_ctypes}),
+        ):
+            assert windows.is_elevated() is False
 
-    def test_password_mode_highest(self):
-        """Password + run_highest=True → LogonType Password, RunLevel HighestAvailable."""
-        from src.scheduler.windows import _build_task_xml
+    def test_non_win32_is_false(self):
+        from src.scheduler import windows
 
-        xml = _build_task_xml(
-            Path("C:/DistrictSync/DistrictSync.exe"),
-            "myedbc",
-            Path("C:/input"),
-            Path("C:/output"),
-            False,
-            "03:00",
-            run_as_user="CORP\\jane",
-            run_as_password="s3cr3t!",
-            run_highest=True,
-        )
-        root = self._parse(xml)
-        assert root.find(".//t:Principal/t:UserId", _NS).text == "CORP\\jane"
-        assert root.find(".//t:Principal/t:LogonType", _NS).text == "Password"
-        assert root.find(".//t:Principal/t:RunLevel", _NS).text == "HighestAvailable"
-        # The password is never written into the XML.
-        assert "s3cr3t!" not in xml
-
-    def test_password_mode_least_privilege(self):
-        """Password + run_highest=False → RunLevel LeastPrivilege."""
-        from src.scheduler.windows import _build_task_xml
-
-        xml = _build_task_xml(
-            Path("C:/DistrictSync/DistrictSync.exe"),
-            "myedbc",
-            Path("C:/input"),
-            Path("C:/output"),
-            False,
-            "03:00",
-            run_as_user="jane",
-            run_as_password="pw123",
-            run_highest=False,
-        )
-        root = ET.fromstring(xml)  # nosec B314
-        assert root.find(".//t:Principal/t:LogonType", _NS).text == "Password"
-        assert root.find(".//t:Principal/t:RunLevel", _NS).text == "LeastPrivilege"
-
-    @patch("src.scheduler.windows.current_run_as_user", return_value="WORKGROUP\\bob")
-    def test_no_password_mode(self, _mock_user):
-        """No password → InteractiveToken, LeastPrivilege, current user."""
-        from src.scheduler.windows import _build_task_xml
-
-        xml = _build_task_xml(
-            Path("C:/DistrictSync/DistrictSync.exe"),
-            "myedbc",
-            Path("C:/input"),
-            Path("C:/output"),
-            False,
-            "03:00",
-        )
-        root = ET.fromstring(xml)  # nosec B314
-        assert root.find(".//t:Principal/t:UserId", _NS).text == "WORKGROUP\\bob"
-        assert root.find(".//t:Principal/t:LogonType", _NS).text == "InteractiveToken"
-        assert root.find(".//t:Principal/t:RunLevel", _NS).text == "LeastPrivilege"
-
-    @patch("src.scheduler.windows.current_run_as_user", return_value="HOST\\setupuser")
-    def test_password_without_user_resolves_current_user(self, _mock_user):
-        from src.scheduler.windows import _build_task_xml
-
-        xml = _build_task_xml(
-            Path("C:/DistrictSync/DistrictSync.exe"),
-            "myedbc",
-            Path("C:/input"),
-            Path("C:/output"),
-            False,
-            "03:00",
-            run_as_password="pw123",
-        )
-        root = ET.fromstring(xml)  # nosec B314
-        assert root.find(".//t:Principal/t:UserId", _NS).text == "HOST\\setupuser"
-
-    def test_xml_escapes_special_chars_in_path(self):
-        """A path with '&' and a space is escaped/quoted and the doc still parses."""
-        from src.scheduler.windows import _build_task_xml
-
-        in_dir = Path("C:/A & B/in dir")
-        xml = _build_task_xml(
-            Path("C:/DistrictSync/DistrictSync.exe"),
-            "myedbc",
-            in_dir,
-            Path("C:/out"),
-            False,
-            "03:00",
-        )
-        # The raw '&' must be escaped in the serialized document.
-        assert "&amp;" in xml
-        assert "A & B" not in xml  # unescaped ampersand must not appear
-        # And it still parses; the parser un-escapes back to the real path.
-        root = ET.fromstring(xml)  # nosec B314
-        arguments = root.find(".//t:Exec/t:Arguments", _NS)
-        assert arguments is not None and arguments.text is not None
-        # The space-bearing path is wrapped in quotes inside the single command line.
-        assert f'"{in_dir}"' in arguments.text
+        with patch.object(windows.sys, "platform", "linux"):
+            assert windows.is_elevated() is False
 
 
 # -----------------------------------------------------------------------
@@ -240,7 +271,7 @@ class TestWindowsRegisterTask:
     def test_register_success(self, mock_run):
         from src.scheduler.windows import register_task
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="SUCCESS", stderr="")
+        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
 
         ok, msg = register_task(
             task_name="DistrictSync_Daily",
@@ -251,23 +282,33 @@ class TestWindowsRegisterTask:
             run_time="03:00",
         )
         assert ok is True
-        assert "SUCCESS" in msg
         mock_run.assert_called_once()
-        args = mock_run.call_args[0][0]
-        assert args[0] == "schtasks"
-        assert "/Create" in args
-        assert "DistrictSync_Daily" in args
-        # XML registration — never an inline /TR command.
-        assert "/XML" in args
-        assert "/TR" not in args
-        assert "/SC" not in args
-        assert "/ST" not in args
+        argv = _argv(mock_run)
+        # Fixed flags + an -EncodedCommand base64 blob (the script is not piped
+        # via stdin — observed live on this dev box (Win11, PS 5.1), a multi-line
+        # try/catch read line-by-line from stdin silently no-ops; -EncodedCommand
+        # parses the script as one unit so the fail-loud try/catch works).
+        assert argv[:6] == [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+        ]
+        assert "input" not in mock_run.call_args[1]
+        # The decoded script is the fixed PowerShell program.
+        assert _ps_script(mock_run).startswith("$ErrorActionPreference")
+        # Legacy schtasks registration markers must be gone.
+        assert "schtasks" not in argv
+        assert "/XML" not in argv
+        assert "/TR" not in argv
 
     @patch("src.scheduler.windows.subprocess.run")
-    def test_register_failure(self, mock_run):
+    def test_register_failure_passes_stderr_through(self, mock_run):
         from src.scheduler.windows import register_task
 
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Access denied")
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Access is denied.")
 
         ok, msg = register_task(
             task_name="DistrictSync_Daily",
@@ -278,23 +319,31 @@ class TestWindowsRegisterTask:
             run_time="03:00",
         )
         assert ok is False
-        assert "Access denied" in msg
+        assert "Access is denied" in msg
+
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_register_success_requires_dsync_ok_sentinel(self, mock_run):
+        """returncode 0 without the DSYNC_OK sentinel is treated as failure."""
+        from src.scheduler.windows import register_task
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="something else", stderr="")
+
+        ok, _ = register_task(
+            task_name="DistrictSync_Daily",
+            exe_path=Path("C:/DistrictSync.exe"),
+            sis_type="myedbc",
+            input_dir=Path("C:/input"),
+            output_dir=Path("C:/output"),
+            run_time="03:00",
+        )
+        assert ok is False
 
     @patch("src.scheduler.windows.subprocess.run")
     def test_register_with_sftp_flag(self, mock_run):
-        """The generated XML (passed via /XML) carries --sftp; temp file is removed after."""
+        """The action arguments (in DSYNC_ARGS) carry --sftp when requested."""
         from src.scheduler.windows import register_task
 
-        captured: dict[str, str] = {}
-
-        def _capture(args, **_kwargs):
-            # Read the temp XML while it still exists (before the finally removes it).
-            with open(_xml_arg(args), encoding="utf-16") as fh:
-                captured["xml"] = fh.read()
-            captured["path"] = _xml_arg(args)
-            return MagicMock(returncode=0, stdout="OK", stderr="")
-
-        mock_run.side_effect = _capture
+        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
 
         register_task(
             task_name="DistrictSync_Daily",
@@ -305,22 +354,14 @@ class TestWindowsRegisterTask:
             run_time="03:00",
             sftp=True,
         )
-        assert "--sftp" in captured["xml"]
-        # Temp XML is cleaned up after the call.
-        assert not os.path.exists(captured["path"])
+        assert "--sftp" in _child_env(mock_run)["DSYNC_ARGS"]
 
     @patch("src.scheduler.windows.subprocess.run")
-    def test_temp_xml_removed_on_failure(self, mock_run):
-        """Even when schtasks fails, the temp XML is removed."""
+    def test_run_time_passed_raw_string_in_env(self, mock_run):
+        """DSYNC_RUNTIME carries the raw 'HH:mm' string, not a (hour, minute) tuple."""
         from src.scheduler.windows import register_task
 
-        captured: dict[str, str] = {}
-
-        def _capture(args, **_kwargs):
-            captured["path"] = _xml_arg(args)
-            return MagicMock(returncode=1, stdout="", stderr="boom")
-
-        mock_run.side_effect = _capture
+        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
 
         register_task(
             task_name="DistrictSync_Daily",
@@ -328,9 +369,9 @@ class TestWindowsRegisterTask:
             sis_type="myedbc",
             input_dir=Path("C:/input"),
             output_dir=Path("C:/output"),
-            run_time="03:00",
+            run_time="16:45",
         )
-        assert not os.path.exists(captured["path"])
+        assert _child_env(mock_run)["DSYNC_RUNTIME"] == "16:45"
 
     def test_register_rejects_invalid_sis_type(self):
         from src.scheduler.windows import register_task
@@ -373,7 +414,7 @@ class TestWindowsRegisterTask:
 
     @patch("src.scheduler.windows.subprocess.run")
     def test_validation_runs_before_subprocess(self, mock_run):
-        """Bad input must raise before any schtasks call."""
+        """Bad input must raise before any powershell call."""
         from src.scheduler.windows import register_task
 
         with pytest.raises(ValueError):
@@ -389,17 +430,11 @@ class TestWindowsRegisterTask:
 
     @patch("src.scheduler.windows.subprocess.run")
     def test_frozen_exe_invoked_directly(self, mock_run):
-        """DistrictSync.exe is the <Command>; arguments carry no -m src.main."""
+        """DistrictSync.exe is DSYNC_EXE; arguments carry no -m src.main; WD=exe parent."""
         from src.scheduler.windows import register_task
 
-        captured: dict[str, str] = {}
+        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
 
-        def _capture(args, **_kwargs):
-            with open(_xml_arg(args), encoding="utf-16") as fh:
-                captured["xml"] = fh.read()
-            return MagicMock(returncode=0, stdout="OK", stderr="")
-
-        mock_run.side_effect = _capture
         register_task(
             task_name="DistrictSync_Daily",
             exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
@@ -408,31 +443,23 @@ class TestWindowsRegisterTask:
             output_dir=Path("C:/output"),
             run_time="03:00",
         )
-        root = ET.fromstring(captured["xml"])  # nosec B314
-        command = root.find(".//t:Exec/t:Command", _NS)
-        arguments = root.find(".//t:Exec/t:Arguments", _NS)
-        assert command is not None and command.text == str(Path("C:/DistrictSync/DistrictSync.exe"))
-        assert arguments is not None and arguments.text is not None
-        assert "-m src.main" not in arguments.text
+        env = _child_env(mock_run)
+        assert env["DSYNC_EXE"] == str(Path("C:/DistrictSync/DistrictSync.exe"))
+        assert "-m src.main" not in env["DSYNC_ARGS"]
+        assert env["DSYNC_WORKDIR"] == str(Path("C:/DistrictSync/DistrictSync.exe").parent)
 
     @patch("src.scheduler.windows.subprocess.run")
     def test_python_source_mode_uses_m_flag(self, mock_run):
-        """Running from source via python.exe sets Command=python and Arguments=-m src.main ...
+        """Running from source via python.exe sets DSYNC_EXE=python, DSYNC_ARGS=-m src.main ...
 
         Without -m, Python treats --sis as a script path and exits with
-        ERROR_FILE_NOT_FOUND (0x80070002) — the original dev bug. With XML the
-        working directory is set natively (no cmd /c "cd /d ...").
+        ERROR_FILE_NOT_FOUND (0x80070002). Working directory = project root.
         """
+        from src.scheduler import windows
         from src.scheduler.windows import register_task
 
-        captured: dict[str, str] = {}
+        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
 
-        def _capture(args, **_kwargs):
-            with open(_xml_arg(args), encoding="utf-16") as fh:
-                captured["xml"] = fh.read()
-            return MagicMock(returncode=0, stdout="OK", stderr="")
-
-        mock_run.side_effect = _capture
         register_task(
             task_name="DistrictSync_Daily",
             exe_path=Path("C:/Python313/python.exe"),
@@ -442,16 +469,72 @@ class TestWindowsRegisterTask:
             run_time="03:00",
             sftp=True,
         )
-        root = ET.fromstring(captured["xml"])  # nosec B314
-        command = root.find(".//t:Exec/t:Command", _NS)
-        arguments = root.find(".//t:Exec/t:Arguments", _NS)
-        assert command is not None and command.text == str(Path("C:/Python313/python.exe"))
-        assert arguments is not None and arguments.text is not None
-        assert "-m src.main" in arguments.text
-        assert "--sis myedbc" in arguments.text
-        assert "--sftp" in arguments.text
-        assert "cmd /c" not in arguments.text
-        assert "cd /d" not in arguments.text
+        env = _child_env(mock_run)
+        assert env["DSYNC_EXE"] == str(Path("C:/Python313/python.exe"))
+        assert "-m src.main" in env["DSYNC_ARGS"]
+        assert "--sis myedbc" in env["DSYNC_ARGS"]
+        assert "--sftp" in env["DSYNC_ARGS"]
+        assert "cmd /c" not in env["DSYNC_ARGS"]
+        assert "cd /d" not in env["DSYNC_ARGS"]
+        expected_root = Path(windows.__file__).resolve().parents[2]
+        assert env["DSYNC_WORKDIR"] == str(expected_root)
+
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_space_bearing_path_is_quoted_in_args(self, mock_run):
+        """A space-bearing district path is wrapped in quotes inside DSYNC_ARGS."""
+        from src.scheduler.windows import register_task
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
+        in_dir = Path("C:/A & B/in dir")
+
+        register_task(
+            task_name="DistrictSync_Daily",
+            exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
+            sis_type="myedbc",
+            input_dir=in_dir,
+            output_dir=Path("C:/out"),
+            run_time="03:00",
+        )
+        assert f'"{in_dir}"' in _child_env(mock_run)["DSYNC_ARGS"]
+
+    @patch("src.scheduler.windows.subprocess.run", side_effect=FileNotFoundError)
+    def test_missing_powershell_is_actionable(self, _mock_run):
+        """No powershell.exe → a distinct actionable message, no crash."""
+        from src.scheduler.windows import register_task
+
+        ok, msg = register_task(
+            task_name="DistrictSync_Daily",
+            exe_path=Path("C:/DistrictSync.exe"),
+            sis_type="myedbc",
+            input_dir=Path("C:/input"),
+            output_dir=Path("C:/output"),
+            run_time="03:00",
+        )
+        assert ok is False
+        assert "PowerShell not found" in msg
+
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_missing_scheduledtasks_module_is_actionable(self, mock_run):
+        """A cmdlet-not-found PS error maps to the ScheduledTasks-module message."""
+        from src.scheduler.windows import register_task
+
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="Register-ScheduledTask : The term 'Register-ScheduledTask' is not "
+            "recognized as the name of a cmdlet, function, script file, or operable program.",
+        )
+
+        ok, msg = register_task(
+            task_name="DistrictSync_Daily",
+            exe_path=Path("C:/DistrictSync.exe"),
+            sis_type="myedbc",
+            input_dir=Path("C:/input"),
+            output_dir=Path("C:/output"),
+            run_time="03:00",
+        )
+        assert ok is False
+        assert "ScheduledTasks module not available" in msg
 
 
 class TestWindowsDeleteTask:

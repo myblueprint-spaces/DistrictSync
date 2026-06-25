@@ -72,7 +72,10 @@ state.
     [Step 3 — Headless configuration](#step-3-headless-configuration-linux-docker-no-browser)
     or see the dedicated [Headless & Docker SFTP Setup](headless-sftp-setup.md) guide.
 
-1. Double-click `DistrictSync-windows.exe`
+!!! warning "Enabling a schedule? Launch as administrator"
+    If you will turn on the daily automated schedule (Step 3 below), **right-click `DistrictSync-windows.exe` → "Run as administrator"** instead of double-clicking. Creating a task that runs **unattended** (whether or not you are logged on) requires administrator rights — without them the schedule step fails with *"Access is denied."* This is a one-time setup requirement; the scheduled task itself runs on its own afterward. Ad-hoc-only use (the Convert page, no schedule) does **not** need administrator rights.
+
+1. Double-click `DistrictSync-windows.exe` — or **right-click → "Run as administrator"** if you will enable a schedule
 2. Your browser will open automatically at `http://localhost:8501`
 3. Follow the 5-step Setup Wizard:
 
@@ -94,6 +97,9 @@ Select your district from the dropdown. If your district is not listed, contact 
 Optionally enable a daily automated schedule. If you only need ad-hoc runs via the Convert page, you can leave this disabled.
 
 If enabled, choose the daily run time. We recommend **03:00 AM** (3am) — after the overnight GDE export from MyEdBC has completed.
+
+!!! note "Unattended runs need administrator rights"
+    Activating a schedule needs the wizard launched **as administrator** (see Step 2). If you launched it normally, this step reports *"Access is denied — run as administrator"*; close the wizard, relaunch it elevated, and try again.
 
 ### Wizard Step 4 — SFTP Upload
 

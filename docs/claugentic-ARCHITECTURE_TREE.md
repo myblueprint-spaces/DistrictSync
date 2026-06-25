@@ -59,7 +59,7 @@ _Last generated from `main` @ c669404._
 
 ## src/scheduler/
 
-- `src/scheduler/windows.py` — Windows Task Scheduler integration (`register_task`/`query_task`/`delete_task`): registers via Task Scheduler XML (`schtasks /Create /XML`, no 261-char `/TR` limit; `_build_task_xml()` sets working-dir/schedule/principal, XML-escaped); `run_as_password` → `/RU`+`/RP`, Password logon + HighestAvailable (unattended; password never in XML, `***` in logs); inputs validated via `src/utils/validators.py`.
+- `src/scheduler/windows.py` — Windows Task Scheduler: `register_task` runs a FIXED PowerShell `Register-ScheduledTask` script (`_build_register_script()` via `-EncodedCommand`, reads only `$env:DSYNC_*` child env); password → `Password`/`Highest`, no-password → `Interactive`/`Limited` (never S4U); errors de-CLIXML'd (`catch`→`[Console]::Error.WriteLine` + `_clean_ps_stderr()`); `is_elevated()`; `delete_task`/`query_task` on `schtasks.exe`.
 - `src/scheduler/linux.py` — Linux/macOS cron integration: `register_cron()` / `delete_cron()` append/remove a sentinel-tagged crontab entry via the system `crontab` command; uses `shlex.quote()` for safe shell escaping.
 
 ---
@@ -83,7 +83,7 @@ _Last generated from `main` @ c669404._
 
 ### src/ui/pages/
 
-- `src/ui/pages/01_Setup_Wizard.py` — 5-step guided setup wizard: file paths → district config selection → schedule time (Windows: collects account password, displays run-as user, passes to `register_task` for unattended operation; blank password warns logged-on-only) → SFTP config (Step 4 verifies credential readability via `get_stored_password()`) → summary/activation with accurate run-as copy; post-activation dashboard.
+- `src/ui/pages/01_Setup_Wizard.py` — 5-step setup wizard: file paths → district config → schedule time (Windows collects account password + run-as user for `register_task`; blank warns logged-on-only) → SFTP config (Step 4 verifies credential via `get_stored_password()`) → summary/activation; dashboard. `_classify_schedule_error(msg, elevated)` maps a clean failure to an elevation-aware message (not-elevated → admin; elevated → batch-logon).
 - `src/ui/pages/02_Convert.py` — Ad-hoc conversion page: a thin adapter over the shared ETL engine (uploaded GDE bytes → `load_from_bytes` → `run_transform` → `DataLoader`, so download/zip + SFTP use `csv_encoding` and match the CLI byte-for-byte); renders quality report + diff, offers ZIP download / optional SFTP upload.
 - `src/ui/pages/03_Run_History.py` — Run History page: parses `__DISTRICTSYNC_RUN__` JSON log lines from `~/.districtsync/etl_tool.log` into a table (raw-tail fallback). The display-only Status cell shows amber "ETL OK · SFTP FAILED" on delivery failure and "Completed with N data errors" on field-transform errors, so the headline never contradicts the exit code.
 - `src/ui/pages/04_Mapping_Editor.py` — 7-step visual Mapping Editor: guides non-technical users through entity selection, file upload + column detection, field mapping, academic calendar, and name/email config; saves a minimal `_base`-inheriting override YAML to `~/.districtsync/mappings/`.

@@ -30,7 +30,10 @@ _TASK_NAME_RE = re.compile(r"^[a-zA-Z0-9_ -]+$")
 _TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 # Windows run-as account: DOMAIN\user or bare user. Letters, digits, dot,
 # underscore, hyphen, and at most ONE backslash domain separator. No
-# whitespace or shell metacharacters — this value is passed to schtasks /RU.
+# whitespace or special characters — this value is interpolated into a
+# PowerShell ``-User`` / principal ``-UserId`` parameter (passed to
+# ``Register-ScheduledTask`` via the child env), so it must stay a clean
+# account identifier with no PowerShell-meaningful characters.
 _RUN_AS_USER_RE = re.compile(r"^[A-Za-z0-9._-]+(?:\\[A-Za-z0-9._-]+)?$")
 
 # Maximum length for a run-as account string (DOMAIN\user).
@@ -77,13 +80,15 @@ def validate_run_time(value: str) -> tuple[str, str]:
 
 
 def validate_run_as_user(user: str) -> str:
-    """Validate a Windows run-as account for ``schtasks /RU``.
+    """Validate a Windows run-as account for a PowerShell scheduled-task principal.
 
-    Accepts a bare username (``jane``) or a ``DOMAIN\\user`` pair
-    (``CORP\\jane``). Permits letters, digits, ``.``, ``_``, ``-`` and at
-    most one backslash as the domain separator. Rejects empty values,
-    internal whitespace, and any shell metacharacter so the value cannot
-    break out of the ``schtasks`` argument list.
+    The value flows to ``Register-ScheduledTask``'s ``-User`` and the principal's
+    ``-UserId`` (via the spawned PowerShell process's environment, not a shell
+    argument list). Accepts a bare username (``jane``) or a ``DOMAIN\\user`` pair
+    (``CORP\\jane``). Permits letters, digits, ``.``, ``_``, ``-`` and at most
+    one backslash as the domain separator. Rejects empty values, internal
+    whitespace, and any special character so the value stays a clean account
+    identifier with no PowerShell-meaningful characters.
 
     Returns the stripped value on success; raises ``ValueError`` otherwise.
     """
