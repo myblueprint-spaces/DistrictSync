@@ -43,11 +43,12 @@
 
 **Task does not run after a reboot / server restart**
 - The Setup Wizard (schedule step) automatically registers the task to **run whether the user is logged on or not** with **Highest Privileges**, using the Windows account password you enter during setup.
-- If the task still doesn't run after a reboot, the Windows password entered at setup was likely incorrect. A wrong password causes `schtasks` to report an error in the wizard — if you dismissed the error, re-run the Setup Wizard to re-register the task with the correct password.
+- If the task still doesn't run after a reboot, the Windows password entered at setup was likely incorrect. A wrong password causes Windows to report an error in the wizard — if you dismissed the error, re-run the Setup Wizard to re-register the task with the correct password.
 - If you left the password blank during setup, the task was registered for **logged-on-only** operation (the wizard warns you at that point). Enter the password to enable unattended runs.
 
-**"Access denied" or task shows "Last Run Result: 0x1"**
-- Re-run the Setup Wizard and enter your Windows account password on the schedule step. This re-registers the task with `/RU <user> /RP <password> /RL HIGHEST` so it runs unattended.
+**"Access is denied" when activating the schedule**
+- **Most common cause: the wizard was not run as administrator.** Creating an unattended task (runs whether or not you are logged on, with highest privileges) requires administrator rights. Close the wizard, **right-click `DistrictSync-windows.exe` → "Run as administrator"**, and re-run the schedule step.
+- **If you are already running as administrator and still see "Access is denied":** the Windows password was likely rejected. Enter your **Windows account password** — not your Windows Hello PIN, and for a **Microsoft Account** your microsoft.com password — on the schedule step. If it still fails, the account may not be permitted to **"Log on as a batch job"** (check with your IT administrator).
 
 **Task shows a non-zero "Last Run Result" (e.g. code 3 / 0x3)**
 - Exit code 3 means the ETL conversion **succeeded** and the output files were written, but the **SFTP delivery to SpacesEDU failed**. The CSV files are intact in your output folder.
