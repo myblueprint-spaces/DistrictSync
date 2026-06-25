@@ -23,12 +23,14 @@ if str(_root) not in sys.path:
 from src.config.app_config import AppConfig  # noqa: E402
 from src.config.loader import available_configs, load_config  # noqa: E402
 from src.etl.pipeline import extract_required_files  # noqa: E402
-from src.ui.brand import header, inject_brand_css, step_progress  # noqa: E402
+from src.ui.brand import header, inject_brand_css, sidebar_exit_control, step_progress  # noqa: E402
+from src.ui.lifecycle import request_exit  # noqa: E402
 from src.utils.validators import ALLOWED_SFTP_HOSTS  # noqa: E402
 
 st.set_page_config(page_title="Setup Wizard — DistrictSync", page_icon="⚙️", layout="wide")
 inject_brand_css()
 header("Setup Wizard", "Configure DistrictSync for automated daily processing")
+sidebar_exit_control()
 
 # ---------------------------------------------------------------------------
 # Session state: current step (1–5) and working config
@@ -873,6 +875,13 @@ elif st.session_state.wizard_step == 5:
             "- If uploads ever stop, check **Run History** — failed SFTP deliveries are logged there "
             "and the scheduled task will report a non-zero result."
         )
+
+        # Setup is done — the daily run is the scheduled CLI, not this UI, so the
+        # window can be closed. Offer a one-click shutdown (safe: the wizard never
+        # calls save_all, so no write can be in flight here).
+        st.success("Setup complete — you can close this window.")
+        if st.button("Finish & Close", type="primary", key="wizard_finish_close"):
+            request_exit()
 
     # Dry-run test — always available when config is complete
     if cfg.is_complete():

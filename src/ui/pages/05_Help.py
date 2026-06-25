@@ -14,11 +14,12 @@ _root = Path(__file__).parent.parent.parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from src.ui.brand import header, inject_brand_css  # noqa: E402
+from src.ui.brand import header, inject_brand_css, sidebar_exit_control  # noqa: E402
 
 st.set_page_config(page_title="Help — DistrictSync", page_icon="❓", layout="wide")
 inject_brand_css()
 header("Help & Documentation", "How DistrictSync works and what to expect")
+sidebar_exit_control()
 
 st.info(
     "📖 The [SpacesEDU Help Centre article](https://help.spacesedu.com/en-ca/article/mx56qo) covers the "

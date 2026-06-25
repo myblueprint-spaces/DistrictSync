@@ -28,7 +28,8 @@ from src.etl.pipeline import (  # noqa: E402
     run_transform,
 )
 from src.quality.report import DataQualityReport  # noqa: E402
-from src.ui.brand import header, inject_brand_css  # noqa: E402
+from src.ui import lifecycle  # noqa: E402
+from src.ui.brand import header, inject_brand_css, sidebar_exit_control  # noqa: E402
 from src.utils.helpers import build_zip_name  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -165,6 +166,7 @@ def create_zip(outputs: dict[str, pd.DataFrame], field_orders: dict[str, list[st
 st.set_page_config(page_title="Convert — DistrictSync", page_icon="🔄", layout="wide")
 inject_brand_css()
 header("Ad-hoc Conversion", "Upload GDE files and download the converted CSVs directly in the browser")
+sidebar_exit_control()
 
 configs = get_available_configs()
 if not configs:
@@ -339,7 +341,15 @@ if outputs:
         if st.button("Upload via SFTP", type="secondary"):
             from src.sftp.uploader import SFTPUploader
 
-            with st.spinner("Uploading..."), tempfile.TemporaryDirectory() as tmpdir:
+            # Guard the atomic write + upload against an exit mid-commit:
+            # DataLoader.save_all is atomic only via a `finally` block that a hard
+            # os._exit would skip, so write_guard makes the Exit button / idle
+            # watchdog wait until this critical write finishes (see lifecycle).
+            with (
+                lifecycle.write_guard(),
+                st.spinner("Uploading..."),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
                 tmp_path = Path(tmpdir)
                 # Write through the SAME atomic DataLoader path the CLI
                 # uses — identical per-entity encoding (no BOM for

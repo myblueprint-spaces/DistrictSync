@@ -30,8 +30,10 @@ sftp = [
     "keyring>=24.0",
 ]
 # pip install -e ".[ui]"  — enables the Streamlit web UI
+# Minor pinned <1.55: the idle-shutdown watchdog (src/ui/lifecycle.py) depends on
+# the PRIVATE Runtime._session_mgr.num_active_sessions() internal — see DECISIONS.md.
 ui = [
-    "streamlit>=1.30",
+    "streamlit>=1.54,<1.55",
     "paramiko>=3.0",
     "keyring>=24.0",
 ]
@@ -40,6 +42,9 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "pytest-benchmark>=4.0",
+    # Pinned to match [ui]: the ui-marked smoke test exercises the private
+    # Streamlit reach the watchdog depends on (see DECISIONS.md).
+    "streamlit>=1.54,<1.55",
     "ruff>=0.4",
     "mypy>=1.0",
     "pandas-stubs>=2.0",

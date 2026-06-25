@@ -16,7 +16,8 @@ _root = Path(__file__).parent.parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from src.ui.brand import header, inject_brand_css  # noqa: E402
+from src.ui.brand import header, inject_brand_css, sidebar_exit_control  # noqa: E402
+from src.ui.lifecycle import start_idle_watchdog  # noqa: E402
 
 st.set_page_config(
     page_title="DistrictSync — SpacesEDU",
@@ -25,11 +26,29 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+
+@st.cache_resource
+def _ensure_idle_watchdog() -> bool:
+    """Start the idle-shutdown watchdog exactly once per server process.
+
+    ``@st.cache_resource`` is the once-per-process hook: the thread is started on
+    the first script run and the cached result is reused on every rerun / page,
+    so closing the last browser tab reaps the server (and leaked console) after
+    the grace period. The watchdog degrades to a no-op + warning on any Streamlit
+    internal-API change, so this can never break the UI.
+    """
+    start_idle_watchdog()
+    return True
+
+
+_ensure_idle_watchdog()
+
 inject_brand_css()
 header(
     "DistrictSync",
     "MyEducation BC General Data Extracts → SpacesEDU Advanced CSV",
 )
+sidebar_exit_control()
 
 # ---------------------------------------------------------------------------
 # Setup status banner

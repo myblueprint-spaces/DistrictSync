@@ -444,6 +444,23 @@ def card(content_fn, title: str = "") -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def sidebar_exit_control() -> None:
+    """Render the **Exit DistrictSync** control in the sidebar.
+
+    Single source for the exit button so its label/behaviour stay consistent
+    across pages. Clicking it calls :func:`src.ui.lifecycle.request_exit`, which
+    waits (bounded) for any in-flight conversion write to finish, shows a goodbye
+    line, then terminates the server process. (`src/ui` has no shared per-page
+    sidebar renderer — Streamlit's native multipage nav owns the sidebar — so each
+    page that wants the control calls this helper.)
+    """
+    from src.ui.lifecycle import request_exit
+
+    st.sidebar.divider()
+    if st.sidebar.button("⏻ Exit DistrictSync", help="Stop the DistrictSync server and close the app."):
+        request_exit()
+
+
 def step_progress(current: int, total: int = 5) -> None:
     """Render a coloured step progress bar (1-indexed)."""
     bars = ""

@@ -3,6 +3,13 @@
 When frozen with PyInstaller, this script locates the Streamlit app
 and launches it programmatically, opening the browser automatically.
 
+If a DistrictSync server is already running on port 8501 (e.g. a prior
+launch whose tab the user closed before the idle watchdog reaped it),
+this opens a browser to the existing instance and exits — no second
+server, no port-8501 clash. (``webbrowser.open`` opens/raises a browser
+to the URL; it cannot focus the already-open tab, so the user may get a
+new tab to the same app — accepted.)
+
 The production build uses src/main.py as the PyInstaller entry so a
 single binary serves both CLI and UI (argv-less launch → UI, with args
 → CLI). See .github/workflows/release.yml for the authoritative build
@@ -14,7 +21,13 @@ keyring discovers credential-store backends dynamically at runtime.
 
 import os
 import sys
+import webbrowser
 from pathlib import Path
+
+from src.ui.lifecycle import already_running
+
+_PORT = 8501
+_URL = f"http://localhost:{_PORT}"
 
 
 def get_app_path() -> Path:
@@ -26,6 +39,14 @@ def get_app_path() -> Path:
 
 
 def main() -> None:
+    # Single-instance guard: if a DistrictSync server is already up on 8501,
+    # open a browser to the existing instance and exit — no second server, no
+    # port clash. Keys off the health-endpoint body == "ok" (see already_running).
+    if already_running(_PORT):
+        print(f"DistrictSync is already running — opening a browser to {_URL}", file=sys.stderr)
+        webbrowser.open(_URL)
+        sys.exit(0)
+
     app_path = get_app_path()
 
     if not app_path.exists():
