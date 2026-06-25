@@ -185,6 +185,22 @@ def _sftp_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_version() -> str:
+    """Version stamped into ``src/_version.py`` at build time (from the git tag),
+    falling back to installed package metadata, then ``"dev"`` for an unbuilt
+    source checkout."""
+    try:
+        from src._version import version
+
+        return version
+    except ImportError:
+        pass
+    try:
+        return importlib.metadata.version("districtsync")
+    except importlib.metadata.PackageNotFoundError:
+        return "dev"
+
+
 if __name__ == "__main__":
     # No arguments → launch the web UI (e.g. double-clicked from Explorer)
     if len(sys.argv) == 1:
@@ -193,10 +209,7 @@ if __name__ == "__main__":
         _launch_ui()
         sys.exit(0)
 
-    try:
-        version = importlib.metadata.version("districtsync")
-    except importlib.metadata.PackageNotFoundError:
-        version = "dev"
+    version = _resolve_version()
 
     parser = argparse.ArgumentParser(
         description="SIS Data ETL Tool for myBlueprint - SpacesEDU",

@@ -9,15 +9,12 @@ All builds and releases are automated via GitHub Actions. The process is:
 ## Tagging a release
 
 ```bash
-# Bump version in pyproject.toml first
-# Then:
-git add pyproject.toml
-git commit -m "Bump to v1.x.0"
+# The version comes from the tag — no pyproject.toml bump needed.
 git tag v1.x.0
 git push origin main --tags
 ```
 
-The tag must start with `v` to trigger the release workflow.
+The tag must start with `v` to trigger the release workflow. The build stamps that tag into the executable's `--version` automatically.
 
 ---
 
@@ -51,9 +48,10 @@ push tag v*
 
 Each build job:
 1. Checks out the repo
-2. Installs Python 3.11 + `requirements.txt` + `pyinstaller` + `paramiko` + `keyring`
-3. Runs `pyinstaller --onefile` with `config/` bundled via `--add-data`
-4. Uploads the binary as a build artifact (retained 5 days)
+2. Installs Python 3.11 + `requirements.txt` + `pyinstaller`
+3. Stamps the version from the tag into `src/_version.py` (bundled, so `--version` is correct)
+4. Runs `pyinstaller --onefile` with `config/` bundled via `--add-data`
+5. Uploads the binary as a build artifact (retained 5 days)
 
 The publish job downloads all three artifacts, renames them (`DistrictSync-windows.exe`, `DistrictSync-linux`, `DistrictSync-macos`), and creates the GitHub Release with auto-generated release notes.
 
@@ -69,8 +67,7 @@ These are required because PyInstaller's static analysis misses some imports:
 --hidden-import=logging.config
 --hidden-import=pydantic
 --hidden-import=pydantic_core
---hidden-import=paramiko
---hidden-import=keyring
+--hidden-import=src._version
 ```
 
 If you add a new dependency that PyInstaller silently misses, add it here in `release.yml`.
@@ -90,19 +87,14 @@ The `config/mappings/` YAML files are embedded in the executable. Partners do no
 
 ## Versioning
 
-Version is defined in `pyproject.toml`:
-
-```toml
-[project]
-version = "1.x.0"
-```
-
-The CLI reads this at runtime:
+The version reported by the built executable is **stamped from the git tag at build time** — each release build job writes `src/_version.py` from the pushed tag (e.g. `v1.2.0` → `version = '1.2.0'`), and the CLI reads it:
 
 ```bash
 DistrictSync.exe --version
-# DistrictSync 1.x.0
+# DistrictSync 1.2.0
 ```
+
+So the **git tag is the single source of truth** for the released version — there is no manual `pyproject.toml` bump to forget. (The frozen exe cannot read installed package metadata, so it relies on this stamped file; an unbuilt source checkout reports `dev`.)
 
 Use [semantic versioning](https://semver.org/):
 
@@ -121,7 +113,7 @@ Use [semantic versioning](https://semver.org/):
 - [ ] Format check passes: `ruff format --check src/ tests/`
 - [ ] Type check passes: `mypy --exclude 'src/ui' src/`
 - [ ] Security scan passes: `bandit -r src/`
-- [ ] `version` in `pyproject.toml` matches the tag you're about to push
+- [ ] You're tagging the intended version (the exe's `--version` is derived from the tag automatically — no `pyproject.toml` bump needed)
 - [ ] CHANGELOG or commit messages are meaningful (Actions generates release notes from commit history)
 - [ ] If output CSV schema changed — partner guide and FAQ are updated
 

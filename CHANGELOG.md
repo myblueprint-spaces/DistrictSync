@@ -9,6 +9,9 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Fixed
+- `--version` now reports the real release version. The build stamps the git tag into the executable (`src/_version.py`); previously the frozen exe reported `dev` because it couldn't read installed package metadata.
+
 ## [3.3.1] - 2026-06-25
 
 Fixes the unattended Windows scheduling regression that blocked district rollout,
