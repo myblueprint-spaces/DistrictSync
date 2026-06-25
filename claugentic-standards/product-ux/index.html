@@ -1,0 +1,1027 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="MyEducation BC GDE to SpacesEDU Advanced CSV converter — by SpacesEDU by myBlueprint">
+      
+      
+        <meta name="author" content="SpacesEDU by myBlueprint">
+      
+      
+        <link rel="canonical" href="https://myblueprint-spaces.github.io/DistrictSync/claugentic-standards/product-ux/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/favicon.ico">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Product ux - DistrictSync</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/brand.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#module-contract-copied-from-_templatemd" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="DistrictSync" class="md-header__button md-logo" aria-label="DistrictSync" data-md-component="logo">
+      
+  <img src="../../assets/spacesedu-icon.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            DistrictSync
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Product ux
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/myblueprint-spaces/DistrictSync" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    myblueprint-spaces/DistrictSync
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../partner/installation/" class="md-tabs__link">
+          
+  
+  
+  Partner Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../developer/setup/" class="md-tabs__link">
+          
+  
+  
+  Developer Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="DistrictSync" class="md-nav__button md-logo" aria-label="DistrictSync" data-md-component="logo">
+      
+  <img src="../../assets/spacesedu-icon.png" alt="logo">
+
+    </a>
+    DistrictSync
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/myblueprint-spaces/DistrictSync" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    myblueprint-spaces/DistrictSync
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Partner Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Partner Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../partner/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../partner/headless-sftp-setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Headless & Docker SFTP Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../partner/how-classes-work/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How Classes Work
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../partner/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../partner/faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/adding-transformer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a Transformer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/adding-district/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a District Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/release/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Process
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<!-- claugentic-dev-harness@0.1.40 managed — do not edit (copied from the claugentic-dev-harness plugin) -->
+<hr />
+<h1 id="module-contract-copied-from-_templatemd">── Module contract (copied from _TEMPLATE.md) ──<a class="headerlink" href="#module-contract-copied-from-_templatemd" title="Permanent link">&para;</a></h1>
+<p>module: product-ux
+title: Product &amp; UX
+version: 0.1.0
+status: draft
+iso_25010: [interaction-capability]
+load_scope:
+  keywords: [ui, ux, component, page, screen, design, frontend, button, form, layout, accessibility, a11y, responsive]
+  globs: ["<strong>/components/</strong>", "<strong>/pages/</strong>", "<strong>/*.tsx", "</strong>/<em>.jsx", "</em><em>/</em>.vue", "*<em>/</em>.css"]
+last_reviewed: 2026-06-04</p>
+<hr />
+<h1 id="product-ux-is-this-a-complete-humane-accessible-product-surface-not-just-working-code">Product &amp; UX — is this a complete, humane, accessible product surface (not just working code)?<a class="headerlink" href="#product-ux-is-this-a-complete-humane-accessible-product-surface-not-just-working-code" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p><strong>Loads when:</strong> a change touches a user-facing surface — a component, page, screen, form, layout, styling, or any interactive frontend.
+<strong>ISO/IEC 25010:</strong> Interaction Capability · <strong>Status:</strong> draft · <strong>v0.1.0</strong></p>
+</blockquote>
+<p>Each entry below is one <strong>auditable dimension</strong>. Per change, the reviewer applies the
+<em>relevant</em> ones <strong>fully</strong> (select-don't-skip), right-sized to the change — never
+gold-plating an irrelevant one, never skipping a relevant one. This module is the
+<strong>product/UX lens</strong>: it asks not "does it run?" but "is it a finished, usable, ethical
+experience?" — and it ends with the <strong>objective UX signals</strong> a <code>ux-reviewer</code> measures so
+judgment is backed by numbers wherever possible.</p>
+<hr />
+<h2 id="information-architecture-navigation">Information architecture &amp; navigation<a class="headerlink" href="#information-architecture-navigation" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> content/features grouped by the user's mental model, not the org chart or DB schema; predictable, consistent navigation; the user always knows where they are (breadcrumbs/active states), how they got there, and how to get back; depth kept shallow (≤3 clicks to primary tasks); labels use the user's vocabulary, not internal jargon.</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> is the nav model consistent across screens (same affordances in the same places)? <code>[J]</code> does every screen answer "where am I / where can I go"? <code>[J]</code> do labels match user language (card-sort/tree-test evidence if available)? <code>[D]</code> are route names/links resolvable (no orphan routes, no broken internal links — link-check in CI)?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Good IA means people find things without thinking; getting it wrong means users feel lost and abandon tasks even when every feature technically works. It costs upfront structuring effort and the discipline to resist dumping features wherever is convenient.</li>
+<li><strong>Sources —</strong> Nielsen-Norman Group, <em>The Difference Between Information Architecture (IA) and Navigation</em> (nngroup.com/articles/ia-vs-navigation/); <em>Navigation: You Are Here</em> (nngroup.com/articles/navigation-you-are-here/); 10 Usability Heuristics #1 (visibility of system status), #2 (match system &amp; real world), #6 (recognition over recall) (nngroup.com/articles/ten-usability-heuristics/).</li>
+</ul>
+<h2 id="design-system-design-tokens-single-source-of-truth-for-look-and-feel">Design system &amp; design tokens (single source of truth for look-and-feel)<a class="headerlink" href="#design-system-design-tokens-single-source-of-truth-for-look-and-feel" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> all visual values (color, spacing, type, radius, shadow, motion) come from <strong>named tokens</strong>, not hardcoded literals; tokens follow a tiered architecture — <strong>global/primitive</strong> (<code>blue-500</code>) → <strong>alias/semantic</strong> (<code>color-bg-interactive</code>) → <strong>component</strong> (<code>button-bg-primary</code>) — so a brand change edits one semantic token and cascades everywhere; components are reused from a shared library before new ones are written; one canonical component per concept (no three subtly different buttons).</li>
+<li><strong>Auditor checks —</strong> <code>[D]</code> grep the diff for raw hex/rgb/px literals in component/CSS files where a token exists (lint rule: <code>no-hardcoded-design-values</code> / Stylelint custom rule) <code>[J]</code> are semantic tokens used over primitives at the component layer (intent, not raw value)? <code>[J]</code> was an existing component reused, or a near-duplicate created? <code>[J]</code> is the new component consistent with siblings (states, sizes, spacing scale)?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Tokens make the whole product re-skinnable and visually consistent from one place; skipping them scatters colors and spacing across hundreds of files so a rebrand becomes a multi-week hunt and the UI drifts out of sync. The cost is the setup of the token layer and the habit of never typing a raw value.</li>
+<li><strong>Sources —</strong> W3C Design Tokens Community Group, <em>Design Tokens Format Module</em> (designtokens.org; W3C CG: w3.org/community/design-tokens/); Material Design 3 <em>Design tokens</em> (m3.material.io/foundations/design-tokens).</li>
+</ul>
+<h2 id="loading-empty-error-states-every-async-surface-has-all-three">Loading / empty / error states (every async surface has all three)<a class="headerlink" href="#loading-empty-error-states-every-async-surface-has-all-three" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> <strong>every</strong> surface that fetches, mutates, or computes asynchronously explicitly handles <strong>all three</strong> non-happy states: <strong>loading</strong> (skeleton/spinner with layout reserved — no jank), <strong>empty</strong> (a helpful zero-state that explains what goes here and a next action, not a blank void), and <strong>error</strong> (a human-readable message + a recovery path — retry/back/contact, never a raw stack trace or silent failure). First-use empty differs from filtered-to-empty.</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> for each async call in the diff, do all three states render? <code>[D]</code> does any data-fetching component lack a loading/error branch (lint rule / data-layer convention — e.g. query hooks forced to handle <code>isLoading</code>/<code>isError</code>)? <code>[J]</code> is the empty state actionable (CTA), not a dead end? <code>[J]</code> are error messages specific and recoverable (no swallowed errors, no <code>[object Object]</code>)?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Handling all three states is the difference between a product that feels solid and one that flashes blank screens or freezes on the first network hiccup; it roughly doubles the UI work per screen but is exactly where "looks like a demo" becomes "ready for real users."</li>
+<li><strong>Sources —</strong> Nielsen-Norman, <em>Designing Empty States in Complex Applications: 3 Guidelines</em> (nngroup.com/articles/empty-state-interface-design/) &amp; Heuristic #9 (help users recognize, diagnose, recover from errors); NNG, <em>Skeleton Screens 101</em> (nngroup.com/articles/skeleton-screens/).</li>
+</ul>
+<h2 id="optimistic-ui-rollback">Optimistic UI &amp; rollback<a class="headerlink" href="#optimistic-ui-rollback" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> for high-frequency, low-risk mutations (like, toggle, reorder, add-to-list) the UI updates <strong>immediately</strong> on intent, then reconciles with the server; on failure it <strong>rolls back cleanly</strong> to the prior state and surfaces a non-blocking error; the optimistic update and its rollback are paired (no orphaned optimistic state); destructive or money-moving actions are <strong>not</strong> optimistic — they confirm first.</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> does the mutation update local state before the server responds where latency would otherwise hurt? <code>[J]</code> is there an explicit rollback on error (cache revert / previous-value restore)? <code>[J]</code> are destructive/irreversible actions excluded from optimism (confirmed/pessimistic instead)? <code>[D]</code> for libraries with built-in optimistic APIs (e.g. TanStack Query <code>onMutate</code>/<code>onError</code> rollback), is the rollback handler present (pattern lint/review)?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Optimistic UI makes an app feel instant instead of laggy on every tap; done wrong it shows users a success that didn't happen and leaves stale state, so it must always pair with a clean rollback. The cost is extra reconciliation logic and careful choice of which actions deserve it.</li>
+<li><strong>Sources —</strong> TanStack Query <em>Optimistic Updates</em> docs — <code>onMutate</code> snapshot / <code>onError</code> rollback pattern (tanstack.com/query/latest/docs/framework/react/guides/optimistic-updates).</li>
+</ul>
+<h2 id="perceived-performance-micro-interactions">Perceived performance &amp; micro-interactions<a class="headerlink" href="#perceived-performance-micro-interactions" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> the UI respects the three response-time thresholds — <strong>&lt;0.1s</strong> feels instant (direct manipulation), <strong>&lt;1s</strong> keeps flow (show nothing or a subtle cue), <strong>&gt;1s but &lt;10s</strong> needs a determinate progress indicator; perceived speed is engineered (skeletons, optimistic UI, prefetch on hover/intent, instant feedback on every interaction); micro-interactions (hover, press, focus, state transitions) give immediate, proportional feedback and use motion to clarify cause→effect, never as decoration that delays the user; animation respects <code>prefers-reduced-motion</code>.</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> does every actionable element give instant visual feedback on interaction? <code>[J]</code> do operations &gt;1s show progress (and &gt;10s allow cancel)? <code>[D]</code> is <code>prefers-reduced-motion</code> honored (media-query present where animation is used — grep/lint)? <code>[J]</code> is motion meaningful (orienting/causal) and short (≈150–300ms), not gratuitous?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Perceived performance is what users actually feel — an app can be "fast" on paper yet feel sluggish, or be honestly slow yet feel responsive with the right cues. Investing here buys trust and lower abandonment; over-animating costs attention and can make the product feel slower.</li>
+<li><strong>Sources —</strong> NNG, <em>Response Times: The 3 Important Limits</em> (Nielsen, 0.1/1/10s — nngroup.com/articles/response-times-3-important-limits/); web.dev <em>Web Vitals</em> (perceived-performance metrics — web.dev/articles/vitals).</li>
+</ul>
+<h2 id="visual-hierarchy-consistency-brand-look-and-feel">Visual hierarchy, consistency &amp; brand (look-and-feel)<a class="headerlink" href="#visual-hierarchy-consistency-brand-look-and-feel" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> the most important action/information on each screen is visually dominant (size, weight, color, position, whitespace) and the eye is guided in priority order; one primary CTA per view; spacing, type scale, and color usage are consistent (driven by tokens, see above); the surface is on-brand — voice, imagery, and visual language match the product's identity and feel intentional, not template-default; alignment and rhythm are tidy (grid-based, no arbitrary offsets).</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> is there a single clear primary action and a sensible scan order? <code>[D]</code> raw design-value lint: see <em>Design system &amp; tokens</em> dimension — the shared Stylelint <code>no-hardcoded-design-values</code> gate covers this check. <code>[J]</code> are spacing/type/color choices drawn from the scale with intent (semantic tokens, not just literals that happen to match)? <code>[J]</code> does it match the established brand/voice and sibling screens? <code>[J]</code> are alignment and grouping clean (Gestalt proximity/similarity), with adequate whitespace?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Strong hierarchy lets users grasp a screen in a glance and act correctly; a flat, inconsistent layout makes everything compete for attention and the product feel cheap. The cost is design care and saying no to "just one more button up top."</li>
+<li><strong>Sources —</strong> NNG, Heuristic #4 (consistency &amp; standards) &amp; #8 (aesthetic &amp; minimalist design) (nngroup.com/articles/ten-usability-heuristics/); NNG, <em>The Principle of Closure in Visual Design</em> — Gestalt principles of grouping (proximity, similarity, common regions, closure) (nngroup.com/articles/principle-closure/).</li>
+</ul>
+<h2 id="ethical-engagement-habit-forming-without-dark-patterns">Ethical engagement (habit-forming without dark patterns)<a class="headerlink" href="#ethical-engagement-habit-forming-without-dark-patterns" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> the design earns engagement by delivering real value (clear triggers, easy actions, honest variable reward, genuine investment) — <strong>never</strong> by deception or coercion; categorically <strong>no dark patterns</strong>: no forced continuity / hard-to-cancel, no sneaking items or hidden fees into carts, no confirm-shaming ("No, I don't want to save money"), no fake urgency/scarcity, no preselected opt-ins for data sharing, no obstruction or nagging; the easy path is the honest path; opt-out is as easy as opt-in; defaults serve the user, not just the metric.</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> does any flow rely on tricking, shaming, or trapping the user to hit a metric? <code>[J]</code> is cancel/unsubscribe/opt-out as discoverable and easy as the opposite action? <code>[J]</code> are urgency/scarcity/social-proof cues truthful? <code>[J]</code> are consent defaults user-favorable (no pre-ticked data sharing)? <code>[D]</code> cookie/consent flows meet "reject as easy as accept" where regulated (consent-mode/CMP config check).</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Ethical design builds durable trust and keeps you clear of regulators (FTC/GDPR enforce against dark patterns); manipulative tricks can spike a metric short-term but corrode trust, invite churn, reviews damage, and fines. The cost is occasionally a lower vanity number in exchange for a defensible, loyal user base.</li>
+<li><strong>Sources —</strong> Brignull, <em>Deceptive Patterns</em> taxonomy (deceptive.design); FTC, <em>Bringing Dark Patterns to Light</em> (ftc.gov/reports/dark-patterns, 2022); Nir Eyal <em>Hooked</em> model — applied <strong>only</strong> with the ethical "regret test."</li>
+</ul>
+<h2 id="user-flow-completeness-no-dead-ends">User-flow completeness (no dead ends)<a class="headerlink" href="#user-flow-completeness-no-dead-ends" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> every flow has a complete, reversible path: clear entry, a defined success state with an obvious next step, and a defined exit/cancel at each stage; there are <strong>no dead ends</strong> (every screen offers a forward and a backward action); back/cancel/undo behave predictably; partially-completed flows are recoverable (draft/resume) rather than lost; success and failure both land the user somewhere sensible, not on a blank or terminal screen.</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> trace the new/changed flow end-to-end: is there a way forward AND a way out from every state? <code>[J]</code> is the success state explicit with a next action (not just a silent close)? <code>[J]</code> is cancel/back non-destructive and predictable? <code>[J]</code> can an interrupted flow be resumed (no silent data loss)? <code>[D]</code> do all CTA targets resolve (no links/buttons to nowhere — see <em>Information architecture</em> dimension for the link/route check gate)?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> A complete flow means users can always finish, escape, or recover — dead ends are where people rage-quit and trust evaporates. The cost is mapping and building the unglamorous exit/empty/cancel paths, not just the golden path.</li>
+<li><strong>Sources —</strong> NNG, <em>10 Usability Heuristics for User Interface Design</em> — Heuristic #3 (user control &amp; freedom: emergency exits, undo/redo) &amp; #1 (visibility of system status) (nngroup.com/articles/ten-usability-heuristics/).</li>
+</ul>
+<h2 id="edge-case-resilient-ux-offline-slow-flaky-network">Edge-case &amp; resilient UX (offline / slow / flaky network)<a class="headerlink" href="#edge-case-resilient-ux-offline-slow-flaky-network" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> the UI degrades gracefully on poor conditions: slow networks show progress and stay interactive (no frozen UI); offline/connection-loss is detected and communicated, with queue-and-retry or a clear read-only/limited mode rather than a hard crash; long content lists virtualize/paginate; extreme inputs (very long strings, huge numbers, empty/zero, RTL, long translations) don't break layout (text truncates/wraps, containers flex); timeouts are bounded with a retry affordance; double-submit is prevented (disabled/idempotent on in-flight).</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> is there an offline/connection-loss path (detect + message + recover), or is it assumed always-online? <code>[D]</code> is double-submit prevented (button disabled / request de-duped while pending — review/lint)? <code>[J]</code> does the layout survive extreme content (overflow handled, no clipping/overlap)? <code>[J]</code> are long lists windowed/paginated (no unbounded DOM)? <code>[J]</code> are network timeouts bounded with user-visible retry?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Real users are on subways, hotel wifi, and old phones — handling slow/offline/extreme cases is what separates a product that survives the real world from one that only works in the demo. The cost is the extra branches and testing for conditions that "usually" don't happen but always eventually do.</li>
+<li><strong>Sources —</strong> web.dev, <em>Offline UX design guidelines</em> (web.dev/articles/offline-ux-design-guidelines); web.dev, <em>Resilience</em> — reliable loading under poor network conditions (web.dev/explore/reliable); NNG, Heuristic #5 (error prevention) (nngroup.com/articles/ten-usability-heuristics/).</li>
+</ul>
+<h2 id="accessibility-wcag-22-aa-keyboard-contrast-screen-reader-focus">Accessibility (WCAG 2.2 AA — keyboard, contrast, screen reader, focus)<a class="headerlink" href="#accessibility-wcag-22-aa-keyboard-contrast-screen-reader-focus" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> conformance to <strong>WCAG 2.2 Level AA</strong>: full <strong>keyboard operability</strong> (every interactive element reachable and usable without a mouse, logical tab/focus <strong>order</strong>, visible focus indicator, no keyboard traps); <strong>color contrast</strong> ≥ 4.5:1 for normal text, ≥ 3:1 for large text and UI components/graphics; <strong>screen-reader</strong> support via semantic HTML / correct ARIA (labels, roles, names, live regions for async updates), images have meaningful <code>alt</code>; meaning never conveyed by color alone; forms have programmatic labels and clear error identification; new 2.2 AA criteria met — <strong>focus not obscured</strong> (2.4.11), <strong>focus appearance</strong> (2.4.13), <strong>dragging alternative</strong> (2.5.7), <strong>target size ≥ 24×24 CSS px</strong> (2.5.8), <strong>consistent help</strong> (3.2.6), <strong>redundant entry</strong> avoided (3.3.7), <strong>accessible authentication</strong> (3.3.8); honors <code>prefers-reduced-motion</code>.</li>
+<li><strong>Auditor checks —</strong> <code>[D]</code> automated axe-core / Lighthouse a11y scan passes with zero violations in changed views (CI gate — catches ~30–40% of issues) <code>[D]</code> contrast ratios meet AA (token/contrast linter or axe) <code>[D]</code> images/icons have alt/accessible names; form controls have associated labels (axe/eslint-plugin-jsx-a11y) <code>[J]</code> keyboard-only walkthrough: tab order logical, focus visible &amp; not obscured, no traps, all actions reachable <code>[J]</code> screen-reader pass (NVDA/VoiceOver): names/roles/states announced, async changes announced via live regions <code>[D]</code> interactive targets ≥ 24×24px (computed-size check) <code>[J]</code> no information conveyed by color alone.</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Accessibility makes the product usable by everyone (including the ~15% with disabilities and anyone on a keyboard or assistive tech) and is a legal requirement in many markets (ADA/EN 301 549/European Accessibility Act); skipping it excludes users and invites lawsuits. Most cost is paid by using semantic HTML and tokens from the start — retrofitting later is far more expensive.</li>
+<li><strong>Sources —</strong> W3C <em>WCAG 2.2</em> (w3.org/TR/WCAG22) incl. SC 2.4.11/2.4.13/2.5.7/2.5.8/3.2.6/3.3.7/3.3.8; W3C <em>What's New in WCAG 2.2</em> (w3.org/WAI/standards-guidelines/wcag/new-in-22/); Deque axe-core (deque.com/axe).</li>
+</ul>
+<h2 id="responsive-cross-device-browser">Responsive &amp; cross-device/-browser<a class="headerlink" href="#responsive-cross-device-browser" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> layout works fluidly from small mobile to large desktop using a mobile-first, fluid approach (relative units, flex/grid, container/media queries) — not fixed-pixel layouts that break between breakpoints; no horizontal scroll at standard widths; touch targets and spacing adapt for touch vs pointer; content reflows (WCAG 1.4.10 — usable at 320px width / 400% zoom with no loss of content/function); verified across the project's supported browser/device matrix; text remains readable (≥16px body on mobile, respects user zoom).</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> does it hold at key widths (≈320, 768, 1024, 1440) with no overflow/overlap/clipping? <code>[D]</code> content reflows at 320px / 400% zoom without horizontal scroll (Lighthouse/manual zoom check — WCAG 1.4.10) <code>[J]</code> are touch targets and hit areas adequate on touch devices? <code>[J]</code> tested on the supported browser matrix (no engine-specific breakage)? <code>[D]</code> viewport meta present and zoom not disabled (<code>user-scalable=no</code> forbidden — grep).</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Most traffic is mobile — a responsive UI meets users on whatever screen they have, while a desktop-only layout alienates the majority and fails zoom/accessibility checks. The cost is designing and testing across sizes instead of one, ideally caught by visual-regression snapshots.</li>
+<li><strong>Sources —</strong> W3C WCAG 2.2 SC 1.4.10 (Reflow) &amp; 1.4.4 (Resize Text) (w3.org/TR/WCAG22/#reflow); MDN, <em>Responsive design</em> (developer.mozilla.org/en-US/docs/Learn_web_development/Core/CSS_layout/Responsive_Design); web.dev, <em>Responsive web design basics</em> (web.dev/articles/responsive-web-design-basics).</li>
+</ul>
+<h2 id="objective-ux-signals-what-a-ux-reviewer-measures">Objective UX signals (what a ux-reviewer measures)<a class="headerlink" href="#objective-ux-signals-what-a-ux-reviewer-measures" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> subjective UX claims are backed by <strong>objective signals</strong> the reviewer can cite, gathered with real tools rather than vibes: <strong>Lighthouse Performance ≥ 90</strong> and <strong>Accessibility ≥ 90</strong> on changed routes; <strong>Core Web Vitals</strong> in the "good" band at field p75 — <strong>LCP &lt; 2.5s</strong>, <strong>INP &lt; 200ms</strong>, <strong>CLS &lt; 0.1</strong> (lab proxy acceptable pre-launch, field data confirms post-launch); <strong>axe-core: 0 violations</strong> on changed views (see <em>Accessibility</em> dimension for the axe-core gate); a structured <strong>Nielsen 10-heuristic critique</strong> of the changed flow (each heuristic rated, violations logged with severity); and, where the slice is significant, evidence of a quick <strong>usability walkthrough</strong> (keyboard pass + screen-reader pass + 5-second/first-click sanity). The scorecard separates these <strong>measured</strong> signals from <strong>asserted</strong> judgment.</li>
+<li><strong>Auditor checks —</strong> <code>[D]</code> Lighthouse Perf ≥ 90 and A11y ≥ 90 on changed routes (Lighthouse CI gate, mobile profile) <code>[D]</code> Core Web Vitals thresholds met — LCP &lt; 2.5s, INP &lt; 200ms, CLS &lt; 0.1 (Lighthouse/PSI lab; web-vitals field at p75) <code>[D]</code> axe-core scan = 0 violations (CI — see <em>Accessibility</em> dimension) <code>[J]</code> Nielsen 10-heuristic critique completed for the changed flow with severities recorded <code>[J]</code> keyboard + screen-reader walkthrough notes attached for non-trivial UI.</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Measuring UX turns "looks fine to me" into evidence a non-designer can trust and a CI gate can enforce, catching regressions automatically; the cost is wiring up Lighthouse/axe in CI and the discipline of a heuristic pass — cheap relative to shipping a slow or inaccessible surface to everyone.</li>
+<li><strong>Sources —</strong> Google Lighthouse / <em>Core Web Vitals</em> thresholds, LCP/INP/CLS (web.dev/articles/vitals, p75 field); INP replaced FID March 2024 (web.dev/articles/inp); Deque axe-core (deque.com/axe); Nielsen-Norman, <em>10 Usability Heuristics for User Interface Design</em> (nngroup.com/articles/ten-usability-heuristics/) &amp; <em>Severity Ratings for Usability Problems</em> (nngroup.com/articles/how-to-rate-the-severity-of-usability-problems/).</li>
+</ul>
+<hr />
+<h2 id="authoring-rules-the-catalog-meta-rules-do-not-delete">Authoring rules (the catalog meta-rules — do not delete)<a class="headerlink" href="#authoring-rules-the-catalog-meta-rules-do-not-delete" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Additive floor:</strong> add dimensions as you discover them; <strong>never delete</strong> one. This catalog is meant to become "every standard we can think of."</li>
+<li><strong>Right-size:</strong> apply only <em>relevant</em> dimensions per change (<code>KISS</code>/<code>YAGNI</code>); never skip a relevant one. Relevance is a per-change judgment — see <code>README.md</code>.</li>
+<li><strong>Novel patterns allowed</strong> when they add clear value — justify (problem → why existing patterns fall short → benefit) and record in <code>claugentic-DECISIONS.md</code>. Unconventional ≠ wrong.</li>
+<li><strong>Every dimension carries a Confidence tag</strong> so the harness can separate what it <em>proved</em> (deterministic gates) from what it <em>asserts</em> (judgment). Trust the oracle, not the model's word.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2026 myBlueprint Corp. &nbsp;·&nbsp; <a href="https://myblueprint.ca/privacy">Privacy</a>
+
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+    <a href="https://github.com/myblueprint-spaces/DistrictSync" target="_blank" rel="noopener" title="DistrictSync on GitHub" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.tabs", "navigation.tabs.sticky", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "announce.dismiss"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

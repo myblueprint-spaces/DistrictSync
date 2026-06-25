@@ -1,0 +1,1775 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="MyEducation BC GDE to SpacesEDU Advanced CSV converter — by SpacesEDU by myBlueprint">
+      
+      
+        <meta name="author" content="SpacesEDU by myBlueprint">
+      
+      
+        <link rel="canonical" href="https://myblueprint-spaces.github.io/DistrictSync/partner/installation/">
+      
+      
+        <link rel="prev" href="../..">
+      
+      
+        <link rel="next" href="../headless-sftp-setup/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/favicon.ico">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Installation - DistrictSync</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/brand.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#partner-installation-guide" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="DistrictSync" class="md-header__button md-logo" aria-label="DistrictSync" data-md-component="logo">
+      
+  <img src="../../assets/spacesedu-icon.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            DistrictSync
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Installation
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/myblueprint-spaces/DistrictSync" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    myblueprint-spaces/DistrictSync
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
+          
+  
+  
+  Partner Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../developer/setup/" class="md-tabs__link">
+          
+  
+  
+  Developer Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="DistrictSync" class="md-nav__button md-logo" aria-label="DistrictSync" data-md-component="logo">
+      
+  <img src="../../assets/spacesedu-icon.png" alt="logo">
+
+    </a>
+    DistrictSync
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/myblueprint-spaces/DistrictSync" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    myblueprint-spaces/DistrictSync
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Partner Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Partner Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-1-download-districtsync" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 1 — Download DistrictSync
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 1 — Download DistrictSync">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#where-does-data-live" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where does data live?
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-2-run-the-setup-wizard-windows-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 2 — Run the Setup Wizard (Windows only)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 2 — Run the Setup Wizard (Windows only)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#wizard-step-1-file-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wizard Step 1 — File Paths
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#wizard-step-2-district-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wizard Step 2 — District Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#wizard-step-3-schedule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wizard Step 3 — Schedule
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#wizard-step-4-sftp-upload" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wizard Step 4 — SFTP Upload
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#wizard-step-5-save-activate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wizard Step 5 — Save &amp; Activate
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-3-headless-configuration-linux-docker-no-browser" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 3 — Headless configuration (Linux / Docker / no browser)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 3 — Headless configuration (Linux / Docker / no browser)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#add-the-crontab-entry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Add the crontab entry
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-4-verify-the-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 4 — Verify the setup
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 4 — Verify the setup">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#test-a-manual-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Test a manual run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#verify-task-scheduler-windows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verify Task Scheduler (Windows)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-5-check-the-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 5 — Check the log
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-happens-each-day" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What happens each day
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What happens each day">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#output-csvs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output CSVs
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#district-specific-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        District-specific notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#getting-help" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Getting help
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../headless-sftp-setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Headless & Docker SFTP Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-classes-work/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How Classes Work
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/adding-transformer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a Transformer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/adding-district/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a District Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/release/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Process
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-1-download-districtsync" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 1 — Download DistrictSync
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 1 — Download DistrictSync">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#where-does-data-live" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where does data live?
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-2-run-the-setup-wizard-windows-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 2 — Run the Setup Wizard (Windows only)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 2 — Run the Setup Wizard (Windows only)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#wizard-step-1-file-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wizard Step 1 — File Paths
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#wizard-step-2-district-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wizard Step 2 — District Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#wizard-step-3-schedule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wizard Step 3 — Schedule
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#wizard-step-4-sftp-upload" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wizard Step 4 — SFTP Upload
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#wizard-step-5-save-activate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wizard Step 5 — Save &amp; Activate
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-3-headless-configuration-linux-docker-no-browser" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 3 — Headless configuration (Linux / Docker / no browser)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 3 — Headless configuration (Linux / Docker / no browser)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#add-the-crontab-entry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Add the crontab entry
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-4-verify-the-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 4 — Verify the setup
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Step 4 — Verify the setup">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#test-a-manual-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Test a manual run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#verify-task-scheduler-windows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verify Task Scheduler (Windows)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-5-check-the-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 5 — Check the log
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-happens-each-day" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What happens each day
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What happens each day">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#output-csvs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output CSVs
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#district-specific-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        District-specific notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#getting-help" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Getting help
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="partner-installation-guide">Partner Installation Guide<a class="headerlink" href="#partner-installation-guide" title="Permanent link">&para;</a></h1>
+<p>This guide walks you through installing and configuring DistrictSync on your school district's server. The entire process takes approximately 15–20 minutes.</p>
+<hr />
+<h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
+<p>Before you begin, ensure you have:</p>
+<ul>
+<li>[ ] A Windows Server (2016 or later) or Linux server</li>
+<li>[ ] Administrator / sudo access to the server</li>
+<li>[ ] The SFTP credentials provided by SpacesEDU (host, username, password)</li>
+<li>[ ] A directory where MyEdBC will place the GDE export files</li>
+<li>[ ] The GDE export scheduled in MyEdBC (contact your SIS administrator if not done)</li>
+</ul>
+<hr />
+<h2 id="step-1-download-districtsync">Step 1 — Download DistrictSync<a class="headerlink" href="#step-1-download-districtsync" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Visit the <a href="https://github.com/myblueprint-spaces/DistrictSync/releases/latest">Releases page</a></li>
+<li>Download the file for your platform:</li>
+<li><strong>Windows:</strong> <code>DistrictSync-windows.exe</code></li>
+<li>
+<p><strong>Linux:</strong> <code>DistrictSync-linux</code></p>
+</li>
+<li>
+<p>Put the file somewhere sensible. <strong>The .exe can live anywhere</strong> —
+   Desktop, <code>C:\Program Files\DistrictSync\</code>, <code>/opt/districtsync/</code>, a USB
+   stick, a shared network drive. Your settings, logs, and any
+   custom mappings are written to your user home directory
+   (see <a href="#where-does-data-live">Where does data live?</a> below), not
+   next to the .exe, so the exe location is purely your preference.</p>
+</li>
+</ol>
+<p>Suggested layouts:</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Windows</label><label for="__tabbed_1_2">Linux</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>C:\DistrictSync\
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  DistrictSync-windows.exe
+</code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/opt/districtsync
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>sudo<span class="w"> </span>mv<span class="w"> </span>DistrictSync-linux<span class="w"> </span>/opt/districtsync/DistrictSync
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>sudo<span class="w"> </span>chmod<span class="w"> </span>+x<span class="w"> </span>/opt/districtsync/DistrictSync
+</code></pre></div>
+</div>
+</div>
+</div>
+<h3 id="where-does-data-live">Where does data live?<a class="headerlink" href="#where-does-data-live" title="Permanent link">&para;</a></h3>
+<p>All runtime state is stored in <code>~/.districtsync/</code> (your user home
+directory). This works the same on every platform and survives
+updates to the .exe:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>~/.districtsync/config.json</code></td>
+<td>Wizard settings (input/output paths, SFTP host, schedule)</td>
+</tr>
+<tr>
+<td><code>~/.districtsync/etl_tool.log</code></td>
+<td>All ETL run history — wizard runs, scheduled runs, and CLI runs all write here</td>
+</tr>
+<tr>
+<td><code>~/.districtsync/mappings/*.yaml</code></td>
+<td>Any district mappings you create in the Mapping Editor (persists across exe upgrades)</td>
+</tr>
+<tr>
+<td>OS credential store</td>
+<td>SFTP password (Windows Credential Manager / macOS Keychain / Linux Secret Service)</td>
+</tr>
+</tbody>
+</table>
+<p>On Windows that path is
+<code>C:\Users\&lt;your-username&gt;\.districtsync\</code>. You can back up or inspect
+this folder at any time. Deleting it resets the tool to first-run
+state.</p>
+<hr />
+<h2 id="step-2-run-the-setup-wizard-windows-only">Step 2 — Run the Setup Wizard (Windows only)<a class="headerlink" href="#step-2-run-the-setup-wizard-windows-only" title="Permanent link">&para;</a></h2>
+<div class="admonition note">
+<p class="admonition-title">Linux / headless / Docker partners</p>
+<p>On Linux or in a container, skip to
+<a href="#step-3-headless-configuration-linux-docker-no-browser">Step 3 — Headless configuration</a>
+or see the dedicated <a href="../headless-sftp-setup/">Headless &amp; Docker SFTP Setup</a> guide.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">Enabling a schedule? Launch as administrator</p>
+<p>If you will turn on the daily automated schedule (Step 3 below), <strong>right-click <code>DistrictSync-windows.exe</code> → "Run as administrator"</strong> instead of double-clicking. Creating a task that runs <strong>unattended</strong> (whether or not you are logged on) requires administrator rights — without them the schedule step fails with <em>"Access is denied."</em> This is a one-time setup requirement; the scheduled task itself runs on its own afterward. Ad-hoc-only use (the Convert page, no schedule) does <strong>not</strong> need administrator rights.</p>
+</div>
+<ol>
+<li>Double-click <code>DistrictSync-windows.exe</code> — or <strong>right-click → "Run as administrator"</strong> if you will enable a schedule</li>
+<li>Your browser will open automatically at <code>http://localhost:8501</code></li>
+<li>Follow the 5-step Setup Wizard:</li>
+</ol>
+<h3 id="wizard-step-1-file-paths">Wizard Step 1 — File Paths<a class="headerlink" href="#wizard-step-1-file-paths" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Example</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GDE Input Directory</td>
+<td><code>C:\DistrictSync\input</code></td>
+<td>Where MyEdBC places the GDE files</td>
+</tr>
+<tr>
+<td>CSV Output Directory</td>
+<td><code>C:\DistrictSync\output</code></td>
+<td>Where CSVs will be written</td>
+</tr>
+</tbody>
+</table>
+<p>Click <strong>Validate &amp; Continue</strong>.</p>
+<h3 id="wizard-step-2-district-configuration">Wizard Step 2 — District Configuration<a class="headerlink" href="#wizard-step-2-district-configuration" title="Permanent link">&para;</a></h3>
+<p>Select your district from the dropdown. If your district is not listed, contact SpacesEDU support.</p>
+<h3 id="wizard-step-3-schedule">Wizard Step 3 — Schedule<a class="headerlink" href="#wizard-step-3-schedule" title="Permanent link">&para;</a></h3>
+<p>Optionally enable a daily automated schedule. If you only need ad-hoc runs via the Convert page, you can leave this disabled.</p>
+<p>If enabled, choose the daily run time. We recommend <strong>03:00 AM</strong> (3am) — after the overnight GDE export from MyEdBC has completed.</p>
+<div class="admonition note">
+<p class="admonition-title">Unattended runs need administrator rights</p>
+<p>Activating a schedule needs the wizard launched <strong>as administrator</strong> (see Step 2). If you launched it normally, this step reports <em>"Access is denied — run as administrator"</em>; close the wizard, relaunch it elevated, and try again.</p>
+</div>
+<h3 id="wizard-step-4-sftp-upload">Wizard Step 4 — SFTP Upload<a class="headerlink" href="#wizard-step-4-sftp-upload" title="Permanent link">&para;</a></h3>
+<p>Enter the SFTP credentials provided by SpacesEDU:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SFTP Host</td>
+<td><code>sftp.spacesEDU.com</code></td>
+</tr>
+<tr>
+<td>Port</td>
+<td><code>22</code></td>
+</tr>
+<tr>
+<td>Username</td>
+<td>(provided by SpacesEDU)</td>
+</tr>
+<tr>
+<td>Password</td>
+<td>(provided by SpacesEDU)</td>
+</tr>
+<tr>
+<td>Remote Path</td>
+<td><code>/files</code></td>
+</tr>
+</tbody>
+</table>
+<p>Click <strong>Test Connection</strong> to verify the credentials work.</p>
+<h3 id="wizard-step-5-save-activate">Wizard Step 5 — Save &amp; Activate<a class="headerlink" href="#wizard-step-5-save-activate" title="Permanent link">&para;</a></h3>
+<p>Review your settings and click <strong>Save &amp; Activate Schedule</strong> (or <strong>Save Configuration</strong> if no schedule was enabled).</p>
+<p>If a schedule was enabled, DistrictSync will create a Windows Task Scheduler entry named <code>DistrictSync_Daily</code> that runs every day at the time you specified.</p>
+<p>After saving, the Setup Wizard switches to a management dashboard where you can view, edit, or disable the schedule and SFTP settings at any time without re-running the wizard.</p>
+<div class="admonition tip">
+<p class="admonition-title">Custom district mapping?</p>
+<p>Need a custom district mapping? Use the <strong>Mapping Editor</strong> page to create or modify mappings visually.</p>
+</div>
+<hr />
+<h2 id="step-3-headless-configuration-linux-docker-no-browser">Step 3 — Headless configuration (Linux / Docker / no browser)<a class="headerlink" href="#step-3-headless-configuration-linux-docker-no-browser" title="Permanent link">&para;</a></h2>
+<p>On Linux servers or containers with no browser, use the CLI to
+configure SFTP directly. No config-file hand-editing and no Python
+one-liners needed.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Interactive — prompts for each field (password input is hidden):</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>/opt/districtsync/DistrictSync<span class="w"> </span>--sftp-configure
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Or fully scripted with the password in an env var:</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="nb">export</span><span class="w"> </span><span class="nv">DISTRICTSYNC_SFTP_PASSWORD</span><span class="o">=</span><span class="s1">&#39;your-password-here&#39;</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>/opt/districtsync/DistrictSync<span class="w"> </span>--sftp-configure<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span>--sftp-host<span class="w"> </span>sftp.ca.spacesedu.com<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span>--sftp-user<span class="w"> </span>your_username<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">  </span>--sftp-remote<span class="w"> </span>/files
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="nb">unset</span><span class="w"> </span>DISTRICTSYNC_SFTP_PASSWORD
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="c1"># Verify:</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>/opt/districtsync/DistrictSync<span class="w"> </span>--sftp-test
+</code></pre></div>
+<p>The host/port/user/remote path are written to <code>~/.districtsync/config.json</code>;
+the password is stored in the OS credential store via the <code>keyring</code>
+library (Linux Secret Service, macOS Keychain, or Windows Credential
+Manager — depending on the platform).</p>
+<p>For Docker, secrets-manager integration, <code>libsecret</code> backends, and
+scripted password piping via stdin, see the dedicated guide:
+<strong><a href="../headless-sftp-setup/">Headless &amp; Docker SFTP Setup</a></strong>.</p>
+<h3 id="add-the-crontab-entry">Add the crontab entry<a class="headerlink" href="#add-the-crontab-entry" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Run daily at 3:00 AM</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="o">(</span>crontab<span class="w"> </span>-l<span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="p">;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;0 3 * * * /opt/districtsync/DistrictSync --sis myedbc --input /data/gde/input --output /data/gde/output --sftp # DistrictSync managed entry&quot;</span><span class="o">)</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>crontab<span class="w"> </span>-
+</code></pre></div>
+<hr />
+<h2 id="step-4-verify-the-setup">Step 4 — Verify the setup<a class="headerlink" href="#step-4-verify-the-setup" title="Permanent link">&para;</a></h2>
+<h3 id="test-a-manual-run">Test a manual run<a class="headerlink" href="#test-a-manual-run" title="Permanent link">&para;</a></h3>
+<div class="tabbed-set tabbed-alternate" data-tabs="2:2"><input checked="checked" id="__tabbed_2_1" name="__tabbed_2" type="radio" /><input id="__tabbed_2_2" name="__tabbed_2" type="radio" /><div class="tabbed-labels"><label for="__tabbed_2_1">Windows</label><label for="__tabbed_2_2">Linux</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<p>Open Command Prompt as Administrator:
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>C:\DistrictSync\DistrictSync-windows.exe --sis myedbc --input C:\DistrictSync\input --output C:\DistrictSync\output --dry-run
+</code></pre></div></p>
+</div>
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>/opt/districtsync/DistrictSync<span class="w"> </span>--sis<span class="w"> </span>myedbc<span class="w"> </span>--input<span class="w"> </span>/data/gde/input<span class="w"> </span>--output<span class="w"> </span>/data/gde/output<span class="w"> </span>--dry-run
+</code></pre></div>
+</div>
+</div>
+</div>
+<p>A successful dry run prints a summary like:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>=== DRY RUN (no files written) ===
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>  Students: 1,842 rows
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>  Staff: 47 rows
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>  Family: 3,201 rows
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>  Classes: 284 rows
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>  Enrollments: 12,456 rows
+</code></pre></div>
+<h3 id="verify-task-scheduler-windows">Verify Task Scheduler (Windows)<a class="headerlink" href="#verify-task-scheduler-windows" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Open <strong>Task Scheduler</strong> (search in Start menu)</li>
+<li>Look for <strong>DistrictSync_Daily</strong> in the task list</li>
+<li>Right-click → <strong>Run</strong> to trigger a test run immediately</li>
+</ol>
+<hr />
+<h2 id="step-5-check-the-log">Step 5 — Check the log<a class="headerlink" href="#step-5-check-the-log" title="Permanent link">&para;</a></h2>
+<p>The ETL log is written to <code>etl_tool.log</code> in the current working directory at run time.</p>
+<ul>
+<li><strong>Windows:</strong> Task Scheduler's <strong>Start in</strong> field controls this — set it to <code>C:\DistrictSync\</code> and the log appears there. The Setup Wizard sets this automatically.</li>
+<li><strong>Linux:</strong> The log is written to whichever directory you run the command from (e.g. <code>/opt/districtsync/</code>).</li>
+</ul>
+<div class="tabbed-set tabbed-alternate" data-tabs="3:2"><input checked="checked" id="__tabbed_3_1" name="__tabbed_3" type="radio" /><input id="__tabbed_3_2" name="__tabbed_3" type="radio" /><div class="tabbed-labels"><label for="__tabbed_3_1">Windows</label><label for="__tabbed_3_2">Linux</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>C:\DistrictSync\etl_tool.log
+</code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>tail<span class="w"> </span>-50<span class="w"> </span>/opt/districtsync/etl_tool.log
+</code></pre></div>
+</div>
+</div>
+</div>
+<p>A successful run ends with:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>INFO - ETL process completed successfully.
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>INFO - Committed output file(s) to C:\DistrictSync\output
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>INFO - SFTP upload complete
+</code></pre></div>
+<p>The number of output files depends on which config you're using — see the <a href="#output-csvs">Output CSVs</a> section below.</p>
+<hr />
+<h2 id="what-happens-each-day">What happens each day<a class="headerlink" href="#what-happens-each-day" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>03:00 AM</strong> — Task Scheduler / cron starts <code>DistrictSync</code></li>
+<li>Tool reads GDE files from the input directory</li>
+<li>Transforms data into the CSV files enabled by your config (5 for standard rostering, 7 with myBlueprint+, or a subset)</li>
+<li>Checks for anomalies — if any entity's record count has dropped more than 20% compared to the previous run, a warning is logged</li>
+<li>Writes all enabled CSVs atomically (all succeed or none are committed)</li>
+<li>Zips them into a single dated file (<code>districtsync_YYYY-MM-DD.zip</code>) and uploads to SpacesEDU via SFTP</li>
+<li>Writes a detailed log entry to <code>etl_tool.log</code></li>
+</ol>
+<h3 id="output-csvs">Output CSVs<a class="headerlink" href="#output-csvs" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th>CSVs produced</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>myedbc</code> (and inheriting district configs <code>sd40myedbc</code>, <code>sd48myedbc</code>, …)</td>
+<td><code>Students.csv</code>, <code>Staff.csv</code>, <code>Family.csv</code>, <code>Classes.csv</code>, <code>Enrollments.csv</code></td>
+</tr>
+<tr>
+<td><code>mbp_all</code></td>
+<td>All 5 above + <code>CourseInfo.csv</code> + <code>StudentCourses.csv</code> (full myBlueprint+ tier)</td>
+</tr>
+<tr>
+<td><code>mbp_core</code></td>
+<td><code>Students.csv</code>, <code>CourseInfo.csv</code>, <code>StudentCourses.csv</code> only (minimal myBlueprint+ tier)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="district-specific-notes">District-specific notes<a class="headerlink" href="#district-specific-notes" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>District</th>
+<th>Config name</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default (MyEdBC)</td>
+<td><code>myedbc</code></td>
+<td>Standard filenames</td>
+</tr>
+<tr>
+<td>SD40 – New Westminster</td>
+<td><code>sd40myedbc</code></td>
+<td>CSV files with SD-40_/SD40- prefix. StudentSchedule has no headers (auto-injected via config).</td>
+</tr>
+<tr>
+<td>SD48 – Sea to Sky</td>
+<td><code>sd48myedbc</code></td>
+<td>Uses <code>StudentDemographicEnhanced.txt</code>, <code>StaffInformation.txt</code></td>
+</tr>
+<tr>
+<td>SD51 – Boundary</td>
+<td><code>sd51myedbc</code></td>
+<td>Contact SpacesEDU for file naming</td>
+</tr>
+<tr>
+<td>SD74 – Gold Trail</td>
+<td><code>sd74myedbc</code></td>
+<td>Uses <code>studentcourseselection.txt</code>, <code>StaffInformation.txt</code>, <code>ParentInformation.txt</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="getting-help">Getting help<a class="headerlink" href="#getting-help" title="Permanent link">&para;</a></h2>
+<p>If you encounter issues:</p>
+<ol>
+<li>Check the <a href="../troubleshooting/">Troubleshooting Guide</a></li>
+<li>Review <code>etl_tool.log</code> for error details</li>
+<li>Contact SpacesEDU support with the log attached</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2026 myBlueprint Corp. &nbsp;·&nbsp; <a href="https://myblueprint.ca/privacy">Privacy</a>
+
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+    <a href="https://github.com/myblueprint-spaces/DistrictSync" target="_blank" rel="noopener" title="DistrictSync on GitHub" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.tabs", "navigation.tabs.sticky", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "announce.dismiss"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,1082 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="MyEducation BC GDE to SpacesEDU Advanced CSV converter — by SpacesEDU by myBlueprint">
+      
+      
+        <meta name="author" content="SpacesEDU by myBlueprint">
+      
+      
+        <link rel="canonical" href="https://myblueprint-spaces.github.io/DistrictSync/claugentic-standards/security/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/favicon.ico">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Security - DistrictSync</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/brand.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#module-contract-every-docsclaugentic-standards-module-copies-this-frontmatter" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="DistrictSync" class="md-header__button md-logo" aria-label="DistrictSync" data-md-component="logo">
+      
+  <img src="../../assets/spacesedu-icon.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            DistrictSync
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Security
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/myblueprint-spaces/DistrictSync" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    myblueprint-spaces/DistrictSync
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../partner/installation/" class="md-tabs__link">
+          
+  
+  
+  Partner Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../developer/setup/" class="md-tabs__link">
+          
+  
+  
+  Developer Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="DistrictSync" class="md-nav__button md-logo" aria-label="DistrictSync" data-md-component="logo">
+      
+  <img src="../../assets/spacesedu-icon.png" alt="logo">
+
+    </a>
+    DistrictSync
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/myblueprint-spaces/DistrictSync" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    myblueprint-spaces/DistrictSync
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Partner Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Partner Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../partner/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../partner/headless-sftp-setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Headless & Docker SFTP Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../partner/how-classes-work/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How Classes Work
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../partner/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../partner/faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/adding-transformer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a Transformer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/adding-district/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a District Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/release/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Process
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<!-- claugentic-dev-harness@0.1.40 managed — do not edit (copied from the claugentic-dev-harness plugin) -->
+<hr />
+<h1 id="module-contract-every-docsclaugentic-standards-module-copies-this-frontmatter">── Module contract: every docs/claugentic-standards/ module copies this frontmatter ──<a class="headerlink" href="#module-contract-every-docsclaugentic-standards-module-copies-this-frontmatter" title="Permanent link">&para;</a></h1>
+<p>module: security
+title: Security &amp; Privacy
+version: 0.1.0
+status: draft
+iso_25010: [security]
+load_scope:
+  keywords: [auth, authz, login, token, password, secret, crypto, session, encryption, pii, injection, csrf, ssrf, cors, dependency]
+  globs: ["<strong>/auth/</strong>", "<strong>/<em>login</em>", "</strong>/middleware/<strong>", "</strong>/<em>.env</em>", "<strong>/security/</strong>"]
+last_reviewed: 2026-06-04</p>
+<hr />
+<h1 id="security-privacy-keep-untrusted-input-attackers-and-regulators-from-turning-code-into-a-breach">Security &amp; Privacy — keep untrusted input, attackers, and regulators from turning code into a breach<a class="headerlink" href="#security-privacy-keep-untrusted-input-attackers-and-regulators-from-turning-code-into-a-breach" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p><strong>Loads when:</strong> a change touches authentication/authorization, sessions/tokens, secrets or crypto, input handling or query/command construction, cross-origin/redirect/outbound-fetch behavior, deserialization, dependencies, or any personal/regulated data (PII, student, health, payment).
+<strong>ISO/IEC 25010:</strong> Security (confidentiality, integrity, non-repudiation, accountability, authenticity) · <strong>Status:</strong> draft · <strong>v0.1.0</strong></p>
+</blockquote>
+<p>Each entry below is one <strong>auditable dimension</strong>. Per change, the reviewer applies the
+<em>relevant</em> ones <strong>fully</strong> (select-don't-skip), right-sized to the change — never
+gold-plating an irrelevant one, never skipping a relevant one. Security dimensions are
+<strong>threat-driven</strong>: relevance is set by what the change exposes (a new endpoint, a new
+sink, a new data field), not by how big the diff is. A one-line change can be in scope.</p>
+<hr />
+<h2 id="authentication-proving-who-the-caller-is">Authentication (proving who the caller is)<a class="headerlink" href="#authentication-proving-who-the-caller-is" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Credentials verified server-side against a vetted identity provider or library; passwords stored with a memory-hard, salted KDF (Argon2id / scrypt / bcrypt — <strong>never</strong> MD5/SHA-1/unsalted/fast hashes); minimum length enforced (≥12, target ≥15 for single-factor) with <strong>no arbitrary composition rules</strong> and a breached-password blocklist check; MFA available for sensitive accounts; generic failure messages ("invalid credentials") that don't reveal whether the username exists; brute-force throttling / lockout / rate-limiting on login + password-reset; secure password-reset (single-use, short-TTL, side-effect-free tokens); no credentials in the URL, query string, or logs.</li>
+<li><strong>Auditor checks —</strong> <code>[D]</code> grep for weak hash calls (<code>md5</code>, <code>sha1(</code>, <code>hashlib.sha256(password</code>), hardcoded credential literals, and passwords logged. <code>[D]</code> a dependency/secrets scan flags committed credentials. <code>[J]</code> is authN delegated to a vetted lib/IdP rather than hand-rolled? <code>[J]</code> are reset tokens single-use + expiring? <code>[J]</code> is the failure path uniform (no user-enumeration via message or timing)? <code>[J]</code> is throttling present on auth endpoints?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Strong, standard login makes account takeover hard; rolling your own or skipping rate-limits is the single fastest way to get users' accounts stolen. The cost is using a proven library and a few extra checks, not bespoke crypto.</li>
+<li><strong>Sources —</strong> OWASP ASVS 5.0 V6 (Authentication) · OWASP Top 10:2021 A07 (Identification &amp; Authentication Failures) · NIST SP 800-63B-4 §3.1.1 (Passwords — length, no composition rules, breached-password blocklist) · OWASP Authentication &amp; Password Storage Cheat Sheets · CWE-287, CWE-916.</li>
+</ul>
+<h2 id="authorization-least-privilege-object-level-access-idor-bola">Authorization, least privilege &amp; object-level access (IDOR / BOLA)<a class="headerlink" href="#authorization-least-privilege-object-level-access-idor-bola" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Every protected action and <strong>every object access</strong> is authorized server-side on each request — deny-by-default, fail-closed. Object/resource ownership is checked against the authenticated principal (no "trust the ID in the request" — the classic IDOR/BOLA hole); access decisions never rely on a hidden field, client-supplied role, or sequential ID being unguessable. Roles/scopes are least-privilege (the minimum needed); privileged operations re-verify; horizontal (peer's data) and vertical (admin functions) escalation are both blocked; multi-tenant queries are always tenant-scoped.</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> for each new endpoint/handler, is there an authZ check <em>and</em> an ownership/tenant check before the resource is read or mutated? <code>[J]</code> can changing an <code>id</code> in the request reach another user's/tenant's row? <code>[D]</code> grep for routes/handlers added without passing through the auth middleware/decorator (where the framework makes that greppable). <code>[J]</code> are roles least-privilege, not "admin for convenience"? <code>[J]</code> are authZ checks server-side (not just hidden UI)?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Checking "is this person allowed to touch <em>this specific</em> record" on every request is what stops one user from reading everyone's data by editing a number in the URL. Skipping it is invisible in testing and catastrophic in production.</li>
+<li><strong>Sources —</strong> OWASP Top 10:2021 A01 (Broken Access Control) · OWASP API Security Top 10:2023 API1 (BOLA) / API5 (BFLA) · OWASP ASVS 5.0 V8 (Authorization) · CWE-639, CWE-285, CWE-862, CWE-863.</li>
+</ul>
+<h2 id="session-token-management">Session &amp; token management<a class="headerlink" href="#session-token-management" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Session IDs / tokens are high-entropy, server-issued, and rotated on privilege change (login, step-up); cookies are <code>HttpOnly</code>, <code>Secure</code>, and <code>SameSite</code> (Lax/Strict); idle + absolute session timeouts; logout and password-change <strong>invalidate</strong> server-side sessions/refresh tokens. Self-contained tokens (JWT/PASETO) verify signature with a pinned algorithm (reject <code>alg:none</code> and algorithm-confusion), validate <code>exp</code>/<code>nbf</code>/<code>iss</code>/<code>aud</code>, are short-lived with a revocable refresh path, and carry no secrets in the (base64, <strong>not</strong> encrypted) payload. No token in the URL; no long-lived bearer token in <code>localStorage</code> for high-value sessions.</li>
+<li><strong>Auditor checks —</strong> <code>[D]</code> grep cookie set-calls for missing <code>HttpOnly</code>/<code>Secure</code>/<code>SameSite</code>; grep JWT verify calls for unpinned/<code>none</code> algorithms or skipped verification. <code>[J]</code> are sessions rotated on login and killed on logout/password-change? <code>[J]</code> are token claims (<code>exp</code>,<code>aud</code>,<code>iss</code>) actually validated, not just decoded? <code>[J]</code> is token lifetime short with revocation possible?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Proper session handling means a stolen or expired token stops working and logging out actually logs you out. Getting it wrong lets an attacker ride a valid session indefinitely or forge their own access tokens.</li>
+<li><strong>Sources —</strong> OWASP ASVS 5.0 V7 (Session Management) / V9 (Self-Contained Tokens) · OWASP Session Management &amp; JWT Cheat Sheets · CWE-384 (Session Fixation), CWE-613 (Insufficient Session Expiration), CWE-347 (Improper Signature Verification).</li>
+</ul>
+<h2 id="secrets-management">Secrets management<a class="headerlink" href="#secrets-management" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> <strong>No secret in source, history, config committed to VCS, container images, or logs.</strong> Secrets come from a vault / secret manager / KMS or, at minimum, injected env vars; they are referenced, not embedded. <code>.env*</code> and key material are git-ignored; pre-commit / CI secret-scanning is wired; leaked secrets are <strong>rotated</strong>, not just deleted from the tip. Distinct secrets per environment; least-privilege scopes; rotation is supported (no "forever" credentials).</li>
+<li><strong>Auditor checks —</strong> <code>[D]</code> secret-scanner (gitleaks / trufflehog / detect-secrets) over the diff <strong>and</strong> history is clean; <code>.gitignore</code> covers <code>.env*</code>/keys. <code>[D]</code> grep for high-entropy strings, <code>AKIA</code>, <code>-----BEGIN ... PRIVATE KEY-----</code>, <code>password=</code>, <code>api_key=</code> in tracked files. <code>[J]</code> are secrets sourced from a manager/env rather than literals? <code>[J]</code> is rotation possible and per-env separation real?</li>
+<li><strong>Confidence —</strong> <code>deterministic</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Keeping secrets out of the repo means one leaked clone doesn't hand over your database and third-party accounts. The cost is a secret manager and a scanner in CI; the cost of skipping it is a public-key-on-GitHub incident.</li>
+<li><strong>Sources —</strong> OWASP Top 10:2021 A05 (Security Misconfiguration) / A02 (Cryptographic Failures — exposed secrets/keys) · OWASP Secrets Management Cheat Sheet · NIST SP 800-57 (key management) · CWE-798 (Hardcoded Credentials), CWE-312 (Cleartext Storage), CWE-532 (Info Exposure via Logs).</li>
+</ul>
+<h2 id="input-validation-at-trust-boundaries">Input validation at trust boundaries<a class="headerlink" href="#input-validation-at-trust-boundaries" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Every input crossing a trust boundary (HTTP params/body/headers, file uploads, message-queue payloads, third-party responses) is validated <strong>server-side</strong> against an explicit schema — type, range, length, format, allowlist of permitted values — <strong>positive (allowlist) validation, not deny-list blocking.</strong> Invalid input is rejected (fail-closed) with a generic error, not coerced silently. Validation is centralized at the boundary (the harness rule: <em>validate at boundaries, trust internal code</em>); canonicalize before validating; client-side checks are UX only and re-checked on the server. File uploads validate type/size and store outside the web root with non-executable, generated names.</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> is there a schema/validator at each new boundary, and is it allowlist-based? <code>[D]</code> where a schema lib is used (pydantic/zod/JSON-Schema/bean-validation), grep confirms new DTOs/endpoints are typed/validated rather than reading raw <code>request.body</code>/<code>params</code> directly. <code>[J]</code> is invalid input rejected (not silently defaulted/truncated)? <code>[J]</code> are uploads constrained and stored safely?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Validating input at the door is the foundation every other defense stands on; it stops malformed and malicious data before it reaches a database, a shell, or another user's screen. The cost is one schema per boundary — cheap, and it doubles as documentation.</li>
+<li><strong>Sources —</strong> OWASP ASVS 5.0 V2 (Validation &amp; Business Logic) · OWASP Input Validation Cheat Sheet · CWE-20 (Improper Input Validation), CWE-434 (Unrestricted Upload).</li>
+</ul>
+<h2 id="injection-prevention-sqlnosql-command-path-xss-templateldap">Injection prevention (SQL/NoSQL · command · path · XSS · template/LDAP)<a class="headerlink" href="#injection-prevention-sqlnosql-command-path-xss-templateldap" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Code is <strong>separated from data</strong> at every interpreter boundary: parameterized queries / prepared statements / ORM bindings for all DB access (<strong>never</strong> string-concatenated SQL/NoSQL); no shell-string concatenation — use argument arrays / native APIs, never <code>os.system</code>/<code>shell=True</code> with user input; path access is confined to a base dir with canonicalization (no <code>../</code> traversal); <strong>output is contextually encoded</strong> (HTML/attr/JS/URL) and untrusted HTML sanitized with a vetted library — XSS defense is output-encoding, with CSP as defense-in-depth; templates auto-escape and aren't fed user-controlled template source (SSTI); LDAP/XML/header values are escaped/validated.</li>
+<li><strong>Auditor checks —</strong> <code>[D]</code> grep for the danger sinks: f-string/<code>+</code>/<code>%</code>/<code>.format</code> building SQL, <code>os.system</code>/<code>subprocess(... shell=True)</code>/<code>eval</code>/<code>exec</code> with variable input, <code>innerHTML</code>/<code>dangerouslySetInnerHTML</code>/<code>v-html</code>, <code>Path</code>/<code>open</code> joined to raw user input. <code>[D]</code> SAST (semgrep / CodeQL / Bandit) on the diff shows no injection findings. <code>[J]</code> for each flagged sink, is the input trusted or properly parameterized/encoded/sanitized? <code>[J]</code> is encoding correct for the <em>output context</em>?</li>
+<li><strong>Confidence —</strong> <code>deterministic</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Keeping user input from being executed as a query, a command, or a script is what stops data theft, server takeover, and one user attacking another through your page. Parameterized queries and output-encoding cost nothing extra and are non-negotiable.</li>
+<li><strong>Sources —</strong> OWASP Top 10:2021 A03 (Injection) · OWASP ASVS 5.0 V1 (Encoding &amp; Sanitization) / V2 (Validation &amp; Business Logic) · OWASP SQLi, XSS Prevention, Command Injection &amp; OS Command Injection Defense Cheat Sheets · CWE-89, CWE-78, CWE-79, CWE-22, CWE-94, CWE-643.</li>
+</ul>
+<h2 id="csrf-cors-clickjacking-cross-origin-posture">CSRF, CORS, clickjacking &amp; cross-origin posture<a class="headerlink" href="#csrf-cors-clickjacking-cross-origin-posture" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> State-changing requests on cookie-authenticated apps are CSRF-protected (synchronizer/double-submit token <strong>and</strong> <code>SameSite</code> cookies — SameSite alone is not sufficient); safe methods stay side-effect-free. CORS is explicit and minimal — a <strong>specific allowlist of origins</strong>, never reflecting <code>Origin</code> or <code>Access-Control-Allow-Origin: *</code> together with <code>Allow-Credentials: true</code>. Clickjacking is blocked via <code>frame-ancestors</code> CSP (and/or <code>X-Frame-Options</code>). Security headers are set (CSP, HSTS, <code>X-Content-Type-Options: nosniff</code>, <code>Referrer-Policy</code>). Token-/header-authenticated APIs (no ambient cookies) document why CSRF tokens are unnecessary.</li>
+<li><strong>Auditor checks —</strong> <code>[D]</code> grep CORS config for wildcard origin, <code>Origin</code> reflection, or <code>*</code> + credentials; grep for missing CSP/HSTS/frame-ancestors where a server config exists. <code>[J]</code> do new state-changing routes have CSRF protection (or a justified exemption for header-auth APIs)? <code>[J]</code> is the CORS origin list specific and intentional?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> These controls stop a malicious site from making your logged-in users perform actions or read your data without their knowledge. Misconfiguring CORS to <code>*</code>-with-credentials silently hands your API to any website on the internet.</li>
+<li><strong>Sources —</strong> OWASP CSRF Prevention, CORS, Clickjacking Defense &amp; HTTP Security Response Headers Cheat Sheets · OWASP ASVS 5.0 V3 (Web Frontend Security) · CWE-352 (CSRF), CWE-942 (Permissive CORS), CWE-1021 (Clickjacking).</li>
+</ul>
+<h2 id="ssrf-outbound-request-safety">SSRF &amp; outbound-request safety<a class="headerlink" href="#ssrf-outbound-request-safety" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Any server-side fetch to a user-influenced URL (webhooks, link previews, image/PDF fetch, import-from-URL, federated calls) is constrained: <strong>allowlist</strong> the permitted hosts/schemes (deny-by-default), block private/loopback/link-local/metadata ranges (<code>127.0.0.0/8</code>, <code>169.254.169.254</code>, <code>10/172.16/192.168</code>, IPv6 ULA/<code>::1</code>), validate the resolved IP <strong>after</strong> DNS (defend DNS-rebinding), disable or constrain redirects, and never echo raw upstream responses. Cloud metadata endpoints are unreachable from the app; egress is firewalled where possible.</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> does any new code fetch a URL derived from user input? If so, is there an allowlist + private-range block + redirect control? <code>[D]</code> grep for HTTP clients (<code>requests.get</code>, <code>fetch(</code>, <code>urllib</code>, <code>httpx</code>) taking a variable URL near request input. <code>[J]</code> is the post-resolution IP validated (rebinding-safe), not just the string?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Stopping the server from fetching attacker-chosen internal URLs prevents it being used as a proxy to reach your private network and cloud credentials — a top cause of cloud breaches. The cost is an allowlist on outbound calls.</li>
+<li><strong>Sources —</strong> OWASP Top 10:2021 A10 (SSRF) · OWASP SSRF Prevention Cheat Sheet · CWE-918 (SSRF).</li>
+</ul>
+<h2 id="safe-deserialization-dynamic-execution">Safe deserialization &amp; dynamic execution<a class="headerlink" href="#safe-deserialization-dynamic-execution" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Untrusted bytes are never fed to an unsafe deserializer that can instantiate arbitrary types or run code (Python <code>pickle</code>/<code>yaml.load</code>, Java native serialization, PHP <code>unserialize</code>, .NET <code>BinaryFormatter</code>, JS <code>node-serialize</code>). Prefer data-only formats (JSON) with <strong>schema validation</strong>; if a richer format is required, use safe modes (<code>yaml.safe_load</code>), type allowlists, signed/integrity-checked payloads, and sandboxing. No <code>eval</code>/<code>exec</code>/dynamic <code>import</code>/template-from-string on untrusted input; no untrusted classpath/plugin loading.</li>
+<li><strong>Auditor checks —</strong> <code>[D]</code> grep for <code>pickle.load</code>, <code>yaml.load(</code> without <code>SafeLoader</code>, <code>eval(</code>, <code>exec(</code>, <code>BinaryFormatter</code>, <code>unserialize(</code>, <code>node-serialize</code> on any externally-sourced data. <code>[J]</code> is the deserialized data's origin trusted/signed, or is a safe loader + schema in place?</li>
+<li><strong>Confidence —</strong> <code>deterministic</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Unsafe deserialization lets an attacker turn a crafted payload into code execution on your server — full compromise. Using JSON-plus-schema or a safe loader removes the class of bug entirely for a negligible cost.</li>
+<li><strong>Sources —</strong> OWASP Top 10:2021 A08 (Software &amp; Data Integrity Failures) · OWASP Deserialization Cheat Sheet · CWE-502 (Deserialization of Untrusted Data), CWE-94 (Code Injection).</li>
+</ul>
+<h2 id="dependency-supply-chain-hygiene">Dependency &amp; supply-chain hygiene<a class="headerlink" href="#dependency-supply-chain-hygiene" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Dependencies are <strong>pinned</strong> (lockfile committed) and sourced from trusted registries; an automated vulnerability scanner (e.g. Dependabot / <code>npm audit</code> / <code>pip-audit</code> / OSV / Trivy / Snyk) runs in CI and blocks known-critical CVEs; transitive deps are visible; unused/abandoned packages are pruned (typosquat / dependency-confusion awareness). Build/CI is reproducible; where required, artifacts are integrity-verified (hashes / signatures / SBOM / SLSA provenance). New dependencies are justified — license-checked and not adding an outsized attack surface for a trivial need.</li>
+<li><strong>Auditor checks —</strong> <code>[D]</code> lockfile present and updated with the change; dependency-audit gate is green (no unaddressed critical/high). <code>[D]</code> CI runs an SCA scan. <code>[J]</code> is each newly-added dependency justified (real need, maintained, reasonable footprint, acceptable license)? <code>[J]</code> are pins exact, not floating <code>latest</code>?</li>
+<li><strong>Confidence —</strong> <code>deterministic</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Pinning and scanning dependencies means you don't unknowingly ship a library with a published, exploitable hole — the cause of many of the largest breaches. The cost is a lockfile and a CI scan; the savings is not being the next supply-chain headline.</li>
+<li><strong>Sources —</strong> OWASP Top 10:2021 A06 (Vulnerable &amp; Outdated Components) / A08 (Software &amp; Data Integrity) · OWASP Dependency-Check (https://owasp.org/www-project-dependency-check/) · OWASP SCVS — Software Component Verification Standard (https://scvs.owasp.org/) · SLSA framework (https://slsa.dev/) · CWE-1104 (Use of Unmaintained Components), CWE-1357.</li>
+</ul>
+<h2 id="secure-defaults-misconfiguration">Secure defaults &amp; misconfiguration<a class="headerlink" href="#secure-defaults-misconfiguration" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Ship locked-down by default: debug/verbose errors and stack traces <strong>off</strong> in production (generic error responses, no internal detail leaked to clients); default/sample credentials removed; admin/management/actuator endpoints disabled or authenticated; directory listing and unnecessary services off; TLS enforced (HTTPS-only, HSTS, modern ciphers); least-privilege OS/container/cloud roles (non-root, read-only FS where feasible); a deny-by-default network/permission posture; framework security features left <strong>on</strong>, not disabled "to make it work." Security-relevant config is environment-specific and reviewed.</li>
+<li><strong>Auditor checks —</strong> <code>[D]</code> grep for <code>DEBUG = True</code>, <code>app.run(debug=True)</code>, stack-trace-to-client handlers, disabled CSRF (<code>CSRF_ENABLED=False</code> or equivalent), <code>chmod 777</code>, container <code>USER root</code>. <code>[J]</code> are errors generic to the client while detailed server-side? <code>[J]</code> are admin endpoints protected and unused features off? <code>[J]</code> is TLS enforced end-to-end? (Disabled-TLS-verification grep — <code>verify=False</code>/<code>rejectUnauthorized:false</code> — see Cryptography correctness dimension.)</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Secure defaults mean a forgotten setting doesn't become an open door, and an error message doesn't hand attackers a map of your system. The cost is resisting "just turn the check off to ship"; the benefit is the most common breach category (misconfiguration) doesn't apply to you.</li>
+<li><strong>Sources —</strong> OWASP Top 10:2021 A05 (Security Misconfiguration) · OWASP ASVS 5.0 V13 (Configuration) · CIS Benchmarks · NIST SP 800-123 · CWE-16, CWE-209 (Error-Message Info Leak), CWE-756.</li>
+</ul>
+<h2 id="cryptography-correctness">Cryptography correctness<a class="headerlink" href="#cryptography-correctness" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Use <strong>vetted, current</strong> primitives via standard libraries — AES-GCM/ChaCha20-Poly1305 (authenticated) for symmetric, TLS 1.2+ for transport, SHA-256+ for hashing, a password KDF for passwords; <strong>no home-grown crypto, no ECB mode, no static/zero IVs, no MD5/SHA-1/DES/RC4</strong> for security purposes. Randomness for tokens/keys/IVs comes from a CSPRNG (<code>secrets</code>, <code>crypto.randomBytes</code>, <code>SecureRandom</code>), never <code>Math.random</code>/<code>rand()</code>. Keys are managed (generated, stored, rotated via KMS/keyring — not in code), correctly sized, and separated by purpose; constant-time comparison for secrets/MACs; certificate validation is <strong>never</strong> disabled.</li>
+<li><strong>Auditor checks —</strong> <code>[D]</code> grep for <code>MD5</code>/<code>SHA1</code>/<code>DES</code>/<code>RC4</code>/<code>ECB</code>, <code>Math.random()</code> used for security tokens, <code>verify=False</code>/<code>rejectUnauthorized:false</code>/disabled cert checks, hardcoded keys/IVs. <code>[J]</code> is an authenticated cipher used and is the construction standard (right mode, fresh IV, CSPRNG)? <code>[J]</code> are keys managed and comparisons constant-time?</li>
+<li><strong>Confidence —</strong> <code>deterministic</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Using standard, modern crypto correctly keeps data unreadable and untampered even if intercepted; inventing your own or using broken ciphers gives a false sense of safety that collapses under a real attacker. The cost is calling the right library function.</li>
+<li><strong>Sources —</strong> OWASP Top 10:2021 A02 (Cryptographic Failures) · OWASP ASVS 5.0 V11 (Cryptography) / V12 (Secure Communication) · OWASP Cryptographic Storage &amp; Transport Layer Security Cheat Sheets · NIST SP 800-175B / FIPS 140-3 · CWE-327 (Broken Crypto), CWE-330 (Insufficient Randomness), CWE-295 (Improper Cert Validation).</li>
+</ul>
+<h2 id="pii-minimization-data-classification">PII minimization &amp; data classification<a class="headerlink" href="#pii-minimization-data-classification" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Personal data is <strong>classified</strong> (what's PII / sensitive / regulated) and <strong>minimized</strong> — collect only what's needed for the stated purpose, retain only as long as needed, and avoid spreading copies. Sensitive fields are masked/tokenized/redacted in UIs, exports, and analytics; data is anonymized or pseudonymized where the use case allows; the most sensitive categories (health, biometric, government ID, full payment data, children's data) get the strictest handling and aren't collected casually. New fields capturing personal data are deliberate, documented, and lawful-basis-aware.</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> does the change collect/store/transmit new personal data, and is each field actually needed for the feature? <code>[J]</code> is sensitive data minimized, masked where displayed/exported, and not duplicated into logs/caches/analytics? <code>[J]</code> is the most-sensitive data avoided unless essential and specially handled?</li>
+<li><strong>Confidence —</strong> <code>judgment</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Collecting and keeping less personal data shrinks both the harm of a breach and your regulatory exposure — you can't leak what you didn't store. The cost is saying no to "collect it just in case"; the benefit is smaller breach blast-radius and easier compliance.</li>
+<li><strong>Sources —</strong> GDPR Art. 5 (data minimization, storage limitation) · NIST SP 800-122 (PII protection) · OWASP ASVS 5.0 V14 (Data Protection) · OWASP Privacy Risks (Top 10) · CWE-359 (Exposure of Private Information).</li>
+</ul>
+<h2 id="encryption-in-transit-at-rest">Encryption in transit &amp; at rest<a class="headerlink" href="#encryption-in-transit-at-rest" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> All personal/sensitive data is encrypted <strong>in transit</strong> (TLS 1.2+, HSTS, no plaintext HTTP for sensitive flows, valid certs) and <strong>at rest</strong> (database/disk/object-store encryption; field-level or envelope encryption for the most sensitive columns; encrypted backups). Keys are managed via KMS and rotated; the most regulated data (payment, health) follows its mandate (e.g. PCI: never store full PAN/CVV unprotected). Sensitive data isn't cached in plaintext where it shouldn't be (browser caches, CDNs, temp files) and is wiped from memory/temp when feasible.</li>
+<li><strong>Auditor checks —</strong> <code>[D]</code> grep for <code>http://</code> to sensitive endpoints, disabled TLS verification, sensitive columns/files written without encryption where the platform expects it. <code>[J]</code> is at-rest encryption enabled for the new data store/field and are backups covered? <code>[J]</code> are keys managed/rotated (not embedded), and is the most-regulated data handled per its standard?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Encrypting data on the wire and on disk means a stolen laptop, backup, or intercepted connection yields gibberish instead of records. The cost is enabling platform encryption and managing keys; skipping it turns any physical or network breach into a full data loss.</li>
+<li><strong>Sources —</strong> OWASP Top 10:2021 A02 (Cryptographic Failures) · OWASP ASVS 5.0 V11 (Cryptography) / V12 (Secure Communication) / V14 (Data Protection) · NIST SP 800-111 (storage encryption) · PCI DSS v4.0 Req. 3 &amp; 4 · CWE-311 (Missing Encryption), CWE-319 (Cleartext Transmission).</li>
+</ul>
+<h2 id="retention-deletion-data-subject-rights">Retention, deletion &amp; data-subject rights<a class="headerlink" href="#retention-deletion-data-subject-rights" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Each data category has a <strong>defined retention period</strong> and is purged when it expires (automated where possible) — including from logs, backups, caches, search indexes, and analytics, not just the primary table. Deletion/erasure ("right to be forgotten"), access/portability (export), and rectification requests are supported and propagate to all stores and downstream processors; "soft delete" of regulated data has a real hard-delete path. Third-party processors are bound by contract and their deletion is triggered too.</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> does new persisted data have a retention/deletion story, or is it written somewhere it can never be removed? <code>[J]</code> does an erasure request reach this data everywhere it lands (replicas, backups, logs, indexes, third parties)? <code>[J]</code> is there a hard-delete path, not only soft-delete, for regulated data?</li>
+<li><strong>Confidence —</strong> <code>judgment</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Being able to delete data and not keeping it forever is both a legal right you owe users and a way to limit how much a breach can expose. The cost is building deletion/export paths; skipping it means unbounded liability and unlawful indefinite retention.</li>
+<li><strong>Sources —</strong> GDPR Art. 5(1)(e) (storage limitation) &amp; Arts. 15–20 (access, erasure, portability) · NIST SP 800-88 (media sanitization) · OWASP ASVS 5.0 V14 (Data Protection) · CCPA/CPRA deletion rights.</li>
+</ul>
+<h2 id="consent-lawful-basis-purpose-limitation">Consent, lawful basis &amp; purpose limitation<a class="headerlink" href="#consent-lawful-basis-purpose-limitation" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Personal data is processed only with a valid lawful basis (consent, contract, legitimate interest, etc.), and where consent is the basis it is <strong>freely given, specific, informed, opt-in (not pre-ticked), granular, and revocable</strong> — with the choice recorded (what/when/version). Data is used only for the <strong>purpose it was collected for</strong> (no silent repurposing for new analytics/ML/marketing); cookies/trackers and third-party data sharing honor the user's choices; sensitive categories and minors get stricter consent handling. Privacy notices reflect what the code actually does.</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> does new processing/sharing have a lawful basis, and where consent applies, is it opt-in, granular, recorded, and revocable? <code>[J]</code> is data being used only for its original purpose (no scope creep into new analytics/ML/marketing)? <code>[J]</code> do trackers/third-party shares respect consent state?</li>
+<li><strong>Confidence —</strong> <code>judgment</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Asking permission properly and using data only for what it was given for is both the law and the basis of user trust; quietly repurposing data is how companies earn fines and headlines. The cost is consent plumbing and discipline about reuse.</li>
+<li><strong>Sources —</strong> GDPR Arts. 6–7 (lawful basis, consent) &amp; Art. 5(1)(b) (purpose limitation) · EU ePrivacy / cookie-consent rules · OWASP Privacy Risks · NIST Privacy Framework.</li>
+</ul>
+<h2 id="regulatory-compliance-mapping-gdpr-ferpa-hipaa-pci-dss">Regulatory compliance mapping (GDPR · FERPA · HIPAA · PCI DSS)<a class="headerlink" href="#regulatory-compliance-mapping-gdpr-ferpa-hipaa-pci-dss" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> The change is checked against the regimes that apply to <em>this</em> data and audience: <strong>GDPR/CCPA</strong> (personal data, consent, rights, breach-notification, processor agreements), <strong>FERPA</strong> (US student education records — consent/disclosure limits, directory-info handling), <strong>HIPAA</strong> (US protected health info — Privacy/Security Rules, BAAs, access controls, audit), <strong>PCI DSS</strong> (payment-card data — scope minimization, never storing prohibited authentication data, segmentation). Where a regime applies, its specific controls (encryption, access, logging, retention, contracts) are met rather than assumed; data residency/cross-border-transfer rules are respected.</li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> which regimes does this data/audience trigger (student → FERPA, health → HIPAA, EU resident → GDPR, card data → PCI), and are that regime's controls present? <code>[J]</code> are processor/BAA/data-transfer obligations covered for any third party touched? <code>[J]</code> is PCI-prohibited data (full track, CVV) never stored?</li>
+<li><strong>Confidence —</strong> <code>judgment</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Matching the rules for the kind of data you handle (student, health, payment, EU-resident) avoids fines, lawsuits, and loss of the right to operate — these are existential, not optional. The cost is identifying which rules apply and meeting their specific controls; the engineer's job is to surface the obligation, not to silently ignore it.</li>
+<li><strong>Sources —</strong> GDPR (Reg. (EU) 2016/679) · FERPA (20 U.S.C. § 1232g) · HIPAA Privacy &amp; Security Rules (45 CFR Parts 160/164) · PCI DSS v4.0 · NIST SP 800-66 (HIPAA Security Rule guidance).</li>
+</ul>
+<h2 id="audit-trails-accountability">Audit trails &amp; accountability<a class="headerlink" href="#audit-trails-accountability" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Security-significant events are logged immutably and traceably — authentication (success/failure), authorization denials, privilege changes, access to sensitive/regulated records, admin actions, config/security changes, and data exports/deletions — each with <em>who, what, when, from where</em>, a correlation/trace ID, and tamper-resistance (append-only / shipped off-host / integrity-protected). Logs are retained per policy, time-synced, and reviewable; they support both incident forensics and regulatory audit (HIPAA access logs, GDPR accountability). <strong>Audit logs themselves contain no secrets, passwords, tokens, or raw sensitive PII.</strong></li>
+<li><strong>Auditor checks —</strong> <code>[J]</code> are the security-significant events for this change logged with actor/action/timestamp/source and a correlation ID? <code>[D]</code> grep to confirm the audit log lines don't include passwords/tokens/secrets/raw PII (overlaps with the logging-hygiene dimension below). <code>[J]</code> are audit logs tamper-resistant and retained per the applicable regime?</li>
+<li><strong>Confidence —</strong> <code>mixed</code></li>
+<li><strong>Tradeoff (plain English) —</strong> A good audit trail is how you detect a breach, prove what happened, and satisfy regulators after the fact; without it an incident is invisible and unprovable. The cost is logging key events carefully (and never logging secrets); the benefit is forensic and legal defensibility.</li>
+<li><strong>Sources —</strong> OWASP Top 10:2021 A09 (Security Logging &amp; Monitoring Failures) · OWASP ASVS 5.0 V16 (Logging) · OWASP Logging Cheat Sheet · NIST SP 800-92 · HIPAA §164.312(b) (audit controls) · CWE-778 (Insufficient Logging).</li>
+</ul>
+<h2 id="sensitive-data-hygiene-never-log-or-commit-real-user-data">Sensitive-data hygiene — never log or commit real user data<a class="headerlink" href="#sensitive-data-hygiene-never-log-or-commit-real-user-data" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Good looks like —</strong> Real production user data, credentials, tokens, full PII, and payment/health data are <strong>never</strong> written to application logs, error trackers, traces, analytics events, test fixtures, seed data, screenshots, or the repository. Logs redact/mask sensitive fields by default (structured logging with allowlisted fields, not "dump the whole object"); test/dev environments use synthetic or anonymized data; debugging dumps that include payloads are gated and scrubbed; error trackers strip request bodies/headers (auth, cookies) and PII. Committed fixtures and example <code>.env</code> files contain only fake values.</li>
+<li><strong>Auditor checks —</strong> <code>[D]</code> grep added log/print/tracker calls for whole-request/whole-object dumps, password/token/PII fields, <code>Authorization</code>/<code>Cookie</code> headers; scan committed fixtures/seeds for realistic PII or live credentials. <code>[D]</code> secret-scanner over the diff (shared with secrets management). <code>[J]</code> does any new log statement risk emitting sensitive data under real inputs? <code>[J]</code> is test/seed data synthetic?</li>
+<li><strong>Confidence —</strong> <code>deterministic</code></li>
+<li><strong>Tradeoff (plain English) —</strong> Keeping real user data out of logs and the repo means a leaked log file or a public repo isn't itself a data breach — logs and repos sprawl to many places (CI, third-party log tools, laptops) you don't fully control. The cost is redaction-by-default and synthetic test data; the payoff is that your <em>defenses</em> don't become the leak.</li>
+<li><strong>Sources —</strong> OWASP Top 10:2021 A09 · OWASP Logging Cheat Sheet (data to exclude) · OWASP ASVS 5.0 V14 (Data Protection) / V16 (Security Logging &amp; Error Handling) · NIST SP 800-122 · CWE-532 (Info Exposure Through Log Files), CWE-312 (Cleartext Storage of Sensitive Info).</li>
+</ul>
+<hr />
+<h2 id="authoring-rules-the-catalog-meta-rules-do-not-delete">Authoring rules (the catalog meta-rules — do not delete)<a class="headerlink" href="#authoring-rules-the-catalog-meta-rules-do-not-delete" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Additive floor:</strong> add dimensions as you discover them; <strong>never delete</strong> one. This catalog is meant to become "every standard we can think of."</li>
+<li><strong>Right-size:</strong> apply only <em>relevant</em> dimensions per change (<code>KISS</code>/<code>YAGNI</code>); never skip a relevant one. Relevance is a per-change judgment — see <code>README.md</code>.</li>
+<li><strong>Novel patterns allowed</strong> when they add clear value — justify (problem → why existing patterns fall short → benefit) and record in <code>claugentic-DECISIONS.md</code>. Unconventional ≠ wrong.</li>
+<li><strong>Every dimension carries a Confidence tag</strong> so the harness can separate what it <em>proved</em> (deterministic gates) from what it <em>asserts</em> (judgment). Trust the oracle, not the model's word.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2026 myBlueprint Corp. &nbsp;·&nbsp; <a href="https://myblueprint.ca/privacy">Privacy</a>
+
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+    <a href="https://github.com/myblueprint-spaces/DistrictSync" target="_blank" rel="noopener" title="DistrictSync on GitHub" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.tabs", "navigation.tabs.sticky", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "announce.dismiss"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,1404 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="MyEducation BC GDE to SpacesEDU Advanced CSV converter — by SpacesEDU by myBlueprint">
+      
+      
+        <meta name="author" content="SpacesEDU by myBlueprint">
+      
+      
+        <link rel="canonical" href="https://myblueprint-spaces.github.io/DistrictSync/partner/troubleshooting/">
+      
+      
+        <link rel="prev" href="../how-classes-work/">
+      
+      
+        <link rel="next" href="../faq/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/favicon.ico">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Troubleshooting - DistrictSync</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/brand.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#troubleshooting" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="DistrictSync" class="md-header__button md-logo" aria-label="DistrictSync" data-md-component="logo">
+      
+  <img src="../../assets/spacesedu-icon.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            DistrictSync
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Troubleshooting
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/myblueprint-spaces/DistrictSync" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    myblueprint-spaces/DistrictSync
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../installation/" class="md-tabs__link">
+          
+  
+  
+  Partner Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../developer/setup/" class="md-tabs__link">
+          
+  
+  
+  Developer Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="DistrictSync" class="md-nav__button md-logo" aria-label="DistrictSync" data-md-component="logo">
+      
+  <img src="../../assets/spacesedu-icon.png" alt="logo">
+
+    </a>
+    DistrictSync
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/myblueprint-spaces/DistrictSync" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    myblueprint-spaces/DistrictSync
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Partner Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Partner Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../headless-sftp-setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Headless & Docker SFTP Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-classes-work/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How Classes Work
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-tool-runs-but-produces-no-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The tool runs but produces no output
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sftp-upload-fails" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SFTP upload fails
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#task-scheduler-does-not-run-the-task" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task Scheduler does not run the task
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#encoding-errors-in-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Encoding errors in log
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mapping-file-not-found-error" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        "Mapping file not found" error
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#partial-output-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Partial output files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sftp-host-rejected" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SFTP Host Rejected
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#record-count-drop-warning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Record Count Drop Warning
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#wrong-file-extension-csv-vs-txt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wrong file extension (.csv vs .txt)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#records-missing-after-spacesedu-import" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Records missing after SpacesEDU import
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-student-appears-in-the-wrong-class" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A student appears in the wrong class
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-student-isnt-getting-the-expected-homeroom-class" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A student isn't getting the expected homeroom class
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#log-location" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Log location
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/adding-transformer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a Transformer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/adding-district/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a District Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer/release/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Process
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-tool-runs-but-produces-no-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The tool runs but produces no output
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sftp-upload-fails" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SFTP upload fails
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#task-scheduler-does-not-run-the-task" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Task Scheduler does not run the task
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#encoding-errors-in-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Encoding errors in log
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mapping-file-not-found-error" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        "Mapping file not found" error
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#partial-output-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Partial output files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sftp-host-rejected" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SFTP Host Rejected
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#record-count-drop-warning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Record Count Drop Warning
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#wrong-file-extension-csv-vs-txt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wrong file extension (.csv vs .txt)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#records-missing-after-spacesedu-import" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Records missing after SpacesEDU import
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-student-appears-in-the-wrong-class" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A student appears in the wrong class
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-student-isnt-getting-the-expected-homeroom-class" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A student isn't getting the expected homeroom class
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#log-location" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Log location
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h1>
+<h2 id="the-tool-runs-but-produces-no-output">The tool runs but produces no output<a class="headerlink" href="#the-tool-runs-but-produces-no-output" title="Permanent link">&para;</a></h2>
+<p><strong>Possible causes:</strong></p>
+<ol>
+<li><strong>Wrong district config</strong> — The config expects different filenames than what's in the input directory.</li>
+<li>Check the log for messages like <code>Primary source file 'X.txt' is empty</code>.</li>
+<li>
+<p>Try a different config (e.g., <code>sd48myedbc</code> instead of <code>myedbc</code>).</p>
+</li>
+<li>
+<p><strong>GDE files not in the input directory</strong> — Verify the files are present:
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>C:\DistrictSync\input\
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  your Student Demographic file     ← must be here
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  your Student Schedule file
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  your Staff Information file
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  your Course Information file
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  your Emergency Contact file
+</code></pre></div></p>
+</li>
+<li>
+<p><strong>All students are inactive</strong> — Only <code>Active</code> enrollment status is exported.</p>
+</li>
+<li>Run with <code>--quality</code> to get a breakdown: <code>DistrictSync-windows.exe --sis myedbc --input ... --output ... --quality</code></li>
+</ol>
+<hr />
+<h2 id="sftp-upload-fails">SFTP upload fails<a class="headerlink" href="#sftp-upload-fails" title="Permanent link">&para;</a></h2>
+<p><strong>Error: "No password found"</strong>
+- The OS credential store was cleared (e.g., after a password change or server reinstall).
+- Re-enter credentials via the Setup Wizard → Step 4.</p>
+<p><strong>Error: "Connection failed: Connection refused"</strong>
+- Verify the SFTP host and port are correct.
+- Check that the server firewall allows outbound connections on port 22.</p>
+<p><strong>Error: "Authentication failed"</strong>
+- The username or password is incorrect.
+- Contact SpacesEDU to confirm your credentials.</p>
+<hr />
+<h2 id="task-scheduler-does-not-run-the-task">Task Scheduler does not run the task<a class="headerlink" href="#task-scheduler-does-not-run-the-task" title="Permanent link">&para;</a></h2>
+<p><strong>Task does not run after a reboot / server restart</strong>
+- The Setup Wizard (schedule step) automatically registers the task to <strong>run whether the user is logged on or not</strong> with <strong>Highest Privileges</strong>, using the Windows account password you enter during setup.
+- If the task still doesn't run after a reboot, the Windows password entered at setup was likely incorrect. A wrong password causes Windows to report an error in the wizard — if you dismissed the error, re-run the Setup Wizard to re-register the task with the correct password.
+- If you left the password blank during setup, the task was registered for <strong>logged-on-only</strong> operation (the wizard warns you at that point). Enter the password to enable unattended runs.</p>
+<p><strong>"Access is denied" when activating the schedule</strong>
+- <strong>Most common cause: the wizard was not run as administrator.</strong> Creating an unattended task (runs whether or not you are logged on, with highest privileges) requires administrator rights. Close the wizard, <strong>right-click <code>DistrictSync-windows.exe</code> → "Run as administrator"</strong>, and re-run the schedule step.
+- <strong>If you are already running as administrator and still see "Access is denied":</strong> the Windows password was likely rejected. Enter your <strong>Windows account password</strong> — not your Windows Hello PIN, and for a <strong>Microsoft Account</strong> your microsoft.com password — on the schedule step. If it still fails, the account may not be permitted to <strong>"Log on as a batch job"</strong> (check with your IT administrator).</p>
+<p><strong>Task shows a non-zero "Last Run Result" (e.g. code 3 / 0x3)</strong>
+- Exit code 3 means the ETL conversion <strong>succeeded</strong> and the output files were written, but the <strong>SFTP delivery to SpacesEDU failed</strong>. The CSV files are intact in your output folder.
+- Open the <strong>Run History</strong> page in the DistrictSync wizard or check <code>~/.districtsync/etl_tool.log</code> for an <code>ERROR</code> line beginning <code>SFTP upload FAILED —</code> to find the cause (network, credentials, host).
+- Re-run <code>--sftp-test</code> (or Setup Wizard → Step 4) to verify your SFTP credentials are still valid.</p>
+<p><strong>Task runs but nothing happens</strong>
+- Open the Run History page in the DistrictSync wizard. Scheduled runs
+  write to the same <code>~/.districtsync/etl_tool.log</code> as manual runs, so
+  they should appear there.
+- If there's a run but it failed, look for <code>Pipeline failed:</code> lines
+  in the log for the cause.
+- The task's <strong>Start in</strong> field does not matter — logs always go to
+  <code>~/.districtsync/</code> regardless of the working directory.</p>
+<hr />
+<h2 id="encoding-errors-in-log">Encoding errors in log<a class="headerlink" href="#encoding-errors-in-log" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>WARNING - Could not decode your Student Demographic file with utf-8, trying latin1
+</code></pre></div>
+<p>This is normal. The tool automatically tries UTF-8, Latin-1, and CP1252 in sequence. If all three fail, check that the file is a valid text file (not corrupt or binary).</p>
+<hr />
+<h2 id="mapping-file-not-found-error">"Mapping file not found" error<a class="headerlink" href="#mapping-file-not-found-error" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>ERROR - Mapping file not found: config/mappings/myedbc_mapping.yaml
+</code></pre></div>
+<p>The tool cannot find its configuration files. This happens when:
+- The executable was moved without the <code>config/</code> directory.
+- The tool is invoked from a different working directory.</p>
+<p><strong>Fix:</strong> The config is embedded in the executable (PyInstaller bundle). If you see this error from the bundled <code>.exe</code>, contact SpacesEDU — it may indicate a corrupted download.</p>
+<hr />
+<h2 id="partial-output-files">Partial output files<a class="headerlink" href="#partial-output-files" title="Permanent link">&para;</a></h2>
+<p>If the tool crashes mid-run, you may find an incomplete output directory. Since v1.4+, DistrictSync uses atomic (transactional) writes — all CSVs are staged in a temporary directory first and only committed together on success. A failed run leaves the previous output intact.</p>
+<p>If you find a <code>.tmp_*</code> directory in your output folder, it means the tool was interrupted during a write. Delete it and re-run.</p>
+<hr />
+<h2 id="sftp-host-rejected">SFTP Host Rejected<a class="headerlink" href="#sftp-host-rejected" title="Permanent link">&para;</a></h2>
+<p>DistrictSync only allows SFTP uploads to SpacesEDU servers (sftp.ca.spacesedu.com, sftp.app.spacesedu.com, sftp.myblueprint.ca). If you see 'SFTP host not allowed', verify you're using the correct SpacesEDU host.</p>
+<hr />
+<h2 id="record-count-drop-warning">Record Count Drop Warning<a class="headerlink" href="#record-count-drop-warning" title="Permanent link">&para;</a></h2>
+<p>If a run produces significantly fewer records than the previous run (&gt;20% decrease), a warning is logged. This usually means the GDE export was incomplete. Re-export the files from MyEdBC and run again.</p>
+<hr />
+<h2 id="wrong-file-extension-csv-vs-txt">Wrong file extension (.csv vs .txt)<a class="headerlink" href="#wrong-file-extension-csv-vs-txt" title="Permanent link">&para;</a></h2>
+<p>Some districts (e.g., SD40 – New Westminster) export GDE files as <code>.csv</code> instead of <code>.txt</code>. If the tool cannot find the expected file, check whether your district's files have a <code>.csv</code> extension and contact SpacesEDU to ensure the correct district config (e.g., <code>sd40myedbc</code>) is configured for your installation.</p>
+<hr />
+<h2 id="records-missing-after-spacesedu-import">Records missing after SpacesEDU import<a class="headerlink" href="#records-missing-after-spacesedu-import" title="Permanent link">&para;</a></h2>
+<p>If DistrictSync completed successfully but records are missing in SpacesEDU, the issue is on the import side — not DistrictSync. Common causes:</p>
+<ul>
+<li><strong>Email domain mismatch</strong> — student or staff email doesn't match the district's configured domain in SpacesEDU.</li>
+<li><strong>Missing required field</strong> — a record was skipped because a required field (User ID, Name, etc.) was blank.</li>
+<li><strong>Orphaned enrollment</strong> — an enrollment references a Class ID or User ID that doesn't exist in the corresponding file.</li>
+<li><strong>Family without student</strong> — a family record references a student not in <code>Students.csv</code>.</li>
+</ul>
+<p>Check the <strong>SpacesEDU import report</strong> for details. See also <a href="../faq/#what-happens-after-upload-spacesedu-import">FAQ — What happens after upload</a>.</p>
+<hr />
+<h2 id="a-student-appears-in-the-wrong-class">A student appears in the wrong class<a class="headerlink" href="#a-student-appears-in-the-wrong-class" title="Permanent link">&para;</a></h2>
+<p>A student shows up in an old or incorrect class in SpacesEDU even though MyEdBC was updated.</p>
+<p><strong>The fix depends on the student's grade</strong>, because different GDE files drive placement for different grades:</p>
+<table>
+<thead>
+<tr>
+<th>Student's grade</th>
+<th>Class placement comes from</th>
+<th>So the field to fix is in…</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>K–7 (homeroom grades)</td>
+<td><strong>Student Demographic</strong> — the <code>Homeroom</code> and <code>Teacher name</code> columns</td>
+<td>the Student Demographic GDE</td>
+</tr>
+<tr>
+<td>8–12</td>
+<td><strong>Student Schedule</strong> — the course-section rows</td>
+<td>the Student Schedule GDE</td>
+</tr>
+</tbody>
+</table>
+<p>DistrictSync rebuilds every class and enrollment <strong>from scratch on each run</strong> — it never remembers a previous run. So if the output still places a student in the wrong class, the <strong>current</strong> input file named above still contains that placement. The fix is always the same shape: correct it in MyEdBC → re-export that GDE → re-run.</p>
+<p><strong>Homeroom-grade students (K–7) are the common surprise.</strong> Their class is named <code>&lt;Homeroom&gt; - &lt;Teacher name&gt; (&lt;year&gt;)</code> (e.g. <code>10 Eng6/7 - Bali-Kainth, P. (2026)</code>), taken <strong>straight from the Student Demographic <code>Homeroom</code> and <code>Teacher name</code> columns</strong> — <em>not</em> from who teaches their courses. If a student was moved to a new homeroom but still appears in the old one, the <strong><code>Homeroom</code> field on their demographic record was never updated in MyEdBC</strong>. Moving them in the schedule (their course teachers) will <em>not</em> fix it — and re-exporting only the Student Schedule will <em>not</em> fix it. Update the homeroom assignment in MyEdBC, then re-export the Student Demographic file.</p>
+<blockquote>
+<p><strong>A stale GDE cannot be auto-detected.</strong> DistrictSync faithfully transforms whatever it is handed; it has no way to know an export is out of date. The only built-in guard is the &gt;20 % record-drop warning (above), which won't catch scattered individual changes. Keeping exports current — especially the Student Schedule at <strong>semester rollover</strong>, when secondary timetables change wholesale — is an operational responsibility.</p>
+</blockquote>
+<hr />
+<h2 id="a-student-isnt-getting-the-expected-homeroom-class">A student isn't getting the expected homeroom class<a class="headerlink" href="#a-student-isnt-getting-the-expected-homeroom-class" title="Permanent link">&para;</a></h2>
+<p>Homeroom classes are only created for grades listed in the config's <code>homeroom_grades</code> (compared after CEDS normalization). DistrictSync maps several MyEdBC grade codes onto a homeroom grade automatically — for example <code>KF</code> and <code>EL</code> both normalize to <code>KG</code>.</p>
+<p><strong>Any grade code the tool doesn't recognize falls through to <code>UG</code> (ungraded)</strong> and is treated as a non-homeroom grade, so that student is routed through the <em>subject-class</em> (schedule) path and gets no homeroom. If a district introduces a new grade code and its students unexpectedly have no homeroom, the code is likely missing from the grade map — contact SpacesEDU to have it added.</p>
+<hr />
+<h2 id="log-location">Log location<a class="headerlink" href="#log-location" title="Permanent link">&para;</a></h2>
+<p>Every ETL run — wizard, scheduled task, and CLI — writes to a single
+persistent log file in your user home directory, regardless of where
+the <code>.exe</code> lives or what working directory the task runs from:</p>
+<table>
+<thead>
+<tr>
+<th>Platform</th>
+<th>Log file</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Windows</td>
+<td><code>C:\Users\&lt;username&gt;\.districtsync\etl_tool.log</code></td>
+</tr>
+<tr>
+<td>Linux</td>
+<td><code>/home/&lt;username&gt;/.districtsync/etl_tool.log</code></td>
+</tr>
+<tr>
+<td>macOS</td>
+<td><code>/Users/&lt;username&gt;/.districtsync/etl_tool.log</code></td>
+</tr>
+</tbody>
+</table>
+<p>The Run History page in the web UI reads from this same path and
+displays the runs in a sortable table. The log rotates automatically
+at 5 MB and keeps 3 backups (<code>etl_tool.log.1</code>, <code>.2</code>, <code>.3</code>).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2026 myBlueprint Corp. &nbsp;·&nbsp; <a href="https://myblueprint.ca/privacy">Privacy</a>
+
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+    <a href="https://github.com/myblueprint-spaces/DistrictSync" target="_blank" rel="noopener" title="DistrictSync on GitHub" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.tabs", "navigation.tabs.sticky", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "announce.dismiss"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

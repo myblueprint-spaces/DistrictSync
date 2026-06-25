@@ -1,0 +1,202 @@
+/* ============================================================
+   myBlueprint / SpacesEDU brand overrides for MkDocs Material
+   ============================================================ */
+
+/* ── Colour tokens ── */
+:root {
+  --mb-primary:   #1D5BB5;   /* myBlueprint blue          */
+  --mb-dark:      #0F2D6B;   /* deep navy — headings      */
+  --mb-accent:    #0EA5E9;   /* sky-blue accent            */
+  --mb-green:     #16A34A;   /* success / active           */
+  --mb-light-bg:  #F0F6FF;   /* page background tint       */
+  --mb-border:    #DBEAFE;   /* card / divider borders     */
+  --mb-text:      #0F172A;   /* body text                  */
+  --mb-muted:     #64748B;   /* captions / muted text      */
+
+  /* Wire Material tokens to MB colours */
+  --md-primary-fg-color:        var(--mb-primary);
+  --md-primary-fg-color--light: #4B85D4;
+  --md-primary-fg-color--dark:  var(--mb-dark);
+  --md-primary-bg-color:        #ffffff;
+  --md-accent-fg-color:         var(--mb-accent);
+  --md-default-bg-color:        var(--mb-light-bg);
+}
+
+/* ── Dark scheme ── */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color:        #4B85D4;
+  --md-default-bg-color:        #0D1B2E;
+  --md-default-fg-color:        #E2EAF8;
+}
+
+/* ── Navigation header ── */
+.md-header {
+  background: linear-gradient(90deg, var(--mb-dark) 0%, var(--mb-primary) 70%, var(--mb-accent) 100%);
+  box-shadow: 0 2px 8px rgba(15, 45, 107, 0.18);
+}
+
+/* ── Navigation tabs ── */
+.md-tabs {
+  background: var(--mb-dark);
+}
+.md-tabs__link {
+  color: rgba(255, 255, 255, 0.75) !important;
+  font-weight: 500;
+}
+.md-tabs__link--active,
+.md-tabs__link:hover {
+  color: #ffffff !important;
+  border-bottom: 2px solid var(--mb-accent);
+}
+
+/* ── Sidebar ── */
+.md-sidebar .md-nav__title {
+  color: var(--mb-dark);
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.md-nav__link--active {
+  color: var(--mb-primary) !important;
+  font-weight: 600;
+}
+
+/* ── Footer ── */
+.md-footer {
+  background: var(--mb-dark);
+}
+.md-footer-meta {
+  background: #071A44;
+}
+
+/* ── Headings ── */
+.md-content h1 {
+  color: var(--mb-dark);
+  border-bottom: 3px solid var(--mb-primary);
+  padding-bottom: 0.35rem;
+}
+.md-content h2 {
+  color: var(--mb-primary);
+  border-bottom: 1px solid var(--mb-border);
+  padding-bottom: 0.2rem;
+}
+.md-content h3 {
+  color: var(--mb-dark);
+}
+
+/* ── Admonitions ── */
+.md-typeset .admonition.tip,
+.md-typeset details.tip {
+  border-left-color: var(--mb-green);
+}
+.md-typeset .admonition.note,
+.md-typeset details.note {
+  border-left-color: var(--mb-primary);
+}
+.md-typeset .admonition.warning,
+.md-typeset details.warning {
+  border-left-color: #F59E0B;
+}
+
+/* ── Tables ── */
+.md-typeset table:not([class]) th {
+  background: var(--mb-dark);
+  color: #ffffff;
+}
+.md-typeset table:not([class]) tr:hover td {
+  background: var(--mb-light-bg);
+}
+
+/* ── Code blocks ── */
+.md-typeset code {
+  background: #EFF6FF;
+  color: var(--mb-dark);
+  border-radius: 0.3rem;
+  padding: 0.1em 0.35em;
+}
+.md-typeset pre > code {
+  background: transparent;
+  padding: 0;
+}
+.highlight {
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+/* ── Buttons / links ── */
+.md-typeset a {
+  color: var(--mb-primary);
+}
+.md-typeset a:hover {
+  color: var(--mb-dark);
+}
+
+/* ── Download badge styling ── */
+.md-typeset .md-button {
+  background: var(--mb-primary);
+  border-color: var(--mb-primary);
+  color: #ffffff;
+  border-radius: 0.5rem;
+  font-weight: 600;
+}
+.md-typeset .md-button:hover {
+  background: var(--mb-dark);
+  border-color: var(--mb-dark);
+}
+.md-typeset .md-button--secondary {
+  background: transparent;
+  border-color: var(--mb-primary);
+  color: var(--mb-primary);
+}
+
+/* ── Hero section on home page ── */
+.mb-hero {
+  background: linear-gradient(135deg, var(--mb-dark) 0%, var(--mb-primary) 60%, var(--mb-accent) 100%);
+  padding: 3rem 2rem;
+  border-radius: 0.75rem;
+  color: #ffffff;
+  margin-bottom: 2rem;
+  text-align: center;
+}
+.mb-hero h1 {
+  color: #ffffff !important;
+  border: none !important;
+  font-size: 2.5rem;
+  font-weight: 800;
+  margin-bottom: 0.5rem;
+  letter-spacing: -0.03em;
+}
+.mb-hero p {
+  font-size: 1.1rem;
+  color: rgba(255, 255, 255, 0.85);
+  margin-bottom: 1.5rem;
+}
+
+/* ── Stat cards ── */
+.mb-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+.mb-stat-card {
+  background: #ffffff;
+  border: 1px solid var(--mb-border);
+  border-radius: 0.6rem;
+  padding: 1rem 1.2rem;
+  text-align: center;
+  box-shadow: 0 1px 4px rgba(15, 45, 107, 0.07);
+}
+.mb-stat-card .stat-value {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: var(--mb-primary);
+}
+.mb-stat-card .stat-label {
+  font-size: 0.78rem;
+  color: var(--mb-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 0.2rem;
+}

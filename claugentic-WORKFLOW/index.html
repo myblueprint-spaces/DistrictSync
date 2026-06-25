@@ -1,0 +1,1262 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="MyEducation BC GDE to SpacesEDU Advanced CSV converter — by SpacesEDU by myBlueprint">
+      
+      
+        <meta name="author" content="SpacesEDU by myBlueprint">
+      
+      
+        <link rel="canonical" href="https://myblueprint-spaces.github.io/DistrictSync/claugentic-WORKFLOW/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/favicon.ico">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>claugentic WORKFLOW - DistrictSync</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/brand.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#agent-development-workflow" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="DistrictSync" class="md-header__button md-logo" aria-label="DistrictSync" data-md-component="logo">
+      
+  <img src="../assets/spacesedu-icon.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            DistrictSync
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              claugentic WORKFLOW
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/myblueprint-spaces/DistrictSync" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    myblueprint-spaces/DistrictSync
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../partner/installation/" class="md-tabs__link">
+          
+  
+  
+  Partner Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../developer/setup/" class="md-tabs__link">
+          
+  
+  
+  Developer Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="DistrictSync" class="md-nav__button md-logo" aria-label="DistrictSync" data-md-component="logo">
+      
+  <img src="../assets/spacesedu-icon.png" alt="logo">
+
+    </a>
+    DistrictSync
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/myblueprint-spaces/DistrictSync" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    myblueprint-spaces/DistrictSync
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Partner Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Partner Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../partner/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../partner/headless-sftp-setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Headless & Docker SFTP Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../partner/how-classes-work/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How Classes Work
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../partner/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../partner/faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../developer/setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../developer/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../developer/adding-transformer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a Transformer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../developer/adding-district/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding a District Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../developer/testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../developer/release/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Process
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#new-here-read-this-first" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        👋 New here? Read this first
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#0-triage-does-this-need-the-full-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0. Triage — does this need the full pipeline?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#principles-apply-at-every-stage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Principles (apply at every stage)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#context-handoff" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context &amp; handoff
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#roles-a-library-not-a-fixed-pair" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Roles — a library, not a fixed pair
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The pipeline
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The pipeline">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#adopter-note-reading-this-doc-inside-your-repo-not-the-harness" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adopter note — reading this doc inside YOUR repo (not the harness)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#definition-of-done" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Definition of Done
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#executing-an-audit-backlog-item-tag-discipline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Executing an audit backlog item — tag → discipline
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-the-learning-loop-how-the-harness-grows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. The learning loop (how the harness grows)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plan-file-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plan file lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<!-- claugentic-dev-harness@0.2.4 managed — do not edit (copied from the claugentic-dev-harness plugin) -->
+<h1 id="agent-development-workflow">Agent Development Workflow<a class="headerlink" href="#agent-development-workflow" title="Permanent link">&para;</a></h1>
+<blockquote>
+<h3 id="new-here-read-this-first">👋 New here? Read this first<a class="headerlink" href="#new-here-read-this-first" title="Permanent link">&para;</a></h3>
+<p>This repo is built and maintained with an <strong>agent-assisted workflow</strong>:
+- <strong>Small/local change?</strong> Just make it — tests must pass, and the architecture-tree hook will prompt you to document any new source file in <code>docs/claugentic-ARCHITECTURE_TREE.md</code>.
+- <strong>Substantial change?</strong> (new subsystem, cross-cutting refactor, shared-contract change, or <strong>~8+ files</strong>) — don't free-code. The agent will <strong>pause, ask questions, enter plan mode</strong>, and run the pipeline below: a plan in <code>.claude/plans/</code>, an adversarial review, a spec <strong>you approve</strong>, implementation in an isolated branch, verification, then a retrospect that improves this harness.
+- <strong>Your map of the codebase</strong> is <code>docs/claugentic-ARCHITECTURE_TREE.md</code> (one line per file) — read it before diving into source. Specialist <strong>roles</strong> the agent delegates to live in <code>.claude/agents/</code> and grow over time.
+- <strong>Decisions</strong> → <code>docs/claugentic-DECISIONS.md</code>. <strong>Backlog</strong> → <code>docs/claugentic-ROADMAP.md</code>.
+- <strong>Build mode</strong> (<code>skills/build/SKILL.md</code>) is the orchestration layer that <strong>auto-drives this pipeline over the audit backlog</strong> — pick items or a whole tier and it works them through the stages below, pausing only at the decisions that are yours.</p>
+</blockquote>
+<p>How agents <strong>and</strong> human devs take <em>substantial</em> work from idea → landed change while keeping quality high and the harness self-improving. CLAUDE.md links here; this is the source of truth for process.</p>
+<blockquote>
+<p><strong>One-line:</strong> Triage → Discuss → Plan → Review the plan → Spec → <strong>Approve</strong> → Implement → Verify → Land → <strong>Retrospect</strong>. Small changes skip to Implement+Verify.</p>
+</blockquote>
+<hr />
+<h2 id="0-triage-does-this-need-the-full-pipeline">0. Triage — does this need the full pipeline?<a class="headerlink" href="#0-triage-does-this-need-the-full-pipeline" title="Permanent link">&para;</a></h2>
+<p><strong>Full pipeline</strong> for <em>substantial</em> work: a new subsystem, a cross-cutting refactor, a change to a shared contract/pattern/standard, a security boundary, or anything touching <strong>roughly 8+ files</strong> (or a pattern documented in CLAUDE.md / STANDARDS).</p>
+<p><strong>Lightweight path</strong> for small/local/mechanical changes: go straight to <strong>Implement → Verify</strong>, still updating <code>claugentic-ARCHITECTURE_TREE.md</code> and <code>claugentic-DECISIONS.md</code> as needed.</p>
+<p><strong>Triage continuously, not just up front.</strong> A conversation often <em>grows</em> into a substantial change. The moment a request is shaping up to cross the bar above (≈8 files, or any qualitative trigger), <strong>stop free-coding</strong>: ask the user clarifying questions — from technical <em>and</em> <strong>product-discovery</strong> angles (see Stage 1) — until scope is crystal-clear, then <strong>enter plan mode (Stage 2)</strong> and follow the pipeline — don't keep ad-hoc editing.</p>
+<p>When unsure, default to full; the plan-reviewer (Stage 3) confirms the path was right.</p>
+<hr />
+<h2 id="principles-apply-at-every-stage">Principles (apply at every stage)<a class="headerlink" href="#principles-apply-at-every-stage" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Slice small, land complete.</strong> Every unit of work must be finishable by <strong>one specialist agent in a single ≤1M-token-context session</strong> and land <strong>vertically complete</strong> — no half-done state, no <code>TODO</code>/debt left behind. If it doesn't fit, decompose further <em>before</em> implementing. This is a hard gate, not a guideline.</li>
+<li><strong>No new tech debt.</strong> A landed slice leaves the codebase at least as clean as it found it: tests added, docs/ARCHITECTURE_TREE updated, no dead code, no silenced errors.</li>
+<li><strong>The harness is living.</strong> Any task may improve STANDARDS / CLAUDE.md / the <code>.claude/agents/</code> role library / this workflow. Stage 9 is how that happens; treat harness improvements as first-class output, not a chore.</li>
+<li><strong>Delegate liberally to preserve orchestrator context.</strong> Use subagents freely and in parallel — <strong>no resource constraints</strong> — so the orchestrator's own context stays lean for synthesis and decisions (fan out reads, reviews, and implementation to specialists). The orchestrator picks whichever role(s) fit from the <code>.claude/agents/</code> library; as the library grows it has more specialists to choose from.</li>
+<li><strong>Effort-dial the machine.</strong> Scale review/verification depth to the change's risk and size, and load only the standards modules the change <em>touches</em> (relevance-gating). The dial flips on the <strong>same triggers Stage 0 uses to call work <em>substantial</em></strong> — a <strong>security/trust boundary · a shared contract/pattern/standard · ~8+ files · or any trust/honesty surface</strong> (per the diverse-critics principle below): a small/local change gets a quick <strong>solo <code>architect-reviewer</code></strong> look; any of those triggers fans out the lenses (and, on a trust surface, the diverse panel — that principle names <em>who</em> joins; this names <em>when</em> to fan out). Don't run the whole machine on a trivial change — that's how a harness kills the velocity it's meant to protect.</li>
+<li><strong>Diverse critics on contested or trust-surface changes.</strong> A contested design fork OR a trust/honesty surface (claims, <code>[D]</code>/<code>[J]</code> labels, proof-vs-attempt wording, a security boundary) triggers the <strong>diverse panel</strong> — <code>plan-reviewer</code>/<code>architect-reviewer</code> + <code>yagni-sentinel</code> + <code>honesty-reviewer</code>, <strong>plus <code>product-designer</code> when the change is user-facing</strong> (so the review confirms the plan still achieves what the user is trying to achieve, not just that it's technically sound) — at <strong>every gate that change passes</strong> (Plan <strong>and</strong> Verify); else a lone reviewer suffices. At <strong>Verify</strong>, the wired mechanism is <code>engine/verify.js</code>: the orchestrator <strong>invokes</strong> it (the invocation is model-upheld — the platform does not auto-fire workflows), and the script then convenes the panel mechanically; if the Workflow tool is unavailable, say so, convene the panel in prose, and tag the run <strong>"prose-orchestrated"</strong> — never claim script guarantees on a prose run. At <strong>Plan</strong>, the panel remains prose-convened.</li>
+<li><strong>Review is cross-review by separate specialist agents — each on the most capable available model, each clean-context.</strong> The gate/refute roles — <code>plan-reviewer</code> · <code>architect-reviewer</code> · <code>honesty-reviewer</code> · <code>finding-verifier</code> — are <strong>distinct specialist agents</strong> (separate roles, separate contexts); each works only from <code>{claim, file:line, …}</code> and <strong>never sees the builder's rationale or transcript</strong>, so it cannot rubber-stamp the reasoning. The independence is of <strong>context and role</strong> — a separate agent, a clean contract, a single lens — <strong>not</strong> of model: every agent runs the most capable available model, so blind spots can still correlate, and the harness says so (it does <strong>not</strong> claim model-independent review). <strong>Honest claim:</strong> multiple skeptical, clean-context specialist passes on the most capable model — a reduction of rubber-stamping risk, never a guarantee. <em>(The engine keeps a <code>RUNNING AS</code> / <code>sameModelTag</code> note as an honest per-run model-relationship reporter; it no longer engineers cross-model de-correlation.)</em></li>
+<li><strong>Model tiers — by capability, never a pinned version.</strong> The harness picks models by capability <em>tier</em> via aliases that auto-resolve to the current model in that tier: <strong>most capable</strong> (<code>opus</code>) · <strong>mid / cheaper</strong> (<code>sonnet</code>) · <strong>fastest / cheapest</strong> (<code>haiku</code>). Default to the <strong>most capable available model</strong> for anything needing judgment — <em>including high-volume review</em>; drop to a cheaper tier only for genuinely mechanical work. <strong>Accuracy first, usage-conservation second.</strong> The tier→alias mapping is the single thing to change if a tier is ever renamed (the engine <code>MODELS</code> block + the agents' <code>model:</code> frontmatter).</li>
+<li>Plus the CLAUDE.md non-negotiables: SOLID &gt; DRY &gt; KISS &gt; YAGNI · fail loudly · validate at boundaries · configurable-over-hardcoded · single source of truth.</li>
+</ul>
+<hr />
+<h2 id="context-handoff">Context &amp; handoff<a class="headerlink" href="#context-handoff" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>The durable memory is the plan file + <code>claugentic-DECISIONS.md</code> + <code>claugentic-ARCHITECTURE_TREE.md</code></strong> — keep them current as you go. For long work, a <strong>fresh session resuming from the plan checklist beats a deeply-compacted context</strong>; no manual orchestrator "handover" is needed.</li>
+<li><strong>Delegate token-heavy work to subagents</strong> to keep the orchestrator lean (the <em>Delegate liberally</em> principle above — this is its context payoff).</li>
+</ul>
+<hr />
+<h2 id="roles-a-library-not-a-fixed-pair">Roles — a library, not a fixed pair<a class="headerlink" href="#roles-a-library-not-a-fixed-pair" title="Permanent link">&para;</a></h2>
+<p>The orchestrator <strong>selects the role(s) that fit the task</strong> and may spawn several or compose them. It is not locked to a fixed sequence of agents.</p>
+<p>Starter library (<code>.claude/agents/</code>):
+- <strong><code>plan-reviewer</code></strong> — adversarially critiques a plan (correctness, SOLID/patterns, risk, <strong>sizing &amp; completeness</strong>, over-engineering/YAGNI, harness impact); writes findings into the plan file.
+- <strong><code>implementer-architect</code></strong> — implements an approved spec to standard, in an isolated worktree, landing one slice complete.
+- <strong><code>product-designer</code></strong> — the product/UX lens at Discuss (Stage 1) for user-facing work: user, job-to-be-done, flows, states, "what good feels like"; applies <code>docs/claugentic-standards/product-ux.md</code>, persists to <code>docs/claugentic-PRODUCT.md</code>.
+- <strong><code>product-critic</code></strong> — critiques a draft product spec by method and returns proposals the user decides on; the elevate counterpart to <code>product-designer</code> (builder-class, read-only).
+- <strong><code>architect-reviewer</code></strong> — owns the Verify gate (Stage 7): <strong>solo</strong> for small changes, or <strong>synthesizer</strong> over fan-out findings for risky ones.
+- <strong><code>lens-reviewer</code></strong> — audits a <strong>diff (Verify) or an audit-scope (the <code>audit</code> skill)</strong> against <strong>one</strong> <code>docs/claugentic-standards/</code> module; invoked once per relevant lens in a fan-out review.
+- <strong><code>finding-verifier</code></strong> — refutes <strong>one</strong> audit finding against the code: given only the claim + <code>file:line</code> (never the finder's rationale), it tries to prove the finding wrong and returns <code>Verified</code> / <code>Refuted</code> / <code>Unconfirmed</code>. The audit's adversarial-verify counterpart to <code>lens-reviewer</code>.
+- <strong><code>blindspot-reviewer</code></strong> — the audit's cross-cutting / between-the-modules sweep (the <code>thorough</code> dial's diverse blind-spot finder): its lens is the <em>whole scope</em>, red-teaming for the risk <strong>no single module-lens owns</strong> (emergent architectural smells, integration gaps, systemic cross-cutting issues). Returns the same finding shape as <code>lens-reviewer</code>, so it joins the same dedup → prune → verify path; always <code>exhaustive</code> depth.
+- <strong><code>yagni-sentinel</code></strong> — the anti-over-engineering skeptic; argues a plan/diff is <em>too much</em>. The deliberate counterweight to the quality lenses. (Also the audit's <code>thorough</code>-only adversarial prune over consolidated findings.)
+- <strong><code>honesty-reviewer</code></strong> — the claims / over-claim lens; refutes <strong>copy</strong> (not code), flagging text that launders model-or-human-upheld judgment into apparent mechanical fact (the verb discipline · <code>[D]</code>/<code>[J]</code> label integrity · dimension-scoped success claims). Part of the diverse panel at Plan + Verify on trust/honesty surfaces.</p>
+<p>Also available without new files: built-in <strong><code>Explore</code></strong> (fan-out search), <strong><code>Plan</code></strong> (drafting), and <code>/code-review</code> · <code>/simplify</code> for diff cleanup. <strong>Add new role files as needs emerge</strong> — the library grows (Stage 9).</p>
+<hr />
+<h2 id="the-pipeline">The pipeline<a class="headerlink" href="#the-pipeline" title="Permanent link">&para;</a></h2>
+<p><strong>The ten stages group into four beats — <code>FRAME → APPROVE → BUILD → CLOSE</code></strong> (a one-glance map; no stage is cut or renumbered):</p>
+<ul>
+<li><strong>FRAME</strong> (0 Triage · 1 Discuss · 2 Plan · 3 Review · 4 Spec) — converge on <em>what to build and how</em>.</li>
+<li><strong>APPROVE</strong> (5) — the user's sign-off; <em>no code before this</em>.</li>
+<li><strong>BUILD</strong> (6 Implement · 7 Verify) — build it and check it.</li>
+<li><strong>CLOSE</strong> (8 Land · 9 Retrospect) — ship it, harvest the lessons.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Stage</th>
+<th>Beat</th>
+<th>Owner</th>
+<th>Output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><strong>Triage</strong></td>
+<td>FRAME</td>
+<td>orchestrator</td>
+<td>full vs lightweight path</td>
+</tr>
+<tr>
+<td>1</td>
+<td><strong>Discuss &amp; brainstorm</strong></td>
+<td>FRAME</td>
+<td>orchestrator + <strong>user</strong></td>
+<td>learn the endeavour from multiple <strong>angles</strong> before planning — technical scope <strong>+ product-discovery</strong> (who's the user · the job-to-be-done · what success/"delight" looks like · the key flows &amp; their states); these surface the user-story gaps a technical-only intake misses. User-facing work pulls in <code>product-designer</code> → <code>docs/claugentic-PRODUCT.md</code>. Crystal-clear scope; tangents→ROADMAP, decisions→DECISIONS</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Draft plan</strong></td>
+<td>FRAME</td>
+<td>orchestrator / <code>Plan</code></td>
+<td><code>.claude/plans/NNNN-&lt;slug&gt;.md</code> (Problem · Approach · Risks · Test strategy · slices — Review &amp; Spec filled later), <strong>sliced into ≤1-session units</strong></td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Review the plan</strong></td>
+<td>FRAME</td>
+<td><code>plan-reviewer</code> (+ others as fit)</td>
+<td>critique written into the plan's <em>Review</em> section; iterate until it passes the gate</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>Spec</strong></td>
+<td>FRAME</td>
+<td>orchestrator</td>
+<td>plan upgraded to implementation-ready spec <strong>per slice</strong>: opens with a short plain-English block (<em>what this builds · what "done" means for you · what you're accepting — risks/trade-offs</em>), then file-by-file changes, signatures, test list, acceptance criteria, <strong>+ the in-scope <code>docs/claugentic-standards/</code> dimensions &amp; target bar (entry point: <code>docs/claugentic-ENGINEERING_STANDARDS.md</code>)</strong></td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Approval gate</strong></td>
+<td>APPROVE</td>
+<td><strong>user</strong></td>
+<td>sign-off on the spec — <em>no code before this</em></td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Implement</strong></td>
+<td>BUILD</td>
+<td><code>implementer-architect</code></td>
+<td>one slice/session, isolated worktree/branch; upholds CLAUDE.md; updates ARCHITECTURE_TREE inline</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>Verify</strong></td>
+<td>BUILD</td>
+<td><code>architect-reviewer</code> (+ lenses)</td>
+<td><strong>effort-dialed</strong> on the same triggers that flip Stage-0 to <em>substantial</em> — a security/trust boundary · a shared contract/pattern/standard · ~8+ files · any trust/honesty surface (per the diverse-panel principle): a <strong>small/local</strong> change → <code>architect-reviewer</code> audits solo; any of those triggers → fan out the panel via <strong><code>engine/verify.js</code></strong> (the orchestrator invokes it — <code>${CLAUDE_PLUGIN_ROOT}/engine/verify.js</code> for an adopter, the repo-local <code>./engine/verify.js</code> dogfooding this repo; spike-verified read-from-install-path) — one <code>lens-reviewer</code> per relevant <code>docs/claugentic-standards/</code> module <strong>+</strong> <code>yagni-sentinel</code> (<strong>+ <code>honesty-reviewer</code></strong> on a trust surface), then <code>architect-reviewer</code> <strong>synthesizes</strong>, with the judge <code>model:</code> (the most-capable tier) and same-model tag computed in code. Workflow tool unavailable → convene in prose and tag the run <strong>"prose-orchestrated."</strong> <strong>All Definition-of-Done gates green</strong> (see below); run <strong><code>/simplify</code></strong> + <strong><code>/code-review</code></strong>; confirm spec match. Findings are <strong>dual-layer</strong> (technical + plain-English).</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>Land</strong></td>
+<td>CLOSE</td>
+<td>orchestrator</td>
+<td>conventional commit/PR; remove the completed plan from <code>.claude/plans/</code> (git history keeps it); append DECISIONS</td>
+</tr>
+<tr>
+<td>9</td>
+<td><strong>Retrospect &amp; evolve</strong></td>
+<td>CLOSE</td>
+<td>orchestrator</td>
+<td>harvest learnings into the harness (see below)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Stage 3 gate — a plan may not pass review until:</strong> it is correct &amp; sound (SOLID/patterns), each slice is <strong>session-sized and lands complete with no debt</strong>, the right path was chosen, risks + test strategy are stated, and any harness impact (new STANDARD/agent/doc) is noted. The reviewer writes a verdict + required changes into the plan; the orchestrator iterates.</p>
+<p><strong>Stage 4 → 5, the plain-English layer (the non-engineer's steering wheel):</strong> the spec contract is code-shaped (file-by-file edits, signatures, named dimensions), but approval is about <em>intent, not code</em>. So every spec <strong>MUST open with a short plain-English block — <em>what this builds · what "done" means for you · what you're accepting (risks/trade-offs)</em></strong> — and that block is <strong>presented first at the approval gate (Stage 5)</strong>, with the file-by-file detail beneath it. The user approves the intent; the detail is there to verify against, not to decode. <em>(The plan <code>TEMPLATE.md</code> carries a matching section.)</em></p>
+<p><strong>Stage 1, the plain-English open (say why before the questions):</strong> when Discuss begins, tell the user in plain English why you're asking before any code — <em>"Before any code I'll ask a few questions about who this is for and what 'good' looks like; your answers steer everything downstream."</em> Then ask. (The <em>why</em> of Discuss is the Stage-1 row above — this is just the user-facing opener, not a second rationale.)</p>
+<p><strong>Keep the docs current — it's part of each stage (no hooks needed beyond the tree check):</strong>
+- <strong>Implement (6):</strong> update <code>claugentic-ARCHITECTURE_TREE.md</code> for any file add/move/remove (also hook-nudged); touch <code>CLAUDE.md</code> only for a genuinely new gotcha/command/pattern — <em>concisely; index, don't duplicate code</em>.
+- <strong>Verify (7) — honesty register:</strong> the report says what the verify <strong>attempted and tagged</strong>, never what it "proved." Deterministic gates passed; reviewer sign-offs are model-upheld judgment, not a guarantee.
+- <strong>Land (8):</strong> append a dated one-liner to <code>claugentic-DECISIONS.md</code> for non-trivial choices; update <code>ROADMAP.md</code> if scope shifted; <strong>run the Stage-9 harvest checklist</strong> (below) before moving on.
+- <strong>Land (8) — honesty register:</strong> the close-out names <strong>which gate-class passed</strong> — the <em>deterministic gates</em> (tests, tree-check, lint/type/security) vs the <em>reviewer sign-offs</em> (the audited dimensions) — never a blanket "verified/done."
+- <strong>Land (8) — close out for the user:</strong> after the slice lands, say it plainly — <em>"This one's done. Next: pick another item the same way, run <code>/claugentic-dev-harness:build</code> to keep working the backlog, or re-run <code>/claugentic-dev-harness:audit</code> for a fresh picture — you're finished when Tier 1 and Tier 2 come back empty."</em>
+- <strong>Retrospect (9):</strong> promote durable learnings into the <code>docs/claugentic-standards/</code> modules (entry point: <code>docs/claugentic-ENGINEERING_STANDARDS.md</code>) / <code>CLAUDE.md</code> / agent files.</p>
+<hr />
+<blockquote>
+<h3 id="adopter-note-reading-this-doc-inside-your-repo-not-the-harness">Adopter note — reading this doc inside YOUR repo (not the harness)<a class="headerlink" href="#adopter-note-reading-this-doc-inside-your-repo-not-the-harness" title="Permanent link">&para;</a></h3>
+<p>When the <code>claugentic-dev-harness</code> plugin is installed into your project, this WORKFLOW.md is a <strong>managed copy</strong> living in your <code>docs/</code>. So a few references below resolve to the <strong>installed plugin</strong>, not to files your repo must contain:
+- <strong>The specialist agents</strong> (<code>plan-reviewer</code>, <code>architect-reviewer</code>, <code>lens-reviewer</code>, <code>yagni-sentinel</code>, <code>honesty-reviewer</code>, …) <strong>and the <code>engine/*.js</code> scripts</strong> referenced throughout live <strong>inside the installed plugin</strong> — agents are resolved at spawn (by their namespaced id), engine scripts are run via the Workflow tool from the install path. They are <strong>NOT</strong> a <code>.claude/agents/</code> or <code>engine/</code> directory your repo has to provide.
+- <strong>The Definition of Done's <em>deterministic gates</em> mean THIS project's OWN gates</strong> — <em>your</em> lint, <em>your</em> type-check, and <em>your</em> test suite — plus the architecture-tree check. The specific commands written below (<code>python -m pytest</code>, <code>python scripts/check_versions_synced.py</code>) are the <strong>harness's own self-test</strong> for developing the plugin itself (version-sync checks the <em>plugin's</em> two manifests and is irrelevant to an adopter). <strong>Substitute your project's equivalents.</strong>
+- <strong>The architecture-tree check is wired as a hook by <code>init</code> only when the tree-gate is enabled</strong> — a fresh or mature-no-tree repo gets a harness-format tree and the hook; a mature repo that already has its own tree is <strong>asked</strong> (replace it with a harness skeleton → gate on, or keep yours → <strong>gate off, no hook wired</strong>). If you keep your own tree (gate off), there's no hook — run <code>scripts/claugentic-check_architecture_tree.py</code> (with <code>python</code> / <code>python3</code> / <code>py</code>) manually at Verify if you ever want a one-off check.</p>
+</blockquote>
+<h2 id="definition-of-done">Definition of Done<a class="headerlink" href="#definition-of-done" title="Permanent link">&para;</a></h2>
+<p>A slice is <strong>done</strong> — and may land (Stage 8) — only when <strong>all</strong> hold. Two groups, same bar; they differ in <em>who</em> says pass:</p>
+<p><strong>Deterministic gates</strong> (pass/fail, can't be argued around):
+1. <strong>Full test suite green</strong> + any regression/snapshot tests — <em>your</em> project's suite. <em>(This plugin's own suite is <code>python -m pytest</code>.)</em>
+2. <strong>Architecture-tree check green</strong> (when the gate is wired) — file-index presence, staleness, and <strong>glob-drift detection</strong>. Run it with whichever interpreter you have (<code>python</code> / <code>python3</code> / <code>py</code>): <code>scripts/claugentic-check_architecture_tree.py</code>.
+   - <strong>Updating the codebase map (the handled drift case).</strong> When this gate reports <em>glob drift</em> — it's watching no files while the repo now contains source (e.g. an <code>init</code>'d empty repo that has since grown real code) — surface it to the user in plain English: <em>"I'm updating your codebase map to match your new code"</em> — then re-detect the layout and reset <code>INCLUDE_GLOBS</code> (init step 5's terminating self-correction). <strong>Scope the claim honestly:</strong> this is the <em>handled</em> drift path reading as plain English — a <strong>genuine gate crash still fails loud by design</strong> (CLAUDE.md: never swallow errors); don't promise "no error ever," only that this one case is plain.
+3. <strong>Version-sync green</strong> — <em>harness-self only</em> (developing this plugin): <code>python scripts/check_versions_synced.py</code> enforces <code>plugin.json</code> ↔ <code>marketplace.json</code> version equality (<code>plugin.json</code> is the source of truth). A <strong>run-gate</strong> (like <code>pytest</code>), not hook-wired; scope is the two manifest versions only. <strong>Not applicable to adopter repos</strong> — skip it.
+4. <strong>Doc-budget green</strong> — the managed ledgers (<code>CLAUDE.md</code>, <code>claugentic-DECISIONS.md</code>, <code>claugentic-ROADMAP.md</code>) stay within byte budget: <code>python scripts/check_doc_budgets.py</code>. A <strong>run-gate</strong> (like version-sync), not hook-wired; it emits a <strong>WARN at ≥90%</strong> (the cue to condense — merge superseded entries to git history) and fails only on a strict breach.
+   - <strong>Condense on WARN (model-upheld, the ledger-condensation discipline).</strong> A ≥90% WARN is a <strong>do-it-now signal, not a deferral</strong> — as part of the current work, <strong>condense that ledger</strong>: merge superseded/settled/landed entries into git history (the archive) and keep only the still-true, forward-looking essentials a future agent actually needs. The always-/often-loaded context stays lean by design; a ledger that only grows is tech debt. No separate task — the WARN is the cue, the condense is the work.
+5. <strong>The project's lint / type-check / security gates</strong> green.</p>
+<p><strong>Reviewer sign-offs</strong> (model judgment, not a mechanical gate):
+5. <strong>In-scope <code>docs/claugentic-standards/</code> dimensions pass</strong> the <code>architect-reviewer</code> audit (incl. SOLID) — solo, or synthesized from <code>lens-reviewer</code>s + <code>yagni-sentinel</code> — for what this slice touches; <code>/simplify</code> + <code>/code-review</code> run.
+6. <strong>Runtime QA (dial-gated)</strong> — when the slice's spec carries acceptance criteria (the <code>docs/claugentic-PRODUCT_SPEC.md</code> schema) and the repo records a run-the-app command, and the Verify dial has fanned out: the QA workflow (<code>engine/qa.js</code>) attempts each criterion's flow in the running app and tags the outcome (screenshots on failure); findings join the Verify synthesis. The script mechanically sequences the flow attempts and never silently skips (a QA run that could not boot the app reports exactly that); invoking it, and the flow observations themselves, are model-upheld.</p>
+<p><strong>Plus:</strong> acceptance criteria met (the spec's checklist) <strong>+ no new tech debt.</strong></p>
+<p><strong>The autonomy ladder (who watches the iteration to this bar):</strong> <strong>checkpoint</strong> (default — the three routine pauses) → <strong>build-to-green</strong> (requestable; unlocked per-repo only when CI runs the deterministic gates, a test baseline covers the touched code, and the item traces to an approved spec with testable acceptance criteria — the contract, the evidence-stated checks, and the verbatim decline live in <code>skills/build/SKILL.md</code> → Mode handling; the engine — <code>engine/build-item.js</code> — is built and runs only via the Workflow tool from the installed plugin (the session precondition), so a build-to-green ask declines only when a per-repo condition is unmet or that engine is unavailable). Either rung iterates to the <strong>same fixed bar above</strong>; build-to-green is a reduction of unwatched-run risk, never a substitute for the unbuilt deterministic trust-gates.</p>
+<p>Iterate to meet this <strong>fixed</strong> bar, then <strong>stop</strong> — it terminates because the bar is <em>finite</em>, not "is it perfect?". Genuinely separate future work → <code>ROADMAP.md</code> (backlog, <em>not</em> debt).</p>
+<hr />
+<h2 id="executing-an-audit-backlog-item-tag-discipline">Executing an audit backlog item — tag → discipline<a class="headerlink" href="#executing-an-audit-backlog-item-tag-discipline" title="Permanent link">&para;</a></h2>
+<p><code>/claugentic-dev-harness:audit</code> writes a tagged backlog into <code>docs/claugentic-ROADMAP.md</code>; there is <strong>no separate refactor command</strong>. Each item runs through the pipeline above, and its <strong>tag selects the discipline</strong> the implementer applies. The tag→discipline mapping is defined here (the canonical home); the rationale is settled — don't re-litigate it.</p>
+<table>
+<thead>
+<tr>
+<th>Tag</th>
+<th>Discipline</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>refactor</code></strong></td>
+<td><strong>Characterization-tests-first — a HARD precondition.</strong> A refactor item on untested behavior-bearing code <strong>cannot start until its Tier-1 "establish a test baseline" item is done</strong>; if that baseline is absent, the implementer <strong>stops and asks</strong> rather than touching code. Durable enforcement will be the Trust-track <code>PreToolUse</code> characterization hook (the first Phase-1 item); <strong>until that hook lands, this is upheld by the implementer + the Verify gate</strong> — not yet automatic. <strong>Say this to the user when the pause fires:</strong> <em>"Before I tidy this code I need to capture what it currently does as a test, or I can't prove I didn't change its behavior — so I'll establish that baseline first."</em></td>
+</tr>
+<tr>
+<td><strong><code>capability-upgrade</code></strong></td>
+<td>Migration safety — feature-flag the new path · dual-write / shadow-read · keep a rollback.</td>
+</tr>
+<tr>
+<td><strong><code>dependency-health</code></strong></td>
+<td>Update + verify — bump, run the full suite green, check the changelog for breaking changes.</td>
+</tr>
+<tr>
+<td><strong><code>bug</code></strong></td>
+<td>Reproduce-first — a <strong>failing test that captures the bug</strong>, then the fix that makes it pass.</td>
+</tr>
+<tr>
+<td><strong><code>feature</code></strong></td>
+<td>The standard pipeline (no extra precondition).</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-the-learning-loop-how-the-harness-grows">9. The learning loop (how the harness grows)<a class="headerlink" href="#9-the-learning-loop-how-the-harness-grows" title="Permanent link">&para;</a></h2>
+<p>A <strong>finite harvest checklist the orchestrator RUNS at Land</strong> (manual discipline, not automation — the orchestrator runs it; it does not trigger by itself). Sweep these six; for each, <strong>emit the edit</strong> or an explicit <em>"nothing durable this slice"</em>:</p>
+<ul>
+<li><strong>(a)</strong> A convention that recurred across review findings → <strong>promote to STANDARDS / CLAUDE.md</strong>. A promoted lesson <strong>must record the incident that motivated it</strong> (the failure/near-miss it prevents) — so the rule is un-cargo-cultable and safe to delete once its cause is gone.</li>
+<li><strong>(b)</strong> A manual/lens catch that a gate or checklist <strong>could have made</strong> → <strong>open a gate item on <code>ROADMAP.md</code></strong> (not just a <code>claugentic-DECISIONS.md</code> line — a logged decision doesn't become a check by itself). <em>(Worked example: a manual catch that recurred at Verify — logged as a decision but never enforced — gets opened as a <code>ROADMAP.md</code> gate item so it becomes a real check, not just a note.)</em></li>
+<li><strong>(c)</strong> A prompt tweak that sharpened a specialist → <strong>fold into the <code>.claude/agents/</code> role file</strong>.</li>
+<li><strong>(d)</strong> Process friction → <strong>edit this <code>WORKFLOW.md</code></strong>.</li>
+<li><strong>(e)</strong> Every non-trivial choice → <strong>one dated line in <code>claugentic-DECISIONS.md</code></strong>.</li>
+<li><strong>(f)</strong> A <strong>load-bearing invariant</strong> this slice established or relied on (a "must stay true or X breaks" constraint whose rationale isn't obvious from the code) → <strong>record it in <code>docs/claugentic-INVARIANTS.md</code></strong> with its why + dated provenance. <strong>Create the file lazily</strong> — only when you have the first genuine invariant to record (do not seed it empty); most slices have none, so the honest emit is usually <em>"no new invariant this slice."</em></li>
+</ul>
+<p><strong>Promotion is two-tier (manual, user-approved):</strong> a <em>universal</em> lesson → stage in <code>docs/claugentic-standards/CANDIDATES.md</code>, then promote upstream so every repo gets it on update; a <em>codebase-specific</em> lesson stays <strong>local</strong> (<code>CLAUDE.md</code> / <code>claugentic-DECISIONS.md</code>), never propagated.</p>
+<hr />
+<h2 id="plan-file-lifecycle">Plan file lifecycle<a class="headerlink" href="#plan-file-lifecycle" title="Permanent link">&para;</a></h2>
+<p><code>​.claude/plans/NNNN-&lt;slug&gt;.md</code> (active, contains Plan + Review + Spec + slice checklist) → on completion, <strong>remove it</strong> — git history keeps it. One plan per substantial change; the slices inside it are the per-session units. Numbering is sequential (<code>0001</code>, <code>0002</code>, …).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © 2026 myBlueprint Corp. &nbsp;·&nbsp; <a href="https://myblueprint.ca/privacy">Privacy</a>
+
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+    <a href="https://github.com/myblueprint-spaces/DistrictSync" target="_blank" rel="noopener" title="DistrictSync on GitHub" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.tabs", "navigation.tabs.sticky", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "announce.dismiss"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
