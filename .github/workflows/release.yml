@@ -29,6 +29,12 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt pyinstaller
+      # Stamp the version from the pushed tag into a bundled module so the exe's
+      # --version reports the real release (it can't read package metadata when
+      # frozen). e.g. tag v3.3.1 -> src/_version.py: version = '3.3.1'.
+      - name: Stamp version from tag
+        shell: bash
+        run: echo "version = '${GITHUB_REF_NAME#v}'" > src/_version.py
       # Streamlit pages are exec()'d at runtime so PyInstaller's static
       # analyzer starting at src/main.py never sees them. --paths=.
       # plus --collect-submodules=src + explicit --hidden-import for
@@ -43,6 +49,7 @@ jobs:
           --collect-all streamlit
           --collect-submodules src
           --paths=.
+          --hidden-import=src._version
           --hidden-import=pandas
           --hidden-import=yaml
           --hidden-import=logging.config
@@ -84,11 +91,15 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt pyinstaller
+      - name: Stamp version from tag
+        shell: bash
+        run: echo "version = '${GITHUB_REF_NAME#v}'" > src/_version.py
       - run: >
           pyinstaller --onefile --name DistrictSync
           --add-data "config:config"
           --collect-submodules src
           --paths=.
+          --hidden-import=src._version
           --hidden-import=pandas
           --hidden-import=yaml
           --hidden-import=logging.config
@@ -126,11 +137,15 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt pyinstaller
+      - name: Stamp version from tag
+        shell: bash
+        run: echo "version = '${GITHUB_REF_NAME#v}'" > src/_version.py
       - run: >
           pyinstaller --onefile --name DistrictSync
           --add-data "config:config"
           --collect-submodules src
           --paths=.
+          --hidden-import=src._version
           --hidden-import=pandas
           --hidden-import=yaml
           --hidden-import=logging.config
