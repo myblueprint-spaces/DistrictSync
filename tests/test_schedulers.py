@@ -90,6 +90,176 @@ class TestBuildRegisterScript:
         assert "-WorkingDirectory $env:DSYNC_WORKDIR" in script
         assert "New-ScheduledTaskTrigger -Daily -At $at" in script
 
+    def test_catch_emits_plain_text_not_write_error(self):
+        """The catch uses [Console]::Error.WriteLine — NOT Write-Error.
+
+        Write-Error to a redirected stderr is CLIXML-serialized by PowerShell
+        (a noisy ``#< CLIXML`` blob that echoes the whole script); the bare
+        [Console]::Error.WriteLine emits a clean plain-text one-liner.
+        """
+        from src.scheduler.windows import _build_register_script
+
+        for has_pw in (True, False):
+            script = _build_register_script(has_password=has_pw)
+            assert "[Console]::Error.WriteLine($_.Exception.Message)" in script
+            assert "Write-Error" not in script
+            # The success path is unchanged.
+            assert "Write-Output 'DSYNC_OK'" in script
+            assert "exit 1" in script
+
+
+# -----------------------------------------------------------------------
+# _clean_ps_stderr — de-CLIXML the PowerShell error surface
+# -----------------------------------------------------------------------
+
+
+# A real PowerShell 5.1 CLIXML stderr blob from a failed Register-ScheduledTask
+# (Write-Error to a redirected stderr). It echoes the whole failing script and
+# buries "Access is denied." inside <S S="Error"> nodes with _x000D_/_x000A_
+# line breaks. _clean_ps_stderr must return ONLY the human message.
+_REAL_CLIXML_STDERR = (
+    "#< CLIXML\r\n"
+    '<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+    '<S S="Error">Register-ScheduledTask : Access is denied._x000D__x000A_</S>'
+    '<S S="Error">At line:9 char:3_x000D__x000A_</S>'
+    '<S S="Error">+   Register-ScheduledTask -TaskName $env:DSYNC_TASKNAME -InputObject $task -User _x000D__x000A_</S>'
+    '<S S="Error">+   $env:DSYNC_USER -Password $env:DSYNC_TASK_PW -Force | Out-Null_x000D__x000A_</S>'
+    '<S S="Error">+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~_x000D__x000A_</S>'
+    '<S S="Error">    + CategoryInfo          : PermissionDenied: (PS_ScheduledTask:Root/Microsoft/...) [Register-ScheduledTask], CimException_x000D__x000A_</S>'
+    '<S S="Error">    + FullyQualifiedErrorId : HRESULT 0x80070005,Register-ScheduledTask_x000D__x000A_</S>'
+    "</Objs>"
+)
+
+
+class TestCleanPsStderr:
+    def test_clixml_blob_yields_clean_access_denied_no_leak(self):
+        from src.scheduler.windows import _clean_ps_stderr
+
+        cleaned = _clean_ps_stderr(_REAL_CLIXML_STDERR)
+
+        # The human message survives ...
+        assert "Access is denied" in cleaned
+        # ... and the CLIXML noise / echoed script body / secret literal do not.
+        assert "CLIXML" not in cleaned
+        assert "<Objs" not in cleaned
+        assert "Register-ScheduledTask -TaskName" not in cleaned
+        assert "DSYNC_TASK_PW" not in cleaned
+        assert "_x000D_" not in cleaned
+
+    def test_clixml_strips_leading_positional_prefix(self):
+        from src.scheduler.windows import _clean_ps_stderr
+
+        cleaned = _clean_ps_stderr(_REAL_CLIXML_STDERR)
+        # The "Register-ScheduledTask : " positional prefix is stripped.
+        assert not cleaned.startswith("Register-ScheduledTask")
+
+    def test_plain_text_passes_through_stripped(self):
+        from src.scheduler.windows import _clean_ps_stderr
+
+        assert _clean_ps_stderr("  Access is denied.  ") == "Access is denied."
+
+    def test_clixml_without_error_node_is_safe_generic(self):
+        from src.scheduler.windows import _clean_ps_stderr
+
+        cleaned = _clean_ps_stderr("#< CLIXML\r\n<Objs></Objs>")
+        # No error node → a safe generic message, never the raw blob.
+        assert "CLIXML" not in cleaned
+        assert "<Objs" not in cleaned
+
+    def test_first_node_with_dsync_ref_is_dropped_not_echoed(self):
+        """Defense-in-depth: if the script body collapses into node 0, drop it.
+
+        Not a shape PS 5.1 emits (the message line is node 0; script echoes are
+        nodes 1+), but the CLIXML branch is untrusted — a first node still
+        carrying a ``DSYNC_*`` reference must yield the safe generic message,
+        never echo the variable name.
+        """
+        from src.scheduler.windows import _clean_ps_stderr
+
+        # Node 0 carries a DSYNC_ ref that SURVIVES the positional-prefix strip
+        # (it sits after the "<cmd> : " separator), so the guard — not the prefix
+        # regex — is what must drop it.
+        blob = (
+            "#< CLIXML\r\n"
+            '<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+            '<S S="Error">Register-ScheduledTask : failed binding $env:DSYNC_TASK_PW</S></Objs>'
+        )
+        cleaned = _clean_ps_stderr(blob)
+        assert "DSYNC_" not in cleaned
+        assert "$env" not in cleaned
+
+    def test_canonical_marker_still_matches_after_clean(self):
+        """register_task de-CLIXMLs before the marker match — Access is denied survives."""
+        from pathlib import Path
+
+        from src.scheduler.windows import register_task
+
+        with patch("src.scheduler.windows.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr=_REAL_CLIXML_STDERR)
+            ok, msg = register_task(
+                task_name="DistrictSync_Daily",
+                exe_path=Path("C:/DistrictSync.exe"),
+                sis_type="myedbc",
+                input_dir=Path("C:/input"),
+                output_dir=Path("C:/output"),
+                run_time="03:00",
+                run_as_user="jane",
+                run_as_password="s3cr3t!",
+            )
+        assert ok is False
+        assert "Access is denied" in msg
+        # The cleaned message must not leak the script body or the secret literal.
+        assert "CLIXML" not in msg
+        assert "Register-ScheduledTask -TaskName" not in msg
+        assert "DSYNC_TASK_PW" not in msg
+        assert "s3cr3t!" not in msg
+
+
+# -----------------------------------------------------------------------
+# is_elevated — administrator detection (used by the wizard classifier)
+# -----------------------------------------------------------------------
+
+
+class TestIsElevated:
+    def test_win32_admin_true(self):
+        from src.scheduler import windows
+
+        fake_ctypes = MagicMock()
+        fake_ctypes.windll.shell32.IsUserAnAdmin.return_value = 1
+        with (
+            patch.object(windows.sys, "platform", "win32"),
+            patch.dict("sys.modules", {"ctypes": fake_ctypes}),
+        ):
+            assert windows.is_elevated() is True
+
+    def test_win32_admin_false(self):
+        from src.scheduler import windows
+
+        fake_ctypes = MagicMock()
+        fake_ctypes.windll.shell32.IsUserAnAdmin.return_value = 0
+        with (
+            patch.object(windows.sys, "platform", "win32"),
+            patch.dict("sys.modules", {"ctypes": fake_ctypes}),
+        ):
+            assert windows.is_elevated() is False
+
+    def test_win32_error_is_false(self):
+        from src.scheduler import windows
+
+        fake_ctypes = MagicMock()
+        fake_ctypes.windll.shell32.IsUserAnAdmin.side_effect = OSError("boom")
+        with (
+            patch.object(windows.sys, "platform", "win32"),
+            patch.dict("sys.modules", {"ctypes": fake_ctypes}),
+        ):
+            assert windows.is_elevated() is False
+
+    def test_non_win32_is_false(self):
+        from src.scheduler import windows
+
+        with patch.object(windows.sys, "platform", "linux"):
+            assert windows.is_elevated() is False
+
 
 # -----------------------------------------------------------------------
 # Windows scheduler tests — register_task (subprocess mocked)

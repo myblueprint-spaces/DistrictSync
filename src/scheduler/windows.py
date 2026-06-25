@@ -48,6 +48,16 @@ prior logged-on-only default. *run_highest* is **ignored** without a password
 (today's semantics), so ``run_highest=True`` + no password still yields
 ``Limited``.
 
+**Readable errors:** the script's ``catch`` emits the bare exception message
+via ``[Console]::Error.WriteLine`` (not ``Write-Error``, which PowerShell
+CLIXML-serializes on a redirected stderr into a noisy ``#< CLIXML`` blob that
+echoes the whole script). :func:`_clean_ps_stderr` is a defensive Python
+fallback that decodes the human message out of any CLIXML that still arrives
+(extracting only the ``<S S="Error">`` text, never the echoed script body), so
+the caller and the Setup Wizard always get a clean one-liner. :func:`is_elevated`
+lets the wizard tell an un-elevated "Access is denied" (run as administrator)
+apart from an elevated one (a credential / batch-logon-right problem).
+
 ``delete_task`` / ``query_task`` deliberately remain on ``schtasks.exe`` —
 they are read-only / name-only, have no command-length or credential surface,
 and are fully tested; migrating them would expand blast radius for no benefit
@@ -74,9 +84,11 @@ import base64
 import getpass
 import logging
 import os
+import re
 
 # subprocess is required to invoke powershell.exe / schtasks.exe.
 import subprocess  # nosec B404
+import sys
 from pathlib import Path
 
 from src.utils.validators import (
@@ -101,6 +113,66 @@ _CMDLET_MISSING_MARKERS = (
     "CommandNotFoundException",
 )
 
+# Marker that PowerShell CLIXML-serialized a stderr stream (the noisy
+# ``#< CLIXML … <Objs>…`` blob produced when ``Write-Error`` writes to a
+# redirected stderr). _clean_ps_stderr decodes the human message out of it.
+_CLIXML_MARKER = "#< CLIXML"
+
+# Bounded match for the human-readable error text inside a CLIXML <S> node.
+# Only the error message is extracted — never the echoed script body — so the
+# ``$env:DSYNC_TASK_PW`` literal and the rest of the program cannot leak out.
+_CLIXML_ERROR_NODE_RE = re.compile(r'<S\s+S="Error">(.*?)</S>', re.DOTALL)
+
+
+def _clean_ps_stderr(text: str) -> str:
+    """Return a clean, human-readable one-liner from PowerShell stderr.
+
+    When ``Write-Error`` (the legacy ``catch``) writes to a redirected stderr,
+    PowerShell 5.1 serializes it as a CLIXML blob — ``#< CLIXML`` followed by an
+    ``<Objs>…</Objs>`` document whose **first** ``<S S="Error">`` node holds the
+    human message and whose **subsequent** ``<S S="Error">`` nodes **echo the
+    failing script** (the ``At line:N``, ``+   <code>``, ``CategoryInfo``,
+    ``FullyQualifiedErrorId`` lines), with literal ``_x000D_`` / ``_x000A_`` for
+    CR / LF. This is defensive: the script now emits plain text via
+    ``[Console]::Error.WriteLine``, but a CLIXML blob can still arrive from a
+    different cmdlet/host, so we decode it here too.
+
+    Security: only the **first** error node — the message line — is returned;
+    the later nodes that echo the script body (which contains the literal
+    ``$env:DSYNC_TASK_PW`` reference, not its value, plus the rest of the
+    program) are **never** returned. Parsing is a bounded regex over the error
+    nodes, not an XML parser fed untrusted input.
+
+    Non-CLIXML text is returned stripped, unchanged.
+    """
+    if _CLIXML_MARKER not in text:
+        return text.strip()
+
+    parts = _CLIXML_ERROR_NODE_RE.findall(text)
+    if not parts:
+        # CLIXML present but no error node we recognize — return a safe,
+        # generic message rather than echo the raw blob (which carries the
+        # script body). Fail loud without leaking.
+        return "PowerShell registration failed (error detail unavailable)."
+
+    # Only the FIRST error node is the message; the rest echo the script body.
+    decoded = parts[0]
+    # CLIXML encodes control chars as _x00NN_ entities; decode + drop the line
+    # breaks (the message node is a single logical line).
+    decoded = decoded.replace("_x000D_", "").replace("_x000A_", "")
+    # Strip the leading positional prefix PowerShell prepends to a piped error
+    # record (e.g. "Register-ScheduledTask : Access is denied." → "Access is
+    # denied."). Only strip when a "<cmd> : " prefix is actually present so a
+    # message that legitimately contains a colon is not truncated.
+    decoded = re.sub(r"^\S.*?\s:\s", "", decoded, count=1).strip()
+    # Defense-in-depth: if the first node still carries a DSYNC_* reference (the
+    # script body collapsed into node 0 — not a shape PS 5.1 emits, but the CLIXML
+    # branch is untrusted), drop it rather than echo it. The password VALUE never
+    # reaches stderr by construction; this guards even the variable name leaking.
+    if "DSYNC_" in decoded:
+        return "PowerShell registration failed (error detail unavailable)."
+    return decoded
+
 
 def current_run_as_user() -> str:
     """Resolve the account the scheduled task should run as.
@@ -115,6 +187,30 @@ def current_run_as_user() -> str:
     if domain and username:
         return f"{domain}\\{username}"
     return getpass.getuser()
+
+
+def is_elevated() -> bool:
+    """Return True if the current process is running with administrator rights.
+
+    On Windows, queries ``shell32.IsUserAnAdmin()`` (returns non-zero when the
+    caller's token has the Administrators group enabled). Any failure — missing
+    API, non-Windows ``ctypes.windll``, unexpected error — resolves to ``False``
+    (treat unknown as "not elevated"). Off Windows there is no equivalent admin
+    concept here, so it always returns ``False``.
+
+    Used by the Setup Wizard to distinguish an *un*-elevated "Access is denied"
+    (→ tell the user to run as administrator) from an elevated one (→ a
+    credential / batch-logon-right problem, not an elevation problem), so the
+    wizard stops sending an already-elevated admin in circles.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
+    except Exception:
+        return False
 
 
 def _build_register_script(*, has_password: bool) -> str:
@@ -178,7 +274,13 @@ def _build_register_script(*, has_password: bool) -> str:
             "  Register-ScheduledTask -TaskName $env:DSYNC_TASKNAME "
             "-InputObject $task -Force | Out-Null\n"
         )
-    tail = "  Write-Output 'DSYNC_OK'\n} catch {\n  Write-Error $_.Exception.Message\n  exit 1\n}\n"
+    # The catch writes the bare exception message to stderr via
+    # [Console]::Error.WriteLine — NOT Write-Error. Write-Error to a redirected
+    # stderr is CLIXML-serialized by PowerShell (a ``#< CLIXML … <Objs>…`` blob
+    # that buries the human message under the echoed script + XML noise);
+    # [Console]::Error.WriteLine emits plain text so the caller surfaces a clean
+    # one-liner (e.g. "Access is denied."). ``exit 1`` keeps the failure loud.
+    tail = "  Write-Output 'DSYNC_OK'\n} catch {\n  [Console]::Error.WriteLine($_.Exception.Message)\n  exit 1\n}\n"
     return common + principal_and_register + tail
 
 
@@ -390,7 +492,13 @@ def register_task(
         return False, _MSG_NO_POWERSHELL
 
     stdout = (result.stdout or "").strip()
-    stderr = (result.stderr or "").strip()
+    # _clean_ps_stderr strips any PowerShell CLIXML serialization down to the
+    # human error line BEFORE the marker match below, so canonical markers still
+    # match and the echoed script body (which contains the literal
+    # $env:DSYNC_TASK_PW reference) never reaches the caller. The script's catch
+    # already emits plain text via [Console]::Error.WriteLine; this is the
+    # defensive fallback for any CLIXML arriving from another cmdlet/host.
+    stderr = _clean_ps_stderr(result.stderr or "")
     success = result.returncode == 0 and "DSYNC_OK" in stdout
 
     if success:
@@ -398,16 +506,17 @@ def register_task(
         return True, stdout
 
     # Map a missing ScheduledTasks module (pre-Win8) to a distinct, actionable
-    # message; otherwise surface the raw PowerShell exception text verbatim so
-    # the wizard classifier can match Windows' own credential/logon wording.
+    # message; otherwise surface the cleaned PowerShell exception text so the
+    # wizard classifier can match Windows' own credential/logon wording.
     if any(marker in stderr for marker in _CMDLET_MISSING_MARKERS):
         message = _MSG_NO_MODULE
     else:
         message = stderr or stdout or "PowerShell registration failed with no output."
 
-    # stderr is surfaced verbatim. register_task itself never adds the password to
-    # the message or logs — the script never echoes $env:DSYNC_TASK_PW and the
-    # value is not in argv; tested on the failure path. (We do not re-scrub
+    # stderr is cleaned (de-CLIXML'd) but otherwise surfaced as-is. register_task
+    # never adds the password to the message or logs — the script never echoes
+    # $env:DSYNC_TASK_PW, the value is not in argv, and _clean_ps_stderr drops the
+    # echoed script body; tested on the failure path. (We do not re-scrub
     # PowerShell's own exception text; the cmdlets are not known to echo the
     # supplied -Password/-User, but that is not asserted as a guarantee.)
     logger.error(f"Failed to register task '{task_name}': {message}")

@@ -1,6 +1,6 @@
 # 0009 — Windows scheduler on PowerShell `Register-ScheduledTask` (fix unattended-run regression)
 
-- **Status:** Approved — Slice 1 implemented, gates green + Verify PASS; activation verified live (elevated), logged-off/SFTP operator sign-off pending; Slice 2 pending
+- **Status:** Approved — both slices implemented, gates green + Verify PASS; Slice-1 activation verified live (elevated); logged-off/SFTP operator sign-off pending before merge
 - **Roadmap item:** none — regression fix (surfaced 2026-06-25 during SD54 rollout prep). Add a DECISIONS entry on land.
 - **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` · regression commit `872f340` (the `/TR`→`/XML` long-path fix) · prior feature `0e38bbb` (unattended run-as) · `src/scheduler/windows.py` · `tests/test_scheduler_runas.py` · `tests/test_schedulers.py`
 
@@ -112,7 +112,7 @@ Full gate on land: `pytest` (80% cov) + `ruff check`/`format` + `mypy src --excl
 ## Decomposition (slices)
 
 - [x] **Slice 1 — PowerShell registration** (`register_task` + module docstring rewrite, `validators.py` copy, both test files, ARCHITECTURE_TREE/CLAUDE/DECISIONS/INVARIANTS/ROADMAP). Lands complete: fully replaces the broken mechanism, keeps the public signature, leaves delete/query/linux untouched, independently mock-testable + user-verifiable (live). **Deliverable contract:** Slice 1's spec publishes the **canonical failure-message substrings** `register_task` emits, so Slice 2 keys off real strings. **This is the SD54-unblocking slice.**
-- [ ] **Slice 2 — Wizard diagnostics** (`is_elevated()` **in `src/scheduler/windows.py`** so it's mypy-checked — UI is mypy-excluded — with a non-win32 guard; error classification replacing the blanket "Run as administrator"; its ARCHITECTURE_TREE line). Lands complete; small; keys off Slice 1's published message contract. Improves UX, not SD54-blocking → lands second.
+- [x] **Slice 2 — Wizard diagnostics** (`is_elevated()` **in `src/scheduler/windows.py`** so it's mypy-checked — UI is mypy-excluded — with a non-win32 guard; error classification replacing the blanket "Run as administrator"; its ARCHITECTURE_TREE line). Lands complete; small; keys off Slice 1's published message contract. Improves UX, not SD54-blocking → lands second.
 
 ---
 
@@ -204,7 +204,10 @@ Without step 2 + the logged-off + SFTP-reachable check in step 3, a green wizard
 3. The task **runs while you are logged off** (or `Start-ScheduledTask` from a different session) AND that run **produces output CSVs and the SFTP upload succeeds** — confirms the stored-credential logon has the network token S4U lacks.
 4. Task Scheduler **`Last Run Result = 0x0`**.
 
-### Slice 2 — Wizard diagnostics
-**Files & changes:** `is_elevated() -> bool` in `src/scheduler/windows.py` (win32: `ctypes.windll.shell32.IsUserAnAdmin()`; non-win32: `False`/guard). `01_Setup_Wizard.py` `_register_schedule` failure branch (`:134-141`) classifies on Slice 1's message substrings + `is_elevated()`: not-elevated + access-denied → "Run as administrator"; elevated + access-denied → "Already running as administrator — the account may lack the 'Log on as a batch job' right, or the password was rejected (use your account password, not your Windows Hello PIN; for a Microsoft Account that's your microsoft.com password)"; `"PowerShell not found"`/`"ScheduledTasks module not available"` → their own actionable lines; else → raw `msg`.
-**Tests:** classifier table (each branch) with `is_elevated` mocked both ways; `is_elevated()` win32-path mocked + non-win32 returns False.
-**Acceptance:** all gates green; tree updated; no SD54 dependency (UX only).
+### Slice 2 — Wizard diagnostics + readable PowerShell errors
+**Files & changes:**
+- **De-CLIXML the error surface (`src/scheduler/windows.py`, live-discovered 2026-06-25).** A real failed registration surfaces PowerShell's CLIXML error serialization (`#< CLIXML … <Objs>…<S S="Error"> : Access is denied.</S></Objs>`) — the whole script + a buried message — because `Write-Error` to a redirected stderr is CLIXML-wrapped. Fix at the source: the script's `catch` emits the plain text via `[Console]::Error.WriteLine($_.Exception.Message); exit 1` (bypasses PS CLIXML formatting). Add a defensive `_clean_ps_stderr(text)` in Python that, if `#< CLIXML` is still seen, extracts the human message from the `<S S="Error">…</S>` nodes (decoding `_x000D_`/`_x000A_`) and returns a clean one-liner — used for both the canonical-marker match and the returned message. **Must NOT leak: extract only the error message, never echo the script body** (which contains the `$env:DSYNC_TASK_PW` literal — not the value, but still noise). Canonical markers (`"PowerShell not found"`, `"ScheduledTasks module not available"`, `"Access is denied"`) still match against the cleaned text.
+- `is_elevated() -> bool` in `src/scheduler/windows.py` (win32: `ctypes.windll.shell32.IsUserAnAdmin()`; non-win32: `False`/guard).
+- `01_Setup_Wizard.py` `_register_schedule` failure branch (`:134-141`) classifies on Slice 1's message substrings + `is_elevated()`: not-elevated + access-denied → "Run as administrator"; elevated + access-denied → "Already running as administrator — the account may lack the 'Log on as a batch job' right, or the password was rejected (use your account password, not your Windows Hello PIN; for a Microsoft Account that's your microsoft.com password)"; `"PowerShell not found"`/`"ScheduledTasks module not available"` → their own actionable lines; else → raw (now CLEAN) `msg`.
+**Tests:** classifier table (each branch) with `is_elevated` mocked both ways; `is_elevated()` win32-path mocked + non-win32 returns False; `_clean_ps_stderr` on a real CLIXML sample → clean "Access is denied." with NO script body and NO `DSYNC_TASK_PW`; the script `catch` uses `[Console]::Error.WriteLine` not `Write-Error`.
+**Acceptance:** all gates green; tree updated; no SD54 dependency (UX only); SD74 byte-identical.
