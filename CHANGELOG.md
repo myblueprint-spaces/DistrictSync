@@ -9,6 +9,36 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-06-25
+
+Fixes the unattended Windows scheduling regression that blocked district rollout,
+and makes its failures legible.
+
+### Fixed
+
+- **Unattended Windows scheduling ("Access is denied").** Registering the daily
+  task to run *whether or not the user is logged on* failed — even when elevated —
+  after v3.3.0 moved registration to `schtasks /Create /XML` (the credentials in
+  the XML broke the run-as handoff). Registration now uses PowerShell
+  `Register-ScheduledTask` with an explicit `Password`-logon principal, restoring
+  unattended scheduling. The one-time schedule setup must be run **as
+  administrator** (creating an unattended task requires elevation).
+
+### Changed
+
+- **Readable scheduler errors + elevation-aware diagnostics.** A failed schedule
+  registration now shows a clean one-line message instead of a raw PowerShell
+  CLIXML blob, and the wizard no longer tells an already-elevated user to "run as
+  administrator" — it distinguishes a missing-elevation, a rejected credential
+  (Windows account password vs Windows Hello PIN / Microsoft-Account password),
+  and a too-old Windows.
+
+### Security
+
+- The scheduled-task run-as password is no longer placed on the process command
+  line. It is passed to PowerShell only through a child-process environment
+  variable, never logged and never written to disk.
+
 ## [3.3.0] - 2026-06-24
 
 Adds the SpacesEDU **StudentAttendance** export, unifies the CLI and web-UI
