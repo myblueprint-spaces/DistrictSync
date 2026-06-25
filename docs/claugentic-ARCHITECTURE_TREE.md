@@ -59,7 +59,7 @@ _Last generated from `main` @ c669404._
 
 ## src/scheduler/
 
-- `src/scheduler/windows.py` — Windows Task Scheduler integration (`register_task`/`query_task`/`delete_task`): registers via Task Scheduler XML (`schtasks /Create /XML`, no 261-char `/TR` limit; `_build_task_xml()` sets working-dir/schedule/principal, XML-escaped); `run_as_password` → `/RU`+`/RP`, Password logon + HighestAvailable (unattended; password never in XML, `***` in logs); inputs validated via `src/utils/validators.py`.
+- `src/scheduler/windows.py` — Windows Task Scheduler: `register_task` uses PowerShell `Register-ScheduledTask` (FIXED `_build_register_script()` run via `-EncodedCommand` base64, reads only `$env:DSYNC_*` + fresh-copy child env `_build_env()`); password → `-LogonType Password`/`Highest` (child env only, never argv/logs), no-password → `Interactive`/`Limited` (never S4U); fail-loud msgs; `delete_task`/`query_task` stay on `schtasks.exe`.
 - `src/scheduler/linux.py` — Linux/macOS cron integration: `register_cron()` / `delete_cron()` append/remove a sentinel-tagged crontab entry via the system `crontab` command; uses `shlex.quote()` for safe shell escaping.
 
 ---

@@ -4,6 +4,7 @@ The prioritized backlog the claugentic harness works through. `/claugentic-dev-h
 
 ## Later
 
+- **Scheduler mechanism consistency follow-up (Plan 0009)** — `register_task` now uses PowerShell `Register-ScheduledTask`, but `delete_task`/`query_task` deliberately remain on `schtasks.exe` (read-only / name-only, no length/credential surface, fully tested, and `query_task`'s LIST-parse output is consumed by `Home.py`). Possible follow-up: migrate delete/query to the `ScheduledTasks` module (`Unregister-ScheduledTask`/`Get-ScheduledTask`/`Get-ScheduledTaskInfo`) for a single mechanism — only if the added blast radius (re-deriving the `query_task` output contract) is justified. _(Deliberate inconsistency, not debt; tracked 2026-06-25.)_
 - **Config-driven columns tech debt** — `src/etl/transformers/student_courses.py` hardcodes ~10 source column names and bypasses its `field_map` for input (the field_map there only sets output column order). Migrate to fully config-driven source columns. _(Already tracked in the project's own `docs/DECISIONS.md`; surfaced here by the init harvest of `docs/WORKFLOW.md`.)_
 - **Consider consolidating the two harnesses** — this repo now runs both its in-house harness and claugentic in parallel (two architecture trees, two tree-gate hooks). Decide whether to converge on one to reduce duplicate gates/maintenance. _(init observation, 2026-06-17.)_
 
