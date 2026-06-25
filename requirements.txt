@@ -10,4 +10,7 @@ keyring>=24.0
 
 # Web UI — bundled into the .exe so launching DistrictSync with no args
 # opens the Streamlit-based wizard. Required at runtime by src/ui/launcher.py.
-streamlit>=1.30
+# Minor pinned <1.55: the idle-shutdown watchdog (src/ui/lifecycle.py) reads the
+# PRIVATE Runtime._session_mgr.num_active_sessions() internal — verified on 1.54.
+# A bump must re-verify that reach + the /_stcore/health body. See DECISIONS.md.
+streamlit>=1.54,<1.55

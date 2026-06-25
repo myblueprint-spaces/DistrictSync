@@ -16,12 +16,13 @@ _root = Path(__file__).parent.parent.parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from src.ui.brand import header, inject_brand_css  # noqa: E402
+from src.ui.brand import header, inject_brand_css, sidebar_exit_control  # noqa: E402
 from src.utils.paths import user_log_file  # noqa: E402
 
 st.set_page_config(page_title="Run History — DistrictSync", page_icon="📋", layout="wide")
 inject_brand_css()
 header("Run History", "Automated daily ETL run log")
+sidebar_exit_control()
 
 # ---------------------------------------------------------------------------
 # Locate the log file

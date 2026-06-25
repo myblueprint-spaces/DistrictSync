@@ -17,7 +17,7 @@ if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 from src.config.loader import available_configs, load_config  # noqa: E402
-from src.ui.brand import header, inject_brand_css, step_progress  # noqa: E402
+from src.ui.brand import header, inject_brand_css, sidebar_exit_control, step_progress  # noqa: E402
 from src.ui.mapping_helpers import (  # noqa: E402
     CEDS_GRADES,
     SOURCE_FILE_ROLES,
@@ -31,6 +31,7 @@ from src.ui.mapping_helpers import (  # noqa: E402
 st.set_page_config(page_title="Mapping Editor — DistrictSync", page_icon="🗺️", layout="wide")
 inject_brand_css()
 header("Mapping Editor", "Create or customize your district's data configuration")
+sidebar_exit_control()
 
 # ---------------------------------------------------------------------------
 # Session state
