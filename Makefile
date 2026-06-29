@@ -1,4 +1,4 @@
-.PHONY: install test test-cov lint fmt ui build-win clean validate-config docs docs-serve
+.PHONY: install test test-cov lint fmt typecheck ui build-win clean validate-config docs docs-serve
 
 install:
 	pip install -r requirements.txt -r requirements-dev.txt
@@ -14,6 +14,10 @@ lint:
 
 fmt:
 	ruff check src/ tests/ --fix
+
+# Mirror .github/workflows/ci.yml — keep the --exclude pattern in lockstep.
+typecheck:
+	mypy src/ --exclude 'src/ui|src/ui_flet'
 
 ui:
 	streamlit run src/ui/Home.py

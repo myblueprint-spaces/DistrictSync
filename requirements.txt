@@ -11,3 +11,10 @@ keyring>=24.0
 # Web UI — bundled into the .exe so launching DistrictSync with no args
 # opens the Streamlit-based wizard. Required at runtime by src/ui/launcher.py.
 streamlit>=1.30
+
+# Native Flet 1.0 desktop UI (opt-in via DISTRICTSYNC_UI=flet; default until CUT-1).
+# Pinned EXACTLY — Flet 1.0 is a beta API that can shift; flet-web/flet-cli are
+# dev/build-only (requirements-dev.txt) to keep fastapi/uvicorn out of the exe.
+# Keep this version in lockstep with docs/FLET_1.0_CONVENTIONS.md (test_flet_pin gates it).
+flet==0.85.3
+flet-desktop==0.85.3

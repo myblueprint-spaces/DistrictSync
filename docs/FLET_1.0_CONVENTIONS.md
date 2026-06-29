@@ -1,6 +1,6 @@
 # Flet 1.0 — conventions & gotchas (DistrictSync)
 
-> **STATUS: AUTHORITATIVE** for the **pin · packaging · lifecycle · CI pre-seed** facts — all empirically confirmed on a real Win11 target in **PLAT-0 (2026-06-29)**; see [DECISIONS 2026-06-29 (PLAT-0)](claugentic-DECISIONS.md). **PLAT-1 will APPEND** the exact 1.0 **API forms** it nails while building the real shell (the canonical worker→UI marshalling snippet, the `SnackBar`/dialog show API, the `page.window.*` async forms) — those sections are still marked *pending PLAT-1* below.
+> **STATUS: AUTHORITATIVE** for the **pin · packaging · lifecycle · CI pre-seed · API forms** facts. The pin/packaging/lifecycle/CI-preseed facts were empirically confirmed on a real Win11 target in **PLAT-0 (2026-06-29)**; the exact 1.0 **API forms** (typed-dataclass control forms, the worker→UI marshalling contract, the `FilePicker` async-service contract, the `SnackBar`/dialog show API, the `page.window.*` async forms) were harvested in **PLAT-1 (2026-06-29)** by introspecting the installed `flet==0.85.3` package while building `src/ui_flet/`. See [DECISIONS 2026-06-29](claugentic-DECISIONS.md).
 >
 > **READ THIS FIRST before writing ANY Flet code for DistrictSync.** Flet 1.0 is a **ground-up rewrite**; the vast majority of Flet tutorials, StackOverflow answers, and model training data describe the **OLD `0.2x` API**. Each rule below pairs the 1.0 way with the **❌ 0.2x trap** so you don't regress to remembered patterns. Anchor to **this doc + the version-matched docs** (https://flet.dev/docs — getting-started / controls / reference) + the **installed package source** (it is the canonical 0.85.3 API), **never** old tutorials.
 
@@ -16,23 +16,85 @@
 - `main(page)` builds the page; **native desktop is the default**. Web mode (for headless screenshots / CI) is gated behind an env flag in the prototype (`SPIKE_WEB`) — see the reference app.
 
 ## Controls are typed dataclasses
-- 1.0 controls are **typed Python dataclasses** with strongly-typed event handlers and docstrings — the **installed package is itself the canonical API reference** (introspect it; don't trust old web examples).
-- **❌ 0.2x traps:** the convenience helpers `ft.padding.all()/symmetric()` and `ft.border.*` were removed/restructured into dataclass forms; `SnackBar` is shown via `page.show_dialog`-style APIs; `page.window.*` methods (e.g. `center()`) are **async**. Confirm each exact form against the installed package in PLAT-1 and record it here.
+- 1.0 controls are **typed Python dataclasses** with strongly-typed event handlers and docstrings — the **installed package is itself the canonical API reference** (introspect it; don't trust old web examples). To introspect: `import dataclasses as dc; [f.name for f in dc.fields(ft.ColorScheme)]`.
+- **❌ 0.2x traps:** the convenience helpers `ft.padding.all()/symmetric()` and `ft.border.*` were removed/restructured into dataclass forms; `SnackBar` is shown via `page.show_dialog`-style APIs; `page.window.*` methods (e.g. `center()`) are **async**.
+- **EXACT 1.0 forms (confirmed against `flet==0.85.3` in PLAT-1; used verbatim in `src/ui_flet/shell.py`):**
+  - **Padding / border / borderside — use the dataclasses directly** (the `ft.padding.*`/`ft.border.*` helper funcs are gone). The shell keeps thin wrappers (`pad`/`pad_sym`/`b_all`/`b_only`) over them for readable call sites — COPY these:
+    ```python
+    ft.Padding(left=0, top=0, right=0, bottom=0)             # was ft.padding.only(...)
+    ft.Padding(left=h, top=v, right=h, bottom=v)             # was ft.padding.symmetric(horizontal=h, vertical=v)
+    ft.BorderSide(width, color)                              # a single edge
+    ft.Border(top=side, bottom=side, left=side, right=side)  # was ft.border.all(width, color)
+    ft.Border(right=ft.BorderSide(1, color))                 # was ft.border.only(right=...)
+    ```
+  - **Theme / colour scheme** (light-only): `ft.Theme(color_scheme_seed=, use_material3=True, color_scheme=ft.ColorScheme(...), font_family="Segoe UI", visual_density=ft.VisualDensity.COMFORTABLE)`. `ft.ColorScheme` is a flat dataclass of M3 roles (`primary`/`on_primary`/`secondary`/`tertiary`/`error`/`surface`/`on_surface`/`on_surface_variant`/`outline`/… — full list via `dc.fields(ft.ColorScheme)`). **There is NO `brightness` field on `ColorScheme`** — light/dark is set on the page via `page.theme_mode = ft.ThemeMode.LIGHT` (`ft.Brightness.LIGHT/DARK` exists separately for `page.window.brightness`).
+  - **Buttons:** `ft.FilledButton(text, icon=, on_click=, style=ft.ButtonStyle(bgcolor={ft.ControlState.DEFAULT: C, ft.ControlState.DISABLED: C2}, color=, padding=, shape=ft.RoundedRectangleBorder(radius=12), text_style=ft.TextStyle(size=, weight=ft.FontWeight.W_700)))`. `ft.ControlState.DEFAULT/DISABLED` keys a per-state map.
+  - **Misc:** `ft.Colors.with_opacity(0.14, color)`; `ft.Icons.<NAME>` (member names like `HOME_ROUNDED`); `ft.Alignment(0, 0)` is a positional `(x, y)`; `ft.LinearGradient(begin=ft.Alignment(-1,-1), end=ft.Alignment(1,1), colors=[...])`.
+  - **Entry point:** `ft.run(main, assets_dir=...)` (sig: `ft.run(main, before_main=None, name='', host=None, port=0, view=ft.AppView.FLET_APP, assets_dir='assets', upload_dir=None, ...)`). Web mode: `ft.run(main, view=ft.AppView.WEB_BROWSER, port=N)`.
 
 ## FilePicker is an async SERVICE (replaces tkinter)
-- 1.0 `FilePicker` is a **service** with an **async-returns-files** API: register it (page services/overlay), call `get_directory_path()` / `pick_files()` and **await / handle the returned result**.  **❌ NOT** the 0.2x `on_result` callback.
+- 1.0 `FilePicker` is a **service** with an **async-returns-files** API: register it on `page.services`, call `get_directory_path()` / `pick_files()` and **await the returned result**.  **❌ NOT** the 0.2x `on_result` callback.
 - Returns a **real server-side filesystem path** (the UI runs on the district server) — a direct, better replacement for `src/ui/folder_picker.py`'s tkinter dialog (drops the tkinter hidden-import).
+- **CONTRACT (confirmed against `flet==0.85.3` in PLAT-1; the picker CODE is deferred to IA-5 — its first real consumer — but the contract is fixed now):**
+  - **Register once, on the page services list:**
+    ```python
+    file_picker = ft.FilePicker()
+    if file_picker not in page.services:
+        page.services.append(file_picker)
+    ```
+  - **`pick_files` is async and RETURNS the files** (no callback):
+    ```python
+    # async signature:
+    #   pick_files(dialog_title=None, initial_directory=None,
+    #              file_type=ft.FilePickerFileType.ANY, allowed_extensions=None,
+    #              allow_multiple=False, with_data=False) -> list[FilePickerFile]
+    files = await file_picker.pick_files(
+        dialog_title="Select MyEd BC extract files",
+        allow_multiple=True, allowed_extensions=["csv", "txt"],
+    )
+    if files:                       # None/[] on cancel
+        for f in files:
+            path = f.path           # real server-side filesystem path
+    ```
+  - **`get_directory_path(dialog_title=None, initial_directory=None) -> str | None`** — async, returns the chosen dir path or `None` on cancel. This is the direct replacement for `pick_directory()`.
+  - **Boundary note:** a path returned from `FilePicker` is **untrusted input to the core** — IA-5 must validate it (it feeds `run_pipeline`'s `input_path`) the same way the CLI validates `--input`. Don't pass a picked path straight into the core.
 
 ## Worker-thread → UI marshalling (THE #1 correctness trap)
-- The ETL core (`run_pipeline`) is **synchronous/blocking** (pandas) → run it on a **worker thread** (`page.run_thread` / `threading.Thread`) so the window never freezes.
-- **Hand UI updates back to the Flet event loop** per the 1.0 convention — **never mutate controls cross-thread**, or the window corrupts/freezes. PLAT-1 nails the exact mechanism in `worker.py` and records the canonical snippet here. Every async surface reuses it.
+- The ETL core (`run_pipeline`) is **synchronous/blocking** (pandas) → run it on a **worker thread** so the window never freezes.
+- **Hand UI updates back to the Flet event loop** — **never mutate controls cross-thread**, or the window corrupts/freezes.
+- **CONTRACT (confirmed against `flet==0.85.3` in PLAT-1; the `JobRunner` CODE is deferred to IA-5 — its first real `run_pipeline` caller, per the program's "promote on 2nd use" rule — but the contract is fixed now):**
+  - **`Page` exposes both `page.run_thread(handler, *args)` (run a blocking fn off the UI thread) and `page.run_task(coro)` (schedule a coroutine on the loop).** The worker does its blocking work on the thread, then marshals each UI update back via `page.run_task(...)` (or by mutating controls only inside a coroutine the loop owns) and calls `page.update()` there — never from the worker thread directly.
+    ```python
+    def _work():                                  # runs OFF the UI thread
+        try:
+            result = run_pipeline(...)             # blocking pandas/ETL
+            page.run_task(_on_done, result)        # marshal back to the loop
+        except SystemExit as ex:                   # see asymmetry below
+            page.run_task(_on_error, ex)
+        except Exception as ex:
+            page.run_task(_on_error, ex)
+    page.run_thread(_work)
+    ```
+  - **`SystemExit` vs `Exception` `on_error` ASYMMETRY (load-bearing — confirmed at `src/etl/pipeline.py:294/302/305` + `420-426`):** `run_pipeline` calls **`sys.exit(1)`** on bad input (input dir missing `:294`, config `FileNotFoundError` `:302`, config `ValueError` `:305`). That `SystemExit` is caught at `pipeline.py:420` and **re-raised BEFORE** `_emit_run_log("failed")` — so on this path **NO `__DISTRICTSYNC_RUN__` record is written** (Run History will show nothing). A caught `Exception` (`:422-425`) **does** write a "failed" run-log record first. **Therefore the UI's `on_error` is the ONLY failure signal on the `SystemExit` path** — the worker MUST catch `SystemExit` (it is NOT an `Exception` subclass — a bare `except Exception` lets it propagate and kill the thread silently) and surface it to the user; do **not** assume a run-log record exists on every failure.
+  - **Exit-3 SFTP-failure shape:** a *successful ETL with a failed SFTP upload* is NOT an exception — `run_pipeline` returns a `PipelineResult` with `sftp_attempted=True, sftp_ok=False` (the CLI maps that to exit 3). The UI reads those booleans off the returned result in `on_done`, not via `on_error`.
 
 ## Lifecycle (RE-CONFIRMED ON-SCREEN in PLAT-0 — the headline win)
 - **Native OS window-close terminates the whole process tree cleanly: ZERO orphans.** PLAT-0 verified this *on a real Win11 desktop* (the earlier bake-off could only assert it via code/API, headless): a real `WM_CLOSE` posted to the OS window tore down the full tree in **0.77s running from source** and **1.27s for the packaged exe** — zero orphans both ways (`psutil` process-tree check). This is *why* Flet was chosen — **no idle watchdog, no beacon, no zombie-websocket reaping, no "close this tab" page** (all the Streamlit-in-browser workarounds are deleted).
 - **Process-tree shape (native):** the Python entry process re-execs/launches a **second Python host** which spawns the **`flet.exe`** Flutter client child (observed `python → python → flet.exe`). Window-close collapses the entire chain. Any orphan check must walk descendants recursively *and* sweep for stray `flet.exe` — the harness in PLAT-0 did both.
 - Flet binds an **internal localhost port** (random) for the Python↔Flutter-client channel — **not** browser-facing; it closes with the window.
-- Add a **confirm-if-write-in-flight** guard (reuse the `write_guard` concept) so closing mid-conversion can't tear the loader's atomic commit. The guard is a UX courtesy; the loader's backup-and-restore atomicity is the real safety net.
+- **EXACT close/lifecycle forms (confirmed against `flet==0.85.3` in PLAT-1; used verbatim in `src/ui_flet/shell.py`):**
+  ```python
+  page.window.prevent_close = False            # OS close button tears the app down on its own
+  page.window.on_event = on_window_event       # also bind for explicit close paths
+  def on_window_event(e):
+      if getattr(e, "type", None) == ft.WindowEventType.CLOSE or getattr(e, "data", None) == "close":
+          page.window.destroy()                # collapses python→python→flet.exe; zero orphans (PLAT-0)
+  page.on_disconnect = lambda _e: os._exit(0)  # native: ensure the host process can't orphan
+  ```
+  - **`page.window.*` sizing is plain attribute assignment** (`page.window.width/height/min_width/min_height = ...`) and is synchronous. **`page.window.center()` / `.destroy()` / `.close()` are async methods** — DO NOT call `center()` synchronously (it's a coroutine → `RuntimeWarning`); the window centers by default, so the shell just relies on that. `destroy()` is fire-and-forget in the close handler (tears the tree down). `ft.WindowEventType.CLOSE` is the close event type; `ft.Brightness.LIGHT/DARK` is for `page.window.brightness`.
+- **Write-in-flight close guard: DEFERRED to IA-5** (its first write-in-flight surface). PLAT-1 ships the proven zero-orphan close + a documented `_on_leave(page)` leave-point **seam** (a no-op hook in `shell.py`); IA-2 attaches the "closing this window does not stop the nightly sync" reassurance and IA-5 attaches the write guard there. The loader's backup-and-restore atomicity (`save_all`) is the real safety net regardless.
 - **Single-instance guard: DEFERRED** (YAGNI) — add only if field reports show double-launch confusion.
+- **Dialogs / SnackBar — show via `page.show_dialog(control)`** (confirmed sig: `Page.show_dialog(self, dialog: DialogControl) -> None`; `page.pop_dialog()` dismisses). `ft.SnackBar(content=ft.Text(...), bgcolor=...)` and `ft.AlertDialog(...)` are both `DialogControl`s passed to `show_dialog`.  **❌ NOT** the 0.2x `page.snack_bar = ...; page.update()` / `page.dialog = ...` assignment pattern.
 
 ## Packaging (windowed · offline · signed) — MEASURED in PLAT-0
 - **`flet pack app.py` defaults to `--noconsole --onefile`** (PLAT-0 observed the exact passthrough: `['app.py','--noconfirm','--noconsole','--name',…,'--onefile',…]`) → **ONE windowed exe, NO console**. This kills the original "console window hangs around" bug. (Use `flet pack`, not raw PyInstaller — the `flet pack` path runs the `hook-flet.py` PyInstaller hook that embeds the client; see below.)

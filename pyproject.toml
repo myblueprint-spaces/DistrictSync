@@ -35,6 +35,15 @@ ui = [
     "paramiko>=3.0",
     "keyring>=24.0",
 ]
+# pip install -e ".[flet-ui]"  — enables the native Flet desktop UI (opt-in via
+# DISTRICTSYNC_UI=flet). Exact-pinned (Flet 1.0 beta); kept in lockstep with
+# requirements.txt + docs/FLET_1.0_CONVENTIONS.md (test_flet_pin gates drift).
+flet-ui = [
+    "flet==0.85.3",
+    "flet-desktop==0.85.3",
+    "paramiko>=3.0",
+    "keyring>=24.0",
+]
 # pip install -e ".[dev]"  — full dev/CI environment
 dev = [
     "pytest>=7.0",
@@ -68,7 +77,9 @@ markers = [
 
 [tool.coverage.run]
 source = ["src"]
-omit = ["src/utils/logger.py", "src/ui/*"]
+# Omit view glue only — the Flet pure modules (tokens/theme/nav) + version.py
+# stay COUNTED (they carry the 80% gate); shell.py/launcher.py are thin views.
+omit = ["src/utils/logger.py", "src/ui/*", "src/ui_flet/shell.py", "src/ui_flet/launcher.py"]
 
 [tool.coverage.report]
 show_missing = true
@@ -110,6 +121,10 @@ strict = false
 [[tool.mypy.overrides]]
 module = ["src.ui.*"]
 ignore_errors = true  # Streamlit stubs not available
+
+[[tool.mypy.overrides]]
+module = ["src.ui_flet.*"]
+ignore_errors = true  # Flet 1.0 beta has no published type stubs
 
 [tool.bandit]
 # B603/B607: subprocess calls — all inputs validated via validators.py

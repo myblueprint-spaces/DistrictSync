@@ -22,6 +22,12 @@ types-PyYAML>=6.0
 # Security scanning (used in CI)
 bandit>=1.7
 
+# Flet build/CI tooling (NOT shipped in the exe). flet-web pulls fastapi+uvicorn
+# for headless screenshots; flet-cli provides `flet pack`. Pinned to match the
+# runtime flet/flet-desktop pins in requirements.txt (test_flet_pin gates drift).
+flet-web==0.85.3
+flet-cli==0.85.3
+
 # Documentation
 mkdocs-material>=9.0
 mkdocs-with-pdf>=0.9

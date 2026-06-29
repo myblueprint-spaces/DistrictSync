@@ -70,6 +70,7 @@ _Last generated from `main` @ c669404._
 - `src/utils/logger.py` — `get_logger()`: configures logging from `config/logging.conf` (or falls back to `basicConfig`) writing to the canonical absolute path `~/.districtsync/etl_tool.log` so logs persist across PyInstaller restarts and scheduled-task runs.
 - `src/utils/helpers.py` — General-purpose utilities: `normalize_columns()`, `ensure_directory()`, `validate_csv()`, `validate_path()`, `safe_float_conversion()`, `district_slug()`, `build_zip_name()`.
 - `src/utils/paths.py` — Single source of truth for path resolution: `bundle_root()`, `bundle_config_dir()`, `bundle_mappings_dir()`, `user_data_dir()`, `user_mappings_dir()`, `user_log_file()`; works identically in source-install and frozen-exe (PyInstaller `_MEIPASS`) environments.
+- `src/utils/version.py` — `app_version()`: single source of truth for the installed package version (`importlib.metadata.version("districtsync")`, `"dev"` fallback when not packaged); used by the Flet UI (`main.py:196-199`'s inline copy is a tracked ROADMAP DRY follow-up).
 
 ---
 
@@ -88,6 +89,16 @@ _Last generated from `main` @ c669404._
 - `src/ui/pages/03_Run_History.py` — Run History page: parses `__DISTRICTSYNC_RUN__` JSON log lines from `~/.districtsync/etl_tool.log` into a table (raw-tail fallback). The display-only Status cell shows amber "ETL OK · SFTP FAILED" on delivery failure and "Completed with N data errors" on field-transform errors, so the headline never contradicts the exit code.
 - `src/ui/pages/04_Mapping_Editor.py` — 7-step visual Mapping Editor: guides non-technical users through entity selection, file upload + column detection, field mapping, academic calendar, and name/email config; saves a minimal `_base`-inheriting override YAML to `~/.districtsync/mappings/`.
 - `src/ui/pages/05_Help.py` — Help page: renders `docs/` markdown files (partner guides + developer docs) in the Streamlit UI; single source of truth shared with the MkDocs static site.
+
+---
+
+## src/ui_flet/  (native Flet 1.0 desktop UI — additive, opt-in via `DISTRICTSYNC_UI=flet`)
+
+- `src/ui_flet/tokens.py` — Pure brand tokens (no flet import): the 8 `MB_*` primitives ported from `src/ui/brand.py` + semantic aliases (`color_action_primary`, `color_status_*`, `color_surface`, `color_text`, `color_muted`, `page_bg`) + a WCAG `contrast_ratio()` helper and `UI_CONTRAST_PAIRS` (every fg/bg pair the shell paints, gated >= 4.5:1).
+- `src/ui_flet/theme.py` — `build_theme()` / `build_color_scheme()`: maps the semantic tokens onto a Material-3 `ft.ColorScheme` (light-only); the single place the brand→M3 role mapping is decided.
+- `src/ui_flet/nav.py` — Pure nav-state model (no flet import): `Destination`/`NavGroup`/`DESTINATIONS` + `nav_model(AppConfig)` returning grouped destinations and the prominent group (Get-started until `is_complete()` + `schedule_registered`, then Everyday); the rail renders flat this slice, prominence wiring is IA-1.
+- `src/ui_flet/shell.py` — View glue (coverage-omitted): `main(page)` builds the themed window + flat `NavigationRail` + a plain `dict[id -> placeholder factory]` of calm, branded, in-voice placeholders; zero-orphan close (`prevent_close=False` + CLOSE event → `window.destroy()`, `on_disconnect` → `os._exit`) with a documented `_on_leave` leave-point seam (no guard logic — IA-2/IA-5 attach).
+- `src/ui_flet/launcher.py` — View glue (coverage-omitted): `main()` does frozen-cwd (`resolve_frozen_cwd`) then `ft.run(shell.main)` wrapped in an early-failure path — full traceback to the ETL log sink, a plain-language error dialog/tkinter/stderr fallback, non-zero exit; pure helpers `resolve_log_path`/`format_user_error` are tested.
 
 ---
 
