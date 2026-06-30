@@ -31,7 +31,7 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.config.loader import available_configs, load_config
-from src.ui_flet import tokens
+from src.ui_flet import components, tokens
 from src.ui_flet.filepicker import (
     ValidationResult,
     setup_state,
@@ -45,11 +45,6 @@ logger = logging.getLogger(__name__)
 
 def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
     return ft.Padding(left=h, top=v, right=h, bottom=v)
-
-
-def _b_all(width: float, color: str) -> ft.Border:
-    side = ft.BorderSide(width, color)
-    return ft.Border(top=side, bottom=side, left=side, right=side)
 
 
 def _district_options() -> list[ft.dropdown.Option]:
@@ -76,25 +71,24 @@ def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view gl
     # Mutable selection state mirrored from the saved config.
     state = {"input": cfg.input_dir, "output": cfg.output_dir, "sis": cfg.sis_type}
 
-    save_btn = ft.FilledButton(
-        text="Save setup",
+    # The security Save-gate (RC3): structurally disabled until both paths validate.
+    # `disabled_bgcolor=color_border` carries the disabled fill — the factory
+    # reproduces the exact prior styling (DEFAULT primary / DISABLED border, radius
+    # 12, size-14 W_700, CHECK_CIRCLE icon); `_refresh_gate` re-toggles `disabled`.
+    save_btn = components.primary_button(
+        "Save setup",
+        lambda _e: _save(),
+        disabled_bgcolor=tokens.color_border,
         icon=ft.Icons.CHECK_CIRCLE_ROUNDED,
-        on_click=lambda _e: _save(),
+        radius=12,
+        text_size=14,
+        text_weight=ft.FontWeight.W_700,
     )
     saved_note = ft.Text("", size=13, weight=ft.FontWeight.W_600)
 
     def _refresh_gate() -> None:
         s = setup_state(state["input"], state["output"], state["sis"])
         save_btn.disabled = not s.can_save
-        save_btn.style = ft.ButtonStyle(
-            bgcolor={
-                ft.ControlState.DEFAULT: tokens.color_action_primary,
-                ft.ControlState.DISABLED: tokens.color_border,
-            },
-            color=tokens.color_on_action,
-            shape=ft.RoundedRectangleBorder(radius=12),
-            text_style=ft.TextStyle(size=14, weight=ft.FontWeight.W_700),
-        )
 
     def _on_input_change(path: str, _result: ValidationResult) -> None:
         state["input"] = path
@@ -156,14 +150,7 @@ def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view gl
 
     _refresh_gate()  # paint the gate for the saved (possibly already-valid) state
 
-    header = ft.Container(
-        gradient=ft.LinearGradient(
-            begin=ft.Alignment(-1, -1),
-            end=ft.Alignment(1, 1),
-            colors=[tokens.color_action_primary_strong, tokens.color_action_primary],
-        ),
-        padding=_pad_sym(32, 26),
-        border_radius=18,
+    header = components.card(
         content=ft.Column(
             spacing=4,
             controls=[
@@ -175,13 +162,12 @@ def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view gl
                 ),
             ],
         ),
+        gradient=components.hero_gradient(),
+        padding=_pad_sym(32, 26),
+        border_radius=18,
     )
 
-    card = ft.Container(
-        bgcolor=tokens.color_surface,
-        padding=32,
-        border_radius=16,
-        border=_b_all(1, tokens.color_border),
+    form_card = components.card(
         content=ft.Column(
             spacing=26,
             controls=[
@@ -211,4 +197,4 @@ def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view gl
         ),
     )
 
-    return ft.Column(spacing=22, controls=[header, card, next_note])
+    return ft.Column(spacing=22, controls=[header, form_card, next_note])

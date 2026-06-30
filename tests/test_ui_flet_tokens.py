@@ -44,6 +44,7 @@ class TestBrandPrimitives:
             "color_text",
             "color_muted",
             "color_on_action",
+            "color_on_status_warning",
         ):
             value = getattr(tokens, alias)
             assert _HEX_RE.match(value), f"{alias}={value!r} is not #RRGGBB"
@@ -71,3 +72,16 @@ class TestContrastRatio:
         for fg, bg in tokens.UI_CONTRAST_PAIRS:
             ratio = tokens.contrast_ratio(fg, bg)
             assert ratio >= 4.5, f"contrast {ratio:.2f}:1 for fg={fg} on bg={bg} is below AA"
+
+    def test_warning_is_amber_700_not_the_sky_accent(self):
+        """DS-1/RC1: warning is the verdict-only amber (not MB_ACCENT)."""
+        assert tokens.color_status_warning == "#B45309"
+        assert tokens.color_status_warning != tokens.MB_ACCENT
+
+    def test_white_on_amber_warning_clears_aa(self):
+        """The pair the verdict banner paints (white-on-amber-700) clears AA (~5.02)."""
+        ratio = tokens.contrast_ratio(tokens.color_on_status_warning, tokens.color_status_warning)
+        assert ratio >= 4.5, f"white-on-amber {ratio:.2f}:1 is below AA"
+
+    def test_white_on_amber_pair_is_in_the_contract(self):
+        assert (tokens.color_on_status_warning, tokens.color_status_warning) in tokens.UI_CONTRAST_PAIRS

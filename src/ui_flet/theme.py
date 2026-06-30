@@ -23,7 +23,7 @@ def build_color_scheme() -> ft.ColorScheme:
     return ft.ColorScheme(
         primary=tokens.color_action_primary,
         on_primary=tokens.color_on_action,
-        secondary=tokens.color_status_warning,  # sky accent
+        secondary=tokens.MB_ACCENT,  # sky accent (decoupled from verdict-only amber warning — DS-1/RC1)
         on_secondary=tokens.color_on_action,
         tertiary=tokens.color_action_primary_strong,  # deep navy
         on_tertiary=tokens.color_on_action,

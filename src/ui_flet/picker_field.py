@@ -21,7 +21,7 @@ from collections.abc import Callable
 
 import flet as ft
 
-from src.ui_flet import tokens
+from src.ui_flet import components, tokens
 from src.ui_flet.filepicker import ValidationResult, pick_directory
 
 
@@ -70,16 +70,13 @@ class PickerField(ft.Column):  # pragma: no cover - Flet view glue (exercised vi
         )
         self._status_text = ft.Text("", size=12, weight=ft.FontWeight.W_600)
 
-        browse_btn = ft.FilledButton(
-            text="Browse…",
+        browse_btn = components.primary_button(
+            "Browse…",
+            self._on_browse,
             icon=ft.Icons.FOLDER_OPEN_ROUNDED,
-            on_click=self._on_browse,
-            style=ft.ButtonStyle(
-                bgcolor={ft.ControlState.DEFAULT: tokens.color_action_primary},
-                color=tokens.color_on_action,
-                shape=ft.RoundedRectangleBorder(radius=12),
-                text_style=ft.TextStyle(size=13, weight=ft.FontWeight.W_700),
-            ),
+            radius=12,
+            text_size=13,
+            text_weight=ft.FontWeight.W_700,
         )
 
         super().__init__(

@@ -61,7 +61,10 @@ color_action_primary_strong = MB_DARK
 # semantic verdict colour the shell paints text on is the AA-safe shade.
 color_status_healthy = "#15803D"  # green-700 — AA-safe for white text/normal labels
 color_status_healthy_accent = MB_GREEN  # bright brand green — large icons/borders only
-color_status_warning = MB_ACCENT
+# Warning is AMBER (verdict-only), NOT the sky accent. amber-700 `#B45309` clears
+# WCAG AA for white text (5.02:1 white-on-fill); amber-600 `#D97706` FAILS (3.19).
+# This is decoupled from the M3 `secondary` role — see theme.py (now MB_ACCENT).
+color_status_warning = "#B45309"  # amber-700 — AA-safe verdict warning fill
 color_status_failed = "#DC2626"  # red-600 — failure verdict (not a Streamlit primitive)
 
 # Surfaces
@@ -77,6 +80,9 @@ color_border = MB_BORDER
 color_text = MB_TEXT
 color_muted = "#475569"  # slate-600 — AA-safe muted text on white AND the page tint
 color_on_action = WHITE  # text/icons sitting on a filled action surface
+# Text/icons on the amber warning fill — white clears AA (5.02:1 on amber-700).
+# A named alias so the verdict banner reads by intent, not by reusing color_on_action.
+color_on_status_warning = WHITE
 
 
 # --------------------------------------------------------------------------- #
@@ -120,6 +126,7 @@ UI_CONTRAST_PAIRS: tuple[tuple[str, str], ...] = (
     (color_on_action, color_action_primary),  # white label on a primary button
     (color_on_action, color_action_primary_strong),  # white label on the navy action
     (color_on_action, color_status_healthy),  # white on the healthy verdict fill
+    (color_on_status_warning, color_status_warning),  # white on the amber warning fill (5.02)
     (color_on_action, color_status_failed),  # white on the failed verdict fill
     (color_status_healthy, color_surface),  # healthy text on a white card
     (color_status_failed, color_surface),  # failed text on a white card

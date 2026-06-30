@@ -21,7 +21,7 @@ from collections.abc import Callable
 import flet as ft
 
 from src.config.app_config import AppConfig
-from src.ui_flet import nav, tokens
+from src.ui_flet import components, nav, tokens
 from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.theme import build_theme
 
@@ -66,14 +66,7 @@ def build_placeholder(dest: nav.Destination) -> ft.Control:
     return ft.Column(
         spacing=22,
         controls=[
-            ft.Container(
-                gradient=ft.LinearGradient(
-                    begin=ft.Alignment(-1, -1),
-                    end=ft.Alignment(1, 1),
-                    colors=[tokens.color_action_primary_strong, tokens.color_action_primary],
-                ),
-                padding=pad_sym(32, 26),
-                border_radius=18,
+            components.card(
                 content=ft.Column(
                     spacing=4,
                     controls=[
@@ -85,8 +78,11 @@ def build_placeholder(dest: nav.Destination) -> ft.Control:
                         ),
                     ],
                 ),
+                gradient=components.hero_gradient(),
+                padding=pad_sym(32, 26),
+                border_radius=18,
             ),
-            ft.Container(
+            components.card(
                 content=ft.Column(
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                     spacing=16,
@@ -115,10 +111,7 @@ def build_placeholder(dest: nav.Destination) -> ft.Control:
                         ),
                     ],
                 ),
-                bgcolor=tokens.color_surface,
                 padding=48,
-                border_radius=16,
-                border=b_all(1, tokens.color_border),
             ),
         ],
     )
@@ -177,6 +170,11 @@ def main(page: ft.Page) -> None:
     # `Callable[[], ft.Control]` — the other five placeholders + render()'s uniform
     # `screens[id]()` call are untouched (RC4). IA-1 splits this host properly.
     screens["setup"] = functools.partial(build_setup, page)
+    # Dev-only: behind DISTRICTSYNC_UI_DEMO, route the Help slot to the design-system
+    # gallery (3 verdict banners + ErrorCard) so the front-loaded spine is visually
+    # exercised. NOT a user nav entry — a hidden override on an existing route.
+    if os.environ.get("DISTRICTSYNC_UI_DEMO") and "help" in screens:
+        screens["help"] = components.build_design_demo
     destinations = model.destinations
 
     content_host = ft.Container(expand=True, padding=pad_sym(36, 28))
@@ -204,14 +202,10 @@ def main(page: ft.Page) -> None:
             os._exit(0)
 
     exit_btn = ft.Container(
-        content=ft.TextButton(
+        content=components.text_button(
             "Exit",
+            do_exit,
             icon=ft.Icons.LOGOUT_ROUNDED,
-            on_click=do_exit,
-            style=ft.ButtonStyle(
-                color=tokens.color_muted,
-                text_style=ft.TextStyle(size=12, weight=ft.FontWeight.W_600),
-            ),
         ),
         padding=pad(bottom=12),
     )

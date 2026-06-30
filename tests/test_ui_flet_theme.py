@@ -24,7 +24,7 @@ class TestBuildTheme:
         assert isinstance(cs, ft.ColorScheme)
         assert cs.primary == tokens.color_action_primary
         assert cs.on_primary == tokens.color_on_action
-        assert cs.secondary == tokens.color_status_warning
+        assert cs.secondary == tokens.MB_ACCENT
         assert cs.tertiary == tokens.color_action_primary_strong
         assert cs.error == tokens.color_status_failed
         assert cs.surface == tokens.color_surface
@@ -34,3 +34,10 @@ class TestBuildTheme:
 
     def test_build_color_scheme_is_an_ft_color_scheme(self):
         assert isinstance(build_color_scheme(), ft.ColorScheme)
+
+    def test_secondary_is_decoupled_from_the_verdict_warning(self):
+        """DS-1/RC1: the M3 secondary role stays the sky accent — the amber warning
+        is verdict-ONLY and must not recolour secondary app-wide."""
+        cs = build_color_scheme()
+        assert cs.secondary == tokens.MB_ACCENT
+        assert cs.secondary != tokens.color_status_warning
