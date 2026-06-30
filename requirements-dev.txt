@@ -28,6 +28,14 @@ bandit>=1.7
 flet-web==0.85.3
 flet-cli==0.85.3
 
+# Flet exe build + smoke (PLAT-3). Single-source for the flet-pack.yml workflow —
+# it installs these via `-r requirements-dev.txt` only (NO inline `pip install pkg`
+# that could drift). pyinstaller is the packer flet-cli drives; pefile reads the
+# PE subsystem (no-console proof); psutil walks the process tree (zero-orphan close).
+pyinstaller>=6,<7
+pefile>=2023.2.7
+psutil>=5.9
+
 # Documentation
 mkdocs-material>=9.0
 mkdocs-with-pdf>=0.9

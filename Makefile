@@ -1,4 +1,4 @@
-.PHONY: install test test-cov lint fmt typecheck ui build-win clean validate-config docs docs-serve
+.PHONY: install test test-cov lint fmt typecheck ui build-win build-flet-win clean validate-config docs docs-serve
 
 install:
 	pip install -r requirements.txt -r requirements-dev.txt
@@ -78,6 +78,58 @@ build-win:
 	  --hidden-import=src.etl.transformers.registry \
 	  --hidden-import=src.etl.transformers.context \
 	  src/main.py
+
+# Build the windowed/no-console/offline Flet preview .exe locally (Windows).
+# Mirrors .github/workflows/flet-pack.yml's Windows `flet pack` invocation so a
+# local build matches CI (same target launcher.py, same hidden-imports, same
+# raw PyInstaller args, same `;` --add-data separator). `flet pack` has no native
+# --paths/--exclude-module, so those go through --pyinstaller-build-args (one
+# token per flag; PyInstaller needs `--paths` and `.` as separate args).
+# Pre-seed the client cache first if offline:
+#   python -c "import flet_desktop; flet_desktop.ensure_client_cached()"
+# Smoke it after:
+#   python scripts/ci_flet_pack_smoke.py dist DistrictSync-flet --require-close
+build-flet-win:
+	flet pack src/ui_flet/launcher.py --name DistrictSync-flet \
+	  --yes \
+	  --add-data "config;config" \
+	  --hidden-import flet \
+	  --hidden-import flet_desktop \
+	  --hidden-import src.ui_flet.launcher \
+	  --hidden-import src.ui_flet.shell \
+	  --hidden-import src.ui_flet.nav \
+	  --hidden-import src.ui_flet.tokens \
+	  --hidden-import src.ui_flet.theme \
+	  --hidden-import tkinter \
+	  --hidden-import pandas \
+	  --hidden-import pydantic \
+	  --hidden-import pydantic_core \
+	  --hidden-import yaml \
+	  --hidden-import logging.config \
+	  --hidden-import src.etl.transformers.registry \
+	  --hidden-import src.etl.transformers.context \
+	  --hidden-import src.etl.transformers.base \
+	  --hidden-import src.etl.transformers.students \
+	  --hidden-import src.etl.transformers.staff \
+	  --hidden-import src.etl.transformers.family \
+	  --hidden-import src.etl.transformers.classes \
+	  --hidden-import src.etl.transformers.enrollments \
+	  --hidden-import src.etl.transformers.blended \
+	  --hidden-import src.etl.transformers.course_info \
+	  --hidden-import src.etl.transformers.student_courses \
+	  --hidden-import src.etl.transformers.student_attendance \
+	  --hidden-import src.config.app_config \
+	  --hidden-import src.config.loader \
+	  --hidden-import src.utils.paths \
+	  --hidden-import src.utils.validators \
+	  --hidden-import src.utils.logger \
+	  --hidden-import src.utils.version \
+	  --hidden-import src.scheduler.windows \
+	  --hidden-import src.scheduler.linux \
+	  --hidden-import keyring.backends.Windows \
+	  --pyinstaller-build-args="--paths" --pyinstaller-build-args="." \
+	  --pyinstaller-build-args="--exclude-module" --pyinstaller-build-args="streamlit" \
+	  --pyinstaller-build-args="--exclude-module" --pyinstaller-build-args="src.ui"
 
 # Linux and macOS builds are produced automatically by GitHub Actions on tag push.
 # To release all three platforms: git tag v1.x.0 && git push origin --tags

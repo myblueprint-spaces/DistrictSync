@@ -1,0 +1,191 @@
+name: flet-pack
+
+# Reusable per-OS pack + smoke for the windowed/no-console/offline Flet exe of the
+# REAL launcher (src/ui_flet/launcher.py). Called by release.yml (tag) AND
+# flet-verify.yml (PR/dispatch) — one matrix, two callers (anti-rot).
+#
+# SECURITY (RC4): least-privilege by construction. A `flet pack` runs arbitrary PR
+# code, so this reusable workflow takes NO secrets and grants only read scope. The
+# built exe is an `upload-artifact` ONLY — never attached to a public Release here.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  FLET_VERSION: "0.85.3" # keep in lockstep with the pinned flet/flet-desktop/flet-web
+
+jobs:
+  pack:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Per-OS desktop flavor (RC6): warm-up, cache key, and `flet pack` MUST
+          # provably agree. Windows/macOS default to `full`; Linux to `light`
+          # (PLAT-0b proved light is enough — no media needs `full`).
+          - os: windows-latest
+            flavor: full
+            sep: ";"
+            require_close: "--require-close"
+          - os: ubuntu-22.04 # pinned: the Linux client filename encodes the distro
+            flavor: light
+            sep: ":"
+            require_close: ""
+          - os: macos-latest
+            flavor: full
+            sep: ":"
+            require_close: ""
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      FLET_DESKTOP_FLAVOR: ${{ matrix.flavor }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      # Linux DESKTOP-GUI runtime libs (the Flet client links libsecret + GL/GTK)
+      # + xvfb so the smoke can open a real window headlessly.
+      - name: Linux desktop GUI runtime deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-0 libgtk-3-0 libgl1 libglib2.0-0 xvfb
+
+      # Single-source pins (RC7): install via -r ONLY — no inline `pip install pkg`.
+      # requirements-dev.txt carries pyinstaller/pefile/psutil + flet-cli/flet-web.
+      - name: Install pinned stack (runtime + build/smoke deps)
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Report flet + tooling versions
+        run: |
+          python -c "import importlib.metadata as m; print('flet', m.version('flet'), '| flet-desktop', m.version('flet-desktop'), '| flet-cli', m.version('flet-cli'), '| pyinstaller', m.version('pyinstaller'))"
+
+      # Content-bound cache key (RC6): OS + flet version + flavor. The cache is a
+      # pure optimization — a miss self-downloads in the warm-up below and the
+      # cache-populated assert still gates, so a miss can never silently break the
+      # offline guarantee.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.flet
+          key: flet-client-${{ runner.os }}-${{ env.FLET_VERSION }}-${{ env.FLET_DESKTOP_FLAVOR }}
+
+      - name: Warm Flet client cache (headless, no window)
+        run: python -c "import flet_desktop; print('cached at:', flet_desktop.ensure_client_cached())"
+
+      # RC1a — cache-populated assert: the warm-up's download fallback succeeds
+      # silently, so a MISS is invisible without this. Fail the job if the client
+      # dir is absent or empty. The embedded archive (get_package_bin_dir()), NOT
+      # the cache, is the runtime source of truth — but a populated cache is the
+      # input `flet pack` copies into the bundle, so it must exist now.
+      - name: Assert client cache populated
+        shell: bash
+        run: |
+          DIR="$HOME/.flet/client/flet-desktop-${FLET_DESKTOP_FLAVOR}-${FLET_VERSION}"
+          if [ ! -d "$DIR" ] || [ -z "$(ls -A "$DIR" 2>/dev/null)" ]; then
+            echo "FAIL: client cache not populated at $DIR"
+            ls -la "$HOME/.flet/client" || true
+            exit 1
+          fi
+          echo "client cache OK: $DIR"
+
+      # Pack the REAL launcher into a windowed/no-console/offline onefile exe.
+      # --add-data separator is per-OS (matrix `sep`). The FULL src.* + flet
+      # hidden-import set is listed explicitly (belt-and-braces — registry.py
+      # statically imports the transformers, but match release.yml's style).
+      # NOTE: `flet pack` has NO native --paths/--exclude-module; raw PyInstaller
+      # flags go through --pyinstaller-build-args, and each token MUST be its own
+      # `--pyinstaller-build-args=<token>` (flet's `nargs="*"` stops at flag-like
+      # tokens, and PyInstaller needs `--paths` and `.` as separate args).
+      # --exclude-module streamlit/src.ui keeps the Streamlit stack out of the exe.
+      - name: Pack windowed offline Flet exe
+        shell: bash
+        run: |
+          flet pack src/ui_flet/launcher.py --name DistrictSync-flet \
+            --yes \
+            --add-data "config${{ matrix.sep }}config" \
+            --hidden-import flet \
+            --hidden-import flet_desktop \
+            --hidden-import src.ui_flet.launcher \
+            --hidden-import src.ui_flet.shell \
+            --hidden-import src.ui_flet.nav \
+            --hidden-import src.ui_flet.tokens \
+            --hidden-import src.ui_flet.theme \
+            --hidden-import tkinter \
+            --hidden-import pandas \
+            --hidden-import pydantic \
+            --hidden-import pydantic_core \
+            --hidden-import yaml \
+            --hidden-import logging.config \
+            --hidden-import src.etl.transformers.registry \
+            --hidden-import src.etl.transformers.context \
+            --hidden-import src.etl.transformers.base \
+            --hidden-import src.etl.transformers.students \
+            --hidden-import src.etl.transformers.staff \
+            --hidden-import src.etl.transformers.family \
+            --hidden-import src.etl.transformers.classes \
+            --hidden-import src.etl.transformers.enrollments \
+            --hidden-import src.etl.transformers.blended \
+            --hidden-import src.etl.transformers.course_info \
+            --hidden-import src.etl.transformers.student_courses \
+            --hidden-import src.etl.transformers.student_attendance \
+            --hidden-import src.config.app_config \
+            --hidden-import src.config.loader \
+            --hidden-import src.utils.paths \
+            --hidden-import src.utils.validators \
+            --hidden-import src.utils.logger \
+            --hidden-import src.utils.version \
+            --hidden-import ${{ runner.os == 'Windows' && 'src.scheduler.windows' || 'src.scheduler.linux' }} \
+            --hidden-import src.scheduler.linux \
+            --hidden-import ${{ runner.os == 'Windows' && 'keyring.backends.Windows' || (runner.os == 'macOS' && 'keyring.backends.macOS' || 'keyring.backends.SecretService') }} \
+            ${{ runner.os == 'Linux' && '--hidden-import keyring.backends.libsecret' || '' }} \
+            --pyinstaller-build-args="--paths" --pyinstaller-build-args="." \
+            --pyinstaller-build-args="--exclude-module" --pyinstaller-build-args="streamlit" \
+            --pyinstaller-build-args="--exclude-module" --pyinstaller-build-args="src.ui"
+
+      # RC1b — packed-archive embed assert: a fresh flet_desktop@0.85.3 ships NO
+      # bundled archive; `flet pack` only embeds the client by copying the
+      # populated cache into the bundle as flet_desktop/app/<archive>. Prove the
+      # build manifest references it — fail if absent.
+      - name: Assert packed exe embeds the client
+        shell: bash
+        run: |
+          MANIFEST="build/DistrictSync-flet/Analysis-00.toc"
+          if [ ! -f "$MANIFEST" ]; then
+            echo "FAIL: build manifest not found at $MANIFEST"
+            ls -la build/DistrictSync-flet 2>/dev/null || true
+            exit 1
+          fi
+          python scripts/ci_flet_pack_smoke.py --assert-embed "$MANIFEST"
+
+      - name: Echo measured artifact size (size budget)
+        shell: bash
+        run: |
+          if [ -f "dist/DistrictSync-flet.exe" ]; then F="dist/DistrictSync-flet.exe";
+          elif [ -d "dist/DistrictSync-flet.app" ]; then F="dist/DistrictSync-flet.app"; \
+            echo "macOS .app bundle size:"; du -sh "$F"; exit 0;
+          else F="dist/DistrictSync-flet"; fi
+          ls -la "$F" || true
+          python -c "import os,sys; p=sys.argv[1]; print(f'measured size: {os.path.getsize(p)/1e6:.1f} MB')" "$F" || true
+
+      # Smoke the REAL exe: PE subsystem (win) + offline-embed (all, gating) +
+      # zero-orphan close (win gating via --require-close; lin/mac INFO-only).
+      # Linux runs under xvfb so the client opens a real window.
+      - name: Smoke the packed exe (Windows / macOS)
+        if: runner.os != 'Linux'
+        run: python scripts/ci_flet_pack_smoke.py dist DistrictSync-flet ${{ matrix.require_close }}
+
+      - name: Smoke the packed exe (Linux, xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python scripts/ci_flet_pack_smoke.py dist DistrictSync-flet ${{ matrix.require_close }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: DistrictSync-flet-${{ matrix.os }}
+          path: dist/DistrictSync-flet*
+          retention-days: 5
