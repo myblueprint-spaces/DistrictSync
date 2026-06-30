@@ -54,8 +54,6 @@ dev = [
     "pandas-stubs>=2.0",
     "bandit>=1.7",
     "pyinstaller>=5.0",
-    "mkdocs-material>=9.0",
-    "mkdocs-with-pdf>=0.9",
 ]
 
 [project.scripts]

@@ -229,20 +229,3 @@ jobs:
             artifacts/DistrictSync-linux
             artifacts/DistrictSync-macos
             artifacts/SHA256SUMS.txt
-
-  # -----------------------------------------------------------------------
-  # Deploy documentation to GitHub Pages
-  # -----------------------------------------------------------------------
-
-  deploy-docs:
-    needs: publish-release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - run: pip install mkdocs-material mkdocs-with-pdf
-      - run: mkdocs gh-deploy --force

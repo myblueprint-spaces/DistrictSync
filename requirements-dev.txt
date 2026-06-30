@@ -35,7 +35,3 @@ flet-cli==0.85.3
 pyinstaller>=6,<7
 pefile>=2023.2.7
 psutil>=5.9
-
-# Documentation
-mkdocs-material>=9.0
-mkdocs-with-pdf>=0.9

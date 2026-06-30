@@ -1,4 +1,4 @@
-.PHONY: install test test-cov lint fmt typecheck ui build-win build-flet-win clean validate-config docs docs-serve
+.PHONY: install test test-cov lint fmt typecheck ui build-win build-flet-win clean validate-config
 
 install:
 	pip install -r requirements.txt -r requirements-dev.txt
@@ -133,12 +133,6 @@ build-flet-win:
 
 # Linux and macOS builds are produced automatically by GitHub Actions on tag push.
 # To release all three platforms: git tag v1.x.0 && git push origin --tags
-
-docs:
-	mkdocs build
-
-docs-serve:
-	mkdocs serve
 
 clean:
 	rm -rf build/ dist/ *.spec __pycache__ .pytest_cache .coverage site/

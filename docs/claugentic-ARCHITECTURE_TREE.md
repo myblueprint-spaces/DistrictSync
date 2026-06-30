@@ -88,7 +88,7 @@ _Last generated from `main` @ c669404._
 - `src/ui/pages/02_Convert.py` — Ad-hoc conversion page: a thin adapter over the shared ETL engine (uploaded GDE bytes → `load_from_bytes` → `run_transform` → `DataLoader`, so download/zip + SFTP use `csv_encoding` and match the CLI byte-for-byte); renders quality report + diff, offers ZIP download / optional SFTP upload.
 - `src/ui/pages/03_Run_History.py` — Run History page: parses `__DISTRICTSYNC_RUN__` JSON log lines from `~/.districtsync/etl_tool.log` into a table (raw-tail fallback). The display-only Status cell shows amber "ETL OK · SFTP FAILED" on delivery failure and "Completed with N data errors" on field-transform errors, so the headline never contradicts the exit code.
 - `src/ui/pages/04_Mapping_Editor.py` — 7-step visual Mapping Editor: guides non-technical users through entity selection, file upload + column detection, field mapping, academic calendar, and name/email config; saves a minimal `_base`-inheriting override YAML to `~/.districtsync/mappings/`.
-- `src/ui/pages/05_Help.py` — Help page: renders `docs/` markdown files (partner guides + developer docs) in the Streamlit UI; single source of truth shared with the MkDocs static site.
+- `src/ui/pages/05_Help.py` — Help page: renders `docs/` markdown files (partner guides + developer docs) directly in the Streamlit UI (the only `docs/` renderer; the MkDocs static site was removed 2026-06-30).
 
 ---
 
@@ -126,10 +126,9 @@ _Last generated from `main` @ c669404._
 ## Root
 
 - `pyproject.toml` — Project metadata (name=districtsync, version=3.2.0), setuptools build config, pytest settings (addopts, benchmarks deselected, coverage omits), ruff lint/format rules, mypy config, bandit exclusions.
-- `Makefile` — Developer shortcuts: `install`, `test`, `test-cov`, `lint`, `fmt`, `ui`, `build-win`, `clean`, `validate-config`, `docs`, `docs-serve`.
+- `Makefile` — Developer shortcuts: `install`, `test`, `test-cov`, `lint`, `fmt`, `ui`, `build-win`, `build-flet-win`, `clean`, `validate-config`.
 - `requirements.txt` — Runtime dependencies: pandas, PyYAML, python-dateutil, pydantic, paramiko, keyring, streamlit.
 - `requirements-dev.txt` — Dev/CI dependencies: extends requirements.txt with pytest, pytest-cov, ruff, mypy, bandit, types-paramiko, types-PyYAML, hypothesis, pytest-benchmark, and optional UI-test extras (playwright, pytest-sftpserver).
-- `mkdocs.yml` — MkDocs configuration: site name, GitHub repo URL, navigation structure (partner guides + developer docs), Material theme, auto-deploy to GitHub Pages on release tag.
 - `README.md` — Project overview, quick-start instructions, supported districts, and links to full documentation.
 - `CHANGELOG.md` — Keep-a-Changelog release history; per-release behavior changes (GitHub Releases holds download links + auto-generated commit notes).
 
