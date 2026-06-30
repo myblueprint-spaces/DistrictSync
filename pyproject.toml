@@ -79,7 +79,14 @@ markers = [
 source = ["src"]
 # Omit view glue only — the Flet pure modules (tokens/theme/nav) + version.py
 # stay COUNTED (they carry the 80% gate); shell.py/launcher.py are thin views.
-omit = ["src/utils/logger.py", "src/ui/*", "src/ui_flet/shell.py", "src/ui_flet/launcher.py"]
+omit = [
+    "src/utils/logger.py",
+    "src/ui/*",
+    "src/ui_flet/shell.py",
+    "src/ui_flet/launcher.py",
+    "src/ui_flet/picker_field.py",
+    "src/ui_flet/screens/setup.py",
+]
 
 [tool.coverage.report]
 show_missing = true

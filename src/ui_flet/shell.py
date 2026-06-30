@@ -14,6 +14,7 @@ slice (the ``nav`` prominence model exists but its render wiring lands at IA-1).
 
 from __future__ import annotations
 
+import functools
 import os
 from collections.abc import Callable
 
@@ -21,6 +22,7 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.ui_flet import nav, tokens
+from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.theme import build_theme
 
 
@@ -170,6 +172,11 @@ def main(page: ft.Page) -> None:
 
     model = nav.nav_model(AppConfig.load())
     screens = build_screens(model.destinations)
+    # Swap the `setup` placeholder for the real folders surface. `functools.partial`
+    # binds `page` (in scope here) so the dict value type stays
+    # `Callable[[], ft.Control]` — the other five placeholders + render()'s uniform
+    # `screens[id]()` call are untouched (RC4). IA-1 splits this host properly.
+    screens["setup"] = functools.partial(build_setup, page)
     destinations = model.destinations
 
     content_host = ft.Container(expand=True, padding=pad_sym(36, 28))

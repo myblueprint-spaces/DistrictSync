@@ -35,7 +35,7 @@
 ## FilePicker is an async SERVICE (replaces tkinter)
 - 1.0 `FilePicker` is a **service** with an **async-returns-files** API: register it on `page.services`, call `get_directory_path()` / `pick_files()` and **await the returned result**.  **❌ NOT** the 0.2x `on_result` callback.
 - Returns a **real server-side filesystem path** (the UI runs on the district server) — a direct, better replacement for `src/ui/folder_picker.py`'s tkinter dialog (drops the tkinter hidden-import).
-- **CONTRACT (confirmed against `flet==0.85.3` in PLAT-1; the picker CODE is deferred to IA-5 — its first real consumer — but the contract is fixed now):**
+- **CONTRACT (confirmed against `flet==0.85.3` in PLAT-1; the picker CODE LANDED in PLAT-2 — `src/ui_flet/filepicker.py` is the canonical impl, with boundary validation; IA-5/IA-8 reuse it):**
   - **Register once, on the page services list:**
     ```python
     file_picker = ft.FilePicker()
@@ -57,7 +57,7 @@
             path = f.path           # real server-side filesystem path
     ```
   - **`get_directory_path(dialog_title=None, initial_directory=None) -> str | None`** — async, returns the chosen dir path or `None` on cancel. This is the direct replacement for `pick_directory()`.
-  - **Boundary note:** a path returned from `FilePicker` is **untrusted input to the core** — IA-5 must validate it (it feeds `run_pipeline`'s `input_path`) the same way the CLI validates `--input`. Don't pass a picked path straight into the core.
+  - **Boundary note (LANDED in PLAT-2):** a path returned from `FilePicker` is **untrusted input to the core** — validate it before persist/forward (it feeds `run_pipeline`'s `input_path`) the same way the CLI validates `--input`. `src/ui_flet/filepicker.py` does this: `validate_input_dir` (exists+is_dir, mirrors `pipeline.py:292`) / `validate_output_dir` (parent-structural) are pure + tested; `check_writable` is a separate effectful probe (TOCTOU-deferred to the loader's atomic `save_all`). Never pass a picked path straight into the core.
 
 ## Worker-thread → UI marshalling (THE #1 correctness trap)
 - The ETL core (`run_pipeline`) is **synchronous/blocking** (pandas) → run it on a **worker thread** so the window never freezes.

@@ -53,14 +53,14 @@ Effort S/M/L/XL · risk low/med/high. **Bold = review-mandated change.**
 | DS-1 | 1 Design system | Token module + `ft.Theme` + ErrorCard + **HealthVerdictBanner (pulled forward)** + button/Card primitives + 4 state patterns; **verdict-mapping logic extracted to a coverage-counted pure module + tests** | L/med | PLAT-1 |
 | DS-2 | 1 Design system | Verdict variants + friendly-`district_name` helper (**pure, tested**) | S/low | DS-1 |
 | ~~DS-3~~ | — | **DISSOLVED per YAGNI** — DataTable→IA-6, FileChip→IA-5, StepProgress→IA-4; promote to shared on 2nd use | — | — |
-| PLAT-2 | 2 Hardening | Replace tkinter folder picker with `ft.FilePicker` everywhere | M/med | PLAT-1 |
+| PLAT-2 | 2 Hardening | **LANDED (plan 0016)** — `ft.FilePicker` async-service wrapper + boundary validation (`filepicker.py`, COUNTED) + reusable `PickerField`, landed WITH the **Setup folders step** (`screens/setup.py`: pick/validate/persist input+output+SIS → `is_complete()`). **Recorded program deviation:** pulled the picker (was earmarked IA-5) + Setup-folders step (was IA-4) forward of IA-1 per the user's "picker where users pick files"; mounts via the existing `build_screens` host (no IA-1 rail / DS-1 library pre-built). See DECISIONS 2026-06-30. | M/med | PLAT-1 |
 | PLAT-3 | 2 Hardening | Rewrite `release.yml` build for the **windowed (no-console)** Flet exe; retire the console build | M/med | PLAT-2 |
 | PLAT-4 | 2 Hardening | Authenticode code-signing (cert-gated; unsigned PLAT-3 exe is the shipping floor) | M/med | PLAT-3 |
 | IA-1 | 3 Surfaces | Design-system→shell assembly + state-aware grouped NavigationRail (live) | M/low | DS-1,2 |
 | IA-2 | 3 Surfaces | First-run onboarding + decouple-the-sync reassurance | M/low | IA-1 |
 | IA-3 | 3 Surfaces | Home → three-way health dashboard; **status-derivation + graceful-degradation in a pure tested module** | L/med | IA-1,2 |
-| IA-4 | 3 Surfaces | **Setup Wizard port (HIGHEST-CARE)** — calls `register_task`/`SFTPUploader` UNCHANGED; **relocate `_classify_schedule_error` + its test out of the Streamlit page into a presentation-neutral module** (it is UI-layer code today, NOT core); architect core-untouched gate | XL/high | IA-1 |
-| IA-5 | 3 Surfaces | Convert port → real `run_transform`/`DataLoader` + `write_guard`; human verdict; SFTP pre-flight confirm + >20% anomaly ack; FileChip built here | L/med | IA-1,4 |
+| IA-4 | 3 Surfaces | **Setup Wizard port (HIGHEST-CARE)** — NARROWED (plan 0016 landed the **folders step**): adds the **scheduler / SFTP / keyring / elevation** steps ON TOP of `screens/setup.py`; calls `register_task`/`SFTPUploader` UNCHANGED; **relocate `_classify_schedule_error` + its test out of the Streamlit page into a presentation-neutral module** (it is UI-layer code today, NOT core); architect core-untouched gate | L/high | IA-1 |
+| IA-5 | 3 Surfaces | Convert port → real `run_transform`/`DataLoader` + `write_guard`; human verdict; SFTP pre-flight confirm + >20% anomaly ack; FileChip built here. **REUSES** the landed `PickerField`/`pick_files` wrapper (plan 0016) — does NOT build the picker | L/med | IA-1,4 |
 | IA-6 | 3 Surfaces | Run History port → verdict + staleness banner (**staleness pure + tested**); DataTable built here | M/low | IA-1,3 |
 | IA-7 | 3 Surfaces | Help port → render `docs/` markdown natively (`ft.Markdown`) + bundle-path resolution | M/low | IA-1 |
 | **IA-8a** | 3 Surfaces | **Mapping Editor: select-a-pre-built-config path (unconditional)** | S/M, low | IA-1 |
