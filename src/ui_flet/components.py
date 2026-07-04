@@ -31,6 +31,7 @@ from collections.abc import Callable
 import flet as ft
 
 from src.ui_flet import tokens
+from src.ui_flet.run_history import RunRow, SftpDelivery
 from src.ui_flet.verdict import Verdict, verdict_visuals
 
 
@@ -215,6 +216,103 @@ def metric_tile(label: str, value: str) -> ft.Container:
             ],
         ),
         padding=_pad_sym(20, 16),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# run_table — the first ft.DataTable consumer (Run History)                     #
+# --------------------------------------------------------------------------- #
+# The 5 rostering entities always shown, then the 2 myBlueprint+ entities shown
+# only when a row has them — mirroring the `home_status`/Home tile rule. Each entry
+# is (entity key -> column header).
+_ROW_ROSTERING_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("Students", "Students"),
+    ("Staff", "Staff"),
+    ("Family", "Family"),
+    ("Classes", "Classes"),
+    ("Enrollments", "Enrollments"),
+)
+_ROW_MYBLUEPRINT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("CourseInfo", "Courses"),
+    ("StudentCourses", "Student courses"),
+)
+
+# The SFTP glyph + word the view paints per delivery axis (a non-colour cue — never colour-only).
+_SFTP_GLYPHS: dict[SftpDelivery, str] = {
+    SftpDelivery.DELIVERED: "✓ Delivered",
+    SftpDelivery.FAILED: "✗ Failed",
+    SftpDelivery.NOT_ATTEMPTED: "—",
+}
+
+# A subtle, AA-safe verdict row tint (text stays the primary signal; the tint is a secondary cue).
+_ROW_TINTS: dict[Verdict, str] = {
+    Verdict.FAILED: ft.Colors.with_opacity(0.06, tokens.color_status_failed),
+    Verdict.WARNING: ft.Colors.with_opacity(0.06, tokens.color_status_warning),
+}
+
+
+def _cell(text: str, *, weight: ft.FontWeight = ft.FontWeight.W_500, color: str = tokens.color_text) -> ft.DataCell:
+    """One ``ft.DataCell`` wrapping a ``ft.Text`` of a uniform string (the coerce-to-string rule)."""
+    return ft.DataCell(content=ft.Text(text, size=13, weight=weight, color=color))
+
+
+def run_table(rows: list[RunRow]) -> ft.Control:
+    """The DS-1-styled ``ft.DataTable`` of past runs — the first ``ft.DataTable`` consumer.
+
+    Columns mirror the proven Streamlit set MINUS the raw ``Error`` column (dropped for privacy):
+    **When · Status · Students · Staff · Family · Classes · Enrollments · [Courses · Student
+    courses] · SFTP · Warnings · Duration**. The 2 myBlueprint+ count columns render ONLY when at
+    least one displayed row has a non-zero count for them — decided TABLE-WIDE (one scan of all
+    rows), so a SpacesEDU district shows 5 count columns, not 7 with two all-zero columns.
+
+    Every cell is a uniform string (a not-produced entity → "—"). Status is TEXT-first
+    (``status_label``), with an optional AA-safe row tint from ``status_verdict`` (never
+    colour-only). SFTP renders a glyph + word. No sort / select / checkbox (YAGNI, read-only).
+    """
+    # Table-wide decision: show a myBlueprint+ column only if ANY row carries a non-zero count.
+    show_mbp = {key: any(row.entity_counts.get(key, 0) > 0 for row in rows) for key, _label in _ROW_MYBLUEPRINT_COLUMNS}
+    count_columns: list[tuple[str, str]] = list(_ROW_ROSTERING_COLUMNS) + [
+        (key, label) for key, label in _ROW_MYBLUEPRINT_COLUMNS if show_mbp[key]
+    ]
+
+    def _head(text: str) -> ft.Text:
+        return ft.Text(text, size=12, weight=ft.FontWeight.W_700, color=tokens.color_muted)
+
+    columns: list[ft.DataColumn] = [
+        ft.DataColumn(label=_head("When")),
+        ft.DataColumn(label=_head("Status")),
+    ]
+    columns += [ft.DataColumn(label=_head(label), numeric=True) for _key, label in count_columns]
+    columns.append(ft.DataColumn(label=_head("SFTP")))
+    columns.append(ft.DataColumn(label=_head("Warnings"), numeric=True))
+    columns.append(ft.DataColumn(label=_head("Duration"), numeric=True))
+
+    data_rows: list[ft.DataRow] = []
+    for row in rows:
+        cells: list[ft.DataCell] = [
+            _cell(row.when),
+            _cell(row.status_label, weight=ft.FontWeight.W_700),
+        ]
+        for key, _label in count_columns:
+            value = row.entity_counts.get(key)
+            cells.append(_cell("—" if value is None else str(value)))
+        cells.append(_cell(_SFTP_GLYPHS[row.sftp]))
+        cells.append(_cell(str(row.warnings) if row.warnings else "0"))
+        cells.append(_cell(row.duration))
+        data_rows.append(ft.DataRow(cells=cells, color=_ROW_TINTS.get(row.status_verdict)))
+
+    return ft.DataTable(
+        columns=columns,
+        rows=data_rows,
+        show_checkbox_column=False,
+        column_spacing=28,
+        heading_row_color=tokens.page_bg,
+        heading_text_style=ft.TextStyle(size=12, weight=ft.FontWeight.W_700, color=tokens.color_muted),
+        data_text_style=ft.TextStyle(size=13, color=tokens.color_text),
+        border=_b_all(1, tokens.color_border),
+        border_radius=14,
+        divider_thickness=1,
+        show_bottom_border=True,
     )
 
 

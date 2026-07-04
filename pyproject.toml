@@ -89,6 +89,7 @@ omit = [
     "src/ui_flet/screens/onboarding.py",
     "src/ui_flet/screens/home.py",
     "src/ui_flet/screens/convert.py",
+    "src/ui_flet/screens/run_history.py",
 ]
 
 [tool.coverage.report]

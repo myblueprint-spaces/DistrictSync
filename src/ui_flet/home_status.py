@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 
 from src.config.app_config import AppConfig
 from src.ui_flet.humanize import friendly_timestamp
@@ -113,6 +114,71 @@ def is_stale(
     return elapsed_hours > stale_after_hours
 
 
+class LatestReason(Enum):
+    """The single-source classification of a latest run's fault axis (staleness EXCLUDED).
+
+    The status→reason precedence a *record* carries, independent of when it ran — the one
+    place the ``status → sftp → anomalies → data_errors`` order is decided. ``derive_home_status``
+    (Home) and ``run_history.derive_history_banner`` + ``run_history.to_run_row`` (IA-6, the 2nd
+    consumer) both classify through this, so a Home verdict and a Run-History row/banner can never
+    drift. Staleness is a SEPARATE, time-relative axis the caller layers on top of ``CLEAN`` — it
+    is deliberately NOT a reason here (a stale run is a clean run that's merely old).
+    """
+
+    FAILED_ETL = "failed_etl"  # status != "success" — the dominant fault
+    FAILED_DELIVERY = "failed_delivery"  # ETL ok, SFTP attempted + failed (exit-3 shape)
+    ANOMALY = "anomaly"  # delivered but a >20% drop looked off
+    DATA_WARNINGS = "data_warnings"  # delivered, some rows had field problems + were skipped
+    CLEAN = "clean"  # delivered cleanly (a stale run is still CLEAN — staleness is layered on top)
+
+
+def classify_latest_reason(record: dict) -> LatestReason:
+    """Classify a run record's fault axis (first-match precedence, staleness EXCLUDED) — pure + TOTAL.
+
+    The SINGLE source of the ``status → sftp → anomalies → data_errors`` precedence (mirrors
+    ``03_Run_History._status_cell``). Every field is read via ``.get`` so a partial/old record never
+    ``KeyError``s (a missing ``status`` → non-``success`` → ``FAILED_ETL``, the honest fail-safe
+    default). NEVER inspects/returns the free-text ``error`` (privacy) — category only.
+    """
+    if record.get("status") != "success":
+        return LatestReason.FAILED_ETL
+    if bool(record.get("sftp_attempted")) and not bool(record.get("sftp_ok")):
+        return LatestReason.FAILED_DELIVERY
+    anomalies = record.get("anomalies") or []
+    if isinstance(anomalies, list) and anomalies:
+        return LatestReason.ANOMALY
+    if _data_errors_total(record) > 0:
+        return LatestReason.DATA_WARNINGS
+    return LatestReason.CLEAN
+
+
+def _data_errors_total(record: dict) -> int:
+    """The ``data_errors.total`` count — total: a missing/non-dict ``data_errors`` → ``0``."""
+    data_errors = record.get("data_errors")
+    if not isinstance(data_errors, dict):
+        return 0
+    return _as_int(data_errors.get("total", 0))
+
+
+def verdict_for_reason(reason: LatestReason) -> Verdict:
+    """Map a ``LatestReason`` to its ``Verdict`` — total over the enum.
+
+    The single source of "which reason is red vs amber vs green": the two failures are FAILED,
+    anomaly/data-warnings are WARNING, CLEAN is HEALTHY. A ``KeyError`` here is a programming error
+    (a new reason without a verdict) — surfaced loudly by the totality test, never swallowed.
+    """
+    return _REASON_VERDICTS[reason]
+
+
+_REASON_VERDICTS: dict[LatestReason, Verdict] = {
+    LatestReason.FAILED_ETL: Verdict.FAILED,
+    LatestReason.FAILED_DELIVERY: Verdict.FAILED,
+    LatestReason.ANOMALY: Verdict.WARNING,
+    LatestReason.DATA_WARNINGS: Verdict.WARNING,
+    LatestReason.CLEAN: Verdict.HEALTHY,
+}
+
+
 def _entity_counts(record: dict) -> dict[str, int]:
     """Re-bucket the record's FLAT top-level count keys into a metrics dict.
 
@@ -182,11 +248,18 @@ def derive_home_status(
 
     latest = records[0]
 
+    # Classify the latest record's fault axis via the SINGLE-SOURCE precedence (shared with IA-6's
+    # Run History so a Home verdict + a Run-History row/banner can never drift). Staleness is a
+    # separate time-relative axis layered on top of the CLEAN reason below. Each branch keeps its
+    # OWN Home copy ("your roster"/"last night's sync") + fix/metrics — the reason drives ONLY the
+    # verdict selection, never the wording. NEVER interpolate the record's free-text `error`
+    # (privacy) — every headline/detail is a FIXED category sentence.
+    reason = classify_latest_reason(latest)
+
     # Rule: last run failed — the dominant fault (precedence over SFTP/anomaly/data-errors).
-    # NEVER interpolate the record's free-text `error` (privacy) — a FIXED category sentence.
-    if latest.get("status") != "success":
+    if reason is LatestReason.FAILED_ETL:
         return HomeStatus(
-            verdict=Verdict.FAILED,
+            verdict=verdict_for_reason(reason),
             headline="Last sync failed",
             detail="Last night's sync hit a problem and didn't finish.",
             fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
@@ -194,9 +267,9 @@ def derive_home_status(
         )
 
     # Rule: SFTP delivery failed (ETL succeeded but the roster didn't reach SpacesEDU).
-    if bool(latest.get("sftp_attempted")) and not bool(latest.get("sftp_ok")):
+    if reason is LatestReason.FAILED_DELIVERY:
         return HomeStatus(
-            verdict=Verdict.FAILED,
+            verdict=verdict_for_reason(reason),
             headline="Your roster didn't reach SpacesEDU",
             detail="The data was built but the upload failed.",
             fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
@@ -204,10 +277,10 @@ def derive_home_status(
         )
 
     # Rule: anomaly / >20% drop — delivered but suspicious → attention, not failure.
-    anomalies = latest.get("anomalies") or []
-    if isinstance(anomalies, list) and anomalies:
+    if reason is LatestReason.ANOMALY:
+        anomalies = latest.get("anomalies") or []
         return HomeStatus(
-            verdict=Verdict.WARNING,
+            verdict=verdict_for_reason(reason),
             headline="Something looked off in the last sync",
             detail=_anomaly_detail(len(anomalies)),
             fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
@@ -215,10 +288,10 @@ def derive_home_status(
         )
 
     # Rule: data errors present — delivered, no anomaly, but some records were skipped.
-    total_data_errors = _as_int((latest.get("data_errors") or {}).get("total", 0))
-    if total_data_errors > 0:
+    if reason is LatestReason.DATA_WARNINGS:
+        total_data_errors = _data_errors_total(latest)
         return HomeStatus(
-            verdict=Verdict.WARNING,
+            verdict=verdict_for_reason(reason),
             headline=f"Completed with {total_data_errors} data {_pluralize('warning', total_data_errors)}",
             detail="A few records had field problems and were skipped — the sync still delivered.",
             fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),

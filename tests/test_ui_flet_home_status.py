@@ -18,8 +18,11 @@ from src.config.app_config import AppConfig
 from src.ui_flet.home_status import (
     STALE_AFTER_HOURS,
     HomeStatus,
+    LatestReason,
+    classify_latest_reason,
     derive_home_status,
     is_stale,
+    verdict_for_reason,
 )
 from src.ui_flet.verdict import Verdict
 
@@ -253,6 +256,51 @@ class TestTotalityPartialRecords:
         status = _derive(_record(Students="not-a-number", CourseInfo=None))
         assert status.metrics is not None
         assert status.metrics.entity_counts["Students"] == 0
+
+
+class TestClassifyLatestReason:
+    """The shared single-source status→reason precedence IA-6 also consumes (staleness EXCLUDED)."""
+
+    def test_failed_etl(self) -> None:
+        assert classify_latest_reason(_record(status="failed")) is LatestReason.FAILED_ETL
+
+    def test_missing_status_is_failed_etl(self) -> None:
+        assert classify_latest_reason({}) is LatestReason.FAILED_ETL
+
+    def test_failed_delivery(self) -> None:
+        assert classify_latest_reason(_record(sftp_attempted=True, sftp_ok=False)) is LatestReason.FAILED_DELIVERY
+
+    def test_anomaly(self) -> None:
+        assert classify_latest_reason(_record(anomalies=["ANOMALY: x"])) is LatestReason.ANOMALY
+
+    def test_data_warnings(self) -> None:
+        assert classify_latest_reason(_record(data_errors={"total": 3})) is LatestReason.DATA_WARNINGS
+
+    def test_clean(self) -> None:
+        assert classify_latest_reason(_record()) is LatestReason.CLEAN
+
+    def test_precedence_failed_over_all(self) -> None:
+        rec = _record(
+            status="failed", sftp_attempted=True, sftp_ok=False, anomalies=["ANOMALY: y"], data_errors={"total": 9}
+        )
+        assert classify_latest_reason(rec) is LatestReason.FAILED_ETL
+
+    def test_staleness_is_not_a_reason(self) -> None:
+        # A stale-but-clean record is still CLEAN — staleness is a separate axis, not a reason.
+        assert classify_latest_reason(_record(timestamp=_OLD)) is LatestReason.CLEAN
+
+
+class TestVerdictForReason:
+    def test_total_over_every_reason(self) -> None:
+        for reason in LatestReason:
+            assert verdict_for_reason(reason) in Verdict
+
+    def test_reason_verdict_mapping(self) -> None:
+        assert verdict_for_reason(LatestReason.FAILED_ETL) is Verdict.FAILED
+        assert verdict_for_reason(LatestReason.FAILED_DELIVERY) is Verdict.FAILED
+        assert verdict_for_reason(LatestReason.ANOMALY) is Verdict.WARNING
+        assert verdict_for_reason(LatestReason.DATA_WARNINGS) is Verdict.WARNING
+        assert verdict_for_reason(LatestReason.CLEAN) is Verdict.HEALTHY
 
 
 # Every representative fixture → a valid HomeStatus, no exception (totality sweep).

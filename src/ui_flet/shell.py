@@ -28,6 +28,7 @@ from src.config.app_config import AppConfig
 from src.ui_flet import components, nav, nav_rail, tokens
 from src.ui_flet.screens.convert import build_convert, is_write_in_flight
 from src.ui_flet.screens.home import build_home
+from src.ui_flet.screens.run_history import build_run_history
 from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.theme import build_theme
 
@@ -186,6 +187,8 @@ def main(page: ft.Page) -> None:
     )
     # Swap the `convert` placeholder for the real manual-convert surface (IA-5a).
     screens["convert"] = functools.partial(build_convert, page)
+    # Swap the `run_history` placeholder for the real read-only Run History surface (IA-6).
+    screens["run_history"] = functools.partial(build_run_history, page, app_config=app_cfg)
     # Dev-only: behind DISTRICTSYNC_UI_DEMO, route the Help slot to the design-system
     # gallery (3 verdict banners + ErrorCard) so the front-loaded spine is visually
     # exercised. NOT a user nav entry — a hidden override on an existing route.
