@@ -36,7 +36,7 @@ from datetime import datetime
 from enum import Enum
 
 from src.config.app_config import AppConfig
-from src.ui_flet.humanize import friendly_timestamp
+from src.ui_flet.humanize import AnomalyVariant, friendly_anomaly_detail, friendly_timestamp, pluralize
 from src.ui_flet.verdict import Verdict
 
 # The 5 SpacesEDU rostering entities always shown, then the 2 myBlueprint+ entities
@@ -300,7 +300,7 @@ def derive_home_status(
         return HomeStatus(
             verdict=verdict_for_reason(reason),
             headline="Something looked off in the last sync",
-            detail=_anomaly_detail(len(anomalies)),
+            detail=friendly_anomaly_detail(len(anomalies), variant=AnomalyVariant.HOME),
             fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
             metrics=None,
         )
@@ -310,7 +310,7 @@ def derive_home_status(
         total_data_errors = _data_errors_total(latest)
         return HomeStatus(
             verdict=verdict_for_reason(reason),
-            headline=f"Completed with {total_data_errors} data {_pluralize('warning', total_data_errors)}",
+            headline=f"Completed with {total_data_errors} data {pluralize('warning', total_data_errors)}",
             detail="A few records had field problems and were skipped — the sync still delivered.",
             fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
             metrics=None,
@@ -338,17 +338,6 @@ def derive_home_status(
         fix=None,
         metrics=_build_metrics(latest, now=now),
     )
-
-
-def _anomaly_detail(count: int) -> str:
-    """Plain-language anomaly summary — NEVER the raw ``ANOMALY:``-prefixed string."""
-    if count == 1:
-        return "One roster file was smaller than usual."
-    return f"{count} roster files were smaller than usual."
-
-
-def _pluralize(word: str, count: int) -> str:
-    return word if count == 1 else f"{word}s"
 
 
 def _friendly_schedule_time(schedule_time: str) -> str:

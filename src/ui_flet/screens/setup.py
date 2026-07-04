@@ -68,7 +68,7 @@ from src.ui_flet.filepicker import (
     validate_input_dir,
     validate_output_dir,
 )
-from src.ui_flet.humanize import friendly_district_name
+from src.ui_flet.humanize import friendly_district_name, friendly_sftp_reason
 from src.ui_flet.picker_field import PickerField
 from src.ui_flet.setup_errors import classify_schedule_error
 from src.ui_flet.verdict import Verdict
@@ -286,9 +286,14 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
         # needs the raw string for PowerShell ParseExact).
         try:
             validate_run_time(run_time)
-        except ValueError as exc:
+        except ValueError:
+            # Privacy/voice: name the fix, never echo the raw ValueError (which repeats
+            # the admin's own input) — the dropdown-free HH:MM hint is all they need.
             result_slot.controls = [
-                components.ErrorCard("That run time isn't valid", str(exc)),
+                components.ErrorCard(
+                    "That run time isn't valid",
+                    "Enter the time as HH:MM in 24-hour form, e.g. 03:00.",
+                ),
             ]
             page.update()
             return
@@ -478,22 +483,30 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
         # allowlist, but SFTPUploader.__init__ re-validates and raises ValueError.
         try:
             uploader = SFTPUploader(host, int(port or 22), username, remote_path)
-        except ValueError as exc:
-            result_slot.controls = [components.ErrorCard("That SFTP host isn't allowed", str(exc))]
+        except ValueError:
+            # The dropdown already constrains the host to the allowlist; name the fix,
+            # never echo the raw ValueError (voice + no input echo).
+            result_slot.controls = [
+                components.ErrorCard(
+                    "That SFTP host isn't allowed",
+                    "Pick one of the approved SpacesEDU hosts from the dropdown.",
+                )
+            ]
             page.update()
             return
 
-        # [gate #3] store_password re-raises on keyring failure — wrap it and
-        # surface a calm verdict. {e} is the keyring error string, NEVER the
-        # password (store_password does not echo the password in its exception).
+        # [gate #3] store_password re-raises on keyring failure — wrap it and surface a
+        # calm, FIXED category card. The raw keyring exception (which can carry OS/backend
+        # detail) NEVER reaches the admin — category prose only, no str(e).
         if password:
             try:
                 uploader.store_password(password)
-            except Exception as e:  # noqa: BLE001 - surface any keyring failure calmly
+            except Exception:  # noqa: BLE001 - surface any keyring failure calmly
                 result_slot.controls = [
                     components.ErrorCard(
                         "Couldn't save the SFTP credential",
-                        f"Couldn't save the SFTP credential on this account — {e}",
+                        "Couldn't save the SFTP credential on this account. Try again, or run "
+                        "DistrictSync as the account the nightly task uses.",
                     )
                 ]
                 page.update()
@@ -571,15 +584,21 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
             uploader = SFTPUploader(host, int(port or 22), username, remote_path)
             if password:
                 uploader.store_password(password)
-        except ValueError as exc:
-            result_slot.controls = [components.ErrorCard("That SFTP host isn't allowed", str(exc))]
+        except ValueError:
+            result_slot.controls = [
+                components.ErrorCard(
+                    "That SFTP host isn't allowed",
+                    "Pick one of the approved SpacesEDU hosts from the dropdown.",
+                )
+            ]
             page.update()
             return
-        except Exception as e:  # noqa: BLE001 - a keyring failure before the network call
+        except Exception:  # noqa: BLE001 - a keyring failure before the network call
             result_slot.controls = [
                 components.ErrorCard(
                     "Couldn't save the SFTP credential",
-                    f"Couldn't save the SFTP credential on this account — {e}",
+                    "Couldn't save the SFTP credential on this account. Try again, or run "
+                    "DistrictSync as the account the nightly task uses.",
                 )
             ]
             page.update()
@@ -595,20 +614,29 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
         async def _show_result(ok: bool, msg: str) -> None:
             # UI mutation ONLY inside this coroutine the loop owns — never from
             # the worker thread (FLET_1.0_CONVENTIONS §Worker-thread).
+            #
+            # [gate #1] PRIVACY: `msg` on the failure path is the CORE's raw
+            # `test_connection` return (a raw paramiko/socket string that can carry
+            # host/socket/path detail). It is mapped to a bounded category reason
+            # via `friendly_sftp_reason` BEFORE it reaches the banner — the raw
+            # string NEVER renders. The success path shows a fixed reassurance.
             test_btn.disabled = False
             test_spinner.visible = False
             verdict = Verdict.HEALTHY if ok else Verdict.FAILED
             headline = "SFTP connection succeeded" if ok else "SFTP connection failed"
-            result_slot.controls = [components.HealthVerdictBanner(verdict, headline=headline, detail=msg)]
+            detail = "Your SFTP credentials work — the nightly sync can deliver." if ok else friendly_sftp_reason(msg)
+            result_slot.controls = [components.HealthVerdictBanner(verdict, headline=headline, detail=detail)]
             page.update()
 
         def _work() -> None:  # runs OFF the UI thread
             # test_connection returns (bool, str) and does NOT raise SystemExit
-            # (unlike run_pipeline) — a plain except Exception suffices here.
+            # (unlike run_pipeline) — a plain except Exception suffices here. Any raw
+            # exception is sanitized to a category reason in `_show_result` (never
+            # rendered raw), so passing str(exc) here is safe — it never reaches a card.
             try:
                 ok, msg = uploader.test_connection()
             except Exception as exc:  # noqa: BLE001 - surface any failure via the banner
-                ok, msg = False, f"Connection failed: {exc}"
+                ok, msg = False, str(exc)
             page.run_task(_show_result, ok, msg)
 
         page.run_thread(_work)

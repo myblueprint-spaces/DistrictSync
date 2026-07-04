@@ -45,7 +45,7 @@ from src.ui_flet.home_status import (
     is_stale,
     verdict_for_reason,
 )
-from src.ui_flet.humanize import friendly_timestamp
+from src.ui_flet.humanize import AnomalyVariant, friendly_anomaly_detail, friendly_timestamp, pluralize
 from src.ui_flet.verdict import Verdict
 
 
@@ -162,7 +162,7 @@ def derive_history_banner(
         return HistoryBanner(
             verdict=verdict_for_reason(reason),
             headline="Something looked off recently",
-            detail=_anomaly_detail(len(anomalies)),
+            detail=friendly_anomaly_detail(len(anomalies), variant=AnomalyVariant.HISTORY),
         )
 
     if reason is LatestReason.DATA_WARNINGS:
@@ -226,7 +226,7 @@ def _status_label(reason: LatestReason, record: dict, *, sftp: SftpDelivery) -> 
         return _REASON_LABELS[reason]
     if reason is LatestReason.DATA_WARNINGS:
         total = _data_errors_total(record)
-        return f"Delivered · {total} data {_pluralize('warning', total)}"
+        return f"Delivered · {total} data {pluralize('warning', total)}"
     # reason is CLEAN — distinguish a delivered run from one that never attempted SFTP.
     return "Delivered" if sftp is SftpDelivery.DELIVERED else "Completed"
 
@@ -270,14 +270,3 @@ def to_run_rows(records: list[dict], *, now: datetime | None = None) -> list[Run
     an actual list (``[]`` → ``[]``; a mixed valid/partial list → one safe ``RunRow`` per record).
     """
     return [to_run_row(record, now=now) for record in records]
-
-
-def _anomaly_detail(count: int) -> str:
-    """Plain-language anomaly summary — NEVER the raw ``ANOMALY:``-prefixed string."""
-    if count == 1:
-        return "One roster file was smaller than usual in the most recent run."
-    return f"{count} roster files were smaller than usual in the most recent run."
-
-
-def _pluralize(word: str, count: int) -> str:
-    return word if count == 1 else f"{word}s"

@@ -30,6 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from src.ui_flet.humanize import AnomalyVariant, friendly_anomaly_detail, pluralize
 from src.ui_flet.verdict import Verdict
 
 
@@ -101,7 +102,7 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
         # Delivered, but data errors are a SEPARATE axis that must stay visible even on a
         # successful delivery (fail-loud; mirrors home_status's delivered-with-warnings verdict).
         total = result.data_errors_total
-        warning_word = "warning" if total == 1 else "warnings"
+        warning_word = pluralize("warning", total)
         return (
             Verdict.WARNING,
             f"Delivered to SpacesEDU with {total} data {warning_word}",
@@ -117,7 +118,7 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
 
     if status is ConvertStatus.BUILT_WITH_DATA_ERRORS:
         total = result.data_errors_total
-        warning_word = "warning" if total == 1 else "warnings"
+        warning_word = pluralize("warning", total)
         return (
             Verdict.WARNING,
             f"Converted with {total} data {warning_word}",
@@ -129,7 +130,7 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
         return (
             Verdict.WARNING,
             "Some files look much smaller than usual",
-            _anomaly_detail(count),
+            friendly_anomaly_detail(count, variant=AnomalyVariant.CONVERT),
         )
 
     if status is ConvertStatus.NO_INPUT:
@@ -147,10 +148,3 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
         )
 
     raise ValueError(f"Unmapped ConvertStatus: {status!r}")  # pragma: no cover - totality guard
-
-
-def _anomaly_detail(count: int) -> str:
-    """Plain-language anomaly summary — NEVER the raw ``compute_anomalies`` string."""
-    if count == 1:
-        return "One roster file has far fewer rows than last time. Review it before delivering."
-    return f"{count} roster files have far fewer rows than last time. Review them before delivering."

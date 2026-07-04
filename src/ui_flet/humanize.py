@@ -3,17 +3,118 @@
 PURE + COUNTED (no flet import): trust-surface copy must never show a raw config id
 (``sd48myedbc``) or a raw ISO timestamp to a non-technical admin. IA-2 needs only
 ``friendly_district_name``; IA-3 adds ``friendly_timestamp`` (the run-log verdict copy);
-IA-9 grows the broader sweep (no raw paths/filenames/stack traces). Kept minimal by
-design (YAGNI) — total functions, not a framework.
+IA-9 consolidates the cross-surface humanization here: ``pluralize`` (the "1 warning /
+N warnings" plural, formerly a private copy in Home + Run History), ``friendly_anomaly_detail``
+(the anomaly summary, parametrized by ``AnomalyVariant`` — formerly triplicated across
+Home / Run History / Convert with intentionally different voices), and ``friendly_sftp_reason``
+(a bounded, category-mapped SFTP-failure reason so the raw ``test_connection`` string never
+reaches an admin card). Kept minimal by design (YAGNI) — total functions, not a framework.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def pluralize(word: str, count: int) -> str:
+    """Return ``word`` at ``count == 1``, else the naive ``word + "s"`` plural. TOTAL.
+
+    The single source of the "1 warning / N warnings" pluralization the trust surfaces
+    render (Home / Run History previously each carried a byte-identical private copy).
+    Total over 0 / negative (both → plural), matching the prior copies' behaviour.
+    """
+    return word if count == 1 else f"{word}s"
+
+
+class AnomalyVariant(Enum):
+    """Which surface's anomaly-detail voice ``friendly_anomaly_detail`` should speak.
+
+    The three surfaces intentionally differ (verified in-plan): Home is plain, Run History
+    scopes it to "the most recent run", and Convert adds a "Review … before delivering" CTA
+    (and switches the pronoun at plural). A single flattened string would degrade three
+    voices, so the shared helper is parametrized by variant, single-sourcing only the
+    pluralization + structure. NOT a "tense" — Convert is a distinct member, not a tense of
+    the other two.
+    """
+
+    HOME = "home"
+    HISTORY = "history"
+    CONVERT = "convert"
+
+
+def friendly_anomaly_detail(count: int, *, variant: AnomalyVariant) -> str:
+    """The plain-language anomaly summary for a surface — NEVER the raw ``ANOMALY:`` string.
+
+    Single source of the anomaly detail copy across Home / Run History / Convert. Each
+    ``variant`` returns the BYTE-FOR-BYTE string that surface historically produced (the
+    consolidated copies of the former ``_anomaly_detail``); the pluralization + structure is
+    shared, the voice/CTA is the variant. TOTAL — never raises, never surfaces a raw string.
+    """
+    plural = count != 1
+    if variant is AnomalyVariant.HOME:
+        if not plural:
+            return "One roster file was smaller than usual."
+        return f"{count} roster files were smaller than usual."
+    if variant is AnomalyVariant.HISTORY:
+        if not plural:
+            return "One roster file was smaller than usual in the most recent run."
+        return f"{count} roster files were smaller than usual in the most recent run."
+    # AnomalyVariant.CONVERT — adds the "Review … before delivering" CTA + the pronoun swap.
+    if not plural:
+        return "One roster file has far fewer rows than last time. Review it before delivering."
+    return f"{count} roster files have far fewer rows than last time. Review them before delivering."
+
+
+# Bounded, category-mapped SFTP-failure reasons — the substrings we match on (case-insensitive)
+# → the fixed, admin-safe reason. Ordered by diagnostic priority: auth first (a rejected
+# credential can also mention the host), then host-resolution, then reachability, then remote
+# path. Every branch returns a FIXED string; the raw ``test_connection`` return NEVER passes
+# through (privacy: a raw paramiko/socket string can carry host/socket/path detail).
+_SFTP_REASON_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("authentication", "auth", "password"),
+        "The username or password wasn't accepted.",
+    ),
+    (
+        ("getaddrinfo", "name or service", "nodename", "resolve"),
+        "Couldn't find that host — double-check the SFTP host.",
+    ),
+    (
+        ("timed out", "timeout", "unreachable", "refused", "network"),
+        "Couldn't reach the server — check the host and your network.",
+    ),
+    (
+        ("no such file", "not found", "permission"),
+        "Connected, but the remote folder wasn't accessible — check the remote path.",
+    ),
+)
+
+_SFTP_REASON_FALLBACK = (
+    "Couldn't connect to SpacesEDU. Check the host, username, password, and remote path, then try again."
+)
+
+
+def friendly_sftp_reason(raw: str) -> str:
+    """Map a raw SFTP-test failure string → a bounded, admin-safe category reason. TOTAL.
+
+    ``uploader.test_connection`` returns ``(bool, str)`` where the ``str`` is a raw
+    paramiko/socket exception message (a CORE return — IA-9 sanitizes it VIEW-side, never
+    touching the core). This maps that raw string to one of four actionable categories
+    (auth / host-resolution / reachability / remote-path) via a case-insensitive substring
+    match, with a MANDATORY catch-all so an unmapped failure can NEVER fall through to the
+    raw string. The admin learns *why* (the category their next action differs on) without
+    ever seeing a raw machine string.
+    """
+    lowered = (raw or "").lower()
+    for needles, reason in _SFTP_REASON_RULES:
+        if any(needle in lowered for needle in needles):
+            return reason
+    return _SFTP_REASON_FALLBACK
 
 
 def friendly_district_name(sis_type: str, *, config_dir: Path | None = None) -> str:
