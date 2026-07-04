@@ -18,6 +18,7 @@ holds no rail reference and never mutates ``selected_index`` after creation.
 from __future__ import annotations
 
 import functools
+import logging
 import os
 from collections.abc import Callable
 
@@ -25,10 +26,12 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.ui_flet import components, nav, nav_rail, tokens
-from src.ui_flet.screens.convert import build_convert
+from src.ui_flet.screens.convert import build_convert, is_write_in_flight
 from src.ui_flet.screens.home import build_home
 from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.theme import build_theme
+
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -116,18 +119,27 @@ def build_screens(destinations: tuple[nav.Destination, ...]) -> dict[str, Callab
 # --------------------------------------------------------------------------- #
 # Lifecycle leave-point seam (documented hook; NO guard logic this slice)      #
 # --------------------------------------------------------------------------- #
-def _on_leave(page: ft.Page) -> None:  # noqa: ARG001  (seam — intentionally a no-op)
-    """Leave-point seam for window close.
+def _on_leave(page: ft.Page) -> None:  # noqa: ARG001  (seam — read-only, never blocks the close)
+    """Leave-point seam for window close — reads the Convert write-in-flight flag (IA-5b).
 
-    Intentionally a no-op. The decouple-the-sync reassurance is now AMBIENT — a
-    persistent line in ``nav_rail`` above Exit (IA-2), always on-screen regardless of
-    which leave path is taken — so it is NOT wired as a close-time interruption here.
-    IA-5 still attaches the write-in-flight guard at this seam (the loader's
-    backup-and-restore atomicity remains the real safety net), and a per-close cue (the
-    rejected confirm-on-exit dialog) would also mount here if ever field-justified.
-    Keeping the hook + its docstring means those slices wire behaviour into an existing
-    seam instead of re-architecting the close path.
+    The decouple-the-sync reassurance is AMBIENT — a persistent line in ``nav_rail``
+    above Exit (IA-2), always on-screen regardless of which leave path is taken — so it
+    is NOT wired as a close-time interruption here.
+
+    IA-5b wires the write-in-flight guard (C6) at this seam: it reads
+    ``convert.is_write_in_flight()`` and, if a Convert atomic write is committing, logs
+    a debug note. It is **REASSURANCE-ONLY** — it does NOT block the atomic close. The
+    loader's backup-and-restore ``save_all`` atomicity is the real safety net: an
+    interrupted commit rolls back, so the output dir is never torn. Blocking the close
+    on a pandas write would risk the freeze/zombie the Flet migration deleted; the flag
+    makes the invariant explicit + gives a future field-justified confirm a seam. The
+    zero-orphan ``page.window.destroy()`` path stays byte-identical.
     """
+    if is_write_in_flight():
+        logger.debug(
+            "Window closing while a Convert write is committing — the atomic save_all "
+            "completes or rolls back cleanly; not blocking the close."
+        )
     return None
 
 

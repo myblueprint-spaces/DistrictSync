@@ -68,6 +68,21 @@ class TestSummarizeDataErrors:
         assert "1 data warning" in headline
         assert "warnings" not in headline
 
+    def test_delivered_with_data_errors_stays_a_warning_and_acknowledges_delivery(self) -> None:
+        # Fail-loud: a successful delivery must NOT silently erase the data-error warning
+        # (mirrors home_status's delivered-with-warnings verdict); it stays a WARNING.
+        result = ConvertResult(
+            status=ConvertStatus.DELIVERED_WITH_DATA_ERRORS,
+            data_errors_total=2,
+            sftp_attempted=True,
+            sftp_ok=True,
+        )
+        verdict, headline, detail = summarize(result)
+        assert verdict is Verdict.WARNING
+        assert "2 data warnings" in headline
+        assert "SpacesEDU" in headline  # the delivery is still acknowledged, not hidden
+        assert detail
+
 
 class TestSummarizeAnomalyAck:
     def test_anomaly_ack_is_a_warning_naming_smaller_files(self) -> None:

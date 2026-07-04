@@ -37,6 +37,7 @@ class ConvertStatus(str, Enum):
     """The distinct outcomes of a Convert run (the axis ``summarize`` maps)."""
 
     DELIVERED = "delivered"  # ETL ok + (SFTP ok OR not requested)
+    DELIVERED_WITH_DATA_ERRORS = "delivered_with_data_errors"  # ETL ok + delivered, but per-row errors present
     BUILT_NOT_DELIVERED = "built_not_delivered"  # ETL ok, SFTP attempted + failed (exit-3 shape)
     BUILT_WITH_DATA_ERRORS = "built_with_data_errors"  # ETL ok, per-row transform errors present
     NEEDS_ANOMALY_ACK = "needs_anomaly_ack"  # >20% drop — write withheld pending acknowledgment
@@ -94,6 +95,17 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
             Verdict.HEALTHY,
             "Roster converted",
             "Your roster was built successfully and written to the output folder.",
+        )
+
+    if status is ConvertStatus.DELIVERED_WITH_DATA_ERRORS:
+        # Delivered, but data errors are a SEPARATE axis that must stay visible even on a
+        # successful delivery (fail-loud; mirrors home_status's delivered-with-warnings verdict).
+        total = result.data_errors_total
+        warning_word = "warning" if total == 1 else "warnings"
+        return (
+            Verdict.WARNING,
+            f"Delivered to SpacesEDU with {total} data {warning_word}",
+            "A few records had field problems and were left blank. The rest of the roster was built, saved, and delivered.",
         )
 
     if status is ConvertStatus.BUILT_NOT_DELIVERED:
