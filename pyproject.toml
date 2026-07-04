@@ -81,6 +81,7 @@ omit = [
     "src/utils/logger.py",
     "src/ui/*",
     "src/ui_flet/shell.py",
+    "src/ui_flet/nav_rail.py",
     "src/ui_flet/launcher.py",
     "src/ui_flet/picker_field.py",
     "src/ui_flet/components.py",

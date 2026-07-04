@@ -85,3 +85,34 @@ def nav_model(app_config: AppConfig) -> NavModel:
         groups={group: tuple(items) for group, items in groups.items()},
         prominent_group=_prominent_group(app_config),
     )
+
+
+def ordered_destinations(model: NavModel) -> tuple[Destination, ...]:
+    """The flat destination list with the prominent group's destinations FIRST.
+
+    Groups are emitted in display order with ``model.prominent_group`` moved to the
+    front; **empty groups are dropped**; within-group order is preserved. Total — an
+    empty prominent group simply contributes nothing (the remaining groups then lead
+    in canonical order). The ONLY render-ordering decision: ``nav_rail`` builds the
+    flat rail from this tuple (option (a); no section headers — see plan 0018 gate).
+    """
+    lead = model.prominent_group
+    order = [lead, *[g for g in NavGroup if g != lead]]
+    result: list[Destination] = []
+    for group in order:
+        result.extend(model.groups.get(group, ()))
+    return tuple(result)
+
+
+def prominent_initial_id(model: NavModel) -> str:
+    """The id of the destination to select on launch — the prominent group's FIRST.
+
+    **Total:** if the prominent group is empty, fall back to the first destination of
+    ``ordered_destinations(model)`` (the first non-empty ordered group); if there are
+    no destinations at all, return ``""``.
+    """
+    prominent = model.groups.get(model.prominent_group, ())
+    if prominent:
+        return prominent[0].id
+    ordered = ordered_destinations(model)
+    return ordered[0].id if ordered else ""

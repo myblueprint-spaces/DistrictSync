@@ -1,4 +1,4 @@
-"""The Flet app shell — themed window + flat navigation + branded placeholders.
+"""The Flet app shell — themed window + navigation assembly + branded placeholders.
 
 VIEW glue (coverage-omitted): the trust-critical logic lives in the pure modules
 (``tokens``/``theme``/``nav``); this file wires them into a window. It follows the
@@ -6,10 +6,13 @@ PROVEN API forms from ``docs/reference/flet-prototype-spike/app.py`` verbatim
 (Flet 0.85.3) — do NOT regress to remembered 0.2x forms (see
 ``docs/FLET_1.0_CONVENTIONS.md``).
 
-Concerns (window · rail · placeholder host · close lifecycle) co-live here at
-PLAT-1 size; this is the documented **boundary to split before IA surfaces grow
-it** (IA-1 is the natural point — see plan 0014 F6). The rail renders FLAT this
-slice (the ``nav`` prominence model exists but its render wiring lands at IA-1).
+Slimmed at IA-1 (plan 0014 F6 split): the rail VIEW moved to ``nav_rail.py`` — the
+shell now owns window paint + sizing, the placeholder host, id-keyed selection, and
+the close lifecycle, and assembles the state-aware rail from ``nav_rail.build_nav``.
+The rail is a single flat ``ft.NavigationRail`` reordered so the prominent group
+leads (``nav.ordered_destinations``); the initial selection is the prominent group's
+first destination (``nav.prominent_initial_id``). Highlight is native — the shell
+holds no rail reference and never mutates ``selected_index`` after creation.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from collections.abc import Callable
 import flet as ft
 
 from src.config.app_config import AppConfig
-from src.ui_flet import components, nav, tokens
+from src.ui_flet import components, nav, nav_rail, tokens
 from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.theme import build_theme
 
@@ -30,27 +33,8 @@ from src.ui_flet.theme import build_theme
 # Flet 0.85 layout helpers (the old ft.padding.* / ft.border.* funcs are gone) #
 # (verbatim from the proven prototype)                                         #
 # --------------------------------------------------------------------------- #
-def pad(*, left: float = 0, top: float = 0, right: float = 0, bottom: float = 0) -> ft.Padding:
-    return ft.Padding(left=left, top=top, right=right, bottom=bottom)
-
-
 def pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
     return ft.Padding(left=h, top=v, right=h, bottom=v)
-
-
-def b_all(width: float, color: str) -> ft.Border:
-    side = ft.BorderSide(width, color)
-    return ft.Border(top=side, bottom=side, left=side, right=side)
-
-
-def b_only(
-    *,
-    top: ft.BorderSide | None = None,
-    right: ft.BorderSide | None = None,
-    bottom: ft.BorderSide | None = None,
-    left: ft.BorderSide | None = None,
-) -> ft.Border:
-    return ft.Border(top=top, right=right, bottom=bottom, left=left)
 
 
 # --------------------------------------------------------------------------- #
@@ -167,33 +151,30 @@ def main(page: ft.Page) -> None:
     screens = build_screens(model.destinations)
     # Swap the `setup` placeholder for the real folders surface. `functools.partial`
     # binds `page` (in scope here) so the dict value type stays
-    # `Callable[[], ft.Control]` — the other five placeholders + render()'s uniform
-    # `screens[id]()` call are untouched (RC4). IA-1 splits this host properly.
+    # `Callable[[], ft.Control]` — the other five placeholders + `render_by_id`'s
+    # uniform `screens[dest_id]()` call are untouched (RC4).
     screens["setup"] = functools.partial(build_setup, page)
     # Dev-only: behind DISTRICTSYNC_UI_DEMO, route the Help slot to the design-system
     # gallery (3 verdict banners + ErrorCard) so the front-loaded spine is visually
     # exercised. NOT a user nav entry — a hidden override on an existing route.
     if os.environ.get("DISTRICTSYNC_UI_DEMO") and "help" in screens:
         screens["help"] = components.build_design_demo
-    destinations = model.destinations
+
+    ordered = nav.ordered_destinations(model)
+    initial_id = nav.prominent_initial_id(model)
 
     content_host = ft.Container(expand=True, padding=pad_sym(36, 28))
 
-    def render(index: int) -> None:
-        dest = destinations[index]
-        inner = screens[dest.id]()
+    def render_by_id(dest_id: str) -> None:
+        inner = screens[dest_id]()
         # Scrollable content so tall screens never clip.
         content_host.content = ft.Column(controls=[inner], scroll=ft.ScrollMode.AUTO, expand=True)
 
-    def select(index: int) -> None:
-        rail.selected_index = index
-        render(index)
+    def select_by_id(dest_id: str) -> None:
+        render_by_id(dest_id)
         page.update()
 
-    def on_nav_change(e: ft.ControlEvent) -> None:
-        select(e.control.selected_index)
-
-    # --- exit affordance --------------------------------------------------- #
+    # --- exit affordance (lifecycle owner stays in the shell) -------------- #
     def do_exit(_e: ft.ControlEvent | None = None) -> None:
         _on_leave(page)
         try:
@@ -201,69 +182,15 @@ def main(page: ft.Page) -> None:
         except Exception:
             os._exit(0)
 
-    exit_btn = ft.Container(
-        content=components.text_button(
-            "Exit",
-            do_exit,
-            icon=ft.Icons.LOGOUT_ROUNDED,
-        ),
-        padding=pad(bottom=12),
+    # --- left navigation rail (state-aware reorder; view lives in nav_rail) - #
+    nav_view = nav_rail.build_nav(
+        ordered=ordered,
+        selected_id=initial_id,
+        on_select=select_by_id,
+        on_exit=do_exit,
     )
 
-    # --- left navigation rail (FLAT — prominence wiring is IA-1) ----------- #
-    rail = ft.NavigationRail(
-        selected_index=0,
-        label_type=ft.NavigationRailLabelType.ALL,
-        min_width=104,
-        min_extended_width=180,
-        bgcolor=tokens.color_surface,
-        indicator_color=ft.Colors.with_opacity(0.14, tokens.color_action_primary),
-        on_change=on_nav_change,
-        leading=ft.Container(
-            content=ft.Column(
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=4,
-                controls=[
-                    ft.Container(
-                        content=ft.Icon(ft.Icons.SYNC_ROUNDED, color=tokens.color_on_action, size=22),
-                        width=42,
-                        height=42,
-                        bgcolor=tokens.color_action_primary,
-                        border_radius=12,
-                        alignment=ft.Alignment(0, 0),
-                    ),
-                    ft.Text("District", size=11, weight=ft.FontWeight.W_700, color=tokens.color_action_primary_strong),
-                    ft.Text("Sync", size=11, weight=ft.FontWeight.W_700, color=tokens.color_action_primary),
-                ],
-            ),
-            padding=pad(top=14, bottom=18),
-        ),
-        destinations=[
-            ft.NavigationRailDestination(
-                icon=getattr(ft.Icons, dest.icon, ft.Icons.CIRCLE_OUTLINED),
-                selected_icon=getattr(ft.Icons, dest.selected_icon, ft.Icons.CIRCLE),
-                label=dest.label,
-            )
-            for dest in destinations
-        ],
-        trailing=ft.Container(
-            expand=True,
-            content=ft.Column(
-                alignment=ft.MainAxisAlignment.END,
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                expand=True,
-                controls=[exit_btn],
-            ),
-        ),
-    )
-
-    rail_wrap = ft.Container(
-        content=rail,
-        bgcolor=tokens.color_surface,
-        border=b_only(right=ft.BorderSide(1, tokens.color_border)),
-    )
-
-    page.add(ft.Row(spacing=0, expand=True, controls=[rail_wrap, content_host]))
+    page.add(ft.Row(spacing=0, expand=True, controls=[nav_view, content_host]))
 
     # --- graceful window-close handling (native): ZERO orphans ------------- #
     def on_window_event(e: ft.WindowEvent) -> None:
@@ -289,5 +216,5 @@ def main(page: ft.Page) -> None:
 
     page.on_disconnect = on_disconnect
 
-    render(0)
+    render_by_id(initial_id)
     page.update()

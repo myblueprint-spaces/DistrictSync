@@ -1,15 +1,26 @@
 """Tests for src/ui_flet/nav.py — the pure, state-aware navigation model.
 
-The rail renders FLAT at PLAT-1, but the prominence model is trust-critical so
-it's built + tested now; its render wiring lands at IA-1.
+The prominence model is trust-critical, so it's built + tested here; IA-1 renders
+it as a reordered flat rail via ``ordered_destinations`` + ``prominent_initial_id``
+(the pure render-ordering helpers, consumed by ``nav_rail``).
 """
 
 from __future__ import annotations
 
 from src.config.app_config import AppConfig
-from src.ui_flet.nav import DESTINATIONS, NavGroup, nav_model
+from src.ui_flet.nav import (
+    DESTINATIONS,
+    Destination,
+    NavGroup,
+    NavModel,
+    nav_model,
+    ordered_destinations,
+    prominent_initial_id,
+)
 
 _EXPECTED_IDS = {"home", "convert", "run_history", "setup", "mapping", "help"}
+
+_CONFIGURED_SCHEDULED = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=True)
 
 
 class TestDestinationSet:
@@ -57,3 +68,63 @@ class TestGrouping:
 
     def test_model_destinations_match_module_constant(self):
         assert nav_model(AppConfig()).destinations == DESTINATIONS
+
+
+class TestOrderedDestinations:
+    def test_unconfigured_leads_with_get_started_setup(self):
+        ordered = ordered_destinations(nav_model(AppConfig()))
+        assert ordered[0].group is NavGroup.GET_STARTED
+        assert ordered[0].id == "setup"
+
+    def test_configured_and_scheduled_leads_with_everyday_home(self):
+        ordered = ordered_destinations(nav_model(_CONFIGURED_SCHEDULED))
+        assert ordered[0].group is NavGroup.EVERYDAY
+        assert ordered[0].id == "home"
+
+    def test_ordering_is_a_permutation_none_dropped(self):
+        # No destination is lost by reordering — every live state is a permutation.
+        assert {d.id for d in ordered_destinations(nav_model(AppConfig()))} == _EXPECTED_IDS
+        assert {d.id for d in ordered_destinations(nav_model(_CONFIGURED_SCHEDULED))} == _EXPECTED_IDS
+
+    def test_within_group_order_preserved(self):
+        # Everyday's declared order (home, convert, run_history) survives the reorder.
+        ordered = ordered_destinations(nav_model(_CONFIGURED_SCHEDULED))
+        everyday = [d.id for d in ordered if d.group is NavGroup.EVERYDAY]
+        assert everyday == ["home", "convert", "run_history"]
+
+    def test_empty_groups_are_dropped(self):
+        # A hand-built model with two empty groups collapses to just the non-empty one.
+        home = Destination("home", "Home", "HOME_OUTLINED", "HOME_ROUNDED", NavGroup.EVERYDAY)
+        model = NavModel(
+            destinations=(home,),
+            groups={NavGroup.GET_STARTED: (), NavGroup.EVERYDAY: (home,), NavGroup.ADVANCED: ()},
+            prominent_group=NavGroup.GET_STARTED,  # prominent group is empty
+        )
+        assert ordered_destinations(model) == (home,)
+
+
+class TestProminentInitialId:
+    def test_unconfigured_initial_is_setup(self):
+        assert prominent_initial_id(nav_model(AppConfig())) == "setup"
+
+    def test_configured_and_scheduled_initial_is_home(self):
+        assert prominent_initial_id(nav_model(_CONFIGURED_SCHEDULED)) == "home"
+
+    def test_empty_prominent_group_falls_back_to_first_ordered(self):
+        # Total: an empty prominent group falls back to the first ordered destination.
+        home = Destination("home", "Home", "HOME_OUTLINED", "HOME_ROUNDED", NavGroup.EVERYDAY)
+        model = NavModel(
+            destinations=(home,),
+            groups={NavGroup.GET_STARTED: (), NavGroup.EVERYDAY: (home,), NavGroup.ADVANCED: ()},
+            prominent_group=NavGroup.GET_STARTED,  # empty → fall back
+        )
+        assert prominent_initial_id(model) == "home"
+
+    def test_no_destinations_returns_empty_string(self):
+        # Total: no destinations at all → "" (never raises).
+        model = NavModel(
+            destinations=(),
+            groups={NavGroup.GET_STARTED: (), NavGroup.EVERYDAY: (), NavGroup.ADVANCED: ()},
+            prominent_group=NavGroup.GET_STARTED,
+        )
+        assert prominent_initial_id(model) == ""
