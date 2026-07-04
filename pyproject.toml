@@ -90,6 +90,7 @@ omit = [
     "src/ui_flet/screens/home.py",
     "src/ui_flet/screens/convert.py",
     "src/ui_flet/screens/run_history.py",
+    "src/ui_flet/screens/help.py",
 ]
 
 [tool.coverage.report]
