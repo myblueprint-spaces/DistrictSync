@@ -14,6 +14,7 @@ import argparse
 import importlib.metadata
 import os
 import sys
+from typing import Callable
 
 from src.config.app_config import AppConfig
 from src.etl.pipeline import (
@@ -185,28 +186,22 @@ def _sftp_show(args: argparse.Namespace) -> int:
     return 0
 
 
-def _select_ui_launcher(ui_mode: str):
-    """Pick the no-argv UI launcher by the (already-normalized) UI mode.
+def _default_ui_launcher() -> Callable[[], None]:
+    """Return the no-argv UI launcher — the native Flet shell.
 
-    ``DISTRICTSYNC_UI=flet`` selects the native Flet shell; anything else
-    (default/unset) keeps the Streamlit launcher — the user-facing default and
-    the rollback floor until CUT-1. Returns the launcher's ``main`` callable.
-    This is the ONLY place the UI mode is interpreted (the env var itself is read
-    once, in the ``__main__`` branch below).
+    Flet is the only UI. This one-line seam keeps the no-argv dispatch
+    testable by identity (a monkeypatched sentinel) without launching a
+    window; it is the ONLY place the default UI entry point is named.
     """
-    if ui_mode == "flet":
-        from src.ui_flet.launcher import main as _launch_ui
-    else:
-        from src.ui.launcher import main as _launch_ui
+    from src.ui_flet.launcher import main as _launch_ui
+
     return _launch_ui
 
 
 if __name__ == "__main__":
-    # No arguments → launch the UI (e.g. double-clicked from Explorer). The UI is
-    # opt-in Flet via DISTRICTSYNC_UI=flet (read ONCE here); default stays Streamlit.
+    # No arguments → launch the UI (e.g. double-clicked from Explorer).
     if len(sys.argv) == 1:
-        _ui_mode = os.environ.get("DISTRICTSYNC_UI", "").strip().lower()
-        _select_ui_launcher(_ui_mode)()
+        _default_ui_launcher()()
         sys.exit(0)
 
     try:
