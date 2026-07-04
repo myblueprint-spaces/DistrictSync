@@ -25,12 +25,10 @@ so — it is not a dead control.
 
 from __future__ import annotations
 
-import logging
-
 import flet as ft
 
 from src.config.app_config import AppConfig
-from src.config.loader import available_configs, load_config
+from src.config.loader import available_configs
 from src.ui_flet import components, tokens
 from src.ui_flet.filepicker import (
     ValidationResult,
@@ -38,9 +36,8 @@ from src.ui_flet.filepicker import (
     validate_input_dir,
     validate_output_dir,
 )
+from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.picker_field import PickerField
-
-logger = logging.getLogger(__name__)
 
 
 def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
@@ -51,17 +48,10 @@ def _district_options() -> list[ft.dropdown.Option]:
     """SIS/district dropdown options — id keyed, ``district_name`` shown (RC2).
 
     Sourced from ``available_configs()`` (the existing single-source enumerator);
-    a config that fails to load falls back to its raw id rather than vanishing.
+    the id→friendly-name mapping (with the raw-id fallback + warning log) is the
+    single-sourced ``humanize.friendly_district_name`` — DRY, one place to change.
     """
-    options: list[ft.dropdown.Option] = []
-    for sis_id in available_configs():
-        try:
-            friendly = load_config(sis_id).district_name or sis_id
-        except Exception as exc:  # noqa: BLE001 - never let one bad config blank the whole list
-            logger.warning("Could not load district_name for %r: %s", sis_id, exc)
-            friendly = sis_id
-        options.append(ft.dropdown.Option(key=sis_id, text=friendly))
-    return options
+    return [ft.dropdown.Option(key=sis_id, text=friendly_district_name(sis_id)) for sis_id in available_configs()]
 
 
 def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view glue

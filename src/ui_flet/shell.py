@@ -25,6 +25,7 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.ui_flet import components, nav, nav_rail, tokens
+from src.ui_flet.screens.onboarding import build_onboarding
 from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.theme import build_theme
 
@@ -117,11 +118,14 @@ def build_screens(destinations: tuple[nav.Destination, ...]) -> dict[str, Callab
 def _on_leave(page: ft.Page) -> None:  # noqa: ARG001  (seam — intentionally a no-op)
     """Leave-point seam for window close.
 
-    Intentionally a no-op at PLAT-1. IA-2 attaches the "closing this window does
-    not stop the nightly sync" reassurance here; IA-5 attaches the write-in-flight
-    guard (the loader's backup-and-restore atomicity remains the real safety net).
-    Keeping the hook + its docstring now means those slices wire behaviour into an
-    existing seam instead of re-architecting the close path.
+    Intentionally a no-op. The decouple-the-sync reassurance is now AMBIENT — a
+    persistent line in ``nav_rail`` above Exit (IA-2), always on-screen regardless of
+    which leave path is taken — so it is NOT wired as a close-time interruption here.
+    IA-5 still attaches the write-in-flight guard at this seam (the loader's
+    backup-and-restore atomicity remains the real safety net), and a per-close cue (the
+    rejected confirm-on-exit dialog) would also mount here if ever field-justified.
+    Keeping the hook + its docstring means those slices wire behaviour into an existing
+    seam instead of re-architecting the close path.
     """
     return None
 
@@ -147,13 +151,28 @@ def main(page: ft.Page) -> None:
     except Exception:  # nosec B110 — window sizing is native-only; harmless no-op in web mode
         pass
 
-    model = nav.nav_model(AppConfig.load())
+    app_cfg = AppConfig.load()
+    model = nav.nav_model(app_cfg)
     screens = build_screens(model.destinations)
     # Swap the `setup` placeholder for the real folders surface. `functools.partial`
     # binds `page` (in scope here) so the dict value type stays
     # `Callable[[], ft.Control]` — the other five placeholders + `render_by_id`'s
     # uniform `screens[dest_id]()` call are untouched (RC4).
     screens["setup"] = functools.partial(build_setup, page)
+    # Swap the `home` placeholder for the first-run onboarding hero, but ONLY when
+    # unconfigured (IA-2, branch (a)). `unconfigured` is the exact predicate
+    # `nav._prominent_group` uses (De-Morgan-identical); the configured-but-unscheduled
+    # admin keeps the `home` placeholder until IA-3 lands the real dashboard. The
+    # `on_start_setup` lambda closes over `select_by_id` (defined below) — Python
+    # resolves the free name at call-time (button click), so this late binding is
+    # correct and all screen-map mutation stays co-located here.
+    if not (app_cfg.is_complete() and app_cfg.schedule_registered) and "home" in screens:
+        screens["home"] = functools.partial(
+            build_onboarding,
+            page,
+            sis_type=app_cfg.sis_type,
+            on_start_setup=lambda: select_by_id("setup"),
+        )
     # Dev-only: behind DISTRICTSYNC_UI_DEMO, route the Help slot to the design-system
     # gallery (3 verdict banners + ErrorCard) so the front-loaded spine is visually
     # exercised. NOT a user nav entry — a hidden override on an existing route.

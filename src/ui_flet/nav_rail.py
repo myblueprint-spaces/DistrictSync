@@ -55,6 +55,32 @@ def build_nav(
     def on_change(e: ft.ControlEvent) -> None:
         on_select(ordered[e.control.selected_index].id)
 
+    # Persistent decouple-the-sync reassurance (IA-2): a calm, always-on-screen line
+    # directly above Exit — the real engine is the invisible scheduled CLI, so a
+    # 2-3x/year admin must never fear that closing the cockpit stops the sync. Ambient
+    # (not a per-close dialog): present regardless of which leave path is taken (in-app
+    # Exit OR the OS title-bar ✕), so it satisfies "every leave point" without friction.
+    # Static presentation — build_nav takes no new parameter.
+    reassurance = ft.Container(
+        padding=_pad(left=10, right=10, bottom=10),
+        content=ft.Column(
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=6,
+            controls=[
+                ft.Icon(ft.Icons.VERIFIED_USER_ROUNDED, size=18, color=tokens.color_muted),
+                ft.Container(
+                    width=84,
+                    content=ft.Text(
+                        "Closing this window won't stop your nightly sync.",
+                        size=11,
+                        color=tokens.color_muted,
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                ),
+            ],
+        ),
+    )
+
     exit_btn = ft.Container(
         content=components.text_button(
             "Exit",
@@ -105,7 +131,7 @@ def build_nav(
                 alignment=ft.MainAxisAlignment.END,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 expand=True,
-                controls=[exit_btn],
+                controls=[reassurance, exit_btn],
             ),
         ),
     )
