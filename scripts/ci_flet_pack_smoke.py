@@ -1,9 +1,10 @@
-"""PLAT-3 release-gate smoke for the packed ``DistrictSync-flet`` exe.
+"""Release-gate smoke for the packed ``DistrictSync`` exe.
 
 Productionizes the throwaway PLAT-0b verifier (``ci_verify_pack.py``) against the
-REAL ``src/ui_flet/launcher.py`` artifact and folds in the plan-gate Required
-Changes (1-5). It proves three independent things about the packed artifact, kept
-as SEPARATE axes so a hiccup in one cannot muddy another's verdict:
+Flet-default ``src/main.py`` artifact (no-argv branch → ``src/ui_flet/launcher.py``)
+and folds in the plan-gate Required Changes (1-5). It proves three independent things
+about the packed artifact, kept as SEPARATE axes so a hiccup in one cannot muddy
+another's verdict:
 
   1. **No console (Windows):** the PE Optional-Header ``Subsystem == 2``
      (``IMAGE_SUBSYSTEM_WINDOWS_GUI``) — a deterministic property, not a vibe.
@@ -24,7 +25,7 @@ as SEPARATE axes so a hiccup in one cannot muddy another's verdict:
 
 The real process model is ``exe -> re-exec'd python host -> separate flet/flet.exe
 view`` (PLAT-0), so the tree walk follows descendants of BOTH the launched PID and
-any re-exec'd host child named ``DistrictSync-flet``.
+any re-exec'd host child named ``DistrictSync``.
 
 On ANY failure the launcher's boot traceback is in ``~/.districtsync/etl_tool.log``
 (it writes there, not stdout, because the exe is windowed) — so a failure prints
@@ -148,10 +149,10 @@ def _view_pids() -> set[int]:
 
 
 def _tree_pids(root_pid: int) -> set[int]:
-    """All live PIDs in ``root_pid``'s tree, including any re-exec'd ``DistrictSync-flet`` host.
+    """All live PIDs in ``root_pid``'s tree, including any re-exec'd ``DistrictSync`` host.
 
     Walks descendants of the launched root AND, defensively, descendants of any
-    process whose image is ``DistrictSync-flet*`` (the re-exec'd python host the
+    process whose image is ``DistrictSync*`` (the re-exec'd python host the
     onefile spawns) — the real model is ``exe -> python host -> flet view``.
     """
     import psutil
@@ -159,14 +160,14 @@ def _tree_pids(root_pid: int) -> set[int]:
     pids: set[int] = set()
     roots: list[int] = [root_pid]
 
-    # Add any DistrictSync-flet host process as an extra walk root (belt-and-braces
+    # Add any DistrictSync host process as an extra walk root (belt-and-braces
     # for the re-exec'd host whose parent may not chain back to root_pid cleanly).
     for proc in psutil.process_iter(["pid", "name"]):
         try:
             nm = (proc.info["name"] or "").lower()
         except Exception:  # nosec B112 — vanished proc skipped
             continue
-        if nm.startswith("districtsync-flet"):
+        if nm.startswith("districtsync"):
             roots.append(proc.info["pid"])
 
     for rpid in roots:
@@ -534,7 +535,7 @@ def _assert_embed(manifest: Path) -> int:
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Smoke the packed DistrictSync-flet exe.")
+    parser = argparse.ArgumentParser(description="Smoke the packed DistrictSync exe.")
     parser.add_argument(
         "--assert-embed",
         type=Path,
@@ -542,7 +543,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="build-time check only: assert a PyInstaller manifest embeds the Flet client, then exit.",
     )
     parser.add_argument("dist", type=Path, nargs="?", help="dist directory containing the artifact")
-    parser.add_argument("name", nargs="?", help="artifact base name (e.g. DistrictSync-flet)")
+    parser.add_argument("name", nargs="?", help="artifact base name (e.g. DistrictSync)")
     parser.add_argument(
         "--require-close",
         action="store_true",

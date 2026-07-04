@@ -1,12 +1,14 @@
 name: flet-pack
 
 # Reusable per-OS pack + smoke for the windowed/no-console/offline Flet exe of the
-# REAL launcher (src/ui_flet/launcher.py). Called by release.yml (tag) AND
-# flet-verify.yml (PR/dispatch) — one matrix, two callers (anti-rot).
+# Flet-default entry point (src/main.py, no-argv branch). Called by release.yml (tag)
+# AND flet-verify.yml (PR/dispatch) — one matrix, two callers (anti-rot). This IS the
+# public Release builder: release.yml attaches these artifacts (one exe/OS + SHA-256).
 #
 # SECURITY (RC4): least-privilege by construction. A `flet pack` runs arbitrary PR
-# code, so this reusable workflow takes NO secrets and grants only read scope. The
-# built exe is an `upload-artifact` ONLY — never attached to a public Release here.
+# code, so this reusable workflow takes NO secrets and grants only read scope. On a PR
+# (flet-verify.yml) the built exe is an `upload-artifact` ONLY; on a tag, release.yml
+# downloads and attaches it.
 on:
   workflow_call:
 
@@ -93,7 +95,8 @@ jobs:
           fi
           echo "client cache OK: $DIR"
 
-      # Pack the REAL launcher into a windowed/no-console/offline onefile exe.
+      # Pack the Flet-default entry point (src/main.py, no-argv branch) into a
+      # windowed/no-console/offline onefile exe — THE public Release binary.
       # --add-data separator is per-OS (matrix `sep`). The FULL src.* + flet
       # hidden-import set is listed explicitly (belt-and-braces — registry.py
       # statically imports the transformers, but match release.yml's style).
@@ -101,11 +104,12 @@ jobs:
       # flags go through --pyinstaller-build-args, and each token MUST be its own
       # `--pyinstaller-build-args=<token>` (flet's `nargs="*"` stops at flag-like
       # tokens, and PyInstaller needs `--paths` and `.` as separate args).
-      # --exclude-module streamlit/src.ui keeps the Streamlit stack out of the exe.
+      # --exclude-module streamlit/src.ui is belt-and-braces (both removed at CUT-1)
+      # so a stray transitive can never re-bloat the exe with a dead UI stack.
       - name: Pack windowed offline Flet exe
         shell: bash
         run: |
-          flet pack src/ui_flet/launcher.py --name DistrictSync-flet \
+          flet pack src/main.py --name DistrictSync \
             --yes \
             --add-data "config${{ matrix.sep }}config" \
             --hidden-import flet \
@@ -154,10 +158,10 @@ jobs:
       - name: Assert packed exe embeds the client
         shell: bash
         run: |
-          MANIFEST="build/DistrictSync-flet/Analysis-00.toc"
+          MANIFEST="build/DistrictSync/Analysis-00.toc"
           if [ ! -f "$MANIFEST" ]; then
             echo "FAIL: build manifest not found at $MANIFEST"
-            ls -la build/DistrictSync-flet 2>/dev/null || true
+            ls -la build/DistrictSync 2>/dev/null || true
             exit 1
           fi
           python scripts/ci_flet_pack_smoke.py --assert-embed "$MANIFEST"
@@ -165,10 +169,10 @@ jobs:
       - name: Echo measured artifact size (size budget)
         shell: bash
         run: |
-          if [ -f "dist/DistrictSync-flet.exe" ]; then F="dist/DistrictSync-flet.exe";
-          elif [ -d "dist/DistrictSync-flet.app" ]; then F="dist/DistrictSync-flet.app"; \
+          if [ -f "dist/DistrictSync.exe" ]; then F="dist/DistrictSync.exe";
+          elif [ -d "dist/DistrictSync.app" ]; then F="dist/DistrictSync.app"; \
             echo "macOS .app bundle size:"; du -sh "$F"; exit 0;
-          else F="dist/DistrictSync-flet"; fi
+          else F="dist/DistrictSync"; fi
           ls -la "$F" || true
           python -c "import os,sys; p=sys.argv[1]; print(f'measured size: {os.path.getsize(p)/1e6:.1f} MB')" "$F" || true
 
@@ -177,15 +181,15 @@ jobs:
       # Linux runs under xvfb so the client opens a real window.
       - name: Smoke the packed exe (Windows / macOS)
         if: runner.os != 'Linux'
-        run: python scripts/ci_flet_pack_smoke.py dist DistrictSync-flet ${{ matrix.require_close }}
+        run: python scripts/ci_flet_pack_smoke.py dist DistrictSync ${{ matrix.require_close }}
 
       - name: Smoke the packed exe (Linux, xvfb)
         if: runner.os == 'Linux'
-        run: xvfb-run -a python scripts/ci_flet_pack_smoke.py dist DistrictSync-flet ${{ matrix.require_close }}
+        run: xvfb-run -a python scripts/ci_flet_pack_smoke.py dist DistrictSync ${{ matrix.require_close }}
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: DistrictSync-flet-${{ matrix.os }}
-          path: dist/DistrictSync-flet*
+          name: DistrictSync-${{ matrix.os }}
+          path: dist/DistrictSync*
           retention-days: 5

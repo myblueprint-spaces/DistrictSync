@@ -74,31 +74,13 @@ _Last generated from `main` @ c669404._
 
 ---
 
-## src/ui/
+## src/ui_flet/  (native Flet 1.0 desktop UI — the only UI)
 
-- `src/ui/Home.py` — Streamlit multi-page app entry point (`streamlit run src/ui/Home.py`): renders status dashboard (configured/unconfigured banner, last Windows scheduled-task run, SFTP status); auto-discovers pages/ subdirectory.
-- `src/ui/brand.py` — myBlueprint/SpacesEDU brand styles: `inject_brand_css()` injects corporate colour palette and card styles; `header()` renders the branded page heading with wordmark; `step_progress()` renders a numbered step bar.
-- `src/ui/folder_picker.py` — `pick_directory()`: native OS folder-selection dialog (tkinter `askdirectory`, lazily imported) for the local Setup Wizard's path inputs; returns `None` on cancel/no-GUI so callers fall back to manual text entry.
-- `src/ui/launcher.py` — PyInstaller UI launcher: locates `src/ui/Home.py` inside the frozen bundle and invokes Streamlit programmatically with `--server.headless=false`; used when the binary is launched without CLI arguments.
-- `src/ui/mapping_helpers.py` — Mapping Editor support library: `detect_columns()` (headerless heuristic), `get_field_metadata()` (field descriptions/types), `build_override_dict()` (diff vs base config), `save_mapping_yaml()`, `column_selectbox()` widget, `SOURCE_FILE_ROLES` and `CEDS_GRADES` constants.
-
-### src/ui/pages/
-
-- `src/ui/pages/01_Setup_Wizard.py` — 5-step setup wizard: file paths → district config → schedule time (Windows collects account password + run-as user for `register_task`; blank warns logged-on-only) → SFTP config (Step 4 verifies credential via `get_stored_password()`) → summary/activation; dashboard. `_classify_schedule_error(msg, elevated)` maps a clean failure to an elevation-aware message (not-elevated → admin; elevated → batch-logon).
-- `src/ui/pages/02_Convert.py` — Ad-hoc conversion page: a thin adapter over the shared ETL engine (uploaded GDE bytes → `load_from_bytes` → `run_transform` → `DataLoader`, so download/zip + SFTP use `csv_encoding` and match the CLI byte-for-byte); renders quality report + diff, offers ZIP download / optional SFTP upload.
-- `src/ui/pages/03_Run_History.py` — Run History page: parses `__DISTRICTSYNC_RUN__` JSON log lines from `~/.districtsync/etl_tool.log` into a table (raw-tail fallback). The display-only Status cell shows amber "ETL OK · SFTP FAILED" on delivery failure and "Completed with N data errors" on field-transform errors, so the headline never contradicts the exit code.
-- `src/ui/pages/04_Mapping_Editor.py` — 7-step visual Mapping Editor: guides non-technical users through entity selection, file upload + column detection, field mapping, academic calendar, and name/email config; saves a minimal `_base`-inheriting override YAML to `~/.districtsync/mappings/`.
-- `src/ui/pages/05_Help.py` — Help page: renders `docs/` markdown files (partner guides + developer docs) directly in the Streamlit UI (the only `docs/` renderer; the MkDocs static site was removed 2026-06-30).
-
----
-
-## src/ui_flet/  (native Flet 1.0 desktop UI — additive, opt-in via `DISTRICTSYNC_UI=flet`)
-
-- `src/ui_flet/tokens.py` — Pure brand tokens (no flet import): the 8 `MB_*` primitives ported from `src/ui/brand.py` + semantic aliases (`color_action_primary`, `color_status_*`, `color_surface`, `color_text`, `color_muted`, `page_bg`) + a WCAG `contrast_ratio()` helper and `UI_CONTRAST_PAIRS` (every fg/bg pair the shell paints, gated >= 4.5:1).
+- `src/ui_flet/tokens.py` — Pure brand tokens (no flet import): the 8 `MB_*` brand-colour primitives (the single hex source) + semantic aliases (`color_action_primary`, `color_status_*`, `color_surface`, `color_text`, `color_muted`, `page_bg`) + a WCAG `contrast_ratio()` helper and `UI_CONTRAST_PAIRS` (every fg/bg pair the shell paints, gated >= 4.5:1).
 - `src/ui_flet/theme.py` — `build_theme()` / `build_color_scheme()`: maps the semantic tokens onto a Material-3 `ft.ColorScheme` (light-only); the single place the brand→M3 role mapping is decided.
 - `src/ui_flet/nav.py` — Pure nav-state model (no flet import): `Destination`/`NavGroup`/`DESTINATIONS` + `needs_setup(AppConfig)` (THE single-sourced "not fully set up" predicate `not (is_complete() and schedule_registered)`, shared by shell dispatcher + prominence) + `nav_model` (grouped; leads Get-started while `needs_setup`, else Everyday) + total render-ordering helpers `ordered_destinations`/`prominent_initial_id` — rendered by `nav_rail`.
 - `src/ui_flet/verdict.py` — COUNTED pure verdict-mapping spine (no flet import): `Verdict` enum (HEALTHY/WARNING/FAILED) + frozen `VerdictVisual(color, icon, headline, tone)` + total `verdict_visuals(v)`; the single source of what healthy/warning/failed looks and reads like — colour ∈ AA-safe verdict tokens, icon name (resolved in the components view) + tone label are the TESTED non-colour cue. Deriving WHICH verdict from state is IA-3.
-- `src/ui_flet/setup_errors.py` — COUNTED pure schedule-error classifier (no flet/streamlit): `classify_schedule_error(msg, elevated) -> str` maps a de-CLIXML'd/secret-stripped `register_task` failure + elevation flag to calm plain prose (keyed on PowerShell-not-found / ScheduledTasks-missing / Access-denied); `else` surfaces `msg`. Single source relocated out of the Streamlit setup page (kept as a shim); non-leaking (I2). IA-4a.
+- `src/ui_flet/setup_errors.py` — COUNTED pure schedule-error classifier (no flet import): `classify_schedule_error(msg, elevated) -> str` maps a de-CLIXML'd/secret-stripped `register_task` failure + elevation flag to calm plain prose (keyed on PowerShell-not-found / ScheduledTasks-missing / Access-denied); `else` surfaces `msg`. Single source for the schedule-error copy; non-leaking (I2). IA-4a.
 - `src/ui_flet/run_log.py` — COUNTED pure `__DISTRICTSYNC_RUN__` parser (no flet import): `TAG` + `read_run_records(log_path=None) -> list[dict] | None` reads the run log (default `paths.user_log_file()`) NEWEST-FIRST — missing→`[]` (no runs), malformed lines skipped, unreadable→`None` (graceful-degradation sentinel). The `[]`-vs-`None` split is load-bearing; reusable by IA-6. IA-3a.
 - `src/ui_flet/home_status.py` — COUNTED pure Home status-derivation (no flet): `HomeStatus`/`HomeMetrics`/`FixAction` + `is_stale` + `derive_home_status` + shared precedence (`LatestReason`/`classify_latest_reason`/`verdict_for_reason`). Owns the entity vocabulary (`_ROSTERING_ENTITIES`/`_MYBLUEPRINT_ENTITIES` + SINGLE-SOURCE `ENTITY_LABELS`). Consumes shared `humanize.pluralize`/`friendly_anomaly_detail`. IA-3a/IA-6/IA-8a/IA-9.
 - `src/ui_flet/humanize.py` — COUNTED pure trust-copy helpers (no flet), all TOTAL: `friendly_district_name` (SIS id → `district_name`, unknown→raw id); `friendly_timestamp` (ISO → plain phrase); `pluralize`; SINGLE-SOURCE `friendly_anomaly_detail(count, *, variant)` (`AnomalyVariant` HOME/HISTORY/CONVERT — byte-for-byte per surface); `friendly_sftp_reason` (bounded category SFTP-failure reason, NEVER the raw core string). DS-2/IA-3/IA-9.
@@ -142,7 +124,7 @@ _Last generated from `main` @ c669404._
 
 - `pyproject.toml` — Project metadata (name=districtsync, version=3.2.0), setuptools build config, pytest settings (addopts, benchmarks deselected, coverage omits), ruff lint/format rules, mypy config, bandit exclusions.
 - `Makefile` — Developer shortcuts: `install`, `test`, `test-cov`, `lint`, `fmt`, `ui`, `build-win`, `build-flet-win`, `clean`, `validate-config`.
-- `requirements.txt` — Runtime dependencies: pandas, PyYAML, python-dateutil, pydantic, paramiko, keyring, streamlit.
+- `requirements.txt` — Runtime dependencies: pandas, PyYAML, python-dateutil, pydantic, paramiko, keyring, flet, flet-desktop.
 - `requirements-dev.txt` — Dev/CI dependencies: extends requirements.txt with pytest, pytest-cov, ruff, mypy, bandit, types-paramiko, types-PyYAML, hypothesis, pytest-benchmark, and optional UI-test extras (playwright, pytest-sftpserver).
 - `README.md` — Project overview, quick-start instructions, supported districts, and links to full documentation.
 - `CHANGELOG.md` — Keep-a-Changelog release history; per-release behavior changes (GitHub Releases holds download links + auto-generated commit notes).
@@ -151,7 +133,7 @@ _Last generated from `main` @ c669404._
 
 ## tests/
 
-- `tests/conftest.py` — Shared fixtures (synthetic DataFrames, YAML configs, `DataTransformer` instances) for all tests; also hosts the `streamlit_server` session fixture for UI smoke tests.
+- `tests/conftest.py` — Shared fixtures (synthetic DataFrames, YAML configs, `DataTransformer` instances) for all tests.
 - `tests/snapshots/generate_synthetic.py` — Script to regenerate synthetic SD74 GDE input files in `tests/snapshots/input/` (run once after schema changes).
 - `tests/snapshots/` — Frozen SD74 snapshot data: `input/` holds 6 synthetic GDE files (StudentDemographic, Staff, Family, Classes, Schedule, CourseInfo); `output/` holds 5 golden CSV files (Students, Staff, Family, Classes, Enrollments) locked against regression.
 - `tests/snapshots/mbp_input/` — Small hand-authored synthetic GDEs for the `mbponly` course tier (CourseInformation, StudentCourseHistory, StudentCourseSelection); consumed by the mbponly end-to-end pipeline test.
@@ -197,7 +179,6 @@ _Last generated from `main` @ c669404._
 - `tests/test_paths.py` — `src/utils/paths.py` path helpers under both source-install and frozen-bundle (`sys.frozen`) scenarios.
 - `tests/test_benchmarks.py` — Performance benchmarks on a synthetic 5 000-student dataset (deselected from normal run; invoke with `-m benchmark`).
 - `tests/test_property_based.py` — Hypothesis property-based tests: invariants on grade mapping, email generation, and other pure functions to catch edge cases hand-written tests miss.
-- `tests/test_ui_smoke.py` — Playwright headless Chrome smoke tests: each Streamlit page loads without crashing and renders key structural elements; requires the `streamlit_server` fixture.
 
 ---
 
@@ -210,8 +191,8 @@ _Last generated from `main` @ c669404._
 - `docs/partner/how-classes-work.md` — Explains the three class types (homeroom, subject, blended) and how each is detected from GDE data.
 - `docs/partner/headless-sftp-setup.md` — Headless / Docker SFTP setup: configuring SFTP credentials entirely from the CLI (`--sftp-configure`, `--sftp-test`, `--sftp-show`) without a browser.
 - `docs/developer/architecture.md` — Architecture overview: ETL pipeline diagram, extractor/transformer/loader responsibilities, config-driven design, blended class logic.
-- `docs/developer/setup.md` — Developer setup: Python version, clone, `pip install`, running tests, linting, type checking, Streamlit UI, PyInstaller build.
-- `docs/developer/testing.md` — Testing guide: test categories (unit, e2e, snapshot, property-based, benchmark, UI smoke), coverage requirements, mocking patterns.
+- `docs/developer/setup.md` — Developer setup: Python version, clone, `pip install`, running tests, linting, type checking, Flet UI, PyInstaller build.
+- `docs/developer/testing.md` — Testing guide: test categories (unit, e2e, snapshot, property-based, benchmark), coverage requirements, mocking patterns.
 - `docs/developer/release.md` — Release process: version bump, tag push, GitHub Actions automated build (3 platform binaries), GitHub Release creation, MkDocs deploy.
 - `docs/developer/adding-district.md` — Step-by-step guide for adding a new district YAML config with `_base` inheritance and non-standard file names/column mappings.
 - `docs/developer/adding-transformer.md` — Guide for adding a custom entity transformer class and registering it in the registry.

@@ -2,8 +2,8 @@
 
 ``src.ui_flet.setup_errors.classify_schedule_error`` is the single source for
 mapping a (de-CLIXML'd) ``register_task`` failure message + the process
-elevation state into a calm, actionable message. It is pure (no flet, no
-streamlit) so it is unit-testable headless.
+elevation state into a calm, actionable message. It is pure (no flet import)
+so it is unit-testable headless.
 
 Two concerns are covered:
 

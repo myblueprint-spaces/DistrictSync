@@ -1,4 +1,4 @@
-.PHONY: install test test-cov lint fmt typecheck ui build-win build-flet-win clean validate-config
+.PHONY: install test test-cov lint fmt typecheck build-win clean validate-config
 
 install:
 	pip install -r requirements.txt -r requirements-dev.txt
@@ -17,80 +17,24 @@ fmt:
 
 # Mirror .github/workflows/ci.yml — keep the --exclude pattern in lockstep.
 typecheck:
-	mypy src/ --exclude 'src/ui|src/ui_flet'
-
-ui:
-	streamlit run src/ui/Home.py
+	mypy src/ --exclude 'src/ui_flet'
 
 validate-config:
 	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc','sd40myedbc','sd48myedbc','sd51myedbc','sd54myedbc','sd74myedbc','mbp_all','mbp_core','mbponly','sd51attendance']]"
 
-# Build Windows .exe locally (must run on Windows).
-# Mirrors .github/workflows/release.yml:build-windows so local builds
-# match CI.
-#
-# Why --paths=. + explicit --hidden-import for every src.* submodule:
-#   Streamlit pages (src/ui/pages/*.py) are exec()'d at runtime, so
-#   PyInstaller's static analyzer (which starts at src/main.py) never
-#   sees `from src.scheduler.windows import ...`, `from src.ui.brand
-#   import ...`, etc. --paths=. lets PyInstaller resolve the `src`
-#   package from the repo root, and --collect-submodules=src scoops
-#   up every submodule. The explicit --hidden-import lines below are
-#   belt-and-suspenders: if a future pyinstaller changes how
-#   --collect-submodules discovers packages, the listed modules are
-#   still guaranteed to be bundled.
-#
-#   paramiko + keyring are top-level imports in src/sftp/uploader.py
-#   so PyInstaller picks them up automatically; only
-#   keyring.backends.Windows still needs --hidden-import because
-#   keyring discovers credential-store backends dynamically.
-build-win:
-	pyinstaller --onefile --name DistrictSync \
-	  --add-data "config;config" \
-	  --add-data "src/ui;src/ui" \
-	  --add-data "docs;docs" \
-	  --collect-all streamlit \
-	  --collect-submodules src \
-	  --paths=. \
-	  --hidden-import=pandas \
-	  --hidden-import=yaml \
-	  --hidden-import=logging.config \
-	  --hidden-import=pydantic \
-	  --hidden-import=pydantic_core \
-	  --hidden-import=keyring.backends.Windows \
-	  --hidden-import=src.scheduler.windows \
-	  --hidden-import=src.scheduler.linux \
-	  --hidden-import=src.ui.brand \
-	  --hidden-import=src.ui.mapping_helpers \
-	  --hidden-import=src.ui.launcher \
-	  --hidden-import=src.ui.folder_picker \
-	  --hidden-import=tkinter \
-	  --hidden-import=src.etl.transformers.base \
-	  --hidden-import=src.etl.transformers.classes \
-	  --hidden-import=src.etl.transformers.enrollments \
-	  --hidden-import=src.etl.transformers.blended \
-	  --hidden-import=src.etl.transformers.students \
-	  --hidden-import=src.etl.transformers.staff \
-	  --hidden-import=src.etl.transformers.family \
-	  --hidden-import=src.etl.transformers.course_info \
-	  --hidden-import=src.etl.transformers.student_courses \
-	  --hidden-import=src.etl.transformers.student_attendance \
-	  --hidden-import=src.etl.transformers.registry \
-	  --hidden-import=src.etl.transformers.context \
-	  src/main.py
-
-# Build the windowed/no-console/offline Flet preview .exe locally (Windows).
-# Mirrors .github/workflows/flet-pack.yml's Windows `flet pack` invocation so a
-# local build matches CI (same target launcher.py, same hidden-imports, same
-# raw PyInstaller args, same `;` --add-data separator). `flet pack` has no native
-# --paths/--exclude-module, so those go through --pyinstaller-build-args (one
-# token per flag; PyInstaller needs `--paths` and `.` as separate args).
+# Build the windowed/no-console/offline Flet-default .exe locally (Windows) — THE
+# public release binary. Packs src/main.py: no args → the Flet shell, --sis/--input/
+# --output → the CLI. Mirrors .github/workflows/flet-pack.yml's Windows `flet pack`
+# invocation so a local build matches CI (same target, same hidden-imports, same raw
+# PyInstaller args, same `;` --add-data separator). `flet pack` has no native
+# --paths/--exclude-module, so those go through --pyinstaller-build-args (one token
+# per flag; PyInstaller needs `--paths` and `.` as separate args).
 # Pre-seed the client cache first if offline:
 #   python -c "import flet_desktop; flet_desktop.ensure_client_cached()"
 # Smoke it after:
-#   python scripts/ci_flet_pack_smoke.py dist DistrictSync-flet --require-close
-build-flet-win:
-	flet pack src/ui_flet/launcher.py --name DistrictSync-flet \
+#   python scripts/ci_flet_pack_smoke.py dist DistrictSync --require-close
+build-win:
+	flet pack src/main.py --name DistrictSync \
 	  --yes \
 	  --add-data "config;config" \
 	  --hidden-import flet \

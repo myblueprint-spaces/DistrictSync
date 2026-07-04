@@ -9,6 +9,22 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Changed
+
+- **Flet is now the only UI; the public executable is the Flet-default build.**
+  Launching `DistrictSync` with no arguments opens the native Flet desktop app
+  (double-click on Windows); running it with `--sis`/`--input`/`--output` uses the
+  CLI, byte-for-byte unchanged. The GitHub Release now ships one Flet-default exe
+  per OS (Windows/Linux/macOS) plus `SHA256SUMS.txt` — a single binary that is
+  both the UI and the CLI.
+
+### Removed
+
+- **The Streamlit web UI (`src/ui/`) and the `streamlit` dependency.** The Flet
+  desktop UI (`src/ui_flet/`) fully replaces it; the browser-based Streamlit app,
+  its Playwright smoke tests, and the separate Streamlit release executables are
+  gone. The ETL/CLI core is unchanged.
+
 ## [3.3.1] - 2026-06-25
 
 Fixes the unattended Windows scheduling regression that blocked district rollout,

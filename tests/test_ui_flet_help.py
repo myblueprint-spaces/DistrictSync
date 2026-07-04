@@ -26,8 +26,8 @@ def test_help_centre_url_is_the_exact_canonical_article() -> None:
     """A change to the org KB URL (incl. a silent case/path drift) must fail this test.
 
     The value is single-sourced here for the Flet layer and grep-consistent with
-    release.yml / README.md / src/ui/Home.py / src/ui/pages/05_Help.py — exact ``==`` so a
-    re-pointed article that didn't move here is caught, not hidden by a fuzzy match.
+    release.yml / README.md — exact ``==`` so a re-pointed article that didn't move
+    here is caught, not hidden by a fuzzy match.
     """
     assert HELP_CENTRE_URL == "https://help.spacesedu.com/en-ca/article/mx56qo"
 

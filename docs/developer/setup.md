@@ -31,8 +31,8 @@ make fmt
 # Format check only (no changes)
 ruff format --check src/ tests/
 
-# Type check (excluding UI pages)
-mypy --exclude 'src/ui' src/
+# Type check (excluding the Flet UI — no beta stubs)
+mypy --exclude 'src/ui_flet' src/
 
 # Security scan
 bandit -r src/
@@ -52,7 +52,6 @@ No `.env` file is required. The tool reads all configuration from YAML files in 
 | `make lint` | Check with ruff |
 | `make fmt` | Auto-fix lint and formatting issues with ruff |
 | `make validate-config` | Validate all district + tier YAML configs |
-| `make ui` | Start the Streamlit web UI |
 | `make docs` | Build MkDocs documentation site |
 | `make docs-serve` | Live preview docs at http://localhost:8000 |
 | `make build-win` | Build Windows `.exe` (run on Windows) |
@@ -73,11 +72,10 @@ Flags:
 | `--quality` | Print a data quality report |
 | `--sftp` | Upload output CSVs via SFTP (requires config) |
 
-## Run the web UI
+## Run the desktop UI
 
 ```bash
-make ui
-# or: streamlit run src/ui/Home.py
+python -m src.main
 ```
 
-Opens at `http://localhost:8501`.
+Launching `src.main` with no CLI arguments opens the native Flet desktop app (`src/ui_flet/`).

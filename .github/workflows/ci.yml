@@ -30,7 +30,7 @@ jobs:
         run: ruff format --check src/ tests/
 
       - name: Type-check with mypy
-        run: mypy src/ --exclude 'src/ui|src/ui_flet'
+        run: mypy src/ --exclude 'src/ui_flet'
 
       - name: Security scan with bandit
         run: bandit -r src/ -q -c pyproject.toml

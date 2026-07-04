@@ -29,14 +29,8 @@ sftp = [
     "paramiko>=3.0",
     "keyring>=24.0",
 ]
-# pip install -e ".[ui]"  — enables the Streamlit web UI
-ui = [
-    "streamlit>=1.30",
-    "paramiko>=3.0",
-    "keyring>=24.0",
-]
-# pip install -e ".[flet-ui]"  — enables the native Flet desktop UI (opt-in via
-# DISTRICTSYNC_UI=flet). Exact-pinned (Flet 1.0 beta); kept in lockstep with
+# pip install -e ".[flet-ui]"  — enables the native Flet desktop UI (the only UI).
+# Exact-pinned (Flet 1.0 beta); kept in lockstep with
 # requirements.txt + docs/FLET_1.0_CONVENTIONS.md (test_flet_pin gates drift).
 flet-ui = [
     "flet==0.85.3",
@@ -64,12 +58,11 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short -m 'not benchmark and not ui'"
+addopts = "-v --tb=short -m 'not benchmark'"
 markers = [
     "benchmark: performance benchmarks (deselect with '-m \"not benchmark\"')",
     "regression: golden-file snapshot tests — fail means output changed",
     "integration: tests that use real servers or filesystem I/O",
-    "ui: Playwright browser smoke tests (require streamlit + chromium)",
     "property: Hypothesis property-based tests",
 ]
 
@@ -79,7 +72,6 @@ source = ["src"]
 # stay COUNTED (they carry the 80% gate); shell.py/launcher.py are thin views.
 omit = [
     "src/utils/logger.py",
-    "src/ui/*",
     "src/ui_flet/shell.py",
     "src/ui_flet/nav_rail.py",
     "src/ui_flet/launcher.py",
@@ -130,10 +122,6 @@ warn_unused_ignores = false  # pandas-stubs type errors differ across versions
 warn_return_any = false
 # Start lenient — tighten incrementally
 strict = false
-
-[[tool.mypy.overrides]]
-module = ["src.ui.*"]
-ignore_errors = true  # Streamlit stubs not available
 
 [[tool.mypy.overrides]]
 module = ["src.ui_flet.*"]
