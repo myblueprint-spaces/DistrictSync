@@ -78,20 +78,6 @@ def _greeting_header(app_config: AppConfig) -> ft.Control:
     )
 
 
-def _metric_tile(label: str, value: str) -> ft.Container:
-    """One light metric tile: a big value over a muted caption (a bordered card)."""
-    return components.card(
-        content=ft.Column(
-            spacing=2,
-            controls=[
-                ft.Text(value, size=22, weight=ft.FontWeight.W_800, color=tokens.color_text),
-                ft.Text(label, size=13, color=tokens.color_muted),
-            ],
-        ),
-        padding=_pad_sym(20, 16),
-    )
-
-
 # Plain-language tile labels for the entity-count keys the record carries. The metrics
 # dict already contains ONLY the tiles to show (5 rostering + myBlueprint+ when non-zero;
 # StudentAttendance omitted) — this view renders exactly what's in the dict, no additions.
@@ -114,11 +100,12 @@ def _metric_tiles_row(metrics: HomeMetrics) -> ft.Control:
     — this view never adds a zero-tile or ``StudentAttendance``).
     """
     tiles: list[ft.Control] = [
-        _metric_tile(_ENTITY_LABELS.get(name, name), str(count)) for name, count in metrics.entity_counts.items()
+        components.metric_tile(_ENTITY_LABELS.get(name, name), str(count))
+        for name, count in metrics.entity_counts.items()
     ]
-    tiles.append(_metric_tile("Last run", metrics.last_run_display))
+    tiles.append(components.metric_tile("Last run", metrics.last_run_display))
     if metrics.sftp_delivered:
-        tiles.append(_metric_tile("Delivery", "Delivered to SpacesEDU ✓"))
+        tiles.append(components.metric_tile("Delivery", "Delivered to SpacesEDU ✓"))
     return ft.Row(spacing=16, wrap=True, controls=tiles)
 
 

@@ -25,6 +25,7 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.ui_flet import components, nav, nav_rail, tokens
+from src.ui_flet.screens.convert import build_convert
 from src.ui_flet.screens.home import build_home
 from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.theme import build_theme
@@ -171,6 +172,8 @@ def main(page: ft.Page) -> None:
         app_config=app_cfg,
         on_navigate=lambda dest: select_by_id(dest),
     )
+    # Swap the `convert` placeholder for the real manual-convert surface (IA-5a).
+    screens["convert"] = functools.partial(build_convert, page)
     # Dev-only: behind DISTRICTSYNC_UI_DEMO, route the Help slot to the design-system
     # gallery (3 verdict banners + ErrorCard) so the front-loaded spine is visually
     # exercised. NOT a user nav entry — a hidden override on an existing route.

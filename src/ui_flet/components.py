@@ -197,6 +197,68 @@ def hero_gradient() -> ft.LinearGradient:
 
 
 # --------------------------------------------------------------------------- #
+# Metric tile — one big value over a muted caption (shared by Home + Convert)   #
+# --------------------------------------------------------------------------- #
+def metric_tile(label: str, value: str) -> ft.Container:
+    """One light metric tile: a big value over a muted caption (a bordered card).
+
+    The single source of the entity-count / status tile shape — Home's dashboard
+    and Convert's result both render a row of these (DRY; extracted from
+    ``home.py``'s former private ``_metric_tile``).
+    """
+    return card(
+        content=ft.Column(
+            spacing=2,
+            controls=[
+                ft.Text(value, size=22, weight=ft.FontWeight.W_800, color=tokens.color_text),
+                ft.Text(label, size=13, color=tokens.color_muted),
+            ],
+        ),
+        padding=_pad_sym(20, 16),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# FileChip — a compact "icon + filename" chip (first consumer: Convert)         #
+# --------------------------------------------------------------------------- #
+def FileChip(filename: str, *, present: bool = True) -> ft.Container:  # noqa: N802 - a view-factory named like a component
+    """A compact chip naming one GDE file: a file icon + the filename, DS-1 styled.
+
+    ``present=False`` renders the "expected but missing" variant (a muted, dashed
+    amber cue) so the missing-file warning reads at a glance. The filename is a
+    config-derived source name (never PII), shown verbatim.
+    """
+    if present:
+        icon = ft.Icons.DESCRIPTION_ROUNDED
+        icon_color = tokens.color_action_primary
+        text_color = tokens.color_text
+        bgcolor = tokens.page_bg
+        border = _b_all(1, tokens.color_border)
+    else:
+        icon = ft.Icons.HELP_OUTLINE_ROUNDED
+        icon_color = tokens.color_status_warning
+        text_color = tokens.color_status_warning
+        bgcolor = tokens.color_surface
+        border = _b_all(1, tokens.color_status_warning)
+
+    return ft.Container(
+        bgcolor=bgcolor,
+        border=border,
+        border_radius=10,
+        padding=_pad_sym(12, 8),
+        content=ft.Row(
+            spacing=8,
+            tight=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Icon(icon, size=18, color=icon_color),
+                ft.Text(filename, size=13, weight=ft.FontWeight.W_600, color=text_color),
+            ],
+        ),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Verdict-first spine                                                            #
 # --------------------------------------------------------------------------- #
 def HealthVerdictBanner(  # noqa: N802 - a view-factory named like a component
