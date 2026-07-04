@@ -25,7 +25,7 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.ui_flet import components, nav, nav_rail, tokens
-from src.ui_flet.screens.onboarding import build_onboarding
+from src.ui_flet.screens.home import build_home
 from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.theme import build_theme
 
@@ -159,20 +159,18 @@ def main(page: ft.Page) -> None:
     # `Callable[[], ft.Control]` — the other five placeholders + `render_by_id`'s
     # uniform `screens[dest_id]()` call are untouched (RC4).
     screens["setup"] = functools.partial(build_setup, page)
-    # Swap the `home` placeholder for the first-run onboarding hero, but ONLY when
-    # unconfigured (IA-2, branch (a)). `unconfigured` is the exact predicate
-    # `nav._prominent_group` uses (De-Morgan-identical); the configured-but-unscheduled
-    # admin keeps the `home` placeholder until IA-3 lands the real dashboard. The
-    # `on_start_setup` lambda closes over `select_by_id` (defined below) — Python
-    # resolves the free name at call-time (button click), so this late binding is
-    # correct and all screen-map mutation stays co-located here.
-    if not (app_cfg.is_complete() and app_cfg.schedule_registered) and "home" in screens:
-        screens["home"] = functools.partial(
-            build_onboarding,
-            page,
-            sis_type=app_cfg.sis_type,
-            on_start_setup=lambda: select_by_id("setup"),
-        )
+    # Swap the `home` placeholder for the three-way health dashboard UNCONDITIONALLY —
+    # `build_home` owns the branch decision itself (branch (a) reuses `build_onboarding`
+    # when `nav.needs_setup(app_cfg)`, (b)/(c) render the verdict-first dashboard). The
+    # `on_navigate` lambda closes over `select_by_id` (defined below) — Python resolves the
+    # free name at call-time (navigation), so this late binding is correct and all
+    # screen-map mutation stays co-located here.
+    screens["home"] = functools.partial(
+        build_home,
+        page,
+        app_config=app_cfg,
+        on_navigate=lambda dest: select_by_id(dest),
+    )
     # Dev-only: behind DISTRICTSYNC_UI_DEMO, route the Help slot to the design-system
     # gallery (3 verdict banners + ErrorCard) so the front-loaded spine is visually
     # exercised. NOT a user nav entry — a hidden override on an existing route.
