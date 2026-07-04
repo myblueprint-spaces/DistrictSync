@@ -14,6 +14,7 @@ from src.ui_flet.nav import (
     NavGroup,
     NavModel,
     nav_model,
+    needs_setup,
     ordered_destinations,
     prominent_initial_id,
 )
@@ -39,6 +40,31 @@ class TestDestinationSet:
         for dest in DESTINATIONS:
             assert dest.label
             assert dest.label != dest.id  # never surface a raw id to the user
+
+
+class TestNeedsSetup:
+    """THE single-sourced onboarding predicate — the shell dispatcher + prominence both call it."""
+
+    def test_unconfigured_needs_setup(self):
+        assert needs_setup(AppConfig()) is True
+
+    def test_configured_but_unscheduled_needs_setup(self):
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+        assert cfg.is_complete()  # paths/SIS present...
+        assert needs_setup(cfg) is True  # ...but no schedule yet → still needs setup
+
+    def test_configured_and_scheduled_does_not_need_setup(self):
+        assert needs_setup(_CONFIGURED_SCHEDULED) is False
+
+    def test_prominent_group_agrees_with_needs_setup(self):
+        # _prominent_group is single-sourced through needs_setup — they can never diverge.
+        for cfg in (
+            AppConfig(),
+            AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False),
+            _CONFIGURED_SCHEDULED,
+        ):
+            leads_get_started = nav_model(cfg).prominent_group is NavGroup.GET_STARTED
+            assert leads_get_started == needs_setup(cfg)
 
 
 class TestProminence:

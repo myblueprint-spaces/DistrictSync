@@ -62,17 +62,27 @@ class NavModel:
     prominent_group: NavGroup
 
 
+def needs_setup(app_config: AppConfig) -> bool:
+    """THE single source of the "not fully set up" predicate for the whole shell.
+
+    ``True`` when the install isn't both configured (usable paths/SIS) AND scheduled —
+    the same boundary that decides Get-started prominence (``_prominent_group``), the
+    IA-3 Home dispatcher's onboarding branch, and (later) the shell swap. Single-sourced
+    here so "configured" is never re-derived a third time (De-Morgan-identical to the
+    IA-2 shell gate ``not (is_complete() and schedule_registered)``).
+    """
+    return not (app_config.is_complete() and app_config.schedule_registered)
+
+
 def _prominent_group(app_config: AppConfig) -> NavGroup:
     """Which group the UI should lead with, derived from real setup state.
 
     An admin who hasn't finished setup (no usable paths/SIS, or no schedule
     registered) is led to **Get started**; a fully-configured, scheduled install
-    leads with **Everyday** (their day-to-day cockpit). Reads ``AppConfig``'s own
-    predicates — never re-derives "configured".
+    leads with **Everyday** (their day-to-day cockpit). Delegates the predicate to
+    ``needs_setup`` — never re-derives "configured".
     """
-    if not app_config.is_complete() or not app_config.schedule_registered:
-        return NavGroup.GET_STARTED
-    return NavGroup.EVERYDAY
+    return NavGroup.GET_STARTED if needs_setup(app_config) else NavGroup.EVERYDAY
 
 
 def nav_model(app_config: AppConfig) -> NavModel:

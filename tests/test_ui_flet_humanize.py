@@ -13,9 +13,10 @@ are hermetic — no home dependency, no real-config coupling for the fixture bra
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from src.ui_flet.humanize import friendly_district_name
+from src.ui_flet.humanize import friendly_district_name, friendly_timestamp
 
 # The real bundled configs — used only for the "known district" and "unknown id"
 # cases (their district_name is asserted structurally, not by hardcoded string).
@@ -81,3 +82,64 @@ class TestFriendlyDistrictName:
         for sis_id in ("sd40myedbc", "sd48myedbc", "sd51myedbc", "sd74myedbc"):
             result = friendly_district_name(sis_id, config_dir=BUNDLED_MAPPINGS)
             assert result and result != sis_id
+
+
+class TestFriendlyTimestamp:
+    _NOW = datetime(2026, 7, 4, 12, 0, 0)
+
+    def _iso(self, **delta: float) -> str:
+        return (self._NOW - timedelta(**delta)).isoformat(timespec="seconds")
+
+    def test_just_now(self) -> None:
+        assert friendly_timestamp(self._iso(seconds=20), now=self._NOW) == "just now"
+
+    def test_minutes_ago_plural(self) -> None:
+        assert friendly_timestamp(self._iso(minutes=15), now=self._NOW) == "15 minutes ago"
+
+    def test_a_minute_ago_singular(self) -> None:
+        assert friendly_timestamp(self._iso(minutes=1), now=self._NOW) == "a minute ago"
+
+    def test_hours_ago_plural(self) -> None:
+        assert friendly_timestamp(self._iso(hours=5), now=self._NOW) == "5 hours ago"
+
+    def test_an_hour_ago_singular(self) -> None:
+        assert friendly_timestamp(self._iso(hours=1), now=self._NOW) == "an hour ago"
+
+    def test_yesterday_has_a_plain_time(self) -> None:
+        result = friendly_timestamp(self._iso(hours=30), now=self._NOW)
+        assert result.startswith("yesterday at ")
+        # A plain clock time, never the raw ISO.
+        assert "T" not in result
+
+    def test_days_ago(self) -> None:
+        assert friendly_timestamp(self._iso(days=3), now=self._NOW) == "3 days ago"
+
+    def test_weeks_ago(self) -> None:
+        assert friendly_timestamp(self._iso(days=15), now=self._NOW) == "2 weeks ago"
+
+    def test_output_is_never_the_raw_iso(self) -> None:
+        raw = self._iso(hours=5)
+        assert friendly_timestamp(raw, now=self._NOW) != raw
+
+    def test_empty_input_falls_back_to_recently(self) -> None:
+        assert friendly_timestamp("", now=self._NOW) == "recently"
+
+    def test_unparseable_input_falls_back_to_recently_never_raises(self) -> None:
+        assert friendly_timestamp("not-a-timestamp", now=self._NOW) == "recently"
+        assert friendly_timestamp("2026-13-99", now=self._NOW) == "recently"
+
+    def test_future_timestamp_is_just_now_not_negative(self) -> None:
+        future = (self._NOW + timedelta(hours=3)).isoformat(timespec="seconds")
+        assert friendly_timestamp(future, now=self._NOW) == "just now"
+
+    def test_default_now_does_not_raise(self) -> None:
+        # No `now` seam → uses datetime.now(); must not raise and must not echo raw ISO.
+        recent = (datetime.now() - timedelta(minutes=2)).isoformat(timespec="seconds")
+        result = friendly_timestamp(recent)
+        assert result and "T" not in result
+
+    def test_naive_aware_mismatch_falls_back_to_recently(self) -> None:
+        # An aware `now` vs a naive parsed ISO → TypeError on subtraction → total ("recently").
+        aware_now = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+        naive_iso = self._iso(hours=5)  # naive
+        assert friendly_timestamp(naive_iso, now=aware_now) == "recently"
