@@ -65,6 +65,7 @@ from src.sftp.uploader import SFTPUploader
 from src.ui_flet import components, tokens
 from src.ui_flet.convert_result import ConvertResult, ConvertStatus, summarize
 from src.ui_flet.filepicker import validate_input_dir
+from src.ui_flet.home_status import ENTITY_LABELS
 from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.job_runner import JobRunner
 from src.ui_flet.picker_field import PickerField
@@ -87,19 +88,6 @@ def is_write_in_flight() -> bool:
     lets the leave-point note the in-flight write.
     """
     return _WRITE_IN_FLIGHT
-
-
-# Plain-language tile labels for the entity-count keys (mirrors home._ENTITY_LABELS).
-_ENTITY_LABELS: dict[str, str] = {
-    "Students": "Students",
-    "Staff": "Staff",
-    "Family": "Family",
-    "Classes": "Classes",
-    "Enrollments": "Enrollments",
-    "CourseInfo": "Courses",
-    "StudentCourses": "Student courses",
-    "StudentAttendance": "Attendance",
-}
 
 
 def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
@@ -603,7 +591,7 @@ def _expected_files(config_name: str) -> list[str]:  # pragma: no cover - Flet v
 def _entity_tiles_row(entity_counts: dict[str, int]) -> ft.Control:  # pragma: no cover - Flet view glue
     """A row of metric tiles for the produced entities (reuses ``components.metric_tile``)."""
     tiles = [
-        components.metric_tile(_ENTITY_LABELS.get(name, name), f"{count:,}") for name, count in entity_counts.items()
+        components.metric_tile(ENTITY_LABELS.get(name, name), f"{count:,}") for name, count in entity_counts.items()
     ]
     return ft.Row(spacing=16, wrap=True, controls=tiles)
 

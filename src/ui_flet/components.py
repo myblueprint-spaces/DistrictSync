@@ -31,6 +31,11 @@ from collections.abc import Callable
 import flet as ft
 
 from src.ui_flet import tokens
+from src.ui_flet.home_status import (
+    _MYBLUEPRINT_ENTITIES,
+    _ROSTERING_ENTITIES,
+    ENTITY_LABELS,
+)
 from src.ui_flet.run_history import RunRow, SftpDelivery
 from src.ui_flet.verdict import Verdict, verdict_visuals
 
@@ -224,17 +229,15 @@ def metric_tile(label: str, value: str) -> ft.Container:
 # --------------------------------------------------------------------------- #
 # The 5 rostering entities always shown, then the 2 myBlueprint+ entities shown
 # only when a row has them — mirroring the `home_status`/Home tile rule. Each entry
-# is (entity key -> column header).
-_ROW_ROSTERING_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("Students", "Students"),
-    ("Staff", "Staff"),
-    ("Family", "Family"),
-    ("Classes", "Classes"),
-    ("Enrollments", "Enrollments"),
+# is (entity key -> column header). Both the entity ORDER (the `home_status` tuples)
+# and the entity→label fact (`home_status.ENTITY_LABELS`) are single-sourced — this
+# `run_table` and the pure `mapping_catalog` read ONE definition, so a label rename
+# (e.g. "Courses") changes every surface at once (DRY).
+_ROW_ROSTERING_COLUMNS: tuple[tuple[str, str], ...] = tuple(
+    (key, ENTITY_LABELS.get(key, key)) for key in _ROSTERING_ENTITIES
 )
-_ROW_MYBLUEPRINT_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("CourseInfo", "Courses"),
-    ("StudentCourses", "Student courses"),
+_ROW_MYBLUEPRINT_COLUMNS: tuple[tuple[str, str], ...] = tuple(
+    (key, ENTITY_LABELS.get(key, key)) for key in _MYBLUEPRINT_ENTITIES
 )
 
 # The SFTP glyph + word the view paints per delivery axis (a non-colour cue — never colour-only).

@@ -29,6 +29,7 @@ from src.ui_flet import components, nav, nav_rail, tokens
 from src.ui_flet.screens.convert import build_convert, is_write_in_flight
 from src.ui_flet.screens.help import build_help
 from src.ui_flet.screens.home import build_home
+from src.ui_flet.screens.mapping import build_mapping
 from src.ui_flet.screens.run_history import build_run_history
 from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.theme import build_theme
@@ -190,6 +191,8 @@ def main(page: ft.Page) -> None:
     screens["convert"] = functools.partial(build_convert, page)
     # Swap the `run_history` placeholder for the real read-only Run History surface (IA-6).
     screens["run_history"] = functools.partial(build_run_history, page, app_config=app_cfg)
+    # Swap the `mapping` placeholder for the real review-and-switch district-config surface (IA-8a).
+    screens["mapping"] = functools.partial(build_mapping, page, app_config=app_cfg)
     # Swap the `help` placeholder for the real link-out Help surface (IA-7). Placed BEFORE the
     # DISTRICTSYNC_UI_DEMO override below so the dev override still wins (it re-assigns last).
     screens["help"] = functools.partial(build_help, page, app_config=app_cfg)

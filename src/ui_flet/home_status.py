@@ -45,6 +45,24 @@ from src.ui_flet.verdict import Verdict
 _ROSTERING_ENTITIES: tuple[str, ...] = ("Students", "Staff", "Family", "Classes", "Enrollments")
 _MYBLUEPRINT_ENTITIES: tuple[str, ...] = ("CourseInfo", "StudentCourses")
 
+# The SINGLE source of the entity-key → plain-language output-CSV label. The 5 rostering
+# entities label to themselves; the myBlueprint+ / attendance keys map to their friendly CSV
+# names (``CourseInfo`` → "Courses", ``StudentCourses`` → "Student courses",
+# ``StudentAttendance`` → "Attendance"). This is a pure presentation fact (no flet), so both
+# the pure ``mapping_catalog`` and the flet views (``components.run_table``, Home, Convert)
+# consume ONE definition — a rename here changes every surface at once (DRY). An unknown key
+# has no entry; callers fall back to the raw key (``ENTITY_LABELS.get(name, name)``).
+ENTITY_LABELS: dict[str, str] = {
+    "Students": "Students",
+    "Staff": "Staff",
+    "Family": "Family",
+    "Classes": "Classes",
+    "Enrollments": "Enrollments",
+    "CourseInfo": "Courses",
+    "StudentCourses": "Student courses",
+    "StudentAttendance": "Attendance",
+}
+
 STALE_AFTER_HOURS = 36
 """A nightly job → a successful run older than ~1.5 nightly cycles is "no recent sync".
 One generous constant absorbs timezone/clock skew (KISS — no per-tz math for a tool an

@@ -46,7 +46,7 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.ui_flet import components, nav, tokens
-from src.ui_flet.home_status import FixAction, HomeMetrics, derive_home_status
+from src.ui_flet.home_status import ENTITY_LABELS, FixAction, HomeMetrics, derive_home_status
 from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.run_log import read_run_records
 from src.ui_flet.screens.onboarding import build_onboarding
@@ -78,20 +78,6 @@ def _greeting_header(app_config: AppConfig) -> ft.Control:
     )
 
 
-# Plain-language tile labels for the entity-count keys the record carries. The metrics
-# dict already contains ONLY the tiles to show (5 rostering + myBlueprint+ when non-zero;
-# StudentAttendance omitted) — this view renders exactly what's in the dict, no additions.
-_ENTITY_LABELS: dict[str, str] = {
-    "Students": "Students",
-    "Staff": "Staff",
-    "Family": "Family",
-    "Classes": "Classes",
-    "Enrollments": "Enrollments",
-    "CourseInfo": "Courses",
-    "StudentCourses": "Student courses",
-}
-
-
 def _metric_tiles_row(metrics: HomeMetrics) -> ft.Control:
     """The light metric-tiles row: entity counts + plain last-run time + SFTP ✓.
 
@@ -100,7 +86,7 @@ def _metric_tiles_row(metrics: HomeMetrics) -> ft.Control:
     — this view never adds a zero-tile or ``StudentAttendance``).
     """
     tiles: list[ft.Control] = [
-        components.metric_tile(_ENTITY_LABELS.get(name, name), str(count))
+        components.metric_tile(ENTITY_LABELS.get(name, name), str(count))
         for name, count in metrics.entity_counts.items()
     ]
     tiles.append(components.metric_tile("Last run", metrics.last_run_display))
