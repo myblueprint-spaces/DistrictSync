@@ -18,18 +18,37 @@ structurally, not just via an inline message.
 pages use — and shows each config's ``district_name`` (via ``load_config``), not
 a raw id, so an admin never picks a meaningless ``sd48myedbc`` from a bare list.
 
-**Scope (IA-4a):** folders + the *scheduler* section (run time + the Windows
-run-as password → ``register_task``/``register_cron`` UNCHANGED → a verdict-first
-result via the relocated ``classify_schedule_error`` + ``is_elevated``). The SFTP
-/ keyring section arrives in IA-4b (extends this same surface). The in-surface
-note points at what's next — it is not a dead control.
+**Scope (IA-4a + IA-4b):** folders + the *scheduler* section (run time + the
+Windows run-as password → ``register_task``/``register_cron`` UNCHANGED → a
+verdict-first result via the relocated ``classify_schedule_error`` +
+``is_elevated``) + the *SFTP* section (allowlist host dropdown + credentials →
+``SFTPUploader.store_password`` (OS keyring) + a ``get_stored_password``
+round-trip → verdict; a marshalled "Test connection" via
+``page.run_thread``/``page.run_task``). The full first-time setup flow (folders
+→ schedule → SFTP) is a sectioned single scroll — no cross-step password parking.
 
-**Password contract (I1/I3, security-critical):** in the schedule handler the
-Windows account password is a **handler-LOCAL variable** whose ONLY sink is
-``register_task(run_as_password=...)`` (which the core routes to a child-env
-``DSYNC_TASK_PW``, never argv). It is NEVER assigned to ``AppConfig``, NEVER
-logged, NEVER echoed in a banner/message, and NEVER stashed beyond the handler's
-scope. Only the non-sensitive ``schedule_time`` reaches ``cfg.save()``.
+**Password contract (I1/I3, security-critical — schedule):** in the schedule
+handler the Windows account password is a **handler-LOCAL variable** whose ONLY
+sink is ``register_task(run_as_password=...)`` (which the core routes to a
+child-env ``DSYNC_TASK_PW``, never argv). It is NEVER assigned to ``AppConfig``,
+NEVER logged, NEVER echoed in a banner/message, and NEVER stashed beyond the
+handler's scope. Only the non-sensitive ``schedule_time`` reaches ``cfg.save()``.
+
+**Password contract (I4/I5, security-critical — SFTP):** in the SFTP handlers the
+credential is a **handler-LOCAL variable** whose ONLY sink is
+``SFTPUploader.store_password(...)`` (OS keyring). It is NEVER assigned to
+``AppConfig``, NEVER logged, NEVER echoed in a banner/message. Only the five
+non-sensitive settings (``sftp_enabled``/``sftp_host``/``sftp_port``/
+``sftp_username``/``sftp_remote_path``) reach ``cfg.save()``. The host is
+restricted to ``ALLOWED_SFTP_HOSTS`` structurally (the dropdown IS the allowlist)
+AND at the boundary (``SFTPUploader.__init__`` runs ``validate_sftp_host``).
+
+**Test-connection marshalling (I6, concurrency):** ``test_connection`` is a
+blocking ~30s network call — it runs OFF the UI thread via ``page.run_thread``;
+the result banner + button/spinner teardown mutate controls ONLY inside a
+``page.run_task`` callback (never from the worker thread). ``test_connection``
+returns ``(bool, str)`` and does NOT raise ``SystemExit`` (unlike
+``run_pipeline``), so a plain ``except Exception`` in the worker suffices.
 """
 
 from __future__ import annotations
@@ -41,6 +60,7 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.config.loader import available_configs
+from src.sftp.uploader import SFTPUploader
 from src.ui_flet import components, tokens
 from src.ui_flet.filepicker import (
     ValidationResult,
@@ -52,7 +72,7 @@ from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.picker_field import PickerField
 from src.ui_flet.setup_errors import classify_schedule_error
 from src.ui_flet.verdict import Verdict
-from src.utils.validators import validate_run_time
+from src.utils.validators import ALLOWED_SFTP_HOSTS, validate_run_time
 
 
 def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
@@ -185,26 +205,9 @@ def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view gl
     )
 
     schedule_card = _build_schedule_section(page, cfg)
+    sftp_card = _build_sftp_section(page, cfg)
 
-    next_note = ft.Container(
-        bgcolor=tokens.page_bg,
-        padding=_pad_sym(20, 16),
-        border_radius=12,
-        content=ft.Row(
-            spacing=12,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=[
-                ft.Icon(ft.Icons.CLOUD_UPLOAD_ROUNDED, color=tokens.color_action_primary, size=20),
-                ft.Text(
-                    "Next: SFTP delivery to SpacesEDU. That step is on its way.",
-                    size=13,
-                    color=tokens.color_muted,
-                ),
-            ],
-        ),
-    )
-
-    return ft.Column(spacing=22, controls=[header, form_card, schedule_card, next_note])
+    return ft.Column(spacing=22, controls=[header, form_card, schedule_card, sftp_card])
 
 
 def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma: no cover - Flet view glue
@@ -388,5 +391,254 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
 
     section_controls.append(register_btn)
     section_controls.append(result_slot)
+
+    return components.card(content=ft.Column(spacing=18, controls=section_controls))
+
+
+def _run_as_account() -> str:
+    """The account whose keyring must hold the SFTP credential (defensive).
+
+    The nightly scheduled task runs as this account, so it is the account whose
+    OS credential store must be readable. ``current_run_as_user`` can raise on a
+    non-Windows host / unusual environment — fall back to a plain label rather
+    than crash the SFTP section (mirrors the Streamlit page's guarded lookup).
+    """
+    try:
+        from src.scheduler.windows import current_run_as_user
+
+        return current_run_as_user()
+    except Exception:
+        return "this account"
+
+
+def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma: no cover - Flet view glue
+    """The SFTP section — store SpacesEDU credentials in the OS keyring + test.
+
+    Calls ``SFTPUploader`` UNCHANGED. The password is a handler-LOCAL variable
+    whose ONLY sink is ``SFTPUploader.store_password`` (OS keyring) — never
+    ``cfg``, never a log, never a message (I4). The host is restricted to
+    ``ALLOWED_SFTP_HOSTS`` structurally (the dropdown IS the allowlist) AND at the
+    boundary (``__init__``'s ``validate_sftp_host`` — belt-and-suspenders, I5).
+    "Test connection" is a blocking ~30s network call → marshalled OFF the UI
+    thread via ``page.run_thread`` / ``page.run_task`` (I6).
+    """
+    host_dropdown = ft.Dropdown(
+        label="SFTP host (SpacesEDU)",
+        value=cfg.sftp_host or None,
+        options=[ft.dropdown.Option(key=h, text=h) for h in sorted(ALLOWED_SFTP_HOSTS)],
+        border_color=tokens.color_border,
+    )
+    username_field = ft.TextField(
+        label="Username",
+        value=cfg.sftp_username or "",
+        width=340,
+        border_color=tokens.color_border,
+    )
+    remote_field = ft.TextField(
+        label="Remote path",
+        value=cfg.sftp_remote_path or "/files",
+        width=340,
+        border_color=tokens.color_border,
+    )
+    port_field = ft.TextField(
+        label="Port",
+        value=str(cfg.sftp_port or 22),
+        width=140,
+        border_color=tokens.color_border,
+    )
+    password_field = ft.TextField(
+        label="Password",
+        password=True,
+        can_reveal_password=True,
+        width=340,
+        border_color=tokens.color_border,
+        helper_text="Leave blank to keep the existing stored credential.",
+    )
+
+    # Result surface — swapped to a verdict banner / error card on save or test.
+    result_slot = ft.Column(spacing=0, controls=[])
+
+    # Spinner shown only while a Test-connection is in flight (marshalled).
+    test_spinner = ft.ProgressRing(width=18, height=18, visible=False)
+
+    def _current_fields() -> tuple[str, str, str, str]:
+        return (
+            (host_dropdown.value or "").strip(),
+            (username_field.value or "").strip(),
+            (remote_field.value or "").strip(),
+            (port_field.value or "").strip(),
+        )
+
+    def _save(_e: ft.ControlEvent) -> None:
+        # Read the credential fresh; local var, sole sink is store_password (I4).
+        password = password_field.value or ""
+        host, username, remote_path, port = _current_fields()
+
+        # [I5] Belt-and-suspenders: the dropdown already restricts host to the
+        # allowlist, but SFTPUploader.__init__ re-validates and raises ValueError.
+        try:
+            uploader = SFTPUploader(host, int(port or 22), username, remote_path)
+        except ValueError as exc:
+            result_slot.controls = [components.ErrorCard("That SFTP host isn't allowed", str(exc))]
+            page.update()
+            return
+
+        # [gate #3] store_password re-raises on keyring failure — wrap it and
+        # surface a calm verdict. {e} is the keyring error string, NEVER the
+        # password (store_password does not echo the password in its exception).
+        if password:
+            try:
+                uploader.store_password(password)
+            except Exception as e:  # noqa: BLE001 - surface any keyring failure calmly
+                result_slot.controls = [
+                    components.ErrorCard(
+                        "Couldn't save the SFTP credential",
+                        f"Couldn't save the SFTP credential on this account — {e}",
+                    )
+                ]
+                page.update()
+                return
+
+        # Keyring round-trip: verify the credential is readable by this account
+        # (the scheduled task runs as the same account — mirrors Streamlit Step 4).
+        read_back = uploader.get_stored_password()
+        if not read_back:
+            result_slot.controls = [
+                components.HealthVerdictBanner(
+                    Verdict.FAILED,
+                    headline="Couldn't read the SFTP credential back",
+                    detail=(
+                        "Couldn't read the credential back on this account — SFTP uploads may fail. "
+                        "Try again, or run the app as this account."
+                    ),
+                )
+            ]
+            page.update()
+            return
+
+        # Persist NON-sensitive settings ONLY. [I4] the password is never here.
+        cfg.sftp_enabled = True
+        cfg.sftp_host = host
+        cfg.sftp_port = int(port or 22)
+        cfg.sftp_username = username
+        cfg.sftp_remote_path = remote_path
+        cfg.save()
+
+        result_slot.controls = [
+            components.HealthVerdictBanner(
+                Verdict.HEALTHY,
+                headline="SFTP credentials stored",
+                detail=f"SFTP credentials stored and readable by {_run_as_account()}.",
+            )
+        ]
+        page.update()
+
+    save_btn = components.primary_button(
+        "Save SFTP credentials",
+        _save,
+        disabled=True,
+        disabled_bgcolor=tokens.color_border,
+        icon=ft.Icons.CLOUD_UPLOAD_ROUNDED,
+    )
+
+    def _refresh_save_gate(_e: ft.ControlEvent | None = None) -> None:
+        host, username, remote_path, _port = _current_fields()
+        has_required = bool(host and username and remote_path)
+        # First-time (no stored credential yet) also needs a password; on re-open
+        # a stored credential exists so the password may be left blank to keep it.
+        first_time = not cfg.sftp_is_configured()
+        has_password = bool(password_field.value)
+        save_btn.disabled = not (has_required and (has_password or not first_time))
+        page.update()
+
+    host_dropdown.on_change = _refresh_save_gate
+    username_field.on_change = _refresh_save_gate
+    remote_field.on_change = _refresh_save_gate
+    port_field.on_change = _refresh_save_gate
+    password_field.on_change = _refresh_save_gate
+
+    # ------------------------------------------------------------------ #
+    # Test connection — marshalled OFF the UI thread (I6).                 #
+    # ------------------------------------------------------------------ #
+    def _test(_e: ft.ControlEvent) -> None:
+        # Read the credential fresh; local var, sole sink is store_password (I4).
+        password = password_field.value or ""
+        host, username, remote_path, port = _current_fields()
+
+        # Construction + optional store happen BEFORE the thread so a ValueError
+        # (out-of-allowlist) or keyring failure surfaces calmly, not on the worker.
+        try:
+            uploader = SFTPUploader(host, int(port or 22), username, remote_path)
+            if password:
+                uploader.store_password(password)
+        except ValueError as exc:
+            result_slot.controls = [components.ErrorCard("That SFTP host isn't allowed", str(exc))]
+            page.update()
+            return
+        except Exception as e:  # noqa: BLE001 - a keyring failure before the network call
+            result_slot.controls = [
+                components.ErrorCard(
+                    "Couldn't save the SFTP credential",
+                    f"Couldn't save the SFTP credential on this account — {e}",
+                )
+            ]
+            page.update()
+            return
+
+        # Disable the button + show the spinner; the ~30s timeout bounds a hung
+        # connection so the window never freezes (degrade-gracefully guarantee).
+        test_btn.disabled = True
+        test_spinner.visible = True
+        result_slot.controls = []
+        page.update()
+
+        async def _show_result(ok: bool, msg: str) -> None:
+            # UI mutation ONLY inside this coroutine the loop owns — never from
+            # the worker thread (FLET_1.0_CONVENTIONS §Worker-thread).
+            test_btn.disabled = False
+            test_spinner.visible = False
+            verdict = Verdict.HEALTHY if ok else Verdict.FAILED
+            headline = "SFTP connection succeeded" if ok else "SFTP connection failed"
+            result_slot.controls = [components.HealthVerdictBanner(verdict, headline=headline, detail=msg)]
+            page.update()
+
+        def _work() -> None:  # runs OFF the UI thread
+            # test_connection returns (bool, str) and does NOT raise SystemExit
+            # (unlike run_pipeline) — a plain except Exception suffices here.
+            try:
+                ok, msg = uploader.test_connection()
+            except Exception as exc:  # noqa: BLE001 - surface any failure via the banner
+                ok, msg = False, f"Connection failed: {exc}"
+            page.run_task(_show_result, ok, msg)
+
+        page.run_thread(_work)
+
+    test_btn = components.secondary_button(
+        "Test connection",
+        _test,
+        icon=ft.Icons.WIFI_TETHERING_ROUNDED,
+    )
+
+    _refresh_save_gate()  # paint the gate for the saved (possibly configured) state
+
+    section_controls: list[ft.Control] = [
+        ft.Text("SFTP delivery (SpacesEDU)", size=20, weight=ft.FontWeight.W_800, color=tokens.color_text),
+        ft.Text(
+            "Store your SpacesEDU SFTP credentials so the nightly sync can deliver the roster. "
+            "The password is saved in this computer's credential manager — never in plain files.",
+            size=14,
+            color=tokens.color_muted,
+        ),
+        host_dropdown,
+        ft.Row(spacing=16, controls=[username_field, port_field]),
+        remote_field,
+        password_field,
+        ft.Row(
+            spacing=16,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[save_btn, test_btn, test_spinner],
+        ),
+        result_slot,
+    ]
 
     return components.card(content=ft.Column(spacing=18, controls=section_controls))
