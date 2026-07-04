@@ -24,6 +24,7 @@ from src.config.app_config import AppConfig  # noqa: E402
 from src.config.loader import available_configs, load_config  # noqa: E402
 from src.etl.pipeline import extract_required_files  # noqa: E402
 from src.ui.brand import header, inject_brand_css, step_progress  # noqa: E402
+from src.ui_flet.setup_errors import classify_schedule_error  # noqa: E402
 from src.utils.validators import ALLOWED_SFTP_HOSTS  # noqa: E402
 
 st.set_page_config(page_title="Setup Wizard — DistrictSync", page_icon="⚙️", layout="wide")
@@ -73,46 +74,12 @@ def _browse_into(state_key: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _classify_schedule_error(msg: str, elevated: bool) -> str:
-    """Map a (now clean) registration error into a calm, actionable message.
-
-    Keyed off the canonical substrings ``register_task`` publishes
-    (``"PowerShell not found"`` / ``"ScheduledTasks module not available"`` /
-    Windows' own ``"Access is denied"``) plus whether the process is elevated
-    (:func:`src.scheduler.windows.is_elevated`). ``msg`` is already de-CLIXML'd
-    by ``register_task`` — it is a plain one-liner, safe to show verbatim in the
-    ``else`` branch.
-
-    Pure function (no Streamlit) so it is unit-testable headless — the UI calls
-    it and renders the result via ``st.error``.
-    """
-    access_denied = "Access is denied" in msg or "access denied" in msg.lower()
-
-    if "PowerShell not found" in msg:
-        return (
-            "Windows PowerShell wasn't found on this machine, so the schedule can't be created. "
-            "PowerShell ships with Windows 8 / Server 2012 and newer — if it's missing, this "
-            "server is unsupported for automated scheduling. You can still run conversions manually."
-        )
-    if "ScheduledTasks module not available" in msg:
-        return (
-            "This Windows version is too old to schedule tasks this way (it needs Windows 8 / "
-            "Server 2012 or newer). You can still run conversions manually from the Convert page."
-        )
-    if access_denied and not elevated:
-        return (
-            "Permission denied — right-click the application and choose **Run as administrator**, "
-            "then try again. (Creating an unattended task needs administrator rights.)"
-        )
-    if access_denied and elevated:
-        return (
-            "Registration was denied even though you're running as administrator. The account "
-            "likely can't be used for an unattended task: make sure you entered your **Windows "
-            "account password** (not your Windows Hello PIN — for a Microsoft Account, your "
-            "microsoft.com password), and that the account is allowed to "
-            "**'Log on as a batch job'**."
-        )
-    return f"Failed to register schedule: {msg}"
+# Migrate-before-delete shim: the classifier's single source now lives in the
+# presentation-neutral ``src.ui_flet.setup_errors`` module (relocated in IA-4a).
+# This page delegates so its behaviour + the ``_classify_schedule_error`` name
+# binding (which ``tests/test_wizard_schedule_errors.py`` loads by file path)
+# stay identical until CUT-1 deletes this page + that test.
+_classify_schedule_error = classify_schedule_error
 
 
 def _register_schedule(

@@ -18,12 +18,24 @@ structurally, not just via an inline message.
 pages use — and shows each config's ``district_name`` (via ``load_config``), not
 a raw id, so an admin never picks a meaningless ``sd48myedbc`` from a bare list.
 
-**Honest scope (IA-4):** this is the *folders* step only; scheduling / SFTP /
-keyring arrive next (IA-4 extends this same surface). The in-surface note says
-so — it is not a dead control.
+**Scope (IA-4a):** folders + the *scheduler* section (run time + the Windows
+run-as password → ``register_task``/``register_cron`` UNCHANGED → a verdict-first
+result via the relocated ``classify_schedule_error`` + ``is_elevated``). The SFTP
+/ keyring section arrives in IA-4b (extends this same surface). The in-surface
+note points at what's next — it is not a dead control.
+
+**Password contract (I1/I3, security-critical):** in the schedule handler the
+Windows account password is a **handler-LOCAL variable** whose ONLY sink is
+``register_task(run_as_password=...)`` (which the core routes to a child-env
+``DSYNC_TASK_PW``, never argv). It is NEVER assigned to ``AppConfig``, NEVER
+logged, NEVER echoed in a banner/message, and NEVER stashed beyond the handler's
+scope. Only the non-sensitive ``schedule_time`` reaches ``cfg.save()``.
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
 
 import flet as ft
 
@@ -38,6 +50,9 @@ from src.ui_flet.filepicker import (
 )
 from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.picker_field import PickerField
+from src.ui_flet.setup_errors import classify_schedule_error
+from src.ui_flet.verdict import Verdict
+from src.utils.validators import validate_run_time
 
 
 def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
@@ -169,6 +184,8 @@ def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view gl
         ),
     )
 
+    schedule_card = _build_schedule_section(page, cfg)
+
     next_note = ft.Container(
         bgcolor=tokens.page_bg,
         padding=_pad_sym(20, 16),
@@ -177,9 +194,9 @@ def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view gl
             spacing=12,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
-                ft.Icon(ft.Icons.SCHEDULE_ROUNDED, color=tokens.color_action_primary, size=20),
+                ft.Icon(ft.Icons.CLOUD_UPLOAD_ROUNDED, color=tokens.color_action_primary, size=20),
                 ft.Text(
-                    "Next: scheduling and SFTP delivery. Those steps are on their way.",
+                    "Next: SFTP delivery to SpacesEDU. That step is on its way.",
                     size=13,
                     color=tokens.color_muted,
                 ),
@@ -187,4 +204,189 @@ def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view gl
         ),
     )
 
-    return ft.Column(spacing=22, controls=[header, form_card, next_note])
+    return ft.Column(spacing=22, controls=[header, form_card, schedule_card, next_note])
+
+
+def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma: no cover - Flet view glue
+    """The scheduler section — run time + (Windows) run-as password → register.
+
+    Calls ``register_task``/``register_cron`` UNCHANGED; a failure is mapped by
+    the relocated ``classify_schedule_error`` (Windows) + ``is_elevated``. The
+    password is a handler-LOCAL variable whose ONLY sink is
+    ``register_task(run_as_password=...)`` (I1/I3): never ``cfg``, never a log,
+    never a message, never stashed after the handler returns.
+    """
+    is_windows = sys.platform == "win32"
+
+    run_time_field = ft.TextField(
+        label="Daily run time (24-hour, HH:MM)",
+        value=cfg.schedule_time or "03:00",
+        width=220,
+        border_color=tokens.color_border,
+        helper_text="When DistrictSync runs each day — pick a time after your SIS extract lands.",
+    )
+
+    # Result surface — swapped to a verdict banner / error card on register.
+    result_slot = ft.Column(spacing=0, controls=[])
+
+    section_controls: list[ft.Control] = [
+        ft.Text("Daily schedule", size=20, weight=ft.FontWeight.W_800, color=tokens.color_text),
+        ft.Text(
+            "Register an unattended nightly sync so the roster keeps flowing without anyone signing in.",
+            size=14,
+            color=tokens.color_muted,
+        ),
+        run_time_field,
+    ]
+
+    password_field: ft.TextField | None = None
+    if is_windows:
+        from src.scheduler.windows import current_run_as_user
+
+        section_controls.append(
+            ft.Text(
+                f"This task will run as: {current_run_as_user()}",
+                size=13,
+                color=tokens.color_muted,
+            )
+        )
+        password_field = ft.TextField(
+            label="Windows account password",
+            password=True,
+            can_reveal_password=True,
+            width=340,
+            border_color=tokens.color_border,
+            helper_text=(
+                "Lets the nightly sync run after a reboot with no one logged in. "
+                "Used once to register the task — DistrictSync does not store it."
+            ),
+        )
+        section_controls.append(password_field)
+        section_controls.append(
+            ft.Text(
+                "Leave the password blank to schedule a logged-on-only task "
+                "(it will not run after a reboot with no one signed in).",
+                size=12,
+                color=tokens.color_muted,
+            )
+        )
+
+    def _register(_e: ft.ControlEvent) -> None:
+        # Read the password fresh at register-time; local var, never stashed (I3).
+        password = password_field.value if password_field is not None else None
+
+        run_time = (run_time_field.value or "").strip()
+
+        # [gate #5] validate_run_time RAISES ValueError on bad input (and returns
+        # a (hour, minute) tuple we discard) — call for the raise-gate, then pass
+        # the ORIGINAL run_time string downstream (register_task re-validates and
+        # needs the raw string for PowerShell ParseExact).
+        try:
+            validate_run_time(run_time)
+        except ValueError as exc:
+            result_slot.controls = [
+                components.ErrorCard("That run time isn't valid", str(exc)),
+            ]
+            page.update()
+            return
+
+        cfg.schedule_time = run_time
+        cfg.save()
+
+        exe_path = Path(sys.executable)
+
+        if is_windows:
+            from src.scheduler.windows import is_elevated, register_task
+
+            ok, msg = register_task(
+                task_name=cfg.schedule_task_name,
+                exe_path=exe_path,
+                sis_type=cfg.sis_type,
+                input_dir=Path(cfg.input_dir),
+                output_dir=Path(cfg.output_dir),
+                run_time=cfg.schedule_time,
+                sftp=cfg.sftp_enabled,
+                run_as_user=None,
+                run_as_password=(password or None),
+            )
+            if ok and password:
+                from src.scheduler.windows import current_run_as_user
+
+                cfg.schedule_registered = True
+                cfg.save()
+                result_slot.controls = [
+                    components.HealthVerdictBanner(
+                        Verdict.HEALTHY,
+                        headline="Nightly sync scheduled",
+                        detail=(
+                            f"Runs as {current_run_as_user()}, whether or not you're logged in, "
+                            f"daily at {cfg.schedule_time}."
+                        ),
+                    )
+                ]
+            elif ok:
+                cfg.schedule_registered = True
+                cfg.save()
+                result_slot.controls = [
+                    components.HealthVerdictBanner(
+                        Verdict.WARNING,
+                        headline="Scheduled — logged-on only",
+                        detail=(
+                            "It will only run while you're logged in. Re-register with your "
+                            "Windows password for unattended operation across reboots."
+                        ),
+                    )
+                ]
+            else:
+                elevated = is_elevated()
+                result_slot.controls = [
+                    components.ErrorCard(
+                        "Couldn't register the schedule",
+                        classify_schedule_error(msg, elevated),
+                    )
+                ]
+        else:
+            from src.scheduler.linux import register_cron
+
+            ok, msg = register_cron(
+                exe_path,
+                cfg.sis_type,
+                Path(cfg.input_dir),
+                Path(cfg.output_dir),
+                cfg.schedule_time,
+                sftp=cfg.sftp_enabled,
+            )
+            if ok:
+                cfg.schedule_registered = True
+                cfg.save()
+                result_slot.controls = [
+                    components.HealthVerdictBanner(
+                        Verdict.HEALTHY,
+                        headline="Nightly sync scheduled",
+                        detail=f"Runs daily at {cfg.schedule_time}.",
+                    )
+                ]
+            else:
+                result_slot.controls = [
+                    components.ErrorCard("Couldn't create the schedule", msg),
+                ]
+
+        page.update()
+
+    register_btn = components.primary_button(
+        "Register schedule",
+        _register,
+        disabled=not (cfg.is_complete() and bool((run_time_field.value or "").strip())),
+        icon=ft.Icons.SCHEDULE_ROUNDED,
+    )
+
+    def _refresh_register_gate(_e: ft.ControlEvent | None = None) -> None:
+        register_btn.disabled = not (cfg.is_complete() and bool((run_time_field.value or "").strip()))
+        page.update()
+
+    run_time_field.on_change = _refresh_register_gate
+
+    section_controls.append(register_btn)
+    section_controls.append(result_slot)
+
+    return components.card(content=ft.Column(spacing=18, controls=section_controls))
