@@ -1,6 +1,6 @@
-"""Native Flet 1.0 desktop UI for DistrictSync (additive; opt-in via DISTRICTSYNC_UI=flet).
+"""Native Flet 1.0 desktop UI for DistrictSync — the only UI.
 
-The Streamlit UI under ``src/ui/`` stays the user-facing default and the
-rollback floor until CUT-1. See ``docs/FLET_1.0_CONVENTIONS.md`` (authoritative)
-and the plan ``.claude/plans/0014-flet-plat1-shell.md``.
+``main.py``'s no-argv branch launches this via ``launcher.py``. See
+``docs/FLET_1.0_CONVENTIONS.md`` (authoritative) and the build plan
+``.claude/plans/0013-flet-production-redesign.md``.
 """

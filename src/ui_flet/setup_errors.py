@@ -1,11 +1,10 @@
 """Pure schedule-error classifier for the Setup surface — the single source.
 
-NO ``flet`` import, NO ``streamlit`` import — this is presentation-neutral,
+NO ``flet`` import, no UI-framework import — this is presentation-neutral,
 cheaply-tested logic that maps a schedule-registration failure into a calm,
-actionable, plain-language message. It was relocated out of the Streamlit
-``01_Setup_Wizard.py`` page (where it was UI-layer code trapped behind a
-file-path import) so the Flet Setup surface and the (CUT-1-doomed) Streamlit
-page share ONE implementation.
+actionable, plain-language message. It is pure logic the Flet Setup surface
+(``screens/setup.py``) consumes; it was extracted here so the classification
+lives in one tested place, independent of any view layer.
 
 ``classify_schedule_error(msg, elevated)`` is keyed off the canonical substrings
 ``register_task`` publishes (``"PowerShell not found"`` /
@@ -19,8 +18,7 @@ The ``else`` branch surfaces ``msg`` verbatim, which is safe because the core
 already guarantees no ``DSYNC_TASK_PW`` literal/value reaches the message. The
 returned copy is **plain prose** (no ``**markdown**``) because the Flet
 ``HealthVerdictBanner``/``ErrorCard`` render ``detail`` as a plain ``ft.Text``,
-which would show literal asterisks; the Streamlit shim renders it via
-``st.error``, where plain text is equally fine.
+which would show literal asterisks.
 """
 
 from __future__ import annotations

@@ -30,7 +30,7 @@ python -m pytest tests/ -v                    # all tests
 python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=80  # with coverage
 ```
 
-640 tests; CI coverage gate 80% (`--cov-fail-under=80`). Coverage omits `src/utils/logger.py` and `src/ui/*` (configured in `pyproject.toml`). Benchmarks deselected by default (`-m 'not benchmark'` in addopts).
+CI coverage gate 80% (`--cov-fail-under=80`). Coverage omits `src/utils/logger.py` and the `src/ui_flet` view glue (`shell`/`nav_rail`/`launcher`/`components`/`picker_field` + `screens/*`; configured in `pyproject.toml`). Benchmarks deselected by default (`-m 'not benchmark'` in addopts).
 
 ### Lint + Format
 ```bash
@@ -44,7 +44,7 @@ Requires ruff>=0.15. CI runs both `ruff check` and `ruff format --check`.
 
 ### Type Check
 ```bash
-mypy src/ --exclude 'src/ui'
+mypy src/ --exclude 'src/ui_flet'
 ```
 
 Enforced in CI (non-UI modules). Requires `types-paramiko` and `types-PyYAML` stubs (in requirements-dev.txt).
@@ -59,9 +59,9 @@ bandit -r src/ -q
 make validate-config  # validates all 9 configs: myedbc, sd40, sd48, sd51, sd54, sd74, mbp_all, mbp_core, mbponly
 ```
 
-### Streamlit web UI
+### Desktop UI (Flet)
 ```bash
-streamlit run src/ui/Home.py
+python -m src.main   # no arguments → opens the native Flet desktop UI
 ```
 
 ### Build executables
@@ -72,13 +72,7 @@ make build-win     # Windows .exe (run on Windows)
 Linux/macOS builds are produced by GitHub Actions on tag push. PyInstaller hidden imports: `pandas`, `yaml`, `logging.config`, `pydantic`, `pydantic_core`, plus the platform-specific keyring backend (`keyring.backends.Windows` / `keyring.backends.macOS` / `keyring.backends.SecretService` + `keyring.backends.libsecret`). `paramiko` and `keyring` are top-level imports in `src/sftp/uploader.py` so PyInstaller picks them up from static analysis — only the dynamically-discovered keyring backends still need explicit hidden-imports.
 
 ### Documentation
-```bash
-mkdocs serve       # live preview at http://localhost:8000
-mkdocs build       # build static site to site/
-mkdocs gh-deploy   # deploy to GitHub Pages
-```
-
-MkDocs auto-deploys to GitHub Pages on release (via release.yml).
+Docs live in `docs/` (Markdown). There is no docs-site build — the MkDocs/GitHub-Pages site was removed; user-facing help is the SpacesEDU Help Centre, linked from the Flet Help surface.
 
 ## Architecture
 
@@ -122,22 +116,24 @@ Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. 
 ### Quality (`src/quality/report.py`)
 `DataQualityReport` checks: missing/empty fields (>50% threshold), duplicates per entity-specific keys, orphaned enrollments (class or user not found), grade distribution anomalies.
 
-### Web UI (`src/ui/`)
-Multi-page Streamlit app. `Home.py` is the landing page with status dashboard. Pages:
-- `pages/01_Setup_Wizard.py` — 5-step wizard (schedule + SFTP optional). Schedule step (Windows) collects the Windows account password and displays the run-as account (`current_run_as_user()`); passes them to `register_task` so the task runs unattended (blank password → logged-on-only with a visible warning). Step 4 verifies the SFTP credential is readable on this account via `SFTPUploader.get_stored_password()`. Success message reflects the actual run-as account. District names from YAML `district_name` field.
-- `pages/02_Convert.py` — Ad-hoc conversion with session_state persistence, quality report, missing file warnings. Uses `load_config()` with `_base` inheritance.
-- `pages/03_Run_History.py` — Parses `__DISTRICTSYNC_RUN__` JSON log tags for tabular run history
-- `pages/04_Mapping_Editor.py` — 7-step visual wizard for creating/editing district mapping configs without YAML. Uses `mapping_helpers.py` for column detection, override diff, YAML generation.
-- `pages/05_Help.py` — Reads markdown from `docs/` directory (single source of truth shared with MkDocs site)
+### Desktop UI (`src/ui_flet/`)
+Native Flet 1.0 desktop app (no browser). `main.py`'s no-argv branch launches it via `src/ui_flet/launcher.py` → `shell.py` (themed window + left `NavigationRail`). Six surfaces in `screens/`:
+- `screens/home.py` — health dashboard: one plain-language verdict ("did the roster sync?") + metric tiles, or the first-run onboarding hero when unconfigured.
+- `screens/setup.py` — single-scroll Setup (folders + district, optional daily schedule, optional SFTP). Windows password → `register_task` (unattended); SFTP password → keyring. Neither is persisted to `AppConfig`.
+- `screens/convert.py` — run a conversion now on a worker thread (`job_runner.py`); anomaly-ack write-gate; optional SFTP delivery.
+- `screens/run_history.py` — read-only past runs parsed from `__DISTRICTSYNC_RUN__` log tags (plain-language status; no raw error/path column).
+- `screens/mapping.py` — review the active district config and switch to another pre-built one (NOT a YAML editor — the full editor is a ROADMAP item).
+- `screens/help.py` — links out to the SpacesEDU Help Centre + support email.
+
+Pure COUNTED (tested) logic: `tokens`/`theme`/`verdict`/`nav`/`humanize`/`run_log`/`home_status`/`convert_result`/`run_history`/`mapping_catalog`/`setup_errors`/`job_runner`; view glue (`shell`/`nav_rail`/`components`/`picker_field`/`launcher` + `screens/*`) is coverage-omitted. Build all controls via `components.py` (see `docs/FLET_1.0_CONVENTIONS.md` — e.g. `ft.Dropdown` uses `on_select`, `ft.FilledButton` uses `content=`; the wrong forms raise `TypeError` on 0.85.3).
 
 ### Supporting modules
 - `src/config/app_config.py` — Runtime config (`~/.districtsync/config.json`); SFTP non-sensitive settings. Unix file permissions (0o700/0o600).
-- `src/sftp/uploader.py` — `SFTPUploader` with paramiko SSHClient + OS keyring (both top-level imports). Zips all CSVs into `districtsync_YYYY-MM-DD.zip` before upload. Host restricted to `ALLOWED_SFTP_HOSTS` (3 SpacesEDU servers). Credential setup: wizard Step 4 (`src/ui/pages/01_Setup_Wizard.py`) **and** headless CLI (`--sftp-configure` / `--sftp-test` / `--sftp-show` in `src/main.py`). Exposes `get_stored_password() -> str | None` (keyring read used by wizard Step 4 to verify credentials are readable by the current account).
+- `src/sftp/uploader.py` — `SFTPUploader` with paramiko SSHClient + OS keyring (both top-level imports). Zips all CSVs into `districtsync_YYYY-MM-DD.zip` before upload. Host restricted to `ALLOWED_SFTP_HOSTS` (3 SpacesEDU servers). Credential setup: the Flet Setup SFTP section (`src/ui_flet/screens/setup.py`) **and** headless CLI (`--sftp-configure` / `--sftp-test` / `--sftp-show` in `src/main.py`). Exposes `get_stored_password() -> str | None` (keyring read used by Setup to verify credentials are readable by the current account).
 - `src/scheduler/windows.py` — `register_task` registers via PowerShell `Register-ScheduledTask` (a FIXED script referencing only `$env:DSYNC_*`, run via `-EncodedCommand` UTF-16LE-base64 — not stdin `-Command -`, which silently no-ops a multi-line try/catch on PS 5.1 — + a fresh-copy child env — `os.environ` never mutated); password supplied → explicit `-LogonType Password -RunLevel Highest` principal + `-User`/`-Password` (unattended), password only in child env `DSYNC_TASK_PW` — never on argv, never logged, and never injected by `register_task` into the returned message; no-password → `Interactive`/`Limited` (never S4U), `run_highest` ignored; fail-loud canonical msgs `"PowerShell not found"`/`"ScheduledTasks module not available"` else the PS error. **Errors are de-CLIXML'd** — the script's `catch` emits plain text via `[Console]::Error.WriteLine` (not `Write-Error`, which CLIXML-wraps a redirected stderr into a script-echoing blob), and `_clean_ps_stderr()` is a defensive Python fallback that extracts only the `<S S="Error">` message (never the script body / `DSYNC_TASK_PW` literal). `is_elevated()` (win32 `IsUserAnAdmin`, else False) lets the wizard's `_classify_schedule_error(msg, elevated)` distinguish un-elevated access-denied (→ run-as-admin) from elevated (→ batch-logon-right / wrong-password hint). `delete_task`/`query_task` stay on `schtasks.exe` (read-only/name-only); inputs validated via `validators.py`; `current_run_as_user()` returns `DOMAIN\user`
 - `src/scheduler/linux.py` — crontab wrapper with `shlex.quote()` and sentinel comment
 - `src/etl/column_names.py` — Column name constants (avoid magic strings across transformers)
 - `src/utils/validators.py` — Centralized security: SIS type validation, task name validation, run time validation, SFTP host allowlist, shell quoting
-- `src/ui/mapping_helpers.py` — Column detection from uploaded files, field metadata registry, override diff for `_base` inheritance, YAML generation
 
 ## Configuration-Driven Design
 
@@ -178,9 +174,7 @@ Base `myedbc` defines all 7 entity templates; configs select which to emit via `
 
 ## Documentation
 
-Single source of truth: `docs/` directory is read by both MkDocs (static site / GitHub Pages) and the Streamlit Help page (`05_Help.py`). Update docs in `docs/` — both renderers pick up the changes.
-
-MkDocs deploys to GitHub Pages automatically on release tag push.
+Docs live in `docs/` (Markdown) — partner + developer guides, read by the harness. The MkDocs/GitHub-Pages site was removed; the Flet Help surface links out to the SpacesEDU Help Centre rather than rendering bundled docs.
 
 ## Key Patterns
 
@@ -190,7 +184,6 @@ MkDocs deploys to GitHub Pages automatically on release tag push.
 - **Pydantic validation** — all YAML configs validated at startup before any ETL processing begins
 - **`to_raw_dict()`** — `MappingConfig.to_raw_dict()` converts validated config back to raw dicts for the transformer pipeline
 - **Entity order gotcha** — `global_config.entity_order` defaults to `[]` (not None). Use `global_config.get("entity_order") or list(mappings.keys())`
-- **Streamlit Arrow gotcha** — any `st.dataframe` column that mixes numbers with a string sentinel (`"—"`/`"?"`) makes pyarrow infer `int64` and raise `ArrowInvalid` (Streamlit auto-recovers but logs a noisy traceback). Coerce such display columns to a uniform `str` (see `02_Convert._compute_diff`, `03_Run_History._fmt`)
 
 ## Engineering Principles (non-negotiable)
 
@@ -274,7 +267,7 @@ Standards dimensions LIVE in this repo today (a non-capping snapshot — relevan
 - `data-and-persistence` — GDE → CSV/YAML ETL, atomic transactional writes, multi-encoding/delimiter handling
 - `reliability-resilience` — anomaly detection (>20% drop), zero-orphan invariant, fail-loud column validation
 - `observability-ops` — structured `__DISTRICTSYNC_RUN__` JSON logging, documented exit-code contract
-- `product-ux` — Streamlit multi-page UI (setup wizard, convert, mapping editor)
+- `product-ux` — native Flet desktop UI (Home / Setup / Convert / Run History / Mapping / Help)
 
 ### DistrictSync scope tiers (harvested from the in-house standards doc, 2026-06-17)
 
@@ -290,7 +283,7 @@ Standards dimensions LIVE in this repo today (a non-capping snapshot — relevan
   - Observability & ops — `__DISTRICTSYNC_RUN__` records, anomaly detection; no PII in logs.
   - Data integrity — atomic writes, schema validation, orphaned-enrollment check, active-roster referential integrity (enrollments + homeroom classes filtered to `Students.csv`).
   - Testing — 640 tests, SD74 snapshot regression, 80% gate.
-  - Docs & traceability — architecture tree + decision log + MkDocs.
+  - Docs & traceability — architecture tree + decision log + `docs/` guides.
 - **LIGHT (relevant but minimal today):**
   - Performance & efficiency — pandas memory (kill needless O(n²), vectorize, memoize lookups); DB/API tuning NOT-YET.
   - API & interface design — contracts = output-CSV schema + YAML config schema (version those); no HTTP API.
@@ -307,11 +300,11 @@ Standards dimensions LIVE in this repo today (a non-capping snapshot — relevan
 
 The project's own gates — the harness composes with these, it does not replace them:
 - Lint/format: `ruff check src/ tests/` · `ruff format --check src/ tests/`
-- Type-check: `mypy src/ --exclude 'src/ui'`
+- Type-check: `mypy src/ --exclude 'src/ui_flet'`
 - Tests: `python -m pytest tests/ -v` (80% coverage gate via `--cov-fail-under=80`)
 - Security: `bandit -r src/ -q`
 - Config validation: `make validate-config`
 - CI: `.github/workflows/ci.yml`, `.github/workflows/release.yml`
-- Run the app: `streamlit run src/ui/Home.py` · App URL: `http://localhost:8501`
+- Run the app: `python -m src.main` (no args → native Flet desktop UI)
 - Architecture tree: harness-skeleton (gate on)
 - Competing way-of-work docs: reviewed (your init choice)
