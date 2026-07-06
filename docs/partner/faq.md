@@ -56,7 +56,7 @@ This is required by the SpacesEDU import format.
 
 **Q: Do I have to set up a schedule?**
 
-No. The schedule is optional. You can use the **Convert** page in the web UI to run ad-hoc conversions: upload GDE files, convert, and download the CSVs directly in the browser. The schedule is only needed for unattended daily runs.
+No. The schedule is optional. You can use the **Convert** surface in the desktop app to run ad-hoc conversions: point it at your GDE files, run the conversion, and it writes the CSVs to your chosen output folder. The schedule is only needed for unattended daily runs.
 
 **Q: How are files uploaded via SFTP?**
 
@@ -132,13 +132,13 @@ Yes, by creating separate scheduled tasks with different `--sis`, `--input`, and
 2. Replace the existing `.exe` in `C:\DistrictSync\`
 3. The scheduled task continues to work automatically — no reconfiguration needed
 
-**Q: Is there a web-based UI?**
+**Q: Is there a desktop UI?**
 
-Yes — double-clicking `DistrictSync-windows.exe` (with no arguments) opens a browser-based UI at `http://localhost:8501`. It includes five pages: Setup Wizard, Convert, Run History, Mapping Editor, and Help & Docs. When run with `--sis`/`--input`/`--output` arguments (e.g. from Task Scheduler), it runs headlessly without opening a browser.
+Yes — double-clicking `DistrictSync-windows.exe` (with no arguments) opens a native desktop window with six surfaces reached from the left navigation: Home, Setup, Convert, Run History, Mapping, and Help. When run with `--sis`/`--input`/`--output` arguments (e.g. from Task Scheduler), it runs headlessly — no window opens.
 
 **Q: Can I customize field mappings without editing YAML?**
 
-Yes. The **Mapping Editor** page in the web UI provides a step-by-step wizard for creating or modifying district configurations. It auto-detects column names from your files and saves a properly formatted YAML config.
+Not in the app. The **Mapping** surface lets you review the active district config and switch to another pre-built one, but creating or editing a district's column mapping is not done in the UI — it's a YAML config maintained by the DistrictSync team. Contact SpacesEDU support if your district needs a new or adjusted mapping.
 
 **Q: Why is my SFTP host being rejected?**
 
@@ -155,8 +155,8 @@ All runtime state is written to `~/.districtsync/` — which is
 and `/Users/<user>/.districtsync/` on macOS. Specifically:
 
 - `config.json` — wizard settings (input/output paths, SFTP host, schedule time).
-- `etl_tool.log` — history of every run (wizard, scheduled, CLI). The Run History page reads this file.
-- `mappings/*.yaml` — any district mapping you create in the Mapping Editor. These override the built-in configs if the file name matches.
+- `etl_tool.log` — history of every run (app, scheduled, CLI). The Run History surface reads this file.
+- `mappings/*.yaml` — any custom district mapping YAML placed here (provided by the DistrictSync team). These override the built-in configs if the file name matches.
 
 Your SFTP password is stored in the OS credential manager (Windows Credential Manager / macOS Keychain / Linux Secret Service), never on disk in plain text.
 

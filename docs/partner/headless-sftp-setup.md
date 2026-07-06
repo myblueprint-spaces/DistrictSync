@@ -1,8 +1,8 @@
 # Headless & Docker SFTP Setup
 
-If your district server has no browser (headless Linux, a locked-down
+If your district server has no display (headless Linux, a locked-down
 Windows Server Core, or a container), you can configure SpacesEDU SFTP
-upload entirely from the command line — no Streamlit wizard required.
+upload entirely from the command line — no desktop UI required.
 
 DistrictSync ships three CLI subcommands for credential management:
 

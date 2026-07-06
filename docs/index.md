@@ -78,7 +78,7 @@ A district with non-standard file naming AND the myBlueprint+ tier composes the 
 - **Atomic writes** — all-or-nothing commit; a failed run never leaves partial output
 - **Anomaly detection** — warns when output record counts drop more than 20% compared to the previous run
 - **Structured run logging** — each run writes a machine-readable JSON log tag for the Run History page
-- **Mapping Editor** — web UI wizard for creating or modifying district configs without editing YAML
+- **Mapping surface** — review the active district config and switch between pre-built configs from the native desktop app, without editing YAML
 - **Help & Docs page** — in-app access to documentation and support links
 
 ---

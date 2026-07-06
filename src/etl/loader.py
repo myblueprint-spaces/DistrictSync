@@ -145,7 +145,7 @@ class DataLoader:
         """Write a single DataFrame directly to the output directory.
 
         Prefer ``save_all()`` for pipeline runs (transactional).  This
-        method is retained for the Streamlit UI and testing.
+        method is retained for the UI and testing.
         """
         self._write_csv(df, entity_name, field_order, self.output_path, staging=False)
 

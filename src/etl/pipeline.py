@@ -3,7 +3,7 @@
 src/main.py is the PyInstaller entry point; in a frozen one-file exe the
 entry script runs as ``__main__``, not as a proper module, so
 ``from src.main import run_pipeline`` fails at runtime even though it
-works in dev. Callers (the Streamlit UI, tests, CLI) import from this
+works in dev. Callers (the Flet UI, tests, CLI) import from this
 module instead and stay decoupled from the CLI argparse layer.
 """
 

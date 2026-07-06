@@ -6,8 +6,8 @@ duplication currently seen in sd48/sd51/sd74 configs.
 
 Mapping YAMLs are discovered from two directories, in order:
 
-1. ``~/.districtsync/mappings/`` — user-writable. Partner-created configs
-   (saved via the Mapping Editor) live here. A config here with the
+1. ``~/.districtsync/mappings/`` — user-writable. Custom district configs
+   (provided by the DistrictSync team) live here. A config here with the
    same SIS identifier as a built-in overrides the built-in.
 2. Bundled ``config/mappings/`` — ships with the binary. Resolved
    relative to the PyInstaller bundle root so absolute paths work in
@@ -113,7 +113,7 @@ def _resolve_inheritance(
 def available_configs(config_dir: Optional[Path] = None) -> list[str]:
     """Return sorted unique SIS identifiers discoverable across all search dirs.
 
-    Used by UI pages (Setup Wizard, Convert, Mapping Editor) to populate
+    Used by the UI surfaces (Setup, Convert, Mapping) to populate
     district-picker dropdowns. User-dir and bundle entries are
     deduplicated by identifier (user wins by virtue of being listed
     first in the search order).

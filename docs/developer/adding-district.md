@@ -225,8 +225,8 @@ global_config:
 ```
 
 `course_start_grade` is the editable knob for the senior-course grade floor
-(it is also exposed in the Mapping Editor's Calendar step when CourseInfo or
-StudentCourses is enabled). MyEd BC encodes the grade in the course code, so
+(set it in the district's mapping YAML when CourseInfo or StudentCourses is
+enabled). MyEd BC encodes the grade in the course code, so
 the transformer turns this value into an early-grade exclusion pattern
 (`^.{5}0[0-9]` for 10, `^.{5}0[0-8]` for 9, `^.{5}0[0-7]` for 8).
 
@@ -252,9 +252,9 @@ global_config:
     - StudentCourses
 ```
 
-The Mapping Editor wizard currently configures the 5 standard entities only.
-To opt a district into the myBlueprint+ tier, use one of the tier configs
-above or edit YAML directly.
+District mapping YAML configures the 5 standard entities by default. To opt a
+district into the myBlueprint+ tier, use one of the tier configs above or add
+`CourseInfo`/`StudentCourses` to the district's `enabled_entities`.
 
 ---
 

@@ -55,7 +55,7 @@ updates to the .exe:
 |------|---------|
 | `~/.districtsync/config.json` | Wizard settings (input/output paths, SFTP host, schedule) |
 | `~/.districtsync/etl_tool.log` | All ETL run history — wizard runs, scheduled runs, and CLI runs all write here |
-| `~/.districtsync/mappings/*.yaml` | Any district mappings you create in the Mapping Editor (persists across exe upgrades) |
+| `~/.districtsync/mappings/*.yaml` | Any custom district mapping YAML provided by the DistrictSync team (persists across exe upgrades) |
 | OS credential store | SFTP password (Windows Credential Manager / macOS Keychain / Linux Secret Service) |
 
 On Windows that path is
@@ -73,11 +73,11 @@ state.
     or see the dedicated [Headless & Docker SFTP Setup](headless-sftp-setup.md) guide.
 
 !!! warning "Enabling a schedule? Launch as administrator"
-    If you will turn on the daily automated schedule (Step 3 below), **right-click `DistrictSync-windows.exe` → "Run as administrator"** instead of double-clicking. Creating a task that runs **unattended** (whether or not you are logged on) requires administrator rights — without them the schedule step fails with *"Access is denied."* This is a one-time setup requirement; the scheduled task itself runs on its own afterward. Ad-hoc-only use (the Convert page, no schedule) does **not** need administrator rights.
+    If you will turn on the daily automated schedule (Step 3 below), **right-click `DistrictSync-windows.exe` → "Run as administrator"** instead of double-clicking. Creating a task that runs **unattended** (whether or not you are logged on) requires administrator rights — without them the schedule step fails with *"Access is denied."* This is a one-time setup requirement; the scheduled task itself runs on its own afterward. Ad-hoc-only use (the Convert surface, no schedule) does **not** need administrator rights.
 
 1. Double-click `DistrictSync-windows.exe` — or **right-click → "Run as administrator"** if you will enable a schedule
-2. Your browser will open automatically at `http://localhost:8501`
-3. Follow the 5-step Setup Wizard:
+2. The DistrictSync desktop window opens directly — no browser involved
+3. Go to the **Setup** surface and follow its 5 steps:
 
 ### Wizard Step 1 — File Paths
 
@@ -124,13 +124,13 @@ If a schedule was enabled, DistrictSync will create a Windows Task Scheduler ent
 After saving, the Setup Wizard switches to a management dashboard where you can view, edit, or disable the schedule and SFTP settings at any time without re-running the wizard.
 
 !!! tip "Custom district mapping?"
-    Need a custom district mapping? Use the **Mapping Editor** page to create or modify mappings visually.
+    Need a custom district mapping? The **Mapping** surface lets you review and switch between pre-built configs, but creating or editing a mapping is not done in the app — contact SpacesEDU support and the DistrictSync team will provide the YAML config for your district.
 
 ---
 
 ## Step 3 — Headless configuration (Linux / Docker / no browser)
 
-On Linux servers or containers with no browser, use the CLI to
+On Linux servers or containers where the desktop app can't run, use the CLI to
 configure SFTP directly. No config-file hand-editing and no Python
 one-liners needed.
 

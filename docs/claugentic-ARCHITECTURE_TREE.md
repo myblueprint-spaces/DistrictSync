@@ -184,7 +184,7 @@ _Last generated from `main` @ c669404._
 
 ## docs/
 
-- `docs/index.md` — MkDocs home page: hero section with SpacesEDU branding, product summary, and quick-links to partner/developer guides.
+- `docs/index.md` — Documentation home page: hero section with SpacesEDU branding, product summary, and quick-links to partner/developer guides.
 - `docs/partner/installation.md` — Partner installation guide: prerequisites, download, Setup Wizard walkthrough (~15–20 min), Windows/Linux task-scheduler setup.
 - `docs/partner/faq.md` — Frequently asked questions: run frequency, supported districts, file naming, SFTP behaviour, data privacy.
 - `docs/partner/troubleshooting.md` — Troubleshooting guide: no-output causes, encoding errors, SFTP failures, schedule not firing, log file locations.
@@ -193,6 +193,6 @@ _Last generated from `main` @ c669404._
 - `docs/developer/architecture.md` — Architecture overview: ETL pipeline diagram, extractor/transformer/loader responsibilities, config-driven design, blended class logic.
 - `docs/developer/setup.md` — Developer setup: Python version, clone, `pip install`, running tests, linting, type checking, Flet UI, PyInstaller build.
 - `docs/developer/testing.md` — Testing guide: test categories (unit, e2e, snapshot, property-based, benchmark), coverage requirements, mocking patterns.
-- `docs/developer/release.md` — Release process: version bump, tag push, GitHub Actions automated build (3 platform binaries), GitHub Release creation, MkDocs deploy.
+- `docs/developer/release.md` — Release process: version bump, tag push, GitHub Actions automated build (3 platform binaries), GitHub Release creation.
 - `docs/developer/adding-district.md` — Step-by-step guide for adding a new district YAML config with `_base` inheritance and non-standard file names/column mappings.
 - `docs/developer/adding-transformer.md` — Guide for adding a custom entity transformer class and registering it in the registry.

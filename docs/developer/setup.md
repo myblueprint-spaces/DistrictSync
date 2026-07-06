@@ -52,8 +52,6 @@ No `.env` file is required. The tool reads all configuration from YAML files in 
 | `make lint` | Check with ruff |
 | `make fmt` | Auto-fix lint and formatting issues with ruff |
 | `make validate-config` | Validate all district + tier YAML configs |
-| `make docs` | Build MkDocs documentation site |
-| `make docs-serve` | Live preview docs at http://localhost:8000 |
 | `make build-win` | Build Windows `.exe` (run on Windows) |
 | `make clean` | Remove build artefacts |
 

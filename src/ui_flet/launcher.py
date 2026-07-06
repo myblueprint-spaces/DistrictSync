@@ -1,7 +1,7 @@
-"""Entry point for the native Flet UI (reached from ``main.py`` when
-``DISTRICTSYNC_UI=flet`` and no CLI args).
+"""Entry point for the native Flet UI (reached from ``main.py``'s no-argv
+branch — Flet is the default/only UI).
 
-Replicates the Streamlit launcher's frozen-cwd handling so ``config/`` resolves
+Replicates the prior launcher's frozen-cwd handling so ``config/`` resolves
 for a later ``run_pipeline``, then runs the Flet shell. Because the shipped exe is
 **windowed / no-console**, a boot failure can't print to a console — so the
 import + ``ft.run`` are wrapped in an early-failure path that (a) writes the FULL
@@ -30,8 +30,8 @@ def resolve_frozen_cwd() -> Path | None:
     """The directory to ``chdir`` into when frozen (PyInstaller ``_MEIPASS``), else None.
 
     Pure/inspectable: returns the path WITHOUT performing the chdir, so it's
-    testable. Matches ``src/ui/launcher.py`` — a frozen one-file exe extracts to a
-    temp dir and the scheduled-task runtime has cwd ``%SystemRoot%\\System32``, so
+    testable. A frozen one-file exe extracts to a temp dir and the
+    scheduled-task runtime has cwd ``%SystemRoot%\\System32``, so
     ``config/`` only resolves after chdir'ing to the bundle root.
     """
     if getattr(sys, "frozen", False):

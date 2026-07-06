@@ -28,7 +28,7 @@ Reads the standard GDE export files from MyEducation BC and produces the CSV fil
 | Course Information | `CourseInfo.csv` *(myBlueprint+)* |
 | Student Course History + Selection + Course Information | `StudentCourses.csv` *(myBlueprint+)* |
 
-The myBlueprint+ course files (`CourseInfo.csv`, `StudentCourses.csv`) include senior courses (grades 10–12) by default. Lower the start grade to **8** or **9** per district via `course_start_grade` in the mapping config (or the **Classes and Courses** step of the Mapping Editor).
+The myBlueprint+ course files (`CourseInfo.csv`, `StudentCourses.csv`) include senior courses (grades 10–12) by default. Lower the start grade to **8** or **9** per district by setting `course_start_grade` in the district's mapping config.
 
 File names vary by district — each district's mapping config specifies its actual filenames and formats.
 
