@@ -46,6 +46,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Stamp the release version so the built exe's `--version` reports the real
+      # tag. A frozen PyInstaller build ships no package metadata, so importlib
+      # always misses → app_version() (src/utils/version.py) reads this bundled
+      # module first. flet-pack is shared: release.yml calls it on a tag (→ the
+      # real version, e.g. v3.4.0 → '3.4.0'); flet-verify.yml on a PR/dispatch
+      # (→ 'dev' preview). Bundled via `--hidden-import src._version` in the pack
+      # step below; src/_version.py is git-ignored (exists only inside a build).
+      - name: Stamp version (real on a tag, else dev)
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "version = '${GITHUB_REF_NAME#v}'" > src/_version.py
+          else
+            echo "version = 'dev'" > src/_version.py
+          fi
+          cat src/_version.py
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -143,6 +160,7 @@ jobs:
             --hidden-import src.utils.validators \
             --hidden-import src.utils.logger \
             --hidden-import src.utils.version \
+            --hidden-import src._version \
             --hidden-import ${{ runner.os == 'Windows' && 'src.scheduler.windows' || 'src.scheduler.linux' }} \
             --hidden-import src.scheduler.linux \
             --hidden-import ${{ runner.os == 'Windows' && 'keyring.backends.Windows' || (runner.os == 'macOS' && 'keyring.backends.macOS' || 'keyring.backends.SecretService') }} \

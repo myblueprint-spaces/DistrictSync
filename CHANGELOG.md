@@ -25,6 +25,15 @@ Per-release download links and auto-generated commit notes live on the
   its Playwright smoke tests, and the separate Streamlit release executables are
   gone. The ETL/CLI core is unchanged.
 
+### Fixed
+
+- **The built executable now reports the real release from `--version`.** Each
+  release build stamps the pushed git tag into a bundled `src/_version.py`, which
+  `app_version()` reads first — a frozen PyInstaller build ships no package
+  metadata, so the previous `importlib`-only lookup always reported `dev`. The UI
+  and the CLI now share the one `app_version()` lookup (tag → package metadata →
+  `dev`). Preserves the fix from PR #42 through the Flet packaging rework.
+
 ## [3.3.1] - 2026-06-25
 
 Fixes the unattended Windows scheduling regression that blocked district rollout,

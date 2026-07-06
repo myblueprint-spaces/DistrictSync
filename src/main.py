@@ -11,7 +11,6 @@ backward compatibility only.
 """
 
 import argparse
-import importlib.metadata
 import os
 import sys
 from typing import Callable
@@ -30,6 +29,7 @@ from src.etl.pipeline import (
 from src.sftp.uploader import SFTPUploader
 from src.utils.logger import get_logger
 from src.utils.validators import validate_sftp_host, validate_sis_type
+from src.utils.version import app_version
 
 __all__ = [
     "ANOMALY_THRESHOLD",
@@ -204,10 +204,10 @@ if __name__ == "__main__":
         _default_ui_launcher()()
         sys.exit(0)
 
-    try:
-        version = importlib.metadata.version("districtsync")
-    except importlib.metadata.PackageNotFoundError:
-        version = "dev"
+    # Single source (src/utils/version.py): build-stamped tag → package
+    # metadata → "dev". A frozen exe reports the real release via the
+    # tag-stamped src/_version.py; importlib alone would always say "dev".
+    version = app_version()
 
     parser = argparse.ArgumentParser(
         description="SIS Data ETL Tool for myBlueprint - SpacesEDU",

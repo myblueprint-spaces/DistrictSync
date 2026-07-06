@@ -1,14 +1,18 @@
 """Application version — single source of truth.
 
-Wraps ``importlib.metadata.version("districtsync")`` so callers (the UI
-shells, future surfaces) read the installed package version without
-re-implementing the lookup + fallback. When the package isn't installed
-(running straight from a source checkout that was never ``pip install``-ed)
-the lookup raises ``PackageNotFoundError`` and we report ``"dev"``.
+``app_version()`` is the ONE version lookup for the whole app: the Flet UI
+surfaces AND the CLI ``--version`` flag (``src/main.py``) both call it.
 
-NOTE: ``src/main.py:196-199`` still inlines the same lookup for the CLI's
-``--version`` flag; DRY-ing it onto this helper is a tracked ROADMAP
-follow-up (deferred to keep PLAT-1's CLI branch untouched).
+Resolution order:
+1. ``src/_version.py`` — a tiny module stamped from the git tag at build time
+   (``flet-pack.yml`` writes ``version = '<tag>'`` before PyInstaller runs, and
+   bundles it via ``--hidden-import src._version``). This is the ONLY source a
+   frozen one-file exe can read: a PyInstaller build never ships the package's
+   installed metadata, so importlib always misses and would report ``"dev"``.
+   ``src/_version.py`` is git-ignored — it exists only inside a build.
+2. ``importlib.metadata.version("districtsync")`` — an editable / ``pip install``
+   from a source checkout that WAS installed.
+3. ``"dev"`` — an unbuilt, uninstalled source checkout.
 """
 
 from __future__ import annotations
@@ -20,7 +24,14 @@ _DEV_FALLBACK = "dev"
 
 
 def app_version() -> str:
-    """Return the installed DistrictSync version, or ``"dev"`` if not packaged."""
+    """Return the DistrictSync version: build-stamped tag, else installed
+    package metadata, else ``"dev"`` for an unbuilt source checkout."""
+    try:
+        from src._version import version  # stamped at build time; git-ignored
+
+        return version
+    except ImportError:
+        pass
     try:
         return importlib.metadata.version(_PACKAGE_NAME)
     except importlib.metadata.PackageNotFoundError:
