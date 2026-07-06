@@ -169,7 +169,9 @@ def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view gl
         label="District",
         value=cfg.sis_type or None,
         options=_district_options(),
-        on_change=_on_district_change,
+        # ft.Dropdown's value-change event on flet 0.85.3 is on_select — there is NO
+        # on_change (that raises TypeError at construction). See FLET_1.0_CONVENTIONS.md.
+        on_select=_on_district_change,
         border_color=tokens.color_border,
     )
 
@@ -226,7 +228,7 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
         value=cfg.schedule_time or "03:00",
         width=220,
         border_color=tokens.color_border,
-        helper_text="When DistrictSync runs each day — pick a time after your SIS extract lands.",
+        helper="When DistrictSync runs each day — pick a time after your SIS extract lands.",
     )
 
     # Result surface — swapped to a verdict banner / error card on register.
@@ -259,7 +261,7 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
             can_reveal_password=True,
             width=340,
             border_color=tokens.color_border,
-            helper_text=(
+            helper=(
                 "Lets the nightly sync run after a reboot with no one logged in. "
                 "Used once to register the task — DistrictSync does not store it."
             ),
@@ -457,7 +459,7 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
         can_reveal_password=True,
         width=340,
         border_color=tokens.color_border,
-        helper_text="Leave blank to keep the existing stored credential.",
+        helper="Leave blank to keep the existing stored credential.",
     )
 
     # Result surface — swapped to a verdict banner / error card on save or test.
@@ -564,7 +566,7 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
         save_btn.disabled = not (has_required and (has_password or not first_time))
         page.update()
 
-    host_dropdown.on_change = _refresh_save_gate
+    host_dropdown.on_select = _refresh_save_gate  # Dropdown value-change is on_select (0.85.3)
     username_field.on_change = _refresh_save_gate
     remote_field.on_change = _refresh_save_gate
     port_field.on_change = _refresh_save_gate

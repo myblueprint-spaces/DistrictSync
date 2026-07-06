@@ -308,7 +308,7 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
         selected["district"] = district_dropdown.value or default_district
         _refresh_files()
 
-    district_dropdown.on_change = _on_district_change
+    district_dropdown.on_select = _on_district_change  # Dropdown value-change is on_select (0.85.3)
 
     # ------------------------------------------------------------------ #
     # Run + result rendering (all UI mutation on the loop, never the worker).

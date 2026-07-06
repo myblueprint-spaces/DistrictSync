@@ -181,7 +181,8 @@ def _surface(page: ft.Page, app_config: AppConfig) -> ft.Control:
         value=app_config.sis_type or None,
         # The options ARE available_configs() — a structural allowlist (no free-text sis_type).
         options=[ft.dropdown.Option(key=s.sis_type, text=s.district_name) for s in list_configs()],
-        on_change=_on_pick,
+        # ft.Dropdown's value-change event is on_select on flet 0.85.3 (no on_change).
+        on_select=_on_pick,
         border_color=tokens.color_border,
     )
 
