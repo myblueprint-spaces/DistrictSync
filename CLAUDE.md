@@ -56,7 +56,7 @@ bandit -r src/ -q
 
 ### Validate configs
 ```bash
-make validate-config  # validates all 10 configs: myedbc, sd40, sd48, sd51, sd54, sd74, mbp_all, mbp_core, mbponly, sd51attendance
+make validate-config  # validates all 11 configs: myedbc, sd40, sd48, sd51, sd54, sd60, sd74, mbp_all, mbp_core, mbponly, sd51attendance
 ```
 
 ### Desktop UI (Flet)
@@ -150,7 +150,9 @@ All field mappings are in YAML files under `config/mappings/`. The `--sis` CLI a
 
 `global_config.excluded_course_codes` (list[str]) filters schedule + class_info rows by Course Code (case-insensitive, trimmed) before class/enrollment/blended generation. SD40 uses `["ATT--AM", "ATT--PM"]` to drop MyEd BC's internal attendance-only sections. Applied in `base.filter_excluded_course_codes()` and called from `classes.py`, `enrollments.py`, and `blended.py` (the schedule-fallback path).
 
-Base `myedbc` defines all 7 entity templates; configs select which to emit via `global_config.enabled_entities` (see **Output Targeting**). 6 SpacesEDU district configs — `myedbc` (base), `sd40myedbc` (New Westminster — CSV files, headerless schedule), `sd48myedbc` (Sea to Sky), `sd51myedbc` (Boundary), `sd54myedbc` (Bulkley Valley), `sd74myedbc` (Gold Trail) — each `_base: myedbc` and inherit the 5 rostering entities. 3 myBlueprint+ tier configs — `mbp_all` (all 7), `mbp_core` (Students + CourseInfo + StudentCourses), and `mbponly` (CourseInfo + StudentCourses only) — also `_base: myedbc`, overriding `enabled_entities`.
+Base `myedbc` defines all 7 entity templates; configs select which to emit via `global_config.enabled_entities` (see **Output Targeting**). 7 SpacesEDU district configs — `myedbc` (base), `sd40myedbc` (New Westminster — CSV files, headerless schedule), `sd48myedbc` (Sea to Sky), `sd51myedbc` (Boundary), `sd54myedbc` (Bulkley Valley), `sd60myedbc` (Peace River North), `sd74myedbc` (Gold Trail) — each `_base: myedbc` and inherit the 5 rostering entities. 3 myBlueprint+ tier configs — `mbp_all` (all 7), `mbp_core` (Students + CourseInfo + StudentCourses), and `mbponly` (CourseInfo + StudentCourses only) — also `_base: myedbc`, overriding `enabled_entities`.
+
+An entity may declare `row_filters` (list of `{column, include: [...]}`) to keep only matching rows before mapping — fails loudly if the column is missing (e.g. SD60's Family entity keeps only rows where `Parent Auth / Guardian = Y`, excluding non-guardian emergency contacts). `global_config.cross_enrollment.{collapse, home_school_column}` is an opt-in dedupe that collapses a student's duplicate cross-school rows to their home-school row while preserving enrollments/classes at every school the student attends (off unless a district config sets `collapse: true`).
 
 ## Key Data Flow
 
@@ -213,7 +215,7 @@ GDE/source column names MUST come from the district `field_map` — never hardco
 ## Harness Discipline
 
 - **Read `docs/claugentic-ARCHITECTURE_TREE.md` first** to locate files — don't explore the tree blindly. It's the single-source index (one line per source file).
-- **Keep it current:** adding/moving/removing an indexed source file (`src/**/*.py`, `config/mappings/*.yaml`) requires updating `docs/claugentic-ARCHITECTURE_TREE.md` in the same change — with a one-line description. Enforced by `scripts/claugentic-check_architecture_tree.py`, wired as a **`PostToolUse(Write)` nudge + `Stop` backstop** in `.claude/settings.json` (there is no CI/Makefile tree target): the script checks presence/staleness and prompts on a new/undocumented file; **the agent that created the file authors the description** (a script can't write meaningful context). Requires `python` on PATH; Claude Code will ask each dev to approve the project hooks on first use.
+- **Keep it current:** adding/moving/removing an indexed source file (`src/**/*.py`, `config/mappings/*.yaml`) requires updating `docs/claugentic-ARCHITECTURE_TREE.md` in the same change — with a one-line description. Enforced by `scripts/claugentic-check_architecture_tree.py`, wired as a **git `pre-commit` gate** (`.githooks/pre-commit` via `core.hooksPath=.githooks`, run `--staged`): a commit that adds/touches an in-scope file without a tree entry is **aborted** until the entry is added; **the agent that created the file authors the description** (a script can't write meaningful context). Runs once per `git commit` (no per-action overhead); requires `python`/`python3` on PATH.
 - **Record non-trivial decisions** as dated one-liners in `docs/claugentic-DECISIONS.md`, and consult it before re-litigating a past choice.
 - **Keep this file lean — it loads into every session.** Dense one-liners only; **index into the code and docs, don't duplicate them** — no pasted code, nothing an agent can read straight from the source, no restating `claugentic-WORKFLOW.md`/`claugentic-ENGINEERING_STANDARDS.md`. Add only commands, non-obvious gotchas, patterns, and project rules; point to the canonical doc rather than copy it.
 
@@ -255,7 +257,7 @@ Three rules are non-negotiable:
 
 **Workflow:** substantial work follows `docs/claugentic-WORKFLOW.md` (triage → plan → adversarial review → spec → approval → implement → verify → land).
 
-`claugentic-dev-harness@0.2.4`
+`claugentic-dev-harness@0.3.0`
 <!-- harness:managed:end -->
 
 ## Harness — Current scope (claugentic)
@@ -307,4 +309,5 @@ The project's own gates — the harness composes with these, it does not replace
 - CI: `.github/workflows/ci.yml`, `.github/workflows/release.yml`
 - Run the app: `python -m src.main` (no args → native Flet desktop UI)
 - Architecture tree: harness-skeleton (gate on)
+- Harness mode: shared
 - Competing way-of-work docs: reviewed (your init choice)

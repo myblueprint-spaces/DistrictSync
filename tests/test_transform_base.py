@@ -123,6 +123,57 @@ class TestFilterExcludedCourseCodePatterns:
         assert list(out["course code"]) == ["MAT10"]
 
 
+class TestApplyRowFilters:
+    """`apply_row_filters` — config-driven row inclusion (SD60 Family guardians-only)."""
+
+    def _df(self):
+        # Columns already normalized (lowercase) as the transformer receives them.
+        return pd.DataFrame(
+            {
+                "parent auth / guardian": ["Y", "N", "y", "Y"],
+                "relationship": ["Parent", "Grandparent", "Guardian", "Friend"],
+                "first name": ["A", "B", "C", "D"],
+            }
+        )
+
+    def test_empty_filters_passthrough(self):
+        df = self._df()
+        out = BaseTransformer.apply_row_filters(df, [], "Family")
+        pd.testing.assert_frame_equal(out, df)
+
+    def test_keeps_only_include_values(self):
+        df = self._df()
+        out = BaseTransformer.apply_row_filters(df, [{"column": "Parent Auth / Guardian", "include": ["Y"]}], "Family")
+        # "Y", "y", "Y" kept (value + column-name matching are case-insensitive); "N" dropped.
+        assert list(out["first name"]) == ["A", "C", "D"]
+
+    def test_value_matching_is_case_insensitive(self):
+        df = self._df()
+        out = BaseTransformer.apply_row_filters(df, [{"column": "parent auth / guardian", "include": ["y"]}], "Family")
+        assert len(out) == 3
+
+    def test_and_combines_two_filters(self):
+        df = self._df()
+        filters = [
+            {"column": "Parent Auth / Guardian", "include": ["Y"]},
+            {"column": "Relationship", "include": ["Parent", "Guardian"]},
+        ]
+        out = BaseTransformer.apply_row_filters(df, filters, "Family")
+        # row0 (Y + Parent) and row2 (y + Guardian) survive; row3 (Y + Friend) drops.
+        assert list(out["first name"]) == ["A", "C"]
+
+    def test_missing_column_raises(self):
+        df = self._df()
+        with pytest.raises(ValueError, match="not found"):
+            BaseTransformer.apply_row_filters(df, [{"column": "Nonexistent", "include": ["Y"]}], "Family")
+
+    def test_returns_copy_not_view(self):
+        df = self._df()
+        out = BaseTransformer.apply_row_filters(df, [{"column": "Parent Auth / Guardian", "include": ["Y"]}], "Family")
+        out.loc[out.index[0], "first name"] = "MUTATED"
+        assert "MUTATED" not in df["first name"].values
+
+
 class TestNormalizeIsoDate:
     """`normalize_iso_date` — ISO `yyyy-mm-dd` output (the SpacesEDU attendance date shape).
 

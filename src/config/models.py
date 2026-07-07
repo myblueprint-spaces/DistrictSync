@@ -154,12 +154,30 @@ def classify_field(raw: Any) -> FieldMapping:
 # -----------------------------------------------------------------------
 
 
+class RowFilter(BaseModel):
+    """Config-driven row inclusion for an entity.
+
+    Keep only rows whose (trimmed, lower-cased) value in ``column`` is present
+    in ``include`` (matching is case-insensitive on both the column name and the
+    values). Successive filters AND-combine. Used, e.g., by SD60 Family to keep
+    only true guardian rows. ``extra="forbid"`` fails loudly on a typo'd key.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    column: str
+    include: list[str] = Field(default_factory=list)
+
+
 class EntityConfig(BaseModel):
     """Config for a single output entity (Students, Staff, etc.)."""
 
     source_files: dict[str, str]
     field_map: dict[str, Any]
     headers: dict[str, list[str]] = Field(default_factory=dict)
+    # Optional config-driven row filters applied at transform entry (before
+    # apply_field_map). Empty = keep every row (default, back-compatible).
+    row_filters: list[RowFilter] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -184,6 +202,23 @@ class EntityConfig(BaseModel):
             validated[key] = classify_field(raw)
         self.field_map = validated
         return self
+
+
+class CrossEnrollmentConfig(BaseModel):
+    """Opt-in Students cross-enrollment collapse (one Students row per User ID).
+
+    When ``collapse`` is true, :class:`StudentTransformer` deduplicates Students
+    rows that share a ``User ID`` (a pupil Active at two schools, identical
+    demographics bar School Number), keeping the row whose School equals the
+    student's home school (``home_school_column``). Off by default — every other
+    district is unaffected. Enrollments are built from the schedule and matched
+    by User ID, so class enrolments at BOTH schools are preserved.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    collapse: bool = False
+    home_school_column: str = ""
 
 
 class GlobalConfig(BaseModel):
@@ -237,6 +272,9 @@ class GlobalConfig(BaseModel):
     # slice can add the 8-12 (Enhanced Period) keys without a model change.
     # Empty/absent when the entity is not enabled (inert).
     attendance: dict[str, Any] = Field(default_factory=dict)
+    # Opt-in Students cross-enrollment collapse (see CrossEnrollmentConfig).
+    # None/absent → disabled (default); every non-opted-in district is unaffected.
+    cross_enrollment: Optional[CrossEnrollmentConfig] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -344,6 +382,8 @@ class MappingConfig(BaseModel):
             }
             if entity_cfg.headers:
                 entry["headers"] = dict(entity_cfg.headers)
+            if entity_cfg.row_filters:
+                entry["row_filters"] = [rf.model_dump() for rf in entity_cfg.row_filters]
             mappings_raw[entity_name] = entry
 
         global_raw: dict[str, Any] = {
@@ -360,6 +400,9 @@ class MappingConfig(BaseModel):
             "course_start_grade": self.global_config.course_start_grade,
             "enabled_entities": list(self.global_config.enabled_entities),
             "attendance": dict(self.global_config.attendance),
+            "cross_enrollment": (
+                self.global_config.cross_enrollment.model_dump() if self.global_config.cross_enrollment else None
+            ),
         }
 
         return {"mappings": mappings_raw, "global_config": global_raw}

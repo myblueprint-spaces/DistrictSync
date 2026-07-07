@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from src.config.loader import _deep_merge, load_config
 from src.config.models import (
+    CrossEnrollmentConfig,
     EntityConfig,
     FieldAcademicYear,
     FieldAppendYear,
@@ -17,6 +18,7 @@ from src.config.models import (
     FieldTransform,
     GlobalConfig,
     MappingConfig,
+    RowFilter,
     classify_field,
 )
 
@@ -310,7 +312,7 @@ class TestDeepMerge:
 class TestLoadConfig:
     @pytest.mark.parametrize(
         "sis_type",
-        ["myedbc", "sd40myedbc", "sd48myedbc", "sd51myedbc", "sd74myedbc"],
+        ["myedbc", "sd40myedbc", "sd48myedbc", "sd51myedbc", "sd60myedbc", "sd74myedbc"],
     )
     def test_all_standard_configs_valid(self, sis_type):
         cfg = load_config(sis_type)
@@ -457,7 +459,7 @@ class TestDistrictConfigEquivalence:
         assert name_cfg["section letter"] == "Section"
 
     def test_all_districts_have_five_entities(self):
-        for sis in ("sd48myedbc", "sd51myedbc", "sd74myedbc"):
+        for sis in ("sd48myedbc", "sd51myedbc", "sd60myedbc", "sd74myedbc"):
             cfg = load_config(sis)
             for entity in ("Students", "Staff", "Family", "Classes", "Enrollments"):
                 assert entity in cfg.mappings, f"{sis} missing {entity}"
@@ -654,7 +656,7 @@ class TestEnabledEntities:
         full enabled_entities list, since deep-merge replaces lists) — see
         ``test_sd51_enables_student_attendance``.
         """
-        for sis in ("sd40myedbc", "sd48myedbc", "sd74myedbc"):
+        for sis in ("sd40myedbc", "sd48myedbc", "sd60myedbc", "sd74myedbc"):
             cfg = load_config(sis)
             assert cfg.global_config.enabled_entities == [
                 "Students",
@@ -679,3 +681,153 @@ class TestEnabledEntities:
             "Enrollments",
             "StudentAttendance",
         ]
+
+
+# -----------------------------------------------------------------------
+# RowFilter (config-driven row inclusion) + CrossEnrollmentConfig
+# -----------------------------------------------------------------------
+class TestRowFilter:
+    def test_basic(self):
+        rf = RowFilter(column="Parent Auth / Guardian", include=["Y"])
+        assert rf.column == "Parent Auth / Guardian"
+        assert rf.include == ["Y"]
+
+    def test_default_include_empty(self):
+        assert RowFilter(column="Guardian").include == []
+
+    def test_unknown_key_rejected(self):
+        """A typo'd key fails loudly (extra='forbid')."""
+        with pytest.raises(ValidationError):
+            RowFilter(column="Guardian", includ=["Y"])
+
+    def test_entity_row_filters_roundtrip_via_to_raw_dict(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            mappings={
+                "Family": EntityConfig(
+                    source_files={"emergency_contacts": "E.txt"},
+                    field_map={"First Name": "First Name"},
+                    row_filters=[RowFilter(column="Parent Auth / Guardian", include=["Y"])],
+                ),
+            },
+        )
+        raw = cfg.to_raw_dict()
+        assert raw["mappings"]["Family"]["row_filters"] == [{"column": "Parent Auth / Guardian", "include": ["Y"]}]
+
+    def test_entity_row_filters_absent_key_when_unset(self):
+        """No row_filters → the key is omitted (back-compatible raw dict)."""
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            mappings={
+                "Family": EntityConfig(
+                    source_files={"emergency_contacts": "E.txt"},
+                    field_map={"First Name": "First Name"},
+                ),
+            },
+        )
+        assert "row_filters" not in cfg.to_raw_dict()["mappings"]["Family"]
+
+    def test_yaml_row_filter_parses_into_typed_model(self, tmp_path):
+        yaml_text = """
+version: "1.9"
+sis: test
+mappings:
+  Family:
+    source_files:
+      emergency_contacts: E.txt
+    field_map:
+      "First Name": "First Name"
+    row_filters:
+      - column: "Parent Auth / Guardian"
+        include: ["Y"]
+"""
+        (tmp_path / "test_mapping.yaml").write_text(yaml_text)
+        cfg = load_config("test", config_dir=tmp_path)
+        rf = cfg.mappings["Family"].row_filters
+        assert len(rf) == 1
+        assert isinstance(rf[0], RowFilter)
+        assert rf[0].column == "Parent Auth / Guardian"
+
+
+class TestCrossEnrollmentConfig:
+    def test_defaults(self):
+        cc = CrossEnrollmentConfig()
+        assert cc.collapse is False
+        assert cc.home_school_column == ""
+
+    def test_unknown_key_rejected(self):
+        with pytest.raises(ValidationError):
+            CrossEnrollmentConfig(collapse=True, home_col="Home school number")
+
+    def test_global_default_none(self):
+        assert GlobalConfig().cross_enrollment is None
+
+    def test_roundtrip_via_to_raw_dict(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            global_config=GlobalConfig(
+                cross_enrollment=CrossEnrollmentConfig(collapse=True, home_school_column="Home school number"),
+            ),
+            mappings={
+                "Students": EntityConfig(
+                    source_files={"student_demographic": "Demo.txt"},
+                    field_map={"User ID": "Student Number"},
+                ),
+            },
+        )
+        raw = cfg.to_raw_dict()
+        assert raw["global_config"]["cross_enrollment"] == {
+            "collapse": True,
+            "home_school_column": "Home school number",
+        }
+
+    def test_roundtrip_none_when_unset(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            mappings={
+                "Students": EntityConfig(
+                    source_files={"student_demographic": "Demo.txt"},
+                    field_map={"User ID": "Student Number"},
+                ),
+            },
+        )
+        assert cfg.to_raw_dict()["global_config"]["cross_enrollment"] is None
+
+
+# -----------------------------------------------------------------------
+# SD60 config — guardians-only Family + cross-enrollment collapse
+# -----------------------------------------------------------------------
+class TestSD60Config:
+    def test_valid_and_rostering_entities(self):
+        cfg = load_config("sd60myedbc")
+        assert cfg.sis == "MyEducationBC"
+        for entity in ("Students", "Staff", "Family", "Classes", "Enrollments"):
+            assert entity in cfg.mappings
+        assert cfg.global_config.enabled_entities == [
+            "Students",
+            "Staff",
+            "Family",
+            "Classes",
+            "Enrollments",
+        ]
+
+    def test_family_carries_guardian_row_filter(self):
+        cfg = load_config("sd60myedbc")
+        raw = cfg.to_raw_dict()
+        assert raw["mappings"]["Family"]["row_filters"] == [{"column": "Parent Auth / Guardian", "include": ["Y"]}]
+
+    def test_cross_enrollment_collapse_enabled(self):
+        cfg = load_config("sd60myedbc")
+        cc = cfg.global_config.cross_enrollment
+        assert cc is not None
+        assert cc.collapse is True
+        assert cc.home_school_column == "Home school number"
+
+    def test_active_values_include_active_no_primary(self):
+        cfg = load_config("sd60myedbc")
+        students_fm = cfg.get_raw_field_map("Students")
+        assert "Active No Primary" in students_fm["EnrollStatus"]["active_values"]

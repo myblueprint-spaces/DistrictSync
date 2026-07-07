@@ -428,6 +428,45 @@ class BaseTransformer(ABC):
         return df
 
     @staticmethod
+    def apply_row_filters(
+        df: pd.DataFrame,
+        filters: list[dict[str, Any]],
+        entity_name: str,
+    ) -> pd.DataFrame:
+        """Keep only rows matching every config-driven ``row_filter`` (AND-combined).
+
+        Each filter is a raw dict ``{"column": str, "include": [str, ...]}`` (as
+        produced by ``MappingConfig.to_raw_dict``). A row survives when, for EVERY
+        filter, its ``column`` value (trimmed + lower-cased) is in that filter's
+        ``include`` set (also trimmed + lower-cased) — successive filters further
+        narrow the frame. Columns are matched against the already-normalized
+        (lowercase) frame, so the filter column is resolved with the same
+        strip+lower treatment.
+
+        Fail-loud (validate at boundary): a filter naming a column absent from
+        the frame raises ``ValueError`` — a renamed source column must never
+        silently keep everyone or no one. Empty/absent ``filters`` return ``df``
+        unchanged. Only the kept/total COUNT is logged (never row values / PII).
+        """
+        if not filters:
+            return df
+        total = len(df)
+        mask = pd.Series(True, index=df.index)
+        for row_filter in filters:
+            col = str(row_filter["column"]).strip().lower()
+            if col not in df.columns:
+                raise ValueError(
+                    f"[{entity_name}] row_filter column '{col}' not found in source columns. "
+                    f"Available: {sorted(df.columns)}"
+                )
+            include = {str(v).strip().lower() for v in row_filter.get("include", [])}
+            values = df[col].astype(str).str.strip().str.lower()
+            mask &= values.isin(include)
+        kept = int(mask.sum())
+        logger.info(f"[{entity_name}] row_filters kept {kept}/{total} rows")
+        return df[mask].copy()  # type: ignore[return-value]
+
+    @staticmethod
     def filter_excluded_course_code_patterns(
         df: pd.DataFrame,
         patterns: list[str],

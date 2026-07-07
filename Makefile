@@ -20,7 +20,7 @@ typecheck:
 	mypy src/ --exclude 'src/ui_flet'
 
 validate-config:
-	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc','sd40myedbc','sd48myedbc','sd51myedbc','sd54myedbc','sd74myedbc','mbp_all','mbp_core','mbponly','sd51attendance']]"
+	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc','sd40myedbc','sd48myedbc','sd51myedbc','sd54myedbc','sd60myedbc','sd74myedbc','mbp_all','mbp_core','mbponly','sd51attendance']]"
 
 # Build the windowed/no-console/offline Flet-default .exe locally (Windows) — THE
 # public release binary. Packs src/main.py: no args → the Flet shell, --sis/--input/

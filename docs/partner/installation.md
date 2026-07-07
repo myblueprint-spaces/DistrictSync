@@ -259,6 +259,7 @@ The number of output files depends on which config you're using — see the [Out
 | SD40 – New Westminster | `sd40myedbc` | CSV files with SD-40_/SD40- prefix. StudentSchedule has no headers (auto-injected via config). |
 | SD48 – Sea to Sky | `sd48myedbc` | Uses `StudentDemographicEnhanced.txt`, `StaffInformation.txt` |
 | SD51 – Boundary | `sd51myedbc` | Contact SpacesEDU for file naming |
+| SD60 – Peace River North | `sd60myedbc` | Guardians-only family import; dual-school students rostered under home school |
 | SD74 – Gold Trail | `sd74myedbc` | Uses `studentcourseselection.txt`, `StaffInformation.txt`, `ParentInformation.txt` |
 
 ---
