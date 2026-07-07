@@ -56,7 +56,7 @@ bandit -r src/ -q
 
 ### Validate configs
 ```bash
-make validate-config  # validates all 9 configs: myedbc, sd40, sd48, sd51, sd54, sd74, mbp_all, mbp_core, mbponly
+make validate-config  # validates all 10 configs: myedbc, sd40, sd48, sd51, sd54, sd74, mbp_all, mbp_core, mbponly, sd51attendance
 ```
 
 ### Desktop UI (Flet)
@@ -262,7 +262,7 @@ Three rules are non-negotiable:
 
 Standards dimensions LIVE in this repo today (a non-capping snapshot — relevance is always a per-change judgment; grows with the stack):
 - `maintainability-structure` — layered ETL (extractor → transformer → loader), Strategy-pattern transformers, config-driven YAML mappings
-- `testing` — pytest suite (640 tests), 80% coverage gate, SD74 snapshot regression, config validation
+- `testing` — pytest suite (~1,350 tests), 80% coverage gate, SD74 snapshot regression, config validation
 - `security` — SFTP host allowlist, subprocess/scheduler input validation, `ALLOWED_TRANSFORMS`, keyring secrets, bandit
 - `data-and-persistence` — GDE → CSV/YAML ETL, atomic transactional writes, multi-encoding/delimiter handling
 - `reliability-resilience` — anomaly detection (>20% drop), zero-orphan invariant, fail-loud column validation
@@ -282,7 +282,7 @@ Standards dimensions LIVE in this repo today (a non-capping snapshot — relevan
   - Extensibility & maintainability — config-driven core (`enabled_entities`).
   - Observability & ops — `__DISTRICTSYNC_RUN__` records, anomaly detection; no PII in logs.
   - Data integrity — atomic writes, schema validation, orphaned-enrollment check, active-roster referential integrity (enrollments + homeroom classes filtered to `Students.csv`).
-  - Testing — 640 tests, SD74 snapshot regression, 80% gate.
+  - Testing — ~1,350 tests, SD74 snapshot regression, 80% gate.
   - Docs & traceability — architecture tree + decision log + `docs/` guides.
 - **LIGHT (relevant but minimal today):**
   - Performance & efficiency — pandas memory (kill needless O(n²), vectorize, memoize lookups); DB/API tuning NOT-YET.
