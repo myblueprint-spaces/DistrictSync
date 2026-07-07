@@ -125,12 +125,19 @@ class ClassTransformer(BaseTransformer):
             return
 
         hc = unique_homerooms.copy()
-        hc["Class ID"] = (
-            hc[SCHOOL_NUMBER].astype(str)
-            + "_"
-            + hc[homeroom_col].fillna("UnassignedHomeroom").astype(str)
-            + f"_{context.school_year}"
-        )
+        # Build the homeroom Class ID row-wise ("{school}_{homeroom}_{year}"). A
+        # list comprehension stays type-clean across pandas-stubs versions (3.0
+        # dropped both the `Series[str] + str` overload and `str.cat(list)`); dev
+        # stubs are intentionally uncapped. `unique_homerooms` is the deduplicated
+        # homeroom set (small), matching the row-wise `.apply` used for Name below.
+        year = context.school_year
+        hc["Class ID"] = [
+            f"{school}_{homeroom}_{year}"
+            for school, homeroom in zip(
+                hc[SCHOOL_NUMBER].astype(str),
+                hc[homeroom_col].fillna("UnassignedHomeroom").astype(str),
+            )
+        ]
 
         hc["Name"] = hc.apply(
             lambda row: self._homeroom_name(row, homeroom_col, TEACHER_NAME, context.school_year),
