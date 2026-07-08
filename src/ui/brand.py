@@ -181,6 +181,26 @@ html, body, [data-testid="stAppViewContainer"] {{
     text-transform: uppercase;
 }}
 
+/* ── Exit DistrictSync button (sidebar) ──
+   Sidebar buttons inherit the broad white-text rule above but have no
+   background rule (the restore-dark-text rule covers only select/input/
+   textarea, and the secondary-button rule is scoped to stMain), so the
+   default light button background renders white-on-white. Give the Exit
+   button a distinct blue gradient (brighter than the sidebar's navy→blue)
+   so its white label — left as-is — reads clearly. Keyed via st.button
+   key="exit_districtsync" → the .st-key-exit_districtsync wrapper class. */
+[data-testid="stSidebar"] .st-key-exit_districtsync button {{
+    background: linear-gradient(90deg, {MB_PRIMARY} 0%, {MB_ACCENT} 100%) !important;
+    color: #ffffff !important;
+    border: 1px solid {MB_ACCENT} !important;
+    font-weight: 600 !important;
+}}
+[data-testid="stSidebar"] .st-key-exit_districtsync button:hover {{
+    background: linear-gradient(90deg, {MB_DARK} 0%, {MB_PRIMARY} 100%) !important;
+    border-color: {MB_PRIMARY} !important;
+    color: #ffffff !important;
+}}
+
 /* ── Primary buttons ── */
 [data-testid="stButton"] button[kind="primary"] {{
     background: {MB_PRIMARY} !important;
@@ -457,7 +477,11 @@ def sidebar_exit_control() -> None:
     from src.ui.lifecycle import request_exit
 
     st.sidebar.divider()
-    if st.sidebar.button("⏻ Exit DistrictSync", help="Stop the DistrictSync server and close the app."):
+    if st.sidebar.button(
+        "⏻ Exit DistrictSync",
+        key="exit_districtsync",
+        help="Stop the DistrictSync server and close the app.",
+    ):
         request_exit()
 
 
