@@ -200,25 +200,37 @@ mappings:
 | `src/utils/helpers.py` | `normalize_columns()` and other shared utilities |
 | `src/utils/logger.py` | Configured from `config/logging.conf`; log rotates at 5 MB |
 | `src/utils/validators.py` | Input validation, SFTP host allowlist enforcement |
-| `src/ui/mapping_helpers.py` | Column detection from uploaded files, YAML config generation for Mapping Editor |
 | `src/etl/column_names.py` | Column name constants — avoids magic strings across transformers |
 
 ---
 
-## Web UI
+## Desktop UI (Flet)
 
-`src/ui/Home.py` is a Streamlit multi-page app landing page. Pages:
+The UI is a **native desktop app** built with [Flet](https://flet.dev) — no browser, no HTTP server. `python -m src.main` with no CLI arguments opens the app; passing `--sis`/`--input`/`--output` (etc.) runs the CLI headlessly instead (same process, same exit-code contract). The no-argv branch in `src/main.py` dispatches to `src/ui_flet/launcher.py`, which builds and runs the Flet window.
 
-| Page | File | Description |
-|------|------|-------------|
-| Home / status | `Home.py` | Config health check, navigation |
-| Setup Wizard | `pages/01_Setup_Wizard.py` | 5-step wizard (schedule + SFTP optional). Shows management dashboard post-setup for editing/disabling schedule and SFTP. |
-| Convert | `pages/02_Convert.py` | Ad-hoc conversion without schedule — upload files, convert, download CSVs or upload via SFTP |
-| Run History | `pages/03_Run_History.py` | Parses `__DISTRICTSYNC_RUN__` JSON log tags, tabular history |
-| Mapping Editor | `pages/04_Mapping_Editor.py` | Step-by-step wizard for creating/modifying district YAML configs |
-| Help & Docs | `pages/05_Help.py` | Embedded documentation and quick-reference links |
+All UI code lives under `src/ui_flet/`:
 
-`src/ui/launcher.py` is the PyInstaller entry point for the UI executable.
+| Module | Purpose |
+|--------|---------|
+| `launcher.py` | Entry point — builds the Flet `Page` and starts the app |
+| `shell.py` | App shell — hosts the nav rail and routes to the active screen |
+| `nav_rail.py` / `nav.py` | Navigation rail widget + route definitions |
+| `components.py` | Shared Flet UI components/widgets |
+| `tokens.py` / `theme.py` | Design tokens and theme (colors, spacing, typography) |
+| `verdict.py`, `humanize.py`, `run_log.py`, `home_status.py`, `convert_result.py`, `run_history.py`, `mapping_catalog.py`, `setup_errors.py`, `job_runner.py` | Pure logic modules (no Flet imports) backing each screen — kept separate from rendering for testability |
+
+Six surfaces, one per module under `src/ui_flet/screens/`:
+
+| Screen | File | Description |
+|--------|------|-------------|
+| Home | `screens/home.py` | Config health/status dashboard, navigation |
+| Setup | `screens/setup.py` | Schedule + SFTP setup (wizard-style, both optional) |
+| Convert | `screens/convert.py` | Ad-hoc conversion — pick files, convert, view result, upload via SFTP |
+| Run History | `screens/run_history.py` | Parses `__DISTRICTSYNC_RUN__` JSON log tags into tabular history |
+| Mapping | `screens/mapping.py` | Review the active district config and switch between pre-built configs — **not** a full YAML editor |
+| Help | `screens/help.py` | In-app documentation and support links |
+
+`screens/onboarding.py` covers first-run onboarding. The old Streamlit `src/ui/` directory (and the `streamlit` dependency) has been removed entirely.
 
 ---
 

@@ -11,9 +11,9 @@ backward compatibility only.
 """
 
 import argparse
-import importlib.metadata
 import os
 import sys
+from typing import Callable
 
 from src.config.app_config import AppConfig
 from src.etl.pipeline import (
@@ -29,6 +29,7 @@ from src.etl.pipeline import (
 from src.sftp.uploader import SFTPUploader
 from src.utils.logger import get_logger
 from src.utils.validators import validate_sftp_host, validate_sis_type
+from src.utils.version import app_version
 
 __all__ = [
     "ANOMALY_THRESHOLD",
@@ -185,31 +186,28 @@ def _sftp_show(args: argparse.Namespace) -> int:
     return 0
 
 
-def _resolve_version() -> str:
-    """Version stamped into ``src/_version.py`` at build time (from the git tag),
-    falling back to installed package metadata, then ``"dev"`` for an unbuilt
-    source checkout."""
-    try:
-        from src._version import version
+def _default_ui_launcher() -> Callable[[], None]:
+    """Return the no-argv UI launcher — the native Flet shell.
 
-        return version
-    except ImportError:
-        pass
-    try:
-        return importlib.metadata.version("districtsync")
-    except importlib.metadata.PackageNotFoundError:
-        return "dev"
+    Flet is the only UI. This one-line seam keeps the no-argv dispatch
+    testable by identity (a monkeypatched sentinel) without launching a
+    window; it is the ONLY place the default UI entry point is named.
+    """
+    from src.ui_flet.launcher import main as _launch_ui
+
+    return _launch_ui
 
 
 if __name__ == "__main__":
-    # No arguments → launch the web UI (e.g. double-clicked from Explorer)
+    # No arguments → launch the UI (e.g. double-clicked from Explorer).
     if len(sys.argv) == 1:
-        from src.ui.launcher import main as _launch_ui
-
-        _launch_ui()
+        _default_ui_launcher()()
         sys.exit(0)
 
-    version = _resolve_version()
+    # Single source (src/utils/version.py): build-stamped tag → package
+    # metadata → "dev". A frozen exe reports the real release via the
+    # tag-stamped src/_version.py; importlib alone would always say "dev".
+    version = app_version()
 
     parser = argparse.ArgumentParser(
         description="SIS Data ETL Tool for myBlueprint - SpacesEDU",

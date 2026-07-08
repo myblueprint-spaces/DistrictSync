@@ -1,7 +1,4 @@
 # Development + CI dependencies
-# streamlit is pinned >=1.54,<1.55 in requirements.txt (single source) and is
-# pulled in here via -r — the ui-marked smoke test depends on that pinned reach
-# (private Runtime._session_mgr.num_active_sessions()). See DECISIONS.md.
 -r requirements.txt
 
 # Testing
@@ -25,6 +22,16 @@ types-PyYAML>=6.0
 # Security scanning (used in CI)
 bandit>=1.7
 
-# Documentation
-mkdocs-material>=9.0
-mkdocs-with-pdf>=0.9
+# Flet build/CI tooling (NOT shipped in the exe). flet-web pulls fastapi+uvicorn
+# for headless screenshots; flet-cli provides `flet pack`. Pinned to match the
+# runtime flet/flet-desktop pins in requirements.txt (test_flet_pin gates drift).
+flet-web==0.85.3
+flet-cli==0.85.3
+
+# Flet exe build + smoke (PLAT-3). Single-source for the flet-pack.yml workflow —
+# it installs these via `-r requirements-dev.txt` only (NO inline `pip install pkg`
+# that could drift). pyinstaller is the packer flet-cli drives; pefile reads the
+# PE subsystem (no-console proof); psutil walks the process tree (zero-orphan close).
+pyinstaller>=6,<7
+pefile>=2023.2.7
+psutil>=5.9

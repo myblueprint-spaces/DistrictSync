@@ -8,9 +8,10 @@ pydantic>=2.0,<3.0
 paramiko>=3.0
 keyring>=24.0
 
-# Web UI — bundled into the .exe so launching DistrictSync with no args
-# opens the Streamlit-based wizard. Required at runtime by src/ui/launcher.py.
-# Minor pinned <1.55: the idle-shutdown watchdog (src/ui/lifecycle.py) reads the
-# PRIVATE Runtime._session_mgr.num_active_sessions() internal — verified on 1.54.
-# A bump must re-verify that reach + the /_stcore/health body. See DECISIONS.md.
-streamlit>=1.54,<1.55
+# Native Flet 1.0 desktop UI — the ONLY UI. Bundled into the .exe so launching
+# DistrictSync with no args opens the Flet shell (src/ui_flet/launcher.py).
+# Pinned EXACTLY — Flet 1.0 is a beta API that can shift; flet-web/flet-cli are
+# dev/build-only (requirements-dev.txt) to keep fastapi/uvicorn out of the exe.
+# Keep this version in lockstep with docs/FLET_1.0_CONVENTIONS.md (test_flet_pin gates it).
+flet==0.85.3
+flet-desktop==0.85.3

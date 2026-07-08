@@ -168,6 +168,6 @@ the `.exe` lives or what working directory the task runs from:
 | Linux   | `/home/<username>/.districtsync/etl_tool.log` |
 | macOS   | `/Users/<username>/.districtsync/etl_tool.log` |
 
-The Run History page in the web UI reads from this same path and
+The Run History surface in the app reads from this same path and
 displays the runs in a sortable table. The log rotates automatically
 at 5 MB and keeps 3 backups (`etl_tool.log.1`, `.2`, `.3`).

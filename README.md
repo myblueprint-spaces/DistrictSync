@@ -12,7 +12,7 @@ Distributed as single-file executables for district servers. Runs daily via Wind
 | **Linux** | [DistrictSync-linux](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-linux) | `chmod +x` before first run |
 | **macOS** | [DistrictSync-macos](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos) | Allow in System Settings > Privacy & Security |
 
-For setup basics, see the **[SpacesEDU Help Centre article](https://help.spacesedu.com/en-ca/article/mx56qo)**. The article covers the essentials; the built-in **Help & Docs** page in the web UI has the complete documentation — installation, headless/Docker SFTP, how it works, FAQ, troubleshooting, and developer guides.
+For setup basics, see the **[SpacesEDU Help Centre article](https://help.spacesedu.com/en-ca/article/mx56qo)**. The `docs/` directory has the complete documentation — installation, headless/Docker SFTP, how it works, FAQ, troubleshooting, and developer guides.
 
 ## What It Does
 
@@ -28,7 +28,7 @@ Reads the standard GDE export files from MyEducation BC and produces the CSV fil
 | Course Information | `CourseInfo.csv` *(myBlueprint+)* |
 | Student Course History + Selection + Course Information | `StudentCourses.csv` *(myBlueprint+)* |
 
-The myBlueprint+ course files (`CourseInfo.csv`, `StudentCourses.csv`) include senior courses (grades 10–12) by default. Lower the start grade to **8** or **9** per district via `course_start_grade` in the mapping config (or the **Classes and Courses** step of the Mapping Editor).
+The myBlueprint+ course files (`CourseInfo.csv`, `StudentCourses.csv`) include senior courses (grades 10–12) by default. Lower the start grade to **8** or **9** per district by setting `course_start_grade` in the district's mapping config.
 
 File names vary by district — each district's mapping config specifies its actual filenames and formats.
 
@@ -63,7 +63,7 @@ For districts feeding **myBlueprint+** course data, three tier configs select wh
 | `mbp_core` | Students + CourseInfo + StudentCourses |
 | `mbponly` | CourseInfo + StudentCourses only |
 
-New district configs can be created via the **Mapping Editor** in the web UI, or by hand in `config/mappings/`. Configs support `_base` inheritance — override only what differs from the default.
+New district configs are created by hand in `config/mappings/`. Configs support `_base` inheritance — override only what differs from the default. The desktop app's **Mapping** screen reviews and switches between the built-in configs.
 
 ## CLI Options
 
@@ -77,23 +77,23 @@ New district configs can be created via the **Mapping Editor** in the web UI, or
 | `--quality` | Print a data quality report after conversion |
 | `--sftp` | Upload output CSVs via SFTP after a successful run |
 
-## Web UI
+## Desktop UI
 
-A browser-based interface for setup, ad-hoc conversions, and monitoring. The packaged executable **opens the web UI automatically** when launched without arguments (double-click on Windows) — no Python or extra install required.
+A native desktop interface (Flet) for setup, ad-hoc conversions, and monitoring. The packaged executable **opens the desktop app automatically** when launched without arguments (double-click on Windows) — no Python or extra install required. Running the same executable with CLI arguments (`--sis`/`--input`/`--output`) uses the CLI instead.
 
 To run from source:
 
 ```bash
 pip install -r requirements.txt
-streamlit run src/ui/Home.py
+python -m src.main
 ```
 
-**Pages:**
-- **Setup Wizard** — Configure paths, schedule, and SFTP upload
-- **Convert** — Upload GDE files and download CSVs on demand
+**Screens:**
+- **Setup** — Configure paths, schedule, and SFTP upload
+- **Convert** — Pick GDE files and run a conversion on demand
 - **Run History** — View the log of automated daily runs
-- **Mapping Editor** — Create or customize district data configurations visually
-- **Help & Docs** — Output format, how it works, quality checks, troubleshooting
+- **Mapping** — Review and switch the active district data configuration
+- **Help** — Links to the Help Centre and support contact
 
 ## Key Features
 

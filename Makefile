@@ -1,4 +1,4 @@
-.PHONY: install test test-cov lint fmt ui build-win clean validate-config docs docs-serve
+.PHONY: install test test-cov lint fmt typecheck build-win clean validate-config
 
 install:
 	pip install -r requirements.txt -r requirements-dev.txt
@@ -15,74 +15,68 @@ lint:
 fmt:
 	ruff check src/ tests/ --fix
 
-ui:
-	streamlit run src/ui/Home.py
+# Mirror .github/workflows/ci.yml — keep the --exclude pattern in lockstep.
+typecheck:
+	mypy src/ --exclude 'src/ui_flet'
 
 validate-config:
 	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc','sd40myedbc','sd48myedbc','sd51myedbc','sd54myedbc','sd74myedbc','mbp_all','mbp_core','mbponly','sd51attendance']]"
 
-# Build Windows .exe locally (must run on Windows).
-# Mirrors .github/workflows/release.yml:build-windows so local builds
-# match CI.
-#
-# Why --paths=. + explicit --hidden-import for every src.* submodule:
-#   Streamlit pages (src/ui/pages/*.py) are exec()'d at runtime, so
-#   PyInstaller's static analyzer (which starts at src/main.py) never
-#   sees `from src.scheduler.windows import ...`, `from src.ui.brand
-#   import ...`, etc. --paths=. lets PyInstaller resolve the `src`
-#   package from the repo root, and --collect-submodules=src scoops
-#   up every submodule. The explicit --hidden-import lines below are
-#   belt-and-suspenders: if a future pyinstaller changes how
-#   --collect-submodules discovers packages, the listed modules are
-#   still guaranteed to be bundled.
-#
-#   paramiko + keyring are top-level imports in src/sftp/uploader.py
-#   so PyInstaller picks them up automatically; only
-#   keyring.backends.Windows still needs --hidden-import because
-#   keyring discovers credential-store backends dynamically.
+# Build the windowed/no-console/offline Flet-default .exe locally (Windows) — THE
+# public release binary. Packs src/main.py: no args → the Flet shell, --sis/--input/
+# --output → the CLI. Mirrors .github/workflows/flet-pack.yml's Windows `flet pack`
+# invocation so a local build matches CI (same target, same hidden-imports, same raw
+# PyInstaller args, same `;` --add-data separator). `flet pack` has no native
+# --paths/--exclude-module, so those go through --pyinstaller-build-args (one token
+# per flag; PyInstaller needs `--paths` and `.` as separate args).
+# Pre-seed the client cache first if offline:
+#   python -c "import flet_desktop; flet_desktop.ensure_client_cached()"
+# Smoke it after:
+#   python scripts/ci_flet_pack_smoke.py dist DistrictSync --require-close
 build-win:
-	pyinstaller --onefile --name DistrictSync \
+	flet pack src/main.py --name DistrictSync \
+	  --yes \
 	  --add-data "config;config" \
-	  --add-data "src/ui;src/ui" \
-	  --add-data "docs;docs" \
-	  --collect-all streamlit \
-	  --collect-submodules src \
-	  --paths=. \
-	  --hidden-import=pandas \
-	  --hidden-import=yaml \
-	  --hidden-import=logging.config \
-	  --hidden-import=pydantic \
-	  --hidden-import=pydantic_core \
-	  --hidden-import=keyring.backends.Windows \
-	  --hidden-import=src.scheduler.windows \
-	  --hidden-import=src.scheduler.linux \
-	  --hidden-import=src.ui.brand \
-	  --hidden-import=src.ui.mapping_helpers \
-	  --hidden-import=src.ui.launcher \
-	  --hidden-import=src.ui.folder_picker \
-	  --hidden-import=tkinter \
-	  --hidden-import=src.etl.transformers.base \
-	  --hidden-import=src.etl.transformers.classes \
-	  --hidden-import=src.etl.transformers.enrollments \
-	  --hidden-import=src.etl.transformers.blended \
-	  --hidden-import=src.etl.transformers.students \
-	  --hidden-import=src.etl.transformers.staff \
-	  --hidden-import=src.etl.transformers.family \
-	  --hidden-import=src.etl.transformers.course_info \
-	  --hidden-import=src.etl.transformers.student_courses \
-	  --hidden-import=src.etl.transformers.student_attendance \
-	  --hidden-import=src.etl.transformers.registry \
-	  --hidden-import=src.etl.transformers.context \
-	  src/main.py
+	  --hidden-import flet \
+	  --hidden-import flet_desktop \
+	  --hidden-import src.ui_flet.launcher \
+	  --hidden-import src.ui_flet.shell \
+	  --hidden-import src.ui_flet.nav \
+	  --hidden-import src.ui_flet.tokens \
+	  --hidden-import src.ui_flet.theme \
+	  --hidden-import tkinter \
+	  --hidden-import pandas \
+	  --hidden-import pydantic \
+	  --hidden-import pydantic_core \
+	  --hidden-import yaml \
+	  --hidden-import logging.config \
+	  --hidden-import src.etl.transformers.registry \
+	  --hidden-import src.etl.transformers.context \
+	  --hidden-import src.etl.transformers.base \
+	  --hidden-import src.etl.transformers.students \
+	  --hidden-import src.etl.transformers.staff \
+	  --hidden-import src.etl.transformers.family \
+	  --hidden-import src.etl.transformers.classes \
+	  --hidden-import src.etl.transformers.enrollments \
+	  --hidden-import src.etl.transformers.blended \
+	  --hidden-import src.etl.transformers.course_info \
+	  --hidden-import src.etl.transformers.student_courses \
+	  --hidden-import src.etl.transformers.student_attendance \
+	  --hidden-import src.config.app_config \
+	  --hidden-import src.config.loader \
+	  --hidden-import src.utils.paths \
+	  --hidden-import src.utils.validators \
+	  --hidden-import src.utils.logger \
+	  --hidden-import src.utils.version \
+	  --hidden-import src.scheduler.windows \
+	  --hidden-import src.scheduler.linux \
+	  --hidden-import keyring.backends.Windows \
+	  --pyinstaller-build-args="--paths" --pyinstaller-build-args="." \
+	  --pyinstaller-build-args="--exclude-module" --pyinstaller-build-args="streamlit" \
+	  --pyinstaller-build-args="--exclude-module" --pyinstaller-build-args="src.ui"
 
 # Linux and macOS builds are produced automatically by GitHub Actions on tag push.
 # To release all three platforms: git tag v1.x.0 && git push origin --tags
-
-docs:
-	mkdocs build
-
-docs-serve:
-	mkdocs serve
 
 clean:
 	rm -rf build/ dist/ *.spec __pycache__ .pytest_cache .coverage site/

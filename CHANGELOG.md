@@ -9,8 +9,30 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Changed
+
+- **Flet is now the only UI; the public executable is the Flet-default build.**
+  Launching `DistrictSync` with no arguments opens the native Flet desktop app
+  (double-click on Windows); running it with `--sis`/`--input`/`--output` uses the
+  CLI, byte-for-byte unchanged. The GitHub Release now ships one Flet-default exe
+  per OS (Windows/Linux/macOS) plus `SHA256SUMS.txt` — a single binary that is
+  both the UI and the CLI.
+
+### Removed
+
+- **The Streamlit web UI (`src/ui/`) and the `streamlit` dependency.** The Flet
+  desktop UI (`src/ui_flet/`) fully replaces it; the browser-based Streamlit app,
+  its Playwright smoke tests, and the separate Streamlit release executables are
+  gone. The ETL/CLI core is unchanged.
+
 ### Fixed
-- `--version` now reports the real release version. The build stamps the git tag into the executable (`src/_version.py`); previously the frozen exe reported `dev` because it couldn't read installed package metadata.
+
+- **The built executable now reports the real release from `--version`.** Each
+  release build stamps the pushed git tag into a bundled `src/_version.py`, which
+  `app_version()` reads first — a frozen PyInstaller build ships no package
+  metadata, so the previous `importlib`-only lookup always reported `dev`. The UI
+  and the CLI now share the one `app_version()` lookup (tag → package metadata →
+  `dev`). Preserves the fix from PR #42 through the Flet packaging rework.
 
 ## [3.3.1] - 2026-06-25
 
