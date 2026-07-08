@@ -42,7 +42,7 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.ui_flet import components, tokens
-from src.ui_flet.mapping_catalog import ConfigSummary, list_configs, summarize_config
+from src.ui_flet.mapping_catalog import ConfigSummary, can_apply, list_configs, summarize_config
 from src.ui_flet.verdict import Verdict
 
 
@@ -120,11 +120,20 @@ def _summary_card(title: str, summary: ConfigSummary) -> ft.Control:
 
 
 def _surface(page: ft.Page, app_config: AppConfig) -> ft.Control:
-    """Render the current-mapping summary + the switch selector + the gated Apply."""
-    current = summarize_config(app_config.sis_type)
+    """Render the current-mapping summary + the switch selector + the gated Apply.
+
+    Apply writes through ``AppConfig`` and re-renders THIS surface in place (D1): the
+    current-mapping card, the pending summary, and the gate all recompute against the freshly
+    PERSISTED current — so a switch shows immediately and can be reverted without a restart (the
+    gate compares against ``persisted``, never the captured mount instance, via the pure
+    ``mapping_catalog.can_apply``).
+    """
     summaries = {s.sis_type: s for s in list_configs()}
+    # The persisted current sis_type — mutated on each successful Apply so the gate + the
+    # current-mapping card always track what's actually saved (never the frozen mount value).
+    persisted = {"sis": app_config.sis_type}
     # Ensure the current config is summarizable even if not in the discovered list (defensive).
-    summaries.setdefault(current.sis_type, current)
+    summaries.setdefault(persisted["sis"], summarize_config(persisted["sis"]))
 
     # Mutable pending selection — starts on the current config (so Apply is a no-op → disabled).
     pending = {"sis": app_config.sis_type}
@@ -136,43 +145,44 @@ def _surface(page: ft.Page, app_config: AppConfig) -> ft.Control:
         disabled_bgcolor=tokens.color_border,
         icon=ft.Icons.CHECK_CIRCLE_ROUNDED,
     )
+    current_card_slot = ft.Column(spacing=0, controls=[])
     applied_banner_slot = ft.Column(spacing=0, controls=[])
     pending_summary_slot = ft.Column(spacing=0, controls=[])
 
-    def _pending_summary() -> ConfigSummary:
-        return summaries.get(pending["sis"]) or summarize_config(pending["sis"])
-
-    def _can_apply(summary: ConfigSummary) -> bool:
-        # Structurally gated: apply ONLY a loadable config different from the current one.
-        return summary.loaded_ok and summary.sis_type != app_config.sis_type
+    def _summary_for(sis: str) -> ConfigSummary:
+        return summaries.get(sis) or summarize_config(sis)
 
     def _refresh() -> None:
-        summary = _pending_summary()
-        pending_summary_slot.controls = [_summary_card("Switch to", summary)]
-        apply_btn.disabled = not _can_apply(summary)
+        # Re-render the current-mapping card + the pending summary + re-derive the gate, all
+        # against the freshly-PERSISTED current — so an Apply is reflected in place and revertible.
+        current_card_slot.controls = [_summary_card("Current mapping", _summary_for(persisted["sis"]))]
+        pending_summary = _summary_for(pending["sis"])
+        pending_summary_slot.controls = [_summary_card("Switch to", pending_summary)]
+        apply_btn.disabled = not can_apply(pending_summary, persisted["sis"])
         page.update()
 
     def _on_pick(e: ft.ControlEvent) -> None:
-        pending["sis"] = e.control.value or app_config.sis_type
+        pending["sis"] = e.control.value or persisted["sis"]
         applied_banner_slot.controls = []  # a fresh pick clears a prior confirmation
         _refresh()
 
     def _on_apply(_e: ft.ControlEvent) -> None:
-        summary = _pending_summary()
+        pending_summary = _summary_for(pending["sis"])
         # Re-check the gate so a broken / no-op config can never reach AppConfig.save().
-        if not _can_apply(summary):
+        if not can_apply(pending_summary, persisted["sis"]):
             return
         cfg = AppConfig.load()
-        cfg.sis_type = summary.sis_type
+        cfg.sis_type = pending_summary.sis_type
         cfg.save()
+        persisted["sis"] = pending_summary.sis_type  # the switch is now the persisted current
         applied_banner_slot.controls = [
             components.HealthVerdictBanner(
                 Verdict.HEALTHY,
-                headline=f"Now using {summary.district_name}",
+                headline=f"Now using {pending_summary.district_name}",
                 detail="Your folders and schedule are unchanged.",
             )
         ]
-        page.update()
+        _refresh()  # re-render the current card + re-derive the gate (reverting is now possible)
 
     apply_btn.on_click = _on_apply
 
@@ -186,7 +196,7 @@ def _surface(page: ft.Page, app_config: AppConfig) -> ft.Control:
         border_color=tokens.color_border,
     )
 
-    _refresh()  # paint the initial pending summary (= current) + the gate (disabled — no-op)
+    _refresh()  # paint the initial current card + pending summary (= current) + the gate (disabled)
 
     switch_card = components.card(
         content=ft.Column(
@@ -210,7 +220,7 @@ def _surface(page: ft.Page, app_config: AppConfig) -> ft.Control:
         spacing=22,
         controls=[
             _greeting_header(app_config),
-            _summary_card("Current mapping", current),
+            current_card_slot,
             switch_card,
         ],
     )

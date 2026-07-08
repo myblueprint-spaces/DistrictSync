@@ -1,9 +1,9 @@
 # 0029 — Flet UI trust & professionalism redesign
 
-- **Status:** Approved — Implementing (user approved 2026-07-08; build started)
-- **Resumable from:** Slice 0 (product/decisions persistence) + Slice 1 (config freshness) in flight
+- **Status:** Approved — Implementing (user approved 2026-07-08; Slices 0+1 landed)
+- **Resumable from:** Slice 3 (nav integrity) next → then Slice 2 (chrome; sequenced after 3, both touch shell.py)
 - **Blockers:** none
-- **Flags:** `backfill CUT (panel consensus: source log is 98.6% test pollution) — existing pre-update history will not appear in the new store; honest fresh-start copy — ACCEPTED by user at approval` · `Slice 11 APPROVED IN-SCOPE by user (pre-adoption window): cross-platform app-data relocation, industry-standard per-OS paths`
+- **Flags:** `backfill CUT (panel consensus: source log is 98.6% test pollution) — existing pre-update history will not appear in the new store; honest fresh-start copy — ACCEPTED by user at approval` · `Slice 11 APPROVED IN-SCOPE by user (pre-adoption window): cross-platform app-data relocation, industry-standard per-OS paths` · `S1: _refresh_button kept local to home/run_history (2-consumer convention; promote on 3rd)` · `S1 verify: test_ui_flet_help.py's _apply_shell_help_swap comment claims partial-mirroring now slightly stale — clean when Slice 3 touches shell wiring` · `S1 verify (minor): mapping.py:136 setdefault evaluates summarize_config eagerly — trivial redundant YAML load per mount, fix opportunistically`
 - **Disposition at close:** per template
 - **Roadmap item:** docs/claugentic-ROADMAP.md → "0029 Flet UI trust & professionalism redesign"
 - **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` · plans 0012/0013 (git history) · investigation wf_84cdd881-3a2 (46-agent verified findings) · advisory panel wf_43f08384-433 (10 advisors, 98 items — incorporated below)
@@ -117,8 +117,8 @@ Alternatives rejected: whole-app `--uac-admin` (PII posture, mapped drives, brea
 
 ## Decomposition (slices)
 
-- [ ] **Slice 0 — Program grounding**: persist PRODUCT.md (personas/journeys from Discover), DECISIONS entries for D1–D10 + panel rejections (backfill, compaction, migration framework, outbound DPAPI, badge-by-reorder). Small, unblocks persona-lens review of every later slice.
-- [ ] **Slice 1 — Config freshness + mapping integrity** (D1): supplier binding; fresh loads; mapping write-through/self-refresh/gate; Refresh affordance on Home/Run History. Lands complete: every stale-display symptom gone.
+- [x] **Slice 0 — Program grounding**: persist PRODUCT.md (personas/journeys from Discover), DECISIONS entries for D1–D10 + panel rejections (backfill, compaction, migration framework, outbound DPAPI, badge-by-reorder). Small, unblocks persona-lens review of every later slice. *(landed 3b01ea4)*
+- [x] **Slice 1 — Config freshness + mapping integrity** (D1): supplier binding; fresh loads; mapping write-through/self-refresh/gate; Refresh affordance on Home/Run History. Lands complete: every stale-display symptom gone. *(verified: CHANGES_REQUIRED → fixed false-green home render-smoke → PASS; 1386 tests, cov 93.8%)*
 - [ ] **Slice 2 — Chrome & input craft**: async exit ×3, Enter-to-submit + gate re-checks, brand `.ico` + `page.window.icon` + `--icon` both builds. Manual-Verify slice (stated).
 - [ ] **Slice 3 — Nav integrity** (D7 core): fixed order; rail reference + highlight sync on programmatic nav; launch-selection logic. Small and foundational; badge deferred to Slice 5 (its signal doesn't exist yet).
 - [ ] **Slice 4a — Test isolation + seam foundation** (D3): autouse fixture on the deep `paths.user_data_dir` seam + AppConfig-through-paths refactor + keyring backend swap + logging handler teardown + `get_logger` deferral to entry paths (CLI + launcher, each tested) + the canary test. A suite-wide correctness fix and hard prerequisite for testing the store; lands vertically complete on its own.

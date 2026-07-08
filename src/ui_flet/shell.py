@@ -167,35 +167,46 @@ def main(page: ft.Page) -> None:
     except Exception:  # nosec B110 — window sizing is native-only; harmless no-op in web mode
         pass
 
+    # Startup-only snapshot: drives the nav MODEL (order + launch selection) at build time.
+    # Nav is reworked in Slices 3/5; keeping the startup config here is a bounded, known
+    # remainder — every SCREEN below loads AppConfig fresh, so display state is never stale.
     app_cfg = AppConfig.load()
     model = nav.nav_model(app_cfg)
     screens = build_screens(model.destinations)
-    # Swap the `setup` placeholder for the real folders surface. `functools.partial`
-    # binds `page` (in scope here) so the dict value type stays
-    # `Callable[[], ft.Control]` — the other five placeholders + `render_by_id`'s
-    # uniform `screens[dest_id]()` call are untouched (RC4).
+    # Config-freshness (D1): the screens that render config-derived state bind a fresh
+    # `AppConfig.load()` per invocation (the supplier pattern Setup/Convert already use) — NOT the
+    # startup instance — so switching district / finishing setup propagates on the next navigation
+    # or Refresh, never only after a restart. `build_screens` values stay `Callable[[], ft.Control]`
+    # (a plain lambda), so `render_by_id`'s uniform `screens[dest_id]()` call is untouched (RC4).
+    #
+    # Setup + Convert already load AppConfig fresh internally (they take only `page`), so they keep
+    # the `functools.partial(build_*, page)` mount form.
     screens["setup"] = functools.partial(build_setup, page)
     # Swap the `home` placeholder for the three-way health dashboard UNCONDITIONALLY —
     # `build_home` owns the branch decision itself (branch (a) reuses `build_onboarding`
-    # when `nav.needs_setup(app_cfg)`, (b)/(c) render the verdict-first dashboard). The
-    # `on_navigate` lambda closes over `select_by_id` (defined below) — Python resolves the
-    # free name at call-time (navigation), so this late binding is correct and all
-    # screen-map mutation stays co-located here.
-    screens["home"] = functools.partial(
-        build_home,
+    # when `nav.needs_setup(...)`, (b)/(c) render the verdict-first dashboard). The `on_navigate`
+    # / `on_refresh` lambdas close over `select_by_id` (defined below) — Python resolves the free
+    # name at call-time (navigation), so this late binding is correct and all screen-map mutation
+    # stays co-located here. `on_refresh` re-invokes this screen's build in place (fresh read).
+    screens["home"] = lambda: build_home(
         page,
-        app_config=app_cfg,
+        app_config=AppConfig.load(),
         on_navigate=lambda dest: select_by_id(dest),
+        on_refresh=lambda: select_by_id("home"),
     )
     # Swap the `convert` placeholder for the real manual-convert surface (IA-5a).
     screens["convert"] = functools.partial(build_convert, page)
     # Swap the `run_history` placeholder for the real read-only Run History surface (IA-6).
-    screens["run_history"] = functools.partial(build_run_history, page, app_config=app_cfg)
+    screens["run_history"] = lambda: build_run_history(
+        page,
+        app_config=AppConfig.load(),
+        on_refresh=lambda: select_by_id("run_history"),
+    )
     # Swap the `mapping` placeholder for the real review-and-switch district-config surface (IA-8a).
-    screens["mapping"] = functools.partial(build_mapping, page, app_config=app_cfg)
+    screens["mapping"] = lambda: build_mapping(page, app_config=AppConfig.load())
     # Swap the `help` placeholder for the real link-out Help surface (IA-7). Placed BEFORE the
     # DISTRICTSYNC_UI_DEMO override below so the dev override still wins (it re-assigns last).
-    screens["help"] = functools.partial(build_help, page, app_config=app_cfg)
+    screens["help"] = lambda: build_help(page, app_config=AppConfig.load())
     # Dev-only: behind DISTRICTSYNC_UI_DEMO, route the Help slot to the design-system
     # gallery (3 verdict banners + ErrorCard) so the front-loaded spine is visually
     # exercised. NOT a user nav entry — a hidden override on an existing route.

@@ -141,3 +141,16 @@ def list_configs(*, config_dir: Path | None = None) -> list[ConfigSummary]:
     listed, never omitted or crashed on). ``config_dir`` is the test seam.
     """
     return [summarize_config(sis_type, config_dir=config_dir) for sis_type in available_configs(config_dir)]
+
+
+def can_apply(pending: ConfigSummary | None, persisted_sis: str) -> bool:
+    """The Mapping Apply-gate — is switching to ``pending`` both SAFE and meaningful?
+
+    Structural gate (mirrors Setup's SFTP-host allowlist pattern): ``True`` only when the
+    pending config LOADED cleanly (never apply a broken config — the next run would fail) AND
+    differs from the ``persisted_sis`` current value (never a no-op). Compared against the
+    PERSISTED current (a fresh ``AppConfig.load`` read, never a captured mount instance), so
+    after an Apply the previous mapping can be re-selected and reverted — the whole point of the
+    pure extraction. ``pending`` is ``None`` when nothing is selected → not applyable.
+    """
+    return pending is not None and pending.loaded_ok and pending.sis_type != persisted_sis

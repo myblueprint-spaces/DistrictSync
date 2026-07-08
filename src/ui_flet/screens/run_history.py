@@ -26,6 +26,8 @@ hand-rolled controls (the ``FilledButton(text=)`` trap; see ``docs/FLET_1.0_CONV
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import flet as ft
 
 from src.config.app_config import AppConfig
@@ -74,6 +76,27 @@ def _greeting_header(app_config: AppConfig) -> ft.Control:
     )
 
 
+def _refresh_button(on_refresh: Callable[[], None]) -> ft.Control:
+    """A small secondary "Refresh" affordance — re-reads the run history in place.
+
+    Covers the Watcher who leaves the app open overnight: Run History reads on mount only (a sync
+    read, no polling), so a manual re-check re-invokes this screen's build via the shell
+    (``select_by_id("run_history")``) without navigating away. A Row keeps it compact.
+
+    Local (not a shared ``components`` factory) — same 2-consumer/local-helper convention as
+    ``_greeting_header``; promote only if a 3rd surface needs the identical affordance.
+    """
+    return ft.Row(
+        controls=[
+            components.secondary_button(
+                "Refresh",
+                lambda _e: on_refresh(),
+                icon=ft.Icons.REFRESH_ROUNDED,
+            ),
+        ],
+    )
+
+
 def _scrollable_table(table: ft.Control) -> ft.Control:
     """Wrap the (wide) table in its own horizontally-scrollable region.
 
@@ -83,7 +106,7 @@ def _scrollable_table(table: ft.Control) -> ft.Control:
     return ft.Row(controls=[table], scroll=ft.ScrollMode.AUTO, expand=True)
 
 
-def _surface(app_config: AppConfig) -> ft.Control:
+def _surface(app_config: AppConfig, on_refresh: Callable[[], None] | None) -> ft.Control:
     """Read the log, derive the banner + rows, render verdict-first."""
     records = read_run_records()
     banner = derive_history_banner(records, app_config)
@@ -95,19 +118,27 @@ def _surface(app_config: AppConfig) -> ft.Control:
     # None (unavailable) / [] (no runs) → the banner alone (nothing to tabulate). Otherwise the table.
     if records:
         controls.append(_scrollable_table(components.run_table(to_run_rows(records)[:LIMIT])))
+    if on_refresh is not None:
+        controls.append(_refresh_button(on_refresh))
 
     return ft.Column(spacing=22, controls=controls)
 
 
-def build_run_history(page: ft.Page, *, app_config: AppConfig) -> ft.Control:  # noqa: ARG001 - uniform mount form
+def build_run_history(  # noqa: ARG001 - `page` kept for the uniform mount form
+    page: ft.Page,
+    *,
+    app_config: AppConfig,
+    on_refresh: Callable[[], None] | None = None,
+) -> ft.Control:
     """Build the Run History surface (read-only). ``page`` is threaded for the uniform mount form.
 
     Sync read on mount, verdict-first render, wrapped in a never-crash ``ErrorCard`` fallback so
     even a view-layer bug shows a calm surface, never a stack trace (defense-in-depth — the parser
-    + derivation are already TOTAL).
+    + derivation are already TOTAL). ``on_refresh`` (injected by the shell) adds a Refresh
+    affordance for the leaves-it-open Watcher — re-invoking this screen's build in place.
     """
     try:
-        return _surface(app_config)
+        return _surface(app_config, on_refresh)
     except Exception:  # noqa: BLE001 - the reliability floor: a view bug shows a calm surface, never a trace
         return components.ErrorCard(
             "We couldn't show your run history",

@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from src.ui_flet.mapping_catalog import ConfigSummary, list_configs, summarize_config
+from src.ui_flet.mapping_catalog import ConfigSummary, can_apply, list_configs, summarize_config
 from src.utils.paths import bundle_mappings_dir
 
 
@@ -377,3 +377,54 @@ def test_list_configs_includes_degraded_config_never_omits(tmp_path: Path) -> No
     assert set(by_id) == {"good", "bad"}
     assert by_id["good"].loaded_ok is True
     assert by_id["bad"].loaded_ok is False  # listed, not omitted
+
+
+# --------------------------------------------------------------------------- #
+# can_apply — the pure Mapping Apply-gate truth table (D1)                       #
+# --------------------------------------------------------------------------- #
+def _summary(sis: str, *, loaded_ok: bool) -> ConfigSummary:
+    """A minimal ConfigSummary for the gate truth-table (only sis_type + loaded_ok matter)."""
+    return ConfigSummary(
+        sis_type=sis,
+        district_name=sis,
+        output_labels=(),
+        source_file_count=0,
+        loaded_ok=loaded_ok,
+    )
+
+
+def test_can_apply_loadable_and_different_is_true() -> None:
+    """A loadable config that differs from the persisted current is applyable."""
+    assert can_apply(_summary("sd40myedbc", loaded_ok=True), "myedbc") is True
+
+
+def test_can_apply_same_as_persisted_is_false() -> None:
+    """A no-op switch (pending IS the persisted current) is not applyable."""
+    assert can_apply(_summary("myedbc", loaded_ok=True), "myedbc") is False
+
+
+def test_can_apply_broken_config_is_false() -> None:
+    """A config that failed to load is never applyable — the next run would fail."""
+    assert can_apply(_summary("sd40myedbc", loaded_ok=False), "myedbc") is False
+
+
+def test_can_apply_none_pending_is_false() -> None:
+    """No selection (``None``) is not applyable."""
+    assert can_apply(None, "myedbc") is False
+
+
+def test_can_apply_revert_after_apply_is_possible() -> None:
+    """The load-bearing D1 fix: after switching A→B, reverting B→A is applyable again.
+
+    The gate compares against the PERSISTED current (not a frozen mount instance), so once B is
+    persisted, re-selecting A (loadable, != B) is applyable — a switch can always be undone
+    without a restart (the pre-fix bug compared against the stale mount value, so revert failed).
+    """
+    a = _summary("myedbc", loaded_ok=True)
+    b = _summary("mbp_core", loaded_ok=True)
+    # Before apply: persisted=A, pending=B → applyable.
+    assert can_apply(b, "myedbc") is True
+    # Just after applying B: persisted=B, pending=B → no-op, disabled.
+    assert can_apply(b, "mbp_core") is False
+    # Revert: persisted=B, pending=A → applyable again (the previously-impossible case).
+    assert can_apply(a, "mbp_core") is True

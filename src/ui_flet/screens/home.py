@@ -106,7 +106,32 @@ def _fix_button(fix: FixAction, on_navigate: Callable[[str], None]) -> ft.Contro
     )
 
 
-def _dashboard(app_config: AppConfig, on_navigate: Callable[[str], None]) -> ft.Control:
+def _refresh_button(on_refresh: Callable[[], None]) -> ft.Control:
+    """A small secondary "Refresh" affordance — re-reads run state + config in place.
+
+    Covers the Watcher who leaves the app open overnight: Home reads on mount only (a sync read,
+    no polling), so a manual re-check re-invokes this screen's build via the shell
+    (``select_by_id("home")``) without navigating away. A Row keeps it compact (intrinsic width).
+
+    Local (not a shared ``components`` factory) — same 2-consumer/local-helper convention as
+    ``_greeting_header``; promote only if a 3rd surface needs the identical affordance.
+    """
+    return ft.Row(
+        controls=[
+            components.secondary_button(
+                "Refresh",
+                lambda _e: on_refresh(),
+                icon=ft.Icons.REFRESH_ROUNDED,
+            ),
+        ],
+    )
+
+
+def _dashboard(
+    app_config: AppConfig,
+    on_navigate: Callable[[str], None],
+    on_refresh: Callable[[], None] | None,
+) -> ft.Control:
     """Branches (b)/(c): read the log, derive the verdict, render verdict-first."""
     records = read_run_records()
     status = derive_home_status(records, app_config)
@@ -123,6 +148,8 @@ def _dashboard(app_config: AppConfig, on_navigate: Callable[[str], None]) -> ft.
         controls.append(_fix_button(status.fix, on_navigate))
     if status.metrics is not None:
         controls.append(_metric_tiles_row(status.metrics))
+    if on_refresh is not None:
+        controls.append(_refresh_button(on_refresh))
 
     return ft.Column(spacing=22, controls=controls)
 
@@ -132,13 +159,16 @@ def build_home(
     *,
     app_config: AppConfig,
     on_navigate: Callable[[str], None],
+    on_refresh: Callable[[], None] | None = None,
 ) -> ft.Control:
     """Build the three-way Home surface. ``on_navigate(dest_id)`` is injected by the shell.
 
     ``page`` is threaded to ``build_onboarding`` (branch (a)) for the uniform
     ``functools.partial(build_*, page)`` mount form. Branch (a) reuses the IA-2 onboarding
     hero verbatim; branches (b)/(c) render the health dashboard from the pure trust core,
-    wrapped in a never-crash ``ErrorCard`` fallback.
+    wrapped in a never-crash ``ErrorCard`` fallback. ``on_refresh`` (injected by the shell)
+    adds a Refresh affordance on the dashboard branches for the leaves-it-open Watcher; the
+    onboarding branch (a) is unaffected (freshness there arrives on next navigation).
     """
     if nav.needs_setup(app_config):
         return build_onboarding(
@@ -148,7 +178,7 @@ def build_home(
         )
 
     try:
-        return _dashboard(app_config, on_navigate)
+        return _dashboard(app_config, on_navigate, on_refresh)
     except Exception:  # noqa: BLE001 - the reliability floor: a view bug shows a calm surface, never a trace
         return components.ErrorCard(
             "We couldn't show your sync status",
