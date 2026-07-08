@@ -37,6 +37,7 @@ from enum import Enum
 
 from src.config.app_config import AppConfig
 from src.ui_flet.humanize import AnomalyVariant, friendly_anomaly_detail, friendly_timestamp, pluralize
+from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.verdict import Verdict
 
 # The 5 SpacesEDU rostering entities always shown, then the 2 myBlueprint+ entities
@@ -71,6 +72,13 @@ admin opens 2-3x/yr); staleness is only ever a WARNING, never a FAILED."""
 _RUN_HISTORY_FIX = "run_history"
 
 _CHECK_RUN_HISTORY_LABEL = "Check Run History"
+
+# The FIRST fix target that isn't Run History (D4): a broken/missing schedule routes to
+# Setup's schedule section, not the read-only run ledger. Slice 3's rail-follow already
+# syncs the highlight on this programmatic hop.
+_SETUP_FIX = "setup"
+
+_OPEN_SETUP_LABEL = "Open Setup"
 
 
 @dataclass(frozen=True)
@@ -235,16 +243,23 @@ def derive_home_status(
     *,
     now: datetime | None = None,
     store_created_at: str | None = None,
+    schedule_status: ScheduleStatus | None = None,
 ) -> HomeStatus:
     """Derive the Home sync-health verdict from the run records + config (pure, TOTAL).
 
-    Assumes a configured + scheduled install — the dispatcher (IA-3b) gates unconfigured
-    installs to onboarding via ``nav.needs_setup``, so these rules only run for
-    ``not needs_setup(app_config)``. Evaluated top-down, first-match-wins.
+    Assumes a configured install — the dispatcher (IA-3b) gates un-onboarded installs to
+    onboarding via ``nav.needs_setup``, so these rules only run for ``not needs_setup``.
+    Evaluated top-down, first-match-wins.
 
     ``store_created_at`` (the run store's ``meta.created_at``, ``None`` when the store was
     never created) is the established-install signal for the fresh-start empty state — the
     view injects it from ``store.store_meta()`` so this stays pure/I-O-free.
+
+    ``schedule_status`` (D4) is the injected tri-state schedule read-back (the view fetches it
+    off-thread). When it reports ``attention`` (a schedule the config expected but the OS no
+    longer has, or one that fired without completing) it becomes the DOMINANT trust fault,
+    routed to Setup — never back into onboarding. A ``None`` (not yet probed / non-applicable)
+    or UNKNOWN schedule is silently ignored — Home NEVER asserts an unconfirmed schedule.
     """
     # Rule: status unavailable (the never-crash floor) — the reader couldn't read the store.
     if records is None:
@@ -256,23 +271,32 @@ def derive_home_status(
             metrics=None,
         )
 
+    # Rule: schedule needs attention (D4) — the read-back contradicts the config (task gone
+    # while expected, or fired-but-no-record). The dominant trust fault: even a clean last run
+    # can't reassure if the nightly won't run again. Routed to Setup, NEVER to onboarding.
+    schedule_attention = _schedule_attention(schedule_status)
+    if schedule_attention is not None:
+        return schedule_attention
+
     # Rule: no runs yet (empty but readable, configured). Two honest sub-states — the
     # run store is fresh for EVERY install after this update (no backfill from the polluted
     # log), so an established install must NOT be told "No sync has run yet":
-    #   * established (scheduled, or the store already exists) → "history starts fresh" —
-    #     earlier runs live only in the old diagnostic log and aren't shown here;
+    #   * established (finished setup once, or the store already exists) → "history starts
+    #     fresh" — earlier runs live only in the old diagnostic log and aren't shown here;
     #   * otherwise → the calm "waiting for the first sync".
-    # KNOWN AMBIGUITY (deliberate default, resolved by Slice 5's setup_completed): a
-    # configured-but-UNSCHEDULED empty store cannot distinguish a genuine first run from
-    # a manual-only district upgrading — both present identically here, and pre-4b manual
-    # runs never appeared either, so the first-run copy is the chosen default, not a fact.
+    # Slice 5 (D4a) re-based the discriminator on the durable ``has_completed_setup()`` fact so a
+    # completed manual-only upgrader gets the honest fresh-start copy; newcomer-vs-upgrader remain
+    # indistinguishable, so fresh-start is the chosen default (not a verified fact) — the copy is
+    # therefore conditioned ("If you used an earlier version…"), never a flat claim of hidden
+    # history. The next-run reassurance derives from the LIVE read-back, never the raw config flag.
     if not records:
-        if app_config.schedule_registered or store_created_at:
-            detail = "Earlier runs aren't shown after this update — new syncs will appear here from now on."
-            if app_config.schedule_registered:
-                detail += (
-                    f" Your next nightly sync is scheduled for {_friendly_schedule_time(app_config.schedule_time)}."
-                )
+        if app_config.has_completed_setup() or store_created_at:
+            detail = (
+                "New syncs will appear here from now on. "
+                "If you used an earlier version, its run history isn't carried over."
+            )
+            if _schedule_is_live(schedule_status):
+                detail += f" Your next nightly sync is scheduled for {schedule_status.next_run_display}."  # type: ignore[union-attr]
             return HomeStatus(
                 verdict=Verdict.WARNING,
                 headline="Run history starts fresh here",
@@ -364,11 +388,29 @@ def derive_home_status(
     )
 
 
-def _friendly_schedule_time(schedule_time: str) -> str:
-    """Turn a ``HH:MM`` schedule time into a plain "3:00 AM"; total — bad input passes through."""
-    text = (schedule_time or "").strip()
-    try:
-        parsed = datetime.strptime(text, "%H:%M")
-    except (ValueError, TypeError):
-        return text or "each night"
-    return parsed.strftime("%I:%M %p").lstrip("0")
+def _schedule_attention(schedule_status: ScheduleStatus | None) -> HomeStatus | None:
+    """The schedule-attention verdict when the read-back needs a Setup fix, else ``None`` (D4).
+
+    Renders ``schedule_status``'s single-source copy (category-only, PII-free) as a WARNING
+    routed to Setup. Only fires on the ``attention`` signal (expected-MISSING or a fired-but-
+    no-record contradiction); a clean LIVE, an unexpected MISSING, and every UNKNOWN return
+    ``None`` — Home never nags and never asserts an unconfirmed schedule.
+    """
+    if schedule_status is None or not schedule_status.attention:
+        return None
+    return HomeStatus(
+        verdict=Verdict.WARNING,
+        headline=schedule_status.headline,
+        detail=schedule_status.detail,
+        fix=FixAction(_OPEN_SETUP_LABEL, _SETUP_FIX),
+        metrics=None,
+    )
+
+
+def _schedule_is_live(schedule_status: ScheduleStatus | None) -> bool:
+    """Whether the injected read-back confirms a LIVE schedule with a known next-run time."""
+    return (
+        schedule_status is not None
+        and schedule_status.state is ScheduleState.LIVE
+        and bool(schedule_status.next_run_display)
+    )

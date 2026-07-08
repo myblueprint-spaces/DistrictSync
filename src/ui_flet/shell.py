@@ -19,9 +19,11 @@ CTAs / error fallback — moves the highlight too, not only user clicks.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import logging
 import os
+import sys
 from collections.abc import Callable
 
 import flet as ft
@@ -276,6 +278,39 @@ def main(page: ft.Page) -> None:
     )
 
     page.add(ft.Row(spacing=0, expand=True, controls=[nav_view, content_host]))
+
+    # --- Setup "needs attention" badge (D4): probe the REAL schedule OFF the UI thread --- #
+    # The rail must never trust the config flag for the badge — it reflects the tri-state
+    # read-back (a task the config believes is registered but Windows no longer has, or one
+    # that fired without recording a run). Fetched off-thread so a slow/absent PowerShell can't
+    # block paint; the pure `needs_setup_badge` decides; only MISSING-while-expected /
+    # contradiction badges (never UNKNOWN). Windows-only (schedule read-back is out of scope
+    # elsewhere); a probe failure is swallowed (the badge simply stays clear).
+    def _refresh_setup_badge() -> None:  # runs OFF the UI thread
+        from src.history.store import read_run_records
+        from src.ui_flet.schedule_probe import probe_schedule
+        from src.ui_flet.schedule_status import needs_setup_badge
+
+        cfg = AppConfig.load()
+        records = read_run_records()
+        latest_ts = records[0].get("timestamp") if records else None
+        status = probe_schedule(
+            cfg.schedule_task_name,
+            hint_registered=cfg.schedule_registered,
+            latest_record_ts=latest_ts,
+        )
+
+        async def _apply() -> None:
+            idx = nav.selected_index_for("setup", ordered)
+            rail.destinations[idx].badge = nav_rail.attention_badge() if needs_setup_badge(status) else None
+            page.update()
+
+        page.run_task(_apply)
+
+    if sys.platform == "win32":
+        # The badge is advisory; a probe/thread failure simply leaves it clear.
+        with contextlib.suppress(Exception):
+            page.run_thread(_refresh_setup_badge)
 
     # --- graceful window-close handling (native): ZERO orphans ------------- #
     async def on_window_event(e: ft.WindowEvent) -> None:

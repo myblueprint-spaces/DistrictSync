@@ -7,11 +7,13 @@ Windows registration uses PowerShell ``Register-ScheduledTask`` (the
 -EncodedCommand`` (UTF-16LE-base64) and all dynamic values flow through the
 child process environment, so these tests assert against the argv, the decoded
 script, and the child env rather than a legacy ``schtasks`` command form.
-``delete_task`` / ``query_task`` stay on ``schtasks.exe`` (read-only /
-name-only) — their tests are unchanged.
+``delete_task`` stays on ``schtasks.exe`` (name-only) — its tests are unchanged.
+The dead ``query_task`` was replaced by the tri-state ``read_schedule`` (D4); its
+parse-fixture tests live in ``TestReadSchedule`` below.
 """
 
 import base64
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -597,30 +599,129 @@ class TestWindowsDeleteTask:
         assert ok is False
 
 
-class TestWindowsQueryTask:
+class TestReadSchedule:
+    """D4 tri-state read-back parse fixtures — found / definitively-absent / query-failed.
+
+    The load-bearing contract: the cmdlet's task-not-found → ``found=False`` (MISSING),
+    but ANY other failure (denied, timeout, PowerShell missing, non-Windows) → ``found=None``
+    (UNKNOWN), never a false "absent". Datetimes ride the invariant ISO round-trip verbatim.
+    """
+
+    _FOUND_JSON = (
+        'DSYNC_FOUND:{"found":true,"next_run":"2026-07-09T03:00:00.0000000",'
+        '"last_run":"2026-07-08T03:00:00.0000000","last_result":0,'
+        '"action_path":"C:\\\\Program Files\\\\DistrictSync\\\\DistrictSync.exe"}'
+    )
+
+    @patch("src.scheduler.windows.sys.platform", "win32")
     @patch("src.scheduler.windows.subprocess.run")
-    def test_query_existing_task(self, mock_run):
-        from src.scheduler.windows import query_task
+    def test_found_task_parses_all_fields(self, mock_run):
+        from src.scheduler.windows import read_schedule
+
+        mock_run.return_value = MagicMock(returncode=0, stdout=self._FOUND_JSON, stderr="")
+        rb = read_schedule("DistrictSync_Daily")
+        assert rb.found is True
+        # Datetimes are passed through as the raw invariant ISO round-trip strings.
+        assert rb.next_run == "2026-07-09T03:00:00.0000000"
+        assert rb.last_run == "2026-07-08T03:00:00.0000000"
+        assert rb.last_result == 0
+        assert rb.action_path.endswith("DistrictSync.exe")
+
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_the_read_script_references_only_the_env_name(self, mock_run):
+        # Same injection-free hardening as registration: no dynamic interpolation, name via env.
+        from src.scheduler.windows import read_schedule
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_ABSENT", stderr="")
+        read_schedule("DistrictSync_Daily")
+        script = _ps_script(mock_run)
+        assert "$env:DSYNC_TASKNAME" in script
+        assert "DistrictSync_Daily" not in script  # the name is NEVER baked into the script text
+        assert mock_run.call_args[1]["env"]["DSYNC_TASKNAME"] == "DistrictSync_Daily"
+        # The read-back subprocess is bounded by a timeout (a hung PowerShell can't freeze the UI).
+        assert mock_run.call_args[1]["timeout"] == 10
+
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_definitively_absent_is_found_false(self, mock_run):
+        from src.scheduler.windows import read_schedule
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_ABSENT", stderr="")
+        rb = read_schedule("NonExistent")
+        assert rb.found is False  # MISSING — the only state that may claim "not scheduled"
+
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_access_denied_is_unknown_not_absent(self, mock_run):
+        from src.scheduler.windows import read_schedule
+
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Access is denied.")
+        rb = read_schedule("DistrictSync_Daily")
+        assert rb.found is None  # a failed query is NEVER reported as absent
+        assert rb.error
+
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_timeout_is_unknown(self, mock_run):
+        from src.scheduler.windows import read_schedule
+
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="powershell", timeout=10)
+        rb = read_schedule("DistrictSync_Daily")
+        assert rb.found is None
+        assert "timed out" in (rb.error or "").lower()
+
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_powershell_missing_is_unknown(self, mock_run):
+        from src.scheduler.windows import read_schedule
+
+        mock_run.side_effect = FileNotFoundError()
+        rb = read_schedule("DistrictSync_Daily")
+        assert rb.found is None
+        assert "PowerShell not found" in (rb.error or "")
+
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_malformed_json_degrades_to_unknown(self, mock_run):
+        from src.scheduler.windows import read_schedule
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_FOUND:{not json", stderr="")
+        rb = read_schedule("DistrictSync_Daily")
+        assert rb.found is None  # can't parse a shape → UNKNOWN, never a false claim
+
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_never_run_task_has_null_last_run(self, mock_run):
+        from src.scheduler.windows import read_schedule
 
         mock_run.return_value = MagicMock(
             returncode=0,
-            stdout="Task Name: DistrictSync_Daily\nStatus: Ready\nNext Run Time: 03:00\nLast Result: 0\n",
+            stdout='DSYNC_FOUND:{"found":true,"next_run":"2026-07-09T03:00:00.0000000",'
+            '"last_run":null,"last_result":267011,"action_path":"C:\\\\x\\\\DistrictSync.exe"}',
             stderr="",
         )
+        rb = read_schedule("DistrictSync_Daily")
+        assert rb.found is True
+        assert rb.last_run is None  # the never-run sentinel is nulled in the script
 
-        info = query_task("DistrictSync_Daily")
-        assert info["exists"] is True
-        assert "status" in info
+    @patch("src.scheduler.windows.sys.platform", "linux")
+    def test_non_windows_is_unknown_with_platform_note(self):
+        from src.scheduler.windows import read_schedule
 
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_query_nonexistent_task(self, mock_run):
-        from src.scheduler.windows import query_task
+        rb = read_schedule("DistrictSync_Daily")
+        assert rb.found is None
+        assert "Windows" in (rb.error or "")
 
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="ERROR: The system cannot find the file")
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    def test_invalid_task_name_is_unknown_never_raises(self):
+        # F1: validation is guarded — an invalid name degrades to UNKNOWN (found=None),
+        # honouring the "never raises" probe contract, not a ValueError.
+        from src.scheduler.windows import read_schedule
 
-        info = query_task("NonExistent")
-        assert info["exists"] is False
-        assert info["status"] == "Not Found"
+        rb = read_schedule("bad;name|rm -rf")
+        assert rb.found is None
+        assert rb.error
 
 
 # -----------------------------------------------------------------------

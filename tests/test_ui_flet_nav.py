@@ -48,17 +48,27 @@ class TestDestinationSet:
 
 
 class TestNeedsSetup:
-    """THE single-sourced onboarding predicate — the Home dispatcher + launch selection call it."""
+    """THE single-sourced onboarding predicate — the Home dispatcher + launch selection call it.
+
+    Re-keyed in Slice 5 (D4a) to ``AppConfig.has_completed_setup()`` — the durable finish-line
+    fact — so a Firefighter whose task later breaks is never dropped back into onboarding.
+    """
 
     def test_unconfigured_needs_setup(self):
         assert needs_setup(AppConfig()) is True
 
     def test_configured_but_unscheduled_needs_setup(self):
         assert _CONFIGURED_UNSCHEDULED.is_complete()  # paths/SIS present...
-        assert needs_setup(_CONFIGURED_UNSCHEDULED) is True  # ...but no schedule yet → still needs setup
+        assert needs_setup(_CONFIGURED_UNSCHEDULED) is True  # ...but never finished setup → still needs it
 
     def test_configured_and_scheduled_does_not_need_setup(self):
+        # Inferred finish line (complete + scheduled) — no onboarding.
         assert needs_setup(_CONFIGURED_SCHEDULED) is False
+
+    def test_explicit_setup_completed_survives_a_broken_schedule(self):
+        # The Event-141 firefighter: completed once, schedule later gone — NOT a newcomer.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
+        assert needs_setup(cfg) is False
 
 
 class TestFixedOrder:
@@ -89,8 +99,8 @@ class TestFixedOrder:
 class TestProminentInitialId:
     """Launch selection: Setup while ``needs_setup``, else the first destination (Home).
 
-    (Bounded remainder: the predicate re-keys ``needs_setup`` → durable ``setup_completed``
-    in Slice 5; the fixed order above does not depend on that split.)
+    (Slice 5 (D4a) re-keyed ``needs_setup`` → durable ``has_completed_setup()``; the fixed
+    order above does not depend on that split.)
     """
 
     def test_unconfigured_initial_is_setup(self):

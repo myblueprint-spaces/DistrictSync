@@ -53,6 +53,7 @@ returns ``(bool, str)`` and does NOT raise ``SystemExit`` (unlike
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -70,14 +71,50 @@ from src.ui_flet.filepicker import (
 )
 from src.ui_flet.humanize import friendly_district_name, friendly_sftp_reason
 from src.ui_flet.picker_field import PickerField
+from src.ui_flet.schedule_status import (
+    ScheduleState,
+    ScheduleStatus,
+    interpret_unregister,
+    is_transient_location,
+)
 from src.ui_flet.setup_errors import classify_schedule_error
 from src.ui_flet.setup_gates import can_register_schedule, can_save_sftp
 from src.ui_flet.verdict import Verdict
 from src.utils.validators import ALLOWED_SFTP_HOSTS, validate_run_time
 
+# Surfaced after a successful registration when the running exe lives in a transient dir
+# (Downloads/Temp): pinning a scheduled task there risks the "task fires, exe is gone,
+# nothing recorded" blind spot (D4). A warning, not a block — the admin may re-register later.
+_TRANSIENT_LOCATION_WARNING = (
+    "Heads up: DistrictSync is running from a temporary location (like Downloads or Temp). "
+    "If you move or delete it, the nightly sync will stop — move it to a permanent folder "
+    "and re-register."
+)
+
 
 def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
     return ft.Padding(left=h, top=v, right=h, bottom=v)
+
+
+def _schedule_readout_line(status: ScheduleStatus) -> ft.Control:
+    """A one-line live readout of the REAL schedule state (LIVE / MISSING / UNKNOWN — D4).
+
+    Colour + icon track the tri-state; the copy is the single-source ``schedule_status`` detail,
+    derived ONLY from the OS read-back — neither the state NOR any shown time comes from the
+    config flag/`schedule_time`. MISSING reads red, UNKNOWN reads muted ("couldn't confirm"),
+    LIVE reads green (with the OS-reported next-run time when available, else timeless).
+    """
+    palette = {
+        ScheduleState.LIVE: (tokens.color_status_healthy, ft.Icons.CHECK_CIRCLE_ROUNDED),
+        ScheduleState.MISSING: (tokens.color_status_failed, ft.Icons.ERROR_OUTLINE_ROUNDED),
+        ScheduleState.UNKNOWN: (tokens.color_muted, ft.Icons.HELP_OUTLINE_ROUNDED),
+    }
+    color, icon = palette.get(status.state, (tokens.color_muted, ft.Icons.HELP_OUTLINE_ROUNDED))
+    return ft.Row(
+        spacing=8,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[ft.Icon(icon, size=18, color=color), ft.Text(status.detail, size=13, color=color)],
+    )
 
 
 def _district_options() -> list[ft.dropdown.Option]:
@@ -232,8 +269,43 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
         helper="When DistrictSync runs each day — pick a time after your SIS extract lands.",
     )
 
-    # Result surface — swapped to a verdict banner / error card on register.
+    # Result surface — swapped to a verdict banner / error card on register / unregister.
     result_slot = ft.Column(spacing=0, controls=[])
+
+    # Live schedule readout (D4): the REAL task state, fetched off-thread — never the config flag.
+    readout_slot = ft.Column(spacing=0, controls=[])
+
+    def _kick_readout_probe() -> None:
+        """Fetch the real schedule OFF the UI thread and render the tri-state readout (Windows only)."""
+        if not is_windows:
+            return
+
+        def _work() -> None:  # runs OFF the UI thread
+            from src.ui_flet.schedule_probe import probe_schedule
+
+            status = probe_schedule(
+                cfg.schedule_task_name,
+                hint_registered=cfg.schedule_registered,
+                latest_record_ts=None,
+            )
+
+            async def _apply() -> None:
+                readout_slot.controls = [_schedule_readout_line(status)]
+                page.update()
+
+            page.run_task(_apply)
+
+        # The readout is advisory; a probe/thread failure leaves the "checking…" placeholder.
+        with contextlib.suppress(Exception):
+            page.run_thread(_work)
+
+    def _refresh_readout() -> None:
+        """Reset the readout to "checking…" and re-probe (after register / unregister)."""
+        if not is_windows:
+            return
+        readout_slot.controls = [ft.Text("Checking the schedule…", size=13, color=tokens.color_muted)]
+        page.update()
+        _kick_readout_probe()
 
     section_controls: list[ft.Control] = [
         ft.Text("Daily schedule", size=20, weight=ft.FontWeight.W_800, color=tokens.color_text),
@@ -242,8 +314,12 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
             size=14,
             color=tokens.color_muted,
         ),
-        run_time_field,
     ]
+    if is_windows:
+        # Seed the placeholder + kick the probe on mount so the admin sees the current truth.
+        readout_slot.controls = [ft.Text("Checking the schedule…", size=13, color=tokens.color_muted)]
+        section_controls.append(readout_slot)
+    section_controls.append(run_time_field)
 
     password_field: ft.TextField | None = None
     if is_windows:
@@ -308,10 +384,21 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
             page.update()
             return
 
-        cfg.schedule_time = run_time
-        cfg.save()
-
+        # save-after-success (D4): config's schedule_time / schedule_registered are written
+        # ONLY when registration actually succeeds — a failed attempt must not record a time
+        # or a "registered" flag that isn't real. The raw `run_time` (not cfg) drives the call.
         exe_path = Path(sys.executable)
+        transient = is_transient_location(str(exe_path))
+
+        def _on_register_success(headline: str, detail: str, *, verdict: Verdict = Verdict.HEALTHY) -> None:
+            cfg.schedule_time = run_time
+            cfg.schedule_registered = True
+            cfg.save()
+            if transient:
+                verdict = Verdict.WARNING
+                detail = f"{detail} {_TRANSIENT_LOCATION_WARNING}"
+            result_slot.controls = [components.HealthVerdictBanner(verdict, headline=headline, detail=detail)]
+            _refresh_readout()
 
         if is_windows:
             from src.scheduler.windows import is_elevated, register_task
@@ -322,7 +409,7 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
                 sis_type=cfg.sis_type,
                 input_dir=Path(cfg.input_dir),
                 output_dir=Path(cfg.output_dir),
-                run_time=cfg.schedule_time,
+                run_time=run_time,
                 sftp=cfg.sftp_enabled,
                 run_as_user=None,
                 run_as_password=(password or None),
@@ -330,31 +417,17 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
             if ok and password:
                 from src.scheduler.windows import current_run_as_user
 
-                cfg.schedule_registered = True
-                cfg.save()
-                result_slot.controls = [
-                    components.HealthVerdictBanner(
-                        Verdict.HEALTHY,
-                        headline="Nightly sync scheduled",
-                        detail=(
-                            f"Runs as {current_run_as_user()}, whether or not you're logged in, "
-                            f"daily at {cfg.schedule_time}."
-                        ),
-                    )
-                ]
+                _on_register_success(
+                    "Nightly sync scheduled",
+                    f"Runs as {current_run_as_user()}, whether or not you're logged in, daily at {run_time}.",
+                )
             elif ok:
-                cfg.schedule_registered = True
-                cfg.save()
-                result_slot.controls = [
-                    components.HealthVerdictBanner(
-                        Verdict.WARNING,
-                        headline="Scheduled — logged-on only",
-                        detail=(
-                            "It will only run while you're logged in. Re-register with your "
-                            "Windows password for unattended operation across reboots."
-                        ),
-                    )
-                ]
+                _on_register_success(
+                    "Scheduled — logged-on only",
+                    "It will only run while you're logged in. Re-register with your "
+                    "Windows password for unattended operation across reboots.",
+                    verdict=Verdict.WARNING,
+                )
             else:
                 elevated = is_elevated()
                 result_slot.controls = [
@@ -371,19 +444,11 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
                 cfg.sis_type,
                 Path(cfg.input_dir),
                 Path(cfg.output_dir),
-                cfg.schedule_time,
+                run_time,
                 sftp=cfg.sftp_enabled,
             )
             if ok:
-                cfg.schedule_registered = True
-                cfg.save()
-                result_slot.controls = [
-                    components.HealthVerdictBanner(
-                        Verdict.HEALTHY,
-                        headline="Nightly sync scheduled",
-                        detail=f"Runs daily at {cfg.schedule_time}.",
-                    )
-                ]
+                _on_register_success("Nightly sync scheduled", f"Runs daily at {run_time}.")
             else:
                 result_slot.controls = [
                     components.ErrorCard("Couldn't create the schedule", msg),
@@ -391,11 +456,43 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
 
         page.update()
 
+    def _unregister(_e: ft.ControlEvent | None = None) -> None:
+        # Remove the nightly schedule. Idempotent: an already-absent task presents as
+        # "already not scheduled" (success-shaped) via the pure `interpret_unregister`; the
+        # config flag is cleared only when the end state (no schedule) holds.
+        if is_windows:
+            from src.scheduler.windows import delete_task
+
+            ok, msg = delete_task(cfg.schedule_task_name)
+        else:
+            from src.scheduler.linux import delete_cron
+
+            ok, msg = delete_cron()
+
+        outcome = interpret_unregister(ok, msg)
+        if outcome.success_shaped:
+            cfg.schedule_registered = False
+            cfg.save()
+            result_slot.controls = [
+                components.HealthVerdictBanner(Verdict.HEALTHY, headline=outcome.headline, detail=outcome.detail)
+            ]
+        else:
+            result_slot.controls = [components.ErrorCard(outcome.headline, outcome.detail)]
+        page.update()
+        _refresh_readout()
+
     register_btn = components.primary_button(
         "Register schedule",
         _register,
         disabled=not can_register_schedule(cfg.is_complete(), run_time_field.value or ""),
         icon=ft.Icons.SCHEDULE_ROUNDED,
+    )
+    # Unregister the nightly schedule (idempotent). Always available so an admin can turn off
+    # an unattended sync (or clear a stale registration) without leaving Setup.
+    unregister_btn = components.secondary_button(
+        "Unregister schedule",
+        _unregister,
+        icon=ft.Icons.EVENT_BUSY_ROUNDED,
     )
 
     def _refresh_register_gate(_e: ft.ControlEvent | None = None) -> None:
@@ -409,8 +506,11 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
     if password_field is not None:
         password_field.on_submit = _register
 
-    section_controls.append(register_btn)
+    section_controls.append(ft.Row(spacing=16, controls=[register_btn, unregister_btn]))
     section_controls.append(result_slot)
+
+    # Probe the real schedule on mount so the readout reflects the OS truth, not the flag (D4).
+    _kick_readout_probe()
 
     return components.card(content=ft.Column(spacing=18, controls=section_controls))
 

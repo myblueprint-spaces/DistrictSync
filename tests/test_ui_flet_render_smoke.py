@@ -271,6 +271,36 @@ def test_nav_rail_builds_and_exposes_rail_handle():
     assert len(rail.destinations) == len(ordered)
 
 
+def test_nav_rail_renders_setup_attention_badge():
+    """D4/D7 render-smoke: an ``attention_ids`` set puts a badge on that rail destination only.
+
+    The shell raises this badge on Setup when the off-thread schedule read-back reports a
+    missing/contradicted schedule; here we prove the rail renders it without a flet-API crash.
+    """
+    from src.ui_flet import nav, nav_rail
+
+    ordered = nav.ordered_destinations(nav.nav_model(AppConfig()))
+    _view, rail = nav_rail.build_nav(
+        ordered=ordered,
+        selected_id="home",
+        on_select=lambda _id: None,
+        on_exit=lambda *_a: None,
+        attention_ids=frozenset({"setup"}),
+    )
+    setup_idx = nav.selected_index_for("setup", ordered)
+    home_idx = nav.selected_index_for("home", ordered)
+    assert rail.destinations[setup_idx].badge is not None  # Setup badged
+    assert rail.destinations[home_idx].badge is None  # nothing else badged
+
+
+def test_setup_renders_unregister_affordance(stub_page):
+    """Slice 5: the schedule section exposes an Unregister affordance (cross-platform)."""
+    tree = build_setup(stub_page)
+    assert any(getattr(c, "content", None) == "Unregister schedule" for c in _iter_controls(tree)), (
+        "the schedule section must render an Unregister button"
+    )
+
+
 def test_no_ft_dropdown_uses_on_change():
     """Guard the specific trap: ft.Dropdown has NO on_change on 0.85.3 (use on_select).
 

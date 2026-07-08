@@ -58,14 +58,26 @@ the caller and the Setup Wizard always get a clean one-liner. :func:`is_elevated
 lets the wizard tell an un-elevated "Access is denied" (run as administrator)
 apart from an elevated one (a credential / batch-logon-right problem).
 
-``delete_task`` / ``query_task`` deliberately remain on ``schtasks.exe`` —
-they are read-only / name-only, have no command-length or credential surface,
-and are fully tested; migrating them would expand blast radius for no benefit
-(possible ROADMAP consistency follow-up).
+``delete_task`` deliberately remains on ``schtasks.exe`` — it is name-only, has
+no command-length or credential surface, and is fully tested; migrating it would
+expand blast radius for no benefit (possible ROADMAP consistency follow-up).
+
+**Schedule read-back (Plan 0029, D4):** :func:`read_schedule` replaces the dead
+``query_task``. It combines ``Get-ScheduledTask`` (existence / action path) and
+``Get-ScheduledTaskInfo`` (NextRunTime / LastRunTime / LastTaskResult) via the SAME
+fixed-script + ``-EncodedCommand`` hardening as registration (name through
+:func:`validate_task_name` first, no dynamic interpolation, datetimes emitted
+culture-invariantly, a bounded ``subprocess`` timeout), returning a typed frozen
+:class:`ScheduleReadback`. It is deliberately **tri-state**: the cmdlet's specific
+task-not-found error → ``found=False`` (definitively absent); ANY other failure
+(PowerShell missing, timeout, access denied — e.g. an elevated-registered task
+unreadable by a filtered token) → ``found=None`` (query itself failed, never
+"absent"). The pure ``ui_flet.schedule_status`` module maps this to the honest
+LIVE / MISSING / UNKNOWN contract — only ``found=False`` may claim "not scheduled".
 
 Usage::
 
-    from src.scheduler.windows import register_task, query_task, delete_task
+    from src.scheduler.windows import register_task, read_schedule, delete_task
 
     ok, msg = register_task(
         task_name="DistrictSync_Daily",
@@ -82,6 +94,7 @@ from __future__ import annotations
 
 import base64
 import getpass
+import json
 import logging
 import os
 import re
@@ -89,6 +102,7 @@ import re
 # subprocess is required to invoke powershell.exe / schtasks.exe.
 import subprocess  # nosec B404
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from src.utils.validators import (
@@ -128,6 +142,21 @@ _CLIXML_MARKER = "#< CLIXML"
 # Only the error message is extracted — never the echoed script body — so the
 # ``$env:DSYNC_TASK_PW`` literal and the rest of the program cannot leak out.
 _CLIXML_ERROR_NODE_RE = re.compile(r'<S\s+S="Error">(.*?)</S>', re.DOTALL)
+
+# --- Schedule read-back (D4) --------------------------------------------------
+# The read-back script tags its two success shapes on stdout so the Python parse is
+# unambiguous: an existing task emits ``DSYNC_FOUND:<json>``; a definitively-absent
+# task (the cmdlet's own ObjectNotFound error, caught in the script) emits ``DSYNC_ABSENT``.
+_READ_FOUND_PREFIX = "DSYNC_FOUND:"
+_READ_ABSENT_MARKER = "DSYNC_ABSENT"
+
+# Bounded timeout for the read-back subprocess — a hung PowerShell can never freeze the
+# UI probe; a timeout is classified as UNKNOWN (query failed), never MISSING.
+_READ_TIMEOUT_S = 10
+
+# Honest platform note surfaced when read-back is requested off Windows (Linux/macOS
+# schedule read-back is out of scope — the pure module renders this as UNKNOWN).
+_MSG_NOT_WINDOWS = "Schedule read-back is only available on Windows."
 
 
 def _clean_ps_stderr(text: str) -> str:
@@ -554,25 +583,187 @@ def delete_task(task_name: str) -> tuple[bool, str]:
     return success, message
 
 
-def query_task(task_name: str) -> dict:
-    """Return basic status information about the scheduled task.
+@dataclass(frozen=True)
+class ScheduleReadback:
+    """The tri-state result of reading the real Windows scheduled task (D4).
 
-    Returns a dict with keys: ``exists``, ``status``, ``last_run``,
-    ``next_run``, ``last_result``.  All values are strings.
+    ``found`` is the load-bearing tri-state — the pure ``ui_flet.schedule_status``
+    module maps it to LIVE / MISSING / UNKNOWN and NEVER asserts "scheduled" from a
+    config hint when the query itself failed:
+
+      - ``True``  — the task exists (``next_run`` / ``last_run`` / ``last_result`` /
+        ``action_path`` populated as available).
+      - ``False`` — the task was definitively queried and is absent (the cmdlet's
+        own ObjectNotFound error) → the honest "not scheduled" signal.
+      - ``None``  — the query itself failed (PowerShell missing, timeout, access
+        denied, an elevated-registered task unreadable by a filtered token, or a
+        non-Windows host) → "we couldn't confirm right now", NEVER "absent".
+
+    Datetimes are the raw ISO round-trip strings PowerShell emits
+    (``.ToString("o", InvariantCulture)``); ``last_result`` is the task's
+    ``LastTaskResult`` HRESULT (0 = last run ok). All fields are total — a field
+    the query couldn't supply is ``None``. ``error`` carries a de-CLIXML'd,
+    secret-free one-liner on the ``found=None`` path (diagnostic only).
     """
-    # Read-only query; schtasks.exe is a trusted Windows binary.
-    result = subprocess.run(  # nosec B603,B607
-        ["schtasks", "/Query", "/TN", task_name, "/FO", "LIST"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return {"exists": False, "status": "Not Found"}
 
-    info: dict = {"exists": True}
-    for line in result.stdout.splitlines():
-        if ":" in line:
-            key, _, value = line.partition(":")
-            key = key.strip().lower().replace(" ", "_")
-            info[key] = value.strip()
-    return info
+    found: bool | None
+    next_run: str | None = None
+    last_run: str | None = None
+    last_result: int | None = None
+    action_path: str | None = None
+    error: str | None = None
+
+
+def _build_read_script() -> str:
+    """Return the FIXED PowerShell read-back script (same hardening as registration).
+
+    A constant string referencing ONLY ``$env:DSYNC_TASKNAME`` — no dynamic value is
+    ever interpolated into the text, so there is no PowerShell string-injection surface.
+    ``Get-ScheduledTask`` supplies existence + the action's ``Execute`` path;
+    ``Get-ScheduledTaskInfo`` supplies ``NextRunTime`` / ``LastRunTime`` /
+    ``LastTaskResult``. Datetimes are emitted with ``InvariantCulture`` ISO round-trip
+    (``'o'``) so a non-en-US locale can't corrupt the parse. The never-run ``LastRunTime``
+    sentinel (year <= 1900) is nulled so it can't masquerade as a real prior run. The
+    ``catch`` distinguishes the cmdlet's ObjectNotFound (→ ``DSYNC_ABSENT``, a definitive
+    "not scheduled") from any other failure (→ plain-text stderr + ``exit 1`` → the caller
+    classifies UNKNOWN). ``$ProgressPreference`` is silenced so it can't pollute stderr.
+    """
+    return (
+        "$ErrorActionPreference = 'Stop'\n"
+        "$ProgressPreference = 'SilentlyContinue'\n"
+        "try {\n"
+        "  $task = Get-ScheduledTask -TaskName $env:DSYNC_TASKNAME\n"
+        "  $info = Get-ScheduledTaskInfo -TaskName $env:DSYNC_TASKNAME\n"
+        "  $inv = [System.Globalization.CultureInfo]::InvariantCulture\n"
+        "  $exec = $null\n"
+        "  if ($task.Actions -and @($task.Actions).Count -gt 0) { $exec = @($task.Actions)[0].Execute }\n"
+        "  $next = $null\n"
+        "  if ($info.NextRunTime) { $next = $info.NextRunTime.ToString('o', $inv) }\n"
+        "  $last = $null\n"
+        "  if ($info.LastRunTime -and $info.LastRunTime.Year -gt 1900) "
+        "{ $last = $info.LastRunTime.ToString('o', $inv) }\n"
+        "  $obj = [PSCustomObject]@{ found = $true; next_run = $next; last_run = $last; "
+        "last_result = $info.LastTaskResult; action_path = $exec }\n"
+        "  Write-Output ('DSYNC_FOUND:' + ($obj | ConvertTo-Json -Compress))\n"
+        "} catch {\n"
+        "  if ($_.CategoryInfo.Category -eq 'ObjectNotFound' -or "
+        "$_.FullyQualifiedErrorId -like 'CmdletizationQuery_NotFound*') {\n"
+        "    Write-Output 'DSYNC_ABSENT'\n"
+        "    exit 0\n"
+        "  }\n"
+        "  [Console]::Error.WriteLine($_.Exception.Message)\n"
+        "  exit 1\n"
+        "}\n"
+    )
+
+
+def read_schedule(task_name: str) -> ScheduleReadback:
+    """Read the real Windows scheduled task, tri-state (D4). Never raises.
+
+    Runs the fixed :func:`_build_read_script` via ``powershell.exe -EncodedCommand``
+    (UTF-16LE-base64), passing only the validated task name through the child env
+    (``DSYNC_TASKNAME``) — never interpolated into the script, never on argv. The
+    subprocess is bounded by :data:`_READ_TIMEOUT_S`.
+
+    Classification:
+      - stdout ``DSYNC_ABSENT`` (rc 0) → ``found=False`` (definitively not scheduled).
+      - stdout ``DSYNC_FOUND:<json>`` (rc 0) → ``found=True`` + parsed fields.
+      - PowerShell missing / timeout / any other non-zero exit (access denied, no
+        ScheduledTasks module, unparseable output) → ``found=None`` (UNKNOWN).
+      - non-Windows host → ``found=None`` with the platform note.
+
+    Args:
+        task_name: the task name; validated via :func:`validate_task_name` first.
+    """
+    if sys.platform != "win32":
+        return ScheduleReadback(found=None, error=_MSG_NOT_WINDOWS)
+
+    # Guard validation so an invalid name degrades to UNKNOWN rather than raising — the probe
+    # contract ("never raises") holds for every caller (the name is a config value, not PII).
+    try:
+        task_name = validate_task_name(task_name)
+    except ValueError:
+        return ScheduleReadback(found=None, error="The scheduled task name is not valid.")
+
+    script = _build_read_script()
+    # Fixed script referencing only $env:DSYNC_TASKNAME — the encoded blob carries no
+    # secret and no untrusted interpolation (identical hardening to register_task).
+    encoded_script = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    child_env = {**os.environ, "DSYNC_TASKNAME": task_name}
+
+    try:
+        # Inputs validated; fixed encoded script; list args + shell=False; read-only
+        # cmdlets. powershell.exe is a trusted Windows binary resolved from PATH (B607).
+        result = subprocess.run(  # nosec B603,B607
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                encoded_script,
+            ],
+            env=child_env,
+            capture_output=True,
+            text=True,
+            timeout=_READ_TIMEOUT_S,
+        )
+    except FileNotFoundError:
+        # No powershell.exe on PATH — the query couldn't run → UNKNOWN, never "absent".
+        return ScheduleReadback(found=None, error=_MSG_NO_POWERSHELL)
+    except subprocess.TimeoutExpired:
+        return ScheduleReadback(found=None, error="The schedule query timed out.")
+
+    stdout = (result.stdout or "").strip()
+    stderr = _clean_ps_stderr(result.stderr or "")
+
+    if result.returncode == 0 and _READ_ABSENT_MARKER in stdout:
+        return ScheduleReadback(found=False)
+    if result.returncode == 0 and _READ_FOUND_PREFIX in stdout:
+        return _parse_readback(stdout, stderr)
+
+    # Anything else — a non-zero exit (access denied, missing ScheduledTasks module),
+    # empty output, or an unexpected shape — is a FAILED query, not an absent task.
+    return ScheduleReadback(found=None, error=stderr or "The schedule query failed.")
+
+
+def _parse_readback(stdout: str, stderr: str) -> ScheduleReadback:
+    """Parse the ``DSYNC_FOUND:<json>`` success line into a ``ScheduleReadback``.
+
+    A malformed/non-dict payload degrades to UNKNOWN (``found=None``) rather than
+    asserting a shape we couldn't read — total, never raises.
+    """
+    line = next((ln for ln in stdout.splitlines() if ln.startswith(_READ_FOUND_PREFIX)), "")
+    payload = line[len(_READ_FOUND_PREFIX) :]
+    try:
+        data = json.loads(payload)
+    except (json.JSONDecodeError, ValueError):
+        return ScheduleReadback(found=None, error="Could not parse the schedule query result.")
+    if not isinstance(data, dict):
+        return ScheduleReadback(found=None, error="Could not parse the schedule query result.")
+    return ScheduleReadback(
+        found=True,
+        next_run=_opt_str_field(data.get("next_run")),
+        last_run=_opt_str_field(data.get("last_run")),
+        last_result=_opt_int_field(data.get("last_result")),
+        action_path=_opt_str_field(data.get("action_path")),
+    )
+
+
+def _opt_str_field(value: object) -> str | None:
+    """A nullable text field from the JSON payload: blank/None → None; else stripped str."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _opt_int_field(value: object) -> int | None:
+    """A nullable int field (``LastTaskResult``): None / non-numeric → None."""
+    if not isinstance(value, (int, float, str)):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

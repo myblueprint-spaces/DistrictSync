@@ -40,12 +40,13 @@ from src.ui_flet.home_status import (
     LatestReason,
     _as_int,
     _data_errors_total,
-    _friendly_schedule_time,
+    _schedule_is_live,
     classify_latest_reason,
     is_stale,
     verdict_for_reason,
 )
 from src.ui_flet.humanize import AnomalyVariant, friendly_anomaly_detail, friendly_timestamp, pluralize
+from src.ui_flet.schedule_status import ScheduleStatus
 from src.ui_flet.verdict import Verdict
 
 
@@ -115,6 +116,7 @@ def derive_history_banner(
     *,
     now: datetime | None = None,
     store_created_at: str | None = None,
+    schedule_status: ScheduleStatus | None = None,
 ) -> HistoryBanner:
     """Derive the verdict-first Run-History banner (pure, TOTAL, PII-safe).
 
@@ -125,7 +127,9 @@ def derive_history_banner(
     never a raise. NEVER interpolates the raw ``error`` / ``ANOMALY:`` string.
 
     ``store_created_at`` (the run store's ``meta.created_at``) is the established-install signal
-    for the fresh-start empty state — injected by the view so this stays pure/I-O-free.
+    for the fresh-start empty state; ``schedule_status`` (D4, injected off-thread) supplies the
+    honest LIVE next-run reassurance — Run History is read-only (no fix CTA), so it does not
+    surface a schedule-attention verdict (Home owns that), only the derived empty-state copy.
     """
     # Rule: unavailable (the never-crash floor) — the reader couldn't read the store.
     if records is None:
@@ -138,14 +142,19 @@ def derive_history_banner(
     # Rule: no runs yet (empty but readable). The store is fresh for EVERY install after this
     # update (no backfill), so an established install is told the history starts fresh rather
     # than the false "No sync has run yet"; a genuine first run keeps the calm waiting copy.
-    # KNOWN AMBIGUITY (deliberate default, resolved by Slice 5's setup_completed): a
-    # configured-but-unscheduled empty store can't distinguish a genuine first run from a
-    # manual-only upgrader — the first-run copy is the chosen default, not a verified fact.
+    # Slice 5 (D4a) re-based the discriminator on the durable ``has_completed_setup()`` fact so a
+    # completed manual-only upgrader gets the honest fresh-start copy; newcomer-vs-upgrader remain
+    # indistinguishable, so fresh-start is the chosen default (not a verified fact) — the copy is
+    # conditioned ("If you used an earlier version…"), never a flat claim of hidden history. The
+    # schedule reassurance derives from the LIVE read-back (``schedule_status``), never the flag.
     if not records:
-        if app_config.schedule_registered or store_created_at:
-            detail = "Earlier runs aren't shown after this update — new nightly syncs will appear here from now on."
-            if app_config.schedule_registered:
-                detail += f" Scheduled for {_friendly_schedule_time(app_config.schedule_time)} each night."
+        if app_config.has_completed_setup() or store_created_at:
+            detail = (
+                "New nightly syncs will appear here from now on. "
+                "If you used an earlier version, its run history isn't carried over."
+            )
+            if _schedule_is_live(schedule_status):
+                detail += f" Scheduled for {schedule_status.next_run_display} each night."  # type: ignore[union-attr]
             return HistoryBanner(verdict=Verdict.WARNING, headline="Run history starts fresh here", detail=detail)
         return HistoryBanner(
             verdict=Verdict.WARNING,

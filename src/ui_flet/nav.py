@@ -13,9 +13,10 @@ decision is the *initial selection*: a launch lands on **Setup** while the insta
 still ``needs_setup`` (a newcomer starts where the work is), otherwise on the first
 destination (Home).
 
-Bounded remainder: the launch predicate re-keys from ``needs_setup`` to a durable
-``setup_completed`` fact in Slice 5 — a Firefighter whose task broke should not be
-greeted as a newcomer; the fixed order here does not depend on that split.
+``needs_setup`` is re-keyed (Slice 5, D4a) to ``AppConfig.has_completed_setup()`` — the durable
+finish-line (an explicit flag, or inferred for installs predating the wizard) — rather than the
+schedule flag, so a Firefighter whose task broke is not greeted as a newcomer; the fixed order
+here does not depend on that split.
 
 Icon names are Flet ``ft.Icons`` member names (e.g. ``"HOME_ROUNDED"``) carried
 as plain strings so this module stays flet-free; ``shell.py`` resolves them to
@@ -67,13 +68,16 @@ class NavModel:
 
 
 def needs_setup(app_config: AppConfig) -> bool:
-    """THE single source of the "not fully set up" predicate for the whole shell.
+    """THE single source of the "hasn't finished onboarding" predicate for the whole shell.
 
-    ``True`` when the install isn't both configured (usable paths/SIS) AND scheduled —
-    the same boundary the Home dispatcher's onboarding branch uses and that the launch
-    selection here keys off. Single-sourced so "configured" is never re-derived.
+    Re-keyed in Slice 5 (D4a) to ``AppConfig.has_completed_setup()`` — the durable finish-line
+    (an explicit flag, or inferred for installs predating the wizard), NOT the schedule flag
+    directly — so a Firefighter whose task broke (Event-141) is never greeted as a newcomer: a
+    completed install stays out of onboarding even when its schedule is later found MISSING
+    (schedule live-ness is exclusively ``schedule_status``, read back from the OS). The
+    onboarding gate + launch selection both key off this single predicate.
     """
-    return not (app_config.is_complete() and app_config.schedule_registered)
+    return not app_config.has_completed_setup()
 
 
 def nav_model(app_config: AppConfig) -> NavModel:

@@ -47,6 +47,12 @@ class AppConfig:
     schedule_task_name: str = "DistrictSync_Daily"
     schedule_registered: bool = False
 
+    # Onboarding (D4a): the durable "reached the setup finish line at least once" fact,
+    # kept DISTINCT from the schedule's live-ness (which is read back from the OS, never
+    # trusted from a flag). Set explicitly by the wizard's finish line in Slice 8; until
+    # then it is inferred on load from the old finish-line condition (see load()).
+    setup_completed: bool = False
+
     # SFTP (non-sensitive only)
     sftp_enabled: bool = False
     sftp_host: str = ""
@@ -65,7 +71,13 @@ class AppConfig:
             # Only pass known fields to avoid errors on old config files
             known = {f for f in cls.__dataclass_fields__}
             filtered = {k: v for k, v in data.items() if k in known}
-            return cls(**filtered)
+            cfg = cls(**filtered)
+            # Back-compat inference (D4a): bake the durable finish-line fact through the
+            # single-source derivation so an install predating the flag (complete config +
+            # a registered schedule = the OLD finish line) is never dropped back into
+            # first-run onboarding after this update. An explicitly-persisted True is kept.
+            cfg.setup_completed = cfg.has_completed_setup()
+            return cfg
         except Exception as exc:
             logger.warning(f"Could not read app config ({exc}); using defaults")
             return cls()
@@ -95,6 +107,19 @@ class AppConfig:
         from src.utils.validators import _SIS_TYPE_RE
 
         return bool(_SIS_TYPE_RE.match(self.sis_type))
+
+    def has_completed_setup(self) -> bool:
+        """The durable "reached the setup finish line at least once" fact (D4a).
+
+        ``True`` when the wizard explicitly recorded completion (``setup_completed`` — set in
+        Slice 8) OR — the back-compat inference for installs predating the flag — the OLD
+        finish-line condition holds (complete config + a registered schedule). This is the
+        SINGLE place the two facts are OR-ed, so ``nav.needs_setup`` (and any onboarding gate)
+        reads ``schedule_registered`` only through this sanctioned inference, never as a
+        live-ness signal. Robust whether the config was loaded (baked in ``load()``) or
+        constructed directly.
+        """
+        return self.setup_completed or (self.is_complete() and self.schedule_registered)
 
     def sftp_is_configured(self) -> bool:
         """Return True if SFTP has been enabled and configured."""

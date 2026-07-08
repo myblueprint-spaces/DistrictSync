@@ -35,12 +35,24 @@ def _pad(*, left: float = 0, top: float = 0, right: float = 0, bottom: float = 0
 # --------------------------------------------------------------------------- #
 # The flat, fixed-order navigation rail                                         #
 # --------------------------------------------------------------------------- #
+def attention_badge() -> ft.Badge:
+    """A small "needs attention" dot badge (no label) for a nav destination (D4/D7).
+
+    A labelless ``ft.Badge`` with ``small_size`` renders as a Material dot on the
+    destination's icon — the Setup badge the shell raises when ``schedule_status`` reports a
+    missing/contradicted schedule. Kept here (the rail view) so its exact form is proven by
+    the rail render-smoke.
+    """
+    return ft.Badge(small_size=10, bgcolor=tokens.color_status_failed)
+
+
 def build_nav(
     *,
     ordered: tuple[nav.Destination, ...],
     selected_id: str,
     on_select: Callable[[str], None],
     on_exit: Callable[..., None],
+    attention_ids: frozenset[str] = frozenset(),
 ) -> tuple[ft.Control, ft.NavigationRail]:
     """Build the flat fixed-order rail from ``ordered``; return ``(view, rail)``.
 
@@ -49,7 +61,9 @@ def build_nav(
     ``ft.NavigationRail`` still manages its own highlight on user click. ``on_change``
     maps the native index back to a ``dest.id`` and calls ``on_select``; Exit calls
     ``on_exit``. The ``rail`` handle is returned so the shell can set ``selected_index``
-    when navigation is driven programmatically. No lifecycle lives here.
+    when navigation is driven programmatically. ``attention_ids`` seeds the "needs attention"
+    dot badge on those destinations at build; the shell also mutates a destination's ``badge``
+    post-build once the off-thread schedule probe returns (D4). No lifecycle lives here.
     """
     selected_index = nav.selected_index_for(selected_id, ordered)
 
@@ -123,6 +137,7 @@ def build_nav(
                 icon=getattr(ft.Icons, dest.icon, ft.Icons.CIRCLE_OUTLINED),
                 selected_icon=getattr(ft.Icons, dest.selected_icon, ft.Icons.CIRCLE),
                 label=dest.label,
+                badge=attention_badge() if dest.id in attention_ids else None,
             )
             for dest in ordered
         ],
