@@ -205,6 +205,30 @@ def test_mapping_post_apply_rerenders_and_allows_revert(stub_page, monkeypatch):
     assert apply_btn.disabled is False
 
 
+def test_nav_rail_builds_and_exposes_rail_handle():
+    """D7 render-smoke: build_nav constructs the fixed-order rail WITHOUT raising and hands
+    the shell the rail handle (so it can sync the highlight on programmatic navigation).
+
+    The rail is coverage-omitted view glue; this mount-smoke catches a flet-0.85.3 API
+    drift in the rail the same way TestScreensRender guards the screens.
+    """
+    from src.ui_flet import nav, nav_rail
+
+    ordered = nav.ordered_destinations(nav.nav_model(AppConfig()))
+    view, rail = nav_rail.build_nav(
+        ordered=ordered,
+        selected_id="setup",
+        on_select=lambda _id: None,
+        on_exit=lambda *_a: None,
+    )
+    assert isinstance(view, ft.Control)
+    assert isinstance(rail, ft.NavigationRail)
+    # Initial highlight is the fixed-order index of selected_id (single-sourced mapping).
+    assert rail.selected_index == nav.selected_index_for("setup", ordered)
+    # One rail destination per ordered entry — fixed order, nothing dropped.
+    assert len(rail.destinations) == len(ordered)
+
+
 def test_no_ft_dropdown_uses_on_change():
     """Guard the specific trap: ft.Dropdown has NO on_change on 0.85.3 (use on_select).
 

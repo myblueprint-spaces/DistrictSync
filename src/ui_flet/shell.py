@@ -8,11 +8,13 @@ PROVEN API forms from ``docs/reference/flet-prototype-spike/app.py`` verbatim
 
 Slimmed at IA-1 (plan 0014 F6 split): the rail VIEW moved to ``nav_rail.py`` — the
 shell now owns window paint + sizing, the placeholder host, id-keyed selection, and
-the close lifecycle, and assembles the state-aware rail from ``nav_rail.build_nav``.
-The rail is a single flat ``ft.NavigationRail`` reordered so the prominent group
-leads (``nav.ordered_destinations``); the initial selection is the prominent group's
-first destination (``nav.prominent_initial_id``). Highlight is native — the shell
-holds no rail reference and never mutates ``selected_index`` after creation.
+the close lifecycle, and assembles the rail from ``nav_rail.build_nav``. The rail is
+a single flat ``ft.NavigationRail`` in ONE fixed order (``nav.ordered_destinations``,
+identical in every state — D7); the initial selection is Setup while the install
+``needs_setup``, else Home (``nav.prominent_initial_id``). The shell HOLDS the rail
+handle and ``select_by_id`` syncs its ``selected_index`` on every id-keyed hop (via
+``nav.selected_index_for``) so programmatic navigation — Home's "Start setup" / fix
+CTAs / error fallback — moves the highlight too, not only user clicks.
 """
 
 from __future__ import annotations
@@ -167,9 +169,10 @@ def main(page: ft.Page) -> None:
     except Exception:  # nosec B110 — window sizing is native-only; harmless no-op in web mode
         pass
 
-    # Startup-only snapshot: drives the nav MODEL (order + launch selection) at build time.
-    # Nav is reworked in Slices 3/5; keeping the startup config here is a bounded, known
-    # remainder — every SCREEN below loads AppConfig fresh, so display state is never stale.
+    # Startup-only snapshot: drives the nav MODEL's launch selection at build time (the rail
+    # ORDER is fixed and config-independent — D7). Keeping the startup config here is a bounded,
+    # known remainder — the launch predicate re-keys from `needs_setup` to `setup_completed` in
+    # Slice 5; every SCREEN below already loads AppConfig fresh, so display state is never stale.
     app_cfg = AppConfig.load()
     model = nav.nav_model(app_cfg)
     screens = build_screens(model.destinations)
@@ -225,6 +228,12 @@ def main(page: ft.Page) -> None:
 
     def select_by_id(dest_id: str) -> None:
         render_by_id(dest_id)
+        # Sync the rail highlight for BOTH user clicks and programmatic hops (Home's
+        # "Start setup" / fix CTAs / error fallback). The native rail only self-highlights
+        # on click, so code-driven navigation must set the index here — single-sourced
+        # through `nav.selected_index_for` so a click and a code hop can never diverge.
+        # (`rail` is bound below before any navigation fires; resolved late at call time.)
+        rail.selected_index = nav.selected_index_for(dest_id, ordered)
         page.update()
 
     # --- exit affordance (lifecycle owner stays in the shell) -------------- #
@@ -235,8 +244,9 @@ def main(page: ft.Page) -> None:
         except Exception:
             os._exit(0)
 
-    # --- left navigation rail (state-aware reorder; view lives in nav_rail) - #
-    nav_view = nav_rail.build_nav(
+    # --- left navigation rail (fixed order; view lives in nav_rail) -------- #
+    # Hold the rail handle so `select_by_id` can sync `selected_index` on programmatic nav.
+    nav_view, rail = nav_rail.build_nav(
         ordered=ordered,
         selected_id=initial_id,
         on_select=select_by_id,
