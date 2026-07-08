@@ -1,9 +1,9 @@
 # 0029 — Flet UI trust & professionalism redesign
 
-- **Status:** In Review — PASS (awaiting Stage-5 user approval)
-- **Resumable from:** Stage 3 synthesizer-gate review → Stage 5 user approval
+- **Status:** Approved — Implementing (user approved 2026-07-08; build started)
+- **Resumable from:** Slice 0 (product/decisions persistence) + Slice 1 (config freshness) in flight
 - **Blockers:** none
-- **Flags:** `Slice 11 (app-data relocation) recommended DEFER to ROADMAP after panel review — user decision pending` · `backfill CUT (panel consensus: source log is 98.6% test pollution) — existing pre-update history will not appear in the new store; honest fresh-start copy instead`
+- **Flags:** `backfill CUT (panel consensus: source log is 98.6% test pollution) — existing pre-update history will not appear in the new store; honest fresh-start copy — ACCEPTED by user at approval` · `Slice 11 APPROVED IN-SCOPE by user (pre-adoption window): cross-platform app-data relocation, industry-standard per-OS paths`
 - **Disposition at close:** per template
 - **Roadmap item:** docs/claugentic-ROADMAP.md → "0029 Flet UI trust & professionalism redesign"
 - **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` · plans 0012/0013 (git history) · investigation wf_84cdd881-3a2 (46-agent verified findings) · advisory panel wf_43f08384-433 (10 advisors, 98 items — incorporated below)
@@ -129,7 +129,7 @@ Alternatives rejected: whole-app `--uac-admin` (PII posture, mapped drives, brea
 - [ ] **Slice 8 — Setup wizard→settings + one front door** (D8, D9 setup-side, D10 IA): `setup_flow.py`, per-step renderers, skippable steps, adaptive honest finish line, resume/reconcile, settings mode with single reconciling Save (any task-arg change), "Settings" title + transition cue, keyboard flow, unconfigured-Home collapse to the single hero→wizard door. **The `AppConfig.sis_type` default `""` flip + "Choose your district" placeholder land here (pinned)** — the wizard's District step is where the empty default becomes coherent UX. **Non-splittable pair with the IA collapse** (pausing between them would ship a fourth door). Depends on 1,3,5,6,7.
 - [ ] **Slice 9 — Convert output + explicit district** (D10, D9 convert-side): resolved-output display + Open folder + no input-dir fallback + explicit district + `source=manual` display polish.
 - [ ] **Slice 10 — Close**: troubleshooting/partner docs, ARCHITECTURE_TREE/CHANGELOG sweep, whole-feature closing Verify against the Stage-1 job-to-be-done (Installer/Watcher/Firefighter journeys end-to-end), retrospect harvest.
-- [ ] **Slice 11 (recommended: DEFER to ROADMAP — user decision)** — app-data relocation `~/.districtsync` → `%LOCALAPPDATA%\DistrictSync`. Panel view: cosmetic move, real migration risk (a live WAL DB must move with its -wal/-shm sidecars), and D3's AppConfig-through-paths refactor already single-sources the location so a future relocation becomes one function change. If deferred: everything (config, log, store, handshake files) stays in `~/.districtsync` — one location, no straddle.
+- [ ] **Slice 11 — Cross-platform app-data relocation (APPROVED in-scope; build order: immediately after 4a, before 4b so `history.db` is born in the new location)** — replace `~/.districtsync` with the industry-standard per-OS user-data directory via the `platformdirs` library (the de-facto standard; tiny, pure-Python, PyInstaller-safe): Windows `%LOCALAPPDATA%\DistrictSync` (non-roaming — correct for a WAL SQLite store), macOS `~/Library/Application Support/DistrictSync`, Linux `$XDG_DATA_HOME/districtsync` (default `~/.local/share/districtsync`). Single change point: `paths.user_data_dir()` (everything already resolves through it at call time after 4a). Transparent one-time migration: on startup, if the legacy `~/.districtsync` exists and the new dir doesn't, move config + logs (+ store with `-wal`/`-shm` sidecars if present) and leave a `MOVED.txt` breadcrumb in the old location; migration is idempotent and failure-safe (on any error, keep using the legacy dir and log a warning — never strand the user between two locations). User rationale recorded: pre-adoption window makes this the right time; must be professional and industry-standard on all three OSes. `requirements.txt` + PyInstaller hidden-imports updated; `docs/partner/troubleshooting.md` documents the per-OS paths.
 
 ---
 
@@ -175,3 +175,21 @@ Alternatives rejected: whole-app `--uac-admin` (PII posture, mapped drives, brea
 ---
 
 ## Spec  _(per slice, after Review passes — Stage 4, JIT per slice)_
+
+### Slice 0 — Program grounding
+- **In plain English:** writes down the product's personas/journeys (from the Discover deliverable) and the program's design decisions so every later slice is reviewed against them. No code changes.
+- **Files & changes:** `docs/claugentic-PRODUCT.md` — persist the Installer/Watcher/Firefighter personas, the three journeys (first-run / daily trust check / incident recovery) with their state tables, the trust-instrument bar, and the resolved open questions (wizard hybrid; explicit district with auto-select-iff-exactly-one; one front door; stable nav; output-folder-at-view-layer; provenance-named test copy; store-backed district-scoped history). `docs/claugentic-DECISIONS.md` — dated one-liners: D1–D10 design decisions; rejections (backfill — polluted source; compaction + migration framework — YAGNI, additive-only rule + user_version stamp instead; outbound DPAPI — no secret; nav-reorder prominence — spatial memory; whole-app UAC — PII posture); Slice-11 approval rationale (pre-adoption window, cross-platform platformdirs). `docs/claugentic-ROADMAP.md` — add "push alerting on failed/missed nightly runs" line; update 0029 status line.
+- **In-scope standards dimensions:** docs & traceability only.
+- **Tests to add:** none (docs slice).
+- **Acceptance criteria:** PRODUCT.md names the three personas + journey states; DECISIONS has one dated line per decision/rejection; no source file touched.
+
+### Slice 1 — Config freshness + mapping integrity (D1)
+- **In plain English:** switching district (or completing setup) is reflected everywhere immediately — Home greeting, Help, Run History, and the Mapping screen's own card; a switch can be reverted; Home/Run History gain a Refresh button so a Watcher who leaves the app open can re-check without navigating away.
+- **Files & changes:**
+  - `src/ui_flet/shell.py` — stop binding the startup `AppConfig` instance into screen factories; each factory invocation loads fresh (`AppConfig.load()` inside the factory lambda / a supplier arg), so every navigation renders current state. Startup nav-model derivation may keep the startup config for now (nav order/launch selection are reworked in Slices 3/5 — note this as a known, bounded remainder in the slice commit message, not silent).
+  - `src/ui_flet/screens/mapping.py` — `_on_apply` re-renders the surface after save: recompute `summarize_config` for the new current, replace the current-mapping card content, and re-derive the Apply gate. Extract the gate predicate into `src/ui_flet/mapping_catalog.py` as a pure COUNTED fn `can_apply(pending: ConfigSummary | None, persisted_sis: str) -> bool` (pending loaded_ok AND pending.sis_type != persisted_sis); the view compares against the *persisted* value (fresh load), never a captured instance.
+  - `src/ui_flet/screens/home.py` / `run_history.py` — accept an optional `on_refresh` callback; render a small secondary "Refresh" button (components.secondary_button) that re-invokes the current screen build via the shell (`select_by_id(current_id)`).
+  - `src/ui_flet/screens/help.py` — no change beyond receiving the fresh instance (verify the greeting updates).
+- **In-scope standards dimensions:** `maintainability-structure` (supplier pattern already used by Setup/Convert; pure gate extraction), `product-ux` (stale-identity trust fix; Refresh affordance), `testing` (pure gate fn COUNTED; render-smoke extension).
+- **Tests to add:** `can_apply` truth table (loaded_ok × same/different × revert-after-apply scenario) in the mapping_catalog tests; render-smoke coverage for Home/Run History (with on_refresh) and Mapping post-apply re-render; regression: full suite + SD74 + contract green.
+- **Acceptance criteria:** with the app running: Mapping Apply updates its own card immediately and allows reverting to the previous mapping without restart; after a switch, navigating to Home/Help/Run History shows the new district; completing setup in-session flips Home off the onboarding hero on next navigation; Refresh re-reads state in place; no test touches the real user profile (existing per-file fixtures still in place until 4a).
