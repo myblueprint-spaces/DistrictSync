@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -25,12 +27,43 @@ from src.config.loader import load_config
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader
 from src.etl.transformer import DataTransformer
+from src.history.store import VALID_SOURCES, write_run_record
 from src.quality.report import DataQualityReport
 from src.sftp.uploader import SFTPUploader
 
 logger = logging.getLogger(__name__)
 
 ANOMALY_THRESHOLD = 0.20  # Warn if any entity drops >20% vs previous output
+
+# The entity-count keys carried FLAT on every run record (the shape the Home / Run-History
+# derivation modules read via ``record["Students"]`` etc.). Single-sourced so the log line
+# and the store record can never drift on which entities they count.
+_RECORD_ENTITY_KEYS: tuple[str, ...] = (
+    "Students",
+    "Staff",
+    "Family",
+    "Classes",
+    "Enrollments",
+    "CourseInfo",
+    "StudentCourses",
+    "StudentAttendance",
+)
+
+_SOURCE_ENV_VAR = "DSYNC_SOURCE"  # scheduled/cron/Docker set this; the registered task passes --source
+
+
+class RunErrorCategory(str, Enum):
+    """The bounded, PII-free failure taxonomy stamped on every run record (mirrors the
+    ``LatestReason`` closed-set style). The store carries ONLY this category — never the
+    free-text ``str(e)`` (which can leak a path / column / sis_type); the diagnostic log
+    keeps the rich message for ops. A closed set so a future filter UI can rely on it.
+    """
+
+    NONE = "none"  # a completed run (delivery/anomaly/data-warning axes live in their own fields)
+    NO_INPUT = "no_input"  # the no-usable-required-input guard fired
+    CONFIG = "config"  # a config/validation problem surfaced as the failure
+    DATA = "data"  # a build/write problem (missing field-map column, transform, loader)
+    UNKNOWN = "unknown"  # an unclassified failure
 
 
 @dataclass
@@ -210,6 +243,62 @@ def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list
     return warnings
 
 
+def build_run_record(
+    *,
+    status: str,
+    elapsed: float,
+    entity_counts: dict[str, int],
+    sftp_attempted: bool = False,
+    sftp_ok: bool = False,
+    anomalies: list[str] | None = None,
+    data_errors: dict[str, Any] | None = None,
+    source: str,
+    sis_type: str,
+    error_category: str,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    """Build the ONE flat run-record dict written to BOTH sinks (D2a — one dict, two sinks).
+
+    This is the exact flat shape ``home_status`` / ``run_history`` consume (entity counts as
+    FLAT top-level keys, ``sftp_*`` / ``anomalies`` / ``data_errors`` axes) plus the new
+    enrichment (``source`` / ``sis_type`` / ``error_category``). It carries NO free-text
+    ``error`` — that rich detail is added ONLY to the diagnostic-log line (see
+    :func:`_log_run_record`); the store never persists it (privacy split).
+
+    ``data_errors`` is the compact ``{"total": N, "by_field": {...}}`` summary — a separate
+    axis from ``status`` (which stays ``success``/``failed`` for the ETL run itself).
+    """
+    record: dict[str, Any] = {
+        "timestamp": timestamp or datetime.now().isoformat(timespec="seconds"),
+        "status": status,
+        "source": source,
+        "sis_type": sis_type,
+        "error_category": error_category,
+        "duration_s": round(elapsed, 1),
+        "sftp_attempted": sftp_attempted,
+        "sftp_ok": sftp_ok,
+        "anomalies": anomalies or [],
+        "data_errors": data_errors or {},
+    }
+    for key in _RECORD_ENTITY_KEYS:
+        record[key] = int(entity_counts.get(key, 0))
+    return record
+
+
+def _counts_from_outputs(outputs: dict[str, pd.DataFrame]) -> dict[str, int]:
+    """Entity row counts from the produced frames (missing entity → 0 via ``build_run_record``)."""
+    return {name: len(df) for name, df in outputs.items()}
+
+
+def _log_run_record(record: dict[str, Any], *, error: str = "") -> None:
+    """Write the structured ``__DISTRICTSYNC_RUN__`` diagnostic-log line for this record.
+
+    The log keeps the RICH free-text ``error`` (ops needs "KeyError: final mark" at 2am);
+    it is merged in here and NOWHERE else — the stored record never carries it.
+    """
+    logger.info(f"__DISTRICTSYNC_RUN__ {json.dumps({**record, 'error': error})}")
+
+
 def _emit_run_log(
     status: str,
     elapsed: float,
@@ -219,33 +308,72 @@ def _emit_run_log(
     error: str = "",
     anomalies: list[str] | None = None,
     data_errors: dict[str, Any] | None = None,
+    *,
+    source: str = "cli",
+    sis_type: str = "",
+    error_category: str = RunErrorCategory.NONE.value,
 ) -> None:
-    """Write a structured __DISTRICTSYNC_RUN__ log line for the Run History page.
+    """Build a run record from ``outputs`` and write the diagnostic-log line (log sink only).
 
-    ``data_errors`` is a compact summary (``{"total": N, "by_field": {...}}``)
-    of non-fatal field-transform problems — a separate axis from ``status``
-    (which stays ``success``/``failed`` for the ETL run itself). Run History
-    renders it as "Completed with N data errors". Absent/empty on a clean run.
+    Retained as the small "count the outputs and log it" convenience the unit tests pin;
+    ``run_pipeline`` uses the finer-grained :func:`build_run_record` + :func:`_log_run_record`
+    + :func:`_store_run_record` split so the SAME dict reaches both sinks (build once).
     """
-    entry = {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "status": status,
-        "duration_s": round(elapsed, 1),
-        "Students": len(outputs.get("Students", [])),
-        "Staff": len(outputs.get("Staff", [])),
-        "Family": len(outputs.get("Family", [])),
-        "Classes": len(outputs.get("Classes", [])),
-        "Enrollments": len(outputs.get("Enrollments", [])),
-        "CourseInfo": len(outputs.get("CourseInfo", [])),
-        "StudentCourses": len(outputs.get("StudentCourses", [])),
-        "StudentAttendance": len(outputs.get("StudentAttendance", [])),
-        "sftp_attempted": sftp_attempted,
-        "sftp_ok": sftp_ok,
-        "error": error,
-        "anomalies": anomalies or [],
-        "data_errors": data_errors or {},
-    }
-    logger.info(f"__DISTRICTSYNC_RUN__ {json.dumps(entry)}")
+    record = build_run_record(
+        status=status,
+        elapsed=elapsed,
+        entity_counts=_counts_from_outputs(outputs),
+        sftp_attempted=sftp_attempted,
+        sftp_ok=sftp_ok,
+        anomalies=anomalies,
+        data_errors=data_errors,
+        source=source,
+        sis_type=sis_type,
+        error_category=error_category,
+    )
+    _log_run_record(record, error=error)
+
+
+def _store_run_record(record: dict[str, Any], *, source: str) -> bool:
+    """Best-effort store write — STRICTLY NON-FATAL (D2b): never raises, never masks a caller error.
+
+    ``write_run_record`` already swallows ``sqlite3.Error`` / ``OSError``; this extra guard
+    also swallows anything unexpected (a bug, an import problem) so a store write can NEVER
+    change ``run_pipeline``'s result, exit code, CSVs, or — critically at the failure site —
+    mask the original ETL exception. Returns whether the row was written.
+    """
+    try:
+        return write_run_record(record, source=source)
+    except Exception as exc:  # noqa: BLE001 - the store is a best-effort sink; it must never propagate
+        logger.warning("Run-history store write raised unexpectedly (%s); the run is in the diagnostic log", exc)
+        return False
+
+
+def _resolve_source(source: str | None) -> str:
+    """Resolve the run ``source`` tag: explicit arg → ``DSYNC_SOURCE`` env → ``"cli"``.
+
+    The registered scheduled task passes ``--source scheduled`` (see ``scheduler/windows.py``);
+    ``convert_job`` passes ``"manual"``; a container/cron deployment may ``export DSYNC_SOURCE``.
+    An out-of-set value coerces to ``"unknown"`` (the store's CHECK constraint's escape hatch).
+    """
+    resolved = source or os.environ.get(_SOURCE_ENV_VAR) or "cli"
+    return resolved if resolved in VALID_SOURCES else "unknown"
+
+
+def _classify_error_category(exc: BaseException) -> str:
+    """Map a failure to the bounded, PII-free :class:`RunErrorCategory` (never the message).
+
+    Classified by exception type/marker, not text interpolation — the store never sees the
+    free-text error. ``SystemExit`` never reaches here (it is re-raised before the failure sink).
+    """
+    if isinstance(exc, RuntimeError) and "No usable required input" in str(exc):
+        return RunErrorCategory.NO_INPUT.value
+    if isinstance(exc, FileNotFoundError):
+        return RunErrorCategory.CONFIG.value
+    if isinstance(exc, ValueError):
+        # A missing field-map column (loader) / validation surfaces as ValueError.
+        return RunErrorCategory.DATA.value
+    return RunErrorCategory.UNKNOWN.value
 
 
 def _summarize_data_errors(data_errors: list[dict]) -> dict[str, Any]:
@@ -274,14 +402,22 @@ def run_pipeline(
     diff: bool = False,
     quality: bool = False,
     sftp: bool = False,
+    source: str | None = None,
 ) -> PipelineResult:
     """Core ETL pipeline with optional dry-run, diff, quality, and SFTP modes.
 
     Returns a :class:`PipelineResult` whose ``sftp_attempted`` / ``sftp_ok``
     fields let callers (e.g. ``src/main.py``) decide whether to exit non-zero
     when delivery failed.
+
+    ``source`` tags where the run came from for the durable run store
+    (manual / scheduled / cli / unknown); it resolves via :func:`_resolve_source`
+    (explicit arg → ``DSYNC_SOURCE`` env → ``"cli"``). The store write is
+    best-effort and strictly non-fatal — it never changes the result, the CSVs,
+    or the exit-code contract (0/1/2/3).
     """
     t0 = time.monotonic()
+    resolved_source = _resolve_source(source)
     outputs: dict[str, pd.DataFrame] = {}
     sftp_attempted = False
     sftp_ok = False
@@ -398,17 +534,24 @@ def run_pipeline(
 
         logger.info("ETL process completed successfully.")
 
-        # Emit structured run log
+        # Build the run record ONCE (D2a) → the diagnostic-log line AND the durable store.
+        # The store write is best-effort/non-fatal and positioned AFTER the output commit,
+        # so it can never touch the CSVs or the exit-code contract.
         elapsed = time.monotonic() - t0
-        _emit_run_log(
-            "success",
-            elapsed,
-            outputs,
+        record = build_run_record(
+            status="success",
+            elapsed=elapsed,
+            entity_counts=_counts_from_outputs(outputs),
             sftp_attempted=sftp_attempted,
             sftp_ok=sftp_ok,
             anomalies=anomalies,
             data_errors=data_errors_summary,
+            source=resolved_source,
+            sis_type=sis_type,
+            error_category=RunErrorCategory.NONE.value,
         )
+        _log_run_record(record)
+        _store_run_record(record, source=resolved_source)
 
         return PipelineResult(
             entity_counts={name: len(df) for name, df in outputs.items()},
@@ -422,7 +565,25 @@ def run_pipeline(
     except Exception as e:
         elapsed = time.monotonic() - t0
         logger.error(f"Pipeline failed: {e}")
-        _emit_run_log("failed", elapsed, outputs, error=str(e), sftp_attempted=sftp_attempted, sftp_ok=sftp_ok)
+        # Record the failure to BOTH sinks — but recording must NEVER raise and mask the
+        # original ETL exception (D2b). The whole record/log/store block is guarded; the
+        # bare ``raise`` below always re-raises the ORIGINAL ``e`` (exception identity
+        # preserved), whatever happens while recording.
+        try:
+            record = build_run_record(
+                status="failed",
+                elapsed=elapsed,
+                entity_counts=_counts_from_outputs(outputs),
+                sftp_attempted=sftp_attempted,
+                sftp_ok=sftp_ok,
+                source=resolved_source,
+                sis_type=sis_type,
+                error_category=_classify_error_category(e),
+            )
+            _log_run_record(record, error=str(e))  # rich free-text error → LOG only
+            _store_run_record(record, source=resolved_source)  # store carries error_category only
+        except Exception as record_exc:  # noqa: BLE001 - recording must never mask the ETL failure
+            logger.error(f"Failed to record the failed run ({record_exc}); re-raising the original error")
         raise
 
 

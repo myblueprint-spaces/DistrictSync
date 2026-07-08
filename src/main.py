@@ -254,6 +254,13 @@ if __name__ == "__main__":
     parser.add_argument("--diff", action="store_true", help="Show diff against existing output files")
     parser.add_argument("--quality", action="store_true", help="Generate a data quality report")
     parser.add_argument("--sftp", action="store_true", help="Upload output CSVs via SFTP after a successful run")
+    parser.add_argument(
+        "--source",
+        choices=["manual", "scheduled", "cli"],
+        default=None,
+        help="Run origin tag for the run-history store (the registered scheduled task passes 'scheduled'; "
+        "defaults to the DSYNC_SOURCE env var, else 'cli')",
+    )
 
     # SFTP setup subcommands (headless / scripted / Docker-friendly)
     sftp_group = parser.add_argument_group("SFTP setup (choose one)")
@@ -303,6 +310,7 @@ if __name__ == "__main__":
             diff=args.diff,
             quality=args.quality,
             sftp=args.sftp,
+            source=args.source,
         )
     except SystemExit:
         raise

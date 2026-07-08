@@ -1,7 +1,7 @@
 """Pure Run-History derivation — the read-only "has the sync been running, and did each work?" core.
 
-NO ``flet`` import (mirrors ``home_status``/``convert_result``). Given the parsed run-log
-records (newest-first, from ``run_log.read_run_records``) + the ``AppConfig`` state, this module
+NO ``flet`` import (mirrors ``home_status``/``convert_result``). Given the run records
+(newest-first, from ``history.store.read_run_records``) + the ``AppConfig`` state, this module
 derives two PII-free things the Run History view renders:
 
 - **the verdict-first banner** — ``derive_history_banner(records, app_config, *, now=None)`` → a
@@ -114,6 +114,7 @@ def derive_history_banner(
     app_config: AppConfig,
     *,
     now: datetime | None = None,
+    store_created_at: str | None = None,
 ) -> HistoryBanner:
     """Derive the verdict-first Run-History banner (pure, TOTAL, PII-safe).
 
@@ -122,23 +123,35 @@ def derive_history_banner(
     ``verdict_for_reason`` and reuses ``is_stale`` — so the banner never drifts from Home or from
     the per-run rows. Graceful degradation (``None``/``[]``) is a first-class calm WARNING output,
     never a raise. NEVER interpolates the raw ``error`` / ``ANOMALY:`` string.
+
+    ``store_created_at`` (the run store's ``meta.created_at``) is the established-install signal
+    for the fresh-start empty state — injected by the view so this stays pure/I-O-free.
     """
-    # Rule: unavailable (the never-crash floor) — the reader couldn't read the log.
+    # Rule: unavailable (the never-crash floor) — the reader couldn't read the store.
     if records is None:
         return HistoryBanner(
             verdict=Verdict.WARNING,
             headline="Run history unavailable",
-            detail="We couldn't read the run log right now — your nightly sync may still be running normally.",
+            detail="We couldn't read the run history right now — your nightly sync may still be running normally.",
         )
 
-    # Rule: no runs yet (empty but readable) — calm, never red.
+    # Rule: no runs yet (empty but readable). The store is fresh for EVERY install after this
+    # update (no backfill), so an established install is told the history starts fresh rather
+    # than the false "No sync has run yet"; a genuine first run keeps the calm waiting copy.
+    # KNOWN AMBIGUITY (deliberate default, resolved by Slice 5's setup_completed): a
+    # configured-but-unscheduled empty store can't distinguish a genuine first run from a
+    # manual-only upgrader — the first-run copy is the chosen default, not a verified fact.
     if not records:
-        detail = "Your nightly runs will appear here once the first one completes"
-        if app_config.schedule_registered:
-            detail += f" — scheduled for {_friendly_schedule_time(app_config.schedule_time)} each night."
-        else:
-            detail += "."
-        return HistoryBanner(verdict=Verdict.WARNING, headline="No sync has run yet", detail=detail)
+        if app_config.schedule_registered or store_created_at:
+            detail = "Earlier runs aren't shown after this update — new nightly syncs will appear here from now on."
+            if app_config.schedule_registered:
+                detail += f" Scheduled for {_friendly_schedule_time(app_config.schedule_time)} each night."
+            return HistoryBanner(verdict=Verdict.WARNING, headline="Run history starts fresh here", detail=detail)
+        return HistoryBanner(
+            verdict=Verdict.WARNING,
+            headline="No sync has run yet",
+            detail="Your nightly runs will appear here once the first one completes.",
+        )
 
     latest = records[0]
     reason = classify_latest_reason(latest)

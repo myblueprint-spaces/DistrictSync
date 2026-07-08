@@ -217,7 +217,7 @@ All UI code lives under `src/ui_flet/`:
 | `nav_rail.py` / `nav.py` | Navigation rail widget + route definitions |
 | `components.py` | Shared Flet UI components/widgets |
 | `tokens.py` / `theme.py` | Design tokens and theme (colors, spacing, typography) |
-| `verdict.py`, `humanize.py`, `run_log.py`, `home_status.py`, `convert_result.py`, `run_history.py`, `mapping_catalog.py`, `setup_errors.py`, `job_runner.py` | Pure logic modules (no Flet imports) backing each screen — kept separate from rendering for testability |
+| `verdict.py`, `humanize.py`, `home_status.py`, `convert_result.py`, `run_history.py`, `mapping_catalog.py`, `setup_errors.py`, `setup_gates.py`, `job_runner.py` | Pure logic modules (no Flet imports) backing each screen — kept separate from rendering for testability (run records are read from `src/history/store.py`, the SQLite run store) |
 
 Six surfaces, one per module under `src/ui_flet/screens/`:
 

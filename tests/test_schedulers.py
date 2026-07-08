@@ -357,6 +357,44 @@ class TestWindowsRegisterTask:
         assert "--sftp" in _child_env(mock_run)["DSYNC_ARGS"]
 
     @patch("src.scheduler.windows.subprocess.run")
+    def test_registered_action_labels_runs_as_scheduled(self, mock_run):
+        """The action args carry ``--source scheduled`` (D2c) — the ONLY thing that
+        labels a nightly run as 'scheduled' in the run store (a scheduled task has no
+        per-action env). Losing it silently relabels every nightly run as 'cli' and
+        breaks Run History's manual-vs-scheduled distinction."""
+        from src.scheduler.windows import register_task
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
+
+        register_task(
+            task_name="DistrictSync_Daily",
+            exe_path=Path("C:/DistrictSync.exe"),
+            sis_type="myedbc",
+            input_dir=Path("C:/input"),
+            output_dir=Path("C:/output"),
+            run_time="03:00",
+        )
+        assert "--source scheduled" in _child_env(mock_run)["DSYNC_ARGS"]
+
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_registered_action_labels_runs_as_scheduled_with_password(self, mock_run):
+        """The unattended (password/Highest) principal carries the same source label."""
+        from src.scheduler.windows import register_task
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
+
+        register_task(
+            task_name="DistrictSync_Daily",
+            exe_path=Path("C:/DistrictSync.exe"),
+            sis_type="myedbc",
+            input_dir=Path("C:/input"),
+            output_dir=Path("C:/output"),
+            run_time="03:00",
+            run_as_password="secret-pw",
+        )
+        assert "--source scheduled" in _child_env(mock_run)["DSYNC_ARGS"]
+
+    @patch("src.scheduler.windows.subprocess.run")
     def test_run_time_passed_raw_string_in_env(self, mock_run):
         """DSYNC_RUNTIME carries the raw 'HH:mm' string, not a (hour, minute) tuple."""
         from src.scheduler.windows import register_task

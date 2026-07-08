@@ -101,12 +101,28 @@ class TestUnavailableSentinel:
 
 
 class TestEmptyState:
-    def test_empty_configured_scheduled_is_reassuring_warning(self) -> None:
+    def test_empty_established_scheduled_is_fresh_start_not_no_sync(self) -> None:
+        # An established (scheduled) install with an empty store post-update must NOT be told
+        # "No sync has run yet" — the store is fresh for everyone after this update (no backfill).
         status = derive_home_status([], _CONFIGURED, now=_NOW)
         assert status.verdict is Verdict.WARNING  # amber-toned, never red
-        assert status.headline == "No sync has run yet"
-        assert "scheduled for" in status.detail  # schedule reassurance present when scheduled
+        assert status.headline == "Run history starts fresh here"
+        assert "scheduled for" in status.detail  # schedule reassurance still present when scheduled
         assert status.fix is None  # nothing to fix — just wait
+
+    def test_empty_genuine_first_run_unscheduled_says_no_sync_yet(self) -> None:
+        # Not established (unscheduled, no store yet) → the calm genuine-first-run copy.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+        status = derive_home_status([], cfg, now=_NOW, store_created_at=None)
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == "No sync has run yet"
+        assert "scheduled for" not in status.detail
+
+    def test_empty_store_created_at_signals_established_even_if_unscheduled(self) -> None:
+        # A store that already exists (created_at present) is an established signal on its own.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+        status = derive_home_status([], cfg, now=_NOW, store_created_at="2026-07-01T03:00:00")
+        assert status.headline == "Run history starts fresh here"
 
     def test_empty_shows_plain_schedule_time_not_raw_hhmm(self) -> None:
         cfg = AppConfig(

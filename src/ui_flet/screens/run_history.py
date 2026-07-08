@@ -1,7 +1,7 @@
 """The Run History surface — the read-only "has the sync been running, and did each work?" view.
 
 VIEW glue (coverage-omitted): the trust-critical *decision* lives COUNTED in the pure modules
-(``run_log.read_run_records`` parses the log; ``run_history.derive_history_banner`` +
+(``history.store.read_run_records`` reads the run store; ``run_history.derive_history_banner`` +
 ``to_run_rows`` derive the banner + the display rows). This file only RENDERS that already-tested
 output, verdict-first — a staleness/verdict banner answering "is my sync running?" BEFORE the
 plain-language ``ft.DataTable`` of past runs (newest-first, humanized throughout).
@@ -9,8 +9,8 @@ plain-language ``ft.DataTable`` of past runs (newest-first, humanized throughout
 **Read-only terminal surface** — no fix-path CTA (unlike Home), so ``build_run_history`` takes NO
 ``on_navigate`` (KISS; add only at a future consumer's need). It owns no lifecycle.
 
-**Sync read on mount** (the same justification as Home / IA-3): the run log is a small local text
-file parsed to a ``list[dict]`` in microseconds, so it is read inline in the factory — the
+**Sync read on mount** (the same justification as Home / IA-3): the run store is a small local
+SQLite DB read to a ``list[dict]`` in microseconds, so it is read inline in the factory — the
 worker-thread convention is scoped to ``run_pipeline`` (see ``docs/FLET_1.0_CONVENTIONS.md``); async
 here would add the doc's #1 concurrency trap for no gain.
 
@@ -31,10 +31,10 @@ from collections.abc import Callable
 import flet as ft
 
 from src.config.app_config import AppConfig
+from src.history.store import read_run_records, store_meta
 from src.ui_flet import components, tokens
 from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.run_history import derive_history_banner, to_run_rows
-from src.ui_flet.run_log import read_run_records
 
 LIMIT = 50
 """The newest-N runs shown (mirrors the Streamlit page). A 2-3x/yr admin reviews a short list —
@@ -107,9 +107,14 @@ def _scrollable_table(table: ft.Control) -> ft.Control:
 
 
 def _surface(app_config: AppConfig, on_refresh: Callable[[], None] | None) -> ft.Control:
-    """Read the log, derive the banner + rows, render verdict-first."""
-    records = read_run_records()
-    banner = derive_history_banner(records, app_config)
+    """Read the store, derive the banner + rows, render verdict-first."""
+    records = read_run_records(limit=LIMIT)
+    # Only the empty branch needs the store's birth stamp (fresh-start vs first-run copy).
+    store_created_at = None
+    if records == []:
+        meta = store_meta()
+        store_created_at = meta.get("created_at") if meta else None
+    banner = derive_history_banner(records, app_config, store_created_at=store_created_at)
 
     controls: list[ft.Control] = [
         _greeting_header(app_config),

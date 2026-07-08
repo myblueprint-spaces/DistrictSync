@@ -100,6 +100,12 @@ from src.utils.validators import (
 
 logger = logging.getLogger(__name__)
 
+# The run-history store's source tag for the nightly scheduled run (Plan 0029, D2c).
+# Carried on the registered task's action command line (``--source scheduled``) so the
+# store labels the nightly run correctly from day one. Mirrors ``history.store``'s
+# ``VALID_SOURCES`` value without importing the store into the scheduler layer.
+_SCHEDULED_SOURCE = "scheduled"
+
 # Canonical failure-message substrings returned by register_task (the message
 # contract the wizard's error classifier keys off — see Slice 2). Any change
 # here must be reflected in the classifier and its tests.
@@ -335,6 +341,13 @@ def _build_action_args(
         ]
     if sftp:
         arg_parts.append("--sftp")
+    # Tag the run as SCHEDULED so the run-history store labels the nightly run correctly
+    # from its first day (Plan 0029, D2c). The ScheduledTasks module has no per-action
+    # environment field (only a cmd wrapper could set a runtime env var, which would
+    # change the action's Execute off the exe); carrying the source on the action's
+    # command line here — the single action builder — is the minimal, exe-path-preserving
+    # way. ``run_pipeline`` resolves ``--source`` ahead of the ``DSYNC_SOURCE`` env fallback.
+    arg_parts += ["--source", _SCHEDULED_SOURCE]
     return " ".join(arg_parts), working_dir
 
 

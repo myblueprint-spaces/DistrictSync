@@ -1,7 +1,7 @@
 """The three-way Home health dashboard — the flagship trust surface (IA model IA-3).
 
 VIEW glue (coverage-omitted): the trust-critical *decision* lives COUNTED in the pure
-modules (``run_log.read_run_records`` parses the log; ``home_status.derive_home_status``
+modules (``history.store.read_run_records`` reads the run store; ``home_status.derive_home_status``
 derives the verdict). This file only RENDERS that already-tested output, verdict-first,
 so a non-technical admin's deep question — *"is my sync OK?"* — is answered in one
 plain-language banner before any metric.
@@ -30,7 +30,7 @@ shows a calm surface, never a stack trace. Defense-in-depth — the parser + der
 already TOTAL (their tests prove it); this is the reliability net DS-1 shipped ``ErrorCard``
 for.
 
-**Sync read on mount** (no loading state): the run log is a small local text file parsed to
+**Sync read on mount** (no loading state): the run store is a small local SQLite DB read to
 a ``list[dict]`` (microseconds), so it is read inline in the factory — the worker-thread
 convention is scoped to ``run_pipeline`` (see ``docs/FLET_1.0_CONVENTIONS.md``), and an
 async path here would add the doc's #1 concurrency trap for no user-perceptible gain
@@ -45,10 +45,10 @@ from collections.abc import Callable
 import flet as ft
 
 from src.config.app_config import AppConfig
+from src.history.store import read_run_records, store_meta
 from src.ui_flet import components, nav, tokens
 from src.ui_flet.home_status import ENTITY_LABELS, FixAction, HomeMetrics, derive_home_status
 from src.ui_flet.humanize import friendly_district_name
-from src.ui_flet.run_log import read_run_records
 from src.ui_flet.screens.onboarding import build_onboarding
 
 
@@ -132,9 +132,15 @@ def _dashboard(
     on_navigate: Callable[[str], None],
     on_refresh: Callable[[], None] | None,
 ) -> ft.Control:
-    """Branches (b)/(c): read the log, derive the verdict, render verdict-first."""
+    """Branches (b)/(c): read the store, derive the verdict, render verdict-first."""
     records = read_run_records()
-    status = derive_home_status(records, app_config)
+    # Only the empty branch needs the store's birth stamp (fresh-start vs first-run copy);
+    # fetch it just there so a populated-history mount pays for exactly one store read.
+    store_created_at = None
+    if records == []:
+        meta = store_meta()
+        store_created_at = meta.get("created_at") if meta else None
+    status = derive_home_status(records, app_config, store_created_at=store_created_at)
 
     controls: list[ft.Control] = [
         _greeting_header(app_config),

@@ -153,23 +153,29 @@ class TestBannerUnavailable:
 
 
 class TestBannerEmpty:
-    def test_empty_scheduled_shows_plain_schedule_time(self) -> None:
+    def test_empty_established_scheduled_is_fresh_start_with_plain_time(self) -> None:
+        # An established (scheduled) install with an empty store post-update → fresh-start copy,
+        # NOT the false "No sync has run yet"; the plain schedule time is still shown.
         cfg = AppConfig(
             input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=True, schedule_time="03:00"
         )
         banner = derive_history_banner([], cfg, now=_NOW)
         assert banner.verdict is Verdict.WARNING  # never red
-        assert banner.headline == "No sync has run yet"
-        assert "scheduled for" in banner.detail
+        assert banner.headline == "Run history starts fresh here"
         assert "3:00 AM" in banner.detail
         assert "03:00" not in banner.detail
 
-    def test_empty_unscheduled_omits_schedule_line(self) -> None:
+    def test_empty_genuine_first_run_unscheduled_says_no_sync_yet(self) -> None:
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
-        banner = derive_history_banner([], cfg, now=_NOW)
+        banner = derive_history_banner([], cfg, now=_NOW, store_created_at=None)
         assert banner.verdict is Verdict.WARNING
         assert banner.headline == "No sync has run yet"
-        assert "scheduled for" not in banner.detail
+        assert "scheduled for" not in banner.detail.lower()
+
+    def test_empty_store_created_at_signals_established(self) -> None:
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+        banner = derive_history_banner([], cfg, now=_NOW, store_created_at="2026-07-01T03:00:00")
+        assert banner.headline == "Run history starts fresh here"
 
 
 class TestBannerLatestRules:

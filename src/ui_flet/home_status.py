@@ -1,7 +1,7 @@
 """Pure Home status-derivation — the trust core of the sync-health cockpit.
 
-NO ``flet`` import. Given the parsed run-log records (newest-first, from
-``run_log.read_run_records``) + the ``AppConfig`` state, derive a single
+NO ``flet`` import. Given the run records (newest-first, from
+``history.store.read_run_records``) + the ``AppConfig`` state, derive a single
 ``HomeStatus`` — a ``Verdict`` (HEALTHY / WARNING / FAILED) + a plain-language
 headline + supporting detail + an optional fix path + optional metric tiles.
 
@@ -234,32 +234,56 @@ def derive_home_status(
     app_config: AppConfig,
     *,
     now: datetime | None = None,
+    store_created_at: str | None = None,
 ) -> HomeStatus:
     """Derive the Home sync-health verdict from the run records + config (pure, TOTAL).
 
     Assumes a configured + scheduled install — the dispatcher (IA-3b) gates unconfigured
     installs to onboarding via ``nav.needs_setup``, so these rules only run for
     ``not needs_setup(app_config)``. Evaluated top-down, first-match-wins.
+
+    ``store_created_at`` (the run store's ``meta.created_at``, ``None`` when the store was
+    never created) is the established-install signal for the fresh-start empty state — the
+    view injects it from ``store.store_meta()`` so this stays pure/I-O-free.
     """
-    # Rule: status unavailable (the never-crash floor) — the reader couldn't read the log.
+    # Rule: status unavailable (the never-crash floor) — the reader couldn't read the store.
     if records is None:
         return HomeStatus(
             verdict=Verdict.WARNING,
             headline="Sync status unavailable",
-            detail="We couldn't read the run log right now — your nightly sync may still be running normally.",
+            detail="We couldn't read the run history right now — your nightly sync may still be running normally.",
             fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
             metrics=None,
         )
 
-    # Rule: no runs yet (empty but readable, configured) — calm, never red.
+    # Rule: no runs yet (empty but readable, configured). Two honest sub-states — the
+    # run store is fresh for EVERY install after this update (no backfill from the polluted
+    # log), so an established install must NOT be told "No sync has run yet":
+    #   * established (scheduled, or the store already exists) → "history starts fresh" —
+    #     earlier runs live only in the old diagnostic log and aren't shown here;
+    #   * otherwise → the calm "waiting for the first sync".
+    # KNOWN AMBIGUITY (deliberate default, resolved by Slice 5's setup_completed): a
+    # configured-but-UNSCHEDULED empty store cannot distinguish a genuine first run from
+    # a manual-only district upgrading — both present identically here, and pre-4b manual
+    # runs never appeared either, so the first-run copy is the chosen default, not a fact.
     if not records:
-        detail = "Your first nightly sync will appear here"
-        if app_config.schedule_registered:
-            detail += f" — scheduled for {_friendly_schedule_time(app_config.schedule_time)} each night."
+        if app_config.schedule_registered or store_created_at:
+            detail = "Earlier runs aren't shown after this update — new syncs will appear here from now on."
+            if app_config.schedule_registered:
+                detail += (
+                    f" Your next nightly sync is scheduled for {_friendly_schedule_time(app_config.schedule_time)}."
+                )
+            return HomeStatus(
+                verdict=Verdict.WARNING,
+                headline="Run history starts fresh here",
+                detail=detail,
+                fix=None,
+                metrics=None,
+            )
         return HomeStatus(
             verdict=Verdict.WARNING,
             headline="No sync has run yet",
-            detail=detail,
+            detail="Your first nightly sync will appear here.",
             fix=None,  # nothing to fix — just wait for the first run
             metrics=None,
         )

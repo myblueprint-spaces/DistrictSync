@@ -47,6 +47,8 @@ the atomic close.
 
 from __future__ import annotations
 
+import contextlib
+import time
 from pathlib import Path
 
 import flet as ft
@@ -56,10 +58,12 @@ from src.config.loader import available_configs, load_config
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader
 from src.etl.pipeline import (
+    build_run_record,
     compute_anomalies,
     extract_required_files,
     run_transform,
 )
+from src.history.store import write_run_record
 from src.quality.report import DataQualityReport
 from src.sftp.uploader import SFTPUploader
 from src.ui_flet import components, tokens
@@ -121,7 +125,11 @@ def convert_job(
     result (the exit-3 shape — a CATEGORY only, never the raw exception/host/path),
     so a build failure is never mis-labelled "SFTP failed" and a failed delivery
     never discards the written files. NO DataFrame is returned (privacy).
+
+    A committed run (built + optionally delivered) is recorded to the run-history store
+    tagged ``source="manual"`` via :func:`_record_manual_run` — best-effort, never fatal.
     """
+    t0 = time.monotonic()
     config = load_config(config_name)
     raw = config.to_raw_dict()
     mappings = raw.get("mappings", {})
@@ -188,7 +196,7 @@ def convert_job(
                 remote_path=cfg.sftp_remote_path,
             ).upload_csvs(output_dir, sis_type=config_name)
         except Exception:  # noqa: BLE001 - exit-3: a failed delivery is a RESULT, not on_error
-            return ConvertResult(
+            built_not_delivered = ConvertResult(
                 status=ConvertStatus.BUILT_NOT_DELIVERED,
                 entity_counts=entity_counts,
                 data_errors_total=errors_total,
@@ -196,10 +204,12 @@ def convert_job(
                 sftp_ok=False,
                 quality_text=quality_text,
             )
+            _record_manual_run(built_not_delivered, sis_type=config_name, elapsed=time.monotonic() - t0)
+            return built_not_delivered
         # Data errors are a SEPARATE axis — a successful delivery must NOT erase the
         # "N records had field problems" warning (fail-loud; mirrors home_status).
         delivered_status = ConvertStatus.DELIVERED_WITH_DATA_ERRORS if errors_total > 0 else ConvertStatus.DELIVERED
-        return ConvertResult(
+        delivered = ConvertResult(
             status=delivered_status,
             entity_counts=entity_counts,
             data_errors_total=errors_total,
@@ -207,14 +217,18 @@ def convert_job(
             sftp_ok=True,
             quality_text=quality_text,
         )
+        _record_manual_run(delivered, sis_type=config_name, elapsed=time.monotonic() - t0)
+        return delivered
 
     status = ConvertStatus.BUILT_WITH_DATA_ERRORS if errors_total > 0 else ConvertStatus.DELIVERED
-    return ConvertResult(
+    built = ConvertResult(
         status=status,
         entity_counts=entity_counts,
         data_errors_total=errors_total,
         quality_text=quality_text,
     )
+    _record_manual_run(built, sis_type=config_name, elapsed=time.monotonic() - t0)
+    return built
 
 
 def _read_gde_bytes(input_dir: Path) -> dict[str, bytes]:
@@ -241,6 +255,39 @@ def _read_gde_bytes(input_dir: Path) -> dict[str, bytes]:
 def _data_errors_total(data_errors: list[dict]) -> int:
     """Total non-fatal per-row transform errors (mirrors the Streamlit sum)."""
     return sum(int(e.get("failed_rows", 0)) for e in (data_errors or []))
+
+
+def _record_manual_run(result: ConvertResult, *, sis_type: str, elapsed: float) -> None:
+    """Write a manual Convert run to the run-history store (source="manual"), best-effort.
+
+    Manual runs used to never appear in Run History (``convert_job`` bypasses
+    ``run_pipeline``/``_emit_run_log`` by design). This writes the SAME flat record shape
+    through the SAME ``build_run_record`` + ``write_run_record`` seam the pipeline uses, so a
+    manual run finally shows up tagged ``manual``. A committed Convert always BUILT
+    successfully → ``status="success"``; a failed SFTP delivery is the separate ``sftp_*``
+    axis (the exit-3 shape). Strictly non-fatal — never changes the returned ``ConvertResult``.
+
+    Deliberate asymmetry with ``run_pipeline``: only COMMITTED manual runs are recorded —
+    ``NO_INPUT``/``NO_OUTPUT``/``NEEDS_ANOMALY_ACK`` and mid-build failures write nothing,
+    because the admin is watching the Convert surface where those outcomes are already
+    shown; the nightly ledger tracks runs that produced (or delivered) output.
+    """
+    record = build_run_record(
+        status="success",
+        elapsed=elapsed,
+        entity_counts=result.entity_counts,
+        sftp_attempted=result.sftp_attempted,
+        sftp_ok=result.sftp_ok,
+        anomalies=[],  # a manual run's anomaly was reviewed + acknowledged in the UI, not a standing warning
+        data_errors={"total": result.data_errors_total} if result.data_errors_total else {},
+        source="manual",
+        sis_type=sis_type,
+        error_category="none",
+    )
+    # Recording a manual run is best-effort — never fail the conversion. ``write_run_record``
+    # already swallows sqlite/OS errors; suppress anything else too (belt-and-suspenders).
+    with contextlib.suppress(Exception):
+        write_run_record(record, source="manual")
 
 
 # --------------------------------------------------------------------------- #
