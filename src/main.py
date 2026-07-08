@@ -29,6 +29,7 @@ from src.etl.pipeline import (
 )
 from src.sftp.uploader import SFTPUploader
 from src.utils.logger import get_logger
+from src.utils.paths import migrate_legacy_data_dir
 from src.utils.validators import validate_sftp_host, validate_sis_type
 from src.utils.version import app_version
 
@@ -216,6 +217,12 @@ if __name__ == "__main__":
     if len(sys.argv) == 1:
         _default_ui_launcher()()
         sys.exit(0)
+
+    # Relocate a legacy ~/.districtsync profile to the platform data dir BEFORE
+    # configuring the log sink, so the log opens in the post-migration location.
+    # Idempotent + failure-safe (falls back to the legacy dir on any error, never
+    # raises), so this is a cheap exists()-check no-op on every already-migrated run.
+    migrate_legacy_data_dir()
 
     # CLI entry path: configure the shared file-log sink now (deferred from import
     # time so importing src.main in tests never touches the real user profile).

@@ -52,17 +52,18 @@
 
 **Task shows a non-zero "Last Run Result" (e.g. code 3 / 0x3)**
 - Exit code 3 means the ETL conversion **succeeded** and the output files were written, but the **SFTP delivery to SpacesEDU failed**. The CSV files are intact in your output folder.
-- Open the **Run History** page in the DistrictSync wizard or check `~/.districtsync/etl_tool.log` for an `ERROR` line beginning `SFTP upload FAILED —` to find the cause (network, credentials, host).
+- Open the **Run History** page in the DistrictSync wizard or check `etl_tool.log` in your DistrictSync data folder (see [*Where DistrictSync stores its data*](#where-districtsync-stores-its-data-config-logs-run-history)) for an `ERROR` line beginning `SFTP upload FAILED —` to find the cause (network, credentials, host).
 - Re-run `--sftp-test` (or Setup Wizard → Step 4) to verify your SFTP credentials are still valid.
 
 **Task runs but nothing happens**
 - Open the Run History page in the DistrictSync wizard. Scheduled runs
-  write to the same `~/.districtsync/etl_tool.log` as manual runs, so
-  they should appear there.
+  write to the same `etl_tool.log` (in your DistrictSync data folder) as
+  manual runs, so they should appear there.
 - If there's a run but it failed, look for `Pipeline failed:` lines
   in the log for the cause.
-- The task's **Start in** field does not matter — logs always go to
-  `~/.districtsync/` regardless of the working directory.
+- The task's **Start in** field does not matter — logs always go to your
+  DistrictSync data folder regardless of the working directory (see
+  [*Where DistrictSync stores its data*](#where-districtsync-stores-its-data-config-logs-run-history)).
 
 ---
 
@@ -156,18 +157,31 @@ Homeroom classes are only created for grades listed in the config's `homeroom_gr
 
 ---
 
-## Log location
+## Where DistrictSync stores its data (config, logs, run history)
 
-Every ETL run — wizard, scheduled task, and CLI — writes to a single
-persistent log file in your user home directory, regardless of where
-the `.exe` lives or what working directory the task runs from:
+DistrictSync keeps all of its data — your saved settings (`config.json`), the
+diagnostic log (`etl_tool.log`), and the run-history database — in the standard
+per-user application-data folder for your operating system. Nothing is ever
+written next to the `.exe`, so moving or re-downloading the program never loses
+your settings or history:
 
-| Platform | Log file |
-|----------|----------|
-| Windows | `C:\Users\<username>\.districtsync\etl_tool.log` |
-| Linux   | `/home/<username>/.districtsync/etl_tool.log` |
-| macOS   | `/Users/<username>/.districtsync/etl_tool.log` |
+| Platform | Data folder |
+|----------|-------------|
+| Windows | `C:\Users\<username>\AppData\Local\DistrictSync\` |
+| macOS   | `~/Library/Application Support/DistrictSync/` |
+| Linux   | `$XDG_DATA_HOME/DistrictSync/` (default `~/.local/share/DistrictSync/`) |
 
-The Run History surface in the app reads from this same path and
-displays the runs in a sortable table. The log rotates automatically
-at 5 MB and keeps 3 backups (`etl_tool.log.1`, `.2`, `.3`).
+Every ETL run — wizard, scheduled task, and CLI — writes to the single
+`etl_tool.log` inside that folder, regardless of where the `.exe` lives or what
+working directory the task runs from. The log rotates automatically at 5 MB and
+keeps 3 backups (`etl_tool.log.1`, `.2`, `.3`). The Run History surface in the
+app reads run records from the same folder.
+
+**Upgrading from an older version?** Earlier releases stored this data in a
+`.districtsync` folder in your home directory (e.g. `C:\Users\<username>\.districtsync\`).
+The first time you run a newer version, DistrictSync automatically copies your
+settings, logs, and history into the new location above and leaves a small
+`MOVED.txt` note in the old folder pointing at the new one. The move is safe and
+one-time: if anything prevents it, DistrictSync simply keeps using the old folder
+(you are never left half-moved). Once you have confirmed everything still works,
+the old `.districtsync` folder is safe to delete.

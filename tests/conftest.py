@@ -132,6 +132,14 @@ def isolated_user_profile(request: pytest.FixtureRequest, tmp_path: Path, monkey
 
     if request.node.get_closest_marker("real_user_data_dir") is None:
         monkeypatch.setattr("src.utils.paths.user_data_dir", _fake_user_data_dir)
+        # Belt-and-suspenders for the relocation seam (Slice 11): migration bypasses
+        # ``user_data_dir`` and resolves the platform/legacy dirs directly, so redirect
+        # BOTH into (non-existent) tmp paths. A stray ``migrate_legacy_data_dir()`` in a
+        # non-marked test then sees no legacy dir → no-op, and can never touch the real
+        # ~/.districtsync. Tests exercising the real relocation opt out via the marker
+        # and drive these seams themselves (see test_paths.py).
+        monkeypatch.setattr("src.utils.paths._platform_data_dir", lambda: tmp_path / "platform" / "DistrictSync")
+        monkeypatch.setattr("src.utils.paths._legacy_data_dir", lambda: tmp_path / "legacy_home" / ".districtsync")
 
     real_keyring = keyring.get_keyring()
     keyring.set_keyring(_InMemoryKeyring())

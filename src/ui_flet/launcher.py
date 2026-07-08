@@ -3,11 +3,12 @@ branch — Flet is the default/only UI).
 
 Replicates the prior launcher's frozen-cwd handling so ``config/`` resolves
 for a later ``run_pipeline``, then runs the Flet shell. Because the shipped exe is
-**windowed / no-console**, a boot failure can't print to a console — so the
-import + ``ft.run`` are wrapped in an early-failure path that (a) writes the FULL
-traceback to the ETL log sink and (b) shows a PLAIN-LANGUAGE error (the traceback
-goes to the LOG ONLY, never the dialog), then exits non-zero. The window can never
-die silently.
+**windowed / no-console**, a boot failure can't print to a console — so the legacy
+app-data migration, log-sink setup, import + ``ft.run`` are wrapped in an
+early-failure path that (a) writes the FULL traceback to the ETL log sink and
+(b) shows a PLAIN-LANGUAGE error (the traceback goes to the LOG ONLY, never the
+dialog), then exits non-zero. The window can never die silently — including when
+the profile itself is locked or permission-denied at migration / log-open time.
 
 The pure helpers (``resolve_frozen_cwd``, ``resolve_log_path``,
 ``format_user_error``) are factored out and unit-tested; the ``ft.run`` glue and
@@ -22,7 +23,7 @@ import traceback
 from pathlib import Path
 
 from src.utils.logger import get_logger
-from src.utils.paths import user_log_file
+from src.utils.paths import migrate_legacy_data_dir, user_log_file
 
 _LOG_NAME = "etl_tool.log"
 
@@ -157,10 +158,17 @@ def main() -> None:  # pragma: no cover - view glue (ft.run + dialog)
     if frozen_cwd is not None:
         os.chdir(frozen_cwd)
 
-    # Configure the shared file-log sink for this UI session (deferred from import).
-    boot_logging()
-
     try:
+        # Relocate a legacy ~/.districtsync profile, THEN open the log sink in the
+        # post-migration location — both inside the safety net so a locked or
+        # permission-denied profile surfaces the plain-language error dialog instead
+        # of dying silently before the window ever opens. ``_write_traceback`` stays
+        # independent: it re-resolves the log path itself (falling back to the legacy
+        # dir), so it still records the traceback even if ``boot_logging`` was the
+        # thing that failed.
+        migrate_legacy_data_dir()
+        boot_logging()
+
         import flet as ft
 
         from src.ui_flet import shell

@@ -1,14 +1,15 @@
 """Runtime application configuration (non-sensitive settings only).
 
 Stores the partner's setup wizard choices to disk as ``config.json`` under the
-per-user app-data directory (``paths.user_data_dir()`` — ``~/.districtsync`` today).
-SFTP passwords are NOT stored here — they are stored in the OS credential store
-via the ``keyring`` library.
+per-user app-data directory (``paths.user_data_dir()`` — the platform-standard
+location: ``%LOCALAPPDATA%\\DistrictSync`` / ``~/Library/Application Support/DistrictSync``
+/ ``$XDG_DATA_HOME/DistrictSync``). SFTP passwords are NOT stored here — they are
+stored in the OS credential store via the ``keyring`` library.
 
 The config path is resolved through ``paths.user_data_dir()`` at CALL time (not an
 import-time constant) so it flows through the single app-data seam: the test
-isolation fixture can redirect it, and Slice 11's relocation only touches
-``paths.py`` (single source of truth for where app data lives).
+isolation fixture can redirect it, and the app-data location (incl. the one-time
+legacy relocation) is owned entirely by ``paths.py`` — the single source of truth.
 """
 
 from __future__ import annotations
