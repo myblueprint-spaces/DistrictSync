@@ -149,3 +149,7 @@ Sourced from the full-codebase architect review (6-agent pass, 2026-06-04). Stat
 - **Active alerting (email / Teams webhook) on SFTP failure** instead of log-only — so admins are notified without checking Task Scheduler. _(Log + exit-code 3 is sufficient for now; push-alerting is a separate integration concern.)_
 - **Auto-run `--sftp-test` at the end of Setup Wizard** to confirm delivery works before the first scheduled run. _(Low-effort win deferred to keep Slice 3 scope tight; no blocking reason.)_
 - **Wizard pre-validates the Windows password before finishing** (call `schtasks /Query` or a lightweight auth check) to catch typos earlier. _(Currently relies on `schtasks /Create` failing loudly; a pre-check would give a tighter feedback loop.)_
+
+### Flet UI trust & professionalism (program 0029)
+
+- **0029 Flet UI trust & professionalism redesign** — field-test-driven combined program: verified v3.4.0 defects (stale AppConfig, no-op Exit, run-log-as-history, schedule state divergence, SFTP test side-effects) + wizard→settings Setup, SQLite run store, schedule read-back, per-op UAC elevation. Plan: `.claude/plans/0029-flet-trust-professionalism.md`. **Status: PLANNED (in review)**
