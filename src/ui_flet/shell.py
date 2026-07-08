@@ -35,6 +35,7 @@ from src.ui_flet.screens.mapping import build_mapping
 from src.ui_flet.screens.run_history import build_run_history
 from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.theme import build_theme
+from src.utils import paths
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,25 @@ def _on_leave(page: ft.Page) -> None:  # noqa: ARG001  (seam — read-only, neve
     return None
 
 
+async def _close_window(page: ft.Page) -> None:
+    """The ONE exit path — shared by the Exit button (``do_exit``) and the OS close
+    event (``on_window_event``) so the two can never drift.
+
+    Flet 0.85.3 ``Window.destroy()`` is a coroutine (``flet/controls/core/window.py``);
+    the previous *synchronous* call was an un-awaited coroutine — a silent no-op, which
+    is why the Exit button did nothing (no exception raised, so the ``os._exit`` fallback
+    never fired either). ``await`` it here so the window actually tears down (collapsing
+    the ``python → python → flet.exe`` tree — zero orphans, PLAT-0). ``os._exit(0)`` stays
+    as the last-resort fallback if ``destroy()`` can't complete, so the host process can
+    never orphan. The zero-orphan ``page.on_disconnect`` path is untouched.
+    """
+    _on_leave(page)
+    try:
+        await page.window.destroy()
+    except Exception:
+        os._exit(0)
+
+
 # --------------------------------------------------------------------------- #
 # App shell + lifecycle                                                        #
 # --------------------------------------------------------------------------- #
@@ -160,13 +180,17 @@ def main(page: ft.Page) -> None:
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme = build_theme()
 
-    # --- window sizing (native mode only; harmless in web) ----------------- #
+    # --- window sizing + brand icon (native mode only; harmless in web) ----- #
     try:
         page.window.width = 1180
         page.window.height = 860
         page.window.min_width = 940
         page.window.min_height = 680
-    except Exception:  # nosec B110 — window sizing is native-only; harmless no-op in web mode
+        # Brand the window/taskbar with the shipped .ico instead of the generic Flet
+        # logo (Windows-only surface). Resolved via the pure `paths.app_icon_path()`
+        # (dev tree vs frozen `_MEIPASS`); set LAST so a failure here can't skip sizing.
+        page.window.icon = str(paths.app_icon_path())
+    except Exception:  # nosec B110 — window sizing/icon are native-only; harmless no-op in web mode
         pass
 
     # Startup-only snapshot: drives the nav MODEL's launch selection at build time (the rail
@@ -237,12 +261,10 @@ def main(page: ft.Page) -> None:
         page.update()
 
     # --- exit affordance (lifecycle owner stays in the shell) -------------- #
-    def do_exit(_e: ft.ControlEvent | None = None) -> None:
-        _on_leave(page)
-        try:
-            page.window.destroy()
-        except Exception:
-            os._exit(0)
+    # Async handler: Flet 0.85.3 supports coroutine event handlers, and
+    # `page.window.destroy()` MUST be awaited (see `_close_window`).
+    async def do_exit(_e: ft.ControlEvent | None = None) -> None:
+        await _close_window(page)
 
     # --- left navigation rail (fixed order; view lives in nav_rail) -------- #
     # Hold the rail handle so `select_by_id` can sync `selected_index` on programmatic nav.
@@ -256,14 +278,10 @@ def main(page: ft.Page) -> None:
     page.add(ft.Row(spacing=0, expand=True, controls=[nav_view, content_host]))
 
     # --- graceful window-close handling (native): ZERO orphans ------------- #
-    def on_window_event(e: ft.WindowEvent) -> None:
+    async def on_window_event(e: ft.WindowEvent) -> None:
         etype = getattr(e, "type", None)
         if etype == ft.WindowEventType.CLOSE or getattr(e, "data", None) == "close":
-            _on_leave(page)
-            try:
-                page.window.destroy()
-            except Exception:
-                os._exit(0)
+            await _close_window(page)
 
     try:
         # prevent_close=False -> the OS close button tears the app down on its own;

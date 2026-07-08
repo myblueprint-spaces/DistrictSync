@@ -37,6 +37,19 @@ def bundle_mappings_dir() -> Path:
     return bundle_config_dir() / "mappings"
 
 
+def app_icon_path() -> Path:
+    """Path to the shipped brand ``.ico`` (window/taskbar/exe icon).
+
+    A read-only *bundle* asset (not user-writable), so it resolves against
+    ``bundle_root()`` exactly like the config dir: in dev this is
+    ``<project root>/assets/districtsync.ico``; in a frozen PyInstaller build it is
+    ``<_MEIPASS>/assets/districtsync.ico`` (the file is shipped there via the
+    ``flet pack`` ``--add-data "assets;assets"`` arg). Pure — resolves a path only;
+    the caller decides whether to set ``page.window.icon`` (Windows-only surface).
+    """
+    return bundle_root() / "assets" / "districtsync.ico"
+
+
 def user_data_dir() -> Path:
     """Persistent per-user data directory (logs, custom mappings, app config).
 

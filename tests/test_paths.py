@@ -77,3 +77,22 @@ class TestBundleMappingsDir:
         d = paths_module.bundle_mappings_dir()
         assert (d / "myedbc_mapping.yaml").is_file()
         assert (d / "sd40myedbc_mapping.yaml").is_file()
+
+
+class TestAppIconPath:
+    """The brand `.ico` resolves against the bundle root (dev tree vs frozen)."""
+
+    def test_dev_points_at_committed_ico(self, dev_mode):
+        p = paths_module.app_icon_path()
+        # Dev: <project root>/assets/districtsync.ico — and the binary is committed,
+        # so the runtime path resolves in a source run too (manual-Verify: dev titlebar).
+        assert p == paths_module.bundle_root() / "assets" / "districtsync.ico"
+        assert p.name == "districtsync.ico"
+        assert p.is_file(), "the committed brand .ico must exist at the resolved dev path"
+
+    def test_frozen_resolves_under_meipass(self, monkeypatch, tmp_path):
+        # Frozen: <_MEIPASS>/assets/districtsync.ico — where `flet pack --add-data
+        # "assets;assets"` places it, so `page.window.icon` resolves in the exe.
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+        assert paths_module.app_icon_path() == tmp_path / "assets" / "districtsync.ico"

@@ -205,6 +205,48 @@ def test_mapping_post_apply_rerenders_and_allows_revert(stub_page, monkeypatch):
     assert apply_btn.disabled is False
 
 
+def _textfield_by_label(tree, label):
+    """The first ``ft.TextField`` whose label EXACTLY equals ``label`` (or None)."""
+    return next((f for f in _find(tree, ft.TextField) if (f.label or "") == label), None)
+
+
+# The five always-present Setup text fields Enter must submit (the Windows-password
+# field is Windows-only, so it is not asserted here — it renders + wires only on win32).
+_ENTER_SUBMIT_LABELS = [
+    "Daily run time (24-hour, HH:MM)",  # → Register
+    "Username",  # → Save SFTP
+    "Remote path",  # → Save SFTP
+    "Port",  # → Save SFTP
+    "Password",  # → Save SFTP (exact "Password"; the Windows field is "Windows account password")
+]
+
+
+def test_setup_textfields_wire_enter_to_submit(stub_page):
+    """Slice 2: the run-time + 4 SFTP text fields fire their action on Enter (``on_submit``).
+
+    on_submit bypasses a disabled button, which is why the handlers re-check the gate; here
+    we assert the wiring is present (a callable) so Enter behaves like clicking the button.
+    """
+    tree = build_setup(stub_page)
+    for label in _ENTER_SUBMIT_LABELS:
+        field = _textfield_by_label(tree, label)
+        assert field is not None, f"expected a Setup TextField labelled {label!r}"
+        assert callable(field.on_submit), f"{label!r} must wire on_submit (Enter-to-submit)"
+
+
+def test_setup_enter_respects_gate_when_config_incomplete(stub_page):
+    """Enter on the run-time field with an incomplete config is a silent no-op.
+
+    The hermetic default AppConfig is unconfigured, so ``can_register_schedule`` is False;
+    firing ``on_submit`` must return without raising and without registering anything —
+    Enter can never bypass the gate the disabled Register button enforces.
+    """
+    tree = build_setup(stub_page)
+    run_time = _textfield_by_label(tree, "Daily run time (24-hour, HH:MM)")
+    assert run_time is not None
+    assert run_time.on_submit(None) is None  # no-op: gate closed, no raise
+
+
 def test_nav_rail_builds_and_exposes_rail_handle():
     """D7 render-smoke: build_nav constructs the fixed-order rail WITHOUT raising and hands
     the shell the rail handle (so it can sync the highlight on programmatic navigation).

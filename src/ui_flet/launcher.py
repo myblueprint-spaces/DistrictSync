@@ -93,6 +93,16 @@ def _show_error_dialog(message: str) -> None:  # pragma: no cover - view glue
             page.title = "DistrictSync"
             page.window.width = 520
             page.window.height = 320
+
+            # Flet 0.85.3 `Window.destroy()` is a coroutine — a synchronous call is an
+            # un-awaited no-op (Close would do nothing). Await it via an async handler;
+            # `os._exit(0)` is the fallback so the boot-error window can always close.
+            async def _close(_e: ft.ControlEvent) -> None:
+                try:
+                    await page.window.destroy()
+                except Exception:
+                    os._exit(0)
+
             page.add(
                 ft.Container(
                     padding=ft.Padding(left=28, top=28, right=28, bottom=28),
@@ -101,7 +111,7 @@ def _show_error_dialog(message: str) -> None:  # pragma: no cover - view glue
                         controls=[
                             ft.Text("DistrictSync", size=20, weight=ft.FontWeight.W_800),
                             ft.Text(message, size=14, selectable=True),
-                            ft.FilledButton("Close", on_click=lambda _e: page.window.destroy()),
+                            ft.FilledButton("Close", on_click=_close),
                         ],
                     ),
                 )

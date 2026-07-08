@@ -36,7 +36,9 @@ validate-config:
 build-win:
 	flet pack src/main.py --name DistrictSync \
 	  --yes \
+	  --icon assets/districtsync.ico \
 	  --add-data "config;config" \
+	  --add-data "assets;assets" \
 	  --hidden-import flet \
 	  --hidden-import flet_desktop \
 	  --hidden-import src.ui_flet.launcher \

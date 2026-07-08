@@ -71,6 +71,7 @@ from src.ui_flet.filepicker import (
 from src.ui_flet.humanize import friendly_district_name, friendly_sftp_reason
 from src.ui_flet.picker_field import PickerField
 from src.ui_flet.setup_errors import classify_schedule_error
+from src.ui_flet.setup_gates import can_register_schedule, can_save_sftp
 from src.ui_flet.verdict import Verdict
 from src.utils.validators import ALLOWED_SFTP_HOSTS, validate_run_time
 
@@ -276,7 +277,14 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
             )
         )
 
-    def _register(_e: ft.ControlEvent) -> None:
+    def _register(_e: ft.ControlEvent | None = None) -> None:
+        # Enter (on_submit) bypasses a disabled button, so re-check the SAME gate the
+        # Register button encodes — an unsatisfied gate is a silent no-op (matches the
+        # disabled button; the raw-input validation card below is for a *bad* run time,
+        # not a structurally-incomplete one).
+        if not can_register_schedule(cfg.is_complete(), run_time_field.value or ""):
+            return
+
         # Read the password fresh at register-time; local var, never stashed (I3).
         password = password_field.value if password_field is not None else None
 
@@ -386,15 +394,20 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
     register_btn = components.primary_button(
         "Register schedule",
         _register,
-        disabled=not (cfg.is_complete() and bool((run_time_field.value or "").strip())),
+        disabled=not can_register_schedule(cfg.is_complete(), run_time_field.value or ""),
         icon=ft.Icons.SCHEDULE_ROUNDED,
     )
 
     def _refresh_register_gate(_e: ft.ControlEvent | None = None) -> None:
-        register_btn.disabled = not (cfg.is_complete() and bool((run_time_field.value or "").strip()))
+        register_btn.disabled = not can_register_schedule(cfg.is_complete(), run_time_field.value or "")
         page.update()
 
     run_time_field.on_change = _refresh_register_gate
+    # Enter-to-submit: the run-time and Windows-password fields both fire Register (the
+    # handler re-checks `can_register_schedule`, so Enter honours the same gate).
+    run_time_field.on_submit = _register
+    if password_field is not None:
+        password_field.on_submit = _register
 
     section_controls.append(register_btn)
     section_controls.append(result_slot)
@@ -476,10 +489,21 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
             (port_field.value or "").strip(),
         )
 
-    def _save(_e: ft.ControlEvent) -> None:
+    def _save(_e: ft.ControlEvent | None = None) -> None:
         # Read the credential fresh; local var, sole sink is store_password (I4).
         password = password_field.value or ""
         host, username, remote_path, port = _current_fields()
+
+        # Enter (on_submit) bypasses a disabled button, so re-check the SAME gate the
+        # Save button encodes — an unsatisfied gate is a silent no-op.
+        if not can_save_sftp(
+            host=host,
+            username=username,
+            remote_path=remote_path,
+            password=password,
+            already_configured=cfg.sftp_is_configured(),
+        ):
+            return
 
         # [I5] Belt-and-suspenders: the dropdown already restricts host to the
         # allowlist, but SFTPUploader.__init__ re-validates and raises ValueError.
@@ -558,12 +582,16 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
 
     def _refresh_save_gate(_e: ft.ControlEvent | None = None) -> None:
         host, username, remote_path, _port = _current_fields()
-        has_required = bool(host and username and remote_path)
-        # First-time (no stored credential yet) also needs a password; on re-open
-        # a stored credential exists so the password may be left blank to keep it.
-        first_time = not cfg.sftp_is_configured()
-        has_password = bool(password_field.value)
-        save_btn.disabled = not (has_required and (has_password or not first_time))
+        # First-time (no stored credential yet) also needs a password; on re-open a
+        # stored credential exists so the password may be left blank to keep it — the
+        # gate is single-sourced in `can_save_sftp` (shared with the Enter handler).
+        save_btn.disabled = not can_save_sftp(
+            host=host,
+            username=username,
+            remote_path=remote_path,
+            password=(password_field.value or ""),
+            already_configured=cfg.sftp_is_configured(),
+        )
         page.update()
 
     host_dropdown.on_select = _refresh_save_gate  # Dropdown value-change is on_select (0.85.3)
@@ -571,6 +599,12 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
     remote_field.on_change = _refresh_save_gate
     port_field.on_change = _refresh_save_gate
     password_field.on_change = _refresh_save_gate
+    # Enter-to-submit: the four SFTP text fields fire Save (the handler re-checks
+    # `can_save_sftp`, so Enter honours the same gate). The host is a dropdown (no submit).
+    username_field.on_submit = _save
+    remote_field.on_submit = _save
+    port_field.on_submit = _save
+    password_field.on_submit = _save
 
     # ------------------------------------------------------------------ #
     # Test connection — marshalled OFF the UI thread (I6).                 #
