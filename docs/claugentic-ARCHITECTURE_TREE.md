@@ -41,7 +41,7 @@ _Last generated from `main` @ c669404._
 
 - `src/config/models.py` — Pydantic v2 models for YAML mapping validation: `MappingConfig`, `GlobalConfig` (incl. opt-in `CrossEnrollmentConfig`), `EntityConfig` (incl. `RowFilter` row inclusion), and field-mapping variants (transform, fixed value, academic year, append year, email format, name config, id-role pair, enroll-status, bare `str`/`null`); `classify_field()` dispatcher; `to_raw_dict()`/`get_raw_field_map()` for pipeline consumption.
 - `src/config/loader.py` — `load_config(sis_type)`: discovers YAML from user-overrides dir then bundled dir; resolves `_base` inheritance via recursive deep-merge with cycle detection; validates via Pydantic; exposes `available_configs()` for the UI district picker.
-- `src/config/app_config.py` — `AppConfig` dataclass: persists non-sensitive runtime settings (paths, SIS type, schedule, SFTP host/port/user) to `~/.districtsync/config.json` with OS-safe permissions; SFTP password is never stored here (keyring only).
+- `src/config/app_config.py` — `AppConfig` dataclass: persists non-sensitive runtime settings (paths, SIS type, schedule, SFTP host/port/user) to `config.json`, resolved at call time via `config_file_path()` → `paths.user_data_dir()` (the single app-data seam, `~/.districtsync` today) with OS-safe permissions; SFTP password is never stored here (keyring only).
 
 ---
 
@@ -69,7 +69,7 @@ _Last generated from `main` @ c669404._
 - `src/utils/validators.py` — Centralised security validators: `ALLOWED_SFTP_HOSTS` allowlist, `validate_sis_type()`, `validate_task_name()`, `validate_run_time()`, `validate_sftp_host()`, `quote_for_shell()`; all user-supplied values flowing into subprocess or SFTP must pass through here.
 - `src/utils/logger.py` — `get_logger()`: configures logging from `config/logging.conf` (or falls back to `basicConfig`) writing to the canonical absolute path `~/.districtsync/etl_tool.log` so logs persist across PyInstaller restarts and scheduled-task runs.
 - `src/utils/helpers.py` — General-purpose utilities: `normalize_columns()`, `ensure_directory()`, `validate_csv()`, `validate_path()`, `safe_float_conversion()`, `district_slug()`, `build_zip_name()`.
-- `src/utils/paths.py` — Single source of truth for path resolution: `bundle_root()`, `bundle_config_dir()`, `bundle_mappings_dir()`, `app_icon_path()` (shipped brand `.ico`, bundle-relative), `user_data_dir()`, `user_mappings_dir()`, `user_log_file()`; works identically in source-install and frozen-exe (PyInstaller `_MEIPASS`) environments.
+- `src/utils/paths.py` — Single source of truth for path resolution: `bundle_root()`, `bundle_config_dir()`, `bundle_mappings_dir()`, `app_icon_path()` (shipped brand `.ico`, bundle-relative), `user_data_dir()` (the one app-data seam, resolved at call time), `user_mappings_dir()`, `user_log_file()`, `user_history_db()` (run-store path); works identically in source-install and frozen-exe (`_MEIPASS`) environments.
 - `src/utils/version.py` — `app_version()`: single source of truth for the installed package version (`importlib.metadata.version("districtsync")`, `"dev"` fallback when not packaged); used by the Flet UI (`main.py:196-199`'s inline copy is a tracked ROADMAP DRY follow-up).
 
 ---
@@ -92,7 +92,7 @@ _Last generated from `main` @ c669404._
 - `src/ui_flet/components.py` — View glue (coverage-omitted): design-system primitives from `tokens` + `verdict_visuals` — `card`/`hero_gradient`, `primary_button`/`secondary_button`/`text_button`, `metric_tile`, `run_table` (`ft.DataTable`: conditional myBlueprint+ columns, text-first status + AA-safe tint, SFTP glyphs, no Error column; labels from `home_status.ENTITY_LABELS`), `FileChip`, `ErrorCard`, `HealthVerdictBanner`, `build_design_demo`.
 - `src/ui_flet/nav_rail.py` — View glue (coverage-omitted): `build_nav(...) -> (view, rail)` — flat `ft.NavigationRail` in the fixed `ordered` order (brand mark + reassurance line above Exit); returns the rail handle so the shell can sync the highlight (D7). No lifecycle/config; selection by `dest.id`; initial index via `nav.selected_index_for`.
 - `src/ui_flet/shell.py` — View glue (coverage-omitted): `main(page)` builds the themed window (+ brand `page.window.icon` via `paths.app_icon_path()`), the `dict[id -> factory]`, and the rail (`nav_rail.build_nav`); `select_by_id` syncs `rail.selected_index` for programmatic nav (D7); owns the content host + zero-orphan close via the shared async `_close_window` (awaits coroutine `window.destroy()`, `os._exit(0)` fallback).
-- `src/ui_flet/launcher.py` — View glue (coverage-omitted): `main()` does frozen-cwd (`resolve_frozen_cwd`) then `ft.run(shell.main)` wrapped in an early-failure path — full traceback to the ETL log sink, a plain-language error dialog/tkinter/stderr fallback, non-zero exit; pure helpers `resolve_log_path`/`format_user_error` are tested.
+- `src/ui_flet/launcher.py` — View glue (coverage-omitted): `main()` does frozen-cwd (`resolve_frozen_cwd`), then `boot_logging()` (configures the shared UI file-log sink — deferred from import), then `ft.run(shell.main)` wrapped in an early-failure path — full traceback to the ETL log sink, a plain-language dialog/tkinter/stderr fallback, non-zero exit; pure helpers `boot_logging`/`resolve_log_path`/`format_user_error` are tested.
 - `src/ui_flet/filepicker.py` — COUNTED boundary logic: `ft.FilePicker` async-service wrapper (`pick_directory`/`pick_files`, registered once via the tested idempotent `_ensure_picker`; only `await`-dialog glue is `# pragma: no cover`) + pure validation mirroring `run_pipeline` (`validate_input_dir` exists+is_dir, `validate_output_dir` parent-structural, effectful `check_writable` w/ TOCTOU note) + the pure `setup_state` save-gate.
 - `src/ui_flet/picker_field.py` — View glue (coverage-omitted): `PickerField` (themed `ft.Column`) — label + "Browse…" button (`components.primary_button`) calling the async `pick_directory` wrapper + chosen-path display + inline valid/invalid line; takes a `validator` + `on_change(path, result)`; the one reusable picker every later surface reuses (no tkinter port).
 - `src/ui_flet/screens/__init__.py` — Flet UI surfaces package marker (one module per real navigation surface; trust-critical logic stays in COUNTED pure helpers).
@@ -135,7 +135,7 @@ _Last generated from `main` @ c669404._
 
 ## tests/
 
-- `tests/conftest.py` — Shared fixtures (synthetic DataFrames, YAML configs, `DataTransformer` instances) for all tests.
+- `tests/conftest.py` — Shared fixtures (synthetic DataFrames, YAML configs, `DataTransformer` instances) + the autouse `isolated_user_profile` fixture (redirects the `paths.user_data_dir` seam to a tmp dir, swaps an in-memory keyring backend, restores/close logging handlers) and the `real_profile_baseline` snapshot for the canary; `real_user_data_dir` marker opts a test out of the seam patch.
 - `tests/snapshots/generate_synthetic.py` — Script to regenerate synthetic SD74 GDE input files in `tests/snapshots/input/` (run once after schema changes).
 - `tests/snapshots/` — Frozen SD74 snapshot data: `input/` holds 6 synthetic GDE files (StudentDemographic, Staff, Family, Classes, Schedule, CourseInfo); `output/` holds 5 golden CSV files (Students, Staff, Family, Classes, Enrollments) locked against regression.
 - `tests/snapshots/mbp_input/` — Small hand-authored synthetic GDEs for the `mbponly` course tier (CourseInformation, StudentCourseHistory, StudentCourseSelection); consumed by the mbponly end-to-end pipeline test.
@@ -167,6 +167,8 @@ _Last generated from `main` @ c669404._
 - `tests/test_quality_report.py` — `DataQualityReport` checks: missing fields, duplicates, orphaned enrollments, grade distribution.
 - `tests/test_validators.py` — All validators in `src/utils/validators.py`: SIS type, task name, run time, SFTP host allowlist, shell quoting.
 - `tests/test_app_config.py` — `AppConfig` load/save round-trip, unknown-field tolerance, default values.
+- `tests/test_isolation_canary.py` — D3 isolation tripwire: `AppConfig.save()` + `get_logger()` under the autouse isolation fixture leave the real `~/.districtsync` profile (config.json/etl_tool.log/history.db) byte-untouched vs the conftest-import baseline, and the writes land in the isolated tmp dir.
+- `tests/test_entry_logging.py` — Entry-path logging (D3): CLI (`_configure_cli_logging`) and Flet launcher (`boot_logging`) each attach a file handler resolved through the paths seam; a fresh-interpreter import of `src.main` configures NO file sink (import-time-pollution regression guard).
 - `tests/test_main_helpers.py` — Pipeline helper functions: `_check_anomalies`, `_emit_run_log`, `extract_required_files`, `_sftp_upload`, `_print_diff`.
 - `tests/test_cli.py` — CLI flags: `--dry-run`, `--diff`, `--quality`, `--version` (calls `run_pipeline()` directly, bypasses argparse).
 - `tests/test_sftp_uploader.py` — `SFTPUploader` with mocked paramiko and keyring: store/retrieve password, `test_connection()`, `upload_csvs()` zip-and-put flow.
@@ -178,7 +180,7 @@ _Last generated from `main` @ c669404._
 - `tests/test_registry.py` — Transformer registry: known entity lookup, `DefaultTransformer` fallback for unregistered entities.
 - `tests/test_source_config.py` — Source-config normalisation (`normalize_source_config`) and `get_source_file()` retrieval from context.
 - `tests/test_helpers.py` — `src/utils/helpers.py` utilities: `normalize_columns()`, `ensure_directory()`, `district_slug()`, `build_zip_name()`, etc.
-- `tests/test_paths.py` — `src/utils/paths.py` path helpers under both source-install and frozen-bundle (`sys.frozen`) scenarios, incl. `app_icon_path()` (dev tree vs `_MEIPASS`; committed `.ico` present).
+- `tests/test_paths.py` — `src/utils/paths.py` path helpers under both source-install and frozen-bundle (`sys.frozen`) scenarios, incl. `app_icon_path()` (dev tree vs `_MEIPASS`; committed `.ico` present) and `user_history_db()` (call-time resolution through the `user_data_dir` seam); marked `real_user_data_dir` to test the real seam.
 - `tests/test_ui_flet_setup_gates.py` — `src/ui_flet/setup_gates.py` pure submit-gate predicates (`can_register_schedule` / `can_save_sftp`) truth tables — the Enter-can't-bypass-the-button guarantee (Slice 2).
 - `tests/test_ui_flet_shell_exit.py` — `src/ui_flet/shell._close_window` awaits the coroutine `window.destroy()` (regression for the un-awaited-no-op Exit bug) + `os._exit(0)` fallback (Slice 2).
 - `tests/test_benchmarks.py` — Performance benchmarks on a synthetic 5 000-student dataset (deselected from normal run; invoke with `-m benchmark`).

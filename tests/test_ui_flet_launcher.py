@@ -36,8 +36,11 @@ class TestResolveLogPath:
 
         monkeypatch.setattr(launcher, "user_log_file", _boom)
         path = launcher.resolve_log_path()
+        # If the paths seam itself is broken, the launcher falls back to a bare
+        # filename (cwd) — it deliberately does NOT re-derive the app-data location,
+        # which would duplicate the single paths.py source of truth.
         assert path.name == "etl_tool.log"
-        assert ".districtsync" in str(path)
+        assert path == Path("etl_tool.log")
 
 
 class TestFormatUserError:

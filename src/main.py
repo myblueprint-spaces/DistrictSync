@@ -11,6 +11,7 @@ backward compatibility only.
 """
 
 import argparse
+import logging
 import os
 import sys
 from typing import Callable
@@ -44,7 +45,6 @@ __all__ = [
     "run_pipeline",
 ]
 
-logger = get_logger(__name__)
 # Keep the re-export references alive (used via __all__).
 _ = (
     ANOMALY_THRESHOLD,
@@ -56,6 +56,18 @@ _ = (
     _print_diff,
     _sftp_upload,
 )
+
+
+def _configure_cli_logging() -> logging.Logger:
+    """Configure the shared file-log sink for a CLI run and return the app logger.
+
+    Deferred out of import time (D3): importing ``src.main`` — e.g. to reach a
+    re-exported symbol or an SFTP subcommand helper from a test — must never attach
+    a handler to the real user log (the source of the "dummy" Run History records).
+    Every CLI entry path calls this exactly once so the run and its exit-code-3
+    summary are written to ``etl_tool.log``.
+    """
+    return get_logger(__name__)
 
 
 def main(sis_type: str, input_path: str, output_path: str) -> None:
@@ -200,9 +212,14 @@ def _default_ui_launcher() -> Callable[[], None]:
 
 if __name__ == "__main__":
     # No arguments → launch the UI (e.g. double-clicked from Explorer).
+    # The launcher configures its own logging sink (launcher.boot_logging).
     if len(sys.argv) == 1:
         _default_ui_launcher()()
         sys.exit(0)
+
+    # CLI entry path: configure the shared file-log sink now (deferred from import
+    # time so importing src.main in tests never touches the real user profile).
+    logger = _configure_cli_logging()
 
     # Single source (src/utils/version.py): build-stamped tag → package
     # metadata → "dev". A frozen exe reports the real release via the

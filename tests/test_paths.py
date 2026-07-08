@@ -9,6 +9,11 @@ import pytest
 
 from src.utils import paths as paths_module
 
+# test_paths.py is the guard for the real path helpers, so opt out of the autouse
+# user_data_dir isolation (redirect Path.home instead) — otherwise these tests
+# would assert against the isolation fixture's fake, not the real implementation.
+pytestmark = pytest.mark.real_user_data_dir
+
 
 @pytest.fixture
 def redirect_home(tmp_path, monkeypatch):
@@ -40,6 +45,19 @@ class TestUserLogFile:
     def test_path_under_user_data(self, redirect_home):
         p = paths_module.user_log_file()
         assert p == redirect_home / ".districtsync" / "etl_tool.log"
+
+
+class TestUserHistoryDb:
+    def test_path_under_user_data(self, redirect_home):
+        p = paths_module.user_history_db()
+        assert p == redirect_home / ".districtsync" / "history.db"
+
+    def test_resolves_through_user_data_dir_at_call_time(self, monkeypatch, tmp_path):
+        # The store must resolve its path through the single seam at call time (not a
+        # module constant) so the test-isolation fixture redirects it too.
+        target = tmp_path / "isolated" / ".districtsync"
+        monkeypatch.setattr(paths_module, "user_data_dir", lambda: target)
+        assert paths_module.user_history_db() == target / "history.db"
 
 
 @pytest.fixture

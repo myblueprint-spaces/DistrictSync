@@ -71,3 +71,13 @@ def user_mappings_dir() -> Path:
 def user_log_file() -> Path:
     """Canonical log-file path, shared by CLI, wizard, and scheduled runs."""
     return user_data_dir() / "etl_tool.log"
+
+
+def user_history_db() -> Path:
+    """Canonical run-history SQLite store path (consumed by the run store, Slice 4b).
+
+    Resolves through ``user_data_dir()`` at call time — never a module-level
+    constant — so the test-isolation seam redirects it too (a store keyed off an
+    import-time path would write the real ``history.db`` from every pipeline test).
+    """
+    return user_data_dir() / "history.db"

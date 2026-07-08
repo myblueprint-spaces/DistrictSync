@@ -21,9 +21,21 @@ import sys
 import traceback
 from pathlib import Path
 
+from src.utils.logger import get_logger
 from src.utils.paths import user_log_file
 
 _LOG_NAME = "etl_tool.log"
+
+
+def boot_logging() -> None:
+    """Configure the shared file-log sink for the UI session (deferred from import).
+
+    A Flet session that never configured logging would run silently — its diagnostics
+    (and, from Slice 4b, its run records) would go nowhere. Call this once at launch so
+    the UI writes to the same ``etl_tool.log`` sink as the CLI and scheduled runs. The
+    sink path resolves through ``paths.user_data_dir()`` at call time (single seam).
+    """
+    get_logger("src.ui_flet")
 
 
 def resolve_frozen_cwd() -> Path | None:
@@ -43,13 +55,15 @@ def resolve_log_path() -> Path:
     """Canonical ETL log path — the same sink the ETL writes to.
 
     Reuses ``src/utils/paths.user_log_file()`` (single source of truth) so the
-    early-failure traceback lands where Run History / support already look. Falls
-    back to ``~/.districtsync/etl_tool.log`` only if that helper is unavailable.
+    early-failure traceback lands where Run History / support already look. If that
+    helper itself is unavailable (paths.py broken), falls back to a bare filename in
+    the current directory — deliberately NOT re-deriving the app-data location here,
+    which would duplicate the single ``paths.py`` seam.
     """
     try:
         return user_log_file()
     except Exception:
-        return Path.home() / ".districtsync" / _LOG_NAME
+        return Path(_LOG_NAME)
 
 
 def format_user_error(exc: BaseException) -> str:
@@ -142,6 +156,9 @@ def main() -> None:  # pragma: no cover - view glue (ft.run + dialog)
     frozen_cwd = resolve_frozen_cwd()
     if frozen_cwd is not None:
         os.chdir(frozen_cwd)
+
+    # Configure the shared file-log sink for this UI session (deferred from import).
+    boot_logging()
 
     try:
         import flet as ft

@@ -12,18 +12,18 @@ from pathlib import Path
 
 import pytest
 
-import src.config.app_config as app_config_mod
 from src.config.app_config import AppConfig
 from src.ui_flet.filepicker import setup_state
 
 
 @pytest.fixture
-def tmp_app_config(tmp_path: Path, monkeypatch):
-    """Point AppConfig persistence at a throwaway home so ``save()`` is sandboxed."""
-    cfg_dir = tmp_path / ".districtsync"
-    monkeypatch.setattr(app_config_mod, "APP_CONFIG_DIR", cfg_dir)
-    monkeypatch.setattr(app_config_mod, "APP_CONFIG_FILE", cfg_dir / "config.json")
-    return cfg_dir
+def tmp_app_config(isolated_user_profile: Path) -> Path:
+    """The isolated app-data dir (AppConfig ``save()`` is sandboxed suite-wide).
+
+    Isolation is provided by the conftest autouse ``isolated_user_profile`` fixture
+    (``paths.user_data_dir`` → per-test tmp); this just surfaces that dir.
+    """
+    return isolated_user_profile
 
 
 class TestSetupStateGate:

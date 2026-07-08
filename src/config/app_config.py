@@ -1,8 +1,14 @@
 """Runtime application configuration (non-sensitive settings only).
 
-Stores the partner's setup wizard choices to disk at
-``~/.districtsync/config.json``.  SFTP passwords are NOT stored here —
-they are stored in the OS credential store via the ``keyring`` library.
+Stores the partner's setup wizard choices to disk as ``config.json`` under the
+per-user app-data directory (``paths.user_data_dir()`` — ``~/.districtsync`` today).
+SFTP passwords are NOT stored here — they are stored in the OS credential store
+via the ``keyring`` library.
+
+The config path is resolved through ``paths.user_data_dir()`` at CALL time (not an
+import-time constant) so it flows through the single app-data seam: the test
+isolation fixture can redirect it, and Slice 11's relocation only touches
+``paths.py`` (single source of truth for where app data lives).
 """
 
 from __future__ import annotations
@@ -14,10 +20,16 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from src.utils import paths
+
 logger = logging.getLogger(__name__)
 
-APP_CONFIG_DIR = Path.home() / ".districtsync"
-APP_CONFIG_FILE = APP_CONFIG_DIR / "config.json"
+CONFIG_FILENAME = "config.json"
+
+
+def config_file_path() -> Path:
+    """Resolve the ``config.json`` path at call time, through the single paths seam."""
+    return paths.user_data_dir() / CONFIG_FILENAME
 
 
 @dataclass
@@ -44,10 +56,11 @@ class AppConfig:
     @classmethod
     def load(cls) -> AppConfig:
         """Load config from disk, returning defaults if the file doesn't exist."""
-        if not APP_CONFIG_FILE.exists():
+        config_file = config_file_path()
+        if not config_file.exists():
             return cls()
         try:
-            data = json.loads(APP_CONFIG_FILE.read_text(encoding="utf-8"))
+            data = json.loads(config_file.read_text(encoding="utf-8"))
             # Only pass known fields to avoid errors on old config files
             known = {f for f in cls.__dataclass_fields__}
             filtered = {k: v for k, v in data.items() if k in known}
@@ -58,19 +71,21 @@ class AppConfig:
 
     def save(self) -> None:
         """Persist config to disk (creates parent directory if needed)."""
-        APP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        APP_CONFIG_FILE.write_text(
+        config_file = config_file_path()
+        config_dir = config_file.parent
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(
             json.dumps(asdict(self), indent=2),
             encoding="utf-8",
         )
         # Restrict permissions on Unix (config contains SFTP host/username)
         if sys.platform != "win32":
             try:
-                os.chmod(APP_CONFIG_DIR, 0o700)
-                os.chmod(APP_CONFIG_FILE, 0o600)
+                os.chmod(config_dir, 0o700)
+                os.chmod(config_file, 0o600)
             except OSError:
                 pass
-        logger.info(f"App config saved to {APP_CONFIG_FILE}")
+        logger.info(f"App config saved to {config_file}")
 
     def is_complete(self) -> bool:
         """Return True if the minimum required settings are present."""

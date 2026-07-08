@@ -8,13 +8,14 @@ from src.config.app_config import AppConfig
 
 
 @pytest.fixture
-def config_dir(tmp_path, monkeypatch):
-    """Redirect AppConfig to a temp directory."""
-    cfg_dir = tmp_path / ".districtsync"
-    cfg_file = cfg_dir / "config.json"
-    monkeypatch.setattr("src.config.app_config.APP_CONFIG_DIR", cfg_dir)
-    monkeypatch.setattr("src.config.app_config.APP_CONFIG_FILE", cfg_file)
-    return cfg_dir, cfg_file
+def config_dir(isolated_user_profile):
+    """The isolated app-data dir + config path.
+
+    AppConfig now resolves its path through ``paths.user_data_dir()`` at call time,
+    which the conftest autouse ``isolated_user_profile`` fixture redirects into a
+    per-test tmp dir — so this just surfaces that isolated location for assertions.
+    """
+    return isolated_user_profile, isolated_user_profile / "config.json"
 
 
 class TestAppConfigDefaults:
@@ -36,7 +37,7 @@ class TestAppConfigLoad:
 
     def test_load_reads_saved_config(self, config_dir):
         cfg_dir, cfg_file = config_dir
-        cfg_dir.mkdir(parents=True)
+        cfg_dir.mkdir(parents=True, exist_ok=True)
         cfg_file.write_text(
             json.dumps(
                 {
@@ -57,7 +58,7 @@ class TestAppConfigLoad:
 
     def test_load_ignores_unknown_fields(self, config_dir):
         cfg_dir, cfg_file = config_dir
-        cfg_dir.mkdir(parents=True)
+        cfg_dir.mkdir(parents=True, exist_ok=True)
         cfg_file.write_text(
             json.dumps(
                 {
@@ -74,7 +75,7 @@ class TestAppConfigLoad:
 
     def test_load_returns_defaults_on_corrupt_file(self, config_dir):
         cfg_dir, cfg_file = config_dir
-        cfg_dir.mkdir(parents=True)
+        cfg_dir.mkdir(parents=True, exist_ok=True)
         cfg_file.write_text("not valid json{{{", encoding="utf-8")
 
         cfg = AppConfig.load()
