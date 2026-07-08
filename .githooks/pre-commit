@@ -1,0 +1,11 @@
+#!/bin/sh
+# claugentic-dev-harness — architecture-tree gate at COMMIT time. Checked once per
+# `git commit`, locally, before the commit is written; a non-zero exit aborts it.
+# `--staged` scopes it to what's being committed. A git failure must never block a
+# commit, so resolve the root defensively and let a clean state pass.
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
+out=$("$PY" "$root/scripts/claugentic-check_architecture_tree.py" --staged 2>&1)
+[ $? -eq 0 ] && exit 0
+printf '%s\n' "$out"
+exit 1

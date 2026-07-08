@@ -371,6 +371,7 @@ Then without `--dry-run` to verify the output CSVs, and with `--quality` to spot
 | `sd48myedbc` | `myedbc` | Student Demographic Enhanced, Staff Information (non-enhanced) |
 | `sd51myedbc` | `myedbc` | Contact SpacesEDU for file naming details |
 | `sd54myedbc` | `myedbc` | Bulkley Valley — lowercase filenames; Staff non-Enhanced; Emergency Contact + Class Info Enhanced; ATT--AM/PM/Daily excluded |
+| `sd60myedbc` | `myedbc` | Peace River North — Family `row_filters` (guardians-only); opt-in `cross_enrollment.collapse` home-school dedupe for dual-school students; ATT--AM/PM excluded |
 | `sd74myedbc` | `myedbc` | Student Course Selection, Staff Information, Parent Information, Class Info Enhanced |
 | `mbp_all` | `myedbc` | Tier override (full myBlueprint+) — enables CourseInfo + StudentCourses in addition to the 5 rostering CSVs |
 | `mbp_core` | `myedbc` | Tier override (minimal myBlueprint+) — enables only Students + CourseInfo + StudentCourses |

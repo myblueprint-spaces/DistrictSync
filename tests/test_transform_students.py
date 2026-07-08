@@ -1,6 +1,7 @@
 """Integration tests for the Students entity transformation."""
 
 import pandas as pd
+import pytest
 
 from src.etl.transformer import DataTransformer
 
@@ -183,3 +184,81 @@ class TestStudentsTransform:
         raw_data = {"StudentDemographicInformation.txt": df}
         result = self.transformer.transform(df, mapping, "Students", raw_data, global_config)
         assert result["Email Address"].iloc[0] == "12345@test.ca"
+
+
+class TestStudentsCrossEnrollmentCollapse:
+    """Opt-in cross-enrollment collapse (SD60): dedupe Students rows sharing a
+    User ID to one row, keeping the home-school row. Off by default."""
+
+    _MAPPING = {
+        "source_files": {"student_demographic": "Demo.txt"},
+        "field_map": {
+            "User ID": "Student Number",
+            "First Name": "Legal First Name",
+            "Last Name": "Legal Surname",
+            "SchoolCode": "School Number",
+            "EnrollStatus": None,
+        },
+    }
+
+    def setup_method(self):
+        self.transformer = DataTransformer()
+        self.transformer.set_school_year(2025, "08-25", "07-25")
+
+    def _cross_df(self):
+        # S001 is Active at two schools (200 and its home school 100); S002 single.
+        return pd.DataFrame(
+            {
+                "student number": ["S001", "S001", "S002"],
+                "legal first name": ["Alice", "Alice", "Bob"],
+                "legal surname": ["Smith", "Smith", "Jones"],
+                "school number": ["200", "100", "100"],
+                "home school number": ["100", "100", "100"],
+                "enrolment status": ["Active", "Active", "Active"],
+            }
+        )
+
+    def _gc(self, collapse=True, home="home school number"):
+        gc = {"academic_start_month_day": "08-25", "academic_end_month_day": "07-25"}
+        if collapse is not None:
+            gc["cross_enrollment"] = {"collapse": collapse, "home_school_column": home}
+        return gc
+
+    def test_collapse_keeps_home_school_row(self):
+        df = self._cross_df()
+        result = self.transformer.transform(df, self._MAPPING, "Students", {"Demo.txt": df}, self._gc())
+        assert set(result["User ID"]) == {"S001", "S002"}
+        assert len(result) == 2
+        s001 = result[result["User ID"] == "S001"]
+        # The home-school row (School == Home School == 100) is the one retained.
+        assert s001["SchoolCode"].iloc[0] == "100"
+
+    def test_single_row_student_untouched(self):
+        df = pd.DataFrame(
+            {
+                "student number": ["S001"],
+                "legal first name": ["Alice"],
+                "legal surname": ["Smith"],
+                "school number": ["200"],  # not the home school, but the only row
+                "home school number": ["100"],
+                "enrolment status": ["Active"],
+            }
+        )
+        result = self.transformer.transform(df, self._MAPPING, "Students", {"Demo.txt": df}, self._gc())
+        assert len(result) == 1
+        assert result["SchoolCode"].iloc[0] == "200"
+
+    def test_collapse_false_keeps_both_rows(self):
+        df = self._cross_df()
+        result = self.transformer.transform(df, self._MAPPING, "Students", {"Demo.txt": df}, self._gc(collapse=False))
+        assert len(result) == 3
+
+    def test_collapse_config_absent_keeps_both_rows(self):
+        df = self._cross_df()
+        result = self.transformer.transform(df, self._MAPPING, "Students", {"Demo.txt": df}, self._gc(collapse=None))
+        assert len(result) == 3
+
+    def test_missing_home_school_column_raises(self):
+        df = self._cross_df().drop(columns="home school number")
+        with pytest.raises(ValueError, match="home_school_column"):
+            self.transformer.transform(df, self._MAPPING, "Students", {"Demo.txt": df}, self._gc())

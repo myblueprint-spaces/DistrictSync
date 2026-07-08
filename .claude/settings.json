@@ -1,27 +1,4 @@
 {
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \"C:/Users/shan.peiris/Documents/Integrations/DistrictSync/scripts/claugentic-check_architecture_tree.py\" --hook-write"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \"C:/Users/shan.peiris/Documents/Integrations/DistrictSync/scripts/claugentic-check_architecture_tree.py\" --hook"
-          }
-        ]
-      }
-    ]
-  },
   "extraKnownMarketplaces": {
     "sh4npeiris": {
       "source": {

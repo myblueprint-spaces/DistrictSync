@@ -1,4 +1,4 @@
-# claugentic-dev-harness@0.2.4 managed — do not edit (copied from the claugentic-dev-harness plugin)
+# claugentic-dev-harness@0.3.0 managed — do not edit (copied from the claugentic-dev-harness plugin)
 #!/usr/bin/env python3
 """Enforce that docs/claugentic-ARCHITECTURE_TREE.md indexes every in-scope source file.
 
@@ -16,27 +16,25 @@ Fails loud: `_git` raises `RuntimeError` if git is missing or returns non-zero
 (missing/erroring git or a non-repo cwd must NEVER read as a green "0 in-scope
 files"). A returncode-0 with empty stdout is legitimate (empty repo / glob matches
 nothing) and is left as an empty list. `main()` is the boundary that maps a git
-failure to each mode's exit code (see below).
+failure to exit 1 (the only non-zero exit).
 
 Modes:
-    python scripts/claugentic-check_architecture_tree.py                # human/CI: stdout, exit 1 on problems
-    python scripts/claugentic-check_architecture_tree.py --hook          # Stop hook: full scan, silent OK, stderr+exit 2 on problems
-    python scripts/claugentic-check_architecture_tree.py --hook-write     # PostToolUse(Write) hook: reads the written path from
-                                                              # stdin; nudges ONLY if it's a new, in-scope, undocumented
-                                                              # file (silent on overwrites / out-of-scope / already-indexed)
+    python scripts/claugentic-check_architecture_tree.py            # manual/CI: full scan, stdout, exit 1 on problems
+    python scripts/claugentic-check_architecture_tree.py --staged    # pre-commit scope: gate the INDEX (tracked + staged),
+                                                          # never unrelated untracked working-tree files
 
-Wired as a hook by `init` when the architecture-tree gate is enabled; otherwise run
-manually (`python scripts/claugentic-check_architecture_tree.py`). `init` decides per scenario:
-FRESH (no tree, no source) and MATURE-NO-TREE (no tree, source present → a
-cheap-complete backtick-prose skeleton) get the gate ON (hook wired); MATURE-WITH-TREE
-(an existing tree) is asked — Replace with a harness skeleton (gate ON) or Keep-mine
-(gate OFF, INCLUDE_GLOBS=[], no hook wired). Also runnable in CI. See CLAUDE.md ->
+Run once per `git commit` by the `.githooks/pre-commit` wrapper (wired via
+`core.hooksPath=.githooks`, which `init` configures for an adopter when the
+architecture-tree gate is enabled); otherwise run manually / in CI. `init` decides
+per scenario: FRESH (no tree, no source) and MATURE-NO-TREE (no tree, source present →
+a cheap-complete backtick-prose skeleton) get the gate ON (pre-commit hook wired);
+MATURE-WITH-TREE (an existing tree) is asked — Replace with a harness skeleton (gate ON)
+or Keep-mine (gate OFF, INCLUDE_GLOBS=[], no hook wired). See CLAUDE.md ->
 Harness Discipline.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
@@ -214,8 +212,8 @@ def _backtick_tokens(text: str) -> set[str]:
     Fenced blocks are stripped first (see `_strip_fenced_blocks`) so a diagram never
     desyncs the pairing.
 
-    The single source of truth for "is this path an EXACT entry in the tree" — used by
-    both the presence check and the `--hook-write` nudge so the two never drift.
+    The single source of truth for "is this path an EXACT entry in the tree" — the
+    presence check's view of what the tree already indexes.
     """
     return {t.replace("\\", "/") for t in BACKTICK_TOKEN_PATTERN.findall(_strip_fenced_blocks(text))}
 
@@ -249,7 +247,7 @@ def _git(*args: str) -> list[str]:
         # Strict UTF-8 decode: a tracked filename whose bytes are not valid UTF-8 must land on
         # the same loud, controlled boundary as every other git failure (a UnicodeDecodeError is
         # a ValueError — without this re-raise it would bypass the RuntimeError handlers and
-        # break the --hook-write "a git failure must NOT block a file write" contract).
+        # surface as a raw traceback instead of the controlled exit-1 error every caller relies on).
         raise RuntimeError(
             "git output was not valid UTF-8 — a tracked filename is not UTF-8-encoded; "
             f"rename that file or fix its encoding ({exc})"
@@ -316,8 +314,14 @@ def glob_drift(in_scope: set[str]) -> list[str]:
     return _repo_source_files()[:8]
 
 
-def in_scope_files() -> set[str]:
-    """Tracked + staged + untracked-not-ignored files matching INCLUDE_GLOBS, minus exclusions."""
+def in_scope_files(include_untracked: bool = True) -> set[str]:
+    """Tracked + staged (+ untracked-not-ignored unless `include_untracked` is False) files
+    matching INCLUDE_GLOBS, minus exclusions.
+
+    `include_untracked=False` is the **pre-commit (`--staged`) scope**: check only what is being
+    committed — the index (tracked + staged-new) — NOT unrelated untracked source lying in the
+    working tree, so an unstaged scratch file can't block an unrelated commit. The default `True`
+    keeps the manual/CI scope (catch a file you forgot to `git add`)."""
     # Empty-globs guard: `git ls-files --` with NO pathspec lists EVERY file (a fail-open
     # bug — the gate would presence-check the whole repo). An unset INCLUDE_GLOBS means
     # "tracking not configured yet" → no in-scope files; drift (above) is what catches a
@@ -326,20 +330,24 @@ def in_scope_files() -> set[str]:
         return set()
     tracked = _git("ls-files", "--", *INCLUDE_GLOBS)
     staged = _git("diff", "--cached", "--name-only", "--diff-filter=ACMR", "--", *INCLUDE_GLOBS)
-    untracked = _git("ls-files", "--others", "--exclude-standard", "--", *INCLUDE_GLOBS)
-    files = {f.replace("\\", "/") for f in (*tracked, *staged, *untracked)}
+    groups = [tracked, staged]
+    if include_untracked:
+        groups.append(_git("ls-files", "--others", "--exclude-standard", "--", *INCLUDE_GLOBS))
+    files = {f.replace("\\", "/") for group in groups for f in group}
     return {f for f in files if not any(x in f for x in EXCLUDE_SUBSTR)}
 
 
-def evaluate() -> tuple[list[str], str]:
-    """Return (problem_lines, success_summary). Empty problem_lines == OK."""
+def evaluate(include_untracked: bool = True) -> tuple[list[str], str]:
+    """Return (problem_lines, success_summary). Empty problem_lines == OK.
+
+    `include_untracked` threads to `in_scope_files`: False is the pre-commit (`--staged`) scope."""
     if not TREE_PATH.exists():
         return ([f"ERROR: {TREE_DISPLAY} is missing — create the architecture index."], "")
     # Strip ```-fenced blocks once: both the presence tokenizer (_backtick_tokens, which
     # re-strips defensively) and the staleness tokenizer (TOKEN_PATTERN.findall below) read
     # this text, and an index entry never lives inside a diagram fence.
     text = _strip_fenced_blocks(TREE_PATH.read_text(encoding="utf-8"))
-    files = in_scope_files()
+    files = in_scope_files(include_untracked)
     # Presence: a file is indexed iff its path appears as an EXACT backtick-delimited
     # token — NOT a raw substring. The old `f not in text` false-green'd a root `a.py`
     # whenever a longer `scripts/a.py` appeared anywhere in the tree, and would have
@@ -387,67 +395,29 @@ def evaluate() -> tuple[list[str], str]:
     return (problems, f"OK: {TREE_DISPLAY} indexes all {len(files)} in-scope files.")
 
 
-def _written_path_from_stdin() -> str | None:
-    """Extract tool_input.file_path from the Claude Code hook JSON on stdin."""
-    try:
-        data = json.loads(sys.stdin.read() or "{}")
-    except (ValueError, OSError):
-        return None
-    path = (data.get("tool_input") or {}).get("file_path")
-    return path or None
-
-
-def _stop_hook_active_from_stdin() -> bool:
-    """True if the Stop-hook JSON on stdin reports `stop_hook_active` — the loop-breaker.
-
-    A blocking Stop hook (exit 2) re-runs the agent, which can Stop again; the platform sets
-    `stop_hook_active: true` on that re-entry. Honouring it lets the SECOND stop pass (exit 0)
-    so the gate reports the problem ONCE rather than wedging the agent in a re-block loop — the
-    first block already surfaced it. Stdin may be empty or non-JSON (manual/CI run, no payload):
-    that decodes to not-active, so the full scan runs as before (fail-loud preserved).
-    """
-    try:
-        data = json.loads(sys.stdin.read() or "{}")
-    except (ValueError, OSError):
-        return False
-    return bool(isinstance(data, dict) and data.get("stop_hook_active"))
-
-
-def _check_written_file() -> int:
-    """PostToolUse(Write): nudge ONLY if the just-written file is a new, in-scope, undocumented file.
-
-    The hook's file_path may be absolute in any slash/style (Windows, MSYS, forward-slash),
-    so match it as a suffix of the repo-relative in-scope paths rather than via relpath.
-    """
-    path = _written_path_from_stdin()
-    if not path:
-        return 0
-    norm = path.replace("\\", "/")
-    rel = next((s for s in in_scope_files() if norm == s or norm.endswith("/" + s)), None)
-    if rel is None:
-        return 0  # out of scope, or an excluded/__init__ file
-    text = TREE_PATH.read_text(encoding="utf-8") if TREE_PATH.exists() else ""
-    if rel in _backtick_tokens(text):
-        return 0  # already documented (an EXACT backtick entry, not a substring)
-    print(
-        f"New file `{rel}` is not in {TREE_DISPLAY}.\n"
-        f"Add `- `{rel}` — <one-line description>.` under the right section (CLAUDE.md -> Harness Discipline).",
-        file=sys.stderr,
-    )
-    return 2
-
-
 def _repo_root() -> Path:
     """Repo root, derived from THIS script's location — never the process CWD, never hardcoded.
 
     Every path the gate touches (`TREE_PATH`, each `_git` call, the staleness `Path.exists()`)
-    is repo-root-relative, but a hook can launch this script from ANY working directory — a
-    subdir, or the home dir certain hook events run from. Anchoring to the script's own location
-    makes the gate CWD-independent and portable across machines/adopters: the value is computed
-    at runtime from `__file__`, never written down. Git is authoritative; when git is unavailable
-    we fall back to `<script_dir>/..` (the script lives at `<repo>/scripts/`).
+    is repo-root-relative, but its callers launch it from ANY working directory — the
+    `.githooks/pre-commit` hook (git runs it from the commit cwd) and manual/CI runs from a
+    subdir. Anchoring to the script's own location makes the gate CWD-independent and portable
+    across machines/adopters: the value is computed at runtime from `__file__`, never written
+    down. Git is authoritative; when git is unavailable we fall back to `<script_dir>/..` (the
+    script lives at `<repo>/scripts/`).
     """
     here = Path(__file__).resolve().parent
+    # A git hook (e.g. the pre-commit gate) runs with GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE set in
+    # the environment. Those OVERRIDE the `-C <here>` discovery, so `--show-toplevel` returns the
+    # `-C` directory (the `scripts/` subdir) instead of the repo root — chdir'ing there hides every
+    # repo-root-relative path and the tree reads as "missing" (observed in a linked git worktree).
+    # Strip them for the discovery call so git walks UP from the script's own location, resolving
+    # the correct root for a main OR a linked worktree. (The later `_git` index reads keep the
+    # inherited env — there GIT_DIR/GIT_INDEX_FILE correctly point at what's being committed.)
+    discover_env = {
+        k: v for k, v in os.environ.items()
+        if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+    }
     try:
         out = subprocess.run(
             ["git", "-C", str(here), "rev-parse", "--show-toplevel"],
@@ -455,6 +425,7 @@ def _repo_root() -> Path:
             text=True,
             encoding="utf-8",
             check=True,
+            env=discover_env,
         )
         return Path(out.stdout.strip())
     except (FileNotFoundError, subprocess.CalledProcessError):
@@ -465,10 +436,11 @@ def _force_utf8_output() -> None:
     """Emit stdout/stderr as UTF-8 so non-ASCII glyphs in messages survive on Windows.
 
     Python encodes stdout/stderr with the host locale codepage by default (cp1252 on Windows),
-    but the hook consumer decodes the stream as UTF-8 — so a lone em-dash (`—`, as in the "is
-    missing —" message) mojibakes to `�` (a strict cp1252 console can even raise
-    UnicodeEncodeError). Reconfiguring to UTF-8 fixes every message at once. A captured/replaced
-    stream (pytest, a pipe wrapper) may lack `.reconfigure` → guarded, best-effort.
+    but the pre-commit wrapper captures the stream and prints it back as UTF-8 — so a lone
+    em-dash (`—`, as in the "is missing —" message) mojibakes to `�` (a strict cp1252 console
+    can even raise UnicodeEncodeError). Reconfiguring to UTF-8 fixes every message at once. A
+    captured/replaced stream (pytest, a pipe wrapper) may lack `.reconfigure` → guarded,
+    best-effort.
     """
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -478,40 +450,24 @@ def _force_utf8_output() -> None:
 
 
 def main(argv: list[str]) -> int:
-    # Boundary setup, run for EVERY mode (all route through main()): emit UTF-8 (Windows
-    # mojibake) and anchor to the repo root so the gate is CWD-independent — a Stop hook may
-    # launch it from anywhere, and every path below is repo-root-relative.
+    # Boundary setup, run for EVERY mode: emit UTF-8 (Windows mojibake) and anchor to the repo
+    # root so the gate is CWD-independent — the pre-commit hook and manual/CI runs can launch it
+    # from any directory, and every path below is repo-root-relative.
     _force_utf8_output()
     os.chdir(_repo_root())
-    if "--hook-write" in argv:
-        # A git failure must NOT block a file write — the write nudge is advisory only.
-        try:
-            return _check_written_file()
-        except RuntimeError:
-            return 0
-
-    hook_mode = "--hook" in argv
-    if hook_mode and _stop_hook_active_from_stdin():
-        # Loop-breaker: a prior blocking Stop already reported; never re-block the same stop.
-        return 0
+    # `--staged` = the pre-commit scope: check only the index (tracked + staged), never unrelated
+    # untracked working-tree files, so an unstaged scratch file can't block an unrelated commit.
+    staged = "--staged" in argv
     try:
-        problems, summary = evaluate()
+        problems, summary = evaluate(include_untracked=not staged)
     except RuntimeError as exc:
         # The gate could not run — fail loud, never report a false green.
-        if hook_mode:
-            print(f"ERROR: {exc}", file=sys.stderr)  # blocking: the agent must know the gate couldn't run
-            return 2
         print(f"ERROR: {exc}")
         return 1
     if problems:
-        msg = "\n".join(problems) + f"\n\nUpdate {TREE_DISPLAY} with a one-line description (CLAUDE.md -> Harness Discipline)."
-        if hook_mode:
-            print(msg, file=sys.stderr)  # fed back to the agent; exit 2 = blocking
-            return 2
-        print(msg)
+        print("\n".join(problems) + f"\n\nUpdate {TREE_DISPLAY} with a one-line description (CLAUDE.md -> Harness Discipline).")
         return 1
-    if not hook_mode:
-        print(summary)
+    print(summary)
     return 0
 
 

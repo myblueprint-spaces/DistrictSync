@@ -1,0 +1,77 @@
+# SD60 - Peace River North School District
+# Inherits from: myedbc (standard MyEducation BC mapping).
+# SD60 is a distributed-learning district aggregating many independent schools:
+# student emails span 70+ domains, so emails are used AS-IS from the file (no
+# template) and ~729 active students with no email are kept (blank) pending
+# district clarification.
+_base: myedbc
+version: '1.0'
+sis: MyEducationBC
+district_name: SD60 - Peace River North School District
+
+global_config:
+  school_year_sources:
+    student_schedule: StudentCourseSelection.txt
+  # MyEd internal attendance-only sections — not real classes.
+  excluded_course_codes:
+    - ATT--AM
+    - ATT--PM
+  # ~386 SD60 students are Active at TWO schools (identical demographics except
+  # School Number; same admission date; no withdraw date; DISJOINT classes at
+  # each school). Collapse to one Students row per User ID, keeping the
+  # home-school row; class enrolments at BOTH schools are preserved (Enrollments
+  # match by User ID). Opt-in — off for every other district.
+  cross_enrollment:
+    collapse: true
+    home_school_column: "Home school number"
+
+mappings:
+  Students:
+    source_files:
+      student_demographic: Student_demo_enh.txt
+    field_map:
+      # Include cross-enrolled students whose PRIMARY enrolment is outside SD60
+      # (34 students are exclusively "Active No Primary").
+      "EnrollStatus":
+        active_values: ["Active", "PreReg", "Active No Primary"]
+
+  Staff:
+    source_files:
+      staff_info: StaffInformation.txt
+
+  Family:
+    source_files:
+      emergency_contacts: EmergencyEnhanced.txt
+    # Only true parents/guardians become SpacesEDU family accounts (exclude
+    # non-guardian emergency contacts: grandparents, friends, etc.).
+    row_filters:
+      - column: "Parent Auth / Guardian"
+        include: ["Y"]
+
+  Classes:
+    source_files:
+      student_schedule: StudentCourseSelection.txt
+      course_info: CourseInformation.txt
+      staff_info: StaffInformation.txt
+      student_demographic: Student_demo_enh.txt
+      class_info: ClassInformation.txt
+    field_map:
+      # SD60 schedule has no Primary-Teacher flag; title col is "Title"; section
+      # comes from the schedule's "Section" (not "Section Letter").
+      "Name":
+        "primary teacher flag": ""
+        "teacher last name": "Teacher Name"
+        "course title": "Title"
+        "section letter": "Section"
+
+  Enrollments:
+    source_files:
+      student_schedule: StudentCourseSelection.txt
+      student_demographic: Student_demo_enh.txt
+    field_map:
+      "User ID":
+        "student_id_col": "Student Number"
+        "staff_id_col": "Teacher ID"
+      "Role":
+        "student_id_col": "Student Number"
+        "staff_id_col": "Teacher ID"

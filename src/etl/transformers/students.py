@@ -19,6 +19,7 @@ class StudentTransformer(BaseTransformer):
 
         self._determine_enrollment_status(working, field_map)
         working = self._filter_active(working, field_map)
+        working = self._collapse_cross_enrollment(working, field_map, context)
         result["EnrollStatus"] = working["EnrollStatus"]
         self._generate_emails(working, result, field_map)
 
@@ -56,6 +57,56 @@ class StudentTransformer(BaseTransformer):
                 continue
             is_blank = result[primary].isna() | result[primary].astype(str).str.strip().str.lower().isin(["", "nan"])
             result.loc[is_blank, primary] = result.loc[is_blank, fallback]
+
+    def _collapse_cross_enrollment(
+        self, working: pd.DataFrame, field_map: dict[str, Any], context: TransformContext
+    ) -> pd.DataFrame:
+        """Collapse duplicate ``User ID`` rows to one, keeping the home-school row.
+
+        Opt-in via ``global_config.cross_enrollment`` (``collapse`` +
+        ``home_school_column``). A pupil Active at two schools has one Students
+        row per school (identical demographics bar School Number); this keeps a
+        single row — the one whose School equals the student's home school, else
+        the first — so Students.csv carries one identity per pupil. Enrollments
+        are built from the schedule and matched by User ID, so class enrolments
+        at BOTH schools are unaffected. Off by default → every other district is
+        unchanged.
+
+        Source column names resolve from the Students ``field_map`` (Configurable
+        Columns): ``User ID`` and ``SchoolCode``. Fail-loud (validate at
+        boundary): a configured ``home_school_column`` absent from the frame
+        raises ``ValueError``. Never drops a student entirely (always ≥ 1 row per
+        User ID). Logs only the collapsed COUNT (no PII).
+        """
+        cc = (context.global_config or {}).get("cross_enrollment") or {}
+        if not cc.get("collapse"):
+            return working
+
+        user_id_col = str(field_map.get("User ID", "")).strip().lower()
+        school_col = str(field_map.get("SchoolCode", "")).strip().lower()
+        home_col = str(cc.get("home_school_column", "")).strip().lower()
+
+        if home_col not in working.columns:
+            raise ValueError(
+                f"[Students] cross_enrollment home_school_column '{home_col}' not found in "
+                f"source columns. Available: {sorted(working.columns)}"
+            )
+
+        before = len(working)
+        working = working.copy()
+        school_norm = working[school_col].astype(str).str.strip()
+        home_norm = working[home_col].astype(str).str.strip()
+        # Priority 0 = home-school row (School == Home School), 1 otherwise. A
+        # stable sort brings the home row first within each User ID group, so
+        # keep="first" retains it (or the first row when no home match exists).
+        working["__ce_priority"] = (school_norm != home_norm).astype(int)
+        working = working.sort_values(by=[user_id_col, "__ce_priority"], kind="stable")
+        working = working.drop_duplicates(subset=[user_id_col], keep="first")
+        working = working.drop(columns="__ce_priority")
+        after = len(working)
+        if before != after:
+            logger.info(f"[Students] cross_enrollment collapsed {before - after} duplicate rows to home school")
+        return working
 
     def _determine_enrollment_status(self, working: pd.DataFrame, field_map: dict[str, Any]) -> None:
         """Set the 'EnrollStatus' column in-place via the shared base predicate.

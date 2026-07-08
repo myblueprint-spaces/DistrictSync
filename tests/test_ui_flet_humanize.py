@@ -88,7 +88,7 @@ class TestFriendlyDistrictName:
     def test_known_district_never_surfaces_the_raw_id(self) -> None:
         # Product invariant across every bundled config: when a friendly name exists
         # (all 9 bundled configs carry one), the helper never returns the raw id.
-        for sis_id in ("sd40myedbc", "sd48myedbc", "sd51myedbc", "sd74myedbc"):
+        for sis_id in ("sd40myedbc", "sd48myedbc", "sd51myedbc", "sd60myedbc", "sd74myedbc"):
             result = friendly_district_name(sis_id, config_dir=BUNDLED_MAPPINGS)
             assert result and result != sis_id
 
