@@ -11,6 +11,13 @@ lives in one tested place, independent of any view layer.
 ``"ScheduledTasks module not available"`` / Windows' own ``"Access is denied"``)
 plus whether the process is elevated (:func:`src.scheduler.windows.is_elevated`).
 
+**Self-elevation outcomes (Plan 0029, D5):** on the self-elevated register/unregister
+path, ``register_task`` returns one of a small set of canonical, secret-free elevation
+markers (imported here as exact constants so the copy can never drift from the producer).
+Each maps to a calm, bounded category — the un-elevated "run as administrator" branch is
+**superseded on the register path** (elevation replaces that dead-end) but is kept for any
+residual raw access-denied message so the classifier stays total.
+
 **Security (I2):** ``msg`` is the ALREADY-sanitized ``register_task`` return —
 ``_clean_ps_stderr`` has de-CLIXML'd it and stripped any ``DSYNC_*`` secret. The
 classifier does NOT re-sanitize; it only maps substrings + appends FIXED copy.
@@ -22,6 +29,14 @@ which would show literal asterisks.
 """
 
 from __future__ import annotations
+
+from src.scheduler.windows import (
+    _MSG_DIFFERENT_ACCOUNT,
+    _MSG_ELEVATION_LAUNCH_FAILED,
+    _MSG_ELEVATION_NO_RESULT,
+    _MSG_ELEVATION_TIMEOUT,
+    _MSG_UAC_DECLINED,
+)
 
 
 def classify_schedule_error(msg: str, elevated: bool) -> str:
@@ -41,6 +56,36 @@ def classify_schedule_error(msg: str, elevated: bool) -> str:
         A plain-language, actionable message (plain prose — no markdown, so a
         Flet verdict banner renders it cleanly).
     """
+    # Self-elevation outcomes (D5) — exact canonical markers from register_task's
+    # elevated path. Checked first (and by exact equality) so a bounded category always
+    # wins over the generic access-denied / else copy; the copy is single-sourced here.
+    if msg == _MSG_UAC_DECLINED:
+        return "You declined the Windows permission prompt — nothing was changed."
+    if msg == _MSG_ELEVATION_TIMEOUT:
+        # HEDGED (honesty): a timeout is only reachable AFTER the prompt was accepted, and the
+        # terminated child may already have created the schedule — never claim "before it was
+        # answered" / "nothing was changed". The register flow already tried a read-back.
+        return (
+            "DistrictSync stopped waiting for the elevated registration to finish — the schedule "
+            "may or may not have been created. Check the schedule status below, then register "
+            "again if needed."
+        )
+    if msg == _MSG_ELEVATION_NO_RESULT:
+        return (
+            "The permission prompt was accepted but we couldn't confirm the registration — "
+            "check the schedule status below."
+        )
+    if msg == _MSG_DIFFERENT_ACCOUNT:
+        return (
+            "The permission prompt ran as a different account — log in as an administrator, or "
+            "register without the Windows password (runs only while you're logged in)."
+        )
+    if msg == _MSG_ELEVATION_LAUNCH_FAILED:
+        return (
+            "Windows couldn't show the permission prompt. Try again, or run DistrictSync as an "
+            "administrator to register the schedule."
+        )
+
     access_denied = "Access is denied" in msg or "access denied" in msg.lower()
 
     if "PowerShell not found" in msg:

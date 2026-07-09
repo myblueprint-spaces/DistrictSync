@@ -169,6 +169,11 @@ def main() -> None:  # pragma: no cover - view glue (ft.run + dialog)
         migrate_legacy_data_dir()
         boot_logging()
 
+        # Best-effort sweep of any orphaned elevation-handshake files (D5) — never fatal.
+        from src.scheduler.elevation import sweep_orphans
+
+        sweep_orphans()
+
         import flet as ft
 
         from src.ui_flet import shell

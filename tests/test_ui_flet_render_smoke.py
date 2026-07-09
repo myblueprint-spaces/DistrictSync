@@ -301,6 +301,77 @@ def test_setup_renders_unregister_affordance(stub_page):
     )
 
 
+def _driving_page(captured):
+    """A page stub that runs off-thread workers synchronously and captures ``run_task`` calls."""
+    page = MagicMock()
+    page.run_thread = lambda fn: fn()  # run the worker body inline
+    page.run_task = lambda coro, *args: captured.append((coro, args))
+    return page
+
+
+def _button_by_content(tree, content):
+    return next(c for c in _iter_controls(tree) if getattr(c, "content", None) == content)
+
+
+def _complete_config(monkeypatch):
+    from src.config.app_config import AppConfig
+
+    cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc")
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    # Keep the on-mount + post-outcome readout probe from firing a real PowerShell subprocess.
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    benign = ScheduleStatus(state=ScheduleState.UNKNOWN, headline="", detail="")
+    monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: benign)
+    return cfg
+
+
+def test_register_worker_survives_crash(monkeypatch):
+    """D5 crash-net: an off-thread register worker that RAISES must still marshal a calm
+    result (spinner + buttons released) instead of stranding the UI forever."""
+    from src.ui_flet.screens.setup import _WORKER_ERROR_REGISTER
+
+    _complete_config(monkeypatch)
+
+    def _boom(*a, **k):
+        raise OSError("injected worker crash")
+
+    # Patch both platform entry points so the worker crashes on Windows AND Linux CI.
+    monkeypatch.setattr("src.scheduler.windows.register_task", _boom)
+    monkeypatch.setattr("src.scheduler.linux.register_cron", _boom)
+
+    captured: list = []
+    tree = build_setup(_driving_page(captured))
+    captured.clear()  # discard the on-mount readout probe marshal
+    _button_by_content(tree, "Register schedule").on_click(None)
+
+    assert len(captured) == 1, "the crashed worker must marshal exactly one result (no strand)"
+    _coro, args = captured[0]
+    assert args == (False, _WORKER_ERROR_REGISTER)
+
+
+def test_unregister_worker_survives_crash(monkeypatch):
+    """D5 crash-net: same guarantee for the unregister worker."""
+    from src.ui_flet.screens.setup import _WORKER_ERROR_UNREGISTER
+
+    _complete_config(monkeypatch)
+
+    def _boom(*a, **k):
+        raise OSError("injected worker crash")
+
+    monkeypatch.setattr("src.scheduler.windows.delete_task", _boom)
+    monkeypatch.setattr("src.scheduler.linux.delete_cron", _boom)
+
+    captured: list = []
+    tree = build_setup(_driving_page(captured))
+    captured.clear()
+    _button_by_content(tree, "Unregister schedule").on_click(None)
+
+    assert len(captured) == 1, "the crashed worker must marshal exactly one result (no strand)"
+    _coro, args = captured[0]
+    assert args == (False, _WORKER_ERROR_UNREGISTER)
+
+
 def test_no_ft_dropdown_uses_on_change():
     """Guard the specific trap: ft.Dropdown has NO on_change on 0.85.3 (use on_select).
 

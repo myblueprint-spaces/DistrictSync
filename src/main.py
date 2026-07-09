@@ -228,6 +228,11 @@ if __name__ == "__main__":
     # time so importing src.main in tests never touches the real user profile).
     logger = _configure_cli_logging()
 
+    # Best-effort sweep of any orphaned elevation-handshake files (D5) — never fatal.
+    from src.scheduler.elevation import sweep_orphans
+
+    sweep_orphans()
+
     # Single source (src/utils/version.py): build-stamped tag → package
     # metadata → "dev". A frozen exe reports the real release via the
     # tag-stamped src/_version.py; importlib alone would always say "dev".

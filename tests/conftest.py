@@ -162,6 +162,23 @@ def isolated_user_profile(request: pytest.FixtureRequest, tmp_path: Path, monkey
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _no_real_uac(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HARD test-safety guard (Plan 0029 D5): no test may ever fire a real Windows UAC prompt.
+
+    Patches the lowest ``ShellExecuteEx("runas")`` seam so an accidental self-elevation
+    attempt in a test — e.g. a ``register_task(run_as_password=...)`` call that mocks
+    ``subprocess.run`` but forgets ``is_elevated`` on a non-elevated Windows dev host —
+    degrades to a fast "declined" outcome (``ERROR_CANCELLED`` 1223) instead of a real UAC
+    dialog / real scheduled-task registration. Tests that exercise the outcome mapping
+    override this seam themselves; the elevation-flow tests replace
+    ``run_elevated_powershell`` entirely. Inert on non-Windows (the real call is guarded).
+    """
+    from src.scheduler import elevation
+
+    monkeypatch.setattr(elevation, "_shell_execute_runas", lambda file, params: (0, 1223))
+
+
 @pytest.fixture
 def transformer():
     """Fresh DataTransformer with school year pre-set."""

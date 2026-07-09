@@ -61,6 +61,7 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.config.loader import available_configs
+from src.scheduler import windows
 from src.sftp.uploader import SFTPUploader
 from src.ui_flet import components, tokens
 from src.ui_flet.filepicker import (
@@ -91,9 +92,28 @@ _TRANSIENT_LOCATION_WARNING = (
     "and re-register."
 )
 
+# Calm fallbacks when an off-thread schedule worker itself raises (D5): the spinner + buttons
+# must ALWAYS be released, so the worker marshals one of these instead of stranding the UI.
+_WORKER_ERROR_REGISTER = "We couldn't run the schedule registration just now. Please try again."
+_WORKER_ERROR_UNREGISTER = "We couldn't run the schedule removal just now. Please try again."
+
 
 def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
     return ft.Padding(left=h, top=v, right=h, bottom=v)
+
+
+def _inflight_row(text: str) -> ft.Control:
+    """A spinner + honest waiting line shown while an off-thread schedule op is in flight (D5).
+
+    The register/unregister call can block on a UAC prompt, so the flow runs off the UI
+    thread (``page.run_thread``) with this in-flight state — e.g. "Waiting for the Windows
+    permission prompt…" — until the classified outcome replaces it.
+    """
+    return ft.Row(
+        spacing=10,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[ft.ProgressRing(width=18, height=18), ft.Text(text, size=13, color=tokens.color_muted)],
+    )
 
 
 def _schedule_readout_line(status: ScheduleStatus) -> ft.Control:
@@ -353,6 +373,14 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
             )
         )
 
+    def _elevated_now() -> bool:
+        """Whether this process is already elevated (Windows only; False elsewhere)."""
+        if not is_windows:
+            return False
+        from src.scheduler.windows import is_elevated
+
+        return is_elevated()
+
     def _register(_e: ft.ControlEvent | None = None) -> None:
         # Enter (on_submit) bypasses a disabled button, so re-check the SAME gate the
         # Register button encodes — an unsatisfied gate is a silent no-op (matches the
@@ -361,7 +389,9 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
         if not can_register_schedule(cfg.is_complete(), run_time_field.value or ""):
             return
 
-        # Read the password fresh at register-time; local var, never stashed (I3).
+        # Read the password fresh at register-time; local var, never stashed (I3). It is
+        # passed ONLY to register_task, which routes it via the DPAPI elevation handshake
+        # or the child-env — never argv/logs/AppConfig.
         password = password_field.value if password_field is not None else None
 
         run_time = (run_time_field.value or "").strip()
@@ -384,102 +414,183 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
             page.update()
             return
 
-        # save-after-success (D4): config's schedule_time / schedule_registered are written
-        # ONLY when registration actually succeeds — a failed attempt must not record a time
-        # or a "registered" flag that isn't real. The raw `run_time` (not cfg) drives the call.
         exe_path = Path(sys.executable)
         transient = is_transient_location(str(exe_path))
+        # Whether THIS registration will raise a UAC prompt (Windows + a stored-password
+        # task + not already elevated → the D5 self-elevation path) — drives the in-flight copy.
+        uac_path = is_windows and bool(password) and not _elevated_now()
 
         def _on_register_success(headline: str, detail: str, *, verdict: Verdict = Verdict.HEALTHY) -> None:
+            # save-after-success (D4): schedule_time / schedule_registered are written ONLY
+            # when registration actually succeeds (never on a failed/declined attempt).
             cfg.schedule_time = run_time
             cfg.schedule_registered = True
             cfg.save()
+            local_verdict, local_detail = verdict, detail
             if transient:
-                verdict = Verdict.WARNING
-                detail = f"{detail} {_TRANSIENT_LOCATION_WARNING}"
-            result_slot.controls = [components.HealthVerdictBanner(verdict, headline=headline, detail=detail)]
-            _refresh_readout()
+                local_verdict = Verdict.WARNING
+                local_detail = f"{detail} {_TRANSIENT_LOCATION_WARNING}"
+            result_slot.controls = [
+                components.HealthVerdictBanner(local_verdict, headline=headline, detail=local_detail)
+            ]
 
-        if is_windows:
-            from src.scheduler.windows import is_elevated, register_task
+        async def _apply_result(ok: bool, msg: str) -> None:
+            # UI mutation ONLY inside the coroutine the loop owns — never the worker thread.
+            register_btn.disabled = not can_register_schedule(cfg.is_complete(), run_time_field.value or "")
+            unregister_btn.disabled = False
+            if is_windows:
+                if ok and password:
+                    from src.scheduler.windows import current_run_as_user
 
-            ok, msg = register_task(
-                task_name=cfg.schedule_task_name,
-                exe_path=exe_path,
-                sis_type=cfg.sis_type,
-                input_dir=Path(cfg.input_dir),
-                output_dir=Path(cfg.output_dir),
-                run_time=run_time,
-                sftp=cfg.sftp_enabled,
-                run_as_user=None,
-                run_as_password=(password or None),
-            )
-            if ok and password:
-                from src.scheduler.windows import current_run_as_user
-
-                _on_register_success(
-                    "Nightly sync scheduled",
-                    f"Runs as {current_run_as_user()}, whether or not you're logged in, daily at {run_time}.",
-                )
-            elif ok:
-                _on_register_success(
-                    "Scheduled — logged-on only",
-                    "It will only run while you're logged in. Re-register with your "
-                    "Windows password for unattended operation across reboots.",
-                    verdict=Verdict.WARNING,
-                )
-            else:
-                elevated = is_elevated()
-                result_slot.controls = [
-                    components.ErrorCard(
-                        "Couldn't register the schedule",
-                        classify_schedule_error(msg, elevated),
+                    _on_register_success(
+                        "Nightly sync scheduled",
+                        f"Runs as {current_run_as_user()}, whether or not you're logged in, daily at {run_time}.",
                     )
-                ]
-        else:
-            from src.scheduler.linux import register_cron
-
-            ok, msg = register_cron(
-                exe_path,
-                cfg.sis_type,
-                Path(cfg.input_dir),
-                Path(cfg.output_dir),
-                run_time,
-                sftp=cfg.sftp_enabled,
-            )
-            if ok:
+                elif ok:
+                    _on_register_success(
+                        "Scheduled — logged-on only",
+                        "It will only run while you're logged in. Re-register with your "
+                        "Windows password for unattended operation across reboots.",
+                        verdict=Verdict.WARNING,
+                    )
+                elif msg == _WORKER_ERROR_REGISTER:
+                    # The worker itself crashed — calm fixed copy, spinner already released above.
+                    result_slot.controls = [components.ErrorCard("Couldn't register the schedule", msg)]
+                elif msg in (windows._MSG_ELEVATION_NO_RESULT, windows._MSG_ELEVATION_TIMEOUT):
+                    # Accepted / timed out but NOT confirmed — honest "couldn't confirm", not a
+                    # definite-failure headline (the body already read the schedule back).
+                    result_slot.controls = [
+                        components.ErrorCard(
+                            "Couldn't confirm the schedule", classify_schedule_error(msg, _elevated_now())
+                        )
+                    ]
+                else:
+                    # Known failures (declined / different-account / launch-failed / raw errors).
+                    result_slot.controls = [
+                        components.ErrorCard(
+                            "Couldn't register the schedule", classify_schedule_error(msg, _elevated_now())
+                        )
+                    ]
+            elif ok:
                 _on_register_success("Nightly sync scheduled", f"Runs daily at {run_time}.")
             else:
-                result_slot.controls = [
-                    components.ErrorCard("Couldn't create the schedule", msg),
-                ]
+                detail = _WORKER_ERROR_REGISTER if msg == _WORKER_ERROR_REGISTER else msg
+                result_slot.controls = [components.ErrorCard("Couldn't create the schedule", detail)]
+            page.update()
+            _refresh_readout()
 
+        def _work() -> None:  # runs OFF the UI thread (the register call can block on the UAC prompt)
+            # A worker crash (e.g. write_request OSError) must STILL release the spinner + buttons —
+            # always marshal a result, never leave the UI stranded mid-flight.
+            try:
+                if is_windows:
+                    from src.scheduler.windows import register_task
+
+                    ok, msg = register_task(
+                        task_name=cfg.schedule_task_name,
+                        exe_path=exe_path,
+                        sis_type=cfg.sis_type,
+                        input_dir=Path(cfg.input_dir),
+                        output_dir=Path(cfg.output_dir),
+                        run_time=run_time,
+                        sftp=cfg.sftp_enabled,
+                        run_as_user=None,
+                        run_as_password=(password or None),
+                    )
+                else:
+                    from src.scheduler.linux import register_cron
+
+                    ok, msg = register_cron(
+                        exe_path,
+                        cfg.sis_type,
+                        Path(cfg.input_dir),
+                        Path(cfg.output_dir),
+                        run_time,
+                        sftp=cfg.sftp_enabled,
+                    )
+            except Exception:  # noqa: BLE001 - a worker crash must not strand the spinner
+                ok, msg = False, _WORKER_ERROR_REGISTER
+            page.run_task(_apply_result, ok, msg)
+
+        # In-flight state: the register call can block on the UAC prompt AND the post-accept
+        # child run (up to ~120s), so the copy covers the whole span, buttons disable, then
+        # the worker takes over.
+        register_btn.disabled = True
+        unregister_btn.disabled = True
+        result_slot.controls = [
+            _inflight_row(
+                "Asking Windows for permission and registering the schedule…"
+                if uac_path
+                else "Registering the schedule…"
+            )
+        ]
         page.update()
+        page.run_thread(_work)
 
     def _unregister(_e: ft.ControlEvent | None = None) -> None:
         # Remove the nightly schedule. Idempotent: an already-absent task presents as
         # "already not scheduled" (success-shaped) via the pure `interpret_unregister`; the
-        # config flag is cleared only when the end state (no schedule) holds.
-        if is_windows:
-            from src.scheduler.windows import delete_task
+        # config flag is cleared only when the end state (no schedule) holds. Removing an
+        # elevated-registered (RunLevel Highest) task can itself need elevation, so the
+        # delete runs OFF the UI thread and escalates through the D5 UAC path on access-denied.
+        async def _apply_unregister(ok: bool, msg: str) -> None:
+            register_btn.disabled = not can_register_schedule(cfg.is_complete(), run_time_field.value or "")
+            unregister_btn.disabled = False
+            if not ok and msg == _WORKER_ERROR_UNREGISTER:
+                result_slot.controls = [components.ErrorCard("Couldn't remove the schedule", msg)]
+            elif not ok and msg == windows._MSG_ELEVATION_REMOVE_UNCONFIRMED:
+                # Accepted / timed out but the removal couldn't be CONFIRMED — never assert
+                # non-removal (it may well be gone); hedge and route to the live readout.
+                result_slot.controls = [
+                    components.ErrorCard(
+                        "Couldn't confirm the schedule was removed",
+                        "We couldn't confirm the nightly schedule was removed — check the schedule "
+                        "status below, then try again if it's still there.",
+                    )
+                ]
+            elif not ok and msg in (windows._MSG_UAC_DECLINED, windows._MSG_ELEVATION_LAUNCH_FAILED):
+                result_slot.controls = [
+                    components.ErrorCard("Schedule not removed", classify_schedule_error(msg, _elevated_now()))
+                ]
+            else:
+                outcome = interpret_unregister(ok, msg)
+                if outcome.success_shaped:
+                    cfg.schedule_registered = False
+                    cfg.save()
+                    result_slot.controls = [
+                        components.HealthVerdictBanner(
+                            Verdict.HEALTHY, headline=outcome.headline, detail=outcome.detail
+                        )
+                    ]
+                else:
+                    result_slot.controls = [components.ErrorCard(outcome.headline, outcome.detail)]
+            page.update()
+            _refresh_readout()
 
-            ok, msg = delete_task(cfg.schedule_task_name)
-        else:
-            from src.scheduler.linux import delete_cron
+        def _work() -> None:  # runs OFF the UI thread (an elevated delete can block on UAC)
+            # A worker crash must STILL release the spinner + buttons — always marshal a result.
+            try:
+                if is_windows:
+                    from src.scheduler.windows import delete_task, delete_task_elevated
 
-            ok, msg = delete_cron()
+                    ok, msg = delete_task(cfg.schedule_task_name)
+                    # An access-denied delete means the task was registered elevated (RunLevel
+                    # Highest) — retry behind ONE UAC prompt via the same D5 elevation path.
+                    if not ok and "access is denied" in (msg or "").lower() and not _elevated_now():
+                        ok, msg = delete_task_elevated(cfg.schedule_task_name)
+                else:
+                    from src.scheduler.linux import delete_cron
 
-        outcome = interpret_unregister(ok, msg)
-        if outcome.success_shaped:
-            cfg.schedule_registered = False
-            cfg.save()
-            result_slot.controls = [
-                components.HealthVerdictBanner(Verdict.HEALTHY, headline=outcome.headline, detail=outcome.detail)
-            ]
-        else:
-            result_slot.controls = [components.ErrorCard(outcome.headline, outcome.detail)]
+                    ok, msg = delete_cron()
+            except Exception:  # noqa: BLE001 - a worker crash must not strand the spinner
+                ok, msg = False, _WORKER_ERROR_UNREGISTER
+            page.run_task(_apply_unregister, ok, msg)
+
+        register_btn.disabled = True
+        unregister_btn.disabled = True
+        result_slot.controls = [_inflight_row("Removing the schedule…")]
         page.update()
-        _refresh_readout()
+        page.run_thread(_work)
 
     register_btn = components.primary_button(
         "Register schedule",

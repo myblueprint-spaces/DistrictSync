@@ -32,6 +32,21 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _already_elevated():
+    """Pin these run-as tests to the DIRECT (already-elevated) registration path.
+
+    Plan 0029 D5 added per-operation self-elevation: an unattended (password) register
+    from a NON-elevated process now runs behind a UAC prompt via ``ShellExecuteEx``
+    instead of the direct ``subprocess.run``. This whole file asserts the direct
+    ``Register-ScheduledTask`` mechanics (env/script/principal), which is exactly the
+    already-elevated (or in-elevated-child) path — so force ``is_elevated() -> True`` so
+    the branch is the one under test, on any host (Windows dev or Linux CI).
+    """
+    with patch("src.scheduler.windows.is_elevated", return_value=True):
+        yield
+
+
 def _argv(mock_run) -> list[str]:
     return mock_run.call_args[0][0]
 

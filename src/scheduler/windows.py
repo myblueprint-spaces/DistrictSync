@@ -48,6 +48,20 @@ prior logged-on-only default. *run_highest* is **ignored** without a password
 (today's semantics), so ``run_highest=True`` + no password still yields
 ``Limited``.
 
+**Self-elevation (Plan 0029, D5):** the unattended (password / RunLevel Highest)
+registration genuinely requires an elevated caller. When the process is NOT already
+elevated (``is_elevated()`` False), :func:`register_task` runs the SAME fixed
+:func:`_register_body` inside a child bootstrap behind ONE normal UAC prompt via
+``src/scheduler/elevation.py`` — replacing the old "quit and re-open as
+administrator" dead-end while the app itself stays non-admin. The password crosses the
+elevation boundary ONLY inside a DPAPI-CurrentUser-sealed request file (never argv, the
+parent env, or a log); a cross-SID (different-admin) consent makes the child's
+``Unprotect`` throw → it **fails closed** with the ``DSYNC_DIFFERENT_ACCOUNT`` sentinel.
+Success is CONFIRMED via :func:`read_schedule` — never assumed from the child's exit
+code. :func:`delete_task_elevated` removes an elevated-registered task the same way (no
+secret, so no DPAPI). Already-elevated / no-password / non-Windows callers keep the
+direct :func:`subprocess.run` path unchanged.
+
 **Readable errors:** the script's ``catch`` emits the bare exception message
 via ``[Console]::Error.WriteLine`` (not ``Write-Error``, which PowerShell
 CLIXML-serializes on a redirected stderr into a noisy ``#< CLIXML`` blob that
@@ -93,6 +107,7 @@ Usage::
 from __future__ import annotations
 
 import base64
+import contextlib
 import getpass
 import json
 import logging
@@ -105,6 +120,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.scheduler import elevation
+from src.scheduler.elevation import ElevationOutcome, ElevationResult
 from src.utils.validators import (
     validate_run_as_user,
     validate_run_time,
@@ -113,6 +130,33 @@ from src.utils.validators import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Bounded wait for the elevated child (D5) — never INFINITE. WaitForSingleObject waits
+# for the elevated PowerShell to finish registering (the UAC-consent delay happens
+# inside ShellExecuteEx, which the OS bounds by its own prompt timeout), so 120s is
+# generous headroom for a slow Register-ScheduledTask without ever freezing the flow.
+_ELEV_TIMEOUT_S = 120.0
+
+# Elevation outcome message contract (D5) — the canonical, secret-free strings
+# register_task returns on the self-elevated register/unregister path. The wizard's
+# pure classifier (src/ui_flet/setup_errors.classify_schedule_error) keys off these
+# EXACT values, so any change here must be mirrored there (it imports these constants).
+_MSG_UAC_DECLINED = "The Windows permission prompt was declined."
+# TIMEOUT is only reachable AFTER UAC consent (a runas process handle exists only once the
+# user accepts), so the terminated child may have already registered/removed the task. The
+# marker is therefore neutral ("timed out"), NEVER "before it was answered / nothing changed"
+# — and the register/delete flows resolve it with a read-back before surfacing it.
+_MSG_ELEVATION_TIMEOUT = "The elevated schedule change timed out before it finished."
+_MSG_ELEVATION_NO_RESULT = "The schedule change could not be confirmed."
+_MSG_ELEVATION_REMOVE_UNCONFIRMED = "The schedule removal could not be confirmed."
+_MSG_DIFFERENT_ACCOUNT = "The permission prompt ran as a different account."
+_MSG_ELEVATION_LAUNCH_FAILED = "Windows could not show the permission prompt."
+
+# The sentinel the elevated child writes to its result file when the DPAPI unprotect
+# FAILS (a cross-SID / different-admin UAC consent — fail closed). The parent detects
+# it BEFORE sanitizing (it deliberately carries the DSYNC_ prefix a normal message
+# never would) and maps it to the bounded _MSG_DIFFERENT_ACCOUNT category.
+_DIFFERENT_ACCOUNT_SENTINEL = "DSYNC_DIFFERENT_ACCOUNT"
 
 # The run-history store's source tag for the nightly scheduled run (Plan 0029, D2c).
 # Carried on the registered task's action command line (``--source scheduled``) so the
@@ -248,13 +292,29 @@ def is_elevated() -> bool:
         return False
 
 
-def _build_register_script(*, has_password: bool) -> str:
-    """Return the FIXED PowerShell registration script for the given path.
+# The FIXED PowerShell preamble + task-setup body, shared by BOTH the direct
+# registration script and the self-elevated child bootstrap (D5) — single-sourced so
+# the elevated path can never fork a second, drifting copy of the registration logic.
+_PS_PREAMBLE = "$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\n"
+_PS_TASK_SETUP = (
+    "  $act = New-ScheduledTaskAction -Execute $env:DSYNC_EXE "
+    "-Argument $env:DSYNC_ARGS -WorkingDirectory $env:DSYNC_WORKDIR\n"
+    "  $at = [DateTime]::ParseExact($env:DSYNC_RUNTIME,'HH:mm',"
+    "[System.Globalization.CultureInfo]::InvariantCulture)\n"
+    "  $trg = New-ScheduledTaskTrigger -Daily -At $at\n"
+    "  $set = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew "
+    "-ExecutionTimeLimit (New-TimeSpan -Hours 2) "
+    "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
+    "-StartWhenAvailable:$false\n"
+)
 
-    The script is a constant string — it references only ``$env:DSYNC_*``
-    variables and **never** interpolates a dynamic value into its own text, so
-    there is no PowerShell string-injection surface and the exact text is
-    auditable. It never echoes ``$env:DSYNC_TASK_PW``.
+
+def _register_body(has_password: bool) -> str:
+    """The FIXED, inside-``try`` registration body (task setup + principal + register).
+
+    References ONLY ``$env:DSYNC_*`` — never interpolates a dynamic value into its own
+    text, so there is no PowerShell string-injection surface and it never echoes
+    ``$env:DSYNC_TASK_PW`` (it is passed to ``-Password`` but never written out).
 
     Two variants:
 
@@ -262,34 +322,11 @@ def _build_register_script(*, has_password: bool) -> str:
         ``New-ScheduledTaskPrincipal -LogonType Password`` forces the
         stored-credential (``TASK_LOGON_PASSWORD``) logon, then
         ``Register-ScheduledTask -InputObject $task -User -Password`` stores it.
-        ``-RunLevel`` is chosen by the env var ``$env:DSYNC_RUNLEVEL``
-        (``Highest`` / ``Limited``).
+        ``-RunLevel`` is chosen by ``$env:DSYNC_RUNLEVEL`` (``Highest`` / ``Limited``).
       - *has_password* False → logged-on-only: ``-LogonType Interactive
         -RunLevel Limited`` and ``Register-ScheduledTask`` with no
         ``-User/-Password`` (interactive-token task; never ``S4U``).
-
-    The run time is parsed with ``InvariantCulture`` so a non-en-US district
-    locale cannot break ``'HH:mm'`` parsing. ``-StartWhenAvailable:$false``
-    preserves the no-catch-up-run guarantee; the battery flags / ``PT2H``
-    execution time limit / ``IgnoreNew`` multiple-instances policy preserve
-    parity with the prior XML registration. ``$ProgressPreference =
-    'SilentlyContinue'`` suppresses the cmdlets' progress stream so it cannot
-    pollute the captured stderr the caller surfaces.
     """
-    common = (
-        "$ErrorActionPreference = 'Stop'\n"
-        "$ProgressPreference = 'SilentlyContinue'\n"
-        "try {\n"
-        "  $act = New-ScheduledTaskAction -Execute $env:DSYNC_EXE "
-        "-Argument $env:DSYNC_ARGS -WorkingDirectory $env:DSYNC_WORKDIR\n"
-        "  $at = [DateTime]::ParseExact($env:DSYNC_RUNTIME,'HH:mm',"
-        "[System.Globalization.CultureInfo]::InvariantCulture)\n"
-        "  $trg = New-ScheduledTaskTrigger -Daily -At $at\n"
-        "  $set = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew "
-        "-ExecutionTimeLimit (New-TimeSpan -Hours 2) "
-        "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
-        "-StartWhenAvailable:$false\n"
-    )
     if has_password:
         principal_and_register = (
             "  $prn = New-ScheduledTaskPrincipal -UserId $env:DSYNC_USER "
@@ -309,14 +346,26 @@ def _build_register_script(*, has_password: bool) -> str:
             "  Register-ScheduledTask -TaskName $env:DSYNC_TASKNAME "
             "-InputObject $task -Force | Out-Null\n"
         )
-    # The catch writes the bare exception message to stderr via
-    # [Console]::Error.WriteLine — NOT Write-Error. Write-Error to a redirected
-    # stderr is CLIXML-serialized by PowerShell (a ``#< CLIXML … <Objs>…`` blob
-    # that buries the human message under the echoed script + XML noise);
-    # [Console]::Error.WriteLine emits plain text so the caller surfaces a clean
-    # one-liner (e.g. "Access is denied."). ``exit 1`` keeps the failure loud.
+    return _PS_TASK_SETUP + principal_and_register
+
+
+def _build_register_script(*, has_password: bool) -> str:
+    """Return the FIXED direct-registration script (used when already elevated / no password).
+
+    The run time is parsed with ``InvariantCulture`` so a non-en-US district locale
+    cannot break ``'HH:mm'`` parsing. ``-StartWhenAvailable:$false`` preserves the
+    no-catch-up-run guarantee; the battery flags / ``PT2H`` execution time limit /
+    ``IgnoreNew`` multiple-instances policy preserve parity with the prior XML
+    registration. ``$ProgressPreference = 'SilentlyContinue'`` suppresses the cmdlets'
+    progress stream so it cannot pollute the captured stderr the caller surfaces.
+
+    The catch writes the bare exception message to stderr via ``[Console]::Error.WriteLine``
+    — NOT ``Write-Error`` (which PowerShell CLIXML-serializes on a redirected stderr,
+    burying the human message under the echoed script + XML noise). ``exit 1`` keeps
+    the failure loud.
+    """
     tail = "  Write-Output 'DSYNC_OK'\n} catch {\n  [Console]::Error.WriteLine($_.Exception.Message)\n  exit 1\n}\n"
-    return common + principal_and_register + tail
+    return _PS_PREAMBLE + "try {\n" + _register_body(has_password) + tail
 
 
 def _build_action_args(
@@ -489,6 +538,26 @@ def register_task(
         user = current_run_as_user()
 
     arguments, working_dir = _build_action_args(exe_path, sis_type, input_dir, output_dir, sftp)
+
+    # Self-elevation (D5): an unattended (password / RunLevel Highest) registration
+    # genuinely requires an elevated caller. When we are NOT already elevated, run the
+    # registration behind ONE normal UAC prompt via the elevation IPC primitive —
+    # replacing the old "quit and re-open as administrator" dead-end — while the app
+    # itself stays non-admin. Already-elevated callers, the no-password logged-on-only
+    # path, and non-Windows hosts keep the direct subprocess path below unchanged.
+    if has_password and sys.platform == "win32" and not is_elevated():
+        assert run_as_password is not None  # has_password == bool(run_as_password)  # nosec B101
+        return _register_elevated(
+            task_name=task_name,
+            user=user,
+            run_time=run_time,
+            exe_path=exe_path,
+            arguments=arguments,
+            working_dir=working_dir,
+            run_as_password=run_as_password,
+            run_highest=run_highest,
+        )
+
     script = _build_register_script(has_password=has_password)
     # PowerShell -EncodedCommand expects UTF-16LE-base64. The script is a fixed
     # string referencing only $env:DSYNC_* — no dynamic value is ever encoded
@@ -581,6 +650,275 @@ def delete_task(task_name: str) -> tuple[bool, str]:
     success = result.returncode == 0
     message = (result.stdout + result.stderr).strip()
     return success, message
+
+
+# --- Per-operation elevation (D5) --------------------------------------------
+# When the app is NOT already elevated, an unattended register (stored-password /
+# RunLevel Highest) — and deleting an elevated-registered task — self-elevate behind
+# ONE UAC prompt via src/scheduler/elevation.py. The register path carries the Windows
+# password ONLY inside a DPAPI-CurrentUser-sealed request file (never argv / the parent
+# env / logs); the elevated child FAILS CLOSED on a cross-SID unprotect. Success is
+# CONFIRMED by reading the real task back (read_schedule) — never assumed from an exit code.
+
+# The FIXED atomic-write helper the elevated child uses to publish its plaintext result
+# ({ok, message}) — temp file + Move-Item so the parent never observes a partial write.
+_PS_WRITE_RESULT_FN = (
+    "function Write-DsyncResult($okv, $msgv) {\n"
+    "  $o = [PSCustomObject]@{ ok = $okv; message = $msgv }\n"
+    "  $enc = New-Object System.Text.UTF8Encoding($false)\n"
+    "  $tmp = $resPath + '.tmp'\n"
+    "  [System.IO.File]::WriteAllText($tmp, ($o | ConvertTo-Json -Compress), $enc)\n"
+    "  Move-Item -LiteralPath $tmp -Destination $resPath -Force\n"
+    "}\n"
+)
+
+
+def _b64(value: str) -> str:
+    """UTF-8-base64 a string for injection-proof embedding in a FIXED PowerShell script.
+
+    Base64 output is ``[A-Za-z0-9+/=]`` only, so a value that could otherwise break the
+    surrounding single-quoted PowerShell literal (a user-profile path with an apostrophe
+    or space, embedded because ShellExecuteEx cannot pass env to the elevated child)
+    can never inject. The handshake PATHS are ours (random names under user_data_dir,
+    not user-controlled); the task name is ``validate_task_name``-checked first — base64
+    is belt-and-suspenders on top of both.
+    """
+    return base64.b64encode(value.encode("utf-8")).decode("ascii")
+
+
+def _build_elevated_register_script(*, has_password: bool, req_path: Path, res_path: Path) -> str:
+    """FIXED child bootstrap: DPAPI-unprotect the request → set env → run the SAME register body.
+
+    The request/result paths AND the single-sourced ``elevation.DPAPI_ENTROPY_UTF8`` are all
+    base64-embedded (ShellExecuteEx can't pass env — base64 is uniformly injection-proof). A DPAPI ``Unprotect``
+    failure — the cross-SID / different-admin case — writes the ``DSYNC_DIFFERENT_ACCOUNT``
+    sentinel and exits (**fail closed, CurrentUser scope only, never LocalMachine**). On
+    success it runs ``_register_body`` (single-sourced with the direct path) and writes a
+    plaintext ``{ok, message}`` result — it NEVER writes ``$env:DSYNC_TASK_PW``.
+    """
+    return (
+        _PS_PREAMBLE
+        + "Add-Type -AssemblyName System.Security\n"
+        + f"$reqPath = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{_b64(str(req_path))}'))\n"
+        + f"$resPath = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{_b64(str(res_path))}'))\n"
+        + f"$entropy = [System.Convert]::FromBase64String('{_b64(elevation.DPAPI_ENTROPY_UTF8)}')\n"
+        + _PS_WRITE_RESULT_FN
+        + "try {\n"
+        + "  $blob = [System.IO.File]::ReadAllBytes($reqPath)\n"
+        + "  $plain = [System.Security.Cryptography.ProtectedData]::Unprotect("
+        "$blob, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)\n"
+        + "  $payload = [System.Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json\n"
+        + "} catch {\n"
+        + f"  Write-DsyncResult $false '{_DIFFERENT_ACCOUNT_SENTINEL}'\n"
+        + "  exit 0\n"
+        + "}\n"
+        + "$env:DSYNC_TASKNAME = $payload.DSYNC_TASKNAME\n"
+        + "$env:DSYNC_USER = $payload.DSYNC_USER\n"
+        + "$env:DSYNC_RUNTIME = $payload.DSYNC_RUNTIME\n"
+        + "$env:DSYNC_EXE = $payload.DSYNC_EXE\n"
+        + "$env:DSYNC_ARGS = $payload.DSYNC_ARGS\n"
+        + "$env:DSYNC_WORKDIR = $payload.DSYNC_WORKDIR\n"
+        + "$env:DSYNC_TASK_PW = $payload.DSYNC_TASK_PW\n"
+        + "$env:DSYNC_RUNLEVEL = $payload.DSYNC_RUNLEVEL\n"
+        + "try {\n"
+        + _register_body(has_password)
+        + "  Write-DsyncResult $true 'Registered.'\n"
+        + "} catch {\n"
+        + "  Write-DsyncResult $false $_.Exception.Message\n"
+        + "}\n"
+    )
+
+
+def _build_elevated_delete_script(*, task_name: str, res_path: Path) -> str:
+    """FIXED child bootstrap for an elevated delete — no password / DPAPI (a delete carries no secret).
+
+    The validated task name is base64-embedded (injection-proof) and removed via
+    ``Unregister-ScheduledTask``; a plaintext ``{ok, message}`` result is written atomically.
+    """
+    return (
+        _PS_PREAMBLE
+        + f"$resPath = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{_b64(str(res_path))}'))\n"
+        + f"$taskName = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{_b64(task_name)}'))\n"
+        + _PS_WRITE_RESULT_FN
+        + "try {\n"
+        + "  Unregister-ScheduledTask -TaskName $taskName -Confirm:$false | Out-Null\n"
+        + "  Write-DsyncResult $true 'Removed.'\n"
+        + "} catch {\n"
+        + "  Write-DsyncResult $false $_.Exception.Message\n"
+        + "}\n"
+    )
+
+
+def _map_pre_consent_failure(outcome: ElevationOutcome) -> str | None:
+    """Map a DECLINED / LAUNCH_FAILED outcome to its canonical message, else None.
+
+    Deliberately does NOT handle TIMEOUT: a timeout is only reachable AFTER UAC consent, so
+    the terminated child may already have registered/removed the task — the register/delete
+    flows resolve TIMEOUT (and COMPLETED) with a read-back rather than assert failure.
+    """
+    if outcome.result is ElevationResult.DECLINED:
+        return _MSG_UAC_DECLINED
+    if outcome.result is ElevationResult.LAUNCH_FAILED:
+        return _MSG_ELEVATION_LAUNCH_FAILED
+    return None
+
+
+def _sanitize_child_message(message: str) -> str:
+    """De-CLIXML + ``DSYNC_``-strip a child result message before it can surface.
+
+    Mirrors the register_task stderr discipline: ``_clean_ps_stderr`` strips any CLIXML,
+    then any residual ``DSYNC_`` token (which a normal PowerShell exception never carries)
+    collapses to a safe generic line rather than risk echoing an env-var name. The
+    password VALUE never reaches the result by construction — this is defense-in-depth.
+    """
+    cleaned = _clean_ps_stderr(message or "")
+    if "DSYNC_" in cleaned:
+        return "The schedule change failed (error detail unavailable)."
+    return cleaned or "The schedule change failed with no detail."
+
+
+def _cleanup_handshake(*handshake_paths: Path | None) -> None:
+    """Best-effort delete of the request/result handshake files (sweep_orphans is the backstop).
+
+    ``None`` paths (a handshake that failed to materialize before an early error) are
+    skipped — the caller passes its ``req_path``/``res_path`` sentinels straight through.
+    """
+    for path in handshake_paths:
+        if path is None:
+            continue
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+
+
+def _confirm_registration(task_name: str, *, on_unconfirmed: str) -> tuple[bool, str]:
+    """Confirm a registration against the REAL task; unconfirmed → ``(False, on_unconfirmed)``.
+
+    Success (exit code / child ``ok`` / a long-running TIMEOUT) is only ever asserted when
+    ``read_schedule`` reports ``found=True``. An elevated-registered task a filtered token
+    can't read yields ``found=None`` → honestly unconfirmed, never a false green.
+    """
+    readback = read_schedule(task_name)
+    if readback.found is True:
+        logger.info("Scheduled task '%s' registered and confirmed via read-back.", task_name)
+        return True, "Schedule registered and confirmed."
+    logger.warning("Elevated registration of '%s' could not be confirmed via read-back.", task_name)
+    return False, on_unconfirmed
+
+
+def _confirm_removal(task_name: str, *, on_unconfirmed: str) -> tuple[bool, str]:
+    """Confirm a removal against the REAL task; only ``found=False`` is a confirmed removal.
+
+    ``found=True`` (still there) or ``found=None`` (unreadable) → ``(False, on_unconfirmed)`` —
+    the flow must not assert the schedule was removed when it couldn't be confirmed.
+    """
+    readback = read_schedule(task_name)
+    if readback.found is False:
+        logger.info("Scheduled task '%s' removal confirmed via read-back.", task_name)
+        return True, "Schedule removed and confirmed."
+    logger.warning("Elevated removal of '%s' could not be confirmed via read-back.", task_name)
+    return False, on_unconfirmed
+
+
+def _register_elevated(
+    *,
+    task_name: str,
+    user: str,
+    run_time: str,
+    exe_path: Path,
+    arguments: str,
+    working_dir: Path,
+    run_as_password: str,
+    run_highest: bool,
+) -> tuple[bool, str]:
+    """Register the unattended task behind ONE UAC prompt; confirm via read-back.
+
+    The password rides ONLY the DPAPI-sealed request file — never argv (ShellExecuteEx
+    gets only the encoded bootstrap + base64 paths), never the parent env, never a log.
+    Success requires BOTH the child's ``ok`` AND a positive ``read_schedule`` confirmation;
+    the handshake files are deleted in ``finally``.
+    """
+    payload: dict[str, object] = {
+        "DSYNC_TASKNAME": task_name,
+        "DSYNC_USER": user,
+        "DSYNC_RUNTIME": run_time,
+        "DSYNC_EXE": str(exe_path),
+        "DSYNC_ARGS": arguments,
+        "DSYNC_WORKDIR": str(working_dir),
+        "DSYNC_TASK_PW": run_as_password,
+        "DSYNC_RUNLEVEL": "Highest" if run_highest else "Limited",
+    }
+    logger.info("Registering scheduled task '%s' via one-time elevation (UAC).", task_name)
+    # req_path/res_path are None until write_request succeeds so the finally cleans the
+    # DPAPI-sealed file the moment it exists — a build/launch error can't strand it until
+    # the 1h sweep (security F2).
+    req_path: Path | None = None
+    res_path: Path | None = None
+    try:
+        req_path = elevation.write_request(payload)
+        res_path = req_path.with_suffix(".res")
+        script = _build_elevated_register_script(has_password=True, req_path=req_path, res_path=res_path)
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        outcome = elevation.run_elevated_powershell(encoded, timeout_s=_ELEV_TIMEOUT_S)
+
+        fail = _map_pre_consent_failure(outcome)
+        if fail is not None:
+            logger.error("Elevated registration of '%s' did not start: %s", task_name, fail)
+            return False, fail
+        if outcome.result is ElevationResult.TIMEOUT:
+            # Post-consent timeout: the terminated child may already have registered — confirm.
+            logger.warning("Elevated registration of '%s' timed out; confirming via read-back.", task_name)
+            return _confirm_registration(task_name, on_unconfirmed=_MSG_ELEVATION_TIMEOUT)
+
+        result = elevation.read_result(res_path)
+        if result is None:
+            logger.error("Elevated registration of '%s' produced no readable result.", task_name)
+            return _confirm_registration(task_name, on_unconfirmed=_MSG_ELEVATION_NO_RESULT)
+        if not result.get("ok"):
+            child_msg = str(result.get("message", ""))
+            if _DIFFERENT_ACCOUNT_SENTINEL in child_msg:
+                return False, _MSG_DIFFERENT_ACCOUNT
+            return False, _sanitize_child_message(child_msg)
+        # The child reported ok — CONFIRM against the real task (exit code alone is not success).
+        return _confirm_registration(task_name, on_unconfirmed=_MSG_ELEVATION_NO_RESULT)
+    finally:
+        _cleanup_handshake(req_path, res_path)
+
+
+def delete_task_elevated(task_name: str) -> tuple[bool, str]:
+    """Remove a scheduled task behind ONE UAC prompt, CONFIRMED against the real task.
+
+    Used when the plain ``schtasks`` :func:`delete_task` fails with access-denied because
+    the task was registered with ``RunLevel Highest``. No password / DPAPI is involved (a
+    delete carries no secret); the validated task name is base64-embedded (injection-proof)
+    in a FIXED bootstrap. Removal is only reported as success when ``read_schedule`` confirms
+    the task is gone (``found=False``) — the child's self-reported ``ok`` is never trusted on
+    its own (security F4); an unconfirmed removal returns ``_MSG_ELEVATION_REMOVE_UNCONFIRMED``.
+    """
+    task_name = validate_task_name(task_name)
+    res_path: Path | None = None
+    try:
+        res_path = elevation.new_result_path()
+        script = _build_elevated_delete_script(task_name=task_name, res_path=res_path)
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        logger.info("Removing scheduled task '%s' via one-time elevation (UAC).", task_name)
+        outcome = elevation.run_elevated_powershell(encoded, timeout_s=_ELEV_TIMEOUT_S)
+
+        fail = _map_pre_consent_failure(outcome)
+        if fail is not None:
+            return False, fail
+        if outcome.result is ElevationResult.TIMEOUT:
+            return _confirm_removal(task_name, on_unconfirmed=_MSG_ELEVATION_REMOVE_UNCONFIRMED)
+
+        result = elevation.read_result(res_path)
+        if result is None:
+            # The child wrote nothing — a read-back can still tell us whether it was removed.
+            return _confirm_removal(task_name, on_unconfirmed=_MSG_ELEVATION_REMOVE_UNCONFIRMED)
+        if not result.get("ok"):
+            return False, _sanitize_child_message(str(result.get("message", "")))
+        # The child reported ok — CONFIRM the task is actually gone before claiming removal.
+        return _confirm_removal(task_name, on_unconfirmed=_MSG_ELEVATION_REMOVE_UNCONFIRMED)
+    finally:
+        _cleanup_handshake(res_path)
 
 
 @dataclass(frozen=True)

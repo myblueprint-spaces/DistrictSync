@@ -20,6 +20,7 @@ Two concerns are covered:
 
 from __future__ import annotations
 
+from src.scheduler import windows
 from src.ui_flet.setup_errors import classify_schedule_error
 
 # A fake secret + path smuggled inside ``msg`` — used to prove that a classified
@@ -122,3 +123,62 @@ class TestClassifierNeverLeaksSecret:
         assert out == f"Failed to register schedule: {raw}"
         # Nothing beyond the fixed prefix + the (core-sanitized) msg.
         assert out.replace(raw, "") == "Failed to register schedule: "
+
+
+class TestClassifyElevationOutcomes:
+    """Plan 0029 D5: the self-elevation outcome markers map to calm, bounded copy.
+
+    The markers are single-sourced from ``register_task`` (imported constants), and the
+    classify branches use exact equality so a bounded category always wins over the
+    generic access-denied / else copy. Elevation replaces the old un-elevated "run as
+    administrator" dead-end on the register path.
+    """
+
+    def test_uac_declined_says_nothing_changed(self) -> None:
+        out = classify_schedule_error(windows._MSG_UAC_DECLINED, elevated=False)
+        assert "declined" in out.lower()
+        assert "nothing was changed" in out.lower()
+
+    def test_elevation_timeout_is_hedged_not_a_false_no_change(self) -> None:
+        out = classify_schedule_error(windows._MSG_ELEVATION_TIMEOUT, elevated=False)
+        # HEDGED — timeout is post-consent, so it must NOT claim nothing changed / not answered.
+        assert "may or may not" in out.lower()
+        assert "schedule status" in out.lower()
+        assert "nothing was changed" not in out.lower()
+        assert "before it was answered" not in out.lower()
+
+    def test_elevation_no_result_points_at_schedule_status(self) -> None:
+        out = classify_schedule_error(windows._MSG_ELEVATION_NO_RESULT, elevated=False)
+        assert "couldn't confirm" in out.lower()
+        assert "schedule status" in out.lower()
+
+    def test_different_account_offers_two_fixes(self) -> None:
+        out = classify_schedule_error(windows._MSG_DIFFERENT_ACCOUNT, elevated=False)
+        assert "different account" in out.lower()
+        assert "administrator" in out.lower()
+        assert "without the Windows password" in out
+
+    def test_launch_failed(self) -> None:
+        out = classify_schedule_error(windows._MSG_ELEVATION_LAUNCH_FAILED, elevated=False)
+        assert "couldn't show the permission prompt" in out.lower()
+
+    def test_elevation_markers_ignore_elevated_flag(self) -> None:
+        # Elevation copy is independent of the process elevation state (we auto-elevate now).
+        for marker in (
+            windows._MSG_UAC_DECLINED,
+            windows._MSG_ELEVATION_TIMEOUT,
+            windows._MSG_ELEVATION_NO_RESULT,
+            windows._MSG_DIFFERENT_ACCOUNT,
+            windows._MSG_ELEVATION_LAUNCH_FAILED,
+        ):
+            assert classify_schedule_error(marker, elevated=True) == classify_schedule_error(marker, elevated=False)
+
+    def test_no_markdown_asterisks_in_elevation_copy(self) -> None:
+        for marker in (
+            windows._MSG_UAC_DECLINED,
+            windows._MSG_ELEVATION_TIMEOUT,
+            windows._MSG_ELEVATION_NO_RESULT,
+            windows._MSG_DIFFERENT_ACCOUNT,
+            windows._MSG_ELEVATION_LAUNCH_FAILED,
+        ):
+            assert "**" not in classify_schedule_error(marker, elevated=False)

@@ -191,12 +191,20 @@ class TestCleanPsStderr:
         assert "$env" not in cleaned
 
     def test_canonical_marker_still_matches_after_clean(self):
-        """register_task de-CLIXMLs before the marker match — Access is denied survives."""
+        """register_task de-CLIXMLs before the marker match — Access is denied survives.
+
+        Pinned to the already-elevated DIRECT path (``is_elevated -> True``) so the
+        password call exercises the ``subprocess.run`` CLIXML branch under test rather
+        than the D5 self-elevation path (covered in test_scheduler_elevation.py).
+        """
         from pathlib import Path
 
         from src.scheduler.windows import register_task
 
-        with patch("src.scheduler.windows.subprocess.run") as mock_run:
+        with (
+            patch("src.scheduler.windows.is_elevated", return_value=True),
+            patch("src.scheduler.windows.subprocess.run") as mock_run,
+        ):
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr=_REAL_CLIXML_STDERR)
             ok, msg = register_task(
                 task_name="DistrictSync_Daily",
@@ -378,9 +386,14 @@ class TestWindowsRegisterTask:
         )
         assert "--source scheduled" in _child_env(mock_run)["DSYNC_ARGS"]
 
+    @patch("src.scheduler.windows.is_elevated", return_value=True)
     @patch("src.scheduler.windows.subprocess.run")
-    def test_registered_action_labels_runs_as_scheduled_with_password(self, mock_run):
-        """The unattended (password/Highest) principal carries the same source label."""
+    def test_registered_action_labels_runs_as_scheduled_with_password(self, mock_run, _mock_elevated):
+        """The unattended (password/Highest) principal carries the same source label.
+
+        Pinned to the already-elevated DIRECT path (``is_elevated -> True``); the
+        non-elevated self-elevation path (D5) is covered in test_scheduler_elevation.py.
+        """
         from src.scheduler.windows import register_task
 
         mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
