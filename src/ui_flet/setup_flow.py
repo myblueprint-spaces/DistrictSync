@@ -43,12 +43,15 @@ class SetupStep(Enum):
     FINISH = "finish"
 
 
-# The fixed step order + the two committing steps that precede the (undivided) finish line.
+# The fixed step order — DELIVERY precedes SCHEDULE by design (F1): the nightly task's ``--sftp``
+# flag is baked at registration from ``cfg.sftp_enabled``, so delivery must be committed BEFORE
+# the Schedule step registers the task, or the natural in-order walk ships a task with no
+# delivery. "Set up where it goes, then when it runs." No re-registration machinery / second UAC.
 STEP_ORDER: tuple[SetupStep, ...] = (
     SetupStep.FOLDERS,
     SetupStep.DISTRICT,
-    SetupStep.SCHEDULE,
     SetupStep.DELIVERY,
+    SetupStep.SCHEDULE,
     SetupStep.FINISH,
 )
 # The steps that must be satisfied before the finish line is reachable (FINISH itself is the
@@ -56,8 +59,8 @@ STEP_ORDER: tuple[SetupStep, ...] = (
 _PRE_FINISH_STEPS: tuple[SetupStep, ...] = (
     SetupStep.FOLDERS,
     SetupStep.DISTRICT,
-    SetupStep.SCHEDULE,
     SetupStep.DELIVERY,
+    SetupStep.SCHEDULE,
 )
 TOTAL_STEPS: int = len(STEP_ORDER)
 
@@ -284,7 +287,7 @@ def _tonight_prefix(schedule_time_display: str | None) -> str:
 def finish_copy(
     *,
     schedule_live: bool,
-    delivery_tested_ok: bool,
+    delivery: DeliveryFact,
     district: str,
     schedule_time_display: str | None,
     host: str,
@@ -292,32 +295,43 @@ def finish_copy(
 ) -> tuple[str, str]:
     """The adaptive (headline, detail) for the finish line — honest, never a future guarantee.
 
-    Three variants, keyed by what was actually checked:
+    The delivery claim keys off PERSISTED delivery, never a transient test (F1 honesty fix): only a
+    saved credential (``STORED_CRED_PRESENT`` — ``sftp_enabled`` written + the keyring holds it)
+    lets the copy promise the nightly will *try to deliver*; a merely-tested-but-unsaved connection
+    (``TESTED_OK``) says the connection worked and prompts Save, WITHOUT claiming the nightly will
+    deliver (the nightly reads saved config, so an unsaved test changes nothing tonight).
 
-    * **schedule skipped** (not live): names the Convert-tab path + the "add a schedule
-      whenever you're ready" defer — no "tonight" claim, because nothing is scheduled.
-    * **schedule live + delivery tested just now**: names the district built + the delivery
-      attempt AND the connection tested to <host> as <user> "just now and it worked" (a
-      present-perfect fact, not a promise the nightly *will* deliver).
-    * **schedule live + delivery deferred/absent**: names the district built into the output
-      folder + the "set up delivery whenever you're ready" defer.
+    Four cases:
+
+    * **schedule skipped** (not live): the Convert-tab path + "add a schedule whenever you're
+      ready" — no "tonight" claim, because nothing is scheduled.
+    * **schedule live + delivery persisted** (``STORED_CRED_PRESENT``): the district built + a
+      real "will try to deliver to SpacesEDU" (the saved credential backs the claim).
+    * **schedule live + delivery tested-but-unsaved** (``TESTED_OK``): the connection to <host>
+      as <user> worked, but it isn't saved — click Save; NO nightly-delivery claim.
+    * **schedule live + delivery deferred/absent/failed**: built into the output folder + the
+      "set up delivery whenever you're ready" defer.
     """
     if not schedule_live:
-        headline = _FINISH_HEADLINE_UNSCHEDULED
-        detail = (
+        return _FINISH_HEADLINE_UNSCHEDULED, (
             f"DistrictSync will build {district} when you run a conversion. "
             "Run conversions from the Convert tab; add a nightly schedule whenever you're ready."
         )
-    elif delivery_tested_ok:
-        headline = _FINISH_HEADLINE_SCHEDULED
+    prefix = _tonight_prefix(schedule_time_display)
+    if delivery is DeliveryFact.STORED_CRED_PRESENT:
         detail = (
-            f"{_tonight_prefix(schedule_time_display)} DistrictSync will build {district} and try to "
-            f"deliver to SpacesEDU — we tested the connection to {host} as {username} just now and it worked."
+            f"{prefix} DistrictSync will build {district} and try to deliver it to SpacesEDU — "
+            "your delivery password is saved on this computer."
+        )
+    elif delivery is DeliveryFact.TESTED_OK:
+        detail = (
+            f"{prefix} DistrictSync will build {district} into your output folder. Your delivery "
+            f"connection to {host} as {username} worked — click Save on the delivery step to have "
+            "the nightly sync deliver it too."
         )
     else:
-        headline = _FINISH_HEADLINE_SCHEDULED
         detail = (
-            f"{_tonight_prefix(schedule_time_display)} DistrictSync will build {district} into your "
-            "output folder. Set up delivery whenever you're ready."
+            f"{prefix} DistrictSync will build {district} into your output folder. "
+            "Set up delivery whenever you're ready."
         )
-    return headline, detail
+    return _FINISH_HEADLINE_SCHEDULED, detail

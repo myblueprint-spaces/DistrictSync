@@ -473,21 +473,21 @@ class TestWizardStepsRender:
         assert dropdown.hint_text == "Choose your district"  # D9 placeholder, no pre-selection
         assert dropdown.value is None
 
-    def test_schedule_delivery_finish_and_transition_cue(self, tmp_path, stub_page, monkeypatch):
+    def test_delivery_schedule_finish_and_transition_cue(self, tmp_path, stub_page, monkeypatch):
         in_dir = tmp_path / "in"
         in_dir.mkdir()
         cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
-        tree = self._wizard_tree(stub_page, monkeypatch, cfg)  # folders + district → Schedule
+        tree = self._wizard_tree(stub_page, monkeypatch, cfg)  # folders + district → Delivery (F1 order)
 
-        # Schedule step (skippable) reuses the register/unregister section.
+        # Delivery step (step 3, skippable) reuses the SFTP section — configured BEFORE the task is baked.
         assert _has_text(tree, "Step 3 of 5")
-        assert any(getattr(c, "content", None) == "Register schedule" for c in _iter_controls(tree))
-        _button_by_content(tree, "Set up later").on_click(None)  # defer schedule → Delivery
-
-        # Delivery step (skippable) reuses the SFTP section.
-        assert _has_text(tree, "Step 4 of 5")
         assert _textfield_by_label(tree, "Username") is not None
-        _button_by_content(tree, "Set up later").on_click(None)  # defer delivery → Finish
+        _button_by_content(tree, "Set up later").on_click(None)  # defer delivery → Schedule
+
+        # Schedule step (step 4, skippable) reuses the register/unregister section.
+        assert _has_text(tree, "Step 4 of 5")
+        assert any(getattr(c, "content", None) == "Register schedule" for c in _iter_controls(tree))
+        _button_by_content(tree, "Set up later").on_click(None)  # defer schedule → Finish
 
         # Finish step: neutral step title (#5) + the schedule-skipped honest headline (#1a) + copy.
         assert _has_text(tree, "Step 5 of 5")
@@ -514,9 +514,9 @@ class TestWizardStepsRender:
 
         live = ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="3:00 AM")
 
-        def _stub_schedule(page, config, *, on_status=None):
+        def _stub_schedule(page, config, *, on_status=None, on_registered=None):
             if on_status is not None:
-                on_status(live)  # deliver a LIVE read-back the moment the step builds
+                on_status(live)  # deliver a LIVE read-back the moment the Schedule step builds
             return ft.Text("schedule"), setup_mod._ScheduleHandle(
                 trigger_register=lambda: None, run_time_value=lambda: "03:00"
             )
@@ -526,10 +526,10 @@ class TestWizardStepsRender:
         in_dir = tmp_path / "in"
         in_dir.mkdir()
         cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
-        tree = self._wizard_tree(stub_page, monkeypatch, cfg)  # resume → Schedule (status LIVE via stub)
+        tree = self._wizard_tree(stub_page, monkeypatch, cfg)  # folders + district → Delivery (F1 order)
 
-        _button_by_content(tree, "Continue").on_click(None)  # schedule addressed (LIVE) → Delivery
-        _button_by_content(tree, "Set up later").on_click(None)  # defer delivery → Finish
+        _button_by_content(tree, "Set up later").on_click(None)  # defer delivery → Schedule (stub fires LIVE)
+        _button_by_content(tree, "Continue").on_click(None)  # schedule addressed (LIVE) → Finish
 
         assert _has_text_containing(tree, "Tonight at 3:00 AM")  # LIVE next-run consumed by the finish body
 
@@ -578,6 +578,106 @@ def test_settings_save_reconciles_reregistration_when_scheduled(tmp_path, stub_p
     save_btn.on_click(None)
 
     assert triggered["count"] == 1, "editing the output folder must re-register the live schedule"
+
+
+# --------------------------------------------------------------------------- #
+# F1 composition regressions — the sftp flag must reach the registered action.  #
+# --------------------------------------------------------------------------- #
+def _dropdown_by_label(tree, label):
+    return next(d for d in _find(tree, ft.Dropdown) if (d.label or "") == label)
+
+
+def _benign_probe(monkeypatch):
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    monkeypatch.setattr(
+        "src.ui_flet.schedule_probe.probe_schedule",
+        lambda *a, **k: ScheduleStatus(state=ScheduleState.UNKNOWN, headline="", detail=""),
+    )
+
+
+def _capture_register_sftp(monkeypatch) -> dict:
+    """Mock both register entry points to record the ``sftp`` flag baked into the action."""
+    recorded: dict = {}
+
+    def _fake_register(**kwargs):
+        recorded["sftp"] = kwargs.get("sftp")
+        return True, "ok"
+
+    def _fake_cron(exe, sis, inp, out, run_time, *, sftp=False):
+        recorded["sftp"] = sftp
+        return True, "ok"
+
+    monkeypatch.setattr("src.scheduler.windows.register_task", _fake_register)
+    monkeypatch.setattr("src.scheduler.linux.register_cron", _fake_cron)
+    return recorded
+
+
+def _fill_sftp(tree):
+    _dropdown_by_label(tree, "SFTP host (SpacesEDU)").value = "sftp.ca.spacesedu.com"
+    _textfield_by_label(tree, "Username").value = "district_x"
+    _textfield_by_label(tree, "Remote path").value = "/files"
+    _textfield_by_label(tree, "Password").value = "pw"
+
+
+def test_wizard_natural_order_bakes_sftp_into_registered_task(tmp_path, monkeypatch):
+    """F1(a): a natural in-order wizard walk that configures Delivery BEFORE the Schedule step
+    registers a task WITH --sftp (delivery precedes schedule, so cfg.sftp_enabled is set at bake)."""
+    from src.sftp.uploader import SFTPUploader
+
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    monkeypatch.setattr(SFTPUploader, "store_password", lambda self, pw: None)
+    monkeypatch.setattr(SFTPUploader, "get_stored_password", lambda self: "pw")
+    _benign_probe(monkeypatch)
+    recorded = _capture_register_sftp(monkeypatch)
+
+    captured: list = []
+    tree = build_setup(_driving_page(captured))  # folders + district done → Delivery (step 3, F1 order)
+
+    _fill_sftp(tree)
+    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # cfg.sftp_enabled = True
+    assert cfg.sftp_enabled is True
+
+    _button_by_content(tree, "Continue").on_click(None)  # delivery addressed → Schedule (step 4)
+    _button_by_content(tree, "Register schedule").on_click(None)  # bakes the task
+
+    assert recorded.get("sftp") is True, "the task registered after Delivery must carry --sftp"
+
+
+def test_settings_enabling_sftp_reregisters_task_with_sftp(monkeypatch, tmp_path):
+    """F1(b): Settings — a registered schedule + newly enabled SFTP + Save re-registers WITH --sftp."""
+    from src.sftp.uploader import SFTPUploader
+
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(tmp_path / "out"),
+        sis_type="myedbc",
+        setup_completed=True,
+        schedule_registered=True,
+        sftp_enabled=False,
+        schedule_time="03:00",
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    monkeypatch.setattr(SFTPUploader, "store_password", lambda self, pw: None)
+    monkeypatch.setattr(SFTPUploader, "get_stored_password", lambda self: "pw")
+    _benign_probe(monkeypatch)
+    recorded = _capture_register_sftp(monkeypatch)
+
+    captured: list = []
+    tree = build_setup(_driving_page(captured))  # Settings mode (completed config)
+
+    _fill_sftp(tree)
+    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # enable SFTP → reconcile re-register
+
+    assert cfg.sftp_enabled is True
+    assert recorded.get("sftp") is True, "enabling SFTP on a scheduled install must re-register with --sftp"
 
 
 def test_convert_output_folder_row_renders_open_folder():

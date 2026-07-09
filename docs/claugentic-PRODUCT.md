@@ -146,7 +146,7 @@ States:
 
 ### Setup — a first-run wizard that graduates into Settings
 
-**First run is a five-step wizard** (D8, as of Slice 8): **Folders → District → Schedule → Delivery →
+**First run is a five-step wizard** (D8, as of Slice 8): **Folders → District → Delivery → Schedule →
 an honest checked finish line**. A "Step N of 5" indicator + Back move through it; Enter/Continue
 advances only when the step's own gate is satisfied (the same predicate the disabled button
 enforces); focus moves to the new step's first field. **Schedule and Delivery are skippable** ("Set

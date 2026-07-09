@@ -192,9 +192,11 @@ mappings:
 
 | Module | Purpose |
 |--------|---------|
-| `src/config/app_config.py` | Runtime config (`~/.districtsync/config.json`) — SFTP host, schedule, paths |
+| `src/config/app_config.py` | Runtime config (`config.json` in the per-user app-data dir) — SFTP host, schedule, paths, `setup_completed` |
+| `src/history/store.py` | SQLite run store (`history.db`) — sole run-record writer/reader; source of Run History (replaces the retired log parser) |
 | `src/sftp/uploader.py` | `SFTPUploader` — paramiko SFTP + OS keyring credential retrieval |
-| `src/scheduler/windows.py` | `schtasks.exe` wrapper for Windows Task Scheduler |
+| `src/scheduler/windows.py` | Windows Task Scheduler: PowerShell `Register-ScheduledTask` register + tri-state `read_schedule` read-back + `delete_task`; per-op elevation via `elevation.py` |
+| `src/scheduler/elevation.py` | Windows per-operation elevation IPC primitive (UAC `runas`, DPAPI handshake) so the app itself never runs elevated |
 | `src/scheduler/linux.py` | `crontab` wrapper for Linux cron |
 | `src/quality/report.py` | `DataQualityReport` — missing fields, duplicates, orphaned enrollments |
 | `src/utils/helpers.py` | `normalize_columns()` and other shared utilities |
@@ -217,16 +219,16 @@ All UI code lives under `src/ui_flet/`:
 | `nav_rail.py` / `nav.py` | Navigation rail widget + route definitions |
 | `components.py` | Shared Flet UI components/widgets |
 | `tokens.py` / `theme.py` | Design tokens and theme (colors, spacing, typography) |
-| `verdict.py`, `humanize.py`, `home_status.py`, `convert_result.py`, `run_history.py`, `mapping_catalog.py`, `setup_errors.py`, `setup_gates.py`, `job_runner.py` | Pure logic modules (no Flet imports) backing each screen — kept separate from rendering for testability (run records are read from `src/history/store.py`, the SQLite run store) |
+| `verdict.py`, `humanize.py`, `home_status.py`, `schedule_status.py`, `schedule_probe.py`, `convert_result.py`, `convert_output.py`, `run_history.py`, `mapping_catalog.py`, `setup_errors.py`, `setup_gates.py`, `sftp_copy.py`, `setup_flow.py`, `job_runner.py` | Pure logic modules (no Flet imports) backing each screen — kept separate from rendering for testability (run records are read from `src/history/store.py`, the SQLite run store; `schedule_status`/`schedule_probe` own the tri-state schedule read-back; `setup_flow` is the wizard state machine) |
 
 Six surfaces, one per module under `src/ui_flet/screens/`:
 
 | Screen | File | Description |
 |--------|------|-------------|
 | Home | `screens/home.py` | Config health/status dashboard, navigation |
-| Setup | `screens/setup.py` | Schedule + SFTP setup (wizard-style, both optional) |
-| Convert | `screens/convert.py` | Ad-hoc conversion — pick files, convert, view result, upload via SFTP |
-| Run History | `screens/run_history.py` | Parses `__DISTRICTSYNC_RUN__` JSON log tags into tabular history |
+| Setup | `screens/setup.py` | First-run 5-step wizard (Folders → District → Delivery → Schedule → finish; Schedule/Delivery skippable) that graduates into a flat Settings page with one reconciling Save |
+| Convert | `screens/convert.py` | Ad-hoc conversion — pick files, convert, view result (resolved-output caption + Open folder), upload via SFTP |
+| Run History | `screens/run_history.py` | Reads run records from the SQLite store (`src/history/store.py`) into tabular history |
 | Mapping | `screens/mapping.py` | Review the active district config and switch between pre-built configs — **not** a full YAML editor |
 | Help | `screens/help.py` | In-app documentation and support links |
 

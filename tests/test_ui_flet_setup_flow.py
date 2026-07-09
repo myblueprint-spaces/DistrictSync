@@ -55,12 +55,13 @@ def _inputs(**over) -> FlowInputs:
 # --------------------------------------------------------------------------- #
 class TestStepScaffolding:
     def test_five_named_steps_in_fixed_order(self):
+        # F1: DELIVERY precedes SCHEDULE so the sftp flag is committed BEFORE the task is baked.
         assert TOTAL_STEPS == 5
         assert STEP_ORDER == (
             SetupStep.FOLDERS,
             SetupStep.DISTRICT,
-            SetupStep.SCHEDULE,
             SetupStep.DELIVERY,
+            SetupStep.SCHEDULE,
             SetupStep.FINISH,
         )
 
@@ -69,8 +70,8 @@ class TestStepScaffolding:
         [
             (SetupStep.FOLDERS, 1),
             (SetupStep.DISTRICT, 2),
-            (SetupStep.SCHEDULE, 3),
-            (SetupStep.DELIVERY, 4),
+            (SetupStep.DELIVERY, 3),
+            (SetupStep.SCHEDULE, 4),
             (SetupStep.FINISH, 5),
         ],
     )
@@ -79,9 +80,11 @@ class TestStepScaffolding:
 
     def test_next_and_prev_step_walk_the_order(self):
         assert next_step(SetupStep.FOLDERS) is SetupStep.DISTRICT
-        assert next_step(SetupStep.DELIVERY) is SetupStep.FINISH
+        assert next_step(SetupStep.DELIVERY) is SetupStep.SCHEDULE
+        assert next_step(SetupStep.SCHEDULE) is SetupStep.FINISH
         assert next_step(SetupStep.FINISH) is None
         assert prev_step(SetupStep.DISTRICT) is SetupStep.FOLDERS
+        assert prev_step(SetupStep.SCHEDULE) is SetupStep.DELIVERY
         assert prev_step(SetupStep.FOLDERS) is None
 
     def test_only_schedule_and_delivery_are_skippable(self):
@@ -104,18 +107,21 @@ class TestResumeDerivation:
         assert state.resume_step is SetupStep.DISTRICT
         assert SetupStep.FOLDERS in state.satisfied
 
-    def test_folders_and_district_resume_at_schedule(self):
+    def test_folders_and_district_resume_at_delivery(self):
+        # F1 reorder: Delivery is the first step after District (before Schedule).
         state = derive_flow(_inputs(folders_valid=True, district_chosen=True))
-        assert state.resume_step is SetupStep.SCHEDULE
+        assert state.resume_step is SetupStep.DELIVERY
 
-    def test_schedule_live_but_delivery_pending_resumes_at_delivery(self):
+    def test_delivery_pending_resumes_at_delivery_even_with_live_schedule(self):
+        # Delivery precedes Schedule, so an unsatisfied Delivery lands there first.
         state = derive_flow(_inputs(folders_valid=True, district_chosen=True, schedule=_LIVE))
         assert state.resume_step is SetupStep.DELIVERY
         assert SetupStep.SCHEDULE in state.satisfied
 
-    def test_schedule_skipped_resumes_at_delivery(self):
-        state = derive_flow(_inputs(folders_valid=True, district_chosen=True, schedule_skipped=True))
-        assert state.resume_step is SetupStep.DELIVERY
+    def test_delivery_done_but_schedule_pending_resumes_at_schedule(self):
+        state = derive_flow(_inputs(folders_valid=True, district_chosen=True, delivery=DeliveryFact.SKIPPED))
+        assert state.resume_step is SetupStep.SCHEDULE
+        assert SetupStep.DELIVERY in state.satisfied
 
     def test_all_satisfied_resumes_at_finish(self):
         state = derive_flow(
@@ -164,7 +170,15 @@ class TestResumeDerivation:
 class TestScheduleSatisfactionHonesty:
     @pytest.mark.parametrize("status", [None, _UNKNOWN, _MISSING])
     def test_non_live_schedule_lands_on_schedule_step(self, status):
-        state = derive_flow(_inputs(folders_valid=True, district_chosen=True, schedule=status))
+        # Delivery satisfied (skipped) so resume reaches the Schedule step (which precedes it now).
+        state = derive_flow(
+            _inputs(
+                folders_valid=True,
+                district_chosen=True,
+                schedule=status,
+                delivery=DeliveryFact.SKIPPED,
+            )
+        )
         assert state.resume_step is SetupStep.SCHEDULE
         assert SetupStep.SCHEDULE not in state.satisfied
         assert state.can_finish is False
@@ -255,7 +269,7 @@ class TestFinishCopy:
     def test_schedule_skipped_variant(self):
         headline, detail = finish_copy(
             schedule_live=False,
-            delivery_tested_ok=False,
+            delivery=DeliveryFact.NONE,
             district="New Westminster",
             schedule_time_display=None,
             host="",
@@ -271,7 +285,7 @@ class TestFinishCopy:
     def test_delivery_deferred_variant_with_time(self):
         headline, detail = finish_copy(
             schedule_live=True,
-            delivery_tested_ok=False,
+            delivery=DeliveryFact.SKIPPED,
             district="New Westminster",
             schedule_time_display="3:00 AM",
             host="",
@@ -286,7 +300,7 @@ class TestFinishCopy:
     def test_delivery_deferred_variant_timeless(self):
         _, detail = finish_copy(
             schedule_live=True,
-            delivery_tested_ok=False,
+            delivery=DeliveryFact.NONE,
             district="New Westminster",
             schedule_time_display=None,
             host="",
@@ -297,10 +311,11 @@ class TestFinishCopy:
             "output folder. Set up delivery whenever you're ready."
         )
 
-    def test_sftp_tested_variant_with_time(self):
+    def test_delivery_persisted_variant_claims_nightly_delivery(self):
+        # F1 honesty: PERSISTED delivery (STORED_CRED_PRESENT) — the confident nightly-delivery claim.
         headline, detail = finish_copy(
             schedule_live=True,
-            delivery_tested_ok=True,
+            delivery=DeliveryFact.STORED_CRED_PRESENT,
             district="New Westminster",
             schedule_time_display="3:00 AM",
             host="sftp.ca.spacesedu.com",
@@ -308,32 +323,49 @@ class TestFinishCopy:
         )
         assert headline == "You're all set"
         assert detail == (
-            "Tonight at 3:00 AM DistrictSync will build New Westminster and try to "
-            "deliver to SpacesEDU — we tested the connection to sftp.ca.spacesedu.com "
-            "as district_x just now and it worked."
+            "Tonight at 3:00 AM DistrictSync will build New Westminster and try to deliver it to "
+            "SpacesEDU — your delivery password is saved on this computer."
         )
 
-    def test_sftp_tested_variant_timeless(self):
+    def test_delivery_tested_unsaved_does_not_claim_nightly_delivery(self):
+        # F1 inversion fix: a TESTED-but-UNSAVED delivery names the working connection + prompts
+        # Save, and NEVER claims the nightly will deliver (the nightly reads SAVED config).
         _, detail = finish_copy(
             schedule_live=True,
-            delivery_tested_ok=True,
+            delivery=DeliveryFact.TESTED_OK,
             district="New Westminster",
-            schedule_time_display=None,
+            schedule_time_display="3:00 AM",
             host="sftp.ca.spacesedu.com",
             username="district_x",
         )
         assert detail == (
-            "Tonight DistrictSync will build New Westminster and try to "
-            "deliver to SpacesEDU — we tested the connection to sftp.ca.spacesedu.com "
-            "as district_x just now and it worked."
+            "Tonight at 3:00 AM DistrictSync will build New Westminster into your output folder. "
+            "Your delivery connection to sftp.ca.spacesedu.com as district_x worked — click Save "
+            "on the delivery step to have the nightly sync deliver it too."
+        )
+        assert "try to deliver" not in detail  # no nightly-delivery promise for an unsaved test
+
+    def test_tested_failed_is_defer_copy(self):
+        # A FAILED test is not persisted → the plain defer copy (no delivery claim, no Save prompt).
+        _, detail = finish_copy(
+            schedule_live=True,
+            delivery=DeliveryFact.TESTED_FAILED,
+            district="New Westminster",
+            schedule_time_display=None,
+            host="h",
+            username="u",
+        )
+        assert detail == (
+            "Tonight DistrictSync will build New Westminster into your "
+            "output folder. Set up delivery whenever you're ready."
         )
 
     def test_schedule_skipped_wins_over_delivery_state(self):
         # When the schedule was skipped, the copy never claims "tonight" even if a credential
-        # was tested — no schedule means no nightly run to promise.
+        # was persisted — no schedule means no nightly run to promise.
         _, detail = finish_copy(
             schedule_live=False,
-            delivery_tested_ok=True,
+            delivery=DeliveryFact.STORED_CRED_PRESENT,
             district="Sea to Sky",
             schedule_time_display="3:00 AM",
             host="h",

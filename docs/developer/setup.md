@@ -40,7 +40,7 @@ bandit -r src/
 
 ## Environment
 
-No `.env` file is required. The tool reads all configuration from YAML files in `config/mappings/` and from `~/.districtsync/config.json` at runtime.
+No `.env` file is required. The tool reads all configuration from YAML files in `config/mappings/` and from `config.json` in the per-user app-data dir (`paths.user_data_dir()` via `platformdirs`) at runtime.
 
 ## Makefile targets
 

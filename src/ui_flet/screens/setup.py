@@ -403,7 +403,7 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
         next_run = status.next_run_display if (schedule_live and status is not None) else None  # type: ignore[union-attr]
         headline, detail = finish_copy(
             schedule_live=bool(schedule_live),
-            delivery_tested_ok=ws["delivery"] is DeliveryFact.TESTED_OK,
+            delivery=ws["delivery"],  # type: ignore[arg-type]  # F1: keyed off PERSISTED delivery, not a transient test
             district=district,
             schedule_time_display=next_run,
             host=str(ws["delivery_host"]),
@@ -484,11 +484,53 @@ def _mount_settings(  # pragma: no cover - Flet view glue
     page: ft.Page, cfg: AppConfig, root: ft.Column, *, transition_cue: bool
 ) -> None:
     """Render the completed-install Settings scroll into ``root`` (folders + schedule + SFTP)."""
-    # Build the schedule section FIRST so the folders Save can drive its register flow on a
-    # task-arg change (the D8 reconcile); display order is arranged below regardless of build order.
-    schedule_card, sched_handle = _build_schedule_section(page, cfg)
-    sftp_card = _build_sftp_section(page, cfg)
-    folders_card = _build_settings_folders(page, cfg, sched_handle)
+    # The ONE task-args snapshot + reconcile the folders Save AND the SFTP Save both drive (D8/F1):
+    # any change to a task-baked field (folders/district/SFTP flag/run time) on a registered
+    # schedule re-registers through the SAME flow, so the nightly action can never go stale — and
+    # enabling SFTP in Settings finally adds --sftp to an already-registered task (the F1 gap).
+    saved = {
+        "args": TaskArgs.of(
+            input_dir=cfg.input_dir,
+            output_dir=cfg.output_dir,
+            sis_type=cfg.sis_type,
+            sftp_enabled=cfg.sftp_enabled,
+            run_time=cfg.schedule_time,
+        )
+    }
+
+    def _snapshot_args() -> TaskArgs:
+        return TaskArgs.of(
+            input_dir=cfg.input_dir,
+            output_dir=cfg.output_dir,
+            sis_type=cfg.sis_type,
+            sftp_enabled=cfg.sftp_enabled,
+            run_time=cfg.schedule_time,
+        )
+
+    def _on_registered() -> None:
+        # N1: after ANY successful register (reconcile OR the schedule section's own Register),
+        # refresh the snapshot so a later Save doesn't redundantly re-register. cfg.schedule_time
+        # was just set to the registered field value, so the snapshot now matches reality.
+        saved["args"] = _snapshot_args()
+
+    # Build the schedule section FIRST so both Saves can drive its register flow on a task-arg change.
+    schedule_card, sched_handle = _build_schedule_section(page, cfg, on_registered=_on_registered)
+
+    def _reconcile() -> bool:
+        pending = TaskArgs.of(
+            input_dir=cfg.input_dir,
+            output_dir=cfg.output_dir,
+            sis_type=cfg.sis_type,
+            sftp_enabled=cfg.sftp_enabled,
+            run_time=sched_handle.run_time_value(),
+        )
+        if cfg.schedule_registered and task_args_changed(saved["args"], pending):
+            sched_handle.trigger_register()  # on success → _on_registered refreshes the snapshot
+            return True
+        return False
+
+    sftp_card = _build_sftp_section(page, cfg, on_saved=_reconcile)
+    folders_card = _build_settings_folders(page, cfg, reconcile=_reconcile)
 
     header = components.card(
         content=ft.Column(
@@ -520,26 +562,16 @@ def _mount_settings(  # pragma: no cover - Flet view glue
 
 
 def _build_settings_folders(  # pragma: no cover - Flet view glue
-    page: ft.Page, cfg: AppConfig, sched_handle: _ScheduleHandle
+    page: ft.Page, cfg: AppConfig, *, reconcile: Callable[[], bool]
 ) -> ft.Control:
     """The Settings folders/district card with the ONE reconciling Save (D8).
 
-    Saving persists the folders + district, then — when a task-baked field changed
-    (``task_args_changed``) AND a schedule is registered — re-registers the task through the
-    SAME register flow (``sched_handle.trigger_register``) so the nightly action isn't left
-    pointing at the old paths/district. The Save is still structurally gated on valid folders.
+    Saving persists the folders + district, then calls the shared ``reconcile`` (which re-registers
+    the task when a task-baked field changed AND a schedule is registered — the SAME reconcile the
+    SFTP Save uses, so the nightly action can never go stale). The Save is still structurally gated
+    on valid folders.
     """
     state = {"input": cfg.input_dir, "output": cfg.output_dir, "sis": cfg.sis_type}
-    # Snapshot the task-baked args as last saved — the reconcile compares against this.
-    saved = {
-        "args": TaskArgs.of(
-            input_dir=cfg.input_dir,
-            output_dir=cfg.output_dir,
-            sis_type=cfg.sis_type,
-            sftp_enabled=cfg.sftp_enabled,
-            run_time=cfg.schedule_time,
-        )
-    }
 
     save_btn = components.primary_button(
         "Save settings",
@@ -577,26 +609,14 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
         cfg.output_dir = state["output"]
         cfg.sis_type = state["sis"]
         cfg.save()
-        pending = TaskArgs.of(
-            input_dir=cfg.input_dir,
-            output_dir=cfg.output_dir,
-            sis_type=cfg.sis_type,
-            sftp_enabled=cfg.sftp_enabled,
-            run_time=sched_handle.run_time_value(),
-        )
-        reconcile = cfg.schedule_registered and task_args_changed(saved["args"], pending)
-        saved["args"] = pending
-        if reconcile:
+        # The shared reconcile re-registers the task when a task-baked field changed; the schedule
+        # section surfaces its own in-flight + confirmed/failed states when it fires.
+        if reconcile():
             saved_note.value = "Saved — updating the nightly schedule to match…"
-            saved_note.color = tokens.color_status_healthy
-            page.update()
-            # Re-register through the SAME flow (incl. elevation) so tonight's task uses the new
-            # settings; the schedule section surfaces its own in-flight + confirmed/failed states.
-            sched_handle.trigger_register()
         else:
             saved_note.value = "Saved."
-            saved_note.color = tokens.color_status_healthy
-            page.update()
+        saved_note.color = tokens.color_status_healthy
+        page.update()
 
     save_btn.on_click = _save
 
@@ -651,13 +671,15 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     cfg: AppConfig,
     *,
     on_status: Callable[[ScheduleStatus], None] | None = None,
+    on_registered: Callable[[], None] | None = None,
 ) -> tuple[ft.Control, _ScheduleHandle]:
     """The scheduler section — run time + (Windows) run-as password → register (Slice 5/6).
 
     Returns the card AND a ``_ScheduleHandle`` so Settings mode can drive re-registration on a
     task-arg change. ``on_status`` (when given) is called with each schedule read-back so the
-    wizard can track live-ness for its resume + finish copy. The register/unregister flow is
-    UNCHANGED from Slice 5/6 (off-thread, elevation-aware, save-after-success).
+    wizard can track live-ness for its resume + finish copy. ``on_registered`` (when given) fires
+    after a CONFIRMED successful register so Settings can refresh its task-args snapshot (N1). The
+    register/unregister flow is UNCHANGED from Slice 5/6 (off-thread, elevation-aware, save-after-success).
     """
     is_windows = sys.platform == "win32"
 
@@ -783,6 +805,8 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             cfg.schedule_time = run_time
             cfg.schedule_registered = True
             cfg.save()
+            if on_registered is not None:
+                on_registered()  # N1: refresh Settings' task-args snapshot after a confirmed register
             local_verdict, local_detail = verdict, detail
             if transient:
                 local_verdict = Verdict.WARNING
@@ -978,12 +1002,16 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
     cfg: AppConfig,
     *,
     on_delivery: Callable[[DeliveryFact, str, str], None] | None = None,
+    on_saved: Callable[[], bool] | None = None,
 ) -> ft.Control:
     """The SFTP section — store SpacesEDU credentials in the OS keyring + test (Slice 7, D6).
 
     ``on_delivery`` (when given) reports the Delivery outcome to the wizard: a successful Test →
     ``TESTED_OK``, a failed Test → ``TESTED_FAILED``, a successful Save → ``STORED_CRED_PRESENT``
-    (with the host/user). The side-effect-free Test + Save-only keyring writes are UNCHANGED.
+    (with the host/user). ``on_saved`` (when given) is the Settings reconcile — after a successful
+    Save flips/confirms ``sftp_enabled``, it re-registers a live task so the nightly action gains
+    (or keeps) ``--sftp`` (the F1 gap: enabling delivery post-registration must reconcile). The
+    side-effect-free Test + Save-only keyring writes are UNCHANGED.
     """
     host_dropdown = ft.Dropdown(
         label="SFTP host (SpacesEDU)",
@@ -1081,12 +1109,15 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
         cfg.sftp_remote_path = remote_path
         cfg.save()
 
+        detail = f"SFTP credentials stored and readable by {_run_as_account()}."
+        # F1 reconcile (Settings only): enabling/confirming delivery must add --sftp to an
+        # already-registered nightly task, or tonight builds but never delivers. Routed through the
+        # SAME task-args reconcile the folders Save uses; a blank-password re-register keeps the
+        # existing visible-WARNING (logged-on-only) behaviour.
+        if on_saved is not None and on_saved():
+            detail += " Updating the nightly schedule to deliver too…"
         result_slot.controls = [
-            components.HealthVerdictBanner(
-                Verdict.HEALTHY,
-                headline="SFTP credentials stored",
-                detail=f"SFTP credentials stored and readable by {_run_as_account()}.",
-            )
+            components.HealthVerdictBanner(Verdict.HEALTHY, headline="SFTP credentials stored", detail=detail)
         ]
         if on_delivery is not None:
             on_delivery(DeliveryFact.STORED_CRED_PRESENT, host, username)
