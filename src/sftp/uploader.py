@@ -83,8 +83,16 @@ class SFTPUploader:
     # Connection helpers
     # ------------------------------------------------------------------
 
-    def _connect(self) -> tuple:
+    def _connect(self, password_override: str | None = None) -> tuple:
         """Create an authenticated SSHClient + SFTPClient pair.
+
+        Args:
+            password_override: A transient password to authenticate with instead of
+                the stored keyring credential (used by ``test_connection`` so a typed
+                password can be verified WITHOUT being written to the keyring). When
+                falsy, the stored credential is used (the nightly-upload path). The
+                override is threaded to ``client.connect()`` ONLY — never the keyring,
+                never a log.
 
         Returns:
             (paramiko.SSHClient, paramiko.SFTPClient)
@@ -92,7 +100,7 @@ class SFTPUploader:
         Raises:
             RuntimeError: If paramiko is missing or credentials are unavailable.
         """
-        password = self._get_password()
+        password = password_override or self._get_password()
         if not password:
             raise RuntimeError("No SFTP password found. Run the setup wizard to enter credentials.")
 
@@ -114,15 +122,22 @@ class SFTPUploader:
     # Connection test (called from the setup wizard UI)
     # ------------------------------------------------------------------
 
-    def test_connection(self) -> tuple[bool, str]:
+    def test_connection(self, password_override: str | None = None) -> tuple[bool, str]:
         """Attempt an SFTP connection and list the remote path.
+
+        Args:
+            password_override: A typed password to test transiently (threaded to
+                ``client.connect()`` ONLY — never stored, never logged, never in the
+                returned message). When falsy, the stored keyring credential is used.
+                This keeps the Test side-effect-free: a failed/typo'd Test can never
+                clobber a working saved credential.
 
         Returns:
             (success, message) — success is True if the connection worked.
         """
         client = None
         try:
-            client, sftp = self._connect()
+            client, sftp = self._connect(password_override=password_override)
             sftp.listdir(self.remote_path)
             sftp.close()
             return True, f"Connection to {self.host}:{self.port} successful."

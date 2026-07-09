@@ -35,13 +35,22 @@ NEVER logged, NEVER echoed in a banner/message, and NEVER stashed beyond the
 handler's scope. Only the non-sensitive ``schedule_time`` reaches ``cfg.save()``.
 
 **Password contract (I4/I5, security-critical — SFTP):** in the SFTP handlers the
-credential is a **handler-LOCAL variable** whose ONLY sink is
-``SFTPUploader.store_password(...)`` (OS keyring). It is NEVER assigned to
-``AppConfig``, NEVER logged, NEVER echoed in a banner/message. Only the five
-non-sensitive settings (``sftp_enabled``/``sftp_host``/``sftp_port``/
+credential is a **handler-LOCAL variable** with exactly two sinks: on **Save** it
+goes to ``SFTPUploader.store_password(...)`` (OS keyring); on **Test** it rides the
+transient ``SFTPUploader.test_connection(password_override=...)`` override to
+``client.connect()`` ONLY (D6 — never the keyring, never a log, never the returned
+message), so a failed/typo'd Test can never clobber a working stored credential. It
+is NEVER assigned to ``AppConfig``, NEVER logged, NEVER echoed in a banner/message.
+Only the five non-sensitive settings (``sftp_enabled``/``sftp_host``/``sftp_port``/
 ``sftp_username``/``sftp_remote_path``) reach ``cfg.save()``. The host is
 restricted to ``ALLOWED_SFTP_HOSTS`` structurally (the dropdown IS the allowlist)
 AND at the boundary (``SFTPUploader.__init__`` runs ``validate_sftp_host``).
+
+**Test-connection provenance copy (D6):** on success the banner names WHAT was
+tested — which host, as which user, using the stored vs the just-typed credential —
+via the pure COUNTED ``sftp_copy.sftp_test_copy``; when the form host/user/port/
+remote differ from the SAVED config, the copy softens to "these settings work — Save
+to use them" and NEVER asserts the nightly sync can deliver for unsaved values.
 
 **Test-connection marshalling (I6, concurrency):** ``test_connection`` is a
 blocking ~30s network call — it runs OFF the UI thread via ``page.run_thread``;
@@ -80,6 +89,7 @@ from src.ui_flet.schedule_status import (
 )
 from src.ui_flet.setup_errors import classify_schedule_error
 from src.ui_flet.setup_gates import can_register_schedule, can_save_sftp
+from src.ui_flet.sftp_copy import sftp_form_differs_from_saved, sftp_test_copy
 from src.ui_flet.verdict import Verdict
 from src.utils.validators import ALLOWED_SFTP_HOSTS, validate_run_time
 
@@ -821,16 +831,17 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
     # Test connection — marshalled OFF the UI thread (I6).                 #
     # ------------------------------------------------------------------ #
     def _test(_e: ft.ControlEvent) -> None:
-        # Read the credential fresh; local var, sole sink is store_password (I4).
+        # Read the typed credential fresh; a handler-LOCAL var threaded ONLY to
+        # test_connection's transient override (D6) — the Test path NEVER writes the
+        # keyring (that happens only in _save), so a failed/typo'd Test can no longer
+        # clobber a working stored credential. It is never assigned to cfg, never logged.
         password = password_field.value or ""
         host, username, remote_path, port = _current_fields()
 
-        # Construction + optional store happen BEFORE the thread so a ValueError
-        # (out-of-allowlist) or keyring failure surfaces calmly, not on the worker.
+        # Construction happens BEFORE the thread so a ValueError (out-of-allowlist host)
+        # surfaces calmly on the UI thread, not on the worker.
         try:
             uploader = SFTPUploader(host, int(port or 22), username, remote_path)
-            if password:
-                uploader.store_password(password)
         except ValueError:
             result_slot.controls = [
                 components.ErrorCard(
@@ -840,16 +851,14 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
             ]
             page.update()
             return
-        except Exception:  # noqa: BLE001 - a keyring failure before the network call
-            result_slot.controls = [
-                components.ErrorCard(
-                    "Couldn't save the SFTP credential",
-                    "Couldn't save the SFTP credential on this account. Try again, or run "
-                    "DistrictSync as the account the nightly task uses.",
-                )
-            ]
-            page.update()
-            return
+
+        # Provenance + unsaved-edits are decided NOW, off the live form vs the saved
+        # config, so the success copy names WHAT was tested (which credential source)
+        # and never over-claims the nightly sync for values that aren't saved (D6).
+        provenance = "typed" if password else "stored"
+        unsaved_edits = sftp_form_differs_from_saved(
+            cfg, host=host, username=username, remote_path=remote_path, port=port
+        )
 
         # Disable the button + show the spinner; the ~30s timeout bounds a hung
         # connection so the window never freezes (degrade-gracefully guarantee).
@@ -866,12 +875,21 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
             # `test_connection` return (a raw paramiko/socket string that can carry
             # host/socket/path detail). It is mapped to a bounded category reason
             # via `friendly_sftp_reason` BEFORE it reaches the banner — the raw
-            # string NEVER renders. The success path shows a fixed reassurance.
+            # string NEVER renders. The success path shows the provenance-honest copy
+            # from the pure `sftp_test_copy` (host + user + credential source, no
+            # unsaved-nightly over-claim).
             test_btn.disabled = False
             test_spinner.visible = False
             verdict = Verdict.HEALTHY if ok else Verdict.FAILED
-            headline = "SFTP connection succeeded" if ok else "SFTP connection failed"
-            detail = "Your SFTP credentials work — the nightly sync can deliver." if ok else friendly_sftp_reason(msg)
+            if ok:
+                headline, detail = sftp_test_copy(
+                    provenance=provenance,
+                    unsaved_edits=unsaved_edits,
+                    host=host,
+                    username=username,
+                )
+            else:
+                headline, detail = "SFTP connection failed", friendly_sftp_reason(msg)
             result_slot.controls = [components.HealthVerdictBanner(verdict, headline=headline, detail=detail)]
             page.update()
 
@@ -880,8 +898,9 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
             # (unlike run_pipeline) — a plain except Exception suffices here. Any raw
             # exception is sanitized to a category reason in `_show_result` (never
             # rendered raw), so passing str(exc) here is safe — it never reaches a card.
+            # The typed password rides the transient override ONLY (never the keyring).
             try:
-                ok, msg = uploader.test_connection()
+                ok, msg = uploader.test_connection(password_override=password)
             except Exception as exc:  # noqa: BLE001 - surface any failure via the banner
                 ok, msg = False, str(exc)
             page.run_task(_show_result, ok, msg)
