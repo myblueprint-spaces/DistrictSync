@@ -81,6 +81,7 @@ def derive_schedule_status(
     *,
     hint_registered: bool,
     latest_record_ts: str | None,
+    surface: str = "home",
 ) -> ScheduleStatus:
     """Derive the tri-state ``ScheduleStatus`` from a read-back + the config hint (pure, TOTAL).
 
@@ -92,11 +93,15 @@ def derive_schedule_status(
     — a displayed next-run time comes ONLY from the OS-reported ``NextRunTime`` (never the
     hint presented as verified). ``latest_record_ts`` (the newest run record's timestamp)
     enables the "fired more recently than the newest record" contradiction branch.
+
+    ``surface`` de-circularizes the MISSING copy (finding #3): rendered ON the Setup surface
+    (``"setup"``) it reads "add/re-register it **below**"; everywhere else (``"home"``,
+    Run History, badge) it keeps "**in Setup**" — the fix lives on a different screen there.
     """
     if readback.found is True:
         return _live_status(readback, latest_record_ts=latest_record_ts, expected=hint_registered)
     if readback.found is False:
-        return _missing_status(expected=hint_registered)
+        return _missing_status(expected=hint_registered, surface=surface)
     return _unknown_status(expected=hint_registered)
 
 
@@ -145,15 +150,20 @@ def _live_status(
     )
 
 
-def _missing_status(*, expected: bool) -> ScheduleStatus:
-    """Build the MISSING status — a definitively-absent task; copy varies on whether it was expected."""
+def _missing_status(*, expected: bool, surface: str = "home") -> ScheduleStatus:
+    """Build the MISSING status — a definitively-absent task; copy varies on expectation + surface.
+
+    ``surface="setup"`` swaps the circular "in Setup" pointer for "below" (the fix is on THIS
+    screen); every other surface keeps "in Setup" (the fix is one hop away). Finding #3.
+    """
+    where = "below" if surface == "setup" else "in Setup"
     if expected:
         return ScheduleStatus(
             state=ScheduleState.MISSING,
             headline="Your schedule isn't registered anymore",
             detail=(
                 "Your saved nightly schedule is no longer registered with Windows — "
-                "re-register it in Setup so the roster keeps flowing."
+                f"re-register it {where} so the roster keeps flowing."
             ),
             expected=True,
             attention=True,
@@ -161,7 +171,7 @@ def _missing_status(*, expected: bool) -> ScheduleStatus:
     return ScheduleStatus(
         state=ScheduleState.MISSING,
         headline="No nightly schedule is registered",
-        detail="You haven't set up a nightly schedule yet — add one in Setup whenever you're ready.",
+        detail=f"You haven't set up a nightly schedule yet — add one {where} whenever you're ready.",
         expected=False,
         attention=False,
     )

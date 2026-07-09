@@ -135,13 +135,34 @@ States:
 - **Degraded** — history unavailable (log unreadable): a calm WARNING, not red.
 - **Error** — the never-crash `ErrorCard` floor.
 
-### Setup — the one-scroll first-run flow
+### Setup — a first-run wizard that graduates into Settings
 
-A single sectioned scroll: pick the input and output folders, choose the district, set the nightly
-schedule (with the Windows run-as password for unattended operation), and configure SFTP delivery
-(an allowlist host dropdown + credentials stored in the OS keyring, with a credential round-trip
-check and a "Test connection" button). Saves are **structurally gated** — the Save button stays
-disabled until the inputs validate, so an invalid path can never reach the config.
+**First run is a five-step wizard** (D8, as of Slice 8): **Folders → District → Schedule → Delivery →
+an honest checked finish line**. A "Step N of 5" indicator + Back move through it; Enter/Continue
+advances only when the step's own gate is satisfied (the same predicate the disabled button
+enforces); focus moves to the new step's first field. **Schedule and Delivery are skippable** ("Set
+up later") so the first success isn't gated on having a Windows password and a live SFTP credential
+in hand. The wizard **resumes from real state** — the first step that isn't truthfully done, derived
+from validated folders + the live schedule read-back + a keyring check, never a stored cursor — and
+**reconciles** against side effects already performed ("already scheduled — daily at HH:MM" from the
+read-back; "a delivery password is already saved" from the keyring) instead of double-registering. No
+single step marks the install "set up"; **only reaching the finish line does**. The finish copy is
+honest and adaptive — it names what was checked and when (schedule tested / delivery tested just now /
+a deferred step to set up later), never a future guarantee. No district is ever pre-selected (a
+"Choose your district" placeholder; auto-selected only when exactly one config exists).
+
+**Once completed, the same surface becomes Settings** — the flat sectioned scroll (folders + schedule
++ delivery), retitled **"Settings"** (the rail label stays "Setup" for spatial memory), with a
+one-time transition cue. It carries **one reconciling Save**: when a field baked into the scheduled
+task's action (input/output folder, district, SFTP flag, run time) changes and a schedule is live,
+saving re-registers the task through the same register flow so tonight's run uses the new settings.
+The register/unregister and SFTP test/save flows are the same ones the wizard's Schedule/Delivery
+steps use — one register flow, one keyring-write path.
+
+Saves are **structurally gated** — the Save/Continue button stays disabled until the inputs validate,
+so an invalid path can never reach the config. The schedule + delivery sections behave identically in
+both modes (an off-thread schedule read-back readout, an Unregister affordance, save-after-success, a
+side-effect-free "Test connection").
 
 Every error card reads in the same calm, verdict-first voice (as of IA-9):
 - **Validation error** — "That run time isn't valid" / "That SFTP host isn't allowed" with a fixed,

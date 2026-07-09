@@ -74,9 +74,40 @@ def _assert_renders(build_callable, monkeypatch: pytest.MonkeyPatch) -> ft.Contr
     return out
 
 
+def _settings_config(**over):
+    """A completed config → ``build_setup`` renders SETTINGS mode (the flat scroll).
+
+    The wizard reuses the same schedule/SFTP section builders, so the flat-scroll tests pin
+    the shared behaviour via Settings mode (all sections present at the top level)."""
+    from src.config.app_config import AppConfig
+
+    base = {"input_dir": "/in", "output_dir": "/out", "sis_type": "myedbc", "setup_completed": True}
+    base.update(over)
+    return AppConfig(**base)
+
+
+def _settings_tree(stub_page, monkeypatch, **over):
+    """Build ``build_setup`` in Settings mode (a completed config), overriding the hermetic load."""
+    from src.config.app_config import AppConfig
+
+    cfg = _settings_config(**over)
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    return build_setup(stub_page)
+
+
 class TestScreensRender:
-    def test_setup(self, stub_page, monkeypatch):
+    def test_setup_wizard_folders_step(self, stub_page, monkeypatch):
+        # A fresh (unconfigured) config renders the wizard's first (Folders) step.
         _assert_renders(lambda: build_setup(stub_page), monkeypatch)
+
+    def test_setup_settings_mode(self, stub_page, monkeypatch):
+        # A completed config renders the flat Settings scroll without crashing.
+        tree = _settings_tree(stub_page, monkeypatch)
+        values = [getattr(c, "value", None) for c in _iter_controls(tree)]
+        assert "Settings" in values, "Settings mode must render the 'Settings' title"
+        # #2a: schedule card FIRST, then delivery, then folders/district (Firefighter landing).
+        order = [v for v in values if v in ("Daily schedule", "SFTP delivery (SpacesEDU)", "Folders & district")]
+        assert order == ["Daily schedule", "SFTP delivery (SpacesEDU)", "Folders & district"]
 
     def test_home(self, stub_page, app_cfg, monkeypatch):
         _assert_renders(
@@ -158,6 +189,16 @@ def _find(control, cls):
     return [c for c in _iter_controls(control) if isinstance(c, cls)]
 
 
+def _has_text(tree, exact) -> bool:
+    """Whether any control in the tree carries the exact string as its ``value``."""
+    return any(getattr(c, "value", None) == exact for c in _iter_controls(tree))
+
+
+def _has_text_containing(tree, substring) -> bool:
+    """Whether any control's ``value`` contains ``substring``."""
+    return any(substring in (getattr(c, "value", None) or "") for c in _iter_controls(tree))
+
+
 def _pick_event(value):
     """A stub Dropdown ``on_select`` event exposing ``e.control.value`` (the handler's read)."""
     evt = MagicMock()
@@ -175,9 +216,9 @@ def test_mapping_post_apply_rerenders_and_allows_revert(stub_page, monkeypatch):
     frozen mount instance). ``AppConfig.save`` is stubbed so the interaction never touches the
     real profile (the existing per-file hermetic ``load`` patch covers the reads).
     """
-    app_cfg = AppConfig()  # default persisted current == "myedbc"
+    app_cfg = AppConfig(sis_type="myedbc")  # explicit persisted current (D9 flipped the default to "")
     original = app_cfg.sis_type
-    target = "mbp_core"  # a real bundled config, different from the default
+    target = "mbp_core"  # a real bundled config, different from the current
     assert original != target
     # `_on_apply` loads + saves AppConfig — keep the save off the real ~/.districtsync.
     monkeypatch.setattr(AppConfig, "save", lambda self: None)
@@ -221,27 +262,29 @@ _ENTER_SUBMIT_LABELS = [
 ]
 
 
-def test_setup_textfields_wire_enter_to_submit(stub_page):
+def test_setup_textfields_wire_enter_to_submit(stub_page, monkeypatch):
     """Slice 2: the run-time + 4 SFTP text fields fire their action on Enter (``on_submit``).
 
     on_submit bypasses a disabled button, which is why the handlers re-check the gate; here
     we assert the wiring is present (a callable) so Enter behaves like clicking the button.
+    Exercised via Settings mode, where the schedule + SFTP sections share the flat scroll.
     """
-    tree = build_setup(stub_page)
+    tree = _settings_tree(stub_page, monkeypatch)
     for label in _ENTER_SUBMIT_LABELS:
         field = _textfield_by_label(tree, label)
         assert field is not None, f"expected a Setup TextField labelled {label!r}"
         assert callable(field.on_submit), f"{label!r} must wire on_submit (Enter-to-submit)"
 
 
-def test_setup_enter_respects_gate_when_config_incomplete(stub_page):
+def test_setup_enter_respects_gate_when_config_incomplete(stub_page, monkeypatch):
     """Enter on the run-time field with an incomplete config is a silent no-op.
 
-    The hermetic default AppConfig is unconfigured, so ``can_register_schedule`` is False;
+    A Settings-mode config with no folders is incomplete, so ``can_register_schedule`` is False;
     firing ``on_submit`` must return without raising and without registering anything —
     Enter can never bypass the gate the disabled Register button enforces.
     """
-    tree = build_setup(stub_page)
+    # setup_completed=True → Settings mode; blank folders → is_complete() False → gate closed.
+    tree = _settings_tree(stub_page, monkeypatch, input_dir="", output_dir="")
     run_time = _textfield_by_label(tree, "Daily run time (24-hour, HH:MM)")
     assert run_time is not None
     assert run_time.on_submit(None) is None  # no-op: gate closed, no raise
@@ -293,9 +336,12 @@ def test_nav_rail_renders_setup_attention_badge():
     assert rail.destinations[home_idx].badge is None  # nothing else badged
 
 
-def test_setup_renders_unregister_affordance(stub_page):
-    """Slice 5: the schedule section exposes an Unregister affordance (cross-platform)."""
-    tree = build_setup(stub_page)
+def test_setup_renders_unregister_affordance(stub_page, monkeypatch):
+    """Slice 5: the schedule section exposes an Unregister affordance (cross-platform).
+
+    Exercised via Settings mode, where the schedule section renders at the top level.
+    """
+    tree = _settings_tree(stub_page, monkeypatch)
     assert any(getattr(c, "content", None) == "Unregister schedule" for c in _iter_controls(tree)), (
         "the schedule section must render an Unregister button"
     )
@@ -316,7 +362,9 @@ def _button_by_content(tree, content):
 def _complete_config(monkeypatch):
     from src.config.app_config import AppConfig
 
-    cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc")
+    # setup_completed=True → Settings mode, so the schedule section (Register/Unregister) renders
+    # at the top level; the register/unregister flow is shared verbatim with the wizard step.
+    cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
     monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
     # Keep the on-mount + post-outcome readout probe from firing a real PowerShell subprocess.
     from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
@@ -370,6 +418,143 @@ def test_unregister_worker_survives_crash(monkeypatch):
     assert len(captured) == 1, "the crashed worker must marshal exactly one result (no strand)"
     _coro, args = captured[0]
     assert args == (False, _WORKER_ERROR_UNREGISTER)
+
+
+class TestWizardStepsRender:
+    """Slice 8 render-smoke: EVERY wizard step + finish → the transition cue mounts without crashing.
+
+    ``build_setup`` renders only the resume step, so folders/district steps are reached by pointing
+    real state at them, and the schedule → delivery → finish → cue path is driven via the actual
+    forward buttons (the wizard mutates the root Column in place, so the same ``tree`` is re-read).
+    """
+
+    def _wizard_tree(self, stub_page, monkeypatch, cfg):
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        return build_setup(stub_page)
+
+    def test_folders_step_renders_gated(self, stub_page, monkeypatch):
+        tree = self._wizard_tree(stub_page, monkeypatch, AppConfig())  # unconfigured → Folders
+        assert _has_text(tree, "Step 1 of 5")
+        # #4: the wizard opens with ONE orientation line (not cold folder pickers).
+        assert _has_text_containing(tree, "keeps your MyEd BC roster flowing to SpacesEDU")
+        cont = _button_by_content(tree, "Continue")
+        assert cont.disabled is True  # folders invalid → Continue gated (Enter can't bypass)
+
+    def test_district_step_renders_with_placeholder(self, tmp_path, stub_page, monkeypatch):
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="")
+        tree = self._wizard_tree(stub_page, monkeypatch, cfg)  # folders valid, no district → District
+        assert _has_text(tree, "Step 2 of 5")
+        dropdown = _find(tree, ft.Dropdown)[0]
+        assert dropdown.hint_text == "Choose your district"  # D9 placeholder, no pre-selection
+        assert dropdown.value is None
+
+    def test_schedule_delivery_finish_and_transition_cue(self, tmp_path, stub_page, monkeypatch):
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+        tree = self._wizard_tree(stub_page, monkeypatch, cfg)  # folders + district → Schedule
+
+        # Schedule step (skippable) reuses the register/unregister section.
+        assert _has_text(tree, "Step 3 of 5")
+        assert any(getattr(c, "content", None) == "Register schedule" for c in _iter_controls(tree))
+        _button_by_content(tree, "Set up later").on_click(None)  # defer schedule → Delivery
+
+        # Delivery step (skippable) reuses the SFTP section.
+        assert _has_text(tree, "Step 4 of 5")
+        assert _textfield_by_label(tree, "Username") is not None
+        _button_by_content(tree, "Set up later").on_click(None)  # defer delivery → Finish
+
+        # Finish step: neutral step title (#5) + the schedule-skipped honest headline (#1a) + copy.
+        assert _has_text(tree, "Step 5 of 5")
+        assert _has_text(tree, "Finish")  # #5: neutral step title, banner owns the peak
+        assert _has_text(tree, "You're set up — nightly sync not scheduled yet")  # #1a adaptive headline
+        assert _has_text_containing(tree, "Run conversions from the Convert tab")
+        assert any(getattr(c, "content", None) == "Finish setup" for c in _iter_controls(tree))
+
+        # Confirming graduates the surface to Settings with the one-time transition cue.
+        _button_by_content(tree, "Finish setup").on_click(None)
+        assert cfg.setup_completed is True
+        assert _has_text(tree, "Settings")
+        assert _has_text_containing(tree, "this is now your Settings page")
+
+    def test_live_schedule_finish_consumes_next_run(self, tmp_path, stub_page, monkeypatch):
+        """#7: the finish BODY consumes a LIVE read-back's next_run_display ("Tonight at HH:MM").
+
+        Cross-platform: the schedule section is stubbed to fire ``on_status`` with a LIVE status
+        synchronously on build (no PowerShell probe / no is_windows dependency), so the wizard's
+        on_status→finish-copy wiring is exercised on every OS.
+        """
+        import src.ui_flet.screens.setup as setup_mod
+        from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+        live = ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="3:00 AM")
+
+        def _stub_schedule(page, config, *, on_status=None):
+            if on_status is not None:
+                on_status(live)  # deliver a LIVE read-back the moment the step builds
+            return ft.Text("schedule"), setup_mod._ScheduleHandle(
+                trigger_register=lambda: None, run_time_value=lambda: "03:00"
+            )
+
+        monkeypatch.setattr(setup_mod, "_build_schedule_section", _stub_schedule)
+
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+        tree = self._wizard_tree(stub_page, monkeypatch, cfg)  # resume → Schedule (status LIVE via stub)
+
+        _button_by_content(tree, "Continue").on_click(None)  # schedule addressed (LIVE) → Delivery
+        _button_by_content(tree, "Set up later").on_click(None)  # defer delivery → Finish
+
+        assert _has_text_containing(tree, "Tonight at 3:00 AM")  # LIVE next-run consumed by the finish body
+
+
+def test_settings_save_reconciles_reregistration_when_scheduled(tmp_path, stub_page, monkeypatch):
+    """D8: changing a task-baked field in Settings re-registers the live schedule (same flow).
+
+    A completed + scheduled config, whose output folder is then edited, must drive the schedule
+    section's register flow on Save (``task_args_changed`` True). The register trigger is spied.
+    """
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    out_dir = tmp_path / "out"
+    new_out = tmp_path / "new_out"
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type="myedbc",
+        setup_completed=True,
+        schedule_registered=True,
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+
+    triggered = {"count": 0}
+    # Spy the schedule section's register trigger via the handle the reconcile drives.
+    import src.ui_flet.screens.setup as setup_mod
+    from src.ui_flet.picker_field import PickerField
+
+    real_build_schedule = setup_mod._build_schedule_section
+
+    def _spy_build(page, config, **kw):
+        card, handle = real_build_schedule(page, config, **kw)
+        handle.trigger_register = lambda: triggered.__setitem__("count", triggered["count"] + 1)
+        return card, handle
+
+    monkeypatch.setattr(setup_mod, "_build_schedule_section", _spy_build)
+
+    tree = build_setup(stub_page)
+    save_btn = _button_by_content(tree, "Save settings")
+
+    # The folders card holds two PickerFields; simulate a pick on the second (output).
+    output_picker = [c for c in _iter_controls(tree) if isinstance(c, PickerField)][1]
+    output_picker.value = str(new_out)
+    output_picker._on_change(str(new_out), output_picker._validator(str(new_out)))
+    save_btn.on_click(None)
+
+    assert triggered["count"] == 1, "editing the output folder must re-register the live schedule"
 
 
 def test_no_ft_dropdown_uses_on_change():

@@ -28,17 +28,20 @@ def probe_schedule(
     *,
     hint_registered: bool,
     latest_record_ts: str | None = None,
+    surface: str = "home",
 ) -> ScheduleStatus:
     """Read the real schedule, derive the tri-state status, and log any contradiction.
 
     Runs the bounded PowerShell read-back (``read_schedule``) and maps it to the honest
     tri-state via the pure ``derive_schedule_status``. Never raises — a failed read is UNKNOWN.
+    ``surface`` (``"home"``/``"setup"``) de-circularizes the MISSING copy (finding #3).
     """
     readback = read_schedule(task_name)
     status = derive_schedule_status(
         readback,
         hint_registered=hint_registered,
         latest_record_ts=latest_record_ts,
+        surface=surface,
     )
     _log_divergence(task_name, status, hint_registered=hint_registered)
     return status

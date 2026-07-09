@@ -144,6 +144,23 @@ class TestMissing:
         assert "3:00 AM" not in status.detail
         assert status.next_run_display is None
 
+    def test_missing_copy_is_de_circularized_on_the_setup_surface(self) -> None:
+        # Finding #3: rendered ON Setup, "add one in Setup" is circular → "add one below".
+        home = derive_schedule_status(
+            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, surface="home"
+        )
+        setup = derive_schedule_status(
+            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, surface="setup"
+        )
+        assert "in Setup" in home.detail
+        assert "below" in setup.detail and "in Setup" not in setup.detail
+
+    def test_expected_missing_copy_is_de_circularized_on_setup(self) -> None:
+        setup = derive_schedule_status(
+            ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, surface="setup"
+        )
+        assert "re-register it below" in setup.detail and "in Setup" not in setup.detail
+
 
 class TestUnknown:
     def test_found_none_is_unknown(self) -> None:

@@ -40,6 +40,7 @@ from src.ui_flet.home_status import (
     LatestReason,
     _as_int,
     _data_errors_total,
+    _schedule_confirmed_missing,
     _schedule_is_live,
     classify_latest_reason,
     is_stale,
@@ -149,12 +150,22 @@ def derive_history_banner(
     # schedule reassurance derives from the LIVE read-back (``schedule_status``), never the flag.
     if not records:
         if app_config.has_completed_setup() or store_created_at:
-            detail = (
+            fresh = (
                 "New nightly syncs will appear here from now on. "
                 "If you used an earlier version, its run history isn't carried over."
             )
             if _schedule_is_live(schedule_status):
-                detail += f" Scheduled for {schedule_status.next_run_display} each night."  # type: ignore[union-attr]
+                detail = fresh + f" Scheduled for {schedule_status.next_run_display} each night."  # type: ignore[union-attr]
+            elif app_config.has_completed_setup() and _schedule_confirmed_missing(schedule_status):
+                # Honest (finding #1b): a completed install with NO nightly schedule won't sync on its
+                # own — mirror Home's plain copy rather than implying automation. Only on a CONFIRMED
+                # MISSING read-back (never an unconfirmed None/UNKNOWN).
+                detail = (
+                    "Your roster won't sync automatically until you add a nightly schedule — set one up "
+                    "in Settings whenever you're ready. Manual conversions from the Convert tab appear here too."
+                )
+            else:
+                detail = fresh
             return HistoryBanner(verdict=Verdict.WARNING, headline="Run history starts fresh here", detail=detail)
         return HistoryBanner(
             verdict=Verdict.WARNING,

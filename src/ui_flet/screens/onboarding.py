@@ -1,10 +1,17 @@
-"""First-run onboarding hero — the UNCONFIGURED Home surface (IA model branch (a)).
+"""First-run onboarding hero — the SINGLE front door into the Setup wizard (D10 / IA branch (a)).
 
 VIEW glue (coverage-omitted): a calm, branded, verdict-first welcome for the admin
 whose deep job is *trust*. It states what DistrictSync does in one plain line, shows
 a plain-language "you're not set up yet" verdict (the ``Verdict.WARNING`` attention
 tone — not alarm), greets the district by its friendly name when one is chosen (never
-a raw ``sd48myedbc``), and offers a prominent "Start setup" CTA.
+a raw ``sd48myedbc``), and offers ONE prominent "Start setup" CTA into the wizard.
+
+**One front door (D10):** while unconfigured there is exactly one entrance to setup —
+this hero's CTA (which navigates to the Setup **wizard**). The old three-step "Getting
+started" preview was removed: it duplicated the wizard's own guided path (Folders →
+District → Schedule → Delivery → finish) and read as a competing set of instructions.
+The launch already lands on the wizard while ``not setup_completed`` (Slice 3/5), so the
+hero is a friendly re-entry point, not a second, differently-worded set of steps.
 
 Built as a **callback-driven factory** — ``build_onboarding`` owns NO navigation or
 lifecycle (``on_start_setup`` is injected by the shell, which calls
@@ -35,18 +42,6 @@ from src.ui_flet.verdict import Verdict
 
 def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
     return ft.Padding(left=h, top=v, right=h, bottom=v)
-
-
-def _step_row(icon: str, text: str) -> ft.Row:
-    """One plain first-run step: a muted brand icon + calm one-line copy."""
-    return ft.Row(
-        spacing=12,
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        controls=[
-            ft.Icon(getattr(ft.Icons, icon, ft.Icons.CIRCLE_OUTLINED), color=tokens.color_action_primary, size=20),
-            ft.Text(text, size=14, color=tokens.color_text),
-        ],
-    )
 
 
 def build_onboarding(
@@ -88,14 +83,19 @@ def build_onboarding(
         detail="A few quick steps and your nightly sync is running.",
     )
 
-    steps_card = components.card(
+    # ONE front door: a single calm line + the "Start setup" CTA into the wizard. No step
+    # enumeration here — the wizard IS the guided path, so repeating the steps would compete
+    # with it (D10). The launch already lands on the wizard while unconfigured.
+    start_card = components.card(
         content=ft.Column(
             spacing=18,
             controls=[
-                ft.Text("Getting started", size=18, weight=ft.FontWeight.W_700, color=tokens.color_text),
-                _step_row("FOLDER_OPEN_ROUNDED", "Pick your input and output folders, and choose your district."),
-                _step_row("SCHEDULE_ROUNDED", "Set the nightly schedule so the sync runs on its own."),
-                _step_row("CHECK_CIRCLE_ROUNDED", "That's it — DistrictSync keeps your roster up to date."),
+                ft.Text(
+                    "We'll walk you through it in a few quick steps — your folders, your district, and "
+                    "(optionally) a nightly schedule and delivery. You can stop and pick up where you left off.",
+                    size=15,
+                    color=tokens.color_text,
+                ),
                 ft.Container(
                     padding=_pad_sym(0, 6),
                     content=components.primary_button(
@@ -108,4 +108,4 @@ def build_onboarding(
         ),
     )
 
-    return ft.Column(spacing=22, controls=[hero, status, steps_card])
+    return ft.Column(spacing=22, controls=[hero, status, start_card])

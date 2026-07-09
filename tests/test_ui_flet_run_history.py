@@ -198,6 +198,15 @@ class TestBannerEmpty:
         banner = derive_history_banner([], cfg, now=_NOW, store_created_at="2026-07-01T03:00:00")
         assert banner.headline == "Run history starts fresh here"
 
+    def test_empty_completed_but_confirmed_unscheduled_says_no_auto_sync(self) -> None:
+        # #1b: same honest no-auto-sync copy as Home when the read-back CONFIRMS no schedule.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
+        missing = ScheduleStatus(state=ScheduleState.MISSING, headline="", detail="", attention=False)
+        banner = derive_history_banner([], cfg, now=_NOW, schedule_status=missing)
+        assert banner.verdict is Verdict.WARNING
+        assert "won't sync automatically" in banner.detail
+        assert "New nightly syncs will appear" not in banner.detail
+
 
 class TestBannerLatestRules:
     def test_failed_etl_is_failed(self) -> None:

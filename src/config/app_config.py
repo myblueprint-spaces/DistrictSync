@@ -40,7 +40,13 @@ class AppConfig:
     # ETL paths
     input_dir: str = ""
     output_dir: str = ""
-    sis_type: str = "myedbc"
+    # No district is pre-selected (D9, Slice 8): a fresh install starts with an empty
+    # district so the Setup wizard's District step shows the "Choose your district"
+    # placeholder and the admin picks explicitly — never a silent "myedbc" default that
+    # a district might not notice is wrong. is_complete()/setup_state gate on this being
+    # non-blank, so an empty sis_type can never reach run_pipeline via the UI. The CLI is
+    # unaffected (--sis is required there, never defaulted from AppConfig).
+    sis_type: str = ""
 
     # Scheduling
     schedule_time: str = "03:00"  # HH:MM (24-hour)

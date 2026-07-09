@@ -157,6 +157,26 @@ class TestEmptyState:
         status = derive_home_status([], cfg, now=_NOW, store_created_at="2026-07-01T03:00:00")
         assert status.headline == "Run history starts fresh here"
 
+    def test_empty_completed_but_confirmed_unscheduled_says_no_auto_sync(self) -> None:
+        # #1b: a completed install whose read-back CONFIRMS no schedule (MISSING) must be told
+        # plainly that nothing syncs on its own — NOT the "new syncs will appear" copy that implies
+        # automation. Calm WARNING, NO fix CTA/badge (a manual-only district must not be nagged).
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
+        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        status = derive_home_status([], cfg, now=_NOW, schedule_status=missing)
+        assert status.verdict is Verdict.WARNING
+        assert status.fix is None
+        assert "won't sync automatically" in status.detail
+        assert "New syncs will appear" not in status.detail
+
+    def test_empty_completed_unconfirmed_schedule_keeps_neutral_fresh_start(self) -> None:
+        # Honesty inverse: an UNKNOWN/None read-back must NOT assert "won't sync automatically"
+        # (we can't see the schedule) — it keeps the neutral fresh-start copy.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
+        status = derive_home_status([], cfg, now=_NOW, schedule_status=None)
+        assert "won't sync automatically" not in status.detail
+        assert "New syncs will appear" in status.detail
+
 
 class TestScheduleAttention:
     """D4: a schedule the config expected but the OS no longer has (or one that fired without
@@ -167,6 +187,8 @@ class TestScheduleAttention:
         status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=sched)
         assert status.verdict is Verdict.WARNING
         assert status.fix is not None and status.fix.dest_id == "setup"
+        # #2b: the CTA names the ACTION, not the destination (Firefighter landing precision).
+        assert status.fix.label == "Fix the nightly schedule"
         assert status.metrics is None
 
     def test_contradiction_routes_to_setup(self) -> None:

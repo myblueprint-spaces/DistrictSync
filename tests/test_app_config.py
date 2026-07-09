@@ -23,7 +23,7 @@ class TestAppConfigDefaults:
         cfg = AppConfig()
         assert cfg.input_dir == ""
         assert cfg.output_dir == ""
-        assert cfg.sis_type == "myedbc"
+        assert cfg.sis_type == ""  # D9: no district pre-selected on a fresh install
         assert cfg.schedule_time == "03:00"
         assert cfg.sftp_enabled is False
         assert cfg.sftp_port == 22
@@ -32,7 +32,7 @@ class TestAppConfigDefaults:
 class TestAppConfigLoad:
     def test_load_returns_defaults_when_no_file(self, config_dir):
         cfg = AppConfig.load()
-        assert cfg.sis_type == "myedbc"
+        assert cfg.sis_type == ""  # D9: no district pre-selected
         assert cfg.input_dir == ""
 
     def test_load_reads_saved_config(self, config_dir):
@@ -79,7 +79,7 @@ class TestAppConfigLoad:
         cfg_file.write_text("not valid json{{{", encoding="utf-8")
 
         cfg = AppConfig.load()
-        assert cfg.sis_type == "myedbc"  # defaults
+        assert cfg.sis_type == ""  # defaults (D9: no district pre-selected)
 
 
 class TestAppConfigSave:

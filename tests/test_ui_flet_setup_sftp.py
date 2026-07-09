@@ -72,10 +72,13 @@ def _benign_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _configured_cfg() -> AppConfig:
+    # setup_completed=True → build_setup renders Settings mode, where the SFTP section (the
+    # behaviour pinned here) is at the top level; the wizard's Delivery step reuses it verbatim.
     return AppConfig(
         input_dir="/in",
         output_dir="/out",
         sis_type="myedbc",
+        setup_completed=True,
         sftp_enabled=True,
         sftp_host="sftp.ca.spacesedu.com",
         sftp_username="district_x",

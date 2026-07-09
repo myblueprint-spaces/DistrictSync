@@ -78,7 +78,9 @@ _CHECK_RUN_HISTORY_LABEL = "Check Run History"
 # syncs the highlight on this programmatic hop.
 _SETUP_FIX = "setup"
 
-_OPEN_SETUP_LABEL = "Open Setup"
+# The MISSING fix CTA names the ACTION, not the destination (finding #2b) — the Firefighter reads
+# "fix the schedule", not "open a screen"; still routes to Setup (dest_id stays `_SETUP_FIX`).
+_OPEN_SETUP_LABEL = "Fix the nightly schedule"
 
 
 @dataclass(frozen=True)
@@ -291,12 +293,24 @@ def derive_home_status(
     # history. The next-run reassurance derives from the LIVE read-back, never the raw config flag.
     if not records:
         if app_config.has_completed_setup() or store_created_at:
-            detail = (
+            fresh = (
                 "New syncs will appear here from now on. "
                 "If you used an earlier version, its run history isn't carried over."
             )
             if _schedule_is_live(schedule_status):
-                detail += f" Your next nightly sync is scheduled for {schedule_status.next_run_display}."  # type: ignore[union-attr]
+                detail = fresh + f" Your next nightly sync is scheduled for {schedule_status.next_run_display}."  # type: ignore[union-attr]
+            elif app_config.has_completed_setup() and _schedule_confirmed_missing(schedule_status):
+                # Honest (finding #1b): a completed install with NO nightly schedule does NOT sync on
+                # its own — say so plainly instead of "new syncs will appear" (which implies automation
+                # that isn't set up). Calm WARNING, NO fix CTA/badge — a manual-only district must not
+                # be nagged. Only fires on a CONFIRMED-absent read-back (MISSING), never on an
+                # unconfirmed None/UNKNOWN (which would falsely deny a schedule we simply can't see).
+                detail = (
+                    "Your roster won't sync automatically until you add a nightly schedule — set one up "
+                    "in Settings whenever you're ready. Manual conversions from the Convert tab appear here too."
+                )
+            else:
+                detail = fresh
             return HomeStatus(
                 verdict=Verdict.WARNING,
                 headline="Run history starts fresh here",
@@ -414,3 +428,13 @@ def _schedule_is_live(schedule_status: ScheduleStatus | None) -> bool:
         and schedule_status.state is ScheduleState.LIVE
         and bool(schedule_status.next_run_display)
     )
+
+
+def _schedule_confirmed_missing(schedule_status: ScheduleStatus | None) -> bool:
+    """Whether the read-back DEFINITIVELY confirms no schedule (MISSING) — the honest-nudge signal.
+
+    Only ``MISSING`` (the cmdlet queried the task and it's absent) may drive the "won't sync
+    automatically" empty-state copy; ``None``/``UNKNOWN`` (not probed / couldn't confirm) never do
+    (they'd falsely deny a schedule we can't see — the D4 honesty invariant, inverted).
+    """
+    return schedule_status is not None and schedule_status.state is ScheduleState.MISSING
