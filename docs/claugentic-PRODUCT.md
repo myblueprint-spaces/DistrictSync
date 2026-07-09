@@ -110,15 +110,24 @@ States:
 ### Convert — ad-hoc, on-demand conversion
 
 The admin picks a GDE input folder and runs a conversion on a background worker thread (the window
-never freezes). The result is a verdict + entity tiles + a collapsible quality report. Anomalies
-(>20% drops) gate delivery behind an explicit acknowledgment; a single-flight guard prevents
-double-runs; SFTP delivery is pre-flighted.
+never freezes). The result is a verdict + entity tiles + a collapsible quality report. Before running,
+the form names **where files will be written**; a conversion refuses to run without an **explicit
+district** (no alphabetical fallback) and a **set output folder** (no silent write into the input
+folder). Anomalies (>20% drops) gate delivery behind an explicit acknowledgment; a single-flight guard
+prevents double-runs; SFTP delivery is pre-flighted.
 
 States:
 - **Empty** — no folder picked yet.
+- **Output known (pre-run)** — a read-only caption names the resolved output folder ("Files will be
+  written to … — change it in Settings"). No district chosen → a "Choose your district" placeholder and
+  Convert disabled; no output folder set → Convert is blocked with a routed "Set your output folder in
+  Settings first" (D9/D10 — no silent fallback into the input folder).
 - **Running** — a spinner while the worker builds the roster.
 - **Needs-ack** — a WARNING that some files look much smaller than usual; the admin reviews before
   delivering.
+- **Output findable (post-run)** — a committed run shows the output folder + an "Open folder" button.
+  The path is app-owned config (never student PII), so it lives at the view layer and never enters the
+  PII-free result model.
 - **Error** — a fixed category card ("The conversion couldn't finish") — the raw exception is
   discarded, the existing files are explicitly unchanged.
 

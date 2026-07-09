@@ -118,6 +118,29 @@ class TestScreensRender:
     def test_convert(self, stub_page, monkeypatch):
         _assert_renders(lambda: build_convert(stub_page), monkeypatch)
 
+    def test_convert_blocks_without_output_dir(self, stub_page, monkeypatch):
+        # D9/D10: the default (unconfigured) config has no district and no output folder, so the
+        # form shows the routed blocked caption, disables Convert, and shows the district placeholder.
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert _has_text_containing(tree, "Set your output folder in Settings first")
+        assert _button_by_content(tree, "Convert now").disabled is True
+        dropdown = _find(tree, ft.Dropdown)[0]
+        assert dropdown.value is None  # no configs[0] fallback (D9)
+        assert dropdown.hint_text == "Choose your district"
+
+    def test_convert_names_output_folder_and_prefills_saved_district(self, tmp_path, stub_page, monkeypatch):
+        # D10 pre-run visibility + D9 prefill: a saved district + output folder → the form names
+        # where files go and prefills the saved district (never an alphabetical guess).
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        out_dir = tmp_path / "out"
+        cfg = AppConfig(input_dir=str(in_dir), output_dir=str(out_dir), sis_type="myedbc")
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert _has_text_containing(tree, "Files will be written to")
+        assert _has_text_containing(tree, str(out_dir))
+        assert _find(tree, ft.Dropdown)[0].value == "myedbc"
+
     def test_home_with_refresh(self, stub_page, monkeypatch):
         # The Refresh affordance (D1) must render on the dashboard branch without
         # crashing — a configured+scheduled config is required to reach that branch
@@ -555,6 +578,20 @@ def test_settings_save_reconciles_reregistration_when_scheduled(tmp_path, stub_p
     save_btn.on_click(None)
 
     assert triggered["count"] == 1, "editing the output folder must re-register the live schedule"
+
+
+def test_convert_output_folder_row_renders_open_folder():
+    """D10 render-smoke: the post-run output-folder row constructs with an "Open folder" button.
+
+    The row is only reached inside ``_render_result`` after a committed run, so mount it directly
+    to catch a flet-0.85.3 API drift the same way the screen smokes guard the full builds.
+    """
+    from src.ui_flet.screens.convert import _output_folder_row
+
+    row = _output_folder_row(r"C:\Users\admin\output")
+    assert isinstance(row, ft.Control)
+    assert any(getattr(c, "content", None) == "Open folder" for c in _iter_controls(row))
+    assert _has_text_containing(row, r"C:\Users\admin\output")
 
 
 def test_no_ft_dropdown_uses_on_change():

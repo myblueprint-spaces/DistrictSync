@@ -67,6 +67,12 @@ from src.history.store import write_run_record
 from src.quality.report import DataQualityReport
 from src.sftp.uploader import SFTPUploader
 from src.ui_flet import components, tokens
+from src.ui_flet.convert_output import (
+    can_run_convert,
+    open_folder,
+    output_dir_is_set,
+    resolved_output_caption,
+)
 from src.ui_flet.convert_result import ConvertResult, ConvertStatus, summarize
 from src.ui_flet.filepicker import validate_input_dir
 from src.ui_flet.home_status import ENTITY_LABELS
@@ -131,6 +137,16 @@ def convert_job(
     """
     t0 = time.monotonic()
     config = load_config(config_name)
+
+    # Resolve the output folder up front and FAIL LOUD if it's unset (D10): the view gate
+    # (`can_run_convert`) blocks a run with no output folder, so reaching here empty is a
+    # programming/gate error — never silently write into the *input* folder (the old
+    # `AppConfig.load().output_dir or input_dir` fallback is gone). Fail-fast, before any I/O.
+    output_dir_value = (AppConfig.load().output_dir or "").strip()
+    if not output_dir_value:
+        raise ValueError("No output folder is configured — set one in Settings before converting.")
+    output_dir = Path(output_dir_value)
+
     raw = config.to_raw_dict()
     mappings = raw.get("mappings", {})
     global_config = raw.get("global_config", {})
@@ -151,8 +167,6 @@ def convert_job(
     outputs, field_orders, data_errors = run_transform(raw_data, mappings, global_config)
     if not outputs:
         return ConvertResult(status=ConvertStatus.NO_OUTPUT)
-
-    output_dir = Path(AppConfig.load().output_dir or input_dir)
 
     # Anomaly gate BEFORE writing: a >20% drop, un-acknowledged, withholds the write.
     anomalies = compute_anomalies(outputs, output_dir)
@@ -297,19 +311,37 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
     """Build the Convert surface, bound to ``page`` (via ``partial`` in the shell)."""
     cfg = AppConfig.load()
     configs = available_configs()
-    default_district = cfg.sis_type if cfg.sis_type in configs else (configs[0] if configs else cfg.sis_type)
+    # D9: NO silent fallback — prefill only from a valid SAVED district; otherwise leave the
+    # dropdown on its "Choose your district" placeholder and keep Run disabled until chosen.
+    # (The old `configs[0]` alphabetical guess is gone.)
+    default_district: str | None = cfg.sis_type if cfg.sis_type in configs else None
+
+    # D10: capture the resolved output folder ONCE at build (screens rebuild fresh per
+    # navigation, so a Settings change is picked up on the next visit). The gate + caption
+    # + post-run "Open folder" row all read this one value — never a hidden input-dir fallback.
+    output_dir_value = cfg.output_dir
+    output_set = output_dir_is_set(output_dir_value)
 
     runner = JobRunner()
-    selected = {"district": default_district}
+    selected: dict[str, str | None] = {"district": default_district}
 
     # ------------------------------------------------------------------ #
-    # District select (read-only caption if only one option, else a dropdown).
+    # District select — a "Choose your district" placeholder until chosen (D9).
     # ------------------------------------------------------------------ #
     district_dropdown = ft.Dropdown(
         label="District",
         value=default_district,
+        hint_text="Choose your district",
         options=[ft.dropdown.Option(key=c, text=friendly_district_name(c)) for c in configs],
         width=340,
+    )
+
+    # Read-only pre-run visibility: where files will be written (or the routed blocked
+    # message when no output folder is set). Warning-toned when unset so the blocked state reads.
+    output_caption = ft.Text(
+        resolved_output_caption(output_dir_value),
+        size=13,
+        color=tokens.color_muted if output_set else tokens.color_status_warning,
     )
 
     # ------------------------------------------------------------------ #
@@ -333,8 +365,12 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
     )
 
     def _refresh_convert_gate() -> None:
-        valid_input = validate_input_dir(input_field.value).ok
-        convert_btn.disabled = not (valid_input and runner.state.can_start)
+        gates_ok = can_run_convert(
+            district_chosen=bool(selected["district"]),
+            output_dir_set=output_set,
+            input_valid=validate_input_dir(input_field.value).ok,
+        )
+        convert_btn.disabled = not (gates_ok and runner.state.can_start)
         page.update()
 
     def _on_input_change(_path: str, _result: object) -> None:
@@ -354,6 +390,7 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
     def _on_district_change(_e: ft.ControlEvent) -> None:
         selected["district"] = district_dropdown.value or default_district
         _refresh_files()
+        _refresh_convert_gate()  # D9: district is part of the run-gate now — re-check on pick
 
     district_dropdown.on_select = _on_district_change  # Dropdown value-change is on_select (0.85.3)
 
@@ -361,7 +398,10 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
     # Run + result rendering (all UI mutation on the loop, never the worker).
     # ------------------------------------------------------------------ #
     def _set_running(running: bool) -> None:
-        convert_btn.disabled = running or not validate_input_dir(input_field.value).ok
+        if running:
+            convert_btn.disabled = True
+        else:
+            _refresh_convert_gate()  # single-source: re-derive district + output + input + can_start
         convert_spinner.visible = running
         convert_caption.visible = running
         convert_caption.value = "Converting… this can take a moment for large extracts." if running else ""
@@ -452,6 +492,11 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
             controls.append(_entity_tiles_row(result.entity_counts))
         if result.quality_text:
             controls.append(_quality_expander(result.quality_text))
+        # D10 post-run visibility: a committed run names WHERE its files are + an "Open folder"
+        # button. The path is app-owned config (never PII) → view layer only; `ConvertResult`
+        # stays path-free. `output_set` guards the (unreachable) empty-output case defensively.
+        if result.status in _WROTE_OUTPUT and output_set:
+            controls.append(_output_folder_row(output_dir_value))
         # SFTP delivery action: shown when SFTP is configured AND either (a) a successful
         # local build hasn't been delivered yet, or (b) a delivery FAILED
         # (BUILT_NOT_DELIVERED) and can be retried — the exit-3 banner's copy promises
@@ -569,6 +614,7 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
                 district_dropdown,
                 input_field,
                 files_slot,
+                output_caption,
                 ft.Row(
                     spacing=16,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -584,7 +630,46 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
 # --------------------------------------------------------------------------- #
 # View helpers                                                                  #
 # --------------------------------------------------------------------------- #
-def _build_file_chips(config_name: str, input_dir: str) -> list[ft.Control]:  # pragma: no cover - Flet view glue
+# Convert statuses whose run COMMITTED files to disk → "Open folder" is meaningful.
+# NO_INPUT / NO_OUTPUT wrote nothing; NEEDS_ANOMALY_ACK is handled before this point.
+_WROTE_OUTPUT: frozenset[ConvertStatus] = frozenset(
+    {
+        ConvertStatus.DELIVERED,
+        ConvertStatus.DELIVERED_WITH_DATA_ERRORS,
+        ConvertStatus.BUILT_WITH_DATA_ERRORS,
+        ConvertStatus.BUILT_NOT_DELIVERED,
+    }
+)
+
+
+def _output_folder_row(output_dir: str) -> ft.Control:  # pragma: no cover - Flet view glue
+    """A view-layer row naming the resolved output folder + an "Open folder" button (D10).
+
+    The output path is app-owned config (never student PII), so it lives HERE at the view
+    layer and never enters the PII-free ``ConvertResult``. "Open folder" dispatches per-OS
+    via ``convert_output.open_folder`` (best-effort, never raises).
+    """
+    return components.card(
+        content=ft.Column(
+            spacing=12,
+            controls=[
+                ft.Text("Where your files are", size=15, weight=ft.FontWeight.W_700, color=tokens.color_text),
+                ft.Text(output_dir, size=13, color=tokens.color_muted, selectable=True),
+                ft.Row(
+                    controls=[
+                        components.secondary_button(
+                            "Open folder",
+                            lambda _e: open_folder(output_dir),
+                            icon=ft.Icons.FOLDER_OPEN_ROUNDED,
+                        )
+                    ]
+                ),
+            ],
+        ),
+    )
+
+
+def _build_file_chips(config_name: str | None, input_dir: str) -> list[ft.Control]:  # pragma: no cover - Flet view glue
     """FileChips for the GDE files found in the folder + a missing-file warning.
 
     Lists the resolved GDE files present in the picked folder and, from

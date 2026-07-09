@@ -246,3 +246,36 @@ class TestConvertManual:
         assert records[0]["source"] == "manual"
         assert records[0]["status"] == "success"
         assert records[0]["Students"] == 2
+
+    def test_no_input_run_records_nothing(self, gde_output: Path, tmp_path: Path) -> None:
+        """Slice 9 regression: only COMMITTED manual runs are recorded — a NO_INPUT run writes nothing.
+
+        Guards that the Slice-9 output-gate rework did not change ``_record_manual_run``'s
+        committed-only asymmetry (an empty input folder → ``NO_INPUT`` before any write).
+        """
+        from src.ui_flet.convert_result import ConvertStatus
+        from src.ui_flet.screens.convert import convert_job
+
+        empty_input = tmp_path / "empty_in"
+        empty_input.mkdir()
+        AppConfig(input_dir=str(empty_input), output_dir=str(gde_output), sis_type="myedbc").save()
+        result = convert_job("myedbc", str(empty_input))
+        assert result.status is ConvertStatus.NO_INPUT
+        assert read_run_records() == []  # committed-only: nothing recorded
+
+    def test_empty_output_dir_fails_loud_and_records_nothing(self, gde_input: Path) -> None:
+        """D10: an unset output folder makes ``convert_job`` FAIL LOUD — never a silent input-dir write.
+
+        The old ``AppConfig.load().output_dir or input_dir`` fallback would have quietly written the
+        roster into the *input* folder; now it raises, and (fail-fast) records nothing.
+        """
+        from src.ui_flet.screens.convert import convert_job
+
+        AppConfig(input_dir=str(gde_input), output_dir="", sis_type="myedbc").save()
+        before = sorted(p.name for p in gde_input.iterdir())
+        with pytest.raises(ValueError, match="output folder"):
+            convert_job("myedbc", str(gde_input))
+        assert read_run_records() == []
+        # The anti-regression is airtight: nothing was written into the INPUT folder
+        # (the old fallback's exact failure mode), not merely "the call raised".
+        assert sorted(p.name for p in gde_input.iterdir()) == before
