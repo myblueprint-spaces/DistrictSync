@@ -262,3 +262,105 @@ class TestStudentsCrossEnrollmentCollapse:
         df = self._cross_df().drop(columns="home school number")
         with pytest.raises(ValueError, match="home_school_column"):
             self.transformer.transform(df, self._MAPPING, "Students", {"Demo.txt": df}, self._gc())
+
+
+class TestStudentEmailGeneration:
+    """Opt-in email extensions (plan 0030): sanitize + derived date parts.
+
+    Exercised through the full DataTransformer.transform() path so the
+    copy-isolation of the injected pseudo-columns and the fail-loud missing
+    column boundary are covered end-to-end. Both knobs default off → the
+    default path is proven byte-identical by the regression test below.
+    """
+
+    _GC = {"academic_start_month_day": "08-25", "academic_end_month_day": "07-25"}
+
+    # SD60-shape template: firstlast + 2-digit admission year, sanitized.
+    _SD60_EMAIL = {
+        "format": "{legal first name}{legal surname}{admission yy}@learn60.ca",
+        "sanitize": True,
+        "derived_dates": {"admission yy": {"column": "Admission date", "date_format": "yy"}},
+    }
+
+    def setup_method(self):
+        self.transformer = DataTransformer()
+        self.transformer.set_school_year(2025, "08-25", "07-25")
+
+    def _mapping(self, email_cfg):
+        return {
+            "source_files": {"student_demographic": "Demo.txt"},
+            "field_map": {
+                "User ID": "Student Number",
+                "First Name": "Legal First Name",
+                "Last Name": "Legal Surname",
+                "SchoolCode": "School Number",
+                "EnrollStatus": None,
+                "Email Address": email_cfg,
+            },
+        }
+
+    def _df(self, first, surname, admission):
+        return pd.DataFrame(
+            {
+                "student number": ["S001"],
+                "legal first name": [first],
+                "legal surname": [surname],
+                "school number": ["100"],
+                "admission date": [admission],
+                "enrolment status": ["Active"],
+            }
+        )
+
+    def _run(self, email_cfg, df):
+        return self.transformer.transform(df, self._mapping(email_cfg), "Students", {"Demo.txt": df}, self._GC)
+
+    def test_derived_date_two_digit_year(self):
+        # DD-MMM-YYYY admission date -> 2-digit year suffix.
+        result = self._run(self._SD60_EMAIL, self._df("Alice", "Smith", "15-Sep-2018"))
+        assert result["Email Address"].iloc[0] == "alicesmith18@learn60.ca"
+
+    def test_sanitize_strips_apostrophe_hyphen_space(self):
+        # Apostrophe + hyphen (surname) + internal space (first name) all removed.
+        result = self._run(self._SD60_EMAIL, self._df("Mary Anne", "O'Brien-Smith", "15-Sep-2018"))
+        assert result["Email Address"].iloc[0] == "maryanneobriensmith18@learn60.ca"
+
+    def test_unparseable_admission_yields_no_suffix(self):
+        # An unparseable admission date -> firstlast with NO year (never "...unknown").
+        result = self._run(self._SD60_EMAIL, self._df("Alice", "Smith", "Unknown"))
+        assert result["Email Address"].iloc[0] == "alicesmith@learn60.ca"
+
+    def test_blank_admission_yields_no_suffix(self):
+        result = self._run(self._SD60_EMAIL, self._df("Alice", "Smith", ""))
+        assert result["Email Address"].iloc[0] == "alicesmith@learn60.ca"
+
+    def test_missing_derived_column_raises(self):
+        df = self._df("Alice", "Smith", "15-Sep-2018").drop(columns="admission date")
+        with pytest.raises(ValueError, match="derived_dates"):
+            self._run(self._SD60_EMAIL, df)
+
+    def test_pseudo_column_not_leaked_into_output(self):
+        # The injected pseudo-column lives only on the local copy — it must not
+        # appear as an output column (proves working frame isolation).
+        result = self._run(self._SD60_EMAIL, self._df("Alice", "Smith", "15-Sep-2018"))
+        assert "admission yy" not in result.columns
+
+    def test_generate_emails_does_not_mutate_source_frame(self):
+        # Direct invariant behind the isolation claim: _generate_emails injects the
+        # derived pseudo-column onto a LOCAL copy only, so the `working` frame that
+        # transform() later hands to apply_field_map is never polluted.
+        from src.etl.transformers.students import StudentTransformer
+
+        working = self._df("Alice", "Smith", "15-Sep-2018")  # columns already lower-cased
+        result = pd.DataFrame()
+        field_map = self._mapping(self._SD60_EMAIL)["field_map"]
+        StudentTransformer()._generate_emails(working, result, field_map)
+        assert "admission yy" not in working.columns  # source frame untouched
+        assert result["Email Address"].iloc[0] == "alicesmith18@learn60.ca"
+
+    def test_default_path_preserves_apostrophe_regression(self):
+        # SD54-shape template with NO sanitize/derived_dates -> legacy path:
+        # lowercase + collapse spaces but KEEP the apostrophe (byte-identical to
+        # pre-0030 behavior). This is the other-districts-unchanged guard.
+        email_cfg = {"format": "{legal surname}.{legal first name}@sd54.bc.ca"}
+        result = self._run(email_cfg, self._df("Mary", "O'Brien", "15-Sep-2018"))
+        assert result["Email Address"].iloc[0] == "o'brien.mary@sd54.bc.ca"

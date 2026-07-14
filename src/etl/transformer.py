@@ -172,8 +172,8 @@ class DataTransformer:
     def generate_user_id(self, row: pd.Series, staff_id_col: str, student_id_col: str) -> str:
         return BaseTransformer.generate_user_id(row, staff_id_col, student_id_col)
 
-    def generate_student_email(self, row: pd.Series, format_str: str) -> str:
-        return BaseTransformer.generate_student_email(row, format_str)
+    def generate_student_email(self, row: pd.Series, format_str: str, sanitize: bool = False) -> str:
+        return BaseTransformer.generate_student_email(row, format_str, sanitize=sanitize)
 
     # --- Blended class delegates ---
 

@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from src.config.loader import _deep_merge, load_config
 from src.config.models import (
     CrossEnrollmentConfig,
+    EmailDerivedDate,
     EntityConfig,
     FieldAcademicYear,
     FieldAppendYear,
@@ -827,7 +828,77 @@ class TestSD60Config:
         assert cc.collapse is True
         assert cc.home_school_column == "Home school number"
 
-    def test_active_values_include_active_no_primary(self):
+    def test_active_no_primary_dropped(self):
+        """SD60 no longer retains "Active No Primary" (plan 0030).
+
+        The EnrollStatus override was removed, so SD60 inherits the base
+        ``null`` sentinel → default ``active_values=["Active","PreReg"]``. The
+        bare ``null`` round-trips to ``None`` via ``get_raw_field_map`` (no
+        ``active_values`` list at all), so ANP is definitively absent.
+        """
         cfg = load_config("sd60myedbc")
         students_fm = cfg.get_raw_field_map("Students")
-        assert "Active No Primary" in students_fm["EnrollStatus"]["active_values"]
+        assert students_fm["EnrollStatus"] is None
+        assert "Active No Primary" not in repr(students_fm["EnrollStatus"])
+
+    def test_school_code_maps_to_home_school_number(self):
+        """SD60 rosters every student under their home school (plan 0030)."""
+        cfg = load_config("sd60myedbc")
+        students_fm = cfg.get_raw_field_map("Students")
+        assert students_fm["SchoolCode"] == "Home school number"
+
+    def test_email_generation_round_trip(self):
+        """SD60 email is generated with sanitize + a derived 2-digit admission year.
+
+        The round-trip must emit PLAIN nested dicts (not model instances) so the
+        transformer's dict-style reads work.
+        """
+        cfg = load_config("sd60myedbc")
+        students_fm = cfg.get_raw_field_map("Students")
+        email = students_fm["Email Address"]
+        assert email["format"] == "{legal first name}{legal surname}{admission yy}@learn60.ca"
+        assert email["sanitize"] is True
+        assert email["derived_dates"] == {"admission yy": {"column": "Admission date", "date_format": "yy"}}
+        # Plain dicts, not model instances (transformer reads dict-style).
+        assert isinstance(email["derived_dates"]["admission yy"], dict)
+
+
+# -----------------------------------------------------------------------
+# FieldEmailFormat / EmailDerivedDate — opt-in email extensions (plan 0030)
+# -----------------------------------------------------------------------
+class TestEmailFormatModels:
+    def test_bare_format_defaults_off(self):
+        """A bare ``{"format": ...}`` yields sanitize=False and no derived dates."""
+        ef = classify_field({"format": "{student number}@sd51.bc.ca"})
+        assert isinstance(ef, FieldEmailFormat)
+        assert ef.sanitize is False
+        assert ef.derived_dates == {}
+
+    def test_sanitize_and_derived_dates_parse(self):
+        ef = classify_field(
+            {
+                "format": "{legal first name}{legal surname}{admission yy}@learn60.ca",
+                "sanitize": True,
+                "derived_dates": {"admission yy": {"column": "Admission date", "date_format": "yy"}},
+            }
+        )
+        assert isinstance(ef, FieldEmailFormat)
+        assert ef.sanitize is True
+        assert ef.derived_dates["admission yy"].column == "Admission date"
+        assert ef.derived_dates["admission yy"].date_format == "yy"
+
+    def test_field_email_format_forbids_extra_key(self):
+        with pytest.raises(ValidationError):
+            FieldEmailFormat(format="{x}@y.ca", saintize=True)  # typo'd key
+
+    def test_derived_date_forbids_extra_key(self):
+        with pytest.raises(ValidationError):
+            EmailDerivedDate(column="Admission date", date_format="yy", colunm="typo")
+
+    def test_derived_date_rejects_empty_column(self):
+        with pytest.raises(ValidationError):
+            EmailDerivedDate(column="", date_format="yy")
+
+    def test_derived_date_rejects_empty_date_format(self):
+        with pytest.raises(ValidationError):
+            EmailDerivedDate(column="Admission date", date_format="")
