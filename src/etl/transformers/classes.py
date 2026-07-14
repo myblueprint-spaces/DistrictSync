@@ -98,6 +98,15 @@ class ClassTransformer(BaseTransformer):
             student_demo_df[teacher_id_col] = student_demo_df[teacher_id_col].astype(str).str.strip()
 
         students_field_map = context.get_students_config().get("field_map", {})
+
+        # Drop inactive students before building homerooms so no homeroom class
+        # is created solely from withdrawn/inactive students (zero-orphan invariant).
+        student_demo_df = self.filter_to_active(
+            student_demo_df, context.get_demo_student_col(), context, caller="Classes"
+        )
+        if student_demo_df.empty:
+            return
+
         grade_config = students_field_map.get("Grade", {})
         grade_col = grade_config.get("column", "grade").lower() if isinstance(grade_config, dict) else "grade"
         student_demo_df[grade_col] = student_demo_df[grade_col].apply(self.grade_to_ceds)
@@ -116,12 +125,19 @@ class ClassTransformer(BaseTransformer):
             return
 
         hc = unique_homerooms.copy()
-        hc["Class ID"] = (
-            hc[SCHOOL_NUMBER].astype(str)
-            + "_"
-            + hc[homeroom_col].fillna("UnassignedHomeroom").astype(str)
-            + f"_{context.school_year}"
-        )
+        # Build the homeroom Class ID row-wise ("{school}_{homeroom}_{year}"). A
+        # list comprehension stays type-clean across pandas-stubs versions (3.0
+        # dropped both the `Series[str] + str` overload and `str.cat(list)`); dev
+        # stubs are intentionally uncapped. `unique_homerooms` is the deduplicated
+        # homeroom set (small), matching the row-wise `.apply` used for Name below.
+        year = context.school_year
+        hc["Class ID"] = [
+            f"{school}_{homeroom}_{year}"
+            for school, homeroom in zip(
+                hc[SCHOOL_NUMBER].astype(str),
+                hc[homeroom_col].fillna("UnassignedHomeroom").astype(str),
+            )
+        ]
 
         hc["Name"] = hc.apply(
             lambda row: self._homeroom_name(row, homeroom_col, TEACHER_NAME, context.school_year),

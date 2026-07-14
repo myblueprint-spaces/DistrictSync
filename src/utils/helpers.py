@@ -51,9 +51,7 @@ def validate_path(path: Path) -> bool:
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Strip whitespace and lowercase all column names. Returns a copy."""
-    df = df.copy()
-    df.columns = [col.strip().lower() for col in df.columns]
-    return df
+    return df.rename(columns=lambda c: c.strip().lower())
 
 
 def district_slug(sis_type: str) -> str:

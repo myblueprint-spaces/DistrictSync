@@ -11,7 +11,7 @@ class TestEnrollmentStatusFromField:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def _transform_students(self, df, raw_data=None, global_config=None):
         if raw_data is None:
@@ -34,21 +34,22 @@ class TestEnrollmentStatusFromField:
         result = self._transform_students(df)
         assert len(result) == 1
 
-    def test_prereg_kept(self):
-        """PreReg students should NOT be filtered out."""
+    def test_prereg_included(self):
+        """PreReg students are INCLUDED by default (Advanced CSV spec).
+
+        The default ``active_values`` is ``["Active", "PreReg"]`` — both expected
+        ``EnrollStatus`` values per the Advanced CSV spec — so a PreReg row is
+        retained. Districts can opt PreReg out via ``EnrollStatus.active_values``.
+        See DECISIONS: "PreReg included by default".
+        """
         df = pd.DataFrame(
             {
                 "enrolment status": ["PreReg"],
                 "student number": ["S001"],
             }
         )
-        # PreReg is kept as-is, but the filter keeps only "Active" —
-        # so PreReg WILL be filtered. Let's verify current behavior.
         result = self._transform_students(df)
-        # Current code: only "Active" and "PreReg" are kept as-is,
-        # but filter is `working["EnrollStatus"] == "Active"`.
-        # So PreReg is actually filtered OUT. This documents current behavior.
-        assert len(result) == 0
+        assert len(result) == 1
 
     def test_inactive_filtered(self):
         df = pd.DataFrame(
@@ -61,7 +62,7 @@ class TestEnrollmentStatusFromField:
         assert len(result) == 0
 
     def test_other_status_becomes_inactive(self):
-        """Any status other than Active/PreReg → Inactive → filtered."""
+        """Any status other than Active (the default active_values) → Inactive → filtered."""
         df = pd.DataFrame(
             {
                 "enrolment status": ["Withdrawn", "Transferred", "Suspended"],
@@ -87,7 +88,7 @@ class TestEnrollmentStatusFromWithdrawDate:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def _transform_students(self, df):
         raw_data = {"StudentDemographicInformation.txt": df}
@@ -138,7 +139,7 @@ class TestEnrollmentStatusNoColumn:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_defaults_to_active(self):
         df = pd.DataFrame({"student number": ["S001", "S002"]})

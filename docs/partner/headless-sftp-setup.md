@@ -1,8 +1,8 @@
 # Headless & Docker SFTP Setup
 
-If your district server has no browser (headless Linux, a locked-down
+If your district server has no display (headless Linux, a locked-down
 Windows Server Core, or a container), you can configure SpacesEDU SFTP
-upload entirely from the command line — no Streamlit wizard required.
+upload entirely from the command line — no desktop UI required.
 
 DistrictSync ships three CLI subcommands for credential management:
 
@@ -99,9 +99,10 @@ DistrictSync --sis myedbc \
   --sftp
 ```
 
-The CLI reads the saved host/port/user/remote path from
-`~/.districtsync/config.json`, retrieves the password from the OS keyring,
-zips the output CSVs to `districtsync_<sis>_<YYYY-MM-DD>.zip`, and uploads.
+The CLI reads the saved host/port/user/remote path from `config.json` in
+DistrictSync's per-user data folder (on Linux, `~/.local/share/DistrictSync`),
+retrieves the password from the OS keyring, zips the output CSVs to
+`districtsync_<sis>_<YYYY-MM-DD>.zip`, and uploads.
 
 ---
 
@@ -113,7 +114,9 @@ Containers need three things to make `keyring` work:
    backend" below).
 2. The password supplied at container startup (never baked into the
    image).
-3. Persistence of `~/.districtsync/config.json` so settings survive restarts.
+3. Persistence of DistrictSync's data folder (`~/.local/share/DistrictSync`,
+   i.e. `/root/.local/share/DistrictSync` for the `root` user) so settings
+   survive restarts.
 
 ### Dockerfile
 
@@ -147,7 +150,7 @@ services:
   districtsync:
     build: .
     volumes:
-      - districtsync_config:/root/.districtsync   # persists ~/.districtsync
+      - districtsync_config:/root/.local/share/DistrictSync   # persists config, logs, run history
       - ./input:/data/input               # GDE export drop
       - ./output:/data/output             # generated CSVs
     environment:
@@ -185,7 +188,7 @@ docker compose run --rm districtsync --sftp-test
 
 If your image has no `libsecret`/GNOME Keyring and you can't install
 one, use `keyrings.alt` which stores credentials in an encrypted file
-inside the container's `~/.districtsync` volume:
+inside the container's DistrictSync data-folder volume:
 
 ```bash
 pip install keyrings.alt

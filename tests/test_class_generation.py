@@ -40,7 +40,7 @@ class TestTruncateName:
 class TestGenerateClassId:
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_without_year(self):
         row = pd.Series({"master timetable id": "MT001"})
@@ -67,7 +67,7 @@ class TestGenerateClassId:
 class TestGenerateClassName:
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_full_name_with_teacher_and_section(self):
         row = pd.Series(

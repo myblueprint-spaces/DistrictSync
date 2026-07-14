@@ -206,7 +206,15 @@ _DISTRICT_SETUP = {
     scope="module",
 )
 def district_output(request, tmp_path_factory):
-    """Run the pipeline for one district and return (sis_type, output_dir)."""
+    """Run the pipeline for one district and return (sis_type, output_dir).
+
+    This is a MODULE-scoped fixture, so it runs during setup BEFORE the function-scoped
+    ``isolated_user_profile`` autouse fixture is active. ``run_pipeline`` now writes a
+    run record to the store via ``paths.user_data_dir()``, so redirect that seam into
+    this fixture's own tmp dir here too — otherwise a module-scoped run would write the
+    REAL ``history.db`` (the isolation canary would catch it). The CSV output goes to the
+    explicit ``output_dir``, so the SpacesEDU schema / SD74 snapshot is unaffected.
+    """
     sis = request.param
     d = tmp_path_factory.mktemp(f"contract_{sis}")
     input_dir = d / "input"
@@ -214,7 +222,12 @@ def district_output(request, tmp_path_factory):
     input_dir.mkdir()
     output_dir.mkdir()
     _DISTRICT_SETUP[sis](input_dir)
-    main(sis, str(input_dir), str(output_dir))
+    mp = pytest.MonkeyPatch()
+    mp.setattr("src.utils.paths.user_data_dir", lambda: d / ".districtsync")
+    try:
+        main(sis, str(input_dir), str(output_dir))
+    finally:
+        mp.undo()
     return sis, output_dir
 
 

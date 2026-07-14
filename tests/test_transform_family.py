@@ -8,7 +8,7 @@ from src.etl.transformer import DataTransformer
 class TestFamilyTransform:
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_basic_family_transform(self, emergency_contact_df, family_mapping, global_config, raw_data):
         result = self.transformer.transform(emergency_contact_df, family_mapping, "Family", raw_data, global_config)
@@ -90,3 +90,30 @@ class TestFamilyTransform:
         result = self.transformer.transform(emergency_contact_df, family_mapping, "Family", raw_data, global_config)
         for field in family_mapping["field_map"]:
             assert field in result.columns, f"Missing expected output column: {field}"
+
+    def test_row_filters_drop_non_matching_rows(self, global_config):
+        """A config-driven row_filter (SD60 guardians-only) drops non-matching contacts."""
+        df = pd.DataFrame(
+            {
+                "student number": ["S001", "S002", "S003"],
+                "first name": ["John", "Jane", "Jake"],
+                "last name": ["Smith", "Doe", "Roe"],
+                "email address": ["j@x.com", "ja@x.com", "jk@x.com"],
+                "parent auth / guardian": ["Y", "N", "Y"],
+            }
+        )
+        mapping = {
+            "source_files": {"emergency_contacts": "EmergencyEnhanced.txt"},
+            "field_map": {
+                "First Name": "First Name",
+                "Last Name": "Last Name",
+                "Email": "Email Address",
+                "Student User ID": "Student Number",
+            },
+            "row_filters": [{"column": "Parent Auth / Guardian", "include": ["Y"]}],
+        }
+        raw_data = {"EmergencyEnhanced.txt": df}
+        result = self.transformer.transform(df, mapping, "Family", raw_data, global_config)
+        # Only the two guardian rows survive; the non-guardian (S002, "N") is dropped.
+        assert len(result) == 2
+        assert list(result["First Name"]) == ["John", "Jake"]

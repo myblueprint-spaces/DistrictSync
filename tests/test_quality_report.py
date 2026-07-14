@@ -119,8 +119,10 @@ class TestDataQualityReport:
         assert "DATA QUALITY REPORT" in report.to_text()
 
     def test_unknown_entity_duplicate_detection(self):
+        # Use a clearly synthetic entity name — CourseInfo and StudentCourses
+        # are now in key_map, so they'd no longer exercise the heuristic.
         outputs = {
-            "CourseInfo": pd.DataFrame(
+            "UnregisteredCatalog": pd.DataFrame(
                 {
                     "Course Code": ["MATH10", "ENG11", "MATH10"],
                     "Course Name": ["Math 10", "English 11", "Math 10 Dup"],
@@ -128,11 +130,11 @@ class TestDataQualityReport:
             ),
         }
         report = DataQualityReport().analyze(outputs)
-        assert report.entities["CourseInfo"].duplicate_count == 2
+        assert report.entities["UnregisteredCatalog"].duplicate_count == 2
 
     def test_unknown_entity_id_column_heuristic(self):
         outputs = {
-            "StudentCourses": pd.DataFrame(
+            "UnregisteredEnrollments": pd.DataFrame(
                 {
                     "Student ID": ["S1", "S1", "S2"],
                     "Course Code": ["MATH10", "ENG11", "MATH10"],
@@ -142,4 +144,32 @@ class TestDataQualityReport:
         }
         report = DataQualityReport().analyze(outputs)
         # S1/MATH10 and S2/MATH10 are unique combos, no duplicates
-        assert report.entities["StudentCourses"].duplicate_count == 0
+        assert report.entities["UnregisteredEnrollments"].duplicate_count == 0
+
+    def test_courseinfo_duplicate_detection_uses_explicit_key_map(self):
+        """CourseInfo is in key_map with ['Course Code', 'School ID'] — same code/school is a dup."""
+        outputs = {
+            "CourseInfo": pd.DataFrame(
+                {
+                    "Course Code": ["MATH10", "MATH10", "ENG11"],
+                    "School ID": ["100", "100", "100"],  # rows 0/1 dup
+                    "Course Name": ["Math 10", "Math 10 dup", "English 11"],
+                }
+            ),
+        }
+        report = DataQualityReport().analyze(outputs)
+        assert report.entities["CourseInfo"].duplicate_count == 2
+
+    def test_studentcourses_duplicate_detection_uses_explicit_key_map(self):
+        """StudentCourses uses ['Student ID', 'Course Code', 'Completion Date'] as key."""
+        outputs = {
+            "StudentCourses": pd.DataFrame(
+                {
+                    "Student ID": ["S1", "S1", "S1"],
+                    "Course Code": ["MATH10", "MATH10", "ENG11"],
+                    "Completion Date": ["30-Jan-2025", "30-Jan-2025", "30-Jan-2025"],  # rows 0/1 dup
+                }
+            ),
+        }
+        report = DataQualityReport().analyze(outputs)
+        assert report.entities["StudentCourses"].duplicate_count == 2

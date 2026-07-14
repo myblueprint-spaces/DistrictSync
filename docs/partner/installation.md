@@ -47,21 +47,37 @@ Before you begin, ensure you have:
 
 ### Where does data live?
 
-All runtime state is stored in `~/.districtsync/` (your user home
-directory). This works the same on every platform and survives
-updates to the .exe:
+All runtime state is stored in the standard per-user application-data
+folder for your operating system — **not** next to the .exe — so moving
+or re-downloading the program never loses your settings or history:
+
+| Platform | Data folder |
+|----------|-------------|
+| Windows | `C:\Users\<username>\AppData\Local\DistrictSync\` |
+| macOS | `~/Library/Application Support/DistrictSync/` |
+| Linux | `$XDG_DATA_HOME/DistrictSync/` (default `~/.local/share/DistrictSync/`) |
+
+Inside that folder:
 
 | File | Purpose |
 |------|---------|
-| `~/.districtsync/config.json` | Wizard settings (input/output paths, SFTP host, schedule) |
-| `~/.districtsync/etl_tool.log` | All ETL run history — wizard runs, scheduled runs, and CLI runs all write here |
-| `~/.districtsync/mappings/*.yaml` | Any district mappings you create in the Mapping Editor (persists across exe upgrades) |
+| `config.json` | Wizard settings (input/output paths, SFTP host, schedule) |
+| `history.db` | Run-history database — every wizard, scheduled, and CLI run is recorded here; the **Run History** surface reads it |
+| `etl_tool.log` | Diagnostic log (rotates at 5 MB, keeps 3 backups) — detailed messages for troubleshooting |
+| `mappings/*.yaml` | Any custom district mapping YAML provided by the DistrictSync team (persists across exe upgrades) |
 | OS credential store | SFTP password (Windows Credential Manager / macOS Keychain / Linux Secret Service) |
 
-On Windows that path is
-`C:\Users\<your-username>\.districtsync\`. You can back up or inspect
-this folder at any time. Deleting it resets the tool to first-run
-state.
+You can back up or inspect this folder at any time. Deleting it resets
+the tool to first-run state.
+
+!!! note "Upgrading from an older version?"
+    Earlier releases stored this data in a `.districtsync` folder in your
+    home directory (e.g. `C:\Users\<username>\.districtsync\`). The first
+    time you run a newer version, DistrictSync copies your settings, logs,
+    and history into the new location above and leaves a small `MOVED.txt`
+    note in the old folder pointing at the new one. The move is safe and
+    one-time — if anything prevents it, the tool simply keeps using the old
+    folder (you are never left half-moved).
 
 ---
 
@@ -72,9 +88,12 @@ state.
     [Step 3 — Headless configuration](#step-3-headless-configuration-linux-docker-no-browser)
     or see the dedicated [Headless & Docker SFTP Setup](headless-sftp-setup.md) guide.
 
+!!! note "Enabling a schedule? Expect one Windows permission prompt"
+    When you turn on the daily automated schedule (Step 4 below), DistrictSync shows **one Windows permission prompt (UAC)** as it registers the task — creating a task that runs **unattended** (whether or not you are logged on) needs administrator rights, and DistrictSync requests them just for that one step. Click **Yes** on the prompt. You do **not** need to run the whole app as administrator, and ad-hoc-only use (the Convert surface, no schedule) shows no prompt at all.
+
 1. Double-click `DistrictSync-windows.exe`
-2. Your browser will open automatically at `http://localhost:8501`
-3. Follow the 5-step Setup Wizard:
+2. The DistrictSync desktop window opens directly — no browser involved
+3. Go to the **Setup** surface and follow its 5 steps (the Schedule and Delivery steps are optional — skip either and set it up later):
 
 ### Wizard Step 1 — File Paths
 
@@ -89,13 +108,7 @@ Click **Validate & Continue**.
 
 Select your district from the dropdown. If your district is not listed, contact SpacesEDU support.
 
-### Wizard Step 3 — Schedule
-
-Optionally enable a daily automated schedule. If you only need ad-hoc runs via the Convert page, you can leave this disabled.
-
-If enabled, choose the daily run time. We recommend **03:00 AM** (3am) — after the overnight GDE export from MyEdBC has completed.
-
-### Wizard Step 4 — SFTP Upload
+### Wizard Step 3 — SFTP Upload (Delivery)
 
 Enter the SFTP credentials provided by SpacesEDU:
 
@@ -109,22 +122,29 @@ Enter the SFTP credentials provided by SpacesEDU:
 
 Click **Test Connection** to verify the credentials work.
 
-### Wizard Step 5 — Save & Activate
+### Wizard Step 4 — Schedule
 
-Review your settings and click **Save & Activate Schedule** (or **Save Configuration** if no schedule was enabled).
+Optionally enable a daily automated schedule. If you only need ad-hoc runs via the Convert page, you can leave this disabled.
 
-If a schedule was enabled, DistrictSync will create a Windows Task Scheduler entry named `DistrictSync_Daily` that runs every day at the time you specified.
+If enabled, choose the daily run time. We recommend **03:00 AM** (3am) — after the overnight GDE export from MyEdBC has completed.
 
-After saving, the Setup Wizard switches to a management dashboard where you can view, edit, or disable the schedule and SFTP settings at any time without re-running the wizard.
+!!! note "Unattended runs need administrator rights — granted via the permission prompt"
+    An unattended task runs whether or not you're logged on, which needs administrator rights. DistrictSync requests them with **one Windows permission prompt** as it registers the task — click **Yes**. If you decline, nothing is changed and you can try again. You'll also enter your **Windows account password** so the task can sign in and run while you're logged off.
+
+### Wizard Step 5 — Finish
+
+The wizard shows an honest summary of what it actually checked — for example *"we tested the connection to `<host>` as `<user>` just now and it worked"*, or, if you skipped a step, what's left to set up later. If a schedule was enabled, DistrictSync creates a Windows Task Scheduler entry named `DistrictSync_Daily` that runs every day at the time you specified.
+
+Once you finish the wizard, the **Setup** surface graduates into a flat **Settings** page (the rail label stays "Setup") where you can review, edit, or remove the schedule and SFTP settings at any time without re-running the wizard. It leads with the schedule card and has a single **Save** that re-registers the task whenever a setting baked into it changes.
 
 !!! tip "Custom district mapping?"
-    Need a custom district mapping? Use the **Mapping Editor** page to create or modify mappings visually.
+    Need a custom district mapping? The **Mapping** surface lets you review and switch between pre-built configs, but creating or editing a mapping is not done in the app — contact SpacesEDU support and the DistrictSync team will provide the YAML config for your district.
 
 ---
 
 ## Step 3 — Headless configuration (Linux / Docker / no browser)
 
-On Linux servers or containers with no browser, use the CLI to
+On Linux servers or containers where the desktop app can't run, use the CLI to
 configure SFTP directly. No config-file hand-editing and no Python
 one-liners needed.
 
@@ -144,7 +164,8 @@ unset DISTRICTSYNC_SFTP_PASSWORD
 /opt/districtsync/DistrictSync --sftp-test
 ```
 
-The host/port/user/remote path are written to `~/.districtsync/config.json`;
+The host/port/user/remote path are written to `config.json` in DistrictSync's
+per-user data folder (see [Where does data live?](#where-does-data-live) above);
 the password is stored in the OS credential store via the `keyring`
 library (Linux Secret Service, macOS Keychain, or Windows Credential
 Manager — depending on the platform).
@@ -198,28 +219,30 @@ A successful dry run prints a summary like:
 
 ## Step 5 — Check the log
 
-The ETL log is written to `etl_tool.log` in the current working directory at run time.
-
-- **Windows:** Task Scheduler's **Start in** field controls this — set it to `C:\DistrictSync\` and the log appears there. The Setup Wizard sets this automatically.
-- **Linux:** The log is written to whichever directory you run the command from (e.g. `/opt/districtsync/`).
+The diagnostic log is always written to `etl_tool.log` in DistrictSync's
+per-user data folder (see [Where does data live?](#where-does-data-live) above) —
+regardless of where the `.exe` lives or which working directory a scheduled task
+runs from. It rotates automatically at 5 MB and keeps 3 backups.
 
 === "Windows"
     ```
-    C:\DistrictSync\etl_tool.log
+    C:\Users\<username>\AppData\Local\DistrictSync\etl_tool.log
     ```
 
 === "Linux"
     ```bash
-    tail -50 /opt/districtsync/etl_tool.log
+    tail -50 ~/.local/share/DistrictSync/etl_tool.log
     ```
 
 A successful run ends with:
 
 ```
 INFO - ETL process completed successfully.
-INFO - Committed 5 output file(s) to C:\DistrictSync\output
-INFO - SFTP upload complete: 5 file(s) uploaded
+INFO - Committed output file(s) to C:\DistrictSync\output
+INFO - SFTP upload complete
 ```
+
+The number of output files depends on which config you're using — see the [Output CSVs](#output-csvs) section below.
 
 ---
 
@@ -227,11 +250,19 @@ INFO - SFTP upload complete: 5 file(s) uploaded
 
 1. **03:00 AM** — Task Scheduler / cron starts `DistrictSync`
 2. Tool reads GDE files from the input directory
-3. Transforms data into 5 CSV files
+3. Transforms data into the CSV files enabled by your config (5 for standard rostering, 7 with myBlueprint+, or a subset)
 4. Checks for anomalies — if any entity's record count has dropped more than 20% compared to the previous run, a warning is logged
-5. Writes all 5 CSVs atomically (all succeed or none are committed)
-6. Zips all 5 CSVs into a single dated file (`districtsync_YYYY-MM-DD.zip`) and uploads to SpacesEDU via SFTP
+5. Writes all enabled CSVs atomically (all succeed or none are committed)
+6. Zips them into a single dated file (`districtsync_YYYY-MM-DD.zip`) and uploads to SpacesEDU via SFTP
 7. Writes a detailed log entry to `etl_tool.log`
+
+### Output CSVs
+
+| Config | CSVs produced |
+|---|---|
+| `myedbc` (and inheriting district configs `sd40myedbc`, `sd48myedbc`, …) | `Students.csv`, `Staff.csv`, `Family.csv`, `Classes.csv`, `Enrollments.csv` |
+| `mbp_all` | All 5 above + `CourseInfo.csv` + `StudentCourses.csv` (full myBlueprint+ tier) |
+| `mbp_core` | `Students.csv`, `CourseInfo.csv`, `StudentCourses.csv` only (minimal myBlueprint+ tier) |
 
 ---
 
@@ -243,6 +274,7 @@ INFO - SFTP upload complete: 5 file(s) uploaded
 | SD40 – New Westminster | `sd40myedbc` | CSV files with SD-40_/SD40- prefix. StudentSchedule has no headers (auto-injected via config). |
 | SD48 – Sea to Sky | `sd48myedbc` | Uses `StudentDemographicEnhanced.txt`, `StaffInformation.txt` |
 | SD51 – Boundary | `sd51myedbc` | Contact SpacesEDU for file naming |
+| SD60 – Peace River North | `sd60myedbc` | Guardians-only family import; dual-school students rostered under home school |
 | SD74 – Gold Trail | `sd74myedbc` | Uses `studentcourseselection.txt`, `StaffInformation.txt`, `ParentInformation.txt` |
 
 ---

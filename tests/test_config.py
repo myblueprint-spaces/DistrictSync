@@ -6,16 +6,19 @@ from pydantic import ValidationError
 
 from src.config.loader import _deep_merge, load_config
 from src.config.models import (
+    CrossEnrollmentConfig,
     EntityConfig,
     FieldAcademicYear,
     FieldAppendYear,
     FieldEmailFormat,
+    FieldEnrollStatus,
     FieldFixedValue,
     FieldIdRolePair,
     FieldNameConfig,
     FieldTransform,
     GlobalConfig,
     MappingConfig,
+    RowFilter,
     classify_field,
 )
 
@@ -90,6 +93,43 @@ class TestClassifyField:
         result = classify_field(42)
         assert result == "42"
 
+    def test_enroll_status_null_is_sentinel(self):
+        """Bare-null EnrollStatus stays the auto-detect sentinel (None)."""
+        assert classify_field(None) is None
+
+    def test_enroll_status_dict_validates(self):
+        """A dict with any active-detection key classifies as FieldEnrollStatus."""
+        result = classify_field(
+            {
+                "status_column": "Status",
+                "withdraw_date_column": "Left On",
+                "active_values": ["Active", "PreReg", "Active No Primary"],
+            }
+        )
+        assert isinstance(result, FieldEnrollStatus)
+        assert result.status_column == "Status"
+        assert result.withdraw_date_column == "Left On"
+        assert result.active_values == ["Active", "PreReg", "Active No Primary"]
+
+    def test_enroll_status_partial_dict_validates(self):
+        """A partial dict (one key) still classifies; absent keys stay None."""
+        result = classify_field({"active_values": ["Active"]})
+        assert isinstance(result, FieldEnrollStatus)
+        assert result.active_values == ["Active"]
+        assert result.status_column is None
+        assert result.withdraw_date_column is None
+
+    def test_enroll_status_unknown_key_raises(self):
+        """An unknown/typo'd EnrollStatus key fails loudly (extra='forbid').
+
+        Closes the prior bug where a recognizable-but-malformed EnrollStatus
+        dict only warned and passed through. A dict routed into the branch by a
+        valid key (``active_values``) that ALSO carries an unknown key
+        (``withdraw_colum`` typo) must raise.
+        """
+        with pytest.raises(ValidationError):
+            classify_field({"active_values": ["Active"], "withdraw_colum": "Left"})
+
 
 # -----------------------------------------------------------------------
 # EntityConfig
@@ -120,6 +160,49 @@ class TestEntityConfig:
             field_map={"Name": "title"},
         )
         assert cfg.source_files["student_schedule"] == "Schedule.txt"
+
+    def test_enroll_status_null_field_map(self):
+        """EnrollStatus: null in an entity field_map stays the None sentinel."""
+        cfg = EntityConfig(
+            source_files={"student_demographic": "Demo.txt"},
+            field_map={"User ID": "Student Number", "EnrollStatus": None},
+        )
+        assert cfg.field_map["EnrollStatus"] is None
+
+    def test_enroll_status_dict_field_map_roundtrips(self):
+        """An EnrollStatus override dict survives validation + raw round-trip.
+
+        Built from a raw dict (the real `load_config` path: raw YAML →
+        MappingConfig), so the value classifies to FieldEnrollStatus and the
+        transformer pipeline receives the raw dict back via get_raw_field_map.
+        """
+        cfg = MappingConfig(
+            **{
+                "version": "1.9",
+                "sis": "test",
+                "mappings": {
+                    "Students": {
+                        "source_files": {"student_demographic": "Demo.txt"},
+                        "field_map": {
+                            "User ID": "Student Number",
+                            "EnrollStatus": {"status_column": "Status", "active_values": ["Active"]},
+                        },
+                    },
+                },
+            }
+        )
+        assert isinstance(cfg.mappings["Students"].field_map["EnrollStatus"], FieldEnrollStatus)
+        raw = cfg.get_raw_field_map("Students")
+        assert raw["EnrollStatus"] == {"status_column": "Status", "active_values": ["Active"]}
+
+    def test_enroll_status_malformed_field_map_raises(self):
+        """A recognizable EnrollStatus override with a typo'd key fails loudly
+        when the entity field_map is validated (extra='forbid')."""
+        with pytest.raises(ValidationError):
+            EntityConfig(
+                source_files={"student_demographic": "Demo.txt"},
+                field_map={"EnrollStatus": {"status_column": "Status", "withdraw_colum": "Left"}},
+            )
 
 
 # -----------------------------------------------------------------------
@@ -227,16 +310,27 @@ class TestDeepMerge:
 # load_config against real YAML files
 # -----------------------------------------------------------------------
 class TestLoadConfig:
-    @pytest.mark.parametrize("sis_type", ["myedbc", "sd48myedbc", "sd51myedbc", "sd74myedbc"])
+    @pytest.mark.parametrize(
+        "sis_type",
+        ["myedbc", "sd40myedbc", "sd48myedbc", "sd51myedbc", "sd60myedbc", "sd74myedbc"],
+    )
     def test_all_standard_configs_valid(self, sis_type):
         cfg = load_config(sis_type)
         assert cfg.sis == "MyEducationBC"
         assert "Students" in cfg.mappings
         assert len(cfg.global_config.homeroom_grades) > 0
 
-    def test_myblueprint_plus_config(self):
-        cfg = load_config("myBlueprint+")
+    def test_mbp_all_config(self):
+        cfg = load_config("mbp_all")
         assert "Students" in cfg.mappings
+        assert "CourseInfo" in cfg.mappings
+        assert "StudentCourses" in cfg.mappings
+
+    def test_mbp_core_config(self):
+        cfg = load_config("mbp_core")
+        assert "Students" in cfg.mappings
+        assert "CourseInfo" in cfg.mappings
+        assert "StudentCourses" in cfg.mappings
 
     def test_nonexistent_config_raises(self):
         with pytest.raises(FileNotFoundError):
@@ -324,11 +418,17 @@ class TestDistrictConfigEquivalence:
         students_fm = cfg.get_raw_field_map("Students")
         assert students_fm["Email Address"] == {"format": "{student number}@sd51.bc.ca"}
 
-    def test_sd51_fixed_dates(self):
+    def test_sd51_inherits_auto_dates(self):
+        """SD51 no longer hardcodes Start/End Date — auto-detection from end-year
+        convention produces the correct academic period (2025-2026 for "2026"
+        school year). The override was a workaround for the now-fixed
+        start-year/end-year bug in context.set_school_year.
+        """
         cfg = load_config("sd51myedbc")
         classes_fm = cfg.get_raw_field_map("Classes")
-        assert classes_fm["Start Date"] == {"value": "2025-08-25", "use_academic_year": False}
-        assert classes_fm["End Date"] == {"value": "2026-07-25", "use_academic_year": False}
+        # Inherited from myedbc base, which uses auto-detection.
+        assert classes_fm["Start Date"] == {"use_academic_year": True}
+        assert classes_fm["End Date"] == {"use_academic_year": True}
 
     def test_sd74_different_schedule_file(self):
         cfg = load_config("sd74myedbc")
@@ -359,7 +459,375 @@ class TestDistrictConfigEquivalence:
         assert name_cfg["section letter"] == "Section"
 
     def test_all_districts_have_five_entities(self):
-        for sis in ("sd48myedbc", "sd51myedbc", "sd74myedbc"):
+        for sis in ("sd48myedbc", "sd51myedbc", "sd60myedbc", "sd74myedbc"):
             cfg = load_config(sis)
             for entity in ("Students", "Staff", "Family", "Classes", "Enrollments"):
                 assert entity in cfg.mappings, f"{sis} missing {entity}"
+
+
+# -----------------------------------------------------------------------
+# CourseInfo / StudentCourses global_config fields + enabled_entities
+# -----------------------------------------------------------------------
+class TestMyBlueprintPlusGlobalConfig:
+    """Verify global_config fields supporting the CourseInfo / StudentCourses entities."""
+
+    def test_defaults_empty(self):
+        cfg = GlobalConfig()
+        assert cfg.excluded_course_code_patterns == []
+        assert cfg.excluded_course_flavors == []
+        assert cfg.enabled_entities == []
+
+    def test_accepts_values(self):
+        cfg = GlobalConfig(
+            excluded_course_code_patterns=["^.{5}-K", r"^.{5}0\d", "^X", "^ATT"],
+            excluded_course_flavors=["HUB", "HOL", "DL", "---"],
+            enabled_entities=["Students", "CourseInfo", "StudentCourses"],
+        )
+        assert cfg.excluded_course_code_patterns == ["^.{5}-K", r"^.{5}0\d", "^X", "^ATT"]
+        assert cfg.excluded_course_flavors == ["HUB", "HOL", "DL", "---"]
+        assert cfg.enabled_entities == ["Students", "CourseInfo", "StudentCourses"]
+
+    def test_invalid_regex_rejected_at_load(self):
+        with pytest.raises(ValidationError, match="Invalid regex"):
+            GlobalConfig(excluded_course_code_patterns=["^[unterminated"])
+
+    def test_course_start_grade_default(self):
+        assert GlobalConfig().course_start_grade == 10
+
+    @pytest.mark.parametrize("grade", [8, 9, 10])
+    def test_course_start_grade_accepts_valid(self, grade):
+        assert GlobalConfig(course_start_grade=grade).course_start_grade == grade
+
+    @pytest.mark.parametrize("grade", [7, 11, 0, 13])
+    def test_course_start_grade_rejects_out_of_range(self, grade):
+        with pytest.raises(ValidationError, match="course_start_grade"):
+            GlobalConfig(course_start_grade=grade)
+
+    def test_course_start_grade_roundtrip_via_to_raw_dict(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            global_config=GlobalConfig(course_start_grade=8),
+            mappings={
+                "Students": EntityConfig(
+                    source_files={"student_demographic": "Demo.txt"},
+                    field_map={"User ID": "Student Number"},
+                ),
+            },
+        )
+        assert cfg.to_raw_dict()["global_config"]["course_start_grade"] == 8
+
+    def test_roundtrip_via_to_raw_dict(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            global_config=GlobalConfig(
+                excluded_course_code_patterns=["^X", "^ATT"],
+                excluded_course_flavors=["HUB", "DL"],
+                enabled_entities=["Students", "Staff"],
+            ),
+            mappings={
+                "Students": EntityConfig(
+                    source_files={"student_demographic": "Demo.txt"},
+                    field_map={"User ID": "Student Number"},
+                ),
+            },
+        )
+        raw = cfg.to_raw_dict()
+        assert raw["global_config"]["excluded_course_code_patterns"] == ["^X", "^ATT"]
+        assert raw["global_config"]["excluded_course_flavors"] == ["HUB", "DL"]
+        assert raw["global_config"]["enabled_entities"] == ["Students", "Staff"]
+
+    def test_roundtrip_defaults_when_unset(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            mappings={
+                "Students": EntityConfig(
+                    source_files={"student_demographic": "Demo.txt"},
+                    field_map={"User ID": "Student Number"},
+                ),
+            },
+        )
+        raw = cfg.to_raw_dict()
+        assert raw["global_config"]["excluded_course_code_patterns"] == []
+        assert raw["global_config"]["excluded_course_flavors"] == []
+        assert raw["global_config"]["enabled_entities"] == []
+
+    def test_base_myedbc_carries_patterns_and_flavors(self):
+        """Patterns + flavors are MyEd BC conventions — they live in the base config
+        so any inheriting district that enables CourseInfo / StudentCourses gets them
+        for free."""
+        cfg = load_config("myedbc")
+        # The numeric early-grade pattern is no longer hard-coded — it is derived
+        # from course_start_grade at transform time (default grades 10-12).
+        assert cfg.global_config.excluded_course_code_patterns == [
+            "^.{5}-K",
+            "^X",
+            "^ATT",
+        ]
+        assert cfg.global_config.excluded_course_flavors == ["HUB", "HOL", "DL", "---"]
+        assert cfg.global_config.course_start_grade == 10
+
+    def test_yaml_load_with_new_fields(self, tmp_path):
+        """End-to-end: YAML with the new fields parses and validates."""
+        yaml_text = """
+version: "1.9"
+sis: test
+global_config:
+  excluded_course_code_patterns:
+    - "^.{5}-K"
+    - "^.{5}0\\\\d"
+    - "^X"
+    - "^ATT"
+  excluded_course_flavors: ["HUB", "HOL", "DL", "---"]
+  enabled_entities: ["Students", "CourseInfo"]
+mappings:
+  Students:
+    source_files:
+      student_demographic: "Demo.txt"
+    field_map:
+      "User ID": "Student Number"
+"""
+        (tmp_path / "test_mapping.yaml").write_text(yaml_text)
+        cfg = load_config("test", config_dir=tmp_path)
+        assert cfg.global_config.excluded_course_code_patterns == ["^.{5}-K", r"^.{5}0\d", "^X", "^ATT"]
+        assert cfg.global_config.excluded_course_flavors == ["HUB", "HOL", "DL", "---"]
+        assert cfg.global_config.enabled_entities == ["Students", "CourseInfo"]
+
+
+# -----------------------------------------------------------------------
+# enabled_entities behavior
+# -----------------------------------------------------------------------
+class TestEnabledEntities:
+    """`enabled_entities` controls which mappings the pipeline actually produces."""
+
+    def test_base_myedbc_enables_only_rostering(self):
+        """The base config defines 7 entity templates but enables only the 5 rostering ones."""
+        cfg = load_config("myedbc")
+        assert set(cfg.mappings.keys()) >= {
+            "Students",
+            "Staff",
+            "Family",
+            "Classes",
+            "Enrollments",
+            "CourseInfo",
+            "StudentCourses",
+        }
+        assert cfg.global_config.enabled_entities == [
+            "Students",
+            "Staff",
+            "Family",
+            "Classes",
+            "Enrollments",
+        ]
+
+    def test_mbp_all_enables_all_seven(self):
+        cfg = load_config("mbp_all")
+        assert set(cfg.global_config.enabled_entities) == {
+            "Students",
+            "Staff",
+            "Family",
+            "Classes",
+            "Enrollments",
+            "CourseInfo",
+            "StudentCourses",
+        }
+
+    def test_mbp_core_excludes_rostering(self):
+        cfg = load_config("mbp_core")
+        assert cfg.global_config.enabled_entities == [
+            "Students",
+            "CourseInfo",
+            "StudentCourses",
+        ]
+
+    def test_mbponly_enables_courses_only(self):
+        cfg = load_config("mbponly")
+        assert cfg.global_config.enabled_entities == [
+            "CourseInfo",
+            "StudentCourses",
+        ]
+
+    def test_district_configs_inherit_rostering_default(self):
+        """sd40/48/74 inherit `enabled_entities` from the base — still the 5 rostering entities.
+
+        SD51 is excluded here because it opts into StudentAttendance (its own
+        full enabled_entities list, since deep-merge replaces lists) — see
+        ``test_sd51_enables_student_attendance``.
+        """
+        for sis in ("sd40myedbc", "sd48myedbc", "sd60myedbc", "sd74myedbc"):
+            cfg = load_config(sis)
+            assert cfg.global_config.enabled_entities == [
+                "Students",
+                "Staff",
+                "Family",
+                "Classes",
+                "Enrollments",
+            ], f"{sis} should still produce only the 5 rostering CSVs"
+
+    def test_sd51_enables_student_attendance(self):
+        """SD51 lists the full set (base 5 rostering + opt-in StudentAttendance).
+
+        Deep-merge REPLACES lists, so SD51 must restate the rostering entities
+        alongside StudentAttendance or they would vanish.
+        """
+        cfg = load_config("sd51myedbc")
+        assert cfg.global_config.enabled_entities == [
+            "Students",
+            "Staff",
+            "Family",
+            "Classes",
+            "Enrollments",
+            "StudentAttendance",
+        ]
+
+
+# -----------------------------------------------------------------------
+# RowFilter (config-driven row inclusion) + CrossEnrollmentConfig
+# -----------------------------------------------------------------------
+class TestRowFilter:
+    def test_basic(self):
+        rf = RowFilter(column="Parent Auth / Guardian", include=["Y"])
+        assert rf.column == "Parent Auth / Guardian"
+        assert rf.include == ["Y"]
+
+    def test_default_include_empty(self):
+        assert RowFilter(column="Guardian").include == []
+
+    def test_unknown_key_rejected(self):
+        """A typo'd key fails loudly (extra='forbid')."""
+        with pytest.raises(ValidationError):
+            RowFilter(column="Guardian", includ=["Y"])
+
+    def test_entity_row_filters_roundtrip_via_to_raw_dict(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            mappings={
+                "Family": EntityConfig(
+                    source_files={"emergency_contacts": "E.txt"},
+                    field_map={"First Name": "First Name"},
+                    row_filters=[RowFilter(column="Parent Auth / Guardian", include=["Y"])],
+                ),
+            },
+        )
+        raw = cfg.to_raw_dict()
+        assert raw["mappings"]["Family"]["row_filters"] == [{"column": "Parent Auth / Guardian", "include": ["Y"]}]
+
+    def test_entity_row_filters_absent_key_when_unset(self):
+        """No row_filters → the key is omitted (back-compatible raw dict)."""
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            mappings={
+                "Family": EntityConfig(
+                    source_files={"emergency_contacts": "E.txt"},
+                    field_map={"First Name": "First Name"},
+                ),
+            },
+        )
+        assert "row_filters" not in cfg.to_raw_dict()["mappings"]["Family"]
+
+    def test_yaml_row_filter_parses_into_typed_model(self, tmp_path):
+        yaml_text = """
+version: "1.9"
+sis: test
+mappings:
+  Family:
+    source_files:
+      emergency_contacts: E.txt
+    field_map:
+      "First Name": "First Name"
+    row_filters:
+      - column: "Parent Auth / Guardian"
+        include: ["Y"]
+"""
+        (tmp_path / "test_mapping.yaml").write_text(yaml_text)
+        cfg = load_config("test", config_dir=tmp_path)
+        rf = cfg.mappings["Family"].row_filters
+        assert len(rf) == 1
+        assert isinstance(rf[0], RowFilter)
+        assert rf[0].column == "Parent Auth / Guardian"
+
+
+class TestCrossEnrollmentConfig:
+    def test_defaults(self):
+        cc = CrossEnrollmentConfig()
+        assert cc.collapse is False
+        assert cc.home_school_column == ""
+
+    def test_unknown_key_rejected(self):
+        with pytest.raises(ValidationError):
+            CrossEnrollmentConfig(collapse=True, home_col="Home school number")
+
+    def test_global_default_none(self):
+        assert GlobalConfig().cross_enrollment is None
+
+    def test_roundtrip_via_to_raw_dict(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            global_config=GlobalConfig(
+                cross_enrollment=CrossEnrollmentConfig(collapse=True, home_school_column="Home school number"),
+            ),
+            mappings={
+                "Students": EntityConfig(
+                    source_files={"student_demographic": "Demo.txt"},
+                    field_map={"User ID": "Student Number"},
+                ),
+            },
+        )
+        raw = cfg.to_raw_dict()
+        assert raw["global_config"]["cross_enrollment"] == {
+            "collapse": True,
+            "home_school_column": "Home school number",
+        }
+
+    def test_roundtrip_none_when_unset(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            mappings={
+                "Students": EntityConfig(
+                    source_files={"student_demographic": "Demo.txt"},
+                    field_map={"User ID": "Student Number"},
+                ),
+            },
+        )
+        assert cfg.to_raw_dict()["global_config"]["cross_enrollment"] is None
+
+
+# -----------------------------------------------------------------------
+# SD60 config — guardians-only Family + cross-enrollment collapse
+# -----------------------------------------------------------------------
+class TestSD60Config:
+    def test_valid_and_rostering_entities(self):
+        cfg = load_config("sd60myedbc")
+        assert cfg.sis == "MyEducationBC"
+        for entity in ("Students", "Staff", "Family", "Classes", "Enrollments"):
+            assert entity in cfg.mappings
+        assert cfg.global_config.enabled_entities == [
+            "Students",
+            "Staff",
+            "Family",
+            "Classes",
+            "Enrollments",
+        ]
+
+    def test_family_carries_guardian_row_filter(self):
+        cfg = load_config("sd60myedbc")
+        raw = cfg.to_raw_dict()
+        assert raw["mappings"]["Family"]["row_filters"] == [{"column": "Parent Auth / Guardian", "include": ["Y"]}]
+
+    def test_cross_enrollment_collapse_enabled(self):
+        cfg = load_config("sd60myedbc")
+        cc = cfg.global_config.cross_enrollment
+        assert cc is not None
+        assert cc.collapse is True
+        assert cc.home_school_column == "Home school number"
+
+    def test_active_values_include_active_no_primary(self):
+        cfg = load_config("sd60myedbc")
+        students_fm = cfg.get_raw_field_map("Students")
+        assert "Active No Primary" in students_fm["EnrollStatus"]["active_values"]

@@ -12,160 +12,43 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.13"
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: python -m pytest tests/ --cov=src --cov-fail-under=80
 
   # -----------------------------------------------------------------------
-  # Windows executable — double-click opens UI, run with args uses CLI
+  # THE public exe — windowed/no-console/offline Flet-default onefile built +
+  # smoked on Win+Linux+macOS via the reusable matrix. Packs src/main.py: no
+  # args → the Flet shell; --sis/--input/--output → the CLI. One exe per OS.
   # -----------------------------------------------------------------------
 
-  build-windows:
+  build-flet:
     needs: test
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-      - run: pip install -r requirements.txt pyinstaller streamlit
-      # Streamlit pages are exec()'d at runtime so PyInstaller's static
-      # analyzer starting at src/main.py never sees them. --paths=.
-      # plus --collect-submodules=src + explicit --hidden-import for
-      # every src.* submodule guarantees they all land in the bundle.
-      # Verified locally with a Playwright probe against the Setup
-      # Wizard + every other page before this change was committed.
-      - run: >
-          pyinstaller --onefile --name DistrictSync
-          --add-data "config;config"
-          --add-data "src/ui;src/ui"
-          --add-data "docs;docs"
-          --collect-all streamlit
-          --collect-submodules src
-          --paths=.
-          --hidden-import=pandas
-          --hidden-import=yaml
-          --hidden-import=logging.config
-          --hidden-import=pydantic
-          --hidden-import=pydantic_core
-          --hidden-import=keyring.backends.Windows
-          --hidden-import=src.scheduler.windows
-          --hidden-import=src.scheduler.linux
-          --hidden-import=src.ui.brand
-          --hidden-import=src.ui.mapping_helpers
-          --hidden-import=src.ui.launcher
-          --hidden-import=src.etl.transformers.base
-          --hidden-import=src.etl.transformers.classes
-          --hidden-import=src.etl.transformers.enrollments
-          --hidden-import=src.etl.transformers.blended
-          --hidden-import=src.etl.transformers.students
-          --hidden-import=src.etl.transformers.staff
-          --hidden-import=src.etl.transformers.family
-          --hidden-import=src.etl.transformers.registry
-          --hidden-import=src.etl.transformers.context
-          src/main.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: DistrictSync-windows
-          path: dist/DistrictSync.exe
-          retention-days: 5
-
-  build-linux:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-      - run: pip install -r requirements.txt pyinstaller
-      - run: >
-          pyinstaller --onefile --name DistrictSync
-          --add-data "config:config"
-          --collect-submodules src
-          --paths=.
-          --hidden-import=pandas
-          --hidden-import=yaml
-          --hidden-import=logging.config
-          --hidden-import=pydantic
-          --hidden-import=pydantic_core
-          --hidden-import=keyring.backends.SecretService
-          --hidden-import=keyring.backends.libsecret
-          --hidden-import=src.scheduler.linux
-          --hidden-import=src.etl.transformers.base
-          --hidden-import=src.etl.transformers.classes
-          --hidden-import=src.etl.transformers.enrollments
-          --hidden-import=src.etl.transformers.blended
-          --hidden-import=src.etl.transformers.students
-          --hidden-import=src.etl.transformers.staff
-          --hidden-import=src.etl.transformers.family
-          --hidden-import=src.etl.transformers.registry
-          --hidden-import=src.etl.transformers.context
-          src/main.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: DistrictSync-linux
-          path: dist/DistrictSync
-          retention-days: 5
-
-  build-macos:
-    needs: test
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-      - run: pip install -r requirements.txt pyinstaller
-      - run: >
-          pyinstaller --onefile --name DistrictSync
-          --add-data "config:config"
-          --collect-submodules src
-          --paths=.
-          --hidden-import=pandas
-          --hidden-import=yaml
-          --hidden-import=logging.config
-          --hidden-import=pydantic
-          --hidden-import=pydantic_core
-          --hidden-import=keyring.backends.macOS
-          --hidden-import=src.scheduler.linux
-          --hidden-import=src.etl.transformers.base
-          --hidden-import=src.etl.transformers.classes
-          --hidden-import=src.etl.transformers.enrollments
-          --hidden-import=src.etl.transformers.blended
-          --hidden-import=src.etl.transformers.students
-          --hidden-import=src.etl.transformers.staff
-          --hidden-import=src.etl.transformers.family
-          --hidden-import=src.etl.transformers.registry
-          --hidden-import=src.etl.transformers.context
-          src/main.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: DistrictSync-macos
-          path: dist/DistrictSync
-          retention-days: 5
+    uses: ./.github/workflows/flet-pack.yml
 
   # -----------------------------------------------------------------------
-  # Publish release with all artifacts
+  # Publish release — attach the Flet-default exe (1/OS) + SHA-256 checksums.
+  # The download `name:` values MUST byte-match flet-pack.yml's upload names
+  # (DistrictSync-<matrix.os>): windows-latest / ubuntu-22.04 / macos-latest.
   # -----------------------------------------------------------------------
 
   publish-release:
-    needs: [build-windows, build-linux, build-macos]
+    needs: [build-flet]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: DistrictSync-windows
+          name: DistrictSync-windows-latest
           path: artifacts/windows
       - uses: actions/download-artifact@v8
         with:
-          name: DistrictSync-linux
+          name: DistrictSync-ubuntu-22.04
           path: artifacts/linux
       - uses: actions/download-artifact@v8
         with:
-          name: DistrictSync-macos
+          name: DistrictSync-macos-latest
           path: artifacts/macos
 
       - name: Rename and mark executables
@@ -174,6 +57,14 @@ jobs:
           mv artifacts/linux/DistrictSync       artifacts/DistrictSync-linux
           mv artifacts/macos/DistrictSync       artifacts/DistrictSync-macos
           chmod +x artifacts/DistrictSync-linux artifacts/DistrictSync-macos
+
+      # Integrity anchor (RC9): SHA-256 of every released binary, attached to the
+      # Release so a downloader can verify. Interim until code-signing (PLAT-4).
+      - name: Compute SHA-256 checksums
+        run: |
+          cd artifacts
+          sha256sum DistrictSync-windows.exe DistrictSync-linux DistrictSync-macos > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -184,29 +75,15 @@ jobs:
 
             | Platform | File | Notes |
             |----------|------|-------|
-            | Windows | `DistrictSync-windows.exe` | Double-click to open the Setup Wizard, or run with `--sis`/`--input`/`--output` args for CLI use |
+            | Windows | `DistrictSync-windows.exe` | Double-click to open the app, or run with `--sis`/`--input`/`--output` args for CLI use |
             | Linux   | `DistrictSync-linux`       | `chmod +x` before first run |
             | macOS   | `DistrictSync-macos`       | Allow in System Settings > Privacy & Security |
 
-            See the [Documentation Site](https://${{ github.repository_owner }}.github.io/DistrictSync/) for setup instructions.
+            Verify your download against `SHA256SUMS.txt` (e.g. `sha256sum -c SHA256SUMS.txt`). These binaries are not yet code-signed.
+
+            See the [SpacesEDU Help Centre article](https://help.spacesedu.com/en-ca/article/mx56qo) for setup basics.
           files: |
             artifacts/DistrictSync-windows.exe
             artifacts/DistrictSync-linux
             artifacts/DistrictSync-macos
-
-  # -----------------------------------------------------------------------
-  # Deploy documentation to GitHub Pages
-  # -----------------------------------------------------------------------
-
-  deploy-docs:
-    needs: publish-release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-      - run: pip install mkdocs-material mkdocs-with-pdf
-      - run: mkdocs gh-deploy --force
+            artifacts/SHA256SUMS.txt

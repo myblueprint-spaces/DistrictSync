@@ -13,7 +13,7 @@ class TestClassesTransformHomeroom:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_homeroom_classes_created(self, student_schedule_df, classes_mapping, global_config, raw_data):
         result = self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
@@ -32,10 +32,11 @@ class TestClassesTransformHomeroom:
             assert class_id.endswith("_2025")
 
     def test_homeroom_has_academic_dates(self, student_schedule_df, classes_mapping, global_config, raw_data):
+        # set_school_year(2025) → academic period 2024-2025 (end-year convention)
         result = self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
         if "Start Date" in result.columns and "End Date" in result.columns:
-            assert (result["Start Date"] == "2025-08-25").any() or result["Start Date"].isna().all()
-            assert (result["End Date"] == "2026-07-25").any() or result["End Date"].isna().all()
+            assert (result["Start Date"] == "2024-08-25").any() or result["Start Date"].isna().all()
+            assert (result["End Date"] == "2025-07-25").any() or result["End Date"].isna().all()
 
     def test_homeroom_name_format(self, student_schedule_df, classes_mapping, global_config, raw_data):
         result = self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
@@ -51,7 +52,7 @@ class TestClassesTransformSubject:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_subject_classes_created(self, student_schedule_df, classes_mapping, global_config, raw_data):
         result = self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
@@ -82,7 +83,7 @@ class TestClassesTransformBlended:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_blended_classes_in_output(
         self, blended_schedule_df, classes_mapping, global_config, raw_data_with_blended
@@ -133,7 +134,7 @@ class TestExcludedCourseCodes:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_attendance_codes_filtered_from_subject_classes(
         self, student_schedule_df, classes_mapping, global_config, raw_data

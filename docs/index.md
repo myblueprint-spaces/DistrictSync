@@ -15,8 +15,8 @@ hide:
 </div>
 
 <div class="mb-stats">
-  <div class="mb-stat-card"><div class="stat-value">5</div><div class="stat-label">CSV outputs</div></div>
-  <div class="mb-stat-card"><div class="stat-value">5</div><div class="stat-label">District configs</div></div>
+  <div class="mb-stat-card"><div class="stat-value">7</div><div class="stat-label">CSV outputs</div></div>
+  <div class="mb-stat-card"><div class="stat-value">6</div><div class="stat-label">District configs</div></div>
   <div class="mb-stat-card"><div class="stat-value">3</div><div class="stat-label">Platforms</div></div>
   <div class="mb-stat-card"><div class="stat-value">91%</div><div class="stat-label">Test coverage</div></div>
 </div>
@@ -44,17 +44,31 @@ Get the latest release for your platform:
 GDE files  →  DistrictSync  →  SpacesEDU CSV files  →  SFTP upload
 ```
 
-| Input (MyEdBC GDE) | Output (SpacesEDU) |
+| Input (MyEdBC GDE) | Output (SpacesEDU) | Tier |
+|---|---|---|
+| Student Demographic | `Students.csv` | rostering |
+| Staff Information – Enhanced | `Staff.csv` | rostering |
+| Emergency Contact Information | `Family.csv` | rostering |
+| Student Schedule + Course Information | `Classes.csv` | rostering |
+| Student Schedule + Class Information – Enhanced | `Enrollments.csv` | rostering |
+| Course Information | `CourseInfo.csv` | myBlueprint+ |
+| Course History + Selection + Information | `StudentCourses.csv` | myBlueprint+ |
+
+### Output tiers
+
+Which CSVs DistrictSync produces is controlled by `enabled_entities` in the config:
+
+| Config | Outputs |
 |---|---|
-| Student Demographic | `Students.csv` |
-| Staff Information – Enhanced | `Staff.csv` |
-| Emergency Contact Information | `Family.csv` |
-| Student Schedule + Course Information | `Classes.csv` |
-| Student Schedule + Student Demographic | `Enrollments.csv` |
+| `myedbc` (and inheriting district configs `sd40myedbc`, `sd48myedbc`, …) | The 5 rostering CSVs |
+| `mbp_all` | 5 rostering CSVs + `CourseInfo.csv` + `StudentCourses.csv` (full myBlueprint+ tier) |
+| `mbp_core` | `Students.csv` + `CourseInfo.csv` + `StudentCourses.csv` only (minimal myBlueprint+ tier) |
+
+A district with non-standard file naming AND the myBlueprint+ tier composes the two — create a child config with `_base:` pointing to the district config and override `enabled_entities`.
 
 ### Key features
 
-- **Active student filtering** — only Active students exported; PreReg and Inactive excluded
+- **Active student filtering** — Active and PreReg students exported; Inactive and other statuses excluded
 - **CEDS grade mapping** — BC grade codes (K, 1–12) mapped to CEDS standard format
 - **Blended class detection** — same teacher/time/multi-grade sections merged automatically
 - **Homeroom generation** — elementary homeroom classes auto-generated from demographics
@@ -64,7 +78,7 @@ GDE files  →  DistrictSync  →  SpacesEDU CSV files  →  SFTP upload
 - **Atomic writes** — all-or-nothing commit; a failed run never leaves partial output
 - **Anomaly detection** — warns when output record counts drop more than 20% compared to the previous run
 - **Structured run logging** — each run writes a machine-readable JSON log tag for the Run History page
-- **Mapping Editor** — web UI wizard for creating or modifying district configs without editing YAML
+- **Mapping surface** — review the active district config and switch between pre-built configs from the native desktop app, without editing YAML
 - **Help & Docs page** — in-app access to documentation and support links
 
 ---

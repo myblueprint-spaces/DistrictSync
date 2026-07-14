@@ -5,7 +5,8 @@ This module preserves the DataTransformer API so existing tests and imports
 continue to work without changes.
 """
 
-from typing import Any
+from datetime import date
+from typing import Any, Optional
 
 import pandas as pd
 
@@ -82,13 +83,29 @@ class DataTransformer:
     def blended_teacher_map(self, value):
         self._context.blended_teacher_map = value
 
+    @property
+    def data_errors(self) -> list[dict[str, Any]]:
+        """Per-run fail-loud field-transform error ledger (see TransformContext)."""
+        return self._context.data_errors
+
     # --- Core methods ---
 
-    def set_school_year(self, year: int, start_month_day: str = "08-25", end_month_day: str = "07-25") -> None:
+    def set_school_year(self, year: int, start_month_day: str, end_month_day: str) -> None:
+        """No in-code date defaults — caller must pass the validated YAML values."""
         self._context.set_school_year(year, start_month_day, end_month_day)
 
-    def determine_school_year(self, all_data: dict[str, pd.DataFrame], source_config: Any) -> int:
-        return self._blended_detector.determine_school_year(all_data, source_config)
+    def determine_school_year(
+        self,
+        all_data: dict[str, pd.DataFrame],
+        source_config: Any,
+        rollover_month_day: str,
+        today: Optional[date] = None,
+        school_year_naming: str = "end",
+    ) -> int:
+        """No in-code default for ``rollover_month_day`` — caller must pass it."""
+        return self._blended_detector.determine_school_year(
+            all_data, source_config, rollover_month_day, today, school_year_naming
+        )
 
     def transform(
         self,
