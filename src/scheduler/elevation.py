@@ -160,7 +160,7 @@ def _dpapi(func_name: str, data: bytes, entropy: bytes) -> bytes:  # pragma: no 
         ctypes.byref(out_blob),
     )
     if not ok:
-        raise OSError(f"{func_name} failed (error {ctypes.get_last_error()}).")
+        raise OSError(f"{func_name} failed (error {ctypes.get_last_error()}).")  # type: ignore[attr-defined]
     try:
         raw = ctypes.string_at(out_blob.pbData, out_blob.cbData)
     finally:
@@ -358,7 +358,7 @@ def _shell_execute_runas(file: str, params: str) -> tuple[int, int]:  # pragma: 
     sei.lpParameters = params
     sei.nShow = _SW_HIDE
     if not shell32.ShellExecuteExW(ctypes.byref(sei)):
-        return 0, ctypes.get_last_error()
+        return 0, ctypes.get_last_error()  # type: ignore[attr-defined]
     return int(sei.hProcess or 0), 0
 
 
