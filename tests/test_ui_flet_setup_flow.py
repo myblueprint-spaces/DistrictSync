@@ -16,6 +16,7 @@ from src.ui_flet.setup_flow import (
     STEP_ORDER,
     TOTAL_STEPS,
     DeliveryFact,
+    FinishSummaryRow,
     FlowInputs,
     SetupStep,
     TaskArgs,
@@ -23,6 +24,7 @@ from src.ui_flet.setup_flow import (
     can_advance,
     derive_flow,
     finish_copy,
+    finish_summary_rows,
     is_skippable,
     next_step,
     prev_step,
@@ -373,6 +375,122 @@ class TestFinishCopy:
         )
         assert detail.startswith("DistrictSync will build Sea to Sky when you run a conversion.")
         assert "Tonight" not in detail
+
+
+# --------------------------------------------------------------------------- #
+# Finish-line checked summary — configured-vs-deferred rows, honest + ordered   #
+# --------------------------------------------------------------------------- #
+class TestFinishSummaryRows:
+    def _rows_by_label(self, rows: list[FinishSummaryRow]) -> dict[str, FinishSummaryRow]:
+        return {row.label: row for row in rows}
+
+    def test_rows_follow_wizard_input_order(self):
+        rows = finish_summary_rows(
+            schedule_live=True,
+            delivery=DeliveryFact.STORED_CRED_PRESENT,
+            district="New Westminster",
+            schedule_time_display="3:00 AM",
+        )
+        # Folders → District → Delivery → Schedule (the wizard input order; Finish is not a row).
+        assert [row.label for row in rows] == ["Folders", "District", "Delivery", "Schedule"]
+
+    def test_all_configured_every_row_done_with_concrete_values(self):
+        rows = self._rows_by_label(
+            finish_summary_rows(
+                schedule_live=True,
+                delivery=DeliveryFact.STORED_CRED_PRESENT,
+                district="New Westminster",
+                schedule_time_display="3:00 AM",
+            )
+        )
+        assert all(row.done for row in rows.values())
+        assert rows["Folders"].detail == "Ready"
+        assert rows["District"].detail == "New Westminster"  # the friendly name, never a raw id
+        assert rows["Delivery"].detail == "SpacesEDU"
+        assert rows["Schedule"].detail == "Nightly at 3:00 AM"  # the OS-reported time, named
+
+    def test_all_skippable_deferred_folders_and_district_still_done(self):
+        rows = self._rows_by_label(
+            finish_summary_rows(
+                schedule_live=False,
+                delivery=DeliveryFact.SKIPPED,
+                district="Sea to Sky",
+                schedule_time_display=None,
+            )
+        )
+        # Required steps are done; both skippable steps read as an honest, deferred "later".
+        assert rows["Folders"].done is True
+        assert rows["District"].done is True
+        assert rows["Delivery"].done is False
+        assert rows["Delivery"].detail == "Set up later in Setup"
+        assert rows["Schedule"].done is False
+        assert rows["Schedule"].detail == "Set up later in Setup"
+
+    def test_mixed_delivery_configured_schedule_deferred(self):
+        rows = self._rows_by_label(
+            finish_summary_rows(
+                schedule_live=False,
+                delivery=DeliveryFact.TESTED_OK,
+                district="New Westminster",
+                schedule_time_display=None,
+            )
+        )
+        # A tested-ok credential is CONFIGURED (done); the un-live schedule is deferred.
+        assert rows["Delivery"].done is True
+        assert rows["Delivery"].detail == "SpacesEDU"
+        assert rows["Schedule"].done is False
+
+    def test_live_schedule_without_reported_time_is_timeless(self):
+        # #7 honesty carried into the summary: LIVE but no OS next-run → a timeless label, never a
+        # config hint presented as a verified time.
+        rows = self._rows_by_label(
+            finish_summary_rows(
+                schedule_live=True,
+                delivery=DeliveryFact.SKIPPED,
+                district="New Westminster",
+                schedule_time_display=None,
+            )
+        )
+        assert rows["Schedule"].done is True
+        assert rows["Schedule"].detail == "Nightly sync scheduled"
+
+    @pytest.mark.parametrize(
+        ("fact", "done"),
+        [
+            (DeliveryFact.TESTED_OK, True),
+            (DeliveryFact.STORED_CRED_PRESENT, True),
+            (DeliveryFact.SKIPPED, False),
+            (DeliveryFact.TESTED_FAILED, False),
+            (DeliveryFact.NONE, False),
+        ],
+    )
+    def test_delivery_configured_is_narrower_than_flow_satisfied(self, fact, done):
+        # Honesty edge: SKIPPED "satisfies" the FLOW (can finish) but is DEFERRED in the summary —
+        # a credential is only "configured" when tested-ok or stored; failed/absent never show done.
+        rows = self._rows_by_label(
+            finish_summary_rows(
+                schedule_live=True,
+                delivery=fact,
+                district="New Westminster",
+                schedule_time_display="3:00 AM",
+            )
+        )
+        assert rows["Delivery"].done is done
+        assert (rows["Delivery"].detail == "SpacesEDU") is done
+        if not done:
+            assert rows["Delivery"].detail == "Set up later in Setup"
+
+    def test_deferred_rows_never_render_as_done(self):
+        # The load-bearing honesty invariant: a deferred delivery/schedule is NEVER a fake ✓.
+        rows = finish_summary_rows(
+            schedule_live=False,
+            delivery=DeliveryFact.NONE,
+            district="New Westminster",
+            schedule_time_display="3:00 AM",  # ignored when the schedule isn't live
+        )
+        deferred = [row for row in rows if not row.done]
+        assert {row.label for row in deferred} == {"Delivery", "Schedule"}
+        assert all(row.detail == "Set up later in Setup" for row in deferred)
 
 
 # --------------------------------------------------------------------------- #
