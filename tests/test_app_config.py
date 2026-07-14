@@ -8,13 +8,14 @@ from src.config.app_config import AppConfig
 
 
 @pytest.fixture
-def config_dir(tmp_path, monkeypatch):
-    """Redirect AppConfig to a temp directory."""
-    cfg_dir = tmp_path / ".districtsync"
-    cfg_file = cfg_dir / "config.json"
-    monkeypatch.setattr("src.config.app_config.APP_CONFIG_DIR", cfg_dir)
-    monkeypatch.setattr("src.config.app_config.APP_CONFIG_FILE", cfg_file)
-    return cfg_dir, cfg_file
+def config_dir(isolated_user_profile):
+    """The isolated app-data dir + config path.
+
+    AppConfig now resolves its path through ``paths.user_data_dir()`` at call time,
+    which the conftest autouse ``isolated_user_profile`` fixture redirects into a
+    per-test tmp dir — so this just surfaces that isolated location for assertions.
+    """
+    return isolated_user_profile, isolated_user_profile / "config.json"
 
 
 class TestAppConfigDefaults:
@@ -22,7 +23,7 @@ class TestAppConfigDefaults:
         cfg = AppConfig()
         assert cfg.input_dir == ""
         assert cfg.output_dir == ""
-        assert cfg.sis_type == "myedbc"
+        assert cfg.sis_type == ""  # D9: no district pre-selected on a fresh install
         assert cfg.schedule_time == "03:00"
         assert cfg.sftp_enabled is False
         assert cfg.sftp_port == 22
@@ -31,12 +32,12 @@ class TestAppConfigDefaults:
 class TestAppConfigLoad:
     def test_load_returns_defaults_when_no_file(self, config_dir):
         cfg = AppConfig.load()
-        assert cfg.sis_type == "myedbc"
+        assert cfg.sis_type == ""  # D9: no district pre-selected
         assert cfg.input_dir == ""
 
     def test_load_reads_saved_config(self, config_dir):
         cfg_dir, cfg_file = config_dir
-        cfg_dir.mkdir(parents=True)
+        cfg_dir.mkdir(parents=True, exist_ok=True)
         cfg_file.write_text(
             json.dumps(
                 {
@@ -57,7 +58,7 @@ class TestAppConfigLoad:
 
     def test_load_ignores_unknown_fields(self, config_dir):
         cfg_dir, cfg_file = config_dir
-        cfg_dir.mkdir(parents=True)
+        cfg_dir.mkdir(parents=True, exist_ok=True)
         cfg_file.write_text(
             json.dumps(
                 {
@@ -74,11 +75,11 @@ class TestAppConfigLoad:
 
     def test_load_returns_defaults_on_corrupt_file(self, config_dir):
         cfg_dir, cfg_file = config_dir
-        cfg_dir.mkdir(parents=True)
+        cfg_dir.mkdir(parents=True, exist_ok=True)
         cfg_file.write_text("not valid json{{{", encoding="utf-8")
 
         cfg = AppConfig.load()
-        assert cfg.sis_type == "myedbc"  # defaults
+        assert cfg.sis_type == ""  # defaults (D9: no district pre-selected)
 
 
 class TestAppConfigSave:
@@ -126,6 +127,75 @@ class TestIsComplete:
     def test_complete(self):
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc")
         assert cfg.is_complete() is True
+
+
+class TestHasCompletedSetup:
+    """D4a: the durable finish-line fact — distinct from the schedule's live-ness."""
+
+    def test_fresh_install_has_not_completed_setup(self):
+        assert AppConfig().has_completed_setup() is False
+
+    def test_explicit_flag_is_honored(self):
+        # The wizard (Slice 8) sets this even before a schedule is registered.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
+        assert cfg.has_completed_setup() is True
+
+    def test_inferred_from_old_finish_line_condition(self):
+        # An install predating the flag: complete config + registered schedule → completed.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=True)
+        assert cfg.has_completed_setup() is True
+
+    def test_complete_but_unscheduled_without_flag_is_not_completed(self):
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+        assert cfg.has_completed_setup() is False
+
+
+class TestSetupCompletedBackCompatInference:
+    """D4a: an existing deployed machine never regresses into onboarding after this update."""
+
+    def test_load_bakes_inferred_setup_completed(self, config_dir):
+        # An OLD config.json (no setup_completed key) with the old finish-line state → inferred True.
+        cfg_dir, cfg_file = config_dir
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg_file.write_text(
+            json.dumps(
+                {
+                    "input_dir": "/in",
+                    "output_dir": "/out",
+                    "sis_type": "myedbc",
+                    "schedule_registered": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg = AppConfig.load()
+        assert cfg.setup_completed is True
+        assert cfg.has_completed_setup() is True
+
+    def test_load_does_not_infer_for_unscheduled_install(self, config_dir):
+        cfg_dir, cfg_file = config_dir
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg_file.write_text(
+            json.dumps({"input_dir": "/in", "output_dir": "/out", "sis_type": "myedbc"}),
+            encoding="utf-8",
+        )
+        cfg = AppConfig.load()
+        assert cfg.setup_completed is False
+
+    def test_load_honors_persisted_true_even_if_unscheduled(self, config_dir):
+        # A completed-setup manual-only upgrader (wizard wrote the flag) stays completed.
+        cfg_dir, cfg_file = config_dir
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg_file.write_text(
+            json.dumps({"input_dir": "/in", "output_dir": "/out", "sis_type": "myedbc", "setup_completed": True}),
+            encoding="utf-8",
+        )
+        cfg = AppConfig.load()
+        assert cfg.setup_completed is True
+
+    def test_setup_completed_survives_save_roundtrip(self, config_dir):
+        AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True).save()
+        assert AppConfig.load().setup_completed is True
 
 
 class TestSftpIsConfigured:

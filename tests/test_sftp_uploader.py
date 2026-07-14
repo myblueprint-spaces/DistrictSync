@@ -93,6 +93,62 @@ class TestTestConnection:
             assert "timeout" in msg
 
 
+class TestPasswordOverride:
+    """Slice 7 (D6): a typed password threads transiently to ``client.connect()`` ONLY.
+
+    It is never written to the keyring, never logged, and never appears in the
+    returned message — so a failed/typo'd Test can't clobber a working credential.
+    """
+
+    def test_override_threaded_to_connect_never_keyring(self):
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        with (
+            patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch("src.sftp.uploader.keyring.get_password") as mock_get,
+        ):
+            mock_client = mock_cls.return_value
+            ok, msg = uploader.test_connection(password_override="typed-secret")
+            assert ok is True
+            # The override rode straight to client.connect(...), not the keyring.
+            assert mock_client.connect.call_args.kwargs["password"] == "typed-secret"
+            mock_get.assert_not_called()
+            # The credential never leaks into the returned message.
+            assert "typed-secret" not in msg
+
+    def test_no_override_falls_back_to_stored_keyring_password(self):
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        with (
+            patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch("src.sftp.uploader.keyring.get_password", return_value="stored-pw") as mock_get,
+        ):
+            mock_client = mock_cls.return_value
+            ok, _msg = uploader.test_connection()
+            assert ok is True
+            # No override → the stored keyring credential is used (the nightly path).
+            assert mock_client.connect.call_args.kwargs["password"] == "stored-pw"
+            mock_get.assert_called_once()
+
+    def test_test_path_leaves_stored_credential_intact(self):
+        """The in-memory keyring backend (suite-wide) is UNTOUCHED by the test path."""
+        import keyring as kr
+
+        kr.set_password(KEYRING_SERVICE, "user", "original-stored")
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        with patch("src.sftp.uploader.paramiko.SSHClient"):
+            uploader.test_connection(password_override="typo-typed")
+        # A typo'd Test never overwrites the working stored credential.
+        assert kr.get_password(KEYRING_SERVICE, "user") == "original-stored"
+
+    def test_test_connection_never_calls_store_password(self):
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        with (
+            patch("src.sftp.uploader.paramiko.SSHClient"),
+            patch.object(uploader, "store_password") as mock_store,
+        ):
+            uploader.test_connection(password_override="typed")
+            mock_store.assert_not_called()
+
+
 class TestUploadCsvs:
     def test_upload_zips_all_csvs(self, tmp_path):
         """upload_csvs should zip all CSVs into a single dated file and upload it."""
@@ -175,3 +231,101 @@ class TestUploadCsvs:
             uploader.upload_csvs(tmp_path)
 
         assert sorted(captured_local) == ["Staff.csv", "Students.csv"]
+
+
+class TestUploadStudentAttendance:
+    """StudentAttendance.csv ships standalone, outside the rostering zip."""
+
+    def test_attendance_delivered_standalone_and_excluded_from_zip(self, tmp_path):
+        """Rostering CSVs zip together; StudentAttendance.csv is put separately."""
+        import zipfile
+
+        (tmp_path / "Students.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
+        (tmp_path / "Enrollments.csv").write_text("class,user\nC1,1\n", encoding="utf-8")
+        (tmp_path / "StudentAttendance.csv").write_text(
+            "School Number,Absence Date,Absence Category,Student Number\n,01-Sep-2025,A,1\n",
+            encoding="utf-8",
+        )
+
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        mock_sftp = MagicMock()
+        mock_client = MagicMock()
+
+        # Capture the namelist of any ZIP put, and all remote paths.
+        zipped_names: list[str] = []
+
+        def capture_put(local, remote):
+            if str(local).endswith(".zip"):
+                with zipfile.ZipFile(local) as zf:
+                    zipped_names.extend(zf.namelist())
+
+        mock_sftp.put.side_effect = capture_put
+
+        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
+            uploaded = uploader.upload_csvs(tmp_path)
+
+        # The zip contains the rostering CSVs but NOT the attendance file.
+        assert sorted(zipped_names) == ["Enrollments.csv", "Students.csv"]
+        assert "StudentAttendance.csv" not in zipped_names
+
+        # Two puts: the rostering zip + the standalone attendance file.
+        assert mock_sftp.put.call_count == 2
+        remote_paths = [call.args[1] for call in mock_sftp.put.call_args_list]
+        assert any(p.endswith("/StudentAttendance.csv") for p in remote_paths)
+        assert "/upload/StudentAttendance.csv" in remote_paths
+
+        # Return value reports both the zipped CSVs and the standalone file.
+        assert "StudentAttendance.csv" in uploaded
+        assert "Students.csv" in uploaded
+        assert "Enrollments.csv" in uploaded
+        mock_client.close.assert_called_once()
+
+    def test_no_standalone_put_when_attendance_absent(self, tmp_path):
+        """Districts without an attendance file: zip-only, behaviour unchanged."""
+        import zipfile
+
+        (tmp_path / "Students.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
+        (tmp_path / "Staff.csv").write_text("id,role\n1,teacher\n", encoding="utf-8")
+
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        mock_sftp = MagicMock()
+        mock_client = MagicMock()
+
+        zipped_names: list[str] = []
+
+        def capture_put(local, remote):
+            with zipfile.ZipFile(local) as zf:
+                zipped_names.extend(zf.namelist())
+
+        mock_sftp.put.side_effect = capture_put
+
+        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
+            uploaded = uploader.upload_csvs(tmp_path)
+
+        # Single put (the zip), and the zip holds every rostering CSV.
+        assert mock_sftp.put.call_count == 1
+        assert mock_sftp.put.call_args.args[1].endswith(".zip")
+        assert sorted(zipped_names) == ["Staff.csv", "Students.csv"]
+        assert sorted(uploaded) == ["Staff.csv", "Students.csv"]
+
+    def test_attendance_only_no_empty_zip(self, tmp_path):
+        """Only StudentAttendance.csv present: deliver it standalone, no empty zip."""
+        (tmp_path / "StudentAttendance.csv").write_text(
+            "School Number,Absence Date,Absence Category,Student Number\n,01-Sep-2025,A,1\n",
+            encoding="utf-8",
+        )
+
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        mock_sftp = MagicMock()
+        mock_client = MagicMock()
+
+        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
+            uploaded = uploader.upload_csvs(tmp_path)
+
+        # Exactly one put — the standalone attendance file, no empty zip.
+        assert mock_sftp.put.call_count == 1
+        remote_path = mock_sftp.put.call_args.args[1]
+        assert remote_path == "/upload/StudentAttendance.csv"
+        assert not remote_path.endswith(".zip")
+        assert uploaded == ["StudentAttendance.csv"]
+        mock_client.close.assert_called_once()

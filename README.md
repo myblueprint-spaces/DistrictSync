@@ -8,23 +8,27 @@ Distributed as single-file executables for district servers. Runs daily via Wind
 
 | Platform | File | Notes |
 |----------|------|-------|
-| **Windows** | [DistrictSync-windows.exe](https://github.com/sh4npeiris/DistrictSync/releases/latest/download/DistrictSync-windows.exe) | Double-click to open Setup Wizard, or use in Task Scheduler |
-| **Linux** | [DistrictSync-linux](https://github.com/sh4npeiris/DistrictSync/releases/latest/download/DistrictSync-linux) | `chmod +x` before first run |
-| **macOS** | [DistrictSync-macos](https://github.com/sh4npeiris/DistrictSync/releases/latest/download/DistrictSync-macos) | Allow in System Settings > Privacy & Security |
+| **Windows** | [DistrictSync-windows.exe](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-windows.exe) | Double-click to open Setup Wizard, or use in Task Scheduler |
+| **Linux** | [DistrictSync-linux](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-linux) | `chmod +x` before first run |
+| **macOS** | [DistrictSync-macos](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos) | Allow in System Settings > Privacy & Security |
 
-See the **[Documentation Site](https://sh4npeiris.github.io/DistrictSync/)** for full setup instructions, troubleshooting, and FAQ.
+For setup basics, see the **[SpacesEDU Help Centre article](https://help.spacesedu.com/en-ca/article/mx56qo)**. The `docs/` directory has the complete documentation — installation, headless/Docker SFTP, how it works, FAQ, troubleshooting, and developer guides.
 
 ## What It Does
 
-Reads the standard GDE export files from MyEducation BC and produces 5 CSV files for SpacesEDU:
+Reads the standard GDE export files from MyEducation BC and produces the CSV files required by SpacesEDU / myBlueprint+. The 5 standard rostering files are always produced; the two myBlueprint+ course files are produced when enabled in the district config:
 
-| Input (MyEdBC GDE) | Output (SpacesEDU) |
+| Input (MyEdBC GDE) | Output (SpacesEDU / myBlueprint+) |
 |---|---|
 | Student Demographic | `Students.csv` |
 | Staff Information – Enhanced | `Staff.csv` |
 | Emergency Contact Information | `Family.csv` |
 | Student Schedule + Course Information | `Classes.csv` |
 | Student Schedule + Class Information – Enhanced | `Enrollments.csv` |
+| Course Information | `CourseInfo.csv` *(myBlueprint+)* |
+| Student Course History + Selection + Course Information | `StudentCourses.csv` *(myBlueprint+)* |
+
+The myBlueprint+ course files (`CourseInfo.csv`, `StudentCourses.csv`) include senior courses (grades 10–12) by default. Lower the start grade to **8** or **9** per district by setting `course_start_grade` in the district's mapping config.
 
 File names vary by district — each district's mapping config specifies its actual filenames and formats.
 
@@ -48,9 +52,19 @@ Use `--sis` to select a district-specific mapping:
 | `sd40myedbc` | SD40 (New Westminster) |
 | `sd48myedbc` | SD48 (Sea to Sky) |
 | `sd51myedbc` | SD51 (Boundary) |
+| `sd54myedbc` | SD54 (Bulkley Valley) |
+| `sd60myedbc` | SD60 (Peace River North) |
 | `sd74myedbc` | SD74 (Gold Trail) |
 
-New district configs can be created via the **Mapping Editor** in the web UI, or by hand in `config/mappings/`. Configs support `_base` inheritance — override only what differs from the default.
+For districts feeding **myBlueprint+** course data, three tier configs select which CSVs to emit (all inherit `_base: myedbc`):
+
+| Flag | Emits |
+|------|-------|
+| `mbp_all` | All 7 (5 rostering + CourseInfo + StudentCourses) |
+| `mbp_core` | Students + CourseInfo + StudentCourses |
+| `mbponly` | CourseInfo + StudentCourses only |
+
+New district configs are created by hand in `config/mappings/`. Configs support `_base` inheritance — override only what differs from the default. The desktop app's **Mapping** screen reviews and switches between the built-in configs.
 
 ## CLI Options
 
@@ -64,21 +78,23 @@ New district configs can be created via the **Mapping Editor** in the web UI, or
 | `--quality` | Print a data quality report after conversion |
 | `--sftp` | Upload output CSVs via SFTP after a successful run |
 
-## Web UI
+## Desktop UI
 
-A browser-based interface for setup, ad-hoc conversions, and monitoring:
+A native desktop interface (Flet) for setup, ad-hoc conversions, and monitoring. The packaged executable **opens the desktop app automatically** when launched without arguments (double-click on Windows) — no Python or extra install required. Running the same executable with CLI arguments (`--sis`/`--input`/`--output`) uses the CLI instead.
+
+To run from source:
 
 ```bash
-pip install streamlit
-streamlit run src/ui/Home.py
+pip install -r requirements.txt
+python -m src.main
 ```
 
-**Pages:**
-- **Setup Wizard** — Configure paths, schedule, and SFTP upload
-- **Convert** — Upload GDE files and download CSVs on demand
+**Screens:**
+- **Setup** — Configure paths, schedule, and SFTP upload
+- **Convert** — Pick GDE files and run a conversion on demand
 - **Run History** — View the log of automated daily runs
-- **Mapping Editor** — Create or customize district data configurations visually
-- **Help & Docs** — Output format, how it works, quality checks, troubleshooting
+- **Mapping** — Review and switch the active district data configuration
+- **Help** — Links to the Help Centre and support contact
 
 ## Key Features
 
@@ -98,6 +114,6 @@ Debug logs written to `etl_tool.log`. Console shows WARNING+ only. Structured `_
 
 ## Support
 
-Contact **support@myBlueprint.ca** with:
+Contact **hello@spacesedu.com** with:
 - A zipped copy of your `data/input/` folder
 - The `etl_tool.log` file

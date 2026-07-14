@@ -12,7 +12,7 @@ from src.etl.transformer import DataTransformer
 class TestEnrollmentsTransform:
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def _run_classes_then_enrollments(self, schedule_df, classes_mapping, enrollments_mapping, global_config, raw_data):
         """Classes must be transformed first to populate homeroom_classes_df and blended maps."""
@@ -78,17 +78,22 @@ class TestEnrollmentsTransform:
     def test_homeroom_student_enrollments(
         self, student_schedule_df, classes_mapping, enrollments_mapping, global_config, raw_data
     ):
-        """Students in homeroom grades should get homeroom enrollments.
-        The enrollment merge uses student_id_col from config ('Student ID' → 'student id').
-        The demographic data must have this column for the merge to find student IDs.
+        """Students in homeroom grades should get homeroom enrollments derived from
+        the demographic file. The demographic file's student-ID column comes from
+        the Students config ('User ID' → 'Student Number'), not the Enrollments
+        config's schedule-targeted 'Student ID'.
         """
         result = self._run_classes_then_enrollments(
             student_schedule_df, classes_mapping, enrollments_mapping, global_config, raw_data
         )
-        if not result.empty:
-            student_enrollments = result[result["Role"] == "student"]
-            # Verify we have some student enrollments (homeroom or subject)
-            assert len(student_enrollments) > 0
+        assert not result.empty
+        student_enrollments = result[result["Role"] == "student"]
+
+        # Homeroom Class IDs follow "{school}_{homeroom}_{year}" — distinct from
+        # subject Class IDs which use Master Timetable ID. The demographic fixture
+        # places S001/S002/S006 in grades K/3/1 at school 100, homeroom A1.
+        homeroom_rows = student_enrollments[student_enrollments["Class ID"].astype(str).str.contains("_A1_")]
+        assert {"S001", "S002", "S006"}.issubset(set(homeroom_rows["User ID"].astype(str)))
 
     def test_school_id_column_renamed(
         self, student_schedule_df, classes_mapping, enrollments_mapping, global_config, raw_data
@@ -105,7 +110,7 @@ class TestEnrollmentsTransform:
 class TestEnrollmentsBlended:
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_blended_teacher_enrollments(
         self, blended_schedule_df, classes_mapping, enrollments_mapping, global_config, raw_data_with_blended
@@ -137,7 +142,7 @@ class TestClassInfoCoTeacherEnrollments:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_coteacher_attached_via_section_letter(
         self,
@@ -298,7 +303,7 @@ class TestEnrollmentsExcludedCourseCodes:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_attendance_enrollments_suppressed(
         self, student_schedule_df, classes_mapping, enrollments_mapping, global_config, raw_data

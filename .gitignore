@@ -10,6 +10,9 @@ __pycache__/
 *.egg-info/
 *.spec
 
+# Version file stamped from the git tag at build time (release.yml / Makefile)
+/src/_version.py
+
 # Logs
 *.log
 
@@ -25,7 +28,11 @@ htmlcov/
 .hypothesis/
 
 # Claude Code + MCP tooling
-.claude/
+# Local Claude state stays ignored; SHARE the harness: agent role library, plans, shared settings.
+.claude/*
+!.claude/agents/
+!.claude/plans/
+!.claude/settings.json
 .playwright-mcp/
 
 # Scratch / local debugging artifacts
@@ -53,3 +60,7 @@ data/output/
 
 # MkDocs build output
 site/
+
+# Local reference docs (partner/SIS spec PDFs & DOCXs — kept locally, not in git)
+/*.pdf
+/*.docx

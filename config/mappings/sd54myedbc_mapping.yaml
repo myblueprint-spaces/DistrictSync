@@ -1,0 +1,79 @@
+# SD54 - Bulkley Valley School District
+# Inherits from: myedbc (standard MyEducation BC mapping)
+#
+# Differences from base:
+#  - All SD54 source filenames are lowercase or have non-default casing:
+#    studentschedule.txt, courseinformation.txt, staffinformation.txt,
+#    classinformationenhanced.txt. (StudentDemographicInformation.txt and
+#    EmergencyContactInformationEnhanced.txt happen to match base exactly
+#    for Students and Family roles; explicit Classes overrides still list
+#    them for readability.)
+#  - Staff uses the non-Enhanced staffinformation.txt — same column set the
+#    pipeline reads (teacher id, first/last name, email, teaching staff,
+#    school number), per the MyEd BC GDE spec for Staff Information.
+#  - Family uses EmergencyContactInformationEnhanced.txt (extra columns
+#    are ignored; only first/last name, email, student number are read).
+#  - Class Information is the Enhanced variant (has 'Primary Teacher'),
+#    so co-teacher enrollment capture works (enrollments.py:_classinfo_coteacher_enrollments).
+#  - SD54 emits attendance-bookkeeping rows in StudentSchedule with course
+#    codes ATT--AM / ATT--PM / ATT--Daily; excluded so they don't surface
+#    as separate classes in SpacesEDU. Matches SD40 conventions.
+#
+# All field_map entries inherit from base unchanged — SD54's column
+# names line up with MyEd BC GDE canonical names (per v1.8 spec):
+#   StudentDemographic → "Student number", "Legal first name", etc.
+#   StudentSchedule    → "Student ID", "Teacher ID", "Master Timetable ID"
+#   Enrollments handles the demographic-vs-schedule student-id mismatch
+#   automatically (enrollments.py:_homeroom_enrollments derives the
+#   demographic column from Students.User ID, not Enrollments.user_id).
+#   Academic-period dates auto-derive from the schedule's "School Year"
+#   column (end-year convention, e.g. "2026" → 2025-2026 academic year),
+#   so no Start/End Date overrides are needed.
+
+_base: myedbc
+version: '1.0'
+sis: MyEducationBC
+district_name: SD54 - Bulkley Valley School District
+
+global_config:
+  school_year_sources:
+    student_schedule: studentschedule.txt
+  # SD54 tracks attendance via dedicated ATT--* rows in StudentSchedule
+  # (AM/PM/Daily check-ins). These are SIS-internal bookkeeping and
+  # must not appear as classes in SpacesEDU. ATT--Daily is included
+  # preemptively to match SD40 — if SD54 doesn't emit it, the exclusion
+  # is a no-op.
+  excluded_course_codes:
+    - ATT--AM
+    - ATT--PM
+    - ATT--Daily
+
+mappings:
+  Students:
+    field_map:
+      # SD54 convention: <legal-surname>.<preferred-first-name>@sd54.bc.ca
+      # Example: John Doe (preferred name John) → doe.john@sd54.bc.ca.
+      # generate_student_email lowercases values and collapses internal spaces,
+      # so double-barrelled surnames like "Goodrick Hill" become
+      # "goodrickhill.skyler@sd54.bc.ca".
+      "Email Address":
+        format: "{legal surname}.{usual first name}@sd54.bc.ca"
+
+  Staff:
+    source_files:
+      staff_info: staffinformation.txt
+
+  Family:
+    source_files:
+      emergency_contacts: EmergencyContactInformationEnhanced.txt
+
+  Classes:
+    source_files:
+      student_schedule: studentschedule.txt
+      course_info: courseinformation.txt
+      staff_info: staffinformation.txt
+      class_info: classinformationenhanced.txt
+
+  Enrollments:
+    source_files:
+      student_schedule: studentschedule.txt

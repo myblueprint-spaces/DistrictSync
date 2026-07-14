@@ -8,9 +8,12 @@ import pandas as pd
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.classes import ClassTransformer
 from src.etl.transformers.context import TransformContext
+from src.etl.transformers.course_info import CourseInfoTransformer
 from src.etl.transformers.enrollments import EnrollmentTransformer
 from src.etl.transformers.family import FamilyTransformer
 from src.etl.transformers.staff import StaffTransformer
+from src.etl.transformers.student_attendance import StudentAttendanceTransformer
+from src.etl.transformers.student_courses import StudentCoursesTransformer
 from src.etl.transformers.students import StudentTransformer
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,9 @@ TRANSFORMER_REGISTRY: dict[str, BaseTransformer] = {
     "Family": FamilyTransformer(),
     "Classes": ClassTransformer(),
     "Enrollments": EnrollmentTransformer(),
+    "CourseInfo": CourseInfoTransformer(),
+    "StudentCourses": StudentCoursesTransformer(),
+    "StudentAttendance": StudentAttendanceTransformer(),
 }
 
 

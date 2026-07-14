@@ -44,12 +44,6 @@ mappings:
         "teacher last name": "Teacher Name"
         "course title": "Title"
         "section letter": "Section"
-      "Start Date":
-        value: "2025-08-25"
-        use_academic_year: false
-      "End Date":
-        value: "2026-07-25"
-        use_academic_year: false
 
   Enrollments:
     source_files:

@@ -3,7 +3,7 @@
 src/main.py is the PyInstaller entry point; in a frozen one-file exe the
 entry script runs as ``__main__``, not as a proper module, so
 ``from src.main import run_pipeline`` fails at runtime even though it
-works in dev. Callers (the Streamlit UI, tests, CLI) import from this
+works in dev. Callers (the Flet UI, tests, CLI) import from this
 module instead and stay decoupled from the CLI argparse layer.
 """
 
@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pandas as pd
 
@@ -24,6 +27,7 @@ from src.config.loader import load_config
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader
 from src.etl.transformer import DataTransformer
+from src.history.store import VALID_SOURCES, write_run_record
 from src.quality.report import DataQualityReport
 from src.sftp.uploader import SFTPUploader
 
@@ -31,18 +35,182 @@ logger = logging.getLogger(__name__)
 
 ANOMALY_THRESHOLD = 0.20  # Warn if any entity drops >20% vs previous output
 
+# The entity-count keys carried FLAT on every run record (the shape the Home / Run-History
+# derivation modules read via ``record["Students"]`` etc.). Single-sourced so the log line
+# and the store record can never drift on which entities they count.
+_RECORD_ENTITY_KEYS: tuple[str, ...] = (
+    "Students",
+    "Staff",
+    "Family",
+    "Classes",
+    "Enrollments",
+    "CourseInfo",
+    "StudentCourses",
+    "StudentAttendance",
+)
+
+_SOURCE_ENV_VAR = "DSYNC_SOURCE"  # scheduled/cron/Docker set this; the registered task passes --source
+
+
+class RunErrorCategory(str, Enum):
+    """The bounded, PII-free failure taxonomy stamped on every run record (mirrors the
+    ``LatestReason`` closed-set style). The store carries ONLY this category — never the
+    free-text ``str(e)`` (which can leak a path / column / sis_type); the diagnostic log
+    keeps the rich message for ops. A closed set so a future filter UI can rely on it.
+    """
+
+    NONE = "none"  # a completed run (delivery/anomaly/data-warning axes live in their own fields)
+    NO_INPUT = "no_input"  # the no-usable-required-input guard fired
+    CONFIG = "config"  # a config/validation problem surfaced as the failure
+    DATA = "data"  # a build/write problem (missing field-map column, transform, loader)
+    UNKNOWN = "unknown"  # an unclassified failure
+
+
+@dataclass
+class PipelineResult:
+    """Structured return value from run_pipeline."""
+
+    entity_counts: dict[str, int] = field(default_factory=dict)
+    sftp_attempted: bool = False
+    sftp_ok: bool = False
+    anomalies: list[str] = field(default_factory=list)
+
 
 def extract_required_files(config) -> list[str]:
-    """Extract all unique source filenames from a validated MappingConfig."""
-    files = set()
-    for entity_cfg in config.mappings.values():
+    """Extract all unique source filenames from a validated MappingConfig.
+
+    Respects ``enabled_entities``: source files for disabled entities are
+    excluded. ``school_year_sources`` are only included when also referenced
+    by an enabled entity — when they aren't, ``determine_school_year``
+    falls back to the calendar-date heuristic in BaseTransformer.
+    """
+    enabled_attr = getattr(config.global_config, "enabled_entities", None)
+    enabled = set(enabled_attr) if isinstance(enabled_attr, list) and enabled_attr else None
+
+    files: set[str] = set()
+    for entity_name, entity_cfg in config.mappings.items():
+        if enabled is not None and entity_name not in enabled:
+            continue
         files.update(entity_cfg.source_files.values())
-    files.update(config.global_config.school_year_sources.values())
     return list(files)
 
 
-def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list[str]:
-    """Compare output row counts against previous run; return warning strings."""
+class TransformOutputs(NamedTuple):
+    """Result of :func:`run_transform` — transformed frames plus their CSV column order.
+
+    ``data_errors`` is the run's fail-loud field-transform ledger (a separate
+    axis from ETL success): non-fatal per-row / column-level transform problems
+    recorded by ``BaseTransformer.apply_field_map`` instead of being silently
+    swallowed. Empty on a clean run.
+    """
+
+    outputs: dict[str, pd.DataFrame]
+    field_orders: dict[str, list[str]]
+    data_errors: list[dict]
+
+
+def run_transform(
+    raw_data: dict[str, pd.DataFrame],
+    mappings: dict,
+    global_config: dict,
+) -> TransformOutputs:
+    """Shared transform-orchestration: school-year determination + the per-entity loop.
+
+    Behaviour-preserving extraction of the canonical orchestration block from
+    ``run_pipeline``. Constructs a fresh :class:`DataTransformer` (both callers
+    already build a new transformer per run, so the per-run ``TransformContext``
+    state stays isolated). Honors ``enabled_entities`` (inclusion) and
+    ``entity_order`` (ordering); skips an entity only when ALL of its source
+    frames are empty (a role-resolved entity may have an empty positional-first
+    source yet a populated secondary band); collects each emitted entity's field
+    order from its ``field_map`` keys.
+    The returned :class:`TransformOutputs` also carries ``data_errors`` — the
+    shared context's fail-loud field-transform ledger accumulated across every
+    entity (empty on a clean run).
+    """
+    transformer = DataTransformer()
+
+    outputs: dict[str, pd.DataFrame] = {}
+    field_orders: dict[str, list[str]] = {}
+
+    # Determine school year — NO in-code defaults. Validation guarantees
+    # academic_start_month_day and academic_end_month_day are set when
+    # Classes is enabled; rollover falls back to academic_end_month_day
+    # when not separately configured.
+    sy_sources_config = global_config.get("school_year_sources", {})
+    start_md = global_config["academic_start_month_day"]
+    end_md = global_config["academic_end_month_day"]
+    rollover_md = global_config.get("academic_year_rollover_month_day") or end_md
+    naming = global_config.get("school_year_naming") or "end"
+    sy = transformer.determine_school_year(
+        raw_data,
+        sy_sources_config,
+        rollover_month_day=rollover_md,
+        school_year_naming=naming,
+    )
+    transformer.set_school_year(sy, start_md, end_md)
+    logger.info(f"Using school year {sy}, academic start={transformer.academic_start}, end={transformer.academic_end}")
+
+    entity_order = global_config.get("entity_order") or list(mappings.keys())
+    # `enabled_entities` (when non-empty) filters which mappings actually run.
+    # This lets the base config define more entity templates than it
+    # activates by default — districts opt in by listing them.
+    enabled = global_config.get("enabled_entities") or []
+    if enabled:
+        enabled_set = set(enabled)
+        entity_order = [e for e in entity_order if e in enabled_set]
+    for entity_name in entity_order:
+        entity_cfg = mappings.get(entity_name, {})
+        source_config = entity_cfg.get("source_files", {})
+
+        if not source_config:
+            logger.warning(f"No source_files for entity '{entity_name}' in the mapping; skipping.")
+            continue
+
+        source_files = list(source_config.values()) if isinstance(source_config, dict) else source_config
+        if not source_files:
+            logger.warning(f"No valid source files for entity '{entity_name}'; skipping.")
+            continue
+
+        # Skip only when EVERY source frame is empty. The positional-first frame
+        # is still passed as the primary, but an entity that resolves its bands
+        # BY ROLE (e.g. StudentAttendance — daily/period order-independent) must
+        # not be dropped just because its listed-first source is empty: a
+        # period-only district lists `daily_absences` first, so an empty daily
+        # frame would otherwise skip a fully-populated period band.
+        source_frames = [raw_data.get(sf, pd.DataFrame()) for sf in source_files]
+        if all(df.empty for df in source_frames):
+            logger.warning(f"All source files {source_files} are empty for '{entity_name}'; skipping.")
+            continue
+        primary_df = source_frames[0]  # may be empty for a role-resolved entity (period-only attendance)
+
+        transformed = transformer.transform(primary_df, entity_cfg, entity_name, raw_data, global_config)
+
+        if transformed.empty:
+            logger.warning(f"No data transformed for entity '{entity_name}'; skipping.")
+            continue
+
+        outputs[entity_name] = transformed
+        field_orders[entity_name] = list(entity_cfg.get("field_map", {}).keys())
+
+    # The shared per-run TransformContext accumulates fail-loud field-transform
+    # errors across every entity; surface them on the same axis as the outputs.
+    return TransformOutputs(outputs, field_orders, transformer.data_errors)
+
+
+def compute_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list[str]:
+    """Pure row-count-drop compute shared by the CLI and the Convert page.
+
+    Compares each output entity's row count against its previous run's CSV in
+    ``output_dir`` and returns a plain per-entity warning string for every
+    entity that dropped by more than :data:`ANOMALY_THRESHOLD`. The base
+    message — ``"{entity} dropped from {prev} to {new} rows ({pct}% decrease)"``
+    — carries NO surface-specific presentation (no ``ANOMALY:`` prefix, no
+    logging/printing); each caller adds its own (CLI logs, UI renders).
+
+    Entities with no previous file, an unreadable previous file, or an empty
+    previous file are skipped — a missing baseline is fine, not an anomaly.
+    """
     warnings: list[str] = []
     for entity, df in outputs.items():
         prev_path = output_dir / f"{entity}.csv"
@@ -56,10 +224,79 @@ def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list
             continue
         if prev_count > 0 and len(df) < prev_count * (1 - ANOMALY_THRESHOLD):
             pct = ((prev_count - len(df)) / prev_count) * 100
-            msg = f"ANOMALY: {entity} dropped from {prev_count} to {len(df)} rows ({pct:.0f}% decrease)"
-            logger.warning(msg)
-            warnings.append(msg)
+            warnings.append(f"{entity} dropped from {prev_count} to {len(df)} rows ({pct:.0f}% decrease)")
     return warnings
+
+
+def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list[str]:
+    """CLI renderer over :func:`compute_anomalies`: prefix ``ANOMALY:`` and log.
+
+    Thin wrapper that adds the CLI's existing presentation to each shared base
+    warning — the ``ANOMALY:``-prefixed ``logger.warning`` lines — and returns
+    the prefixed strings (consumed by the structured run-log's ``anomalies``).
+    """
+    warnings: list[str] = []
+    for msg in compute_anomalies(outputs, output_dir):
+        prefixed = f"ANOMALY: {msg}"
+        logger.warning(prefixed)
+        warnings.append(prefixed)
+    return warnings
+
+
+def build_run_record(
+    *,
+    status: str,
+    elapsed: float,
+    entity_counts: dict[str, int],
+    sftp_attempted: bool = False,
+    sftp_ok: bool = False,
+    anomalies: list[str] | None = None,
+    data_errors: dict[str, Any] | None = None,
+    source: str,
+    sis_type: str,
+    error_category: str,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    """Build the ONE flat run-record dict written to BOTH sinks (D2a — one dict, two sinks).
+
+    This is the exact flat shape ``home_status`` / ``run_history`` consume (entity counts as
+    FLAT top-level keys, ``sftp_*`` / ``anomalies`` / ``data_errors`` axes) plus the new
+    enrichment (``source`` / ``sis_type`` / ``error_category``). It carries NO free-text
+    ``error`` — that rich detail is added ONLY to the diagnostic-log line (see
+    :func:`_log_run_record`); the store never persists it (privacy split).
+
+    ``data_errors`` is the compact ``{"total": N, "by_field": {...}}`` summary — a separate
+    axis from ``status`` (which stays ``success``/``failed`` for the ETL run itself).
+    """
+    record: dict[str, Any] = {
+        "timestamp": timestamp or datetime.now().isoformat(timespec="seconds"),
+        "status": status,
+        "source": source,
+        "sis_type": sis_type,
+        "error_category": error_category,
+        "duration_s": round(elapsed, 1),
+        "sftp_attempted": sftp_attempted,
+        "sftp_ok": sftp_ok,
+        "anomalies": anomalies or [],
+        "data_errors": data_errors or {},
+    }
+    for key in _RECORD_ENTITY_KEYS:
+        record[key] = int(entity_counts.get(key, 0))
+    return record
+
+
+def _counts_from_outputs(outputs: dict[str, pd.DataFrame]) -> dict[str, int]:
+    """Entity row counts from the produced frames (missing entity → 0 via ``build_run_record``)."""
+    return {name: len(df) for name, df in outputs.items()}
+
+
+def _log_run_record(record: dict[str, Any], *, error: str = "") -> None:
+    """Write the structured ``__DISTRICTSYNC_RUN__`` diagnostic-log line for this record.
+
+    The log keeps the RICH free-text ``error`` (ops needs "KeyError: final mark" at 2am);
+    it is merged in here and NOWHERE else — the stored record never carries it.
+    """
+    logger.info(f"__DISTRICTSYNC_RUN__ {json.dumps({**record, 'error': error})}")
 
 
 def _emit_run_log(
@@ -70,23 +307,91 @@ def _emit_run_log(
     sftp_ok: bool = False,
     error: str = "",
     anomalies: list[str] | None = None,
+    data_errors: dict[str, Any] | None = None,
+    *,
+    source: str = "cli",
+    sis_type: str = "",
+    error_category: str = RunErrorCategory.NONE.value,
 ) -> None:
-    """Write a structured __DISTRICTSYNC_RUN__ log line for the Run History page."""
-    entry = {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "status": status,
-        "duration_s": round(elapsed, 1),
-        "Students": len(outputs.get("Students", [])),
-        "Staff": len(outputs.get("Staff", [])),
-        "Family": len(outputs.get("Family", [])),
-        "Classes": len(outputs.get("Classes", [])),
-        "Enrollments": len(outputs.get("Enrollments", [])),
-        "sftp_attempted": sftp_attempted,
-        "sftp_ok": sftp_ok,
-        "error": error,
-        "anomalies": anomalies or [],
-    }
-    logger.info(f"__DISTRICTSYNC_RUN__ {json.dumps(entry)}")
+    """Build a run record from ``outputs`` and write the diagnostic-log line (log sink only).
+
+    Retained as the small "count the outputs and log it" convenience the unit tests pin;
+    ``run_pipeline`` uses the finer-grained :func:`build_run_record` + :func:`_log_run_record`
+    + :func:`_store_run_record` split so the SAME dict reaches both sinks (build once).
+    """
+    record = build_run_record(
+        status=status,
+        elapsed=elapsed,
+        entity_counts=_counts_from_outputs(outputs),
+        sftp_attempted=sftp_attempted,
+        sftp_ok=sftp_ok,
+        anomalies=anomalies,
+        data_errors=data_errors,
+        source=source,
+        sis_type=sis_type,
+        error_category=error_category,
+    )
+    _log_run_record(record, error=error)
+
+
+def _store_run_record(record: dict[str, Any], *, source: str) -> bool:
+    """Best-effort store write — STRICTLY NON-FATAL (D2b): never raises, never masks a caller error.
+
+    ``write_run_record`` already swallows ``sqlite3.Error`` / ``OSError``; this extra guard
+    also swallows anything unexpected (a bug, an import problem) so a store write can NEVER
+    change ``run_pipeline``'s result, exit code, CSVs, or — critically at the failure site —
+    mask the original ETL exception. Returns whether the row was written.
+    """
+    try:
+        return write_run_record(record, source=source)
+    except Exception as exc:  # noqa: BLE001 - the store is a best-effort sink; it must never propagate
+        logger.warning("Run-history store write raised unexpectedly (%s); the run is in the diagnostic log", exc)
+        return False
+
+
+def _resolve_source(source: str | None) -> str:
+    """Resolve the run ``source`` tag: explicit arg → ``DSYNC_SOURCE`` env → ``"cli"``.
+
+    The registered scheduled task passes ``--source scheduled`` (see ``scheduler/windows.py``);
+    ``convert_job`` passes ``"manual"``; a container/cron deployment may ``export DSYNC_SOURCE``.
+    An out-of-set value coerces to ``"unknown"`` (the store's CHECK constraint's escape hatch).
+    """
+    resolved = source or os.environ.get(_SOURCE_ENV_VAR) or "cli"
+    return resolved if resolved in VALID_SOURCES else "unknown"
+
+
+def _classify_error_category(exc: BaseException) -> str:
+    """Map a failure to the bounded, PII-free :class:`RunErrorCategory` (never the message).
+
+    Classified by exception type/marker, not text interpolation — the store never sees the
+    free-text error. ``SystemExit`` never reaches here (it is re-raised before the failure sink).
+    """
+    if isinstance(exc, RuntimeError) and "No usable required input" in str(exc):
+        return RunErrorCategory.NO_INPUT.value
+    if isinstance(exc, FileNotFoundError):
+        return RunErrorCategory.CONFIG.value
+    if isinstance(exc, ValueError):
+        # A missing field-map column (loader) / validation surfaces as ValueError.
+        return RunErrorCategory.DATA.value
+    return RunErrorCategory.UNKNOWN.value
+
+
+def _summarize_data_errors(data_errors: list[dict]) -> dict[str, Any]:
+    """Collapse the per-(entity, field) error ledger into a compact run-log summary.
+
+    ``{"total": <sum of failed_rows>, "by_field": {"<Entity>.<Field>": <rows>}}``.
+    Returns an empty dict for a clean run (nothing to surface).
+    """
+    if not data_errors:
+        return {}
+    by_field: dict[str, int] = {}
+    total = 0
+    for rec in data_errors:
+        key = f"{rec.get('entity', '?')}.{rec.get('field', '?')}"
+        rows = int(rec.get("failed_rows", 0))
+        by_field[key] = by_field.get(key, 0) + rows
+        total += rows
+    return {"total": total, "by_field": by_field}
 
 
 def run_pipeline(
@@ -97,9 +402,22 @@ def run_pipeline(
     diff: bool = False,
     quality: bool = False,
     sftp: bool = False,
-) -> None:
-    """Core ETL pipeline with optional dry-run, diff, quality, and SFTP modes."""
+    source: str | None = None,
+) -> PipelineResult:
+    """Core ETL pipeline with optional dry-run, diff, quality, and SFTP modes.
+
+    Returns a :class:`PipelineResult` whose ``sftp_attempted`` / ``sftp_ok``
+    fields let callers (e.g. ``src/main.py``) decide whether to exit non-zero
+    when delivery failed.
+
+    ``source`` tags where the run came from for the durable run store
+    (manual / scheduled / cli / unknown); it resolves via :func:`_resolve_source`
+    (explicit arg → ``DSYNC_SOURCE`` env → ``"cli"``). The store write is
+    best-effort and strictly non-fatal — it never changes the result, the CSVs,
+    or the exit-code contract (0/1/2/3).
+    """
     t0 = time.monotonic()
+    resolved_source = _resolve_source(source)
     outputs: dict[str, pd.DataFrame] = {}
     sftp_attempted = False
     sftp_ok = False
@@ -131,7 +449,6 @@ def run_pipeline(
         global_config: dict[str, Any] = raw["global_config"]
 
         extractor = DataExtractor(input_path)
-        transformer = DataTransformer()
         loader = DataLoader(output_path)
 
         required_files = extract_required_files(config)
@@ -145,47 +462,33 @@ def run_pipeline(
 
         raw_data = extractor.load_data(required_files, file_headers=file_headers)
 
-        # Determine school year
-        sy_sources_config = global_config.get("school_year_sources", {})
-        sy = transformer.determine_school_year(raw_data, sy_sources_config)
-        start_md = global_config.get("academic_start_month_day", "08-25")
-        end_md = global_config.get("academic_end_month_day", "07-25")
-        transformer.set_school_year(sy, start_md, end_md)
-        logger.info(
-            f"Using school year {sy}, academic start={transformer.academic_start}, end={transformer.academic_end}"
-        )
+        # Fail loud on NO USABLE INPUT. A scheduled, unattended run that received
+        # no usable required input (wrong folder, truncated export, locked file)
+        # must not masquerade as a clean run. The guard keys off INPUT presence
+        # (`raw_data`), independent of `run_transform`'s per-entity skip-on-empty
+        # — so a partial run (some files present) proceeds, and a period-only
+        # attendance run (period file non-empty, daily absent) does NOT fire it.
+        if not raw_data or all(df.empty for df in raw_data.values()):
+            empty_or_missing = [name for name, df in raw_data.items() if df.empty] or list(required_files)
+            raise RuntimeError(
+                "No usable required input was loaded — every required file is "
+                f"missing or empty: {empty_or_missing}. Check the input folder, "
+                "the export job, and that the files are not locked."
+            )
 
-        field_orders: dict[str, list[str]] = {}
+        # Shared transform-orchestration (school-year + per-entity loop +
+        # enabled_entities filter + field-order collection).
+        outputs, field_orders, data_errors = run_transform(raw_data, mappings, global_config)
 
-        entity_order = global_config.get("entity_order") or list(mappings.keys())
-        for entity_name in entity_order:
-            entity_cfg = mappings.get(entity_name, {})
-            source_config = entity_cfg.get("source_files", {})
-
-            if not source_config:
-                logger.warning(f"No source_files for entity '{entity_name}' in the mapping; skipping.")
-                continue
-
-            source_files = list(source_config.values()) if isinstance(source_config, dict) else source_config
-            if not source_files:
-                logger.warning(f"No valid source files for entity '{entity_name}'; skipping.")
-                continue
-
-            primary_source = source_files[0]
-            primary_df = raw_data.get(primary_source, pd.DataFrame())
-
-            if primary_df.empty:
-                logger.warning(f"Primary source file '{primary_source}' is empty for '{entity_name}'; skipping.")
-                continue
-
-            transformed = transformer.transform(primary_df, entity_cfg, entity_name, raw_data, global_config)
-
-            if transformed.empty:
-                logger.warning(f"No data transformed for entity '{entity_name}'; skipping.")
-                continue
-
-            outputs[entity_name] = transformed
-            field_orders[entity_name] = list(entity_cfg.get("field_map", {}).keys())
+        # Surface fail-loud field-transform errors (a separate axis from ETL
+        # status): consolidated ERROR + a compact run-log summary. The run still
+        # completed + delivered, so `status` stays `success`.
+        data_errors_summary = _summarize_data_errors(data_errors)
+        if data_errors_summary:
+            logger.error(
+                f"Completed with {data_errors_summary['total']} data error(s) across "
+                f"{len(data_errors_summary['by_field'])} field(s): {data_errors_summary['by_field']}"
+            )
 
         # Check for anomalies before writing
         if outputs and not dry_run:
@@ -194,6 +497,19 @@ def run_pipeline(
         # Write all outputs transactionally (all-or-nothing commit)
         if not dry_run and outputs:
             loader.save_all(outputs, field_orders)
+
+            # Archive (non-destructive) entity CSVs left in the output dir that
+            # this run did NOT produce — they were not refreshed and would ship
+            # stale in the next SFTP zip. Moving them into archive_<ts>/ (a
+            # SUBfolder) excludes them from SFTP's top-level *.csv glob without
+            # deleting anything — auto-delete is unsafe under _base inheritance
+            # (see DataLoader.archive_stale_outputs). No exit/run-log change.
+            archived = loader.archive_stale_outputs(set(outputs))
+            if archived:
+                logger.info(
+                    f"Archived {len(archived)} stale entity CSV(s) not produced by this run into "
+                    f"archive_<ts>/ (excluded from SFTP): {archived}"
+                )
 
             # SFTP upload (only on a successful, non-dry-run write)
             if sftp:
@@ -218,21 +534,67 @@ def run_pipeline(
 
         logger.info("ETL process completed successfully.")
 
-        # Emit structured run log
+        # Build the run record ONCE (D2a) → the diagnostic-log line AND the durable store.
+        # The store write is best-effort/non-fatal and positioned AFTER the output commit,
+        # so it can never touch the CSVs or the exit-code contract.
         elapsed = time.monotonic() - t0
-        _emit_run_log("success", elapsed, outputs, sftp_attempted=sftp_attempted, sftp_ok=sftp_ok, anomalies=anomalies)
+        record = build_run_record(
+            status="success",
+            elapsed=elapsed,
+            entity_counts=_counts_from_outputs(outputs),
+            sftp_attempted=sftp_attempted,
+            sftp_ok=sftp_ok,
+            anomalies=anomalies,
+            data_errors=data_errors_summary,
+            source=resolved_source,
+            sis_type=sis_type,
+            error_category=RunErrorCategory.NONE.value,
+        )
+        _log_run_record(record)
+        _store_run_record(record, source=resolved_source)
+
+        return PipelineResult(
+            entity_counts={name: len(df) for name, df in outputs.items()},
+            sftp_attempted=sftp_attempted,
+            sftp_ok=sftp_ok,
+            anomalies=anomalies,
+        )
 
     except SystemExit:
         raise
     except Exception as e:
         elapsed = time.monotonic() - t0
         logger.error(f"Pipeline failed: {e}")
-        _emit_run_log("failed", elapsed, outputs, error=str(e), sftp_attempted=sftp_attempted, sftp_ok=sftp_ok)
+        # Record the failure to BOTH sinks — but recording must NEVER raise and mask the
+        # original ETL exception (D2b). The whole record/log/store block is guarded; the
+        # bare ``raise`` below always re-raises the ORIGINAL ``e`` (exception identity
+        # preserved), whatever happens while recording.
+        try:
+            record = build_run_record(
+                status="failed",
+                elapsed=elapsed,
+                entity_counts=_counts_from_outputs(outputs),
+                sftp_attempted=sftp_attempted,
+                sftp_ok=sftp_ok,
+                source=resolved_source,
+                sis_type=sis_type,
+                error_category=_classify_error_category(e),
+            )
+            _log_run_record(record, error=str(e))  # rich free-text error → LOG only
+            _store_run_record(record, source=resolved_source)  # store carries error_category only
+        except Exception as record_exc:  # noqa: BLE001 - recording must never mask the ETL failure
+            logger.error(f"Failed to record the failed run ({record_exc}); re-raising the original error")
         raise
 
 
 def _sftp_upload(output_path: str, sis_type: str | None = None) -> bool:
-    """Upload generated CSV files via SFTP. Returns True on success."""
+    """Upload generated CSV files via SFTP. Returns True on success.
+
+    Never raises — exceptions are caught and logged at ERROR level so the
+    caller (``run_pipeline``) can propagate ``sftp_ok=False`` to ``main.py``
+    which then decides to exit non-zero.  The already-written CSVs are NOT
+    touched on failure.
+    """
     try:
         cfg = AppConfig.load()
         if not cfg.sftp_is_configured():
@@ -242,17 +604,26 @@ def _sftp_upload(output_path: str, sis_type: str | None = None) -> bool:
             )
             return False
 
+        host = cfg.sftp_host or "<unknown host>"
         uploader = SFTPUploader(
-            host=cfg.sftp_host,
+            host=host,
             port=cfg.sftp_port,
             username=cfg.sftp_username,
             remote_path=cfg.sftp_remote_path,
         )
         uploaded = uploader.upload_csvs(Path(output_path), sis_type=sis_type)
-        logger.info(f"SFTP upload complete: {len(uploaded)} file(s) — {uploaded}")
-        return len(uploaded) > 0
+        if uploaded:
+            logger.info(f"SFTP upload complete: {len(uploaded)} file(s) — {uploaded}")
+            return True
+        # upload_csvs returned an empty list (e.g. no CSVs found) — treat as failure
+        logger.error(f"SFTP upload FAILED — output files were NOT delivered to {host} (no files were transferred)")
+        return False
     except Exception as e:
-        logger.error(f"SFTP upload failed: {e}")
+        try:
+            host = AppConfig.load().sftp_host or "<unknown host>"
+        except Exception:
+            host = "<unknown host>"
+        logger.error(f"SFTP upload FAILED — output files were NOT delivered to {host}: {e}")
         return False
 
 

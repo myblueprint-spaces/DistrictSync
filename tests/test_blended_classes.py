@@ -65,7 +65,7 @@ class TestGetBlendedGradeRange:
 class TestCreateBlendedClassName:
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_full_blended_name(self):
         group = pd.DataFrame(
@@ -105,7 +105,7 @@ class TestDetectBlendedClasses:
 
     def setup_method(self):
         self.transformer = DataTransformer()
-        self.transformer.set_school_year(2025)
+        self.transformer.set_school_year(2025, "08-25", "07-25")
 
     def test_detects_blended_from_class_info(self, class_info_enh_df, blended_schedule_df, blended_course_info_df):
         """Teacher T010 teaches MT100/MT101/MT102 at same time with grades 1,2,3 → blended."""

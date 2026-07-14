@@ -1,0 +1,21 @@
+# mbp_all — full rostering + the two myBlueprint+ entities.
+#
+# Use case: a district that wants every standard rostering CSV (Students,
+# Staff, Family, Classes, Enrollments) AND the myBlueprint+ course CSVs
+# (CourseInfo, StudentCourses). Inherits standard MyEd BC file naming
+# from the base — districts with non-standard file names should layer
+# their own override on top with `_base: mbp_all`.
+_base: myedbc
+version: 1.0
+sis: MyEducationBC
+district_name: myBlueprint+ (full)
+
+global_config:
+  enabled_entities:
+    - Students
+    - Staff
+    - Family
+    - Classes
+    - Enrollments
+    - CourseInfo
+    - StudentCourses
