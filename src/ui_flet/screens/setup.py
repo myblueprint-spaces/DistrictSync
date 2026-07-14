@@ -1,65 +1,54 @@
-"""Setup → folders surface (the first real Flet surface).
+"""Setup surface — a first-run WIZARD that graduates into a flat SETTINGS page (D8).
 
-VIEW glue (coverage-omitted): an admin picks the input (GDE) folder and the
-output folder, chooses their district, and Saves — persisting to ``AppConfig``
-(``input_dir``/``output_dir``/``sis_type``), which flips ``is_complete()``. The
-trust-critical decisions are the COUNTED pure helpers in ``filepicker``
-(``validate_input_dir``/``validate_output_dir``/``setup_state``); this file only
-wires them to controls.
+VIEW glue (coverage-omitted): the trust-critical *decisions* live in the COUNTED pure
+modules — ``setup_flow`` (the wizard state machine: resume, per-step gates, finish copy,
+the ``task_args_changed`` reconcile predicate, district auto-select), ``filepicker``
+(``setup_state``/path validation), ``setup_gates`` (submit gates), ``schedule_status``
+(the tri-state schedule truth), ``sftp_copy`` (Test provenance copy). This file only wires
+them to controls.
 
-**Structural Save gate (RC3, security):** the Save button is *disabled* until
-BOTH paths validate (``setup_state(...).can_save``) — an invalid path can never
-reach ``AppConfig.save()`` (which would flip a false ``is_complete()`` and feed
-``run_pipeline`` a path it ``sys.exit(1)``s on). Validation gates persistence
-structurally, not just via an inline message.
+**Two modes, one build entry (``build_setup``):**
 
-**SIS source (RC2, DRY):** the district dropdown is sourced from the existing
-``src.config.loader.available_configs()`` — the same enumerator the Streamlit
-pages use — and shows each config's ``district_name`` (via ``load_config``), not
-a raw id, so an admin never picks a meaningless ``sd48myedbc`` from a bare list.
+* **Wizard mode** — while ``not cfg.has_completed_setup()``: a five-step guided path
+  (Folders → District → Schedule → Delivery → Finish) with a "Step N of 5" indicator +
+  Back, Enter/Continue gated per step, and focus moved to the new step's first field. The
+  Schedule + Delivery steps are **skippable** ("Set up later") and **reconcile** against
+  real side effects — a task the read-back already reports LIVE ("already scheduled") and a
+  credential already in the keyring ("a delivery password is already saved") are shown
+  instead of double-registering. **No step sets ``setup_completed``** — only the explicit
+  finish confirmation does, so a mid-wizard abandonment never reads as "set up". Resume
+  derives from real state (``setup_flow.derive_flow``), never a stored cursor.
+* **Settings mode** — once completed: the flat scroll retitled **"Settings"** with the same
+  folders/schedule/SFTP sections, plus **one reconciling Save** — when a task-baked field
+  (input/output/district/SFTP flag/run time — ``setup_flow.task_args_changed``) changes and
+  a schedule is live, the folders Save re-registers the task through the SAME register flow
+  (incl. elevation) so tonight's run uses the new settings. The rail label stays "Setup".
 
-**Scope (IA-4a + IA-4b):** folders + the *scheduler* section (run time + the
-Windows run-as password → ``register_task``/``register_cron`` UNCHANGED → a
-verdict-first result via the relocated ``classify_schedule_error`` +
-``is_elevated``) + the *SFTP* section (allowlist host dropdown + credentials →
-``SFTPUploader.store_password`` (OS keyring) + a ``get_stored_password``
-round-trip → verdict; a marshalled "Test connection" via
-``page.run_thread``/``page.run_task``). The full first-time setup flow (folders
-→ schedule → SFTP) is a sectioned single scroll — no cross-step password parking.
+The register/unregister flow (Slice 5/6) and the SFTP test/save flow (Slice 7) are **reused
+verbatim** in both modes — the wizard's Schedule/Delivery steps embed the SAME section
+builders, so there is exactly one register flow and one keyring-write path.
 
-**Password contract (I1/I3, security-critical — schedule):** in the schedule
-handler the Windows account password is a **handler-LOCAL variable** whose ONLY
-sink is ``register_task(run_as_password=...)`` (which the core routes to a
-child-env ``DSYNC_TASK_PW``, never argv). It is NEVER assigned to ``AppConfig``,
-NEVER logged, NEVER echoed in a banner/message, and NEVER stashed beyond the
-handler's scope. Only the non-sensitive ``schedule_time`` reaches ``cfg.save()``.
-
-**Password contract (I4/I5, security-critical — SFTP):** in the SFTP handlers the
-credential is a **handler-LOCAL variable** whose ONLY sink is
-``SFTPUploader.store_password(...)`` (OS keyring). It is NEVER assigned to
-``AppConfig``, NEVER logged, NEVER echoed in a banner/message. Only the five
-non-sensitive settings (``sftp_enabled``/``sftp_host``/``sftp_port``/
-``sftp_username``/``sftp_remote_path``) reach ``cfg.save()``. The host is
-restricted to ``ALLOWED_SFTP_HOSTS`` structurally (the dropdown IS the allowlist)
-AND at the boundary (``SFTPUploader.__init__`` runs ``validate_sftp_host``).
-
-**Test-connection marshalling (I6, concurrency):** ``test_connection`` is a
-blocking ~30s network call — it runs OFF the UI thread via ``page.run_thread``;
-the result banner + button/spinner teardown mutate controls ONLY inside a
-``page.run_task`` callback (never from the worker thread). ``test_connection``
-returns ``(bool, str)`` and does NOT raise ``SystemExit`` (unlike
-``run_pipeline``), so a plain ``except Exception`` in the worker suffices.
+**Password contracts (I1/I3 schedule · I4/I5 SFTP — security-critical):** unchanged from
+Slice 5–7. The Windows account password is a handler-LOCAL variable whose only sink is
+``register_task(run_as_password=...)`` (DPAPI elevation handshake / child-env — never argv,
+never ``cfg``, never a log/message). The SFTP credential's only sinks are
+``store_password`` (Save → keyring) and the transient ``test_connection(password_override=)``
+(Test → ``client.connect`` only); a failed Test can never clobber a stored credential (D6).
 """
 
 from __future__ import annotations
 
+import contextlib
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import flet as ft
 
 from src.config.app_config import AppConfig
 from src.config.loader import available_configs
+from src.scheduler import windows
 from src.sftp.uploader import SFTPUploader
 from src.ui_flet import components, tokens
 from src.ui_flet.filepicker import (
@@ -70,39 +59,523 @@ from src.ui_flet.filepicker import (
 )
 from src.ui_flet.humanize import friendly_district_name, friendly_sftp_reason
 from src.ui_flet.picker_field import PickerField
+from src.ui_flet.schedule_status import (
+    ScheduleState,
+    ScheduleStatus,
+    interpret_unregister,
+    is_transient_location,
+)
 from src.ui_flet.setup_errors import classify_schedule_error
+from src.ui_flet.setup_flow import (
+    TOTAL_STEPS,
+    TRANSITION_CUE,
+    DeliveryFact,
+    FlowInputs,
+    SetupStep,
+    TaskArgs,
+    auto_selected_district,
+    can_advance,
+    derive_flow,
+    finish_copy,
+    is_skippable,
+    next_step,
+    prev_step,
+    step_number,
+    task_args_changed,
+)
+from src.ui_flet.setup_gates import can_register_schedule, can_save_sftp
+from src.ui_flet.sftp_copy import sftp_form_differs_from_saved, sftp_test_copy
 from src.ui_flet.verdict import Verdict
 from src.utils.validators import ALLOWED_SFTP_HOSTS, validate_run_time
+
+# Surfaced after a successful registration when the running exe lives in a transient dir
+# (Downloads/Temp): pinning a scheduled task there risks the "task fires, exe is gone,
+# nothing recorded" blind spot (D4). A warning, not a block — the admin may re-register later.
+_TRANSIENT_LOCATION_WARNING = (
+    "Heads up: DistrictSync is running from a temporary location (like Downloads or Temp). "
+    "If you move or delete it, the nightly sync will stop — move it to a permanent folder "
+    "and re-register."
+)
+
+# Calm fallbacks when an off-thread schedule worker itself raises (D5): the spinner + buttons
+# must ALWAYS be released, so the worker marshals one of these instead of stranding the UI.
+_WORKER_ERROR_REGISTER = "We couldn't run the schedule registration just now. Please try again."
+_WORKER_ERROR_UNREGISTER = "We couldn't run the schedule removal just now. Please try again."
+
+# Plain-language titles for the five wizard steps (the "Step N of 5 · <title>" indicator).
+_STEP_TITLES: dict[SetupStep, str] = {
+    SetupStep.FOLDERS: "Choose your folders",
+    SetupStep.DISTRICT: "Choose your district",
+    SetupStep.SCHEDULE: "Set a nightly schedule",
+    SetupStep.DELIVERY: "Set up delivery",
+    # #5: the step title is a neutral marker so the adaptive banner headline owns the peak moment
+    # (avoids stacking "You're all set" twice — step title + banner).
+    SetupStep.FINISH: "Finish",
+}
 
 
 def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
     return ft.Padding(left=h, top=v, right=h, bottom=v)
 
 
-def _district_options() -> list[ft.dropdown.Option]:
-    """SIS/district dropdown options — id keyed, ``district_name`` shown (RC2).
+def _inflight_row(text: str) -> ft.Control:
+    """A spinner + honest waiting line shown while an off-thread schedule op is in flight (D5)."""
+    return ft.Row(
+        spacing=10,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[ft.ProgressRing(width=18, height=18), ft.Text(text, size=13, color=tokens.color_muted)],
+    )
 
-    Sourced from ``available_configs()`` (the existing single-source enumerator);
-    the id→friendly-name mapping (with the raw-id fallback + warning log) is the
-    single-sourced ``humanize.friendly_district_name`` — DRY, one place to change.
+
+def _schedule_readout_line(status: ScheduleStatus) -> ft.Control:
+    """A one-line live readout of the REAL schedule state — styled by ATTENTION, not state (finding #3).
+
+    A first-run install's Schedule step is legitimately MISSING ("not set up yet"); painting that
+    red/error screams "broken" for a normal not-yet state. So the failed styling is reserved for
+    ``attention`` (an expected-but-gone schedule, or a fired-but-no-record contradiction); a calm
+    MISSING reads muted/neutral, LIVE reads green, UNKNOWN reads muted.
     """
+    if status.attention:
+        color, icon = tokens.color_status_failed, ft.Icons.ERROR_OUTLINE_ROUNDED
+    elif status.state is ScheduleState.LIVE:
+        color, icon = tokens.color_status_healthy, ft.Icons.CHECK_CIRCLE_ROUNDED
+    elif status.state is ScheduleState.MISSING:
+        color, icon = tokens.color_muted, ft.Icons.EVENT_BUSY_ROUNDED  # calm "not set up yet"
+    else:  # UNKNOWN
+        color, icon = tokens.color_muted, ft.Icons.HELP_OUTLINE_ROUNDED
+    return ft.Row(
+        spacing=8,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[ft.Icon(icon, size=18, color=color), ft.Text(status.detail, size=13, color=color)],
+    )
+
+
+def _district_options() -> list[ft.dropdown.Option]:
+    """SIS/district dropdown options — id keyed, ``district_name`` shown (RC2)."""
     return [ft.dropdown.Option(key=sis_id, text=friendly_district_name(sis_id)) for sis_id in available_configs()]
 
 
-def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view glue
-    """Build the Setup folders surface, bound to ``page`` (via ``partial`` in shell)."""
-    cfg = AppConfig.load()
+def _folders_valid(input_dir: str, output_dir: str) -> bool:
+    """Both the input and output folders pass the boundary validators (the folders-step gate)."""
+    return validate_input_dir(input_dir).ok and validate_output_dir(output_dir).ok
 
-    # Mutable selection state mirrored from the saved config.
+
+def _stored_delivery_present(cfg: AppConfig) -> bool:
+    """Whether a delivery credential already sits in the keyring for the saved host/user (reconcile).
+
+    A cheap synchronous keyring read (guarded — a blank/out-of-allowlist host makes the
+    ``SFTPUploader`` construction raise, which we treat as "no stored credential"). Used to
+    reconcile the Delivery step to "a delivery password is already saved" instead of forcing a
+    fresh test, and to seed the wizard's ``DeliveryFact`` on resume.
+    """
+    if not (cfg.sftp_host and cfg.sftp_username):
+        return False
+    try:
+        uploader = SFTPUploader(
+            cfg.sftp_host, int(cfg.sftp_port or 22), cfg.sftp_username, cfg.sftp_remote_path or "/files"
+        )
+        return bool(uploader.get_stored_password())
+    except Exception:  # noqa: BLE001 - any keyring/construction failure → "no stored credential"
+        return False
+
+
+@dataclass
+class _ScheduleHandle:
+    """A thin handle the Settings reconcile uses to drive the schedule section's register flow."""
+
+    trigger_register: Callable[[], None]
+    run_time_value: Callable[[], str]
+
+
+# --------------------------------------------------------------------------- #
+# Entry: wizard while not completed, else the flat Settings scroll.            #
+# --------------------------------------------------------------------------- #
+def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view glue
+    """Build the Setup surface — the first-run wizard, or the Settings page once completed."""
+    cfg = AppConfig.load()
+    root = ft.Column(spacing=22)
+    if not cfg.has_completed_setup():
+        _mount_wizard(page, cfg, root)
+    else:
+        _mount_settings(page, cfg, root, transition_cue=False)
+    return root
+
+
+# --------------------------------------------------------------------------- #
+# Wizard mode (D8).                                                            #
+# --------------------------------------------------------------------------- #
+def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pragma: no cover - Flet view glue
+    """Render the five-step first-run wizard into ``root`` (resume derived from real state)."""
+    available = available_configs()
+
+    # Shared mutable wizard state. Folders/district selections mirror the config; the schedule
+    # status + delivery fact are the injected verification results the finish line + resume read.
+    ws: dict[str, object] = {
+        "step": SetupStep.FOLDERS,
+        "input": cfg.input_dir,
+        "output": cfg.output_dir,
+        "sis": cfg.sis_type or auto_selected_district(available),  # D9: auto-select iff one config
+        "schedule_skipped": False,
+        "schedule_status": None,  # latest ScheduleStatus from the section's read-back
+        "delivery": DeliveryFact.STORED_CRED_PRESENT if _stored_delivery_present(cfg) else DeliveryFact.NONE,
+        "delivery_host": cfg.sftp_host,
+        "delivery_user": cfg.sftp_username,
+        "forward_btn": None,  # the current step's forward button (re-gated in place on input change)
+    }
+
+    def _inputs() -> FlowInputs:
+        return FlowInputs(
+            folders_valid=_folders_valid(str(ws["input"]), str(ws["output"])),
+            district_chosen=bool(str(ws["sis"]).strip()),
+            schedule=ws["schedule_status"],  # type: ignore[arg-type]
+            schedule_skipped=bool(ws["schedule_skipped"]),
+            delivery=ws["delivery"],  # type: ignore[arg-type]
+        )
+
+    # Resume: land on the first step real state says is unsatisfied (no stored cursor).
+    ws["step"] = derive_flow(_inputs()).resume_step
+
+    def _step_addressed(step: SetupStep) -> bool:
+        """Whether a skippable step is done (LIVE / tested-ok / stored) OR explicitly deferred."""
+        if step is SetupStep.SCHEDULE:
+            status = ws["schedule_status"]
+            return bool(ws["schedule_skipped"]) or (
+                status is not None and status.state is ScheduleState.LIVE  # type: ignore[union-attr]
+            )
+        if step is SetupStep.DELIVERY:
+            return ws["delivery"] in {
+                DeliveryFact.TESTED_OK,
+                DeliveryFact.STORED_CRED_PRESENT,
+                DeliveryFact.SKIPPED,
+            }
+        return False
+
+    def _refresh_footer() -> None:
+        """Re-gate / re-label the forward button in place (input change, async status arrival)."""
+        btn = ws["forward_btn"]
+        if btn is None:
+            return
+        step = ws["step"]
+        if step in (SetupStep.FOLDERS, SetupStep.DISTRICT):
+            btn.disabled = not can_advance(step, _inputs())  # type: ignore[union-attr]
+        elif is_skippable(step):
+            btn.disabled = False
+            btn.content = "Continue" if _step_addressed(step) else "Set up later"  # type: ignore[union-attr]
+        page.update()
+
+    def _go(step: SetupStep) -> None:
+        ws["step"] = step
+        _render()
+
+    def _forward() -> None:
+        step = ws["step"]
+        if not can_advance(step, _inputs()):
+            return  # gate closed (folders/district) — Enter/Continue is a no-op, matching the disabled button
+        if step is SetupStep.FOLDERS:
+            cfg.input_dir = str(ws["input"])
+            cfg.output_dir = str(ws["output"])
+            cfg.save()
+        elif step is SetupStep.DISTRICT:
+            cfg.sis_type = str(ws["sis"])
+            cfg.save()
+        elif is_skippable(step) and not _step_addressed(step):
+            # Advancing an unaddressed skippable step defers it ("Set up later") — marked skipped
+            # so it counts as satisfied for the finish line WITHOUT asserting anything false.
+            if step is SetupStep.SCHEDULE:
+                ws["schedule_skipped"] = True
+            else:
+                ws["delivery"] = DeliveryFact.SKIPPED
+        nxt = next_step(step)
+        if nxt is not None:
+            _go(nxt)
+
+    def _back() -> None:
+        prev = prev_step(ws["step"])  # type: ignore[arg-type]
+        if prev is not None:
+            _go(prev)
+
+    def _finish() -> None:
+        # The ONLY completion signal (D8/D4a): reaching the finish line — never any single step —
+        # marks the install set up. Then graduate this surface to Settings mode in place.
+        cfg.setup_completed = True
+        cfg.save()
+        _mount_settings(page, AppConfig.load(), root, transition_cue=True)
+        page.update()
+
+    def _on_sched_status(status: ScheduleStatus) -> None:
+        ws["schedule_status"] = status
+        _refresh_footer()
+
+    def _on_delivery(fact: DeliveryFact, host: str, username: str) -> None:
+        ws["delivery"] = fact
+        ws["delivery_host"] = host
+        ws["delivery_user"] = username
+        _refresh_footer()
+
+    # ---- per-step body builders ---------------------------------------- #
+    def _folders_body() -> ft.Control:
+        def _on_input(path: str, _r: ValidationResult) -> None:
+            ws["input"] = path
+            _refresh_footer()
+
+        def _on_output(path: str, _r: ValidationResult) -> None:
+            ws["output"] = path
+            _refresh_footer()
+
+        input_field = PickerField(
+            page=page,
+            label="Input folder (MyEd BC extract)",
+            helper="The folder DistrictSync reads your General Data Extract files from.",
+            validator=validate_input_dir,
+            on_change=_on_input,
+            dialog_title="Select the MyEd BC extract folder",
+            initial_value=str(ws["input"]),
+        )
+        output_field = PickerField(
+            page=page,
+            label="Output folder (SpacesEDU CSVs)",
+            helper="Where DistrictSync writes the converted CSV files.",
+            validator=validate_output_dir,
+            on_change=_on_output,
+            dialog_title="Select the output folder",
+            initial_value=str(ws["output"]),
+        )
+        # #4: ONE orientation line on step 1 only — the wizard shouldn't cold-open on folder pickers
+        # with zero context. (A fuller welcome screen is a close-out question, not built here.)
+        orientation = ft.Text(
+            "DistrictSync keeps your MyEd BC roster flowing to SpacesEDU — automatically, every night. "
+            "Let's set it up.",
+            size=14,
+            color=tokens.color_muted,
+        )
+        return ft.Column(spacing=22, controls=[orientation, input_field, output_field])
+
+    def _district_body() -> ft.Control:
+        def _on_pick(e: ft.ControlEvent) -> None:
+            ws["sis"] = e.control.value or ""
+            _refresh_footer()
+
+        dropdown = ft.Dropdown(
+            label="District",
+            hint_text="Choose your district",  # D9: no pre-selection; placeholder prompts an explicit pick
+            value=str(ws["sis"]) or None,
+            options=_district_options(),
+            on_select=_on_pick,  # Dropdown's value-change is on_select on 0.85.3 (not on_change)
+            border_color=tokens.color_border,
+            autofocus=True,  # focus the new step's first field (D8 keyboard flow)
+        )
+        return ft.Column(
+            spacing=12,
+            controls=[
+                ft.Text(
+                    "Pick the district whose MyEd BC layout matches your extract. "
+                    "You can switch it later from the Mapping tab.",
+                    size=14,
+                    color=tokens.color_muted,
+                ),
+                dropdown,
+            ],
+        )
+
+    def _schedule_body() -> ft.Control:
+        card, _handle = _build_schedule_section(page, cfg, on_status=_on_sched_status)
+        return card
+
+    def _delivery_body() -> ft.Control:
+        controls: list[ft.Control] = []
+        if ws["delivery"] is DeliveryFact.STORED_CRED_PRESENT:
+            # Reconcile (D8): a credential is already saved — don't imply a fresh one is required.
+            controls.append(
+                components.HealthVerdictBanner(
+                    Verdict.HEALTHY,
+                    headline="A delivery password is already saved",
+                    detail="A SpacesEDU credential is already stored on this computer. "
+                    "Test it below, or continue to keep using it.",
+                )
+            )
+        controls.append(_build_sftp_section(page, cfg, on_delivery=_on_delivery))
+        return ft.Column(spacing=18, controls=controls)
+
+    def _finish_body() -> ft.Control:
+        status = ws["schedule_status"]
+        schedule_live = (not ws["schedule_skipped"]) and status is not None and status.state is ScheduleState.LIVE  # type: ignore[union-attr]
+        district = friendly_district_name(str(ws["sis"])) or str(ws["sis"])
+        next_run = status.next_run_display if (schedule_live and status is not None) else None  # type: ignore[union-attr]
+        headline, detail = finish_copy(
+            schedule_live=bool(schedule_live),
+            delivery=ws["delivery"],  # type: ignore[arg-type]  # F1: keyed off PERSISTED delivery, not a transient test
+            district=district,
+            schedule_time_display=next_run,
+            host=str(ws["delivery_host"]),
+            username=str(ws["delivery_user"]),
+        )
+        return components.HealthVerdictBanner(Verdict.HEALTHY, headline=headline, detail=detail)
+
+    _BODIES: dict[SetupStep, Callable[[], ft.Control]] = {
+        SetupStep.FOLDERS: _folders_body,
+        SetupStep.DISTRICT: _district_body,
+        SetupStep.SCHEDULE: _schedule_body,
+        SetupStep.DELIVERY: _delivery_body,
+        SetupStep.FINISH: _finish_body,
+    }
+
+    def _step_header(step: SetupStep) -> ft.Control:
+        return components.card(
+            content=ft.Column(
+                spacing=4,
+                controls=[
+                    ft.Text(
+                        f"Step {step_number(step)} of {TOTAL_STEPS}",
+                        size=13,
+                        weight=ft.FontWeight.W_700,
+                        color=ft.Colors.with_opacity(0.85, tokens.color_on_action),
+                    ),
+                    ft.Text(_STEP_TITLES[step], size=26, weight=ft.FontWeight.W_800, color=tokens.color_on_action),
+                ],
+            ),
+            gradient=components.hero_gradient(),
+            padding=_pad_sym(32, 24),
+            border_radius=18,
+        )
+
+    def _step_footer(step: SetupStep) -> ft.Control:
+        controls: list[ft.Control] = []
+        if prev_step(step) is not None:
+            controls.append(components.secondary_button("Back", lambda _e: _back(), icon=ft.Icons.ARROW_BACK_ROUNDED))
+
+        if step is SetupStep.FINISH:
+            forward = components.primary_button(
+                "Finish setup",
+                lambda _e: _finish(),
+                disabled=not can_advance(SetupStep.FINISH, _inputs()),
+                disabled_bgcolor=tokens.color_border,
+                icon=ft.Icons.CHECK_CIRCLE_ROUNDED,
+            )
+        elif step in (SetupStep.FOLDERS, SetupStep.DISTRICT):
+            forward = components.primary_button(
+                "Continue",
+                lambda _e: _forward(),
+                disabled=not can_advance(step, _inputs()),
+                disabled_bgcolor=tokens.color_border,
+                icon=ft.Icons.ARROW_FORWARD_ROUNDED,
+            )
+        else:  # skippable Schedule / Delivery
+            forward = components.primary_button(
+                "Continue" if _step_addressed(step) else "Set up later",
+                lambda _e: _forward(),
+                icon=ft.Icons.ARROW_FORWARD_ROUNDED,
+            )
+        ws["forward_btn"] = forward
+        controls.append(forward)
+        return ft.Row(spacing=16, controls=controls)
+
+    def _render() -> None:
+        step = ws["step"]  # type: ignore[assignment]
+        root.controls = [_step_header(step), _BODIES[step](), _step_footer(step)]  # type: ignore[index]
+        page.update()
+
+    _render()
+
+
+# --------------------------------------------------------------------------- #
+# Settings mode (D8): the flat scroll + one reconciling Save.                  #
+# --------------------------------------------------------------------------- #
+def _mount_settings(  # pragma: no cover - Flet view glue
+    page: ft.Page, cfg: AppConfig, root: ft.Column, *, transition_cue: bool
+) -> None:
+    """Render the completed-install Settings scroll into ``root`` (folders + schedule + SFTP)."""
+    # The ONE task-args snapshot + reconcile the folders Save AND the SFTP Save both drive (D8/F1):
+    # any change to a task-baked field (folders/district/SFTP flag/run time) on a registered
+    # schedule re-registers through the SAME flow, so the nightly action can never go stale — and
+    # enabling SFTP in Settings finally adds --sftp to an already-registered task (the F1 gap).
+    saved = {
+        "args": TaskArgs.of(
+            input_dir=cfg.input_dir,
+            output_dir=cfg.output_dir,
+            sis_type=cfg.sis_type,
+            sftp_enabled=cfg.sftp_enabled,
+            run_time=cfg.schedule_time,
+        )
+    }
+
+    def _snapshot_args() -> TaskArgs:
+        return TaskArgs.of(
+            input_dir=cfg.input_dir,
+            output_dir=cfg.output_dir,
+            sis_type=cfg.sis_type,
+            sftp_enabled=cfg.sftp_enabled,
+            run_time=cfg.schedule_time,
+        )
+
+    def _on_registered() -> None:
+        # N1: after ANY successful register (reconcile OR the schedule section's own Register),
+        # refresh the snapshot so a later Save doesn't redundantly re-register. cfg.schedule_time
+        # was just set to the registered field value, so the snapshot now matches reality.
+        saved["args"] = _snapshot_args()
+
+    # Build the schedule section FIRST so both Saves can drive its register flow on a task-arg change.
+    schedule_card, sched_handle = _build_schedule_section(page, cfg, on_registered=_on_registered)
+
+    def _reconcile() -> bool:
+        pending = TaskArgs.of(
+            input_dir=cfg.input_dir,
+            output_dir=cfg.output_dir,
+            sis_type=cfg.sis_type,
+            sftp_enabled=cfg.sftp_enabled,
+            run_time=sched_handle.run_time_value(),
+        )
+        if cfg.schedule_registered and task_args_changed(saved["args"], pending):
+            sched_handle.trigger_register()  # on success → _on_registered refreshes the snapshot
+            return True
+        return False
+
+    sftp_card = _build_sftp_section(page, cfg, on_saved=_reconcile)
+    folders_card = _build_settings_folders(page, cfg, reconcile=_reconcile)
+
+    header = components.card(
+        content=ft.Column(
+            spacing=4,
+            controls=[
+                ft.Text("Settings", size=26, weight=ft.FontWeight.W_800, color=tokens.color_on_action),
+                ft.Text(
+                    "Everything you set up lives here — edit your folders, district, schedule, or delivery anytime.",
+                    size=14,
+                    color=ft.Colors.with_opacity(0.85, tokens.color_on_action),
+                ),
+            ],
+        ),
+        gradient=components.hero_gradient(),
+        padding=_pad_sym(32, 26),
+        border_radius=18,
+    )
+
+    controls: list[ft.Control] = [header]
+    if transition_cue:
+        controls.append(
+            components.HealthVerdictBanner(Verdict.HEALTHY, headline="Setup complete", detail=TRANSITION_CUE)
+        )
+    # #2a: schedule FIRST (the operational heart + where a MISSING fix-CTA lands the Firefighter),
+    # then delivery, then folders/district (rarely changed post-setup). Wizard step order is unchanged.
+    controls += [schedule_card, sftp_card, folders_card]
+    root.controls = controls
+    page.update()
+
+
+def _build_settings_folders(  # pragma: no cover - Flet view glue
+    page: ft.Page, cfg: AppConfig, *, reconcile: Callable[[], bool]
+) -> ft.Control:
+    """The Settings folders/district card with the ONE reconciling Save (D8).
+
+    Saving persists the folders + district, then calls the shared ``reconcile`` (which re-registers
+    the task when a task-baked field changed AND a schedule is registered — the SAME reconcile the
+    SFTP Save uses, so the nightly action can never go stale). The Save is still structurally gated
+    on valid folders.
+    """
     state = {"input": cfg.input_dir, "output": cfg.output_dir, "sis": cfg.sis_type}
 
-    # The security Save-gate (RC3): structurally disabled until both paths validate.
-    # `disabled_bgcolor=color_border` carries the disabled fill — the factory
-    # reproduces the exact prior styling (DEFAULT primary / DISABLED border, radius
-    # 12, size-14 W_700, CHECK_CIRCLE icon); `_refresh_gate` re-toggles `disabled`.
     save_btn = components.primary_button(
-        "Save setup",
-        lambda _e: _save(),
+        "Save settings",
+        None,  # wired below
         disabled_bgcolor=tokens.color_border,
         icon=ft.Icons.CHECK_CIRCLE_ROUNDED,
         radius=12,
@@ -112,15 +585,14 @@ def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view gl
     saved_note = ft.Text("", size=13, weight=ft.FontWeight.W_600)
 
     def _refresh_gate() -> None:
-        s = setup_state(state["input"], state["output"], state["sis"])
-        save_btn.disabled = not s.can_save
+        save_btn.disabled = not setup_state(state["input"], state["output"], state["sis"]).can_save
 
-    def _on_input_change(path: str, _result: ValidationResult) -> None:
+    def _on_input_change(path: str, _r: ValidationResult) -> None:
         state["input"] = path
         _refresh_gate()
         page.update()
 
-    def _on_output_change(path: str, _result: ValidationResult) -> None:
+    def _on_output_change(path: str, _r: ValidationResult) -> None:
         state["output"] = path
         _refresh_gate()
         page.update()
@@ -130,21 +602,23 @@ def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view gl
         _refresh_gate()
         page.update()
 
-    def _save() -> None:
-        # Structural guard: can_save MUST hold here (button is disabled otherwise),
-        # but re-check so an invalid path can never reach AppConfig.save().
-        s = setup_state(state["input"], state["output"], state["sis"])
-        if not s.can_save:
-            return
+    def _save(_e: ft.ControlEvent | None = None) -> None:
+        if not setup_state(state["input"], state["output"], state["sis"]).can_save:
+            return  # structural gate (matches the disabled button)
         cfg.input_dir = state["input"]
         cfg.output_dir = state["output"]
         cfg.sis_type = state["sis"]
         cfg.save()
-        saved_note.value = (
-            "Saved — DistrictSync is set up." if cfg.is_complete() else "Saved, but some settings still need attention."
-        )
-        saved_note.color = tokens.color_status_healthy if cfg.is_complete() else tokens.color_status_failed
+        # The shared reconcile re-registers the task when a task-baked field changed; the schedule
+        # section surfaces its own in-flight + confirmed/failed states when it fires.
+        if reconcile():
+            saved_note.value = "Saved — updating the nightly schedule to match…"
+        else:
+            saved_note.value = "Saved."
+        saved_note.color = tokens.color_status_healthy
         page.update()
+
+    save_btn.on_click = _save
 
     input_field = PickerField(
         page=page,
@@ -164,62 +638,48 @@ def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view gl
         dialog_title="Select the output folder",
         initial_value=cfg.output_dir,
     )
-
     district_dropdown = ft.Dropdown(
         label="District",
+        hint_text="Choose your district",
         value=cfg.sis_type or None,
         options=_district_options(),
-        # ft.Dropdown's value-change event on flet 0.85.3 is on_select — there is NO
-        # on_change (that raises TypeError at construction). See FLET_1.0_CONVENTIONS.md.
         on_select=_on_district_change,
         border_color=tokens.color_border,
     )
 
-    _refresh_gate()  # paint the gate for the saved (possibly already-valid) state
+    _refresh_gate()
 
-    header = components.card(
-        content=ft.Column(
-            spacing=4,
-            controls=[
-                ft.Text("Setup", size=26, weight=ft.FontWeight.W_800, color=tokens.color_on_action),
-                ft.Text(
-                    "Pick your folders and district, then Save. We'll remember it.",
-                    size=14,
-                    color=ft.Colors.with_opacity(0.85, tokens.color_on_action),
-                ),
-            ],
-        ),
-        gradient=components.hero_gradient(),
-        padding=_pad_sym(32, 26),
-        border_radius=18,
-    )
-
-    form_card = components.card(
+    return components.card(
         content=ft.Column(
             spacing=26,
             controls=[
+                ft.Text("Folders & district", size=20, weight=ft.FontWeight.W_800, color=tokens.color_text),
                 input_field,
                 output_field,
                 district_dropdown,
                 ft.Row(spacing=16, controls=[save_btn, saved_note]),
             ],
-        ),
+        )
     )
 
-    schedule_card = _build_schedule_section(page, cfg)
-    sftp_card = _build_sftp_section(page, cfg)
 
-    return ft.Column(spacing=22, controls=[header, form_card, schedule_card, sftp_card])
+# --------------------------------------------------------------------------- #
+# Schedule section — reused verbatim by the wizard Schedule step AND Settings.  #
+# --------------------------------------------------------------------------- #
+def _build_schedule_section(  # pragma: no cover - Flet view glue
+    page: ft.Page,
+    cfg: AppConfig,
+    *,
+    on_status: Callable[[ScheduleStatus], None] | None = None,
+    on_registered: Callable[[], None] | None = None,
+) -> tuple[ft.Control, _ScheduleHandle]:
+    """The scheduler section — run time + (Windows) run-as password → register (Slice 5/6).
 
-
-def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma: no cover - Flet view glue
-    """The scheduler section — run time + (Windows) run-as password → register.
-
-    Calls ``register_task``/``register_cron`` UNCHANGED; a failure is mapped by
-    the relocated ``classify_schedule_error`` (Windows) + ``is_elevated``. The
-    password is a handler-LOCAL variable whose ONLY sink is
-    ``register_task(run_as_password=...)`` (I1/I3): never ``cfg``, never a log,
-    never a message, never stashed after the handler returns.
+    Returns the card AND a ``_ScheduleHandle`` so Settings mode can drive re-registration on a
+    task-arg change. ``on_status`` (when given) is called with each schedule read-back so the
+    wizard can track live-ness for its resume + finish copy. ``on_registered`` (when given) fires
+    after a CONFIRMED successful register so Settings can refresh its task-args snapshot (N1). The
+    register/unregister flow is UNCHANGED from Slice 5/6 (off-thread, elevation-aware, save-after-success).
     """
     is_windows = sys.platform == "win32"
 
@@ -231,8 +691,41 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
         helper="When DistrictSync runs each day — pick a time after your SIS extract lands.",
     )
 
-    # Result surface — swapped to a verdict banner / error card on register.
     result_slot = ft.Column(spacing=0, controls=[])
+    readout_slot = ft.Column(spacing=0, controls=[])
+
+    def _kick_readout_probe() -> None:
+        """Fetch the real schedule OFF the UI thread and render the tri-state readout (Windows only)."""
+        if not is_windows:
+            return
+
+        def _work() -> None:  # runs OFF the UI thread
+            from src.ui_flet.schedule_probe import probe_schedule
+
+            status = probe_schedule(
+                cfg.schedule_task_name,
+                hint_registered=cfg.schedule_registered,
+                latest_record_ts=None,
+                surface="setup",  # de-circularize the MISSING copy → "add one below" (finding #3)
+            )
+
+            async def _apply() -> None:
+                readout_slot.controls = [_schedule_readout_line(status)]
+                if on_status is not None:
+                    on_status(status)
+                page.update()
+
+            page.run_task(_apply)
+
+        with contextlib.suppress(Exception):
+            page.run_thread(_work)
+
+    def _refresh_readout() -> None:
+        if not is_windows:
+            return
+        readout_slot.controls = [ft.Text("Checking the schedule…", size=13, color=tokens.color_muted)]
+        page.update()
+        _kick_readout_probe()
 
     section_controls: list[ft.Control] = [
         ft.Text("Daily schedule", size=20, weight=ft.FontWeight.W_800, color=tokens.color_text),
@@ -241,19 +734,18 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
             size=14,
             color=tokens.color_muted,
         ),
-        run_time_field,
     ]
+    if is_windows:
+        readout_slot.controls = [ft.Text("Checking the schedule…", size=13, color=tokens.color_muted)]
+        section_controls.append(readout_slot)
+    section_controls.append(run_time_field)
 
     password_field: ft.TextField | None = None
     if is_windows:
         from src.scheduler.windows import current_run_as_user
 
         section_controls.append(
-            ft.Text(
-                f"This task will run as: {current_run_as_user()}",
-                size=13,
-                color=tokens.color_muted,
-            )
+            ft.Text(f"This task will run as: {current_run_as_user()}", size=13, color=tokens.color_muted)
         )
         password_field = ft.TextField(
             label="Windows account password",
@@ -276,21 +768,26 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
             )
         )
 
-    def _register(_e: ft.ControlEvent) -> None:
-        # Read the password fresh at register-time; local var, never stashed (I3).
-        password = password_field.value if password_field is not None else None
+    def _elevated_now() -> bool:
+        if not is_windows:
+            return False
+        from src.scheduler.windows import is_elevated
 
+        return is_elevated()
+
+    def _register(_e: ft.ControlEvent | None = None) -> None:
+        if not can_register_schedule(cfg.is_complete(), run_time_field.value or ""):
+            return
+
+        # I1/I3 (see module docstring — password contract): the Windows account password is a
+        # handler-LOCAL var whose ONLY sink is register_task (DPAPI elevation handshake / child-env);
+        # never cfg, never argv, never a log/message, never stashed past this handler.
+        password = password_field.value if password_field is not None else None
         run_time = (run_time_field.value or "").strip()
 
-        # [gate #5] validate_run_time RAISES ValueError on bad input (and returns
-        # a (hour, minute) tuple we discard) — call for the raise-gate, then pass
-        # the ORIGINAL run_time string downstream (register_task re-validates and
-        # needs the raw string for PowerShell ParseExact).
         try:
             validate_run_time(run_time)
         except ValueError:
-            # Privacy/voice: name the fix, never echo the raw ValueError (which repeats
-            # the admin's own input) — the dropdown-free HH:MM hint is all they need.
             result_slot.controls = [
                 components.ErrorCard(
                     "That run time isn't valid",
@@ -300,116 +797,195 @@ def _build_schedule_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
             page.update()
             return
 
-        cfg.schedule_time = run_time
-        cfg.save()
-
         exe_path = Path(sys.executable)
+        transient = is_transient_location(str(exe_path))
+        uac_path = is_windows and bool(password) and not _elevated_now()
 
-        if is_windows:
-            from src.scheduler.windows import is_elevated, register_task
+        def _on_register_success(headline: str, detail: str, *, verdict: Verdict = Verdict.HEALTHY) -> None:
+            cfg.schedule_time = run_time
+            cfg.schedule_registered = True
+            cfg.save()
+            if on_registered is not None:
+                on_registered()  # N1: refresh Settings' task-args snapshot after a confirmed register
+            local_verdict, local_detail = verdict, detail
+            if transient:
+                local_verdict = Verdict.WARNING
+                local_detail = f"{detail} {_TRANSIENT_LOCATION_WARNING}"
+            result_slot.controls = [
+                components.HealthVerdictBanner(local_verdict, headline=headline, detail=local_detail)
+            ]
 
-            ok, msg = register_task(
-                task_name=cfg.schedule_task_name,
-                exe_path=exe_path,
-                sis_type=cfg.sis_type,
-                input_dir=Path(cfg.input_dir),
-                output_dir=Path(cfg.output_dir),
-                run_time=cfg.schedule_time,
-                sftp=cfg.sftp_enabled,
-                run_as_user=None,
-                run_as_password=(password or None),
-            )
-            if ok and password:
-                from src.scheduler.windows import current_run_as_user
+        async def _apply_result(ok: bool, msg: str) -> None:
+            register_btn.disabled = not can_register_schedule(cfg.is_complete(), run_time_field.value or "")
+            unregister_btn.disabled = False
+            if is_windows:
+                if ok and password:
+                    from src.scheduler.windows import current_run_as_user
 
-                cfg.schedule_registered = True
-                cfg.save()
-                result_slot.controls = [
-                    components.HealthVerdictBanner(
-                        Verdict.HEALTHY,
-                        headline="Nightly sync scheduled",
-                        detail=(
-                            f"Runs as {current_run_as_user()}, whether or not you're logged in, "
-                            f"daily at {cfg.schedule_time}."
-                        ),
+                    _on_register_success(
+                        "Nightly sync scheduled",
+                        f"Runs as {current_run_as_user()}, whether or not you're logged in, daily at {run_time}.",
                     )
-                ]
+                elif ok:
+                    _on_register_success(
+                        "Scheduled — logged-on only",
+                        "It will only run while you're logged in. Re-register with your "
+                        "Windows password for unattended operation across reboots.",
+                        verdict=Verdict.WARNING,
+                    )
+                elif msg == _WORKER_ERROR_REGISTER:
+                    result_slot.controls = [components.ErrorCard("Couldn't register the schedule", msg)]
+                elif msg in (windows._MSG_ELEVATION_NO_RESULT, windows._MSG_ELEVATION_TIMEOUT):
+                    result_slot.controls = [
+                        components.ErrorCard(
+                            "Couldn't confirm the schedule", classify_schedule_error(msg, _elevated_now())
+                        )
+                    ]
+                else:
+                    result_slot.controls = [
+                        components.ErrorCard(
+                            "Couldn't register the schedule", classify_schedule_error(msg, _elevated_now())
+                        )
+                    ]
             elif ok:
-                cfg.schedule_registered = True
-                cfg.save()
-                result_slot.controls = [
-                    components.HealthVerdictBanner(
-                        Verdict.WARNING,
-                        headline="Scheduled — logged-on only",
-                        detail=(
-                            "It will only run while you're logged in. Re-register with your "
-                            "Windows password for unattended operation across reboots."
-                        ),
-                    )
-                ]
+                _on_register_success("Nightly sync scheduled", f"Runs daily at {run_time}.")
             else:
-                elevated = is_elevated()
+                detail = _WORKER_ERROR_REGISTER if msg == _WORKER_ERROR_REGISTER else msg
+                result_slot.controls = [components.ErrorCard("Couldn't create the schedule", detail)]
+            page.update()
+            _refresh_readout()
+
+        def _work() -> None:  # runs OFF the UI thread (the register call can block on the UAC prompt)
+            try:
+                if is_windows:
+                    from src.scheduler.windows import register_task
+
+                    ok, msg = register_task(
+                        task_name=cfg.schedule_task_name,
+                        exe_path=exe_path,
+                        sis_type=cfg.sis_type,
+                        input_dir=Path(cfg.input_dir),
+                        output_dir=Path(cfg.output_dir),
+                        run_time=run_time,
+                        sftp=cfg.sftp_enabled,
+                        run_as_user=None,
+                        run_as_password=(password or None),
+                    )
+                else:
+                    from src.scheduler.linux import register_cron
+
+                    ok, msg = register_cron(
+                        exe_path,
+                        cfg.sis_type,
+                        Path(cfg.input_dir),
+                        Path(cfg.output_dir),
+                        run_time,
+                        sftp=cfg.sftp_enabled,
+                    )
+            except Exception:  # noqa: BLE001 - a worker crash must not strand the spinner
+                ok, msg = False, _WORKER_ERROR_REGISTER
+            page.run_task(_apply_result, ok, msg)
+
+        register_btn.disabled = True
+        unregister_btn.disabled = True
+        result_slot.controls = [
+            _inflight_row(
+                "Asking Windows for permission and registering the schedule…"
+                if uac_path
+                else "Registering the schedule…"
+            )
+        ]
+        page.update()
+        page.run_thread(_work)
+
+    def _unregister(_e: ft.ControlEvent | None = None) -> None:
+        async def _apply_unregister(ok: bool, msg: str) -> None:
+            register_btn.disabled = not can_register_schedule(cfg.is_complete(), run_time_field.value or "")
+            unregister_btn.disabled = False
+            if not ok and msg == _WORKER_ERROR_UNREGISTER:
+                result_slot.controls = [components.ErrorCard("Couldn't remove the schedule", msg)]
+            elif not ok and msg == windows._MSG_ELEVATION_REMOVE_UNCONFIRMED:
                 result_slot.controls = [
                     components.ErrorCard(
-                        "Couldn't register the schedule",
-                        classify_schedule_error(msg, elevated),
+                        "Couldn't confirm the schedule was removed",
+                        "We couldn't confirm the nightly schedule was removed — check the schedule "
+                        "status below, then try again if it's still there.",
                     )
                 ]
-        else:
-            from src.scheduler.linux import register_cron
-
-            ok, msg = register_cron(
-                exe_path,
-                cfg.sis_type,
-                Path(cfg.input_dir),
-                Path(cfg.output_dir),
-                cfg.schedule_time,
-                sftp=cfg.sftp_enabled,
-            )
-            if ok:
-                cfg.schedule_registered = True
-                cfg.save()
+            elif not ok and msg in (windows._MSG_UAC_DECLINED, windows._MSG_ELEVATION_LAUNCH_FAILED):
                 result_slot.controls = [
-                    components.HealthVerdictBanner(
-                        Verdict.HEALTHY,
-                        headline="Nightly sync scheduled",
-                        detail=f"Runs daily at {cfg.schedule_time}.",
-                    )
+                    components.ErrorCard("Schedule not removed", classify_schedule_error(msg, _elevated_now()))
                 ]
             else:
-                result_slot.controls = [
-                    components.ErrorCard("Couldn't create the schedule", msg),
-                ]
+                outcome = interpret_unregister(ok, msg)
+                if outcome.success_shaped:
+                    cfg.schedule_registered = False
+                    cfg.save()
+                    result_slot.controls = [
+                        components.HealthVerdictBanner(
+                            Verdict.HEALTHY, headline=outcome.headline, detail=outcome.detail
+                        )
+                    ]
+                else:
+                    result_slot.controls = [components.ErrorCard(outcome.headline, outcome.detail)]
+            page.update()
+            _refresh_readout()
 
+        def _work() -> None:  # runs OFF the UI thread (an elevated delete can block on UAC)
+            try:
+                if is_windows:
+                    from src.scheduler.windows import delete_task, delete_task_elevated
+
+                    ok, msg = delete_task(cfg.schedule_task_name)
+                    if not ok and "access is denied" in (msg or "").lower() and not _elevated_now():
+                        ok, msg = delete_task_elevated(cfg.schedule_task_name)
+                else:
+                    from src.scheduler.linux import delete_cron
+
+                    ok, msg = delete_cron()
+            except Exception:  # noqa: BLE001 - a worker crash must not strand the spinner
+                ok, msg = False, _WORKER_ERROR_UNREGISTER
+            page.run_task(_apply_unregister, ok, msg)
+
+        register_btn.disabled = True
+        unregister_btn.disabled = True
+        result_slot.controls = [_inflight_row("Removing the schedule…")]
         page.update()
+        page.run_thread(_work)
 
     register_btn = components.primary_button(
         "Register schedule",
         _register,
-        disabled=not (cfg.is_complete() and bool((run_time_field.value or "").strip())),
+        disabled=not can_register_schedule(cfg.is_complete(), run_time_field.value or ""),
         icon=ft.Icons.SCHEDULE_ROUNDED,
+    )
+    unregister_btn = components.secondary_button(
+        "Unregister schedule",
+        _unregister,
+        icon=ft.Icons.EVENT_BUSY_ROUNDED,
     )
 
     def _refresh_register_gate(_e: ft.ControlEvent | None = None) -> None:
-        register_btn.disabled = not (cfg.is_complete() and bool((run_time_field.value or "").strip()))
+        register_btn.disabled = not can_register_schedule(cfg.is_complete(), run_time_field.value or "")
         page.update()
 
     run_time_field.on_change = _refresh_register_gate
+    run_time_field.on_submit = _register
+    if password_field is not None:
+        password_field.on_submit = _register
 
-    section_controls.append(register_btn)
+    section_controls.append(ft.Row(spacing=16, controls=[register_btn, unregister_btn]))
     section_controls.append(result_slot)
 
-    return components.card(content=ft.Column(spacing=18, controls=section_controls))
+    _kick_readout_probe()
+
+    card = components.card(content=ft.Column(spacing=18, controls=section_controls))
+    handle = _ScheduleHandle(trigger_register=_register, run_time_value=lambda: run_time_field.value or "")
+    return card, handle
 
 
 def _run_as_account() -> str:
-    """The account whose keyring must hold the SFTP credential (defensive).
-
-    The nightly scheduled task runs as this account, so it is the account whose
-    OS credential store must be readable. ``current_run_as_user`` can raise on a
-    non-Windows host / unusual environment — fall back to a plain label rather
-    than crash the SFTP section (mirrors the Streamlit page's guarded lookup).
-    """
+    """The account whose keyring must hold the SFTP credential (defensive)."""
     try:
         from src.scheduler.windows import current_run_as_user
 
@@ -418,16 +994,24 @@ def _run_as_account() -> str:
         return "this account"
 
 
-def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma: no cover - Flet view glue
-    """The SFTP section — store SpacesEDU credentials in the OS keyring + test.
+# --------------------------------------------------------------------------- #
+# SFTP section — reused verbatim by the wizard Delivery step AND Settings.      #
+# --------------------------------------------------------------------------- #
+def _build_sftp_section(  # pragma: no cover - Flet view glue
+    page: ft.Page,
+    cfg: AppConfig,
+    *,
+    on_delivery: Callable[[DeliveryFact, str, str], None] | None = None,
+    on_saved: Callable[[], bool] | None = None,
+) -> ft.Control:
+    """The SFTP section — store SpacesEDU credentials in the OS keyring + test (Slice 7, D6).
 
-    Calls ``SFTPUploader`` UNCHANGED. The password is a handler-LOCAL variable
-    whose ONLY sink is ``SFTPUploader.store_password`` (OS keyring) — never
-    ``cfg``, never a log, never a message (I4). The host is restricted to
-    ``ALLOWED_SFTP_HOSTS`` structurally (the dropdown IS the allowlist) AND at the
-    boundary (``__init__``'s ``validate_sftp_host`` — belt-and-suspenders, I5).
-    "Test connection" is a blocking ~30s network call → marshalled OFF the UI
-    thread via ``page.run_thread`` / ``page.run_task`` (I6).
+    ``on_delivery`` (when given) reports the Delivery outcome to the wizard: a successful Test →
+    ``TESTED_OK``, a failed Test → ``TESTED_FAILED``, a successful Save → ``STORED_CRED_PRESENT``
+    (with the host/user). ``on_saved`` (when given) is the Settings reconcile — after a successful
+    Save flips/confirms ``sftp_enabled``, it re-registers a live task so the nightly action gains
+    (or keeps) ``--sftp`` (the F1 gap: enabling delivery post-registration must reconcile). The
+    side-effect-free Test + Save-only keyring writes are UNCHANGED.
     """
     host_dropdown = ft.Dropdown(
         label="SFTP host (SpacesEDU)",
@@ -436,23 +1020,12 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
         border_color=tokens.color_border,
     )
     username_field = ft.TextField(
-        label="Username",
-        value=cfg.sftp_username or "",
-        width=340,
-        border_color=tokens.color_border,
+        label="Username", value=cfg.sftp_username or "", width=340, border_color=tokens.color_border
     )
     remote_field = ft.TextField(
-        label="Remote path",
-        value=cfg.sftp_remote_path or "/files",
-        width=340,
-        border_color=tokens.color_border,
+        label="Remote path", value=cfg.sftp_remote_path or "/files", width=340, border_color=tokens.color_border
     )
-    port_field = ft.TextField(
-        label="Port",
-        value=str(cfg.sftp_port or 22),
-        width=140,
-        border_color=tokens.color_border,
-    )
+    port_field = ft.TextField(label="Port", value=str(cfg.sftp_port or 22), width=140, border_color=tokens.color_border)
     password_field = ft.TextField(
         label="Password",
         password=True,
@@ -462,10 +1035,7 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
         helper="Leave blank to keep the existing stored credential.",
     )
 
-    # Result surface — swapped to a verdict banner / error card on save or test.
     result_slot = ft.Column(spacing=0, controls=[])
-
-    # Spinner shown only while a Test-connection is in flight (marshalled).
     test_spinner = ft.ProgressRing(width=18, height=18, visible=False)
 
     def _current_fields() -> tuple[str, str, str, str]:
@@ -476,18 +1046,24 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
             (port_field.value or "").strip(),
         )
 
-    def _save(_e: ft.ControlEvent) -> None:
-        # Read the credential fresh; local var, sole sink is store_password (I4).
+    def _save(_e: ft.ControlEvent | None = None) -> None:
+        # I4 (see module docstring — password contract): the SFTP credential is a handler-LOCAL var
+        # whose ONLY sink on Save is store_password (OS keyring); never cfg, never a log/message.
         password = password_field.value or ""
         host, username, remote_path, port = _current_fields()
 
-        # [I5] Belt-and-suspenders: the dropdown already restricts host to the
-        # allowlist, but SFTPUploader.__init__ re-validates and raises ValueError.
+        if not can_save_sftp(
+            host=host,
+            username=username,
+            remote_path=remote_path,
+            password=password,
+            already_configured=cfg.sftp_is_configured(),
+        ):
+            return
+
         try:
             uploader = SFTPUploader(host, int(port or 22), username, remote_path)
         except ValueError:
-            # The dropdown already constrains the host to the allowlist; name the fix,
-            # never echo the raw ValueError (voice + no input echo).
             result_slot.controls = [
                 components.ErrorCard(
                     "That SFTP host isn't allowed",
@@ -497,9 +1073,6 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
             page.update()
             return
 
-        # [gate #3] store_password re-raises on keyring failure — wrap it and surface a
-        # calm, FIXED category card. The raw keyring exception (which can carry OS/backend
-        # detail) NEVER reaches the admin — category prose only, no str(e).
         if password:
             try:
                 uploader.store_password(password)
@@ -514,8 +1087,6 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
                 page.update()
                 return
 
-        # Keyring round-trip: verify the credential is readable by this account
-        # (the scheduled task runs as the same account — mirrors Streamlit Step 4).
         read_back = uploader.get_stored_password()
         if not read_back:
             result_slot.controls = [
@@ -531,7 +1102,6 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
             page.update()
             return
 
-        # Persist NON-sensitive settings ONLY. [I4] the password is never here.
         cfg.sftp_enabled = True
         cfg.sftp_host = host
         cfg.sftp_port = int(port or 22)
@@ -539,13 +1109,18 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
         cfg.sftp_remote_path = remote_path
         cfg.save()
 
+        detail = f"SFTP credentials stored and readable by {_run_as_account()}."
+        # F1 reconcile (Settings only): enabling/confirming delivery must add --sftp to an
+        # already-registered nightly task, or tonight builds but never delivers. Routed through the
+        # SAME task-args reconcile the folders Save uses; a blank-password re-register keeps the
+        # existing visible-WARNING (logged-on-only) behaviour.
+        if on_saved is not None and on_saved():
+            detail += " Updating the nightly schedule to deliver too…"
         result_slot.controls = [
-            components.HealthVerdictBanner(
-                Verdict.HEALTHY,
-                headline="SFTP credentials stored",
-                detail=f"SFTP credentials stored and readable by {_run_as_account()}.",
-            )
+            components.HealthVerdictBanner(Verdict.HEALTHY, headline="SFTP credentials stored", detail=detail)
         ]
+        if on_delivery is not None:
+            on_delivery(DeliveryFact.STORED_CRED_PRESENT, host, username)
         page.update()
 
     save_btn = components.primary_button(
@@ -558,34 +1133,35 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
 
     def _refresh_save_gate(_e: ft.ControlEvent | None = None) -> None:
         host, username, remote_path, _port = _current_fields()
-        has_required = bool(host and username and remote_path)
-        # First-time (no stored credential yet) also needs a password; on re-open
-        # a stored credential exists so the password may be left blank to keep it.
-        first_time = not cfg.sftp_is_configured()
-        has_password = bool(password_field.value)
-        save_btn.disabled = not (has_required and (has_password or not first_time))
+        save_btn.disabled = not can_save_sftp(
+            host=host,
+            username=username,
+            remote_path=remote_path,
+            password=(password_field.value or ""),
+            already_configured=cfg.sftp_is_configured(),
+        )
         page.update()
 
-    host_dropdown.on_select = _refresh_save_gate  # Dropdown value-change is on_select (0.85.3)
+    host_dropdown.on_select = _refresh_save_gate
     username_field.on_change = _refresh_save_gate
     remote_field.on_change = _refresh_save_gate
     port_field.on_change = _refresh_save_gate
     password_field.on_change = _refresh_save_gate
+    username_field.on_submit = _save
+    remote_field.on_submit = _save
+    port_field.on_submit = _save
+    password_field.on_submit = _save
 
-    # ------------------------------------------------------------------ #
-    # Test connection — marshalled OFF the UI thread (I6).                 #
-    # ------------------------------------------------------------------ #
     def _test(_e: ft.ControlEvent) -> None:
-        # Read the credential fresh; local var, sole sink is store_password (I4).
+        # I4/D6 (see module docstring — password contract): the typed password rides ONLY the
+        # transient test_connection(password_override=...) → client.connect(); never the keyring
+        # (that is _save's job alone), never a log, never the returned message. A failed Test can
+        # therefore never clobber a working stored credential.
         password = password_field.value or ""
         host, username, remote_path, port = _current_fields()
 
-        # Construction + optional store happen BEFORE the thread so a ValueError
-        # (out-of-allowlist) or keyring failure surfaces calmly, not on the worker.
         try:
             uploader = SFTPUploader(host, int(port or 22), username, remote_path)
-            if password:
-                uploader.store_password(password)
         except ValueError:
             result_slot.controls = [
                 components.ErrorCard(
@@ -595,61 +1171,44 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
             ]
             page.update()
             return
-        except Exception:  # noqa: BLE001 - a keyring failure before the network call
-            result_slot.controls = [
-                components.ErrorCard(
-                    "Couldn't save the SFTP credential",
-                    "Couldn't save the SFTP credential on this account. Try again, or run "
-                    "DistrictSync as the account the nightly task uses.",
-                )
-            ]
-            page.update()
-            return
 
-        # Disable the button + show the spinner; the ~30s timeout bounds a hung
-        # connection so the window never freezes (degrade-gracefully guarantee).
+        provenance = "typed" if password else "stored"
+        unsaved_edits = sftp_form_differs_from_saved(
+            cfg, host=host, username=username, remote_path=remote_path, port=port
+        )
+
         test_btn.disabled = True
         test_spinner.visible = True
         result_slot.controls = []
         page.update()
 
         async def _show_result(ok: bool, msg: str) -> None:
-            # UI mutation ONLY inside this coroutine the loop owns — never from
-            # the worker thread (FLET_1.0_CONVENTIONS §Worker-thread).
-            #
-            # [gate #1] PRIVACY: `msg` on the failure path is the CORE's raw
-            # `test_connection` return (a raw paramiko/socket string that can carry
-            # host/socket/path detail). It is mapped to a bounded category reason
-            # via `friendly_sftp_reason` BEFORE it reaches the banner — the raw
-            # string NEVER renders. The success path shows a fixed reassurance.
             test_btn.disabled = False
             test_spinner.visible = False
             verdict = Verdict.HEALTHY if ok else Verdict.FAILED
-            headline = "SFTP connection succeeded" if ok else "SFTP connection failed"
-            detail = "Your SFTP credentials work — the nightly sync can deliver." if ok else friendly_sftp_reason(msg)
+            if ok:
+                headline, detail = sftp_test_copy(
+                    provenance=provenance, unsaved_edits=unsaved_edits, host=host, username=username
+                )
+            else:
+                headline, detail = "SFTP connection failed", friendly_sftp_reason(msg)
             result_slot.controls = [components.HealthVerdictBanner(verdict, headline=headline, detail=detail)]
+            if on_delivery is not None:
+                on_delivery(DeliveryFact.TESTED_OK if ok else DeliveryFact.TESTED_FAILED, host, username)
             page.update()
 
         def _work() -> None:  # runs OFF the UI thread
-            # test_connection returns (bool, str) and does NOT raise SystemExit
-            # (unlike run_pipeline) — a plain except Exception suffices here. Any raw
-            # exception is sanitized to a category reason in `_show_result` (never
-            # rendered raw), so passing str(exc) here is safe — it never reaches a card.
             try:
-                ok, msg = uploader.test_connection()
+                ok, msg = uploader.test_connection(password_override=password)
             except Exception as exc:  # noqa: BLE001 - surface any failure via the banner
                 ok, msg = False, str(exc)
             page.run_task(_show_result, ok, msg)
 
         page.run_thread(_work)
 
-    test_btn = components.secondary_button(
-        "Test connection",
-        _test,
-        icon=ft.Icons.WIFI_TETHERING_ROUNDED,
-    )
+    test_btn = components.secondary_button("Test connection", _test, icon=ft.Icons.WIFI_TETHERING_ROUNDED)
 
-    _refresh_save_gate()  # paint the gate for the saved (possibly configured) state
+    _refresh_save_gate()
 
     section_controls: list[ft.Control] = [
         ft.Text("SFTP delivery (SpacesEDU)", size=20, weight=ft.FontWeight.W_800, color=tokens.color_text),
@@ -664,9 +1223,7 @@ def _build_sftp_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma:
         remote_field,
         password_field,
         ft.Row(
-            spacing=16,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=[save_btn, test_btn, test_spinner],
+            spacing=16, vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[save_btn, test_btn, test_spinner]
         ),
         result_slot,
     ]

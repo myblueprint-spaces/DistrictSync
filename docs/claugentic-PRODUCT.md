@@ -2,7 +2,9 @@
 # DistrictSync — Product spec (narrative)
 
 > The durable, human-readable product spec for the DistrictSync desktop cockpit (the Flet 1.0
-> rebuild, IA-1..IA-9). It describes what LANDED, not what's aspirational. It is distinct from any
+> rebuild, IA-1..IA-9). The per-surface sections describe what LANDED; the personas, the three
+> journeys, the trust bar, and the resolved 0029 direction describe the durable product truth the
+> cockpit serves and the approved direction it is evolving toward. It is distinct from any
 > machine-readable acceptance-criteria spec produced by `/product` — this is the prose the whole
 > rebuild has been serving, kept honest so the next agent inherits the intent, not just the code.
 
@@ -18,6 +20,23 @@ is absolute: the admin is **never** shown a machine identifier, a filesystem pat
 (`sd48myedbc`), a raw ISO timestamp, a raw exception string, or a stack trace. Every surface speaks in
 plain, calm, human language.
 
+### The three hats — one admin, three moments
+
+That one admin wears **three hats at three different moments**, and the cockpit has to serve all
+three. (They are the same person, not three user types — but the job, the mood, and the stakes are
+different each time, so the surfaces are reviewed against all three.)
+
+- **The Installer (first run, ~once).** Job: *"Get this configured and prove tonight's sync will
+  actually reach SpacesEDU, then walk away."* Wants a linear, verifiable path — folders → district →
+  schedule → delivery → a checked "you're done, here's what happens tonight" — and cares about
+  certainty, not features.
+- **The Watcher (steady state, ~95% of the product's life).** Job: *"Tell me in one glance that last
+  night's roster reached SpacesEDU — and if not, what to do."* Glances in occasionally, or after an
+  email. Wants Home to be a trustworthy verdict and Run History to be a clean, district-scoped ledger.
+- **The Firefighter (incident, rare + high-stress).** Job: *"Something's wrong — SFTP failed, the
+  roster dropped, the schedule didn't fire — show me what, and the shortest fix."* Wants honest
+  fault-naming and a routed fix path that lands where it says and keeps "you are here" truthful.
+
 ## The job-to-be-done
 
 > *"When my district's roster needs to reach SpacesEDU, I want the nightly sync to just work — and
@@ -29,6 +48,21 @@ A **verdict-first cockpit**. Open the window and immediately know the one thing 
 roster syncing?* The answer is a single health verdict (HEALTHY / WARNING / FAILED) with a
 plain-language headline, before any detail or numbers. The nightly sync runs on its own; setup is a
 calm, one-scroll flow; nothing ever dead-ends in jargon.
+
+## The trust bar
+
+DistrictSync is a **trust instrument**, not a feature console. Its entire value is the admin
+*believing* the nightly sync works without watching it — and trust instruments die on unverified
+assertions. So one rule governs every surface:
+
+> **Never assert a state you didn't check. Every success names WHAT it checked and WHEN** — "we tested
+> the connection to <host> as <user> just now and it worked", "the task is registered — next run
+> tonight at HH:MM" — never a promise about the future, never a self-reported boolean standing in for
+> a real check.
+
+When a fact can't be checked right now (a schedule the OS won't report, a credential stored under
+another account), the honest answer is *"we couldn't confirm this right now"* — never a green
+borrowed from stale config.
 
 ## The design language
 
@@ -76,15 +110,24 @@ States:
 ### Convert — ad-hoc, on-demand conversion
 
 The admin picks a GDE input folder and runs a conversion on a background worker thread (the window
-never freezes). The result is a verdict + entity tiles + a collapsible quality report. Anomalies
-(>20% drops) gate delivery behind an explicit acknowledgment; a single-flight guard prevents
-double-runs; SFTP delivery is pre-flighted.
+never freezes). The result is a verdict + entity tiles + a collapsible quality report. Before running,
+the form names **where files will be written**; a conversion refuses to run without an **explicit
+district** (no alphabetical fallback) and a **set output folder** (no silent write into the input
+folder). Anomalies (>20% drops) gate delivery behind an explicit acknowledgment; a single-flight guard
+prevents double-runs; SFTP delivery is pre-flighted.
 
 States:
 - **Empty** — no folder picked yet.
+- **Output known (pre-run)** — a read-only caption names the resolved output folder ("Files will be
+  written to … — change it in Settings"). No district chosen → a "Choose your district" placeholder and
+  Convert disabled; no output folder set → Convert is blocked with a routed "Set your output folder in
+  Settings first" (D9/D10 — no silent fallback into the input folder).
 - **Running** — a spinner while the worker builds the roster.
 - **Needs-ack** — a WARNING that some files look much smaller than usual; the admin reviews before
   delivering.
+- **Output findable (post-run)** — a committed run shows the output folder + an "Open folder" button.
+  The path is app-owned config (never student PII), so it lives at the view layer and never enters the
+  PII-free result model.
 - **Error** — a fixed category card ("The conversion couldn't finish") — the raw exception is
   discarded, the existing files are explicitly unchanged.
 
@@ -101,13 +144,34 @@ States:
 - **Degraded** — history unavailable (log unreadable): a calm WARNING, not red.
 - **Error** — the never-crash `ErrorCard` floor.
 
-### Setup — the one-scroll first-run flow
+### Setup — a first-run wizard that graduates into Settings
 
-A single sectioned scroll: pick the input and output folders, choose the district, set the nightly
-schedule (with the Windows run-as password for unattended operation), and configure SFTP delivery
-(an allowlist host dropdown + credentials stored in the OS keyring, with a credential round-trip
-check and a "Test connection" button). Saves are **structurally gated** — the Save button stays
-disabled until the inputs validate, so an invalid path can never reach the config.
+**First run is a five-step wizard** (D8, as of Slice 8): **Folders → District → Delivery → Schedule →
+an honest checked finish line**. A "Step N of 5" indicator + Back move through it; Enter/Continue
+advances only when the step's own gate is satisfied (the same predicate the disabled button
+enforces); focus moves to the new step's first field. **Schedule and Delivery are skippable** ("Set
+up later") so the first success isn't gated on having a Windows password and a live SFTP credential
+in hand. The wizard **resumes from real state** — the first step that isn't truthfully done, derived
+from validated folders + the live schedule read-back + a keyring check, never a stored cursor — and
+**reconciles** against side effects already performed ("already scheduled — daily at HH:MM" from the
+read-back; "a delivery password is already saved" from the keyring) instead of double-registering. No
+single step marks the install "set up"; **only reaching the finish line does**. The finish copy is
+honest and adaptive — it names what was checked and when (schedule tested / delivery tested just now /
+a deferred step to set up later), never a future guarantee. No district is ever pre-selected (a
+"Choose your district" placeholder; auto-selected only when exactly one config exists).
+
+**Once completed, the same surface becomes Settings** — the flat sectioned scroll (folders + schedule
++ delivery), retitled **"Settings"** (the rail label stays "Setup" for spatial memory), with a
+one-time transition cue. It carries **one reconciling Save**: when a field baked into the scheduled
+task's action (input/output folder, district, SFTP flag, run time) changes and a schedule is live,
+saving re-registers the task through the same register flow so tonight's run uses the new settings.
+The register/unregister and SFTP test/save flows are the same ones the wizard's Schedule/Delivery
+steps use — one register flow, one keyring-write path.
+
+Saves are **structurally gated** — the Save/Continue button stays disabled until the inputs validate,
+so an invalid path can never reach the config. The schedule + delivery sections behave identically in
+both modes (an off-thread schedule read-back readout, an Unregister affordance, save-after-success, a
+side-effect-free "Test connection").
 
 Every error card reads in the same calm, verdict-first voice (as of IA-9):
 - **Validation error** — "That run time isn't valid" / "That SFTP host isn't allowed" with a fixed,
@@ -142,6 +206,58 @@ A static surface: a friendly greeting, a link to the SpacesEDU Help Centre knowl
 selectable support email. Rendered as selectable text (not just clickable) so it works even if
 `launch_url` no-ops. No async, no failure surface.
 
+## The three journeys
+
+The six surfaces above are the map; these are the routes the three hats actually walk, with the
+state each step owes the user.
+
+### Journey 1 — First-run setup (the Installer)
+
+A single guided path that ends in a checked promise: **folders → district → schedule → delivery → a
+verified "you're set up" summary**. Schedule and Delivery are skippable ("set up later") so the first
+success isn't gated on having a Windows password and live SFTP credentials in hand.
+
+- **Empty / start** — one front door (Home's onboarding hero → the wizard), never three competing
+  entrances.
+- **Per step** — a valid/invalid inline state; the step advances only when its own gate is satisfied.
+- **Schedule (async)** — a UAC prompt in flight ("waiting for the Windows permission prompt…"),
+  declined, failed, or timed out — each named; success is confirmed by reading the task back, not
+  assumed.
+- **Delivery (async)** — testing / worked / failed / skipped; a success names the host and user tested.
+- **Finish** — an honest, adaptive summary: what was checked, when, and what happens tonight (or "add
+  a schedule / delivery whenever you're ready" when a step was skipped). Reaching the finish line —
+  not any single step — is the only thing that marks the install "set up".
+
+### Journey 2 — Daily trust check (the Watcher)
+
+Open → read one verdict → done. Home derives a single HEALTHY / WARNING / FAILED verdict over the
+newest run record.
+
+- **Loading** — a synchronous local read; fast, no spinner needed.
+- **Empty (genuinely new)** — a calm "no sync has run yet", with the scheduled time if one is
+  registered.
+- **Empty (fresh store, existing install)** — *"Run history starts fresh with this update — earlier
+  runs aren't shown"*, never "no sync has run yet" (the store starts clean at this update; there is no
+  backfill).
+- **Healthy** — the verdict + metric tiles, greeting the *current* district.
+- **Warning / failed** — the fault named by category + a fix path that routes and keeps the nav
+  highlight truthful.
+- **Degraded / error** — "sync status unavailable" or a calm ErrorCard, never a stack trace; a Refresh
+  affordance re-checks in place for the Watcher who leaves the window open overnight.
+
+### Journey 3 — Incident recovery (the Firefighter)
+
+Home or Run History names the fault → a routed fix path → resolved. A previously-configured install
+whose schedule broke lands on Home with a WARNING and a fix path into Setup's schedule section —
+**never** back in first-run onboarding (the Firefighter is not a newcomer).
+
+- **Fault named** — category only (ETL failed / didn't reach SpacesEDU / anomaly / schedule not
+  firing), never a raw error.
+- **Routed** — the fix CTA navigates *and* moves the "you are here" highlight; orientation never
+  breaks mid-incident.
+- **Output findable** — a locally-successful convert shows its output folder + an "Open folder"
+  button, so manual delivery is possible when the nightly path is down.
+
 ## What "good" feels like
 
 Calm, legible, reassuring. An admin opens the window, reads one plain sentence, and knows their
@@ -158,3 +274,37 @@ string.
   the bundled `docs/` markdown in-app. In-app offline docs are a future consideration, not shipped.
 - **Management / multi-district views.** DistrictSync is a single-district admin's cockpit. Aggregate
   or fleet-management views are out of scope.
+
+## Resolved product direction (program 0029 — trust & professionalism redesign)
+
+A 2026-07-08 field test of the shipped Flet cockpit surfaced a pattern: the UI repeatedly **asserted
+state it never verified**. Program 0029 is the response. The product decisions below are **resolved**
+(user-approved 2026-07-08) and are the durable direction every 0029 slice builds toward — distinct
+from the "what landed" descriptions above, which remain accurate for the pre-0029 build until each
+slice lands.
+
+- **One combined redesign program**, not a scatter of patches.
+- **Setup becomes a wizard → settings hybrid.** First run is a stepped wizard with a checked finish
+  line; once complete, the same surface graduates into a flat **Settings** scroll for edits. The
+  Schedule and Delivery steps are **skippable** so the first success isn't gated on an admin password
+  and live SFTP credentials being at hand.
+- **Explicit district everywhere.** No silent default; "Choose your district" until chosen;
+  auto-select only when exactly one config exists; Convert refuses to run without an explicit choice.
+- **One front door.** While unconfigured, Home's onboarding hero is the only entrance to setup — no
+  competing Setup-tab / Setup-led-nav doors.
+- **Stable nav order.** The rail order is fixed (spatial memory is protected); a newcomer is guided by
+  the initial selection + a "needs attention" badge, never by reordering the rail.
+- **Output visible at the view layer.** The resolved output folder is shown before and after a
+  convert, with an "Open folder" button — the folder path is app-owned config, not student PII, so it
+  lives at the view layer and never enters the PII-free result model.
+- **Provenance-honest checks.** "Test connection" names the host, user, and credential source it
+  tested, and writes nothing to the keyring on the test path.
+- **Run history is a district-scoped, store-backed ledger.** Runs are written to a per-user SQLite
+  store (both the nightly and the manual paths), scoped to the district. It **starts fresh at this
+  update** — no backfill (the only source, the diagnostic log, is ~98.6% test pollution); the empty
+  state says so honestly.
+- **Per-operation UAC elevation.** Registering the schedule self-elevates via a normal one-time
+  Windows permission prompt; the app itself stays non-admin.
+- **A single per-user app-data home, industry-standard per OS.** The store, config, and logs move
+  from `~/.districtsync` to the platform-standard user-data directory (Windows LocalAppData, macOS
+  Application Support, Linux XDG), with a transparent, idempotent, one-time migration.

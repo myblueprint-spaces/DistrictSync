@@ -1,7 +1,7 @@
 """The three-way Home health dashboard — the flagship trust surface (IA model IA-3).
 
 VIEW glue (coverage-omitted): the trust-critical *decision* lives COUNTED in the pure
-modules (``run_log.read_run_records`` parses the log; ``home_status.derive_home_status``
+modules (``history.store.read_run_records`` reads the run store; ``home_status.derive_home_status``
 derives the verdict). This file only RENDERS that already-tested output, verdict-first,
 so a non-technical admin's deep question — *"is my sync OK?"* — is answered in one
 plain-language banner before any metric.
@@ -30,7 +30,7 @@ shows a calm surface, never a stack trace. Defense-in-depth — the parser + der
 already TOTAL (their tests prove it); this is the reliability net DS-1 shipped ``ErrorCard``
 for.
 
-**Sync read on mount** (no loading state): the run log is a small local text file parsed to
+**Sync read on mount** (no loading state): the run store is a small local SQLite DB read to
 a ``list[dict]`` (microseconds), so it is read inline in the factory — the worker-thread
 convention is scoped to ``run_pipeline`` (see ``docs/FLET_1.0_CONVENTIONS.md``), and an
 async path here would add the doc's #1 concurrency trap for no user-perceptible gain
@@ -40,15 +40,18 @@ async path here would add the doc's #1 concurrency trap for no user-perceptible 
 
 from __future__ import annotations
 
+import contextlib
+import sys
 from collections.abc import Callable
 
 import flet as ft
 
 from src.config.app_config import AppConfig
+from src.history.store import read_run_records, store_meta
 from src.ui_flet import components, nav, tokens
 from src.ui_flet.home_status import ENTITY_LABELS, FixAction, HomeMetrics, derive_home_status
 from src.ui_flet.humanize import friendly_district_name
-from src.ui_flet.run_log import read_run_records
+from src.ui_flet.schedule_status import ScheduleStatus
 from src.ui_flet.screens.onboarding import build_onboarding
 
 
@@ -106,25 +109,106 @@ def _fix_button(fix: FixAction, on_navigate: Callable[[str], None]) -> ft.Contro
     )
 
 
-def _dashboard(app_config: AppConfig, on_navigate: Callable[[str], None]) -> ft.Control:
-    """Branches (b)/(c): read the log, derive the verdict, render verdict-first."""
+def _refresh_button(on_refresh: Callable[[], None]) -> ft.Control:
+    """A small secondary "Refresh" affordance — re-reads run state + config in place.
+
+    Covers the Watcher who leaves the app open overnight: Home reads on mount only (a sync read,
+    no polling), so a manual re-check re-invokes this screen's build via the shell
+    (``select_by_id("home")``) without navigating away. A Row keeps it compact (intrinsic width).
+
+    Local (not a shared ``components`` factory) — same 2-consumer/local-helper convention as
+    ``_greeting_header``; promote only if a 3rd surface needs the identical affordance.
+    """
+    return ft.Row(
+        controls=[
+            components.secondary_button(
+                "Refresh",
+                lambda _e: on_refresh(),
+                icon=ft.Icons.REFRESH_ROUNDED,
+            ),
+        ],
+    )
+
+
+def _dashboard(
+    page: ft.Page,
+    app_config: AppConfig,
+    on_navigate: Callable[[str], None],
+    on_refresh: Callable[[], None] | None,
+) -> ft.Control:
+    """Branches (b)/(c): read the store, derive the verdict, render verdict-first.
+
+    The real schedule read-back (D4) is fetched OFF the UI thread and injected into a
+    re-derive: the initial paint is record-based (schedule unknown), then — once the bounded
+    PowerShell probe returns — the verdict re-derives in place (a MISSING/contradicted schedule
+    becomes the dominant WARNING routed to Setup). A store read is microseconds (read inline);
+    only the schedule probe is threaded (it may spawn PowerShell).
+    """
     records = read_run_records()
-    status = derive_home_status(records, app_config)
+    # Only the empty branch needs the store's birth stamp (fresh-start vs first-run copy);
+    # fetch it just there so a populated-history mount pays for exactly one store read.
+    store_created_at = None
+    if records == []:
+        meta = store_meta()
+        store_created_at = meta.get("created_at") if meta else None
+    latest_ts = records[0].get("timestamp") if records else None
 
-    controls: list[ft.Control] = [
-        _greeting_header(app_config),
-        components.HealthVerdictBanner(
-            status.verdict,
-            headline=status.headline,
-            detail=status.detail,
-        ),
-    ]
-    if status.fix is not None:
-        controls.append(_fix_button(status.fix, on_navigate))
-    if status.metrics is not None:
-        controls.append(_metric_tiles_row(status.metrics))
+    container = ft.Column(spacing=22)
 
-    return ft.Column(spacing=22, controls=controls)
+    def _render(schedule_status: ScheduleStatus | None) -> None:
+        status = derive_home_status(
+            records, app_config, store_created_at=store_created_at, schedule_status=schedule_status
+        )
+        controls: list[ft.Control] = [
+            _greeting_header(app_config),
+            components.HealthVerdictBanner(status.verdict, headline=status.headline, detail=status.detail),
+        ]
+        if status.fix is not None:
+            controls.append(_fix_button(status.fix, on_navigate))
+        if status.metrics is not None:
+            controls.append(_metric_tiles_row(status.metrics))
+        if on_refresh is not None:
+            controls.append(_refresh_button(on_refresh))
+        container.controls = controls
+
+    _render(None)  # initial paint from the store alone; the schedule read-back arrives async
+    _probe_schedule_async(page, app_config, latest_ts, _render)
+    return container
+
+
+def _probe_schedule_async(
+    page: ft.Page,
+    app_config: AppConfig,
+    latest_ts: str | None,
+    on_status: Callable[[ScheduleStatus], None],
+) -> None:
+    """Fetch the schedule read-back OFF the UI thread and re-render on the loop (Windows only).
+
+    Mirrors the SFTP-test marshalling (``page.run_thread`` → ``page.run_task``): the bounded
+    PowerShell probe runs on a worker thread; ``on_status`` + ``page.update()`` fire only inside
+    the loop-owned coroutine. A probe/thread failure is swallowed — the record-based paint stays.
+    """
+    if sys.platform != "win32":
+        return
+
+    def _work() -> None:  # runs OFF the UI thread
+        from src.ui_flet.schedule_probe import probe_schedule
+
+        status = probe_schedule(
+            app_config.schedule_task_name,
+            hint_registered=app_config.schedule_registered,
+            latest_record_ts=latest_ts,
+        )
+
+        async def _apply() -> None:
+            on_status(status)
+            page.update()
+
+        page.run_task(_apply)
+
+    # The schedule read-back is advisory; a probe/thread failure keeps the record-based paint.
+    with contextlib.suppress(Exception):
+        page.run_thread(_work)
 
 
 def build_home(
@@ -132,13 +216,16 @@ def build_home(
     *,
     app_config: AppConfig,
     on_navigate: Callable[[str], None],
+    on_refresh: Callable[[], None] | None = None,
 ) -> ft.Control:
     """Build the three-way Home surface. ``on_navigate(dest_id)`` is injected by the shell.
 
     ``page`` is threaded to ``build_onboarding`` (branch (a)) for the uniform
     ``functools.partial(build_*, page)`` mount form. Branch (a) reuses the IA-2 onboarding
-    hero verbatim; branches (b)/(c) render the health dashboard from the pure trust core,
-    wrapped in a never-crash ``ErrorCard`` fallback.
+    hero verbatim; branches (b)/(c) render the health dashboard from the pure trust core (with
+    the off-thread schedule read-back injected), wrapped in a never-crash ``ErrorCard`` fallback.
+    ``on_refresh`` (injected by the shell) adds a Refresh affordance on the dashboard branches
+    for the leaves-it-open Watcher; the onboarding branch (a) is unaffected.
     """
     if nav.needs_setup(app_config):
         return build_onboarding(
@@ -148,7 +235,7 @@ def build_home(
         )
 
     try:
-        return _dashboard(app_config, on_navigate)
+        return _dashboard(page, app_config, on_navigate, on_refresh)
     except Exception:  # noqa: BLE001 - the reliability floor: a view bug shows a calm surface, never a trace
         return components.ErrorCard(
             "We couldn't show your sync status",

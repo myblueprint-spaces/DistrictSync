@@ -1,11 +1,13 @@
 """The Flet left navigation rail VIEW — the F6 rail extraction from ``shell.py``.
 
-VIEW glue (coverage-omitted): ``build_nav`` assembles a single flat, state-aware
-``ft.NavigationRail`` from a pre-ordered ``Destination`` tuple (option (a) — the
-prominent group's destinations lead; no section headers, built-in a11y retained
-— see plan 0018 gate). It owns **no** lifecycle and reads **no** config: the
-shell passes ``on_select``/``on_exit`` callbacks in and stays the lifecycle owner.
-Selection is by ``dest.id``, decoupling render order from the screen map.
+VIEW glue (coverage-omitted): ``build_nav`` assembles a single flat
+``ft.NavigationRail`` from the FIXED-order ``Destination`` tuple (D7 — one order in
+every state; no section headers, built-in a11y retained). It owns **no** lifecycle
+and reads **no** config: the shell passes ``on_select``/``on_exit`` callbacks in and
+stays the lifecycle owner. Selection is by ``dest.id``, decoupling render order from
+the screen map; the initial highlight index comes from the single-source
+``nav.selected_index_for``. It returns ``(view, rail)`` — the rail handle lets the
+shell sync ``selected_index`` on programmatic navigation, not just user clicks.
 
 Follows the PROVEN Flet 0.85.3 forms (``ft.Padding``/``ft.Border`` dataclasses —
 NOT the gone 0.2x helpers; see ``docs/FLET_1.0_CONVENTIONS.md``). The brand mark
@@ -31,26 +33,39 @@ def _pad(*, left: float = 0, top: float = 0, right: float = 0, bottom: float = 0
 
 
 # --------------------------------------------------------------------------- #
-# The flat, state-aware navigation rail                                         #
+# The flat, fixed-order navigation rail                                         #
 # --------------------------------------------------------------------------- #
+def attention_badge() -> ft.Badge:
+    """A small "needs attention" dot badge (no label) for a nav destination (D4/D7).
+
+    A labelless ``ft.Badge`` with ``small_size`` renders as a Material dot on the
+    destination's icon — the Setup badge the shell raises when ``schedule_status`` reports a
+    missing/contradicted schedule. Kept here (the rail view) so its exact form is proven by
+    the rail render-smoke.
+    """
+    return ft.Badge(small_size=10, bgcolor=tokens.color_status_failed)
+
+
 def build_nav(
     *,
     ordered: tuple[nav.Destination, ...],
     selected_id: str,
     on_select: Callable[[str], None],
     on_exit: Callable[..., None],
-) -> ft.Control:
-    """Build the flat state-aware rail from ``ordered`` (prominent group first).
+    attention_ids: frozenset[str] = frozenset(),
+) -> tuple[ft.Control, ft.NavigationRail]:
+    """Build the flat fixed-order rail from ``ordered``; return ``(view, rail)``.
 
-    ``selected_id`` sets only the INITIAL highlight (its index in ``ordered``,
-    falling back to 0); ``ft.NavigationRail`` manages its own highlight on click
-    (native — gate #4). ``on_change`` maps the native index back to a ``dest.id``
-    and calls ``on_select``; Exit calls ``on_exit``. No lifecycle lives here.
+    ``selected_id`` sets only the INITIAL highlight (``nav.selected_index_for`` — the
+    same mapping the shell uses to sync the highlight, falling back to 0);
+    ``ft.NavigationRail`` still manages its own highlight on user click. ``on_change``
+    maps the native index back to a ``dest.id`` and calls ``on_select``; Exit calls
+    ``on_exit``. The ``rail`` handle is returned so the shell can set ``selected_index``
+    when navigation is driven programmatically. ``attention_ids`` seeds the "needs attention"
+    dot badge on those destinations at build; the shell also mutates a destination's ``badge``
+    post-build once the off-thread schedule probe returns (D4). No lifecycle lives here.
     """
-    try:
-        selected_index = [d.id for d in ordered].index(selected_id)
-    except ValueError:
-        selected_index = 0
+    selected_index = nav.selected_index_for(selected_id, ordered)
 
     def on_change(e: ft.ControlEvent) -> None:
         on_select(ordered[e.control.selected_index].id)
@@ -122,6 +137,7 @@ def build_nav(
                 icon=getattr(ft.Icons, dest.icon, ft.Icons.CIRCLE_OUTLINED),
                 selected_icon=getattr(ft.Icons, dest.selected_icon, ft.Icons.CIRCLE),
                 label=dest.label,
+                badge=attention_badge() if dest.id in attention_ids else None,
             )
             for dest in ordered
         ],
@@ -136,8 +152,9 @@ def build_nav(
         ),
     )
 
-    return ft.Container(
+    view = ft.Container(
         content=rail,
         bgcolor=tokens.color_surface,
         border=ft.Border(right=ft.BorderSide(1, tokens.color_border)),
     )
+    return view, rail

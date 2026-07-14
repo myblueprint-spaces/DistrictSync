@@ -64,7 +64,11 @@ All enabled output CSVs (5 for standard rostering, up to 7 with myBlueprint+) ar
 
 **Q: Can I change the schedule or SFTP settings after setup?**
 
-Yes. Open the **Setup Wizard** page — if you've already completed setup, it shows a management dashboard where you can edit the schedule time, disable the schedule, edit SFTP settings, or disable SFTP. You don't need to re-run the full wizard.
+Yes. Open the **Setup** page — once you've completed setup it shows a flat **Settings** view where you can edit the schedule time, remove the schedule, edit SFTP settings, or disable SFTP. You don't need to re-run the full wizard; a single **Save** reconciles everything (re-registering the task when a setting baked into it changes).
+
+**Q: Why did I see a Windows permission prompt when I turned on the schedule?**
+
+Registering an unattended daily task (one that runs whether or not you're logged on) needs administrator rights. Rather than making you run the whole app as administrator, DistrictSync asks for those rights only for that one step — you'll see a single Windows permission prompt (UAC) when you activate or change the schedule. Click **Yes**. The app itself keeps running without administrator rights, and ad-hoc conversions from the Convert page never prompt. If you decline the prompt, nothing changes and you can try again.
 
 ---
 
@@ -120,7 +124,7 @@ No. The `.exe` file is a self-contained executable that includes Python, all lib
 
 **Q: Where are SFTP credentials stored?**
 
-Credentials are stored in the Windows Credential Manager (Windows) or the equivalent OS keychain — never in a plain text file. The configuration file (`~/.districtsync/config.json`) stores only non-sensitive settings like host and port.
+Credentials are stored in the Windows Credential Manager (Windows) or the equivalent OS keychain — never in a plain text file. The configuration file (`config.json`, in DistrictSync's per-user application-data folder — see [*Where does DistrictSync store my settings…*](#technical-questions) below) stores only non-sensitive settings like host and port.
 
 **Q: Can I run this on multiple districts from the same server?**
 
@@ -134,7 +138,7 @@ Yes, by creating separate scheduled tasks with different `--sis`, `--input`, and
 
 **Q: Is there a desktop UI?**
 
-Yes — double-clicking `DistrictSync-windows.exe` (with no arguments) opens a native desktop window with six surfaces reached from the left navigation: Home, Setup, Convert, Run History, Mapping, and Help. When run with `--sis`/`--input`/`--output` arguments (e.g. from Task Scheduler), it runs headlessly — no window opens.
+Yes — double-clicking `DistrictSync-windows.exe` (with no arguments) opens a native desktop window with six surfaces reached from the left navigation, in a fixed order: Home, Convert, Run History, Setup, Mapping, and Help. First-run **Setup** is a 5-step wizard that graduates into a **Settings** page once you finish. When run with `--sis`/`--input`/`--output` arguments (e.g. from Task Scheduler), it runs headlessly — no window opens.
 
 **Q: Can I customize field mappings without editing YAML?**
 
@@ -148,19 +152,33 @@ For security, SFTP uploads are restricted to SpacesEDU servers only (sftp.ca.spa
 
 After each run, DistrictSync compares output against the previous run. If any entity (Students, Classes, etc.) dropped by more than 20%, a warning is logged. This usually means the GDE export was partial or corrupted — re-export from MyEdBC.
 
-**Q: Where does DistrictSync store my settings, logs, and custom mappings?**
+**Q: Where does DistrictSync store my settings, logs, and run history?**
 
-All runtime state is written to `~/.districtsync/` — which is
-`C:\Users\<username>\.districtsync\` on Windows, `/home/<user>/.districtsync/` on Linux,
-and `/Users/<user>/.districtsync/` on macOS. Specifically:
+All runtime state is written to the standard per-user application-data folder
+for your operating system:
+
+| Platform | Data folder |
+|----------|-------------|
+| Windows | `C:\Users\<username>\AppData\Local\DistrictSync\` |
+| macOS | `~/Library/Application Support/DistrictSync/` |
+| Linux | `$XDG_DATA_HOME/DistrictSync/` (default `~/.local/share/DistrictSync/`) |
+
+Inside it:
 
 - `config.json` — wizard settings (input/output paths, SFTP host, schedule time).
-- `etl_tool.log` — history of every run (app, scheduled, CLI). The Run History surface reads this file.
+- `history.db` — the run-history database. Every run (app, scheduled, CLI) is recorded here, and the **Run History** surface reads it.
+- `etl_tool.log` — the diagnostic log: detailed messages for troubleshooting, kept separate from run history. It rotates at 5 MB and keeps 3 backups.
 - `mappings/*.yaml` — any custom district mapping YAML placed here (provided by the DistrictSync team). These override the built-in configs if the file name matches.
 
 Your SFTP password is stored in the OS credential manager (Windows Credential Manager / macOS Keychain / Linux Secret Service), never on disk in plain text.
 
-You can back up `~/.districtsync/` to preserve your setup, or delete it to reset the tool to a fresh-install state. The `.exe` itself can live anywhere (Desktop, Program Files, USB stick) — it doesn't store anything next to itself.
+You can back up this folder to preserve your setup, or delete it to reset the tool to a fresh-install state. The `.exe` itself can live anywhere (Desktop, Program Files, USB stick) — it doesn't store anything next to itself.
+
+**Upgrading from a version before this one?** Older releases kept this data in a `.districtsync` folder in your home directory (e.g. `C:\Users\<username>\.districtsync\`). The first time you run the new version, DistrictSync copies everything into the folder above and leaves a `MOVED.txt` note in the old location. The move is safe and one-time; if anything prevents it, the tool keeps using the old folder.
+
+**Q: Why does Run History start empty (fresh) after this update?**
+
+This version records run history in a dedicated database (`history.db`) instead of reading it back out of the diagnostic log. Runs from before the update lived only in the log, which mixed real runs with internal test entries — so importing them would fill your history with noise. Rather than carry that forward, **Run History starts fresh** and fills in from your very next conversion (app, scheduled, or CLI). Your older `etl_tool.log` is left untouched if you ever need to look back at it.
 
 **Q: I see a warning about `pkg_resources is deprecated` when I run the .exe from a terminal. Is that a problem?**
 

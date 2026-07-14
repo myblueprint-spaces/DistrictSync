@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from src.config.app_config import AppConfig
+from src.scheduler.windows import ScheduleReadback
 from src.ui_flet.home_status import (
     STALE_AFTER_HOURS,
     HomeStatus,
@@ -24,7 +25,19 @@ from src.ui_flet.home_status import (
     is_stale,
     verdict_for_reason,
 )
+from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus, derive_schedule_status
 from src.ui_flet.verdict import Verdict
+
+
+def _live_schedule(next_run_display: str = "3:00 AM") -> ScheduleStatus:
+    """A LIVE ScheduleStatus with a known next-run time (the injected read-back)."""
+    return ScheduleStatus(
+        state=ScheduleState.LIVE,
+        headline="Nightly sync is scheduled",
+        detail="registered",
+        next_run_display=next_run_display,
+    )
+
 
 # A fixed reference "now" so relative timestamps are deterministic.
 _NOW = datetime(2026, 7, 4, 8, 0, 0)
@@ -101,29 +114,111 @@ class TestUnavailableSentinel:
 
 
 class TestEmptyState:
-    def test_empty_configured_scheduled_is_reassuring_warning(self) -> None:
+    def test_empty_established_is_fresh_start_not_no_sync(self) -> None:
+        # An established (completed-setup) install with an empty store post-update must NOT be
+        # told "No sync has run yet" — the store is fresh for everyone after this update.
         status = derive_home_status([], _CONFIGURED, now=_NOW)
         assert status.verdict is Verdict.WARNING  # amber-toned, never red
-        assert status.headline == "No sync has run yet"
-        assert "scheduled for" in status.detail  # schedule reassurance present when scheduled
+        assert status.headline == "Run history starts fresh here"
         assert status.fix is None  # nothing to fix — just wait
+        # Honesty C: the hidden-history claim is CONDITIONED (newcomer-vs-upgrader is unknown),
+        # never a flat assertion that earlier runs exist.
+        assert "If you used an earlier version" in status.detail
 
-    def test_empty_shows_plain_schedule_time_not_raw_hhmm(self) -> None:
-        cfg = AppConfig(
-            input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=True, schedule_time="03:00"
-        )
-        status = derive_home_status([], cfg, now=_NOW)
+    def test_empty_established_with_live_schedule_shows_next_run(self) -> None:
+        # The next-run reassurance derives from the LIVE read-back (D4), not the config flag.
+        status = derive_home_status([], _CONFIGURED, now=_NOW, schedule_status=_live_schedule("3:00 AM"))
+        assert status.headline == "Run history starts fresh here"
         assert "3:00 AM" in status.detail
-        assert "03:00" not in status.detail
 
-    def test_empty_with_malformed_schedule_time_does_not_crash(self) -> None:
-        # A garbage schedule_time passes through untouched — total, never raises.
-        cfg = AppConfig(
-            input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=True, schedule_time="nonsense"
-        )
-        status = derive_home_status([], cfg, now=_NOW)
+    def test_empty_established_without_schedule_status_omits_next_run(self) -> None:
+        # No injected read-back → NO schedule assertion (never claim a time we didn't confirm).
+        status = derive_home_status([], _CONFIGURED, now=_NOW)
+        assert "scheduled for" not in status.detail
+
+    def test_empty_genuine_first_run_unscheduled_says_no_sync_yet(self) -> None:
+        # Not established (never completed setup, no store yet) → the calm genuine-first-run copy.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+        status = derive_home_status([], cfg, now=_NOW, store_created_at=None)
         assert status.verdict is Verdict.WARNING
-        assert "nonsense" in status.detail
+        assert status.headline == "No sync has run yet"
+        assert "scheduled for" not in status.detail
+
+    def test_empty_completed_manual_only_upgrader_gets_fresh_start(self) -> None:
+        # D4a: a completed-setup manual-only install (unscheduled) is established via
+        # setup_completed — the honest fresh-start copy, not the false "No sync has run yet".
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
+        status = derive_home_status([], cfg, now=_NOW, store_created_at=None)
+        assert status.headline == "Run history starts fresh here"
+
+    def test_empty_store_created_at_signals_established_even_if_unscheduled(self) -> None:
+        # A store that already exists (created_at present) is an established signal on its own.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+        status = derive_home_status([], cfg, now=_NOW, store_created_at="2026-07-01T03:00:00")
+        assert status.headline == "Run history starts fresh here"
+
+    def test_empty_completed_but_confirmed_unscheduled_says_no_auto_sync(self) -> None:
+        # #1b: a completed install whose read-back CONFIRMS no schedule (MISSING) must be told
+        # plainly that nothing syncs on its own — NOT the "new syncs will appear" copy that implies
+        # automation. Calm WARNING, NO fix CTA/badge (a manual-only district must not be nagged).
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
+        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        status = derive_home_status([], cfg, now=_NOW, schedule_status=missing)
+        assert status.verdict is Verdict.WARNING
+        assert status.fix is None
+        assert "won't sync automatically" in status.detail
+        assert "New syncs will appear" not in status.detail
+
+    def test_empty_completed_unconfirmed_schedule_keeps_neutral_fresh_start(self) -> None:
+        # Honesty inverse: an UNKNOWN/None read-back must NOT assert "won't sync automatically"
+        # (we can't see the schedule) — it keeps the neutral fresh-start copy.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
+        status = derive_home_status([], cfg, now=_NOW, schedule_status=None)
+        assert "won't sync automatically" not in status.detail
+        assert "New syncs will appear" in status.detail
+
+
+class TestScheduleAttention:
+    """D4: a schedule the config expected but the OS no longer has (or one that fired without
+    completing) is the dominant fault — WARNING routed to Setup, never onboarding."""
+
+    def test_expected_missing_routes_to_setup(self) -> None:
+        sched = derive_schedule_status(ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None)
+        status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=sched)
+        assert status.verdict is Verdict.WARNING
+        assert status.fix is not None and status.fix.dest_id == "setup"
+        # #2b: the CTA names the ACTION, not the destination (Firefighter landing precision).
+        assert status.fix.label == "Fix the nightly schedule"
+        assert status.metrics is None
+
+    def test_contradiction_routes_to_setup(self) -> None:
+        # A record-gap contradiction: the task fired more recently than the newest record.
+        sched = derive_schedule_status(
+            ScheduleReadback(found=True, last_run="2026-07-04T04:00:00"),
+            hint_registered=True,
+            latest_record_ts=_RECENT,
+        )
+        status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=sched)
+        assert status.verdict is Verdict.WARNING
+        assert status.fix is not None and status.fix.dest_id == "setup"
+
+    def test_unknown_schedule_never_overrides_a_healthy_run(self) -> None:
+        # A failed query must not manufacture a fault — Home falls through to the record rules.
+        sched = derive_schedule_status(
+            ScheduleReadback(found=None, error="denied"), hint_registered=True, latest_record_ts=None
+        )
+        status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=sched)
+        assert status.verdict is Verdict.HEALTHY
+
+    def test_clean_live_schedule_does_not_override_a_healthy_run(self) -> None:
+        status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=_live_schedule())
+        assert status.verdict is Verdict.HEALTHY
+
+    def test_unexpected_missing_does_not_warn(self) -> None:
+        # A configured manual-only install that never scheduled → not a fault on Home.
+        sched = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=sched)
+        assert status.verdict is Verdict.HEALTHY
 
 
 class TestFailedRules:

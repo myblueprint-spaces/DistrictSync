@@ -3,19 +3,180 @@ Shared fixtures for DistrictSync tests.
 
 All data is synthetic — no real student PII.
 Fixtures are designed to exercise every code path in the transformer.
+
+Suite-wide isolation (D3): an autouse fixture (``isolated_user_profile``)
+redirects the single deep app-data seam ``paths.user_data_dir`` into a per-test
+tmp dir, swaps a suite-wide in-memory keyring backend, and restores/close logging
+handlers on teardown. This is *redirect-the-seams* isolation — it holds only
+while writes route through the patched seam; ``test_isolation_canary`` is the
+tripwire that proves the real user profile stays untouched, not a mechanical
+guarantee.
 """
 
+import contextlib
+import logging
 from pathlib import Path
 
+import keyring
 import pandas as pd
 import pytest
 import yaml
+from keyring.backend import KeyringBackend
 
 from src.etl.transformer import DataTransformer
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "real_user_data_dir: opt out of the autouse user_data_dir isolation so a "
+        "test exercises the REAL paths.user_data_dir implementation (used by "
+        "test_paths.py, which is the guard for that seam).",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Real-profile baseline — captured at conftest IMPORT (before any test runs and
+# before any seam is patched), via Path.home() which the isolation fixture never
+# patches. The canary compares against this to prove a whole pytest run leaves
+# the real ~/.districtsync profile byte-untouched.
+# ---------------------------------------------------------------------------
+
+_REAL_PROFILE_DIR = Path.home() / ".districtsync"
+_REAL_PROFILE_FILES = ("config.json", "etl_tool.log", "history.db")
+
+
+def _snapshot_mtime(path: Path) -> int | None:
+    """Return the file's mtime in nanoseconds, or None if it does not exist."""
+    return path.stat().st_mtime_ns if path.exists() else None
+
+
+_REAL_PROFILE_BASELINE: dict[str, tuple[Path, int | None]] = {
+    name: (_REAL_PROFILE_DIR / name, _snapshot_mtime(_REAL_PROFILE_DIR / name)) for name in _REAL_PROFILE_FILES
+}
+
+
+@pytest.fixture
+def real_profile_baseline() -> dict[str, tuple[Path, int | None]]:
+    """The pristine real-profile snapshot captured at conftest import (for the canary)."""
+    return _REAL_PROFILE_BASELINE
+
+
+# ---------------------------------------------------------------------------
+# Autouse isolation — redirect every user-profile write into a tmp dir + guard
+# the real one.
+# ---------------------------------------------------------------------------
+
+
+class _InMemoryKeyring(KeyringBackend):
+    """Suite-wide in-memory keyring so no test touches the real OS credential store.
+
+    Belt-and-suspenders: even a test that forgets to mock keyring stores into this
+    dict, never the Windows Credential Manager / macOS Keychain / Secret Service.
+    Local mocks that assert specific keyring calls still layer on top of it.
+    """
+
+    priority = 1  # type: ignore[assignment]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._store: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self._store.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self._store[(service, username)] = password
+
+    def delete_password(self, service: str, username: str) -> None:
+        self._store.pop((service, username), None)
+
+
+def _close_and_restore_handlers(logger_obj: logging.Logger, snapshot: list[logging.Handler]) -> None:
+    """Close any FileHandler a test added (not in the snapshot) and restore the snapshot.
+
+    ``get_logger()`` reconfigures root/etl via ``fileConfig``, attaching a
+    RotatingFileHandler to the isolated log; an open handle blocks tmp_path cleanup
+    on Windows, so close the ones we added before restoring the pre-test handler set.
+    """
+    for handler in logger_obj.handlers[:]:
+        if handler not in snapshot and isinstance(handler, logging.FileHandler):
+            # Defensive: teardown must not raise even if a handler is already closed.
+            with contextlib.suppress(Exception):
+                handler.close()
+    logger_obj.handlers[:] = snapshot
+
+
+@pytest.fixture(autouse=True)
+def isolated_user_profile(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect the deep ``paths.user_data_dir`` seam into a per-test tmp dir + guard.
+
+    AppConfig, the logger sink, custom mappings, and (Slice 4b) the run store all
+    resolve through ``paths.user_data_dir()`` at call time, so patching that single
+    seam isolates every user-profile write. Also swaps an in-memory keyring backend
+    and restores/close logging handlers on teardown.
+
+    Tests marked ``real_user_data_dir`` opt out of the ``user_data_dir`` patch (they
+    test the real seam itself, redirecting ``Path.home`` instead) but still get
+    keyring + logging isolation.
+
+    Returns the isolated ``.districtsync`` directory so tests can assert writes
+    landed there. HONEST SCOPE: the guarantee holds only while writes route through
+    the patched seam — the canary is the tripwire, not a mechanical impossibility.
+    """
+    data_dir = tmp_path / ".districtsync"
+
+    def _fake_user_data_dir() -> Path:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir
+
+    if request.node.get_closest_marker("real_user_data_dir") is None:
+        monkeypatch.setattr("src.utils.paths.user_data_dir", _fake_user_data_dir)
+        # Belt-and-suspenders for the relocation seam (Slice 11): migration bypasses
+        # ``user_data_dir`` and resolves the platform/legacy dirs directly, so redirect
+        # BOTH into (non-existent) tmp paths. A stray ``migrate_legacy_data_dir()`` in a
+        # non-marked test then sees no legacy dir → no-op, and can never touch the real
+        # ~/.districtsync. Tests exercising the real relocation opt out via the marker
+        # and drive these seams themselves (see test_paths.py).
+        monkeypatch.setattr("src.utils.paths._platform_data_dir", lambda: tmp_path / "platform" / "DistrictSync")
+        monkeypatch.setattr("src.utils.paths._legacy_data_dir", lambda: tmp_path / "legacy_home" / ".districtsync")
+
+    real_keyring = keyring.get_keyring()
+    keyring.set_keyring(_InMemoryKeyring())
+
+    root = logging.getLogger()
+    etl = logging.getLogger("etl")
+    root_snapshot = root.handlers[:]
+    etl_snapshot = etl.handlers[:]
+
+    try:
+        yield data_dir
+    finally:
+        keyring.set_keyring(real_keyring)
+        _close_and_restore_handlers(root, root_snapshot)
+        _close_and_restore_handlers(etl, etl_snapshot)
+
 
 # ---------------------------------------------------------------------------
 # Transformer instance
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_real_uac(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HARD test-safety guard (Plan 0029 D5): no test may ever fire a real Windows UAC prompt.
+
+    Patches the lowest ``ShellExecuteEx("runas")`` seam so an accidental self-elevation
+    attempt in a test — e.g. a ``register_task(run_as_password=...)`` call that mocks
+    ``subprocess.run`` but forgets ``is_elevated`` on a non-elevated Windows dev host —
+    degrades to a fast "declined" outcome (``ERROR_CANCELLED`` 1223) instead of a real UAC
+    dialog / real scheduled-task registration. Tests that exercise the outcome mapping
+    override this seam themselves; the elevation-flow tests replace
+    ``run_elevated_powershell`` entirely. Inert on non-Windows (the real call is guarded).
+    """
+    from src.scheduler import elevation
+
+    monkeypatch.setattr(elevation, "_shell_execute_runas", lambda file, params: (0, 1223))
 
 
 @pytest.fixture

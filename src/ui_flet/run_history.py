@@ -1,7 +1,7 @@
 """Pure Run-History derivation — the read-only "has the sync been running, and did each work?" core.
 
-NO ``flet`` import (mirrors ``home_status``/``convert_result``). Given the parsed run-log
-records (newest-first, from ``run_log.read_run_records``) + the ``AppConfig`` state, this module
+NO ``flet`` import (mirrors ``home_status``/``convert_result``). Given the run records
+(newest-first, from ``history.store.read_run_records``) + the ``AppConfig`` state, this module
 derives two PII-free things the Run History view renders:
 
 - **the verdict-first banner** — ``derive_history_banner(records, app_config, *, now=None)`` → a
@@ -40,12 +40,14 @@ from src.ui_flet.home_status import (
     LatestReason,
     _as_int,
     _data_errors_total,
-    _friendly_schedule_time,
+    _schedule_confirmed_missing,
+    _schedule_is_live,
     classify_latest_reason,
     is_stale,
     verdict_for_reason,
 )
 from src.ui_flet.humanize import AnomalyVariant, friendly_anomaly_detail, friendly_timestamp, pluralize
+from src.ui_flet.schedule_status import ScheduleStatus
 from src.ui_flet.verdict import Verdict
 
 
@@ -114,6 +116,8 @@ def derive_history_banner(
     app_config: AppConfig,
     *,
     now: datetime | None = None,
+    store_created_at: str | None = None,
+    schedule_status: ScheduleStatus | None = None,
 ) -> HistoryBanner:
     """Derive the verdict-first Run-History banner (pure, TOTAL, PII-safe).
 
@@ -122,23 +126,52 @@ def derive_history_banner(
     ``verdict_for_reason`` and reuses ``is_stale`` — so the banner never drifts from Home or from
     the per-run rows. Graceful degradation (``None``/``[]``) is a first-class calm WARNING output,
     never a raise. NEVER interpolates the raw ``error`` / ``ANOMALY:`` string.
+
+    ``store_created_at`` (the run store's ``meta.created_at``) is the established-install signal
+    for the fresh-start empty state; ``schedule_status`` (D4, injected off-thread) supplies the
+    honest LIVE next-run reassurance — Run History is read-only (no fix CTA), so it does not
+    surface a schedule-attention verdict (Home owns that), only the derived empty-state copy.
     """
-    # Rule: unavailable (the never-crash floor) — the reader couldn't read the log.
+    # Rule: unavailable (the never-crash floor) — the reader couldn't read the store.
     if records is None:
         return HistoryBanner(
             verdict=Verdict.WARNING,
             headline="Run history unavailable",
-            detail="We couldn't read the run log right now — your nightly sync may still be running normally.",
+            detail="We couldn't read the run history right now — your nightly sync may still be running normally.",
         )
 
-    # Rule: no runs yet (empty but readable) — calm, never red.
+    # Rule: no runs yet (empty but readable). The store is fresh for EVERY install after this
+    # update (no backfill), so an established install is told the history starts fresh rather
+    # than the false "No sync has run yet"; a genuine first run keeps the calm waiting copy.
+    # Slice 5 (D4a) re-based the discriminator on the durable ``has_completed_setup()`` fact so a
+    # completed manual-only upgrader gets the honest fresh-start copy; newcomer-vs-upgrader remain
+    # indistinguishable, so fresh-start is the chosen default (not a verified fact) — the copy is
+    # conditioned ("If you used an earlier version…"), never a flat claim of hidden history. The
+    # schedule reassurance derives from the LIVE read-back (``schedule_status``), never the flag.
     if not records:
-        detail = "Your nightly runs will appear here once the first one completes"
-        if app_config.schedule_registered:
-            detail += f" — scheduled for {_friendly_schedule_time(app_config.schedule_time)} each night."
-        else:
-            detail += "."
-        return HistoryBanner(verdict=Verdict.WARNING, headline="No sync has run yet", detail=detail)
+        if app_config.has_completed_setup() or store_created_at:
+            fresh = (
+                "New nightly syncs will appear here from now on. "
+                "If you used an earlier version, its run history isn't carried over."
+            )
+            if _schedule_is_live(schedule_status):
+                detail = fresh + f" Scheduled for {schedule_status.next_run_display} each night."  # type: ignore[union-attr]
+            elif app_config.has_completed_setup() and _schedule_confirmed_missing(schedule_status):
+                # Honest (finding #1b): a completed install with NO nightly schedule won't sync on its
+                # own — mirror Home's plain copy rather than implying automation. Only on a CONFIRMED
+                # MISSING read-back (never an unconfirmed None/UNKNOWN).
+                detail = (
+                    "Your roster won't sync automatically until you add a nightly schedule — set one up "
+                    "in Settings whenever you're ready. Manual conversions from the Convert tab appear here too."
+                )
+            else:
+                detail = fresh
+            return HistoryBanner(verdict=Verdict.WARNING, headline="Run history starts fresh here", detail=detail)
+        return HistoryBanner(
+            verdict=Verdict.WARNING,
+            headline="No sync has run yet",
+            detail="Your nightly runs will appear here once the first one completes.",
+        )
 
     latest = records[0]
     reason = classify_latest_reason(latest)

@@ -10,11 +10,12 @@ break the dev demo route).
 
 from __future__ import annotations
 
-import functools
 import os
+import sys
 
 import pytest
 
+from src.config.app_config import AppConfig
 from src.ui_flet import components
 from src.ui_flet.screens.help import HELP_CENTRE_URL, SUPPORT_EMAIL, build_help
 
@@ -45,21 +46,23 @@ def test_support_email_is_the_exact_mixed_case_canonical_contact() -> None:
 # DISTRICTSYNC_UI_DEMO override-ordering — the load-bearing wiring invariant    #
 # --------------------------------------------------------------------------- #
 def _apply_shell_help_swap() -> dict[str, object]:
-    """Reproduce the shell's ``help`` swap + the DISTRICTSYNC_UI_DEMO override block VERBATIM.
+    """Reproduce the shell's ``help`` swap + the DISTRICTSYNC_UI_DEMO override block.
 
     The shell's ``main`` swap logic isn't cleanly extractable without a ``page``, so this
-    mirrors it exactly (``shell.py``): the real ``help`` swap binds ``build_help`` via
-    ``functools.partial`` FIRST, then the override block re-assigns ``screens["help"]`` to
+    mirrors the CURRENT wiring (``shell.py``, post-Slice-1): the real ``help`` swap binds a
+    fresh-load ``lambda: build_help(page, app_config=AppConfig.load())`` FIRST (each mount
+    reads config fresh — the D1 supplier pattern; no longer a ``functools.partial`` over a
+    frozen instance), then the override block re-assigns ``screens["help"]`` to
     ``components.build_design_demo`` LAST iff the env var is set — so the override wins in dev.
-    Uses a sentinel ``page``/``app_cfg`` (never called — we assert identity, not render).
+    Uses a sentinel ``page``; ``build_help``/``AppConfig.load`` are resolved at call time, so
+    the env-unset test patches them to observe the route without a live render.
     """
-    page = object()  # sentinel — build_help is never invoked in these wiring tests
-    app_cfg = object()
+    page = object()  # sentinel — the route is invoked only under patched build_help/AppConfig
     screens: dict[str, object] = {"help": lambda: None}  # the placeholder the shell starts with
 
-    # --- real swap (shell.py, BEFORE the override block) --- #
-    screens["help"] = functools.partial(build_help, page, app_config=app_cfg)
-    # --- DISTRICTSYNC_UI_DEMO override (shell.py:195-196, byte-identical condition) --- #
+    # --- real swap (shell.py, BEFORE the override block): fresh-load lambda (D1) --- #
+    screens["help"] = lambda: build_help(page, app_config=AppConfig.load())
+    # --- DISTRICTSYNC_UI_DEMO override (shell.py, byte-identical condition) --- #
     if os.environ.get("DISTRICTSYNC_UI_DEMO") and "help" in screens:
         screens["help"] = components.build_design_demo
     return screens
@@ -73,9 +76,26 @@ def test_demo_override_wins_when_env_set(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_real_help_wins_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With DISTRICTSYNC_UI_DEMO unset, ``help`` routes to a ``build_help`` partial (the real surface)."""
+    """With DISTRICTSYNC_UI_DEMO unset, ``help`` routes to the real ``build_help`` surface.
+
+    Post-Slice-1 the route is an anonymous fresh-load lambda (not a ``functools.partial``),
+    so identity can't be asserted directly — instead invoke the route under a patched
+    ``build_help`` + ``AppConfig.load`` and confirm it dispatches to ``build_help`` with a
+    FRESH ``AppConfig`` (the D1 per-mount load), and is NOT the demo override.
+    """
     monkeypatch.delenv("DISTRICTSYNC_UI_DEMO", raising=False)
+    seen: list[object] = []
+    # The lambda resolves `build_help`/`AppConfig` as this module's globals at call time.
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cls()))
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "build_help",
+        lambda *_a, **kw: seen.append(kw.get("app_config")) or "HELP_SURFACE",
+    )
+
     screens = _apply_shell_help_swap()
-    swapped = screens["help"]
-    assert isinstance(swapped, functools.partial)
-    assert swapped.func is build_help
+    route = screens["help"]
+    assert route is not components.build_design_demo  # override did NOT fire
+    assert callable(route)
+    assert route() == "HELP_SURFACE"  # routes to the real build_help
+    assert len(seen) == 1 and isinstance(seen[0], AppConfig)  # a fresh config per mount (D1)

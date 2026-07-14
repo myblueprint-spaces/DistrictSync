@@ -36,7 +36,19 @@ from src.ui_flet.run_history import (
     to_run_row,
     to_run_rows,
 )
+from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.verdict import Verdict
+
+
+def _live_schedule(next_run_display: str = "3:00 AM") -> ScheduleStatus:
+    """A LIVE ScheduleStatus with a known next-run time (the injected read-back)."""
+    return ScheduleStatus(
+        state=ScheduleState.LIVE,
+        headline="Nightly sync is scheduled",
+        detail="registered",
+        next_run_display=next_run_display,
+    )
+
 
 # A fixed reference "now" so relative timestamps are deterministic.
 _NOW = datetime(2026, 7, 4, 8, 0, 0)
@@ -153,23 +165,47 @@ class TestBannerUnavailable:
 
 
 class TestBannerEmpty:
-    def test_empty_scheduled_shows_plain_schedule_time(self) -> None:
-        cfg = AppConfig(
-            input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=True, schedule_time="03:00"
-        )
-        banner = derive_history_banner([], cfg, now=_NOW)
+    def test_empty_established_with_live_schedule_shows_plain_time(self) -> None:
+        # An established install with an empty store post-update → fresh-start copy, NOT the
+        # false "No sync has run yet"; the next-run time derives from the LIVE read-back (D4).
+        banner = derive_history_banner([], _CONFIGURED, now=_NOW, schedule_status=_live_schedule("3:00 AM"))
         assert banner.verdict is Verdict.WARNING  # never red
-        assert banner.headline == "No sync has run yet"
-        assert "scheduled for" in banner.detail
+        assert banner.headline == "Run history starts fresh here"
         assert "3:00 AM" in banner.detail
-        assert "03:00" not in banner.detail
 
-    def test_empty_unscheduled_omits_schedule_line(self) -> None:
+    def test_empty_established_without_schedule_status_omits_time(self) -> None:
+        banner = derive_history_banner([], _CONFIGURED, now=_NOW)
+        assert banner.headline == "Run history starts fresh here"
+        assert "Scheduled for" not in banner.detail
+        # Honesty C: conditioned hidden-history claim, never a flat assertion.
+        assert "If you used an earlier version" in banner.detail
+
+    def test_empty_genuine_first_run_unscheduled_says_no_sync_yet(self) -> None:
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
-        banner = derive_history_banner([], cfg, now=_NOW)
+        banner = derive_history_banner([], cfg, now=_NOW, store_created_at=None)
         assert banner.verdict is Verdict.WARNING
         assert banner.headline == "No sync has run yet"
-        assert "scheduled for" not in banner.detail
+        assert "scheduled for" not in banner.detail.lower()
+
+    def test_empty_completed_manual_only_upgrader_gets_fresh_start(self) -> None:
+        # D4a: a completed-setup manual-only install is established via setup_completed.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
+        banner = derive_history_banner([], cfg, now=_NOW, store_created_at=None)
+        assert banner.headline == "Run history starts fresh here"
+
+    def test_empty_store_created_at_signals_established(self) -> None:
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+        banner = derive_history_banner([], cfg, now=_NOW, store_created_at="2026-07-01T03:00:00")
+        assert banner.headline == "Run history starts fresh here"
+
+    def test_empty_completed_but_confirmed_unscheduled_says_no_auto_sync(self) -> None:
+        # #1b: same honest no-auto-sync copy as Home when the read-back CONFIRMS no schedule.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
+        missing = ScheduleStatus(state=ScheduleState.MISSING, headline="", detail="", attention=False)
+        banner = derive_history_banner([], cfg, now=_NOW, schedule_status=missing)
+        assert banner.verdict is Verdict.WARNING
+        assert "won't sync automatically" in banner.detail
+        assert "New nightly syncs will appear" not in banner.detail
 
 
 class TestBannerLatestRules:

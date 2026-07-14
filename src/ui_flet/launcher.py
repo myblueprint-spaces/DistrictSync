@@ -3,11 +3,12 @@ branch — Flet is the default/only UI).
 
 Replicates the prior launcher's frozen-cwd handling so ``config/`` resolves
 for a later ``run_pipeline``, then runs the Flet shell. Because the shipped exe is
-**windowed / no-console**, a boot failure can't print to a console — so the
-import + ``ft.run`` are wrapped in an early-failure path that (a) writes the FULL
-traceback to the ETL log sink and (b) shows a PLAIN-LANGUAGE error (the traceback
-goes to the LOG ONLY, never the dialog), then exits non-zero. The window can never
-die silently.
+**windowed / no-console**, a boot failure can't print to a console — so the legacy
+app-data migration, log-sink setup, import + ``ft.run`` are wrapped in an
+early-failure path that (a) writes the FULL traceback to the ETL log sink and
+(b) shows a PLAIN-LANGUAGE error (the traceback goes to the LOG ONLY, never the
+dialog), then exits non-zero. The window can never die silently — including when
+the profile itself is locked or permission-denied at migration / log-open time.
 
 The pure helpers (``resolve_frozen_cwd``, ``resolve_log_path``,
 ``format_user_error``) are factored out and unit-tested; the ``ft.run`` glue and
@@ -21,9 +22,21 @@ import sys
 import traceback
 from pathlib import Path
 
-from src.utils.paths import user_log_file
+from src.utils.logger import get_logger
+from src.utils.paths import migrate_legacy_data_dir, user_log_file
 
 _LOG_NAME = "etl_tool.log"
+
+
+def boot_logging() -> None:
+    """Configure the shared file-log sink for the UI session (deferred from import).
+
+    A Flet session that never configured logging would run silently — its diagnostics
+    (and, from Slice 4b, its run records) would go nowhere. Call this once at launch so
+    the UI writes to the same ``etl_tool.log`` sink as the CLI and scheduled runs. The
+    sink path resolves through ``paths.user_data_dir()`` at call time (single seam).
+    """
+    get_logger("src.ui_flet")
 
 
 def resolve_frozen_cwd() -> Path | None:
@@ -43,13 +56,15 @@ def resolve_log_path() -> Path:
     """Canonical ETL log path — the same sink the ETL writes to.
 
     Reuses ``src/utils/paths.user_log_file()`` (single source of truth) so the
-    early-failure traceback lands where Run History / support already look. Falls
-    back to ``~/.districtsync/etl_tool.log`` only if that helper is unavailable.
+    early-failure traceback lands where Run History / support already look. If that
+    helper itself is unavailable (paths.py broken), falls back to a bare filename in
+    the current directory — deliberately NOT re-deriving the app-data location here,
+    which would duplicate the single ``paths.py`` seam.
     """
     try:
         return user_log_file()
     except Exception:
-        return Path.home() / ".districtsync" / _LOG_NAME
+        return Path(_LOG_NAME)
 
 
 def format_user_error(exc: BaseException) -> str:
@@ -93,6 +108,16 @@ def _show_error_dialog(message: str) -> None:  # pragma: no cover - view glue
             page.title = "DistrictSync"
             page.window.width = 520
             page.window.height = 320
+
+            # Flet 0.85.3 `Window.destroy()` is a coroutine — a synchronous call is an
+            # un-awaited no-op (Close would do nothing). Await it via an async handler;
+            # `os._exit(0)` is the fallback so the boot-error window can always close.
+            async def _close(_e: ft.ControlEvent) -> None:
+                try:
+                    await page.window.destroy()
+                except Exception:
+                    os._exit(0)
+
             page.add(
                 ft.Container(
                     padding=ft.Padding(left=28, top=28, right=28, bottom=28),
@@ -101,7 +126,7 @@ def _show_error_dialog(message: str) -> None:  # pragma: no cover - view glue
                         controls=[
                             ft.Text("DistrictSync", size=20, weight=ft.FontWeight.W_800),
                             ft.Text(message, size=14, selectable=True),
-                            ft.FilledButton("Close", on_click=lambda _e: page.window.destroy()),
+                            ft.FilledButton("Close", on_click=_close),
                         ],
                     ),
                 )
@@ -134,6 +159,21 @@ def main() -> None:  # pragma: no cover - view glue (ft.run + dialog)
         os.chdir(frozen_cwd)
 
     try:
+        # Relocate a legacy ~/.districtsync profile, THEN open the log sink in the
+        # post-migration location — both inside the safety net so a locked or
+        # permission-denied profile surfaces the plain-language error dialog instead
+        # of dying silently before the window ever opens. ``_write_traceback`` stays
+        # independent: it re-resolves the log path itself (falling back to the legacy
+        # dir), so it still records the traceback even if ``boot_logging`` was the
+        # thing that failed.
+        migrate_legacy_data_dir()
+        boot_logging()
+
+        # Best-effort sweep of any orphaned elevation-handshake files (D5) — never fatal.
+        from src.scheduler.elevation import sweep_orphans
+
+        sweep_orphans()
+
         import flet as ft
 
         from src.ui_flet import shell

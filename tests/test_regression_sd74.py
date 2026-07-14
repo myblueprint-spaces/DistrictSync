@@ -45,9 +45,16 @@ class TestSD74Regression:
         """
         out = tmp_path_factory.mktemp("sd74_regression")
         empty_user_dir = tmp_path_factory.mktemp("empty_user_mappings")
+        store_dir = tmp_path_factory.mktemp("sd74_store")
+        # This is a CLASS-scoped fixture — it runs before the function-scoped
+        # ``isolated_user_profile`` autouse fixture. ``run_pipeline`` now writes a run
+        # record via ``paths.user_data_dir()``, so redirect that seam into a tmp store dir
+        # here too, else the class-scoped run would write the REAL ``history.db``. The CSV
+        # output goes to ``out``, so the SD74 golden snapshot is byte-identical.
         with (
             patch("src.config.loader.bundle_mappings_dir", return_value=FROZEN_CONFIG_DIR),
             patch("src.config.loader.user_mappings_dir", return_value=empty_user_dir),
+            patch("src.utils.paths.user_data_dir", return_value=store_dir),
         ):
             main("sd74myedbc", str(INPUT_DIR), str(out))
         return out

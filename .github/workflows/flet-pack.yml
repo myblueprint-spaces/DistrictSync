@@ -31,14 +31,21 @@ jobs:
             flavor: full
             sep: ";"
             require_close: "--require-close"
+            # The brand icon runtime surface (`page.window.icon`) + the Explorer exe icon
+            # are Windows-only; PyInstaller `--icon` wants a `.icns` on macOS, so scope the
+            # `.ico` to Windows to avoid a mac conversion failure. The .ico is still BUNDLED
+            # on all OSes via `--add-data assets` (harmless elsewhere; tiny).
+            icon_arg: "--icon assets/districtsync.ico"
           - os: ubuntu-22.04 # pinned: the Linux client filename encodes the distro
             flavor: light
             sep: ":"
             require_close: ""
+            icon_arg: ""
           - os: macos-latest
             flavor: full
             sep: ":"
             require_close: ""
+            icon_arg: ""
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -128,7 +135,9 @@ jobs:
         run: |
           flet pack src/main.py --name DistrictSync \
             --yes \
+            ${{ matrix.icon_arg }} \
             --add-data "config${{ matrix.sep }}config" \
+            --add-data "assets${{ matrix.sep }}assets" \
             --hidden-import flet \
             --hidden-import flet_desktop \
             --hidden-import src.ui_flet.launcher \

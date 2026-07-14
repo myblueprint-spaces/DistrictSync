@@ -93,6 +93,62 @@ class TestTestConnection:
             assert "timeout" in msg
 
 
+class TestPasswordOverride:
+    """Slice 7 (D6): a typed password threads transiently to ``client.connect()`` ONLY.
+
+    It is never written to the keyring, never logged, and never appears in the
+    returned message — so a failed/typo'd Test can't clobber a working credential.
+    """
+
+    def test_override_threaded_to_connect_never_keyring(self):
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        with (
+            patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch("src.sftp.uploader.keyring.get_password") as mock_get,
+        ):
+            mock_client = mock_cls.return_value
+            ok, msg = uploader.test_connection(password_override="typed-secret")
+            assert ok is True
+            # The override rode straight to client.connect(...), not the keyring.
+            assert mock_client.connect.call_args.kwargs["password"] == "typed-secret"
+            mock_get.assert_not_called()
+            # The credential never leaks into the returned message.
+            assert "typed-secret" not in msg
+
+    def test_no_override_falls_back_to_stored_keyring_password(self):
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        with (
+            patch("src.sftp.uploader.paramiko.SSHClient") as mock_cls,
+            patch("src.sftp.uploader.keyring.get_password", return_value="stored-pw") as mock_get,
+        ):
+            mock_client = mock_cls.return_value
+            ok, _msg = uploader.test_connection()
+            assert ok is True
+            # No override → the stored keyring credential is used (the nightly path).
+            assert mock_client.connect.call_args.kwargs["password"] == "stored-pw"
+            mock_get.assert_called_once()
+
+    def test_test_path_leaves_stored_credential_intact(self):
+        """The in-memory keyring backend (suite-wide) is UNTOUCHED by the test path."""
+        import keyring as kr
+
+        kr.set_password(KEYRING_SERVICE, "user", "original-stored")
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        with patch("src.sftp.uploader.paramiko.SSHClient"):
+            uploader.test_connection(password_override="typo-typed")
+        # A typo'd Test never overwrites the working stored credential.
+        assert kr.get_password(KEYRING_SERVICE, "user") == "original-stored"
+
+    def test_test_connection_never_calls_store_password(self):
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        with (
+            patch("src.sftp.uploader.paramiko.SSHClient"),
+            patch.object(uploader, "store_password") as mock_store,
+        ):
+            uploader.test_connection(password_override="typed")
+            mock_store.assert_not_called()
+
+
 class TestUploadCsvs:
     def test_upload_zips_all_csvs(self, tmp_path):
         """upload_csvs should zip all CSVs into a single dated file and upload it."""

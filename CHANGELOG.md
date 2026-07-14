@@ -9,6 +9,22 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Added
+
+- **Guided 5-step Setup wizard.** First-run setup is now a stepped wizard —
+  Folders → District → Delivery → Schedule → a finish screen that states what it
+  actually checked (e.g. "we tested the connection to `<host>` just now and it
+  worked"). The Schedule and Delivery steps are optional and can be set up later.
+  Once finished, Setup becomes a flat **Settings** page with a single Save.
+- **Durable run-history database.** Run history now lives in a dedicated
+  `history.db` in the app-data folder instead of being parsed back out of the
+  diagnostic log. Manual (Convert), scheduled, and CLI runs are all recorded and
+  tagged by how they were triggered; the log stays for diagnostics only.
+- **Schedule read-back.** DistrictSync now reads the real Windows scheduled task
+  back and reports it honestly — registered and next-run time when it can confirm
+  it, "not scheduled" only when it's genuinely absent, and "couldn't confirm right
+  now" rather than guessing. An **Unregister** action removes the schedule.
+
 ### Changed
 
 - **Flet is now the only UI; the public executable is the Flet-default build.**
@@ -17,6 +33,21 @@ Per-release download links and auto-generated commit notes live on the
   CLI, byte-for-byte unchanged. The GitHub Release now ships one Flet-default exe
   per OS (Windows/Linux/macOS) plus `SHA256SUMS.txt` — a single binary that is
   both the UI and the CLI.
+- **Turning on the nightly schedule now uses one Windows permission prompt (UAC)**
+  for that step only, instead of requiring the whole app to be launched as
+  administrator. The app itself never runs elevated.
+- **App data moved to the standard per-OS location.** Settings, logs, and run
+  history now live in `%LOCALAPPDATA%\DistrictSync` (Windows) /
+  `~/Library/Application Support/DistrictSync` (macOS) /
+  `~/.local/share/DistrictSync` (Linux). Existing installs are migrated
+  automatically on first run, with a `MOVED.txt` note left in the old
+  `~/.districtsync` folder (nothing is deleted).
+- **Honest, verified status throughout.** The SFTP test now names exactly what it
+  checked and when (and no longer writes a typed password to the credential store
+  before testing); Convert names the output folder, offers "Open folder", and
+  refuses to run without an explicit district; the navigation order is now fixed;
+  the window/taskbar/exe show the myBlueprint brand icon; Exit closes the app and
+  Enter submits forms.
 
 ### Removed
 
@@ -33,6 +64,22 @@ Per-release download links and auto-generated commit notes live on the
   metadata, so the previous `importlib`-only lookup always reported `dev`. The UI
   and the CLI now share the one `app_version()` lookup (tag → package metadata →
   `dev`). Preserves the fix from PR #42 through the Flet packaging rework.
+- **Stale in-app state.** Switching district, completing setup, and other changes
+  now reflect immediately across Home, Run History, Mapping, and Help without a
+  restart; the schedule status shown in the app is read back from Windows rather
+  than trusted from a saved flag.
+- **Run history starts fresh with this update.** Earlier history existed only in
+  the diagnostic log (which mixed real runs with internal test entries), so it is
+  **not** carried over; Run History fills in again from your next conversion. Your
+  previous `etl_tool.log` is left untouched.
+
+### Security
+
+- The per-operation schedule-elevation handshake passes the Windows password to
+  the elevated step through an encrypted (DPAPI, current-user-scoped) channel that
+  fails closed if the prompt is approved under a different account, and never logs
+  it or writes it to disk in plain text. Stored run history carries only a bounded
+  error category — detailed error text stays in the local diagnostic log.
 
 ## [3.3.1] - 2026-06-25
 
