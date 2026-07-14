@@ -136,9 +136,10 @@ class TestEndToEndPipeline:
         main("myedbc", str(input_dir), str(output_dir))
 
         classes = pd.read_csv(output_dir / "Classes.csv")
-        # Subject class IDs should contain _2025 (school year)
+        # Test data has 'School Year' = "2025/2026" → end-year = 2026
+        # so class IDs are suffixed with "_2026".
         subject_ids = classes["Class ID"].dropna().astype(str)
-        assert any("_2025" in cid for cid in subject_ids)
+        assert any("_2026" in cid for cid in subject_ids)
 
     def test_enrollments_have_both_roles(self, setup_gde_files):
         input_dir, output_dir = setup_gde_files

@@ -22,7 +22,7 @@ class TestGetTransformer:
             assert name in TRANSFORMER_REGISTRY
 
     def test_unknown_entity_returns_default_transformer(self):
-        transformer = get_transformer("CourseInfo")
+        transformer = get_transformer("UnregisteredEntity")
         assert isinstance(transformer, DefaultTransformer)
 
     def test_unknown_entity_does_not_raise(self):
@@ -35,7 +35,7 @@ class TestDefaultTransformer:
     @pytest.fixture()
     def context(self):
         ctx = TransformContext()
-        ctx.set_school_year(2025)
+        ctx.set_school_year(2025, "08-25", "07-25")
         return ctx
 
     def test_applies_field_map_string_columns(self, context):

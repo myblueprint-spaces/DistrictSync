@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "sh4npeiris": {
+      "source": {
+        "source": "github",
+        "repo": "sh4npeiris/claugentic-dev-harness"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "claugentic-dev-harness@sh4npeiris": true
+  }
+}
