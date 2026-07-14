@@ -95,7 +95,7 @@ jobs:
       # pure optimization — a miss self-downloads in the warm-up below and the
       # cache-populated assert still gates, so a miss can never silently break the
       # offline guarantee.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.flet
           key: flet-client-${{ runner.os }}-${{ env.FLET_VERSION }}-${{ env.FLET_DESKTOP_FLAVOR }}
