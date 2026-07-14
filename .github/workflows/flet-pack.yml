@@ -51,7 +51,7 @@ jobs:
     env:
       FLET_DESKTOP_FLAVOR: ${{ matrix.flavor }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Stamp the release version so the built exe's `--version` reports the real
       # tag. A frozen PyInstaller build ships no package metadata, so importlib
