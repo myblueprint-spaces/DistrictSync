@@ -68,7 +68,7 @@ def test_benchmark_student_transform(benchmark, large_student_df, students_mappi
     """Benchmark: transform 5,000 student records."""
     raw_data = {"StudentDemographicInformation.txt": large_student_df}
     transformer = DataTransformer()
-    transformer.set_school_year(2025)
+    transformer.set_school_year(2025, "08-25", "07-25")
 
     result = benchmark(
         transformer.transform,

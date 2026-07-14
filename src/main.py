@@ -11,13 +11,15 @@ backward compatibility only.
 """
 
 import argparse
-import importlib.metadata
+import logging
 import os
 import sys
+from typing import Callable
 
 from src.config.app_config import AppConfig
 from src.etl.pipeline import (
     ANOMALY_THRESHOLD,
+    PipelineResult,
     _check_anomalies,
     _emit_run_log,
     _print_diff,
@@ -27,10 +29,13 @@ from src.etl.pipeline import (
 )
 from src.sftp.uploader import SFTPUploader
 from src.utils.logger import get_logger
+from src.utils.paths import migrate_legacy_data_dir
 from src.utils.validators import validate_sftp_host, validate_sis_type
+from src.utils.version import app_version
 
 __all__ = [
     "ANOMALY_THRESHOLD",
+    "PipelineResult",
     "SFTP_PASSWORD_ENV_VAR",
     "_check_anomalies",
     "_emit_run_log",
@@ -41,10 +46,10 @@ __all__ = [
     "run_pipeline",
 ]
 
-logger = get_logger(__name__)
 # Keep the re-export references alive (used via __all__).
 _ = (
     ANOMALY_THRESHOLD,
+    PipelineResult,
     extract_required_files,
     run_pipeline,
     _check_anomalies,
@@ -52,6 +57,18 @@ _ = (
     _print_diff,
     _sftp_upload,
 )
+
+
+def _configure_cli_logging() -> logging.Logger:
+    """Configure the shared file-log sink for a CLI run and return the app logger.
+
+    Deferred out of import time (D3): importing ``src.main`` — e.g. to reach a
+    re-exported symbol or an SFTP subcommand helper from a test — must never attach
+    a handler to the real user log (the source of the "dummy" Run History records).
+    Every CLI entry path calls this exactly once so the run and its exit-code-3
+    summary are written to ``etl_tool.log``.
+    """
+    return get_logger(__name__)
 
 
 def main(sis_type: str, input_path: str, output_path: str) -> None:
@@ -182,18 +199,44 @@ def _sftp_show(args: argparse.Namespace) -> int:
     return 0
 
 
-if __name__ == "__main__":
-    # No arguments → launch the web UI (e.g. double-clicked from Explorer)
-    if len(sys.argv) == 1:
-        from src.ui.launcher import main as _launch_ui
+def _default_ui_launcher() -> Callable[[], None]:
+    """Return the no-argv UI launcher — the native Flet shell.
 
-        _launch_ui()
+    Flet is the only UI. This one-line seam keeps the no-argv dispatch
+    testable by identity (a monkeypatched sentinel) without launching a
+    window; it is the ONLY place the default UI entry point is named.
+    """
+    from src.ui_flet.launcher import main as _launch_ui
+
+    return _launch_ui
+
+
+if __name__ == "__main__":
+    # No arguments → launch the UI (e.g. double-clicked from Explorer).
+    # The launcher configures its own logging sink (launcher.boot_logging).
+    if len(sys.argv) == 1:
+        _default_ui_launcher()()
         sys.exit(0)
 
-    try:
-        version = importlib.metadata.version("districtsync")
-    except importlib.metadata.PackageNotFoundError:
-        version = "dev"
+    # Relocate a legacy ~/.districtsync profile to the platform data dir BEFORE
+    # configuring the log sink, so the log opens in the post-migration location.
+    # Idempotent + failure-safe (falls back to the legacy dir on any error, never
+    # raises), so this is a cheap exists()-check no-op on every already-migrated run.
+    migrate_legacy_data_dir()
+
+    # CLI entry path: configure the shared file-log sink now (deferred from import
+    # time so importing src.main in tests never touches the real user profile).
+    logger = _configure_cli_logging()
+
+    # Best-effort sweep of any orphaned elevation-handshake files (D5) — never fatal.
+    from src.scheduler.elevation import sweep_orphans
+
+    sweep_orphans()
+
+    # Single source (src/utils/version.py): build-stamped tag → package
+    # metadata → "dev". A frozen exe reports the real release via the
+    # tag-stamped src/_version.py; importlib alone would always say "dev".
+    version = app_version()
 
     parser = argparse.ArgumentParser(
         description="SIS Data ETL Tool for myBlueprint - SpacesEDU",
@@ -216,6 +259,13 @@ if __name__ == "__main__":
     parser.add_argument("--diff", action="store_true", help="Show diff against existing output files")
     parser.add_argument("--quality", action="store_true", help="Generate a data quality report")
     parser.add_argument("--sftp", action="store_true", help="Upload output CSVs via SFTP after a successful run")
+    parser.add_argument(
+        "--source",
+        choices=["manual", "scheduled", "cli"],
+        default=None,
+        help="Run origin tag for the run-history store (the registered scheduled task passes 'scheduled'; "
+        "defaults to the DSYNC_SOURCE env var, else 'cli')",
+    )
 
     # SFTP setup subcommands (headless / scripted / Docker-friendly)
     sftp_group = parser.add_argument_group("SFTP setup (choose one)")
@@ -257,7 +307,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     try:
-        run_pipeline(
+        result = run_pipeline(
             sis,
             args.input,
             args.output,
@@ -265,6 +315,7 @@ if __name__ == "__main__":
             diff=args.diff,
             quality=args.quality,
             sftp=args.sftp,
+            source=args.source,
         )
     except SystemExit:
         raise
@@ -272,3 +323,23 @@ if __name__ == "__main__":
         print(f"\nError: {e}")
         print("Check etl_tool.log for details. Contact support@myBlueprint.ca for help.")
         sys.exit(1)
+
+    # Exit code 3: SFTP was requested and attempted but delivery failed.
+    # The ETL output (CSV files) is already written and intact — only the
+    # upload to SpacesEDU failed.  Non-zero exit lets Task Scheduler flag
+    # the run as failed so operators are not left with a false green.
+    #
+    # Exit code inventory:
+    #   0 — success (ETL complete; SFTP succeeded or not requested)
+    #   1 — ETL / argument / validation error (run did not complete)
+    #   2 — stdin empty / mutual-exclusion flag error
+    #   3 — SFTP delivery failure (ETL succeeded; upload did not)
+    if result.sftp_attempted and not result.sftp_ok:
+        # _sftp_upload already logged at ERROR level with the host; re-emit
+        # a brief summary here so the Task Scheduler "Last Run Result" note
+        # is clearly non-zero.
+        logger.error(
+            "Run exiting with code 3: SFTP upload was attempted but failed. "
+            "Output CSVs are present on disk. Check logs for details."
+        )
+        sys.exit(3)

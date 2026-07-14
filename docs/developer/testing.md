@@ -117,14 +117,17 @@ Always pass `config_dir=tmp_path` in config tests so they don't read from `confi
 
 ## Coverage configuration
 
-`pyproject.toml` omits certain modules from coverage:
+`pyproject.toml` omits certain modules from coverage — logging config plus the
+Flet view-glue modules (thin `flet`-touching views; their pure logic lives in
+COUNTED helpers that carry the 80% gate):
 
 ```toml
 [tool.coverage.run]
 omit = [
     "src/utils/logger.py",   # logging configuration only
-    "src/ui/*",              # Streamlit UI — not unit-testable
-    "src/ui/launcher.py",
+    "src/ui_flet/shell.py",  # view glue — pure logic tested in COUNTED helpers
+    "src/ui_flet/launcher.py",
+    # ... other src/ui_flet view-glue modules
 ]
 ```
 
@@ -157,9 +160,9 @@ CI also runs the following quality gates on each push:
 | Step | Command |
 |------|---------|
 | Format check | `ruff format --check src/ tests/` |
-| Type check | `mypy src/ --exclude 'src/ui'` (UI pages excluded) |
+| Type check | `mypy src/ --exclude 'src/ui_flet'` (Flet UI excluded — no beta stubs) |
 | Security scan | `bandit -r src/ -q` |
-| Config validation | `make validate-config` (all 5 district YAML configs) |
+| Config validation | `make validate-config` (all district + tier YAML configs) |
 
 !!! note "Testing district configs with non-standard filenames"
     When writing E2E tests for district configs that use non-standard filenames (e.g., SD40's CSV files with SD-40_ prefix), create fixture files in `tmp_path` using the exact filenames the district config expects. See `tests/test_pipeline_e2e_districts.py` for examples.

@@ -9,17 +9,13 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.9", "3.11", "3.13"]
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.13
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.13"
 
       - name: Install dependencies
         run: |
@@ -34,7 +30,7 @@ jobs:
         run: ruff format --check src/ tests/
 
       - name: Type-check with mypy
-        run: mypy src/ --exclude 'src/ui'
+        run: mypy src/ --exclude 'src/ui_flet'
 
       - name: Security scan with bandit
         run: bandit -r src/ -q -c pyproject.toml
@@ -46,7 +42,7 @@ jobs:
         run: |
           python -c "
           from src.config.loader import load_config
-          for name in ['myedbc', 'sd40myedbc', 'sd48myedbc', 'sd51myedbc', 'sd74myedbc']:
+          for name in ['myedbc', 'sd40myedbc', 'sd48myedbc', 'sd51myedbc', 'sd54myedbc', 'sd60myedbc', 'sd74myedbc']:
               load_config(name)
               print(f'{name}: OK')
           "

@@ -60,6 +60,12 @@ class DataQualityReport:
 
         Known entities use predefined key columns. Unknown entities fall back
         to a heuristic: any column ending with ' ID' or named 'Course Code'.
+
+        StudentAttendance maps to an EXPLICIT empty key list: a full-day
+        absence is intentionally two identical rows, so duplicates are
+        legitimate and the dup check is skipped. The entry is explicit (not
+        left to the heuristic) so the intentional-duplicates contract is
+        encoded rather than accidental.
         """
         key_map = {
             "Students": ["User ID"],
@@ -67,9 +73,13 @@ class DataQualityReport:
             "Family": ["Student User ID", "Email"],
             "Classes": ["Class ID"],
             "Enrollments": ["Class ID", "User ID", "Role"],
+            "CourseInfo": ["Course Code", "School ID"],
+            "StudentCourses": ["Student ID", "Course Code", "Completion Date"],
+            "StudentAttendance": [],  # intentional duplicates (full-day = 2 rows) — skip
         }
-        keys = key_map.get(name)
-        if keys is None:
+        if name in key_map:
+            keys = key_map[name]
+        else:
             # Heuristic for unknown entities: columns ending with " ID" or " Code"
             keys = [c for c in df.columns if c.endswith(" ID") or c.endswith(" Code")]
         if keys and all(k in df.columns for k in keys):
