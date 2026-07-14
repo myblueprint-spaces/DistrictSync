@@ -1,0 +1,4 @@
+School Number,Course Code,Title,Grade Level,Credit Value
+7479001,MEN--10,English 10,10,4
+7479001,MMA--10,Math 10,10,4
+7479001,XGEN-12,Explore 12,12,0

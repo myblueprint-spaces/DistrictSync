@@ -7,6 +7,102 @@ global_config:
   school_year_sources:
     student_schedule: "StudentSchedule.txt"
   homeroom_grades: ["IT", "PR", "PK", "TK", "KG", "01", "02", "03", "04", "05", "06", "07"]
+  # Academic-period dates (BC / MyEd BC). These are the SINGLE source of truth —
+  # the pipeline has no in-code fallbacks. Districts inheriting this config
+  # (SD40/SD48/SD51/SD54/SD74) receive these via deep merge.
+  # NON-BC districts should NOT inherit from myedbc; create a separate base
+  # config (e.g. ontario_powerschool.yaml) with the dates appropriate to that
+  # region's school year. A config that enables the Classes entity but lacks
+  # these dates fails validation at load time.
+  academic_start_month_day: "08-25"
+  academic_end_month_day: "07-25"
+  # Date past which the today's-date fallback for school_year rolls forward
+  # to the next academic year. Only matters when no source file has a
+  # 'school year' column. Districts that upload upcoming-year exports
+  # earlier can lower this (e.g. "07-01").
+  academic_year_rollover_month_day: "07-25"
+  # MyEd BC convention: a bare 'YYYY' in the source 'school year' column is
+  # the year the academic period ENDS in. Non-BC districts whose source
+  # files use start-year semantics should set this to "start".
+  school_year_naming: "end"
+  # By default this base config produces the 5 standard rostering CSVs. The
+  # CourseInfo + StudentCourses templates below are defined so districts can
+  # opt into them via an override config (see mbp_all_mapping.yaml) by
+  # extending `enabled_entities`. Districts that want only a subset can
+  # override this list — e.g. mbp_core drops the rostering entities.
+  enabled_entities:
+    - Students
+    - Staff
+    - Family
+    - Classes
+    - Enrollments
+  # MyEd BC course-code conventions used by the CourseInfo + StudentCourses
+  # entities. Inert when those entities aren't enabled.
+  # Lowest grade to include in the CourseInfo + StudentCourses CSVs. MyEd BC
+  # encodes the grade in the course code; courses below this grade are dropped.
+  # Default 10 (grades 10-12). Set to 8 or 9 to also include those grade levels
+  # (never lower). The early-grade exclusion regex is derived from this value.
+  course_start_grade: 10
+  excluded_course_code_patterns:
+    - "^.{5}-K"      # kindergarten variants
+    - "^X"           # X-prefix courses
+    - "^ATT"         # attendance bookkeeping
+  excluded_course_flavors:
+    - HUB
+    - HOL
+    - DL
+    - "---"
+  # StudentAttendance derivation (read at runtime by StudentAttendanceTransformer;
+  # inert unless StudentAttendance is in enabled_entities). Every source column
+  # name and every derivation knob lives here so SpacesEDU/SD51 tunes config, not
+  # code. The `daily` sub-block covers the K-7 Student Daily Absences band; the
+  # `period` sub-block covers the 8-12 Student Period Absences band.
+  # Source column names are the NORMALIZED (lowercase) names injected by the
+  # entity `headers:` blocks below.
+  attendance:
+    # Output format for the Absence Date column — configurable per district.
+    # Friendly tokens: yyyy, yy, MMMM, MMM, MM, dd (e.g. "yyyy-MM-dd",
+    # "dd-MMM-yyyy") with literal separators; an unsupported token fails loud.
+    # Default ISO "yyyy-MM-dd" is the shape SpacesEDU's attendance importer
+    # requires. Input GDE dates in any recognized format are parsed and
+    # reformatted to this — input recognition is unaffected by this setting.
+    date_format: "yyyy-MM-dd"
+    daily:
+      daily_school_col: "school number"
+      daily_student_col: "student number"
+      daily_date_col: "absence date"
+      daily_absent_code_col: "absent code am"
+      daily_authorized_col: "authorized am"
+      daily_portion_col: "portion absent"
+      # (Absent Code | Authorized) -> SpacesEDU Absence Category. A non-blank
+      # pair absent from this map fails loud (raises) — never silently dropped.
+      category_map:
+        "A|N": "A"      # absent, unexcused
+        "A|Y": "A-E"    # authorized absence
+        "T|N": "L"      # tardy = late
+        "T|Y": "L-E"    # excused late
+      # Portion Absent -> output row count (each row = one half-day).
+      portion:
+        full_day_value: 1.0   # portion == this -> full_day_rows
+        full_day_rows: 2
+        tardy_code: "T"       # this Absent Code -> tardy_rows (always 1 half-day)
+        tardy_rows: 1
+        default_rows: 1       # any other present absence (partial day)
+    # 8-12 Student Period Absences band — PER-PERIOD PASS-THROUGH. SpacesEDU
+    # aggregates per-day itself via per-entry weights (8-12 = 0.25/entry, 4
+    # entries = 1 day, capped at 1/day), so we emit ONE output row per
+    # period-absence row — no AM/PM collapse, no Period Id, no derivation. The
+    # `absence category` column already holds the final codes (A, A-E, L, AD,
+    # AL, OffSite, ISS...); SpacesEDU ignores non-accepted ones, so the category
+    # is passed through AS-IS (no filtering). Only the four populated output
+    # columns are sourced; nothing is derived, so there are no row-count or
+    # category-map knobs here. Column names are the NORMALIZED names injected by
+    # the StudentPeriodAbsences.txt `headers:` block below.
+    period:
+      period_school_col: "school number"
+      period_student_col: "student number"
+      period_date_col: "absence date"
+      period_category_col: "absence category"
 
 mappings:
   Students:
@@ -21,10 +117,21 @@ mappings:
       "Grade":
         column: "Grade"
         transform: "grade_to_ceds"
-      "EnrollStatus": #auto detected from Enrollment Status or Withdrawal Date fields
+      # Active-student detection. `null` keeps MyEd BC defaults:
+      #   - status column auto-resolved from the alias
+      #     ["Enrollment status", "Enrolment status"] (first present in the
+      #     frame; covers both real two-L and one-L exports). None -> date-only.
+      #   - active_values: ["Active", "PreReg"] (the Advanced CSV spec's expected
+      #     EnrollStatus values; Inactive/etc. excluded). Status wins when present.
+      #   - withdraw_date_column: "Withdraw date" — only a FALLBACK for rows
+      #     with no status value (past/unparseable -> Inactive).
+      # Override per-district with a dict, e.g. to also retain cross-enrolled
+      # students, or to drop PreRegs:
+      #   EnrollStatus: {active_values: ["Active", "PreReg", "Active No Primary"]}
+      "EnrollStatus":
       "SchoolCode": "School Number"
       "Homeroom": "Homeroom"
-      "PreRegSchoolCode": "Previous school number"
+      "PreRegSchoolCode": "Next school code"
       "Preferred First Name": "Usual First Name"
       "Preferred Last Name": "Usual surname"
       "Community Hours":
@@ -96,3 +203,148 @@ mappings:
         "student_id_col": "Student ID"
         "staff_id_col": "Teacher ID"
       "School ID": "School Number"
+
+  # ------------------------------------------------------------------------
+  # myBlueprint+ entities (CourseInfo + StudentCourses)
+  # ------------------------------------------------------------------------
+  # Defined but not enabled by default. To produce these CSVs, use a config
+  # that extends `enabled_entities` (e.g. mbp_all_mapping.yaml or
+  # mbp_core_mapping.yaml).
+  CourseInfo:
+    source_files:
+      course_info: "CourseInformation.txt"
+    field_map:
+      "Course Code": "Course Code"
+      "Alternate Course Code":
+        value: ""
+      "School ID": "School Number"
+      "Course Name": "Title"
+      "Course Description":
+        value: ""
+      "Discipline":
+        value: ""
+      "Department":
+        value: ""
+      "Type":
+        value: ""
+      "Grade": "Grade Level"
+      "MaxGrade":
+        value: ""
+      "Credit Value": "Credit Value"
+      "IntegrationId":
+        value: ""
+      "Year Offered":
+        value: ""
+
+  # StudentCourses joins course history + selection + info. The transformer
+  # implements all logic; field_map values are ignored — the keys exist only
+  # to set the output column order. source_files order matters: course_info
+  # is first so the pipeline's primary_df.empty check doesn't skip the entity
+  # when history is empty (CourseInformation.txt is the most reliable source).
+  StudentCourses:
+    source_files:
+      course_info: "CourseInformation.txt"
+      course_history: "StudentCourseHistory.txt"
+      course_selection: "StudentCourseSelection.txt"
+    field_map:
+      "Student ID":
+        value: ""
+      "Course Code":
+        value: ""
+      "IntegrationId":
+        value: ""
+      "Course Name":
+        value: ""
+      "Completion Date":
+        value: ""
+      "Final Mark":
+        value: ""
+      "Credits Earned":
+        value: ""
+      "Alternate Course Code":
+        value: ""
+      "Potential Credits Earned":
+        value: ""
+      "Term Grade":
+        value: ""
+
+  # ------------------------------------------------------------------------
+  # StudentAttendance (SpacesEDU half-day attendance feed) — opt-in
+  # ------------------------------------------------------------------------
+  # Defined but not enabled by default (not in base enabled_entities). SD51
+  # opts in. Two bands union into one frame:
+  #   - K-7 Student Daily Absences (StudentDailyAbsences.txt) — DERIVED category
+  #     + row multiplicity from global_config.attendance.daily.
+  #   - 8-12 Student Period Absences (StudentPeriodAbsences.txt) — PER-PERIOD
+  #     PASS-THROUGH: one output row per period-absence row, category passed
+  #     through as-is (SpacesEDU weights 0.25/entry + caps 1/day → no AM/PM
+  #     collapse, no derivation).
+  # BOTH files are HEADERLESS — each `headers:` block injects the MyEd
+  # Data-Elements column names (in file order) at extract time. field_map sets
+  # the 4-column output order (School Number, Absence Date, Absence Category,
+  # Student Number) — the SpacesEDU contract permits dropping the optional
+  # fields after Student Number. The transformer builds the rows directly (it
+  # does NOT call apply_field_map), so the field_map values are placeholders;
+  # only the KEYS and their order matter. "Absence Category" is
+  # computed/passed-through by the transformer.
+  #
+  # The base declares NO source_files for StudentAttendance. Each district
+  # declares the `source_files` role(s) for the band(s) it runs —
+  # `daily_absences` (K-7 daily) and/or `period_absences` (8-12 period). The
+  # transformer resolves each band by ROLE (order-independent) and each band is
+  # optional, so a district can run only daily, only period, or both. (The base
+  # never enables StudentAttendance, so an empty source_files here never runs;
+  # it just keeps both bands off any district that doesn't opt in by declaring a
+  # role.)
+  StudentAttendance:
+    source_files: {}
+    headers:
+      "StudentDailyAbsences.txt":
+        - School Number
+        - Student Number
+        - Student Legal Last Name
+        - Student Legal First Name
+        - Grade
+        - Homeroom
+        - Teacher Name
+        - Absence Date
+        - Reason Code AM
+        - Sub Allocation Code AM
+        - Authorized AM
+        - Reason Code PM
+        - Sub Allocation Code PM
+        - Authorized PM
+        - Absent Code AM
+        - Absent Code PM
+        - Teacher ID
+        - Portion Absent
+      # Standard headerless Student Period Absences (MyEd Data Elements §2.45):
+      # 17 columns in file order. Only School Number / Student Number /
+      # Absence Date / Absence Category are functionally used (per-period
+      # pass-through); the rest are placeholders to match the column count.
+      "StudentPeriodAbsences.txt":
+        - School Number
+        - Student Number
+        - Student Legal Last Name
+        - Student Legal First Name
+        - Grade
+        - Homeroom
+        - Teacher Name
+        - Absence Date
+        - Course Code
+        - Absence Category
+        - Absence Sub Allocation Code
+        - Authorized Absence Code
+        - Master Timetable ID
+        - Section Letter
+        - Teacher ID
+        - School Course Code
+        - Flavour
+    field_map:
+      "School Number": "School Number"
+      # Placeholder (transformer builds rows directly). The Absence Date OUTPUT
+      # format is governed by global_config.attendance.date_format, not here.
+      "Absence Date": "Absence Date"
+      "Absence Category":
+        value: ""
+      "Student Number": "Student Number"

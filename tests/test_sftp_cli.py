@@ -22,14 +22,17 @@ from src.main import (
 
 
 @pytest.fixture
-def tmp_app_config(tmp_path, monkeypatch):
-    """Redirect AppConfig + keyring to in-memory/tmp storage."""
-    cfg_dir = tmp_path / ".districtsync"
-    cfg_file = cfg_dir / "config.json"
-    monkeypatch.setattr("src.config.app_config.APP_CONFIG_DIR", cfg_dir)
-    monkeypatch.setattr("src.config.app_config.APP_CONFIG_FILE", cfg_file)
+def tmp_app_config(isolated_user_profile, monkeypatch):
+    """Surface the isolated app-data path + capture keyring writes for assertions.
 
-    # In-memory keyring stand-in so we never touch the real OS credential store.
+    AppConfig persistence is isolated suite-wide by the conftest autouse fixture
+    (``paths.user_data_dir`` → tmp). This local ``store`` mock captures the exact
+    keyring calls so tests can assert *which* password was stored under *which* key
+    (layered on top of the suite-wide in-memory backend).
+    """
+    cfg_dir = isolated_user_profile
+    cfg_file = cfg_dir / "config.json"
+
     store: dict[tuple[str, str], str] = {}
     monkeypatch.setattr(
         "src.sftp.uploader.keyring.set_password",

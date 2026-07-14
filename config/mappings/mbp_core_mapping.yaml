@@ -1,0 +1,16 @@
+# mbp_core — only Students plus the two myBlueprint+ entities.
+#
+# Use case: a district that only needs to feed myBlueprint+ course data
+# (no class enrollments, no family contacts). Staff is excluded by
+# default — districts that want Staff can add it back by overriding
+# `enabled_entities` in a child config.
+_base: myedbc
+version: 1.0
+sis: MyEducationBC
+district_name: myBlueprint+ (minimal)
+
+global_config:
+  enabled_entities:
+    - Students
+    - CourseInfo
+    - StudentCourses

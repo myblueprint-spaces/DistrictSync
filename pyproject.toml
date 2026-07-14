@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "districtsync"
-version = "2.5.5"
+version = "3.3.1"
 authors = [{name = "Shan Peiris", email = "shan.peiris@myblueprint.ca"}]
 description = "SIS Data ETL Tool - Converts General Data Extracts to SpacesEDU Advanced CSV"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.13"
 license = {text = "MIT"}
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -29,9 +29,12 @@ sftp = [
     "paramiko>=3.0",
     "keyring>=24.0",
 ]
-# pip install -e ".[ui]"  — enables the Streamlit web UI
-ui = [
-    "streamlit>=1.30",
+# pip install -e ".[flet-ui]"  — enables the native Flet desktop UI (the only UI).
+# Exact-pinned (Flet 1.0 beta); kept in lockstep with
+# requirements.txt + docs/FLET_1.0_CONVENTIONS.md (test_flet_pin gates drift).
+flet-ui = [
+    "flet==0.85.3",
+    "flet-desktop==0.85.3",
     "paramiko>=3.0",
     "keyring>=24.0",
 ]
@@ -45,8 +48,6 @@ dev = [
     "pandas-stubs>=2.0",
     "bandit>=1.7",
     "pyinstaller>=5.0",
-    "mkdocs-material>=9.0",
-    "mkdocs-with-pdf>=0.9",
 ]
 
 [project.scripts]
@@ -57,18 +58,33 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short -m 'not benchmark and not ui'"
+addopts = "-v --tb=short -m 'not benchmark'"
 markers = [
     "benchmark: performance benchmarks (deselect with '-m \"not benchmark\"')",
     "regression: golden-file snapshot tests — fail means output changed",
     "integration: tests that use real servers or filesystem I/O",
-    "ui: Playwright browser smoke tests (require streamlit + chromium)",
     "property: Hypothesis property-based tests",
 ]
 
 [tool.coverage.run]
 source = ["src"]
-omit = ["src/utils/logger.py", "src/ui/*"]
+# Omit view glue only — the Flet pure modules (tokens/theme/nav) + version.py
+# stay COUNTED (they carry the 80% gate); shell.py/launcher.py are thin views.
+omit = [
+    "src/utils/logger.py",
+    "src/ui_flet/shell.py",
+    "src/ui_flet/nav_rail.py",
+    "src/ui_flet/launcher.py",
+    "src/ui_flet/picker_field.py",
+    "src/ui_flet/components.py",
+    "src/ui_flet/screens/setup.py",
+    "src/ui_flet/screens/onboarding.py",
+    "src/ui_flet/screens/home.py",
+    "src/ui_flet/screens/convert.py",
+    "src/ui_flet/screens/run_history.py",
+    "src/ui_flet/screens/help.py",
+    "src/ui_flet/screens/mapping.py",
+]
 
 [tool.coverage.report]
 show_missing = true
@@ -98,7 +114,8 @@ ignore = [
 known-first-party = ["src"]
 
 [tool.mypy]
-python_version = "3.9"
+# Matches the single supported Python (see requires-python above + ci.yml).
+python_version = "3.13"
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_unused_ignores = false  # pandas-stubs type errors differ across versions
@@ -107,8 +124,8 @@ warn_return_any = false
 strict = false
 
 [[tool.mypy.overrides]]
-module = ["src.ui.*"]
-ignore_errors = true  # Streamlit stubs not available
+module = ["src.ui_flet.*"]
+ignore_errors = true  # Flet 1.0 beta has no published type stubs
 
 [tool.bandit]
 # B603/B607: subprocess calls — all inputs validated via validators.py

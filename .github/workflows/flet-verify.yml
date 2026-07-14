@@ -1,0 +1,28 @@
+name: flet-verify
+
+# Anti-rot gate: build + smoke the windowed/offline Flet exe on every PR that
+# touches the build/UI/deps surface, plus on demand. Thin wrapper around the
+# reusable flet-pack.yml so the offline guarantee is self-testing, not tag-only.
+#
+# SECURITY (RC4): `pull_request` (NEVER `pull_request_target`). A `flet pack` runs
+# arbitrary PR code; pull_request runs it in the fork's least-privilege context
+# with no repo secrets. The reusable flet-pack.yml grants only `contents: read`
+# and the built exe is an upload-artifact, never a Release asset.
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - "src/ui_flet/**"
+      - "src/main.py"
+      - "requirements*.txt"
+      - "pyproject.toml"
+      - ".github/workflows/flet-pack.yml"
+      - ".github/workflows/flet-verify.yml"
+      - "scripts/ci_flet_pack_smoke.py"
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    uses: ./.github/workflows/flet-pack.yml
