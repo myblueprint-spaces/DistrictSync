@@ -13,6 +13,11 @@ District → Schedule → Delivery → finish) and read as a competing set of in
 The launch already lands on the wizard while ``not setup_completed`` (Slice 3/5), so the
 hero is a friendly re-entry point, not a second, differently-worded set of steps.
 
+A **single calm "what's ahead" line** (the four input steps named at a glance + a
+~3-minute estimate) sits in the hero — a resolved user decision (2026-07-14): it orients
+the admin before the CTA WITHOUT re-instating the removed multi-step preview (one line,
+not a competing walkthrough — the wizard is still the only guided path).
+
 Built as a **callback-driven factory** — ``build_onboarding`` owns NO navigation or
 lifecycle (``on_start_setup`` is injected by the shell, which calls
 ``select_by_id("setup")``). That discipline (mirroring ``nav_rail``) is what lets
@@ -70,6 +75,15 @@ def build_onboarding(
                     size=15,
                     color=ft.Colors.with_opacity(0.9, tokens.color_on_action),
                 ),
+                # A single calm "what's ahead" preview (resolved user decision, 2026-07-14): the four
+                # input steps named at a glance + a time estimate — subdued/secondary, NOT a heading,
+                # and NOT the removed multi-step walkthrough (the wizard is still the only guided path).
+                ft.Text(
+                    "Four quick steps — your files, your district, how results are delivered, and "
+                    "when it runs. About 3 minutes.",
+                    size=14,
+                    color=ft.Colors.with_opacity(0.72, tokens.color_on_action),
+                ),
             ],
         ),
         gradient=components.hero_gradient(),
@@ -83,16 +97,15 @@ def build_onboarding(
         detail="A few quick steps and your nightly sync is running.",
     )
 
-    # ONE front door: a single calm line + the "Start setup" CTA into the wizard. No step
-    # enumeration here — the wizard IS the guided path, so repeating the steps would compete
-    # with it (D10). The launch already lands on the wizard while unconfigured.
+    # ONE front door: a single calm line + the "Start setup" CTA into the wizard. The steps are
+    # previewed once (in the hero, above) — this line stays a resume reassurance, not a second
+    # enumeration, so nothing here competes with the wizard's guided path (D10).
     start_card = components.card(
         content=ft.Column(
             spacing=18,
             controls=[
                 ft.Text(
-                    "We'll walk you through it in a few quick steps — your folders, your district, and "
-                    "(optionally) a nightly schedule and delivery. You can stop and pick up where you left off.",
+                    "We'll walk you through it, and you can stop and pick up right where you left off.",
                     size=15,
                     color=tokens.color_text,
                 ),

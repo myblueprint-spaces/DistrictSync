@@ -21,7 +21,10 @@ Load-bearing invariants (the honesty + no-double-register spine):
   later"), and skipping marks them satisfied for resume without asserting anything false.
 * **Finish copy is honest and adaptive** (``finish_copy``): it names WHAT was checked and
   WHEN, never a future guarantee. Three variants — schedule skipped / delivery deferred /
-  delivery tested-just-now — each phrased in the present-perfect trust register.
+  delivery tested-just-now — each phrased in the present-perfect trust register. The finish
+  line also exposes a **checked configured-vs-deferred summary** (``finish_summary_rows``)
+  derived from the SAME injected facts, so the calm "here's what you set up" card can never
+  contradict the finish copy (no celebration — a trust instrument, not a confetti moment).
 """
 
 from __future__ import annotations
@@ -335,3 +338,76 @@ def finish_copy(
             "Set up delivery whenever you're ready."
         )
     return _FINISH_HEADLINE_SCHEDULED, detail
+
+
+# --------------------------------------------------------------------------- #
+# Finish-line checked summary — the honest "here's what you set up" card (D8).  #
+# --------------------------------------------------------------------------- #
+# A delivery counts as CONFIGURED for the summary when a credential was tested-ok or is already
+# stored — deliberately NARROWER than ``_DELIVERY_SATISFIED`` (which also counts ``SKIPPED``): a
+# skipped delivery is "safe to advance" for the flow, but the summary must show it as a *deferred*
+# step, matching the honest finish copy. A failed/absent test is never configured.
+_DELIVERY_CONFIGURED: frozenset[DeliveryFact] = frozenset({DeliveryFact.TESTED_OK, DeliveryFact.STORED_CRED_PRESENT})
+
+# The shared deferral phrase for a skippable step the admin left for later (Delivery / Schedule).
+_SUMMARY_DEFERRED_DETAIL = "Set up later in Setup"
+
+
+@dataclass(frozen=True)
+class FinishSummaryRow:
+    """One row of the finish-line checked summary — a configured-vs-deferred fact (D8, honesty).
+
+    Attributes:
+        label: the input step's name (Folders / District / Delivery / Schedule).
+        done: the step is configured/ready (the view paints a ✓); ``False`` for a deferred
+            skippable step (the view paints a subdued "set up later" cue — never a fake ✓).
+        detail: the concrete value (the friendly district, the nightly time, the delivery
+            target) or the honest deferral phrase. The view renders icon + label + detail and
+            never re-derives the state.
+    """
+
+    label: str
+    done: bool
+    detail: str
+
+
+def finish_summary_rows(
+    *,
+    schedule_live: bool,
+    delivery: DeliveryFact,
+    district: str,
+    schedule_time_display: str | None,
+) -> list[FinishSummaryRow]:
+    """The ordered configured-vs-deferred checklist the finish card renders (pure, TOTAL).
+
+    Rows follow the WIZARD input order — Folders, District, Delivery, Schedule — and derive from
+    the SAME injected facts ``finish_copy`` consumes (``schedule_live``, ``delivery``, ``district``,
+    ``schedule_time_display``), so the card can NEVER contradict the honest finish copy. The caller
+    passes ``district`` already resolved to its friendly name (as it does for ``finish_copy``), so
+    a raw config id never reaches the card.
+
+    Honesty rules (mirroring the finish copy):
+
+    * **Folders + District are required** — reaching Finish means both are done (always ``done``).
+    * **Delivery is done only when a credential is configured** (tested-ok / stored); a *skipped*
+      delivery, a failed test, and an untouched step all read as deferred — "a credential is
+      configured" never means "data was delivered".
+    * **Schedule is done only when the read-back is LIVE**; a skipped / unconfirmed schedule is
+      deferred, and the LIVE detail names the OS-reported time when known (never a config hint —
+      timeless "Nightly sync scheduled" when the read-back reported no next-run time).
+    """
+    delivery_done = delivery in _DELIVERY_CONFIGURED
+    if schedule_live:
+        schedule_detail = f"Nightly at {schedule_time_display}" if schedule_time_display else "Nightly sync scheduled"
+    else:
+        schedule_detail = _SUMMARY_DEFERRED_DETAIL
+    return [
+        FinishSummaryRow(label="Folders", done=True, detail="Ready"),
+        FinishSummaryRow(label="District", done=True, detail=district),
+        FinishSummaryRow(
+            label="Delivery",
+            done=delivery_done,
+            detail="SpacesEDU" if delivery_done else _SUMMARY_DEFERRED_DETAIL,
+        ),
+        FinishSummaryRow(label="Schedule", done=schedule_live, detail=schedule_detail),
+    ]

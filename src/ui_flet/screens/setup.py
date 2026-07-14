@@ -70,6 +70,7 @@ from src.ui_flet.setup_flow import (
     TOTAL_STEPS,
     TRANSITION_CUE,
     DeliveryFact,
+    FinishSummaryRow,
     FlowInputs,
     SetupStep,
     TaskArgs,
@@ -77,6 +78,7 @@ from src.ui_flet.setup_flow import (
     can_advance,
     derive_flow,
     finish_copy,
+    finish_summary_rows,
     is_skippable,
     next_step,
     prev_step,
@@ -147,6 +149,45 @@ def _schedule_readout_line(status: ScheduleStatus) -> ft.Control:
         spacing=8,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
         controls=[ft.Icon(icon, size=18, color=color), ft.Text(status.detail, size=13, color=color)],
+    )
+
+
+def _finish_summary_row_control(row: FinishSummaryRow) -> ft.Control:  # pragma: no cover - Flet view glue
+    """One checked-summary row: a green ✓ for a configured step, else a subdued "later" cue.
+
+    Uses M3 icons (never raw emoji): ``CHECK_CIRCLE_ROUNDED`` (healthy) for done, a muted
+    ``PENDING_OUTLINED`` for a deferred skippable step. The whole deferred row reads subdued so an
+    honest "you can do this later" never looks like a failure.
+    """
+    if row.done:
+        icon, icon_color, detail_color = (
+            ft.Icons.CHECK_CIRCLE_ROUNDED,
+            tokens.color_status_healthy,
+            tokens.color_text,
+        )
+    else:
+        icon, icon_color, detail_color = ft.Icons.PENDING_OUTLINED, tokens.color_muted, tokens.color_muted
+    return ft.Row(
+        spacing=10,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
+            ft.Icon(icon, size=20, color=icon_color),
+            ft.Text(row.label, size=14, weight=ft.FontWeight.W_700, color=tokens.color_text),
+            ft.Text(row.detail, size=14, color=detail_color),
+        ],
+    )
+
+
+def _finish_summary_card(rows: list[FinishSummaryRow]) -> ft.Control:  # pragma: no cover - Flet view glue
+    """The honest checked-summary card — one row per input step, configured-vs-deferred (no confetti)."""
+    return components.card(
+        content=ft.Column(
+            spacing=14,
+            controls=[
+                ft.Text("Here's what you set up", size=16, weight=ft.FontWeight.W_800, color=tokens.color_text),
+                *[_finish_summary_row_control(row) for row in rows],
+            ],
+        )
     )
 
 
@@ -409,7 +450,21 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
             host=str(ws["delivery_host"]),
             username=str(ws["delivery_user"]),
         )
-        return components.HealthVerdictBanner(Verdict.HEALTHY, headline=headline, detail=detail)
+        # The checked summary is derived from the SAME computed facts as the banner copy (single
+        # source — no independent re-derivation), so the calm per-step card can never contradict it.
+        rows = finish_summary_rows(
+            schedule_live=bool(schedule_live),
+            delivery=ws["delivery"],  # type: ignore[arg-type]
+            district=district,
+            schedule_time_display=next_run,
+        )
+        return ft.Column(
+            spacing=18,
+            controls=[
+                components.HealthVerdictBanner(Verdict.HEALTHY, headline=headline, detail=detail),
+                _finish_summary_card(rows),
+            ],
+        )
 
     _BODIES: dict[SetupStep, Callable[[], ft.Control]] = {
         SetupStep.FOLDERS: _folders_body,

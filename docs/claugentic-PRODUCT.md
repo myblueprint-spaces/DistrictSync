@@ -92,7 +92,8 @@ borrowed from stale config.
 The landing surface answers *"is my roster syncing?"* three ways:
 
 - If the install isn't set up yet (`needs_setup`), Home routes to **onboarding** — a calm first-run
-  welcome that points at Setup.
+  welcome that previews what's ahead in one subdued line (the four input steps + a ~3-minute
+  estimate) and points at Setup (one front door — no separate welcome screen).
 - Otherwise Home derives a single **verdict** from the newest run record (`derive_home_status`): a
   HEALTHY "Your roster is syncing" with metric tiles (per-entity output counts + the plain last-run
   time + an SFTP-delivered flag), or an amber/red WARNING/FAILED with a plain headline and a "Check
@@ -157,8 +158,13 @@ from validated folders + the live schedule read-back + a keyring check, never a 
 read-back; "a delivery password is already saved" from the keyring) instead of double-registering. No
 single step marks the install "set up"; **only reaching the finish line does**. The finish copy is
 honest and adaptive — it names what was checked and when (schedule tested / delivery tested just now /
-a deferred step to set up later), never a future guarantee. No district is ever pre-selected (a
-"Choose your district" placeholder; auto-selected only when exactly one config exists).
+a deferred step to set up later), never a future guarantee — and is joined by a calm **checked-summary
+card** (no celebration/confetti — a trust instrument): one row per input step (Folders / District /
+Delivery / Schedule) showing configured (✓) vs deferred, with the concrete value (friendly district,
+nightly time, "SpacesEDU"). The card derives from the same facts as the copy, so it can never
+contradict it — a stored/tested credential reads "Delivery configured", never "data was delivered". No
+district is ever pre-selected (a "Choose your district" placeholder; auto-selected only when exactly
+one config exists).
 
 **Once completed, the same surface becomes Settings** — the flat sectioned scroll (folders + schedule
 + delivery), retitled **"Settings"** (the rail label stays "Setup" for spatial memory), with a
@@ -224,9 +230,10 @@ success isn't gated on having a Windows password and live SFTP credentials in ha
   declined, failed, or timed out — each named; success is confirmed by reading the task back, not
   assumed.
 - **Delivery (async)** — testing / worked / failed / skipped; a success names the host and user tested.
-- **Finish** — an honest, adaptive summary: what was checked, when, and what happens tonight (or "add
-  a schedule / delivery whenever you're ready" when a step was skipped). Reaching the finish line —
-  not any single step — is the only thing that marks the install "set up".
+- **Finish** — an honest, adaptive summary (never confetti): the adaptive copy (what was checked,
+  when, and what happens tonight — or "add a schedule / delivery whenever you're ready" when a step
+  was skipped) plus a checked-summary card listing each input step configured-vs-deferred. Reaching
+  the finish line — not any single step — is the only thing that marks the install "set up".
 
 ### Journey 2 — Daily trust check (the Watcher)
 
