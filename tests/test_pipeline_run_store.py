@@ -279,3 +279,79 @@ class TestConvertManual:
         # The anti-regression is airtight: nothing was written into the INPUT folder
         # (the old fallback's exact failure mode), not merely "the call raised".
         assert sorted(p.name for p in gde_input.iterdir()) == before
+
+
+# --------------------------------------------------------------------------- #
+# early-exit recording (0034 Slice 4 — kill the false silence)                  #
+# --------------------------------------------------------------------------- #
+class TestEarlyExitRecording:
+    """The SystemExit paths inside ``run_pipeline`` (input dir missing, config load failure)
+    record a failed run to BOTH sinks before exiting — Task Scheduler's exit 1 and Run History
+    can no longer disagree. Exit codes stay byte-identical; the store never carries the free text.
+    """
+
+    def test_missing_input_dir_records_failed_run_and_exits_1(
+        self, tmp_path: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        missing = tmp_path / "nope"
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"), pytest.raises(SystemExit) as exc_info:
+            run_pipeline("myedbc", str(missing), str(gde_output), source="scheduled")
+        assert exc_info.value.code == 1
+
+        records = read_run_records()
+        assert records is not None and records
+        stored = records[0]
+        assert stored["status"] == "failed"
+        assert stored["error_category"] == "no_input"
+        assert stored["source"] == "scheduled"
+        assert "error" not in stored  # privacy split: the free text goes to the log line only
+
+        lines = [r.message for r in caplog.records if "__DISTRICTSYNC_RUN__" in r.message]
+        assert lines, "expected a structured run-log line"
+        payload = json.loads(lines[-1].split("__DISTRICTSYNC_RUN__ ")[1])
+        assert payload["error_category"] == "no_input"
+        assert payload["error"]  # the rich free-text detail lives in the log
+
+    def test_unknown_config_records_config_category_and_exits_1(self, gde_input: Path, gde_output: Path) -> None:
+        with pytest.raises(SystemExit) as exc_info:
+            run_pipeline("not-a-district", str(gde_input), str(gde_output))
+        assert exc_info.value.code == 1
+        records = read_run_records()
+        assert records is not None and records
+        assert records[0]["status"] == "failed"
+        assert records[0]["error_category"] == "config"
+
+    def test_invalid_config_records_config_category_and_exits_1(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        def _bad(_sis: str) -> None:
+            raise ValueError("mapping validation failed")
+
+        monkeypatch.setattr(pipeline, "load_config", _bad)
+        with pytest.raises(SystemExit) as exc_info:
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+        assert exc_info.value.code == 1
+        records = read_run_records()
+        assert records is not None and records
+        assert records[0]["error_category"] == "config"
+
+    def test_store_failure_never_blocks_the_early_exit(self, tmp_path: Path, gde_output: Path, monkeypatch) -> None:
+        # Recording is best-effort (D2b): a store explosion must not change the exit code.
+        def _boom(*_a: object, **_k: object) -> bool:
+            raise RuntimeError("store exploded")
+
+        monkeypatch.setattr(pipeline, "write_run_record", _boom)
+        missing = tmp_path / "nope"
+        with pytest.raises(SystemExit) as exc_info:
+            run_pipeline("myedbc", str(missing), str(gde_output))
+        assert exc_info.value.code == 1
+
+    def test_early_failure_shows_failed_on_home(self, tmp_path: Path, gde_output: Path) -> None:
+        # The acceptance shape: breaking the input dir surfaces as a FAILED Home verdict.
+        missing = tmp_path / "nope"
+        with pytest.raises(SystemExit):
+            run_pipeline("myedbc", str(missing), str(gde_output))
+        records = read_run_records()
+        cfg = AppConfig(input_dir=str(missing), output_dir=str(gde_output), sis_type="myedbc")
+        status = derive_home_status(records, cfg)
+        assert status.verdict.name == "FAILED"

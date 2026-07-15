@@ -324,6 +324,57 @@ class TestToRunRowFields:
 
 
 # --------------------------------------------------------------------------- #
+# #3 — the Source column + the different-district note (0034 Slice 4)           #
+# --------------------------------------------------------------------------- #
+class TestSourceLabel:
+    @pytest.mark.parametrize(
+        ("source", "label"),
+        [
+            ("scheduled", "Nightly"),
+            ("manual", "Manual"),
+            ("cli", "Command line"),
+            ("unknown", "—"),
+        ],
+    )
+    def test_bounded_source_maps_to_friendly_label(self, source: str, label: str) -> None:
+        assert to_run_row(_record(source=source), now=_NOW).source == label
+
+    def test_missing_source_renders_dash(self) -> None:
+        # A pre-enrichment record has no source key — TOTAL, the neutral fallback.
+        assert to_run_row(_record(), now=_NOW).source == "—"
+
+    def test_out_of_set_source_is_never_echoed(self) -> None:
+        # Anything outside the bounded vocabulary renders the fallback, never the raw value.
+        row = to_run_row(_record(source=r"C:\evil\path"), now=_NOW)
+        assert row.source == "—"
+
+
+class TestDistrictNote:
+    def test_no_note_when_district_matches_active(self) -> None:
+        row = to_run_row(_record(sis_type="myedbc"), now=_NOW, active_sis="myedbc")
+        assert row.district_note is None
+
+    def test_note_when_district_differs(self) -> None:
+        row = to_run_row(_record(sis_type="zz_not_a_config"), now=_NOW, active_sis="myedbc")
+        # An unknown id falls back to the raw district id (a bounded config id, never a path).
+        assert row.district_note == "Different district: zz_not_a_config"
+
+    def test_real_district_resolves_to_friendly_display(self) -> None:
+        row = to_run_row(_record(sis_type="sd74myedbc"), now=_NOW, active_sis="myedbc")
+        assert row.district_note is not None
+        assert row.district_note.startswith("Different district: ")
+
+    def test_no_note_without_active_district(self) -> None:
+        # The active district must be KNOWN to establish a difference (never a guess).
+        row = to_run_row(_record(sis_type="sd74myedbc"), now=_NOW)
+        assert row.district_note is None
+
+    def test_no_note_when_record_lacks_district(self) -> None:
+        row = to_run_row(_record(), now=_NOW, active_sis="myedbc")
+        assert row.district_note is None
+
+
+# --------------------------------------------------------------------------- #
 # #3 — totality across every degradation axis (parametrized)                   #
 # --------------------------------------------------------------------------- #
 _PARTIAL_RECORDS = [
@@ -390,7 +441,14 @@ class TestPrivacyNoLeak:
             rec = _record(error=f"FileNotFoundError: {self._SECRET}\\input.csv", sis_type="sd48myedbc", **extra)
 
             row = to_run_row(rec, now=_NOW)
-            row_strings = [row.when, row.status_label, row.duration, *[str(v) for v in row.entity_counts]]
+            row_strings = [
+                row.when,
+                row.status_label,
+                row.duration,
+                row.source,
+                str(row.district_note),
+                *[str(v) for v in row.entity_counts],
+            ]
             for s in row_strings:
                 assert self._SECRET not in s
                 assert self._RAW_ANOMALY not in s

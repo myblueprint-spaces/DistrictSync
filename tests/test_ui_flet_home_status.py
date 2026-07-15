@@ -17,6 +17,7 @@ import pytest
 from src.config.app_config import AppConfig
 from src.scheduler.windows import ScheduleReadback
 from src.ui_flet.home_status import (
+    MISSED_RUN_AFTER_HOURS,
     STALE_AFTER_HOURS,
     HomeStatus,
     LatestReason,
@@ -219,6 +220,147 @@ class TestScheduleAttention:
         sched = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
         status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=sched)
         assert status.verdict is Verdict.HEALTHY
+
+
+class TestMissedRun:
+    """The owner rule (2026-07-15): a CONFIRMED-LIVE schedule + no run record in the last 26h +
+    an established store → the missed-run WARNING. Every guard failing → stay silent (a false
+    "missed run" on day one costs more trust than a one-day-late first warning)."""
+
+    _MISSED_HEADLINE = "We expected a nightly sync that didn't arrive"
+    # The store's birth stamp, comfortably older than the missed-run window.
+    _ESTABLISHED = (_NOW - timedelta(hours=MISSED_RUN_AFTER_HOURS + 48)).isoformat(timespec="seconds")
+    # A clean record just past the window (but well inside STALE_AFTER_HOURS).
+    _PAST_WINDOW = (_NOW - timedelta(hours=MISSED_RUN_AFTER_HOURS + 1)).isoformat(timespec="seconds")
+
+    def test_live_empty_established_store_warns_missed(self) -> None:
+        status = derive_home_status(
+            [], _CONFIGURED, now=_NOW, store_created_at=self._ESTABLISHED, schedule_status=_live_schedule()
+        )
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == self._MISSED_HEADLINE
+        assert status.fix is not None and status.fix.dest_id == "run_history"
+        assert status.metrics is None
+
+    def test_live_record_past_window_warns_missed(self) -> None:
+        status = derive_home_status(
+            [_record(timestamp=self._PAST_WINDOW)],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=self._ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == self._MISSED_HEADLINE
+
+    def test_live_recent_record_stays_healthy(self) -> None:
+        status = derive_home_status(
+            [_record()], _CONFIGURED, now=_NOW, store_created_at=self._ESTABLISHED, schedule_status=_live_schedule()
+        )
+        assert status.verdict is Verdict.HEALTHY
+
+    def test_fresh_store_guard_stays_silent(self) -> None:
+        # A store younger than the window (day-one install) has not missed anything yet.
+        fresh = (_NOW - timedelta(hours=2)).isoformat(timespec="seconds")
+        status = derive_home_status([], _CONFIGURED, now=_NOW, store_created_at=fresh, schedule_status=_live_schedule())
+        assert status.headline == "Run history starts fresh here"
+
+    def test_no_store_meta_stays_silent(self) -> None:
+        status = derive_home_status([], _CONFIGURED, now=_NOW, store_created_at=None, schedule_status=_live_schedule())
+        assert status.headline != self._MISSED_HEADLINE
+
+    def test_unparseable_created_at_stays_silent(self) -> None:
+        status = derive_home_status(
+            [], _CONFIGURED, now=_NOW, store_created_at="garbage", schedule_status=_live_schedule()
+        )
+        assert status.headline == "Run history starts fresh here"
+
+    def test_unconfirmed_schedule_never_fires_missed(self) -> None:
+        # D4 honesty: None (not probed) and UNKNOWN (query failed) never assert a miss — the
+        # schedule-unaware staleness proxy remains the honest fallback for an old clean record.
+        unknown = derive_schedule_status(
+            ScheduleReadback(found=None, error="denied"), hint_registered=True, latest_record_ts=None
+        )
+        for sched in (None, unknown):
+            status = derive_home_status(
+                [_record(timestamp=_OLD)],
+                _CONFIGURED,
+                now=_NOW,
+                store_created_at=self._ESTABLISHED,
+                schedule_status=sched,
+            )
+            assert status.headline == "No recent sync"
+
+    def test_confirmed_missing_schedule_does_not_fire_missed(self) -> None:
+        # An unexpected MISSING (manual-only install) is not a missed run — nothing was promised.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        status = derive_home_status([], cfg, now=_NOW, store_created_at=self._ESTABLISHED, schedule_status=missing)
+        assert status.headline != self._MISSED_HEADLINE
+
+    def test_failed_latest_is_never_masked_by_missed_run(self) -> None:
+        # Failures above warnings: an old FAILED record keeps the red verdict, not this amber.
+        status = derive_home_status(
+            [_record(status="failed", timestamp=self._PAST_WINDOW)],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=self._ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Last sync failed"
+
+    def test_failed_delivery_latest_is_never_masked_by_missed_run(self) -> None:
+        status = derive_home_status(
+            [_record(sftp_attempted=True, sftp_ok=False, timestamp=self._PAST_WINDOW)],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=self._ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Your roster didn't reach SpacesEDU"
+
+    def test_missed_run_precedes_old_anomaly_warning(self) -> None:
+        # Among WARNINGs the missed run is the fresher fact — the anomaly copy would describe
+        # a run that is over a day old.
+        status = derive_home_status(
+            [_record(anomalies=["ANOMALY: x"], timestamp=self._PAST_WINDOW)],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=self._ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.headline == self._MISSED_HEADLINE
+
+    def test_boundary_exactly_at_window_stays_silent(self) -> None:
+        exactly = (_NOW - timedelta(hours=MISSED_RUN_AFTER_HOURS)).isoformat(timespec="seconds")
+        status = derive_home_status(
+            [_record(timestamp=exactly)],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=self._ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.verdict is Verdict.HEALTHY  # strictly-greater-than, mirrors is_stale
+
+    def test_unparseable_newest_timestamp_stays_silent(self) -> None:
+        # Can't establish the gap → don't cry wolf (the record still classifies normally).
+        status = derive_home_status(
+            [_record(timestamp="garbage")],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=self._ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.headline != self._MISSED_HEADLINE
+
+    def test_detail_is_plain_language_no_raw_values(self) -> None:
+        status = derive_home_status(
+            [], _CONFIGURED, now=_NOW, store_created_at=self._ESTABLISHED, schedule_status=_live_schedule()
+        )
+        assert "26" not in status.detail  # the window is copy-free plain language ("the last day")
+        assert self._ESTABLISHED not in status.detail  # never the raw ISO
 
 
 class TestFailedRules:

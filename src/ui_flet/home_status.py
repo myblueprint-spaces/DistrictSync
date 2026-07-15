@@ -69,6 +69,12 @@ STALE_AFTER_HOURS = 36
 One generous constant absorbs timezone/clock skew (KISS — no per-tz math for a tool an
 admin opens 2-3x/yr); staleness is only ever a WARNING, never a FAILED."""
 
+MISSED_RUN_AFTER_HOURS = 26
+"""The missed-run window (owner rule, 2026-07-15): a CONFIRMED-LIVE nightly schedule with no
+recorded run inside ~1 nightly cycle (+ 2h skew) means the sync we promised didn't arrive.
+Deliberately tighter than the schedule-unaware ``STALE_AFTER_HOURS`` proxy — this rule demands
+a LIVE read-back (never the config hint), so it can afford to warn a whole cycle earlier."""
+
 _RUN_HISTORY_FIX = "run_history"
 
 _CHECK_RUN_HISTORY_LABEL = "Check Run History"
@@ -280,6 +286,13 @@ def derive_home_status(
     if schedule_attention is not None:
         return schedule_attention
 
+    # The missed-run fact (owner rule, 2026-07-15): a CONFIRMED-LIVE schedule, an established
+    # store, and no run record inside the window. Computed once, consulted at two slots below —
+    # it must beat the empty-state reassurance AND the warning-tier record rules (whose copy
+    # would describe a run that is over a day old by construction), but it must NEVER mask a
+    # FAILED verdict (failures above warnings — amber can't downgrade red).
+    missed_run = _is_missed_run(records, now=now, store_created_at=store_created_at, schedule_status=schedule_status)
+
     # Rule: no runs yet (empty but readable, configured). Two honest sub-states — the
     # run store is fresh for EVERY install after this update (no backfill from the polluted
     # log), so an established install must NOT be told "No sync has run yet":
@@ -292,6 +305,10 @@ def derive_home_status(
     # therefore conditioned ("If you used an earlier version…"), never a flat claim of hidden
     # history. The next-run reassurance derives from the LIVE read-back, never the raw config flag.
     if not records:
+        # Rule: missed run (empty store) — a LIVE schedule over an ESTABLISHED store with no
+        # runs at all is not a calm fresh start: the nightly we promised never arrived.
+        if missed_run:
+            return _missed_run_status()
         if app_config.has_completed_setup() or store_created_at:
             fresh = (
                 "New syncs will appear here from now on. "
@@ -356,6 +373,13 @@ def derive_home_status(
             metrics=None,
         )
 
+    # Rule: missed run — the newest record is older than the window while the schedule is LIVE.
+    # Slotted below the two FAILED reasons (a red verdict is never downgraded to this amber) and
+    # above the warning-tier reasons: when it fires, their copy ("the last sync…") would describe
+    # a run over a day old — "nothing arrived last night" is the fresher, more actionable fact.
+    if missed_run:
+        return _missed_run_status()
+
     # Rule: anomaly / >20% drop — delivered but suspicious → attention, not failure.
     if reason is LatestReason.ANOMALY:
         anomalies = latest.get("anomalies") or []
@@ -417,6 +441,49 @@ def _schedule_attention(schedule_status: ScheduleStatus | None) -> HomeStatus | 
         headline=schedule_status.headline,
         detail=schedule_status.detail,
         fix=FixAction(_OPEN_SETUP_LABEL, _SETUP_FIX),
+        metrics=None,
+    )
+
+
+def _is_missed_run(
+    records: list[dict],
+    *,
+    now: datetime | None,
+    store_created_at: str | None,
+    schedule_status: ScheduleStatus | None,
+) -> bool:
+    """Whether a CONFIRMED-LIVE schedule produced no run record inside the missed-run window.
+
+    Every fact must POSITIVELY hold (when in doubt, stay silent — a false "missed run" on day
+    one costs more trust than a one-day-late first warning; owner rule, 2026-07-15):
+
+    - the read-back is LIVE (the probe result, NEVER the config hint alone — D4 honesty);
+    - the fresh-start guard: the store's ``created_at`` is itself older than the window (a
+      day-one install hasn't missed anything yet; ``None``/unparseable → silent);
+    - no record's timestamp falls inside the last ``MISSED_RUN_AFTER_HOURS`` — an empty,
+      readable store counts (nothing ever arrived); with records, the newest must be
+      POSITIVELY older than the window (unparseable → can't establish the gap → silent).
+    """
+    if schedule_status is None or schedule_status.state is not ScheduleState.LIVE:
+        return False
+    if not is_stale(store_created_at or "", now, stale_after_hours=MISSED_RUN_AFTER_HOURS):
+        return False
+    if records:
+        return is_stale(str(records[0].get("timestamp", "")), now, stale_after_hours=MISSED_RUN_AFTER_HOURS)
+    return True
+
+
+def _missed_run_status() -> HomeStatus:
+    """The missed-run WARNING — a LIVE schedule promised a nightly sync and none arrived."""
+    return HomeStatus(
+        verdict=Verdict.WARNING,
+        headline="We expected a nightly sync that didn't arrive",
+        detail=(
+            "Your nightly schedule is registered, but no sync has been recorded in the last day. "
+            "If this computer was off overnight, the next sync should arrive normally — otherwise "
+            "check Run History and the schedule in Settings."
+        ),
+        fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
         metrics=None,
     )
 

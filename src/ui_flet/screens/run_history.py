@@ -117,7 +117,8 @@ def _surface(page: ft.Page, app_config: AppConfig, on_refresh: Callable[[], None
         ]
         # None (unavailable) / [] (no runs) → banner alone (nothing to tabulate). Otherwise the table.
         if records:
-            controls.append(_scrollable_table(components.run_table(to_run_rows(records)[:LIMIT])))
+            rows = to_run_rows(records, active_sis=app_config.sis_type)[:LIMIT]
+            controls.append(_scrollable_table(components.run_table(rows)))
         if on_refresh is not None:
             controls.append(_refresh_button(on_refresh))
         container.controls = controls
