@@ -1,6 +1,6 @@
 # 0030 — SD60 clarification learnings: email standardization + home-school rostering + drop Active No Primary
 
-- **Status:** Reviewed (3-lens adversarial pass incorporated) — awaiting user approval
+- **Status:** Implemented + verified + reviewed (3-lens plan review · correctness re-review PASS · honesty pass) — PR [#51](https://github.com/myblueprint-spaces/DistrictSync/pull/51), awaiting merge + release
 - **Resumable from:** §Decomposition Slice 1
 - **Blockers:** none
 - **Flags:** ⚠️ Deliberately overrides an evidence-based recommendation — see §Decision record.
