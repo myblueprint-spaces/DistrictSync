@@ -339,3 +339,21 @@ class TestAppIconPath:
         monkeypatch.setattr(sys, "frozen", True, raising=False)
         monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
         assert paths_module.app_icon_path() == tmp_path / "assets" / "districtsync.ico"
+
+
+class TestWindowIconPath:
+    """The myBlueprint-mark `.ico` (running window/title-bar/taskbar icon) resolves like
+    every bundle asset — dev tree vs frozen `_MEIPASS`. Split from the EXE-file icon
+    (`app_icon_path`) per the 2026-07-15 owner decision: myB on the title bar, the
+    DistrictSync sync mark on the app file itself."""
+
+    def test_dev_points_at_committed_ico(self, dev_mode):
+        p = paths_module.window_icon_path()
+        assert p == paths_module.bundle_root() / "assets" / "myblueprint.ico"
+        assert p.name == "myblueprint.ico"
+        assert p.is_file(), "the committed myBlueprint .ico must exist at the resolved dev path"
+
+    def test_frozen_resolves_under_meipass(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+        assert paths_module.window_icon_path() == tmp_path / "assets" / "myblueprint.ico"

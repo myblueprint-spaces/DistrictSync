@@ -14,9 +14,11 @@ One brand-blue **filled** action per screen, a **toned verdict band** directly u
 header, **navy tabular numerals** on calm metric tiles. Every element maps 1:1 onto Flet 0.85.3
 Material primitives — solid fills, 1px borders, standard radii, 1–2dp shadows.
 
-Two marks: the **myBlueprint logo is the window / taskbar / exe icon** (asset PENDING from the owner —
-interim keeps `assets/districtsync.ico`); the **sync glyph is the in-app rail brand mark** (it
-signifies DistrictSync — "roster sync for SpacesEDU").
+Two marks: the **myBlueprint "m" mark is the running window / title-bar / taskbar icon**
+(`assets/myblueprint.ico`, sourced from the official myB favicon — transparent 16/32/48 layers,
+resolved via `paths.window_icon_path()`); the **DistrictSync sync mark stays the EXE file icon**
+(`assets/districtsync.ico`, baked by `flet pack --icon`) and the **sync glyph is the in-app rail
+brand mark** (it signifies DistrictSync — "roster sync for SpacesEDU").
 
 ## Principles
 1. **Verdict-first.** The health band ("did the roster sync?") is the top content element — a

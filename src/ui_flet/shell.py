@@ -191,10 +191,12 @@ def main(page: ft.Page) -> None:
         page.window.height = 860
         page.window.min_width = 940
         page.window.min_height = 680
-        # Brand the window/taskbar with the shipped .ico instead of the generic Flet
-        # logo (Windows-only surface). Resolved via the pure `paths.app_icon_path()`
-        # (dev tree vs frozen `_MEIPASS`); set LAST so a failure here can't skip sizing.
-        page.window.icon = str(paths.app_icon_path())
+        # Brand the running window/title-bar/taskbar with the myBlueprint mark
+        # (owner decision 2026-07-15: myB on the bar up top; the EXE file keeps the
+        # DistrictSync sync mark via flet-pack --icon). Resolved via the pure
+        # `paths.window_icon_path()` (dev tree vs frozen `_MEIPASS`); set LAST so a
+        # failure here can't skip sizing.
+        page.window.icon = str(paths.window_icon_path())
     except Exception:  # nosec B110 — window sizing/icon are native-only; harmless no-op in web mode
         pass
 
