@@ -188,7 +188,11 @@ def derive_history_banner(
         return HistoryBanner(
             verdict=verdict_for_reason(reason),
             headline="Your last roster didn't reach SpacesEDU",
-            detail="The most recent run built the data but the upload failed.",
+            detail=(
+                "The upload of your saved files failed."
+                if is_delivery_only(latest)
+                else "The most recent run built the data but the upload failed."
+            ),
         )
 
     if reason is LatestReason.ANOMALY:

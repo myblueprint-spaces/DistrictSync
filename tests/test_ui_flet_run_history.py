@@ -361,6 +361,17 @@ class TestDeliveryOnlyRows:
         banner = _banner(_delivery_record())
         assert banner.verdict is Verdict.HEALTHY
 
+    def test_failed_delivery_only_banner_never_claims_a_build(self) -> None:
+        # The row label says "Delivery failed"; the banner above it must agree —
+        # a delivery-only failure built nothing this run.
+        banner = _banner(_delivery_record(sftp_ok=False))
+        assert banner.verdict is Verdict.FAILED
+        assert banner.detail == "The upload of your saved files failed."
+
+    def test_failed_delivery_after_a_build_keeps_the_build_copy(self) -> None:
+        banner = _banner(_record(sftp_attempted=True, sftp_ok=False))
+        assert banner.detail == "The most recent run built the data but the upload failed."
+
 
 # --------------------------------------------------------------------------- #
 # #3 — totality across every degradation axis (parametrized)                   #

@@ -439,10 +439,36 @@ class TestDeliveryOnlyRecord:
         assert status.verdict is Verdict.HEALTHY
         assert status.metrics is None
 
+    def test_delivery_over_failed_build_uses_the_successful_builds_counts(self) -> None:
+        # A failed build (zero counts — atomic save_all rolled back, nothing committed)
+        # sitting between the good build and the delivery must never feed the HEALTHY
+        # tiles: the delivery shipped the GOOD build's on-disk CSVs.
+        good = _record(timestamp=_OLD)
+        failed = _record(status="failed", timestamp=_OLD, Students=0, Staff=0, Family=0, Classes=0, Enrollments=0)
+        delivery = _delivery_record(timestamp=_RECENT)
+        status = derive_home_status([delivery, failed, good], _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.metrics is not None
+        assert status.metrics.entity_counts["Students"] == 100
+
+    def test_delivery_with_only_failed_builds_shows_no_tiles(self) -> None:
+        # No SUCCESSFUL build on record → no honest count exists → no tiles, never zeros.
+        failed = _record(status="failed", timestamp=_OLD, Students=0, Staff=0, Family=0, Classes=0, Enrollments=0)
+        status = derive_home_status([_delivery_record(), failed], _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.metrics is None
+
     def test_failed_delivery_only_is_the_failed_delivery_verdict(self) -> None:
         status = derive_home_status([_delivery_record(sftp_ok=False)], _CONFIGURED, now=_NOW)
         assert status.verdict is Verdict.FAILED
         assert "didn't reach SpacesEDU" in status.headline
+        # Delivery-only failure built nothing this run — the copy must not claim a build.
+        assert status.detail == "The upload of your saved files failed."
+
+    def test_failed_delivery_after_a_build_keeps_the_build_copy(self) -> None:
+        status = derive_home_status([_record(sftp_ok=False)], _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.FAILED
+        assert status.detail == "The data was built but the upload failed."
 
     def test_build_latest_keeps_its_own_counts(self) -> None:
         # Regression: a build latest is its own counts source (delivery records behind it).

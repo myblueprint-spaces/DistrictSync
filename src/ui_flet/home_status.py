@@ -259,13 +259,15 @@ def _counts_source(records: list[dict], latest: dict) -> dict | None:
     """The record whose entity counts describe what the latest run/delivery shipped.
 
     A build record IS its own counts source. A delivery-only latest shipped the newest
-    BUILD's committed CSVs, so its tiles fall back to that record's counts; with no build
-    on record there is no honest count → ``None`` (no tiles — never a "0 Students" lie).
+    SUCCESSFUL build's committed CSVs (a failed build never commits — atomic ``save_all``
+    rolls back — and its record carries zero counts), so its tiles fall back to the newest
+    ``status == "success"`` build; with no successful build on record there is no honest
+    count → ``None`` (no tiles — never a "0 Students" lie).
     """
     if not is_delivery_only(latest):
         return latest
     for record in records:
-        if not is_delivery_only(record):
+        if not is_delivery_only(record) and record.get("status") == "success":
             return record
     return None
 
@@ -378,11 +380,16 @@ def derive_home_status(
         )
 
     # Rule: SFTP delivery failed (ETL succeeded but the roster didn't reach SpacesEDU).
+    # A delivery-only failure built nothing this run — say so (0034 Slice 2 honesty).
     if reason is LatestReason.FAILED_DELIVERY:
         return HomeStatus(
             verdict=verdict_for_reason(reason),
             headline="Your roster didn't reach SpacesEDU",
-            detail="The data was built but the upload failed.",
+            detail=(
+                "The upload of your saved files failed."
+                if is_delivery_only(latest)
+                else "The data was built but the upload failed."
+            ),
             fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
             metrics=None,
         )
