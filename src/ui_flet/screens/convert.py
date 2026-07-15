@@ -503,14 +503,22 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
         # exactly this retry, so the failure screen must offer it (no forced rebuild).
         # A DELIVERED / DELIVERED_WITH_DATA_ERRORS run (sftp_attempted=True) is already
         # delivered, so it is NOT offered again.
-        if AppConfig.load().sftp_is_configured():
+        sftp_cfg = AppConfig.load()
+        if sftp_cfg.sftp_is_configured():
             deliverable_local = (
                 result.status in (ConvertStatus.DELIVERED, ConvertStatus.BUILT_WITH_DATA_ERRORS)
                 and not result.sftp_attempted
             )
             retry_delivery = result.status is ConvertStatus.BUILT_NOT_DELIVERED
             if deliverable_local or retry_delivery:
-                controls.append(_deliver_action(retry=retry_delivery))
+                # Deliver-gate (0031): SFTP is configured, but delivery ALSO needs a stored
+                # password for THIS Windows account. Present → the deliver/retry card; absent
+                # or unreadable → a calm "route to Setup" card instead (no transient password
+                # entry in Convert — Setup is the single credential home).
+                if _sftp_credential_present(sftp_cfg):
+                    controls.append(_deliver_action(retry=retry_delivery))
+                else:
+                    controls.append(_delivery_not_ready_card())
         result_slot.controls = controls
 
     def _deliver_action(*, retry: bool = False) -> ft.Control:
@@ -640,6 +648,55 @@ _WROTE_OUTPUT: frozenset[ConvertStatus] = frozenset(
         ConvertStatus.BUILT_NOT_DELIVERED,
     }
 )
+
+
+def _sftp_credential_present(cfg: AppConfig) -> bool:  # pragma: no cover - Flet view glue
+    """Whether a delivery password is stored + readable for the saved host/user on THIS account.
+
+    Building the uploader also re-validates the host against ``ALLOWED_SFTP_HOSTS`` (a
+    belt-and-suspenders check on top of ``sftp_is_configured``). ANY failure — a disallowed
+    host, an unreadable keyring — reads as "no credential" (defensive, never raises): the view
+    then routes to Setup instead of offering a deliver button that would immediately fail.
+    Mirrors ``screens/setup._stored_delivery_present``.
+    """
+    try:
+        uploader = SFTPUploader(
+            cfg.sftp_host,
+            int(cfg.sftp_port or 22),
+            cfg.sftp_username,
+            cfg.sftp_remote_path,
+        )
+        return bool(uploader.get_stored_password())
+    except Exception:  # noqa: BLE001 - any construction/keyring failure → treat as no credential
+        return False
+
+
+def _delivery_not_ready_card() -> ft.Control:  # pragma: no cover - Flet view glue
+    """Calm info card: SFTP is configured but no password is stored on this Windows account.
+
+    Delivery is one credential away — route the admin to Setup rather than block the build
+    (rendered above, untouched) or offer a deliver button that would fail. No button: Setup
+    is one rail-click away.
+    """
+    return components.card(
+        content=ft.Column(
+            spacing=12,
+            controls=[
+                ft.Text(
+                    "Delivery isn't ready on this account",
+                    size=15,
+                    weight=ft.FontWeight.W_700,
+                    color=tokens.color_text,
+                ),
+                ft.Text(
+                    "SFTP delivery is set up, but no password is stored for this Windows account. "
+                    "Add it in Setup → SFTP delivery, then convert again to deliver.",
+                    size=13,
+                    color=tokens.color_muted,
+                ),
+            ],
+        ),
+    )
 
 
 def _output_folder_row(output_dir: str) -> ft.Control:  # pragma: no cover - Flet view glue

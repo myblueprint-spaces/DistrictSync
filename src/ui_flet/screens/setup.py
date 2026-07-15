@@ -49,7 +49,7 @@ import flet as ft
 from src.config.app_config import AppConfig
 from src.config.loader import available_configs
 from src.scheduler import windows
-from src.sftp.uploader import SFTPUploader
+from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
 from src.ui_flet import components, tokens
 from src.ui_flet.filepicker import (
     ValidationResult,
@@ -1241,9 +1241,17 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
             test_btn.disabled = False
             test_spinner.visible = False
             verdict = Verdict.HEALTHY if ok else Verdict.FAILED
+            # Listing-denied is a SUCCESS-with-note (auth worked; the account just can't list
+            # the remote folder — normal for upload-only delivery accounts). Detected by
+            # EQUALITY against the uploader's canonical fixed note.
+            listing_denied = ok and msg == LISTING_DENIED_NOTE
             if ok:
                 headline, detail = sftp_test_copy(
-                    provenance=provenance, unsaved_edits=unsaved_edits, host=host, username=username
+                    provenance=provenance,
+                    unsaved_edits=unsaved_edits,
+                    host=host,
+                    username=username,
+                    listing_denied=listing_denied,
                 )
             else:
                 headline, detail = "SFTP connection failed", friendly_sftp_reason(msg)

@@ -30,6 +30,14 @@ _HEADLINE = "SFTP connection succeeded"
 # sync can deliver for values that aren't in the saved config yet.
 _UNSAVED_TAIL = "These settings work — click Save to use them for the nightly sync."
 
+# Appended when auth worked but the account can't list the remote folder (upload-only
+# delivery accounts). DUPLICATED here — not imported — to keep this module pure: importing
+# ``src.sftp.uploader`` would drag paramiko into this module's import graph. This mirrors the
+# TAIL of ``uploader.LISTING_DENIED_NOTE`` (which prefixes "Connected and signed in. ");
+# the view-layer equality check against the full ``LISTING_DENIED_NOTE`` lives in
+# ``screens/setup._show_result``, not here.
+_LISTING_DENIED_TAIL = "This account can't list the remote folder — that's normal for upload-only delivery accounts."
+
 
 def _parse_port(port: str, default: int = 22) -> int | None:
     """Best-effort int() of a form port string; None (never a raise) when unparseable."""
@@ -73,6 +81,7 @@ def sftp_test_copy(
     unsaved_edits: bool,
     host: str,
     username: str,
+    listing_denied: bool = False,
 ) -> tuple[str, str]:
     """The (headline, detail) for a SUCCESSFUL Test — provenance- and unsaved-honest.
 
@@ -83,6 +92,9 @@ def sftp_test_copy(
     - ``unsaved_edits``: appends the test-scoped "these settings work — Save to use
       them" softener; the copy NEVER claims the nightly sync can deliver for values
       that aren't saved.
+    - ``listing_denied``: auth worked but the account can't LIST the remote folder
+      (upload-only delivery accounts) — appends the fixed reassurance LAST (after the
+      unsaved softener). Delivery uses ``put``, not ``list``, so this is still a success.
 
     The only state that makes no Save prompt is stored-credential + saved-settings —
     the one case where exactly-this is already what the nightly sync uses.
@@ -95,5 +107,8 @@ def sftp_test_copy(
 
     if unsaved_edits:
         detail = f"{detail} {_UNSAVED_TAIL}"
+
+    if listing_denied:
+        detail = f"{detail} {_LISTING_DENIED_TAIL}"
 
     return _HEADLINE, detail
