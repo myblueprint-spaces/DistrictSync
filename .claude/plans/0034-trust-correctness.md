@@ -1,7 +1,39 @@
 # 0034 — Trust & correctness batch (post-v3.6.0)
 
-- **Status:** Queued — owner approved the batch 2026-07-15; a FRESH session should run the full
-  workflow gates (triage → plan-review → spec → implement per slice) starting from this file.
+- **Status:** Queued — owner approved the batch 2026-07-15 **and pre-approved AUTONOMOUS
+  execution** ("can it do it in parallel autonomously so that i can … step away"). A fresh
+  session executes end-to-end per the §Autonomous execution addendum below — no owner
+  questions mid-run; it STOPS at a verified, PR-ready state (merge + release stay with the owner).
+
+## Autonomous execution addendum (owner pre-approvals — do not re-ask)
+- **Endpoint:** one branch `fix/0034-trust-correctness` off latest main → one PR with full gate
+  evidence + a manual-verify checklist. Do NOT merge, do NOT tag/release, do NOT push to main.
+- **Parallelization map (respect the coupling):** Slices 2 (deliver-from-disk) and 4 (false-green)
+  touch disjoint files → run in PARALLEL via isolated worktrees. Slices 1 (Mapping reconcile) and
+  3 (Settings-Save honesty) both orbit the schedule/register machinery (`setup_flow.TaskArgs`,
+  `screens/setup.py` handle, `scheduler/windows.py`) → run SEQUENTIALLY (1 then 3), after or
+  alongside the parallel pair. Integration lands slices onto the batch branch one at a time with
+  the FULL suite re-run after each landing; per-slice adversarial verify per the workflow.
+- **Shared-doc discipline:** parallel slice agents change CODE + TESTS only; the orchestrator
+  applies all shared-doc edits (DECISIONS, CHANGELOG `[Unreleased]`, ARCHITECTURE_TREE) at
+  integration — avoids doc merge conflicts.
+- **Pre-answered product decisions:**
+  - Slice 1: on district Apply with a LIVE schedule → confirm dialog offers "Update the nightly
+    schedule too" (default) / Cancel; if re-registration fails or is declined, show the honest
+    banner "Your nightly schedule still uses <old district> — open Settings and Save to update it."
+  - Slice 2: deliver-from-disk uploads the committed CSVs as-is; confirm dialog shows labelled
+    Server / Folder facts (host named once); a manual delivery writes ONE run-store record
+    (source="manual", sftp axes; never double-counts the build).
+  - Slice 3: when a reconcile would downgrade an unattended task, interrupt with the explicit
+    choice: "Keep running when signed out — re-enter the Windows password" vs "Continue — the sync
+    will only run while signed in" (calm copy, no default that downgrades silently).
+  - Slice 4: missed-run rule = schedule read-back LIVE **and** no run record in the last **26 h**
+    → Home WARNING "We expected a nightly sync that didn't arrive" + route to Run History/Setup.
+  - Copy stays within the districtsync-design skill's vocabulary; UAC/live-schedule behaviour that
+    can't be exercised headlessly goes on the PR's manual-verify checklist instead of being claimed.
+- **Escalation rule:** if genuinely blocked (a pre-approval doesn't cover it, a gate can't go
+  green), do NOT guess and do NOT wait — record the open question at the top of this plan file,
+  finish every unblocked slice, and say so plainly in the PR body.
 - **Source of detail:** `.claude/plans/0032-ui-ux-sweep-proposal.md` (Tier 1 #3, Tier 2 #1/#2/#3/#7 —
   each carries file:line grounding from the 5-lens sweep). This file is the QUEUE + acceptance bar;
   re-verify the cited line numbers against current main (v3.6.0 shipped 0033 after the sweep).
