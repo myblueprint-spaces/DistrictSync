@@ -9,6 +9,17 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Changed
+
+- **Mapping is now honest about the nightly schedule when you switch districts.**
+  The post-Apply confirmation no longer claims "your folders and schedule are
+  unchanged" — it says "Your folders are unchanged." and, when a registered
+  nightly schedule exists (or can't be confirmed but is expected), shows a
+  warning that the schedule still uses (or may still use) the old district,
+  with an "Open Settings" button that routes to the Settings Save/re-register
+  flow. Schedule truth comes from the real off-thread Windows read-back —
+  never asserted from the saved setting alone. (plan 0034 slice 1)
+
 ## [3.6.0] - 2026-07-15
 
 The professional-grade desktop release: the "Branded Professional" design system
