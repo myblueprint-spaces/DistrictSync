@@ -52,6 +52,18 @@ class AppConfig:
     schedule_time: str = "03:00"  # HH:MM (24-hour)
     schedule_task_name: str = "DistrictSync_Daily"
     schedule_registered: bool = False
+    # The durable "what was ACTUALLY registered" facts (plan 0034 Slice 3) — written ONLY on a
+    # confirmed successful register (and cleared on a confirmed unregister), never inferred:
+    # ``schedule_unattended`` records whether the task was registered WITH a Windows password
+    # (LogonType Password — runs while signed out), so a Settings-Save re-register can never
+    # silently downgrade it to logged-on-only without the admin's explicit choice. NEVER a
+    # password — a boolean fact only (the I1/I3 password contract is untouched).
+    # ``schedule_task_args`` records the task-baked args (input/output/district/sftp/run time)
+    # the live task actually carries, so the Settings reconcile compares against reality rather
+    # than a mount-time snapshot (a Mapping district switch + no-edit Save must re-register).
+    # Both are additive with defaults — old config.json files load unchanged (back-compat).
+    schedule_unattended: bool = False
+    schedule_task_args: dict[str, object] | None = None
 
     # Onboarding (D4a): the durable "reached the setup finish line at least once" fact,
     # kept DISTINCT from the schedule's live-ness (which is read back from the OS, never

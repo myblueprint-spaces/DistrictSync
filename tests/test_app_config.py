@@ -27,6 +27,9 @@ class TestAppConfigDefaults:
         assert cfg.schedule_time == "03:00"
         assert cfg.sftp_enabled is False
         assert cfg.sftp_port == 22
+        # 0034 S3: the "what was actually registered" facts default to "no record".
+        assert cfg.schedule_unattended is False
+        assert cfg.schedule_task_args is None
 
 
 class TestAppConfigLoad:
@@ -196,6 +199,37 @@ class TestSetupCompletedBackCompatInference:
     def test_setup_completed_survives_save_roundtrip(self, config_dir):
         AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True).save()
         assert AppConfig.load().setup_completed is True
+
+
+class TestScheduleRegistrationFacts:
+    """0034 S3: the durable last-register facts (unattended flag + task-args record)."""
+
+    _ARGS = {
+        "input_dir": "/in",
+        "output_dir": "/out",
+        "sis_type": "myedbc",
+        "sftp_enabled": True,
+        "run_time": "03:00",
+    }
+
+    def test_facts_survive_save_roundtrip(self, config_dir):
+        AppConfig(schedule_unattended=True, schedule_task_args=dict(self._ARGS)).save()
+        loaded = AppConfig.load()
+        assert loaded.schedule_unattended is True
+        assert loaded.schedule_task_args == self._ARGS
+
+    def test_old_config_file_without_the_fields_loads_defaults(self, config_dir):
+        # Back-compat: a pre-S3 config.json has neither key → additive defaults apply and the
+        # reconcile falls back to its mount snapshot (the pre-record behaviour).
+        cfg_dir, cfg_file = config_dir
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg_file.write_text(
+            json.dumps({"input_dir": "/in", "output_dir": "/out", "sis_type": "myedbc"}),
+            encoding="utf-8",
+        )
+        cfg = AppConfig.load()
+        assert cfg.schedule_unattended is False
+        assert cfg.schedule_task_args is None
 
 
 class TestSftpIsConfigured:
