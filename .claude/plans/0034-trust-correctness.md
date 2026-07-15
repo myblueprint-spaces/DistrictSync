@@ -18,17 +18,30 @@
   applies all shared-doc edits (DECISIONS, CHANGELOG `[Unreleased]`, ARCHITECTURE_TREE) at
   integration — avoids doc merge conflicts.
 - **Pre-answered product decisions:**
-  - Slice 1: on district Apply with a LIVE schedule → confirm dialog offers "Update the nightly
-    schedule too" (default) / Cancel; if re-registration fails or is declined, show the honest
-    banner "Your nightly schedule still uses <old district> — open Settings and Save to update it."
-  - Slice 2: deliver-from-disk uploads the committed CSVs as-is; confirm dialog shows labelled
-    Server / Folder facts (host named once); a manual delivery writes ONE run-store record
-    (source="manual", sftp axes; never double-counts the build).
+  - Slice 1 (owner 2026-07-15: **route to Settings** — no inline re-register in Mapping): Apply
+    switches the district; when a LIVE schedule exists, show a prominent honest notice "Your
+    nightly schedule still uses <old district> — open Settings and Save to update it" with a
+    button that navigates to Setup/Settings (shell `on_navigate` pattern). Re-registration
+    (password + UAC) stays Settings-owned; Mapping never collects credentials. No dependency on
+    Slice 3 — the 1→3 order stands.
+  - Slice 2 (owner 2026-07-15: **standalone deliver INCLUDED**): deliver-from-disk uploads the
+    committed CSVs as-is; confirm dialog shows labelled Server / Folder facts (host named once);
+    ONE run-store record per delivery (source="manual", sftp axes; never double-counts a build).
+    ADDITIONALLY Convert offers a standalone "Deliver the files in your output folder" action —
+    gated on SFTP configured + stored credential + top-level CSVs present — carrying an HONEST
+    freshness fact ("files last built <friendly time>", derived from the newest output-CSV mtime)
+    in both the card and the confirm dialog, so the admin always knows the vintage of what ships.
+    No transform runs → the anomaly write-gate is untouched by ANY deliver path.
   - Slice 3: when a reconcile would downgrade an unattended task, interrupt with the explicit
     choice: "Keep running when signed out — re-enter the Windows password" vs "Continue — the sync
     will only run while signed in" (calm copy, no default that downgrades silently).
   - Slice 4: missed-run rule = schedule read-back LIVE **and** no run record in the last **26 h**
     → Home WARNING "We expected a nightly sync that didn't arrive" + route to Run History/Setup.
+    **Fresh-start guard (no false alarm):** suppress the warning when the schedule/store is too
+    new for a run to have been expected — i.e. also require that the registration is old enough
+    for a scheduled occurrence to have passed (use `store_meta().created_at` / newest record /
+    schedule read-back facts already available; when in doubt, stay silent — a false "missed run"
+    on day one costs more trust than a 1-day-late first warning).
   - Copy stays within the districtsync-design skill's vocabulary; UAC/live-schedule behaviour that
     can't be exercised headlessly goes on the PR's manual-verify checklist instead of being claimed.
 - **Escalation rule:** if genuinely blocked (a pre-approval doesn't cover it, a gate can't go
