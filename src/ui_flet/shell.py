@@ -178,7 +178,10 @@ def main(page: ft.Page) -> None:
     # --- paint themed chrome FIRST (no flash of unstyled window) ----------- #
     page.title = "DistrictSync"
     page.padding = 0
-    page.bgcolor = tokens.page_bg
+    # Direction B (0033 Slice 2): the content area sits on the calm ``color_content_wash``
+    # (white cards float on it); the navy rail owns the contrast. Set on the page too so there
+    # is no flash of the brand page-tint before the content host paints.
+    page.bgcolor = tokens.color_content_wash
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme = build_theme()
 
@@ -245,12 +248,20 @@ def main(page: ft.Page) -> None:
     ordered = nav.ordered_destinations(model)
     initial_id = nav.prominent_initial_id(model)
 
-    content_host = ft.Container(expand=True, padding=pad_sym(36, 28))
+    # The content area sits on the Direction B wash; screens' white cards float on it.
+    content_host = ft.Container(expand=True, padding=pad_sym(36, 28), bgcolor=tokens.color_content_wash)
 
     def render_by_id(dest_id: str) -> None:
         inner = screens[dest_id]()
-        # Scrollable content so tall screens never clip.
-        content_host.content = ft.Column(controls=[inner], scroll=ft.ScrollMode.AUTO, expand=True)
+        # Scrollable content so tall screens never clip; the reading column is capped at ~960px
+        # and LEFT-anchored (0032 Tier-1 #5) — a fixed width clamps DOWN to the viewport on a
+        # narrow window (Flutter enforces the parent constraint), so it never overflows. A screen
+        # that scrolls a wide region horizontally (Run History's table) does so INSIDE this cap.
+        content_host.content = ft.Column(
+            controls=[ft.Container(content=inner, width=960)],
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
 
     def select_by_id(dest_id: str) -> None:
         render_by_id(dest_id)

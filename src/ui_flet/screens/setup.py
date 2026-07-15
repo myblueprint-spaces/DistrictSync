@@ -117,10 +117,6 @@ _STEP_TITLES: dict[SetupStep, str] = {
 }
 
 
-def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
-    return ft.Padding(left=h, top=v, right=h, bottom=v)
-
-
 def _inflight_row(text: str) -> ft.Control:
     """A spinner + honest waiting line shown while an off-thread schedule op is in flight (D5)."""
     return ft.Row(
@@ -477,22 +473,12 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
     }
 
     def _step_header(step: SetupStep) -> ft.Control:
-        return components.card(
-            content=ft.Column(
-                spacing=4,
-                controls=[
-                    ft.Text(
-                        f"Step {step_number(step)} of {TOTAL_STEPS}",
-                        size=13,
-                        weight=ft.FontWeight.W_700,
-                        color=ft.Colors.with_opacity(0.85, tokens.color_on_action),
-                    ),
-                    ft.Text(_STEP_TITLES[step], size=26, weight=ft.FontWeight.W_800, color=tokens.color_on_action),
-                ],
-            ),
-            gradient=components.hero_gradient(),
-            padding=_pad_sym(32, 24),
-            border_radius=18,
+        # Direction B (0033 Slice 2): the gradient step hero demotes to a compact page header —
+        # the step title as the header, "Step N of 5" as the caption. (The 5→4 "Finish
+        # unnumbered" count fix is 0032 Tier-1 #10, a separate slice — not folded in here.)
+        return components.page_header(
+            _STEP_TITLES[step],
+            f"Step {step_number(step)} of {TOTAL_STEPS}",
         )
 
     def _step_footer(step: SetupStep) -> ft.Control:
@@ -589,21 +575,10 @@ def _mount_settings(  # pragma: no cover - Flet view glue
     sftp_card = _build_sftp_section(page, cfg, on_saved=_reconcile)
     folders_card = _build_settings_folders(page, cfg, reconcile=_reconcile)
 
-    header = components.card(
-        content=ft.Column(
-            spacing=4,
-            controls=[
-                ft.Text("Settings", size=26, weight=ft.FontWeight.W_800, color=tokens.color_on_action),
-                ft.Text(
-                    "Everything you set up lives here — edit your folders, district, schedule, or delivery anytime.",
-                    size=14,
-                    color=ft.Colors.with_opacity(0.85, tokens.color_on_action),
-                ),
-            ],
-        ),
-        gradient=components.hero_gradient(),
-        padding=_pad_sym(32, 26),
-        border_radius=18,
+    # Direction B (0033 Slice 2): the Settings gradient hero demotes to a slim page header.
+    header = components.page_header(
+        "Settings",
+        "Everything you set up lives here — edit your folders, district, schedule, or delivery anytime.",
     )
 
     controls: list[ft.Control] = [header]

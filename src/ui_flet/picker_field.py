@@ -70,11 +70,12 @@ class PickerField(ft.Column):  # pragma: no cover - Flet view glue (exercised vi
         )
         self._status_text = ft.Text("", size=12, weight=ft.FontWeight.W_600)
 
+        # Radius intentionally NOT overridden — inherit the system default (``radius_sm``) so the
+        # Browse button matches every other primary (0033 Slice 2 removed the transient radius=12).
         browse_btn = components.primary_button(
             "Browse…",
             self._on_browse,
             icon=ft.Icons.FOLDER_OPEN_ROUNDED,
-            radius=12,
             text_size=13,
             text_weight=ft.FontWeight.W_700,
         )

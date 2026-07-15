@@ -14,6 +14,8 @@ file only assembles ``ft.Control``s from them.
 The component inventory (see ``docs/DESIGN_SYSTEM.md`` for usage rules):
   * ``page_header`` — the slim white page header (title + sub + optional right
     slot). Replaces the gradient hero as the top-of-screen element (Slice 2).
+  * ``section_label`` — a muted uppercased caps label introducing a group (the
+    mockup's "Latest roster" over a tile row).
   * ``primary_button`` — the ONE filled brand-blue action per screen
     (``FilledButton``; hover/pressed/focused states; ``disabled_bgcolor`` carries
     the security Save-gate fill in ``setup.py``).
@@ -411,6 +413,26 @@ def page_header(
         content=ft.Row(
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=row_controls,
+        ),
+    )
+
+
+def section_label(text: str) -> ft.Control:
+    """A small uppercased caps label introducing a group (Direction B ``.section-label``).
+
+    An uppercased, letter-spaced ``type_caption`` in muted slate — the quiet header the mockup
+    puts above a metric-tile row ("Latest roster"). Muted-on-wash / muted-on-white are both
+    AA-gated (``UI_CONTRAST_PAIRS``). Assembly, not styling: screens call this rather than
+    hand-rolling the caps ``ft.Text``.
+    """
+    return ft.Container(
+        padding=ft.Padding(left=tokens.space_xs // 2, top=0, right=0, bottom=0),
+        content=ft.Text(
+            text.upper(),
+            size=tokens.type_caption,
+            weight=ft.FontWeight.W_700,
+            color=tokens.color_muted,
+            style=ft.TextStyle(letter_spacing=0.8),
         ),
     )
 

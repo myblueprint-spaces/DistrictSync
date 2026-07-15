@@ -51,33 +51,92 @@ from src.history.store import read_run_records, store_meta
 from src.ui_flet import components, nav, tokens
 from src.ui_flet.home_status import ENTITY_LABELS, FixAction, HomeMetrics, derive_home_status
 from src.ui_flet.humanize import friendly_district_name
-from src.ui_flet.schedule_status import ScheduleStatus
+from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.screens.onboarding import build_onboarding
+from src.ui_flet.verdict import Verdict
 
 
 def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
     return ft.Padding(left=h, top=v, right=h, bottom=v)
 
 
-def _greeting_header(app_config: AppConfig) -> ft.Control:
-    """A branded hero greeting the district by its friendly name (never a raw id)."""
+def _header(app_config: AppConfig, on_refresh: Callable[[], None] | None) -> ft.Control:
+    """The Direction B page header: title + sub, with the district chip + Refresh in the right slot.
+
+    Replaces the gradient greeting hero (0033 Slice 2) — the greeting demotes to the header
+    subtitle, the district identity rides as a ``district_chip``, and Refresh becomes the
+    text-tier affordance the mockup puts in the header (not a standalone secondary button).
+    """
     friendly = friendly_district_name(app_config.sis_type)
-    greeting = f"Welcome back, {friendly}" if friendly else "Welcome back"
+    trailing_controls: list[ft.Control] = []
+    if friendly:
+        trailing_controls.append(components.district_chip(friendly))
+    if on_refresh is not None:
+        trailing_controls.append(
+            components.text_button("Refresh", lambda _e: on_refresh(), icon=ft.Icons.REFRESH_ROUNDED)
+        )
+    trailing = (
+        ft.Row(
+            spacing=tokens.space_md,
+            tight=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=trailing_controls,
+        )
+        if trailing_controls
+        else None
+    )
+    return components.page_header("Home", "Your nightly roster sync to SpacesEDU", trailing=trailing)
+
+
+def _schedule_card(status: ScheduleStatus, on_navigate: Callable[[str], None]) -> ft.Control:
+    """A calm "nightly sync scheduled — Confirmed" row-card (Direction B), LIVE state only.
+
+    Surfaces the already-fetched schedule read-back in the mockup's schedule row idiom: a
+    ``color_chip_bg`` icon square, the plain readout line, a ``status_pill`` "Confirmed", and a
+    text-tier "Change schedule" that hops to Setup. Rendered ONLY on a clean LIVE schedule — a
+    MISSING/contradicted schedule is already the dominant WARNING routed to Setup by the verdict
+    band above (never both), so this card never competes with an attention state.
+    """
     return components.card(
-        content=ft.Column(
-            spacing=6,
+        content=ft.Row(
+            spacing=tokens.space_md + 2,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
-                ft.Text(greeting, size=26, weight=ft.FontWeight.W_800, color=tokens.color_on_action),
-                ft.Text(
-                    "Here's how your nightly roster sync to SpacesEDU is doing.",
-                    size=15,
-                    color=ft.Colors.with_opacity(0.9, tokens.color_on_action),
+                ft.Container(
+                    width=36,
+                    height=36,
+                    bgcolor=tokens.color_chip_bg,
+                    border_radius=tokens.radius_md,
+                    alignment=ft.Alignment(0, 0),
+                    content=ft.Icon(ft.Icons.SCHEDULE_ROUNDED, size=19, color=tokens.MB_DARK),
+                ),
+                ft.Container(
+                    expand=True,
+                    content=ft.Column(
+                        spacing=2,
+                        controls=[
+                            ft.Text(
+                                "Nightly sync scheduled",
+                                size=tokens.type_emphasis,
+                                weight=ft.FontWeight.W_700,
+                                color=tokens.color_text,
+                            ),
+                            ft.Text(status.detail, size=tokens.type_body, color=tokens.color_muted),
+                        ],
+                    ),
+                ),
+                ft.Row(
+                    spacing=tokens.space_md + 2,
+                    tight=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        components.status_pill("Confirmed", Verdict.HEALTHY),
+                        components.text_button("Change schedule", lambda _e: on_navigate("setup")),
+                    ],
                 ),
             ],
         ),
-        gradient=components.hero_gradient(),
-        padding=_pad_sym(32, 26),
-        border_radius=18,
+        padding=_pad_sym(tokens.space_lg + 4, tokens.space_lg),
     )
 
 
@@ -106,27 +165,6 @@ def _fix_button(fix: FixAction, on_navigate: Callable[[str], None]) -> ft.Contro
             fix.label,
             lambda _e: on_navigate(fix.dest_id),
         ),
-    )
-
-
-def _refresh_button(on_refresh: Callable[[], None]) -> ft.Control:
-    """A small secondary "Refresh" affordance — re-reads run state + config in place.
-
-    Covers the Watcher who leaves the app open overnight: Home reads on mount only (a sync read,
-    no polling), so a manual re-check re-invokes this screen's build via the shell
-    (``select_by_id("home")``) without navigating away. A Row keeps it compact (intrinsic width).
-
-    Local (not a shared ``components`` factory) — same 2-consumer/local-helper convention as
-    ``_greeting_header``; promote only if a 3rd surface needs the identical affordance.
-    """
-    return ft.Row(
-        controls=[
-            components.secondary_button(
-                "Refresh",
-                lambda _e: on_refresh(),
-                icon=ft.Icons.REFRESH_ROUNDED,
-            ),
-        ],
     )
 
 
@@ -159,16 +197,25 @@ def _dashboard(
         status = derive_home_status(
             records, app_config, store_created_at=store_created_at, schedule_status=schedule_status
         )
+        # Verdict-first (Direction B): a slim page header, then the health band as the FIRST
+        # content element, then the detail (fix / metrics / the clean-schedule confirmation card).
         controls: list[ft.Control] = [
-            _greeting_header(app_config),
+            _header(app_config, on_refresh),
             components.HealthVerdictBanner(status.verdict, headline=status.headline, detail=status.detail),
         ]
         if status.fix is not None:
             controls.append(_fix_button(status.fix, on_navigate))
         if status.metrics is not None:
+            controls.append(components.section_label("Latest roster"))
             controls.append(_metric_tiles_row(status.metrics))
-        if on_refresh is not None:
-            controls.append(_refresh_button(on_refresh))
+        # The clean-schedule row-card surfaces the LIVE read-back only — an attention state is
+        # already the dominant WARNING band + fix button above, so the two never both show.
+        if (
+            schedule_status is not None
+            and schedule_status.state is ScheduleState.LIVE
+            and not schedule_status.attention
+        ):
+            controls.append(_schedule_card(schedule_status, on_navigate))
         container.controls = controls
 
     _render(None)  # initial paint from the store alone; the schedule read-back arrives async
