@@ -9,6 +9,11 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-07-15
+
+The Flet UI trust & professionalism redesign (plan 0029) plus SD60 email
+standardization (plan 0030).
+
 ### Added
 
 - **Guided 5-step Setup wizard.** First-run setup is now a stepped wizard —
@@ -32,12 +37,6 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
-- **Flet is now the only UI; the public executable is the Flet-default build.**
-  Launching `DistrictSync` with no arguments opens the native Flet desktop app
-  (double-click on Windows); running it with `--sis`/`--input`/`--output` uses the
-  CLI, byte-for-byte unchanged. The GitHub Release now ships one Flet-default exe
-  per OS (Windows/Linux/macOS) plus `SHA256SUMS.txt` — a single binary that is
-  both the UI and the CLI.
 - **Turning on the nightly schedule now uses one Windows permission prompt (UAC)**
   for that step only, instead of requiring the whole app to be launched as
   administrator. The app itself never runs elevated.
@@ -61,21 +60,8 @@ Per-release download links and auto-generated commit notes live on the
   standardizes ~59% of students onto a new login address (see the SpacesEDU
   onboarding notes).
 
-### Removed
-
-- **The Streamlit web UI (`src/ui/`) and the `streamlit` dependency.** The Flet
-  desktop UI (`src/ui_flet/`) fully replaces it; the browser-based Streamlit app,
-  its Playwright smoke tests, and the separate Streamlit release executables are
-  gone. The ETL/CLI core is unchanged.
-
 ### Fixed
 
-- **The built executable now reports the real release from `--version`.** Each
-  release build stamps the pushed git tag into a bundled `src/_version.py`, which
-  `app_version()` reads first — a frozen PyInstaller build ships no package
-  metadata, so the previous `importlib`-only lookup always reported `dev`. The UI
-  and the CLI now share the one `app_version()` lookup (tag → package metadata →
-  `dev`). Preserves the fix from PR #42 through the Flet packaging rework.
 - **Stale in-app state.** Switching district, completing setup, and other changes
   now reflect immediately across Home, Run History, Mapping, and Help without a
   restart; the schedule status shown in the app is read back from Windows rather
@@ -92,6 +78,55 @@ Per-release download links and auto-generated commit notes live on the
   fails closed if the prompt is approved under a different account, and never logs
   it or writes it to disk in plain text. Stored run history carries only a bounded
   error category — detailed error text stays in the local diagnostic log.
+
+## [3.4.0] - 2026-07-08
+
+The Flet 1.0 desktop rebuild (plan 0013) — Streamlit removed — plus the SD60
+district config.
+
+### Added
+
+- **SD60 (Peace River North) district config.** New `sd60myedbc` mapping —
+  guardians-only family import and an opt-in cross-enrollment collapse that
+  rosters dual-school students once under their home school. (#46)
+
+### Changed
+
+- **Flet is now the only UI; the public executable is the Flet-default build.**
+  Launching `DistrictSync` with no arguments opens the native Flet desktop app
+  (double-click on Windows); running it with `--sis`/`--input`/`--output` uses the
+  CLI, byte-for-byte unchanged. The GitHub Release now ships one Flet-default exe
+  per OS (Windows/Linux/macOS) plus `SHA256SUMS.txt` — a single binary that is
+  both the UI and the CLI. (#45)
+
+### Removed
+
+- **The Streamlit web UI (`src/ui/`) and the `streamlit` dependency.** The Flet
+  desktop UI (`src/ui_flet/`) fully replaces it; the browser-based Streamlit app,
+  its Playwright smoke tests, and the separate Streamlit release executables are
+  gone. The ETL/CLI core is unchanged. (#45)
+
+### Fixed
+
+- **The built executable now reports the real release from `--version`.** Each
+  release build stamps the pushed git tag into a bundled `src/_version.py`, which
+  `app_version()` reads first — a frozen PyInstaller build ships no package
+  metadata, so the previous `importlib`-only lookup always reported `dev`. The UI
+  and the CLI now share the one `app_version()` lookup (tag → package metadata →
+  `dev`). Preserves the fix from PR #42 through the Flet packaging rework.
+
+## [3.3.3] - 2026-06-25
+
+### Changed
+
+- **Graceful shutdown.** Idle watchdog, Exit controls, and a single-instance
+  guard for the desktop app. (#43)
+
+## [3.3.2] - 2026-06-25
+
+### Fixed
+
+- **Report the real `--version` in built executables.** (#42)
 
 ## [3.3.1] - 2026-06-25
 
