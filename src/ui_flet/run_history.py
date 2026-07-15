@@ -11,15 +11,19 @@ derives two PII-free things the Run History view renders:
   precedence) and reuses ``home_status.is_stale`` (the landed staleness), keeping Home and Run
   History from ever drifting. Graceful degradation is a first-class OUTPUT: ``None`` → a calm
   "history unavailable" WARNING (never a raise); ``[]`` → "no runs yet" WARNING (never red).
-- **the per-run display rows** — ``to_run_row(record, *, now=None)`` → a total, PII-free ``RunRow``
-  (plain time, a category-only ``status_label`` + its ``Verdict``, entity counts, an SFTP enum, a
-  warnings count, a plain duration) and ``to_run_rows(records)`` over the whole newest-first list.
+- **the per-run display rows** — ``to_run_row(record, *, now=None, active_sis=None)`` → a total,
+  PII-free ``RunRow`` (plain time, a category-only ``status_label`` + its ``Verdict``, entity
+  counts, an SFTP enum, a warnings count, a plain duration, a bounded run-origin ``source`` label,
+  an optional different-district note) and ``to_run_rows(records)`` over the newest-first list.
 
 **Privacy (LIVE/top):** the record's free-text ``error`` (``str(e)`` in the emitter — path /
 ``sis_type`` / column risk) and the raw ``ANOMALY:``-prefixed strings are **NEVER** read into a
 ``RunRow`` field or a banner headline/detail. ``RunRow`` carries **no** ``error`` field at all, so
 a future view edit cannot render one; faults are named by CATEGORY, counts are safe scalars. This
 is the concrete fix for the Streamlit page's raw-``error`` column + log-path caption (dropped).
+The ONE deliberate identity fact surfaced (0034 Slice 4) is the DISTRICT: when a record's
+``sis_type`` differs from the active district, ``district_note`` carries the friendly district
+display (a bounded config id / display name — never a path, never the free-text error).
 
 **Totality:** every field is read via ``.get`` + ``_as_int`` (reused from ``home_status``), so a
 partial/old record yields a safe ``RunRow`` (missing timestamp → "recently"; missing counts → 0;
@@ -47,7 +51,13 @@ from src.ui_flet.home_status import (
     is_stale,
     verdict_for_reason,
 )
-from src.ui_flet.humanize import AnomalyVariant, friendly_anomaly_detail, friendly_timestamp, pluralize
+from src.ui_flet.humanize import (
+    AnomalyVariant,
+    friendly_anomaly_detail,
+    friendly_district_name,
+    friendly_timestamp,
+    pluralize,
+)
 from src.ui_flet.schedule_status import ScheduleStatus
 from src.ui_flet.verdict import Verdict
 
@@ -91,6 +101,12 @@ class RunRow:
         sftp: the ``SftpDelivery`` axis (the view maps it to a glyph + word).
         warnings: the ``data_errors.total`` count (a safe scalar).
         duration: a plain duration string ("3.2s" / "—").
+        source: a friendly run-origin label from the bounded ``_SOURCE_LABELS`` vocabulary
+            ("Nightly" / "Manual" / "Command line"); "—" for unknown/absent (a pre-enrichment
+            record) — an unexpected raw value is NEVER echoed.
+        district_note: a muted "Different district: <name>" note when the record's district
+            differs from the active one (a bounded district id/display — never a path), else
+            ``None``.
     """
 
     when: str
@@ -101,6 +117,8 @@ class RunRow:
     sftp: SftpDelivery = SftpDelivery.NOT_ATTEMPTED
     warnings: int = 0
     duration: str = "—"
+    source: str = "—"
+    district_note: str | None = None
 
 
 # Plain per-run status labels keyed by the shared ``LatestReason`` (single-sourced precedence).
@@ -110,6 +128,17 @@ _REASON_LABELS: dict[LatestReason, str] = {
     LatestReason.FAILED_ETL: "Failed",
     LatestReason.FAILED_DELIVERY: "Built, not delivered",
 }
+
+# The bounded run-source → friendly-label vocabulary (the store's ``VALID_SOURCES`` closed set,
+# minus ``unknown`` which shares the fallback). Anything else — including a record written before
+# the source enrichment existed — renders the neutral fallback; a raw value is NEVER echoed.
+_SOURCE_LABELS: dict[str, str] = {
+    "scheduled": "Nightly",
+    "manual": "Manual",
+    "cli": "Command line",
+}
+
+_SOURCE_FALLBACK = "—"
 
 
 def derive_history_banner(
@@ -280,6 +309,26 @@ def _status_label(reason: LatestReason, record: dict, *, sftp: SftpDelivery) -> 
     return "Delivered" if sftp is SftpDelivery.DELIVERED else "Completed"
 
 
+def _source_label(record: dict) -> str:
+    """The friendly run-origin label from the bounded vocabulary; anything else → "—" (total)."""
+    return _SOURCE_LABELS.get(str(record.get("source", "")), _SOURCE_FALLBACK)
+
+
+def _district_note(record: dict, active_sis: str | None) -> str | None:
+    """A "Different district: <name>" note when the record's district differs from the active one.
+
+    Pure + total: BOTH sides must be known non-empty to establish a difference (an absent
+    ``sis_type`` / unset active district → ``None``, never a guess). The display resolves via
+    ``friendly_district_name`` (a bounded district id/display fact — never a path; the module's
+    privacy bar deliberately allows this one identity fact, see the module docstring).
+    """
+    record_sis = str(record.get("sis_type", "") or "").strip()
+    active = (active_sis or "").strip()
+    if not record_sis or not active or record_sis == active:
+        return None
+    return f"Different district: {friendly_district_name(record_sis)}"
+
+
 def _duration(record: dict) -> str:
     """A plain duration string ("3.2s"); missing/garbage → "—" (uniform-string display cell)."""
     value = record.get("duration_s")
@@ -291,11 +340,13 @@ def _duration(record: dict) -> str:
         return "—"
 
 
-def to_run_row(record: dict, *, now: datetime | None = None) -> RunRow:
+def to_run_row(record: dict, *, now: datetime | None = None, active_sis: str | None = None) -> RunRow:
     """Map one run record → a total, PII-free ``RunRow`` (never raises).
 
     Every field is read via ``.get`` + ``_as_int``; a missing ``status`` classifies as non-success
-    → "Failed" (the honest fail-safe default). The raw ``error``/path is NEVER read.
+    → "Failed" (the honest fail-safe default). The raw ``error``/path is NEVER read. ``active_sis``
+    (the active district id, injected by the view) enables the different-district note; ``None``
+    (the default) derives no note.
     """
     sftp = _sftp_delivery(record)
     reason = classify_latest_reason(record)
@@ -309,13 +360,15 @@ def to_run_row(record: dict, *, now: datetime | None = None) -> RunRow:
         sftp=sftp,
         warnings=_data_errors_total(record),
         duration=_duration(record),
+        source=_source_label(record),
+        district_note=_district_note(record, active_sis),
     )
 
 
-def to_run_rows(records: list[dict], *, now: datetime | None = None) -> list[RunRow]:
+def to_run_rows(records: list[dict], *, now: datetime | None = None, active_sis: str | None = None) -> list[RunRow]:
     """Map a newest-first list of run records → ``RunRow``s (one per record, never raises).
 
     The view branches on ``None``/``[]`` BEFORE calling this — ``to_run_rows`` is only ever handed
     an actual list (``[]`` → ``[]``; a mixed valid/partial list → one safe ``RunRow`` per record).
     """
-    return [to_run_row(record, now=now) for record in records]
+    return [to_run_row(record, now=now, active_sis=active_sis) for record in records]

@@ -60,7 +60,7 @@ class RunErrorCategory(str, Enum):
     """
 
     NONE = "none"  # a completed run (delivery/anomaly/data-warning axes live in their own fields)
-    NO_INPUT = "no_input"  # the no-usable-required-input guard fired
+    NO_INPUT = "no_input"  # no usable input (input folder missing, or every required file missing/empty)
     CONFIG = "config"  # a config/validation problem surfaced as the failure
     DATA = "data"  # a build/write problem (missing field-map column, transform, loader)
     UNKNOWN = "unknown"  # an unclassified failure
@@ -349,6 +349,31 @@ def _store_run_record(record: dict[str, Any], *, source: str) -> bool:
         return False
 
 
+def _record_early_failure(t0: float, *, source: str, sis_type: str, error: str, category: str) -> None:
+    """Record a pre-ETL failure (bad input dir / config) to BOTH sinks before an early ``sys.exit``.
+
+    The ``sys.exit(1)`` paths inside ``run_pipeline`` re-raise through the ``except SystemExit``
+    guard and never reach the generic failure sink — without this, a scheduled run that lost its
+    input folder or its config exits 1 with NO run record at all (a false silence: Task Scheduler
+    sees the failure, Run History shows nothing). Same guard shape as the failure sink (D2b):
+    recording can never raise, never delays or changes the exit code, and the free-text ``error``
+    goes to the diagnostic-log line ONLY — the store carries the bounded ``category`` (privacy split).
+    """
+    try:
+        record = build_run_record(
+            status="failed",
+            elapsed=time.monotonic() - t0,
+            entity_counts={},
+            source=source,
+            sis_type=sis_type,
+            error_category=category,
+        )
+        _log_run_record(record, error=error)  # rich free-text error → LOG only
+        _store_run_record(record, source=source)  # store carries error_category only
+    except Exception as record_exc:  # noqa: BLE001 - recording must never block the early exit
+        logger.error(f"Failed to record the failed run ({record_exc}); exiting anyway")
+
+
 def _resolve_source(source: str | None) -> str:
     """Resolve the run ``source`` tag: explicit arg → ``DSYNC_SOURCE`` env → ``"cli"``.
 
@@ -426,7 +451,15 @@ def run_pipeline(
     try:
         input_dir = Path(input_path)
         if not input_dir.exists() or not input_dir.is_dir():
-            logger.error(f"Input path is not a directory: {input_dir}")
+            error = f"Input path is not a directory: {input_dir}"
+            logger.error(error)
+            _record_early_failure(
+                t0,
+                source=resolved_source,
+                sis_type=sis_type,
+                error=error,
+                category=RunErrorCategory.NO_INPUT.value,
+            )
             sys.exit(1)
         logger.info(f"Input directory: {input_dir.resolve()}")
 
@@ -435,9 +468,23 @@ def run_pipeline(
             config = load_config(sis_type)
         except FileNotFoundError as e:
             logger.error(str(e))
+            _record_early_failure(
+                t0,
+                source=resolved_source,
+                sis_type=sis_type,
+                error=str(e),
+                category=RunErrorCategory.CONFIG.value,
+            )
             sys.exit(1)
         except ValueError as e:
             logger.error(str(e))
+            _record_early_failure(
+                t0,
+                source=resolved_source,
+                sis_type=sis_type,
+                error=str(e),
+                category=RunErrorCategory.CONFIG.value,
+            )
             sys.exit(1)
 
         logger.info(f"Loaded config: sis={config.sis}, version={config.version}")
