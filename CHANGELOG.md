@@ -11,6 +11,18 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **Delivering to SpacesEDU now sends the files already on disk — never a
+  rebuild.** Every "Deliver to SpacesEDU" action — the post-build deliver, the
+  failed-delivery retry, and a new standalone "Deliver the files in your output
+  folder" card on Convert — uploads the already-committed output CSVs straight
+  from your output folder. Delivering never re-runs the conversion, so what you
+  reviewed is exactly what ships, and a delivery can no longer silently
+  re-acknowledge a large roster-drop warning (the old rebuild-with-auto-ack
+  path is removed). The deliver confirmation shows labelled Server / Folder
+  facts plus an honest freshness line ("Files last built …") derived from the
+  files on disk; deliveries record in Run History as "Delivered saved files"
+  (or "Delivery failed") without pretending to be builds, and Home's tiles
+  keep showing the delivered build's real counts. (plan 0034 slice 2)
 - **Mapping is now honest about the nightly schedule when you switch districts.**
   The post-Apply confirmation no longer claims "your folders and schedule are
   unchanged" — it says "Your folders are unchanged." and, when a registered
