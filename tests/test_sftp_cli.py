@@ -175,3 +175,23 @@ class TestSftpTest:
 
         with patch("src.main.SFTPUploader.test_connection", return_value=(False, "boom")):
             assert _sftp_test(_args()) == 1
+
+    def test_listing_denied_exits_0_with_note(self, tmp_app_config, monkeypatch, capsys):
+        """A listing-denied result (auth worked, upload-only account) is success → exit 0,
+        and the note is printed. Delivery uses ``put``, so it will work."""
+        from src.sftp.uploader import LISTING_DENIED_NOTE
+
+        monkeypatch.setenv(SFTP_PASSWORD_ENV_VAR, "pw")
+        _sftp_configure(
+            _args(
+                sftp_configure=True,
+                sftp_host="sftp.ca.spacesedu.com",
+                sftp_user="partner",
+                sftp_remote="/files",
+            )
+        )
+        capsys.readouterr()
+
+        with patch("src.main.SFTPUploader.test_connection", return_value=(True, LISTING_DENIED_NOTE)):
+            assert _sftp_test(_args()) == 0
+        assert LISTING_DENIED_NOTE in capsys.readouterr().out

@@ -33,6 +33,16 @@ logger = logging.getLogger(__name__)
 
 KEYRING_SERVICE = "DistrictSync_SFTP"
 
+# Canonical success-with-note returned by ``test_connection`` when auth succeeded but the
+# account cannot LIST the remote folder (upload-only delivery accounts, e.g. SpacesEDU-style).
+# Delivery uses ``sftp.put``, never ``listdir`` — so a listing denial is NOT a delivery
+# failure. FIXED string (no host/port/path interpolation): it crosses to the UI copy layer by
+# EQUALITY (``screens/setup._show_result`` compares ``msg == LISTING_DENIED_NOTE``).
+LISTING_DENIED_NOTE = (
+    "Connected and signed in. This account can't list the remote folder — "
+    "that's normal for upload-only delivery accounts."
+)
+
 
 class SFTPUploader:
     """Upload CSV files from an output directory to an SFTP server."""
@@ -123,7 +133,13 @@ class SFTPUploader:
     # ------------------------------------------------------------------
 
     def test_connection(self, password_override: str | None = None) -> tuple[bool, str]:
-        """Attempt an SFTP connection and list the remote path.
+        """Attempt an SFTP connection; AUTH is the test (delivery uses ``put``, not ``list``).
+
+        The connect/auth phase decides success. The remote-folder ``listdir`` is only a
+        best-effort probe wrapped SEPARATELY: an upload-only account that is signed in but
+        DENIED listing (``PermissionError``) is a SUCCESS-with-note — delivery (``sftp.put``)
+        never lists — while a MISSING/wrong remote path (``FileNotFoundError``, or any other
+        listdir error) stays a FAILURE, because a bad path breaks ``put`` too.
 
         Args:
             password_override: A typed password to test transiently (threaded to
@@ -133,13 +149,22 @@ class SFTPUploader:
                 clobber a working saved credential.
 
         Returns:
-            (success, message) — success is True if the connection worked.
+            (success, message) — success is True if auth worked. When auth worked but the
+            account can't list the remote folder, returns ``(True, LISTING_DENIED_NOTE)``.
         """
         client = None
         try:
             client, sftp = self._connect(password_override=password_override)
-            sftp.listdir(self.remote_path)
-            sftp.close()
+            # Probe the remote listing SEPARATELY from connect/auth. paramiko maps
+            # SFTP_PERMISSION_DENIED → IOError(errno.EACCES) ⇒ PermissionError (benign for
+            # upload-only accounts); SFTP_NO_SUCH_FILE → FileNotFoundError (a real delivery
+            # problem — a bad path breaks put too), which falls through to the outer handler.
+            try:
+                sftp.listdir(self.remote_path)
+            except PermissionError:
+                return True, LISTING_DENIED_NOTE
+            finally:
+                sftp.close()
             return True, f"Connection to {self.host}:{self.port} successful."
         except RuntimeError as exc:
             return False, str(exc)
@@ -181,10 +206,13 @@ class SFTPUploader:
 
         Returns:
             List of CSV filenames delivered — the zipped rostering CSVs plus any
-            standalone ``StudentAttendance.csv``.
+            standalone ``StudentAttendance.csv``. Always non-empty on return (an empty
+            *output_dir* raises rather than returning ``[]``).
 
         Raises:
-            RuntimeError: If the connection could not be established.
+            RuntimeError: If *output_dir* contains no CSV files (fail-loud — a silent
+                ``[]`` let callers report a false "delivered"), or if the connection /
+                upload could not be established.
         """
         import tempfile
         import zipfile
@@ -196,8 +224,11 @@ class SFTPUploader:
 
         csv_files = sorted(output_dir.glob("*.csv"))
         if not csv_files:
-            logger.warning(f"No CSV files found in {output_dir}")
-            return []
+            # Fail loud: a silent `[]` return let callers mark the delivery "ok" (a false
+            # "delivered"). Raise so run_pipeline exits 3 / Convert shows BUILT_NOT_DELIVERED.
+            # Only the directory NAME (never the full path) is in the message — no PII leak.
+            logger.error(f"No CSV files found to upload in {output_dir.name}")
+            raise RuntimeError(f"No CSV files found to upload in {output_dir.name}")
 
         # SpacesEDU's attendance feed ships standalone, outside the rostering zip.
         attendance_files = [f for f in csv_files if f.name == "StudentAttendance.csv"]

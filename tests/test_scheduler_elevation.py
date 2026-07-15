@@ -149,6 +149,26 @@ class TestElevationHelpers:
         monkeypatch.setenv("USERNAME", "jane")
         assert elevation._current_user() == "jane"
 
+    def test_owner_only_dacl_icacls_passes_no_window_flag(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The windowed exe must not flash a console when icacls locks the DPAPI request file's DACL.
+        from src.utils.helpers import subprocess_no_window_flags
+
+        monkeypatch.setattr(elevation.sys, "platform", "win32")
+        monkeypatch.setattr(elevation, "_current_user", lambda: "CORP\\jane")
+        captured: dict[str, object] = {}
+
+        def _fake_run(argv, **kwargs):  # type: ignore[no-untyped-def]
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(elevation.subprocess, "run", _fake_run)
+        elevation._set_owner_only_dacl(tmp_path / "dsync_elev_x.req")
+        assert captured["argv"][0] == "icacls"  # type: ignore[index]
+        assert captured["kwargs"]["creationflags"] == subprocess_no_window_flags()  # type: ignore[index]
+
 
 class TestSweepOrphans:
     def test_deletes_old_keeps_fresh(self) -> None:

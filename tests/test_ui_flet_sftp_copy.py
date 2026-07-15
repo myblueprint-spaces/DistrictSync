@@ -25,6 +25,10 @@ _USER = "district_x"
 # the nightly sync can deliver (that is a future outcome the test never verified).
 _KILLED_OVERCLAIM = "the nightly sync can deliver"
 
+# The fixed listing-denied note appended when auth worked but the account can't list the
+# remote folder (upload-only accounts). Mirrors the tail of ``uploader.LISTING_DENIED_NOTE``.
+_LISTING_NOTE = "This account can't list the remote folder — that's normal for upload-only delivery accounts."
+
 
 class TestSftpTestCopy:
     """The success-copy truth table: provenance {stored, typed} x unsaved {False, True}."""
@@ -79,6 +83,52 @@ class TestSftpTestCopy:
         _headline, detail = self._copy(provenance="typed", unsaved_edits=True)
         assert "you just entered" in detail
         assert "These settings work — click Save to use them for the nightly sync." in detail
+
+
+class TestSftpTestCopyListingDenied:
+    """``listing_denied=True`` appends a fixed note (auth worked; listing is denied on
+    upload-only accounts). Default False must leave the copy byte-identical."""
+
+    @pytest.mark.parametrize("provenance", ["stored", "typed"])
+    def test_note_appended_for_both_provenances(self, provenance):
+        _headline, detail = sftp_test_copy(
+            provenance=provenance,
+            unsaved_edits=False,
+            host=_HOST,
+            username=_USER,
+            listing_denied=True,
+        )
+        assert _LISTING_NOTE in detail
+        # It still never over-claims the nightly sync.
+        assert _KILLED_OVERCLAIM not in detail
+
+    def test_composes_after_unsaved_tail(self):
+        # Both softeners present, and the listing note comes LAST (after the unsaved tail).
+        _headline, detail = sftp_test_copy(
+            provenance="stored",
+            unsaved_edits=True,
+            host=_HOST,
+            username=_USER,
+            listing_denied=True,
+        )
+        assert "These settings work — click Save to use them for the nightly sync." in detail
+        assert _LISTING_NOTE in detail
+        assert detail.index(_LISTING_NOTE) > detail.index("These settings work")
+
+    @pytest.mark.parametrize("provenance", ["stored", "typed"])
+    @pytest.mark.parametrize("unsaved_edits", [False, True])
+    def test_default_false_is_byte_identical(self, provenance, unsaved_edits):
+        # Regression: not passing listing_denied (default False) yields the exact prior copy.
+        without = sftp_test_copy(provenance=provenance, unsaved_edits=unsaved_edits, host=_HOST, username=_USER)
+        explicit_false = sftp_test_copy(
+            provenance=provenance,
+            unsaved_edits=unsaved_edits,
+            host=_HOST,
+            username=_USER,
+            listing_denied=False,
+        )
+        assert without == explicit_false
+        assert _LISTING_NOTE not in without[1]
 
 
 class TestSftpFormDiffersFromSaved:

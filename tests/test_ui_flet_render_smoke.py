@@ -105,9 +105,9 @@ class TestScreensRender:
         tree = _settings_tree(stub_page, monkeypatch)
         values = [getattr(c, "value", None) for c in _iter_controls(tree)]
         assert "Settings" in values, "Settings mode must render the 'Settings' title"
-        # #2a: schedule card FIRST, then delivery, then folders/district (Firefighter landing).
+        # 2026-07-15 user decision: folders/district FIRST (what/where), then schedule (when), then delivery.
         order = [v for v in values if v in ("Daily schedule", "SFTP delivery (SpacesEDU)", "Folders & district")]
-        assert order == ["Daily schedule", "SFTP delivery (SpacesEDU)", "Folders & district"]
+        assert order == ["Folders & district", "Daily schedule", "SFTP delivery (SpacesEDU)"]
 
     def test_home(self, stub_page, app_cfg, monkeypatch):
         _assert_renders(
@@ -455,23 +455,23 @@ class TestWizardStepsRender:
         monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
         return build_setup(stub_page)
 
-    def test_folders_step_renders_gated(self, stub_page, monkeypatch):
-        tree = self._wizard_tree(stub_page, monkeypatch, AppConfig())  # unconfigured → Folders
+    def test_district_step_renders_with_placeholder(self, stub_page, monkeypatch):
+        # 2026-07-15 reorder: District is now step 1 — a fresh config lands here with the placeholder.
+        tree = self._wizard_tree(stub_page, monkeypatch, AppConfig())  # unconfigured → District (step 1)
         assert _has_text(tree, "Step 1 of 5")
-        # #4: the wizard opens with ONE orientation line (not cold folder pickers).
+        # #4: the wizard opens with ONE orientation line (now on the District step, not a cold dropdown).
         assert _has_text_containing(tree, "keeps your MyEd BC roster flowing to SpacesEDU")
-        cont = _button_by_content(tree, "Continue")
-        assert cont.disabled is True  # folders invalid → Continue gated (Enter can't bypass)
-
-    def test_district_step_renders_with_placeholder(self, tmp_path, stub_page, monkeypatch):
-        in_dir = tmp_path / "in"
-        in_dir.mkdir()
-        cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="")
-        tree = self._wizard_tree(stub_page, monkeypatch, cfg)  # folders valid, no district → District
-        assert _has_text(tree, "Step 2 of 5")
         dropdown = _find(tree, ft.Dropdown)[0]
         assert dropdown.hint_text == "Choose your district"  # D9 placeholder, no pre-selection
         assert dropdown.value is None
+
+    def test_folders_step_renders_gated(self, stub_page, monkeypatch):
+        # District chosen but folders invalid → the wizard lands on the Folders step (now step 2).
+        cfg = AppConfig(sis_type="myedbc")  # district chosen, blank/invalid folders
+        tree = self._wizard_tree(stub_page, monkeypatch, cfg)
+        assert _has_text(tree, "Step 2 of 5")
+        cont = _button_by_content(tree, "Continue")
+        assert cont.disabled is True  # folders invalid → Continue gated (Enter can't bypass)
 
     def test_delivery_schedule_finish_and_transition_cue(self, tmp_path, stub_page, monkeypatch):
         in_dir = tmp_path / "in"

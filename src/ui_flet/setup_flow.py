@@ -1,7 +1,7 @@
 """Pure wizard state machine for first-run Setup (COUNTED — no flet import, no I/O).
 
-Slice 8 (D8): first-run Setup is a five-step guided path — **Folders → District →
-Schedule → Delivery → Finish** — that graduates into a flat Settings surface once the
+Slice 8 (D8): first-run Setup is a five-step guided path — **District → Folders →
+Delivery → Schedule → Finish** — that graduates into a flat Settings surface once the
 finish line is reached. This module owns the trust-critical *decisions* of that flow so
 they are unit-tested and single-sourced; the view (``screens/setup.py``) performs all
 I/O (path validation, the schedule read-back, the keyring check) and feeds the results
@@ -46,13 +46,15 @@ class SetupStep(Enum):
     FINISH = "finish"
 
 
-# The fixed step order — DELIVERY precedes SCHEDULE by design (F1): the nightly task's ``--sftp``
-# flag is baked at registration from ``cfg.sftp_enabled``, so delivery must be committed BEFORE
-# the Schedule step registers the task, or the natural in-order walk ships a task with no
-# delivery. "Set up where it goes, then when it runs." No re-registration machinery / second UAC.
+# The fixed step order (user decision 2026-07-15): DISTRICT now LEADS — "pick who you are first,
+# then where your files live" — so FOLDERS follows DISTRICT. DELIVERY still precedes SCHEDULE by
+# design (F1): the nightly task's ``--sftp`` flag is baked at registration from ``cfg.sftp_enabled``,
+# so delivery must be committed BEFORE the Schedule step registers the task, or the natural in-order
+# walk ships a task with no delivery. "Set up where it goes, then when it runs." No re-registration
+# machinery / second UAC.
 STEP_ORDER: tuple[SetupStep, ...] = (
-    SetupStep.FOLDERS,
     SetupStep.DISTRICT,
+    SetupStep.FOLDERS,
     SetupStep.DELIVERY,
     SetupStep.SCHEDULE,
     SetupStep.FINISH,
@@ -60,8 +62,8 @@ STEP_ORDER: tuple[SetupStep, ...] = (
 # The steps that must be satisfied before the finish line is reachable (FINISH itself is the
 # terminal confirmation, never "satisfied" by derivation — only by the explicit confirm).
 _PRE_FINISH_STEPS: tuple[SetupStep, ...] = (
-    SetupStep.FOLDERS,
     SetupStep.DISTRICT,
+    SetupStep.FOLDERS,
     SetupStep.DELIVERY,
     SetupStep.SCHEDULE,
 )
@@ -380,8 +382,9 @@ def finish_summary_rows(
 ) -> list[FinishSummaryRow]:
     """The ordered configured-vs-deferred checklist the finish card renders (pure, TOTAL).
 
-    Rows follow the WIZARD input order — Folders, District, Delivery, Schedule — and derive from
-    the SAME injected facts ``finish_copy`` consumes (``schedule_live``, ``delivery``, ``district``,
+    Rows follow the WIZARD input order — District, Folders, Delivery, Schedule (District leads per
+    the 2026-07-15 reorder) — and derive from the SAME injected facts ``finish_copy`` consumes
+    (``schedule_live``, ``delivery``, ``district``,
     ``schedule_time_display``), so the card can NEVER contradict the honest finish copy. The caller
     passes ``district`` already resolved to its friendly name (as it does for ``finish_copy``), so
     a raw config id never reaches the card.
@@ -402,8 +405,8 @@ def finish_summary_rows(
     else:
         schedule_detail = _SUMMARY_DEFERRED_DETAIL
     return [
-        FinishSummaryRow(label="Folders", done=True, detail="Ready"),
         FinishSummaryRow(label="District", done=True, detail=district),
+        FinishSummaryRow(label="Folders", done=True, detail="Ready"),
         FinishSummaryRow(
             label="Delivery",
             done=delivery_done,

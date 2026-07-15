@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.sftp.uploader import KEYRING_SERVICE, SFTPUploader
+from src.sftp.uploader import KEYRING_SERVICE, LISTING_DENIED_NOTE, SFTPUploader
 
 
 class TestSFTPUploaderInit:
@@ -91,6 +91,52 @@ class TestTestConnection:
             ok, msg = uploader.test_connection()
             assert ok is False
             assert "timeout" in msg
+
+    def test_listing_denied_is_success_with_note(self):
+        """Auth is the test: a signed-in but listing-denied account (upload-only, e.g.
+        SpacesEDU) is SUCCESS-WITH-NOTE, because delivery uses ``put`` — never ``listdir``.
+
+        paramiko maps SFTP_PERMISSION_DENIED → ``IOError(errno.EACCES)`` which Python
+        raises as ``PermissionError``.
+        """
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        mock_sftp = MagicMock()
+        mock_sftp.listdir.side_effect = PermissionError("Permission denied")
+        mock_client = MagicMock()
+        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
+            ok, msg = uploader.test_connection()
+        assert ok is True
+        assert msg == LISTING_DENIED_NOTE
+        # The connection is still torn down cleanly on the listing-denied path.
+        mock_sftp.close.assert_called_once()
+        mock_client.close.assert_called_once()
+
+    def test_missing_remote_path_is_failure(self):
+        """A missing/wrong remote path (``FileNotFoundError``) stays a FAILURE — a bad
+        remote path breaks ``put`` too, so it is a real delivery problem (distinct from
+        the benign listing-permission denial above).
+        """
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        mock_sftp = MagicMock()
+        mock_sftp.listdir.side_effect = FileNotFoundError("No such file")
+        mock_client = MagicMock()
+        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
+            ok, msg = uploader.test_connection()
+        assert ok is False
+        assert "No such file" in msg
+        assert msg != LISTING_DENIED_NOTE
+        mock_client.close.assert_called_once()
+
+    def test_other_listdir_error_is_failure(self):
+        """Any non-permission listdir error remains a failure (not silently a success)."""
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+        mock_sftp = MagicMock()
+        mock_sftp.listdir.side_effect = OSError("transport closed")
+        mock_client = MagicMock()
+        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
+            ok, msg = uploader.test_connection()
+        assert ok is False
+        assert "transport closed" in msg
 
 
 class TestPasswordOverride:
@@ -187,10 +233,13 @@ class TestUploadCsvs:
         remote_path = mock_sftp.put.call_args[0][1]
         assert remote_path == "/upload/custom.zip"
 
-    def test_upload_no_csv_files(self, tmp_path):
+    def test_upload_no_csv_files_raises(self, tmp_path):
+        """Fail-loud on an empty output dir: a silent ``[]`` return let callers report a
+        false 'delivered'. The raise makes the pipeline exit 3 / Convert BUILT_NOT_DELIVERED.
+        """
         uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
-        uploaded = uploader.upload_csvs(tmp_path)
-        assert uploaded == []
+        with pytest.raises(RuntimeError, match="No CSV files found to upload"):
+            uploader.upload_csvs(tmp_path)
 
     def test_upload_raises_on_sftp_error(self, tmp_path):
         (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")

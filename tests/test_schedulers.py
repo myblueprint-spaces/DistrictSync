@@ -19,10 +19,22 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.utils.helpers import subprocess_no_window_flags
+
 
 def _argv(mock_run) -> list[str]:
     """The argv list passed to the (mocked) subprocess.run."""
     return mock_run.call_args[0][0]
+
+
+def _creationflags(mock_run) -> int:
+    """The ``creationflags`` kwarg passed to subprocess.run (KeyError if the site dropped it).
+
+    Every Windows-facing subprocess.run must pass ``creationflags=subprocess_no_window_flags()``
+    so the windowed exe never flashes a console (e.g. the schedule read-back on a nav click).
+    Reading the kwarg directly makes a dropped flag a hard test failure — the regression guard.
+    """
+    return mock_run.call_args[1]["creationflags"]
 
 
 def _ps_script(mock_run) -> str:
@@ -293,6 +305,8 @@ class TestWindowsRegisterTask:
         )
         assert ok is True
         mock_run.assert_called_once()
+        # No-console flag: the windowed exe must not flash a console when registering.
+        assert _creationflags(mock_run) == subprocess_no_window_flags()
         argv = _argv(mock_run)
         # Fixed flags + an -EncodedCommand base64 blob (the script is not piped
         # via stdin — observed live on this dev box (Win11, PS 5.1), a multi-line
@@ -601,6 +615,8 @@ class TestWindowsDeleteTask:
         assert ok is True
         args = mock_run.call_args[0][0]
         assert "/Delete" in args
+        # No-console flag on the schtasks delete too.
+        assert _creationflags(mock_run) == subprocess_no_window_flags()
 
     @patch("src.scheduler.windows.subprocess.run")
     def test_delete_failure(self, mock_run):
@@ -654,6 +670,8 @@ class TestReadSchedule:
         assert mock_run.call_args[1]["env"]["DSYNC_TASKNAME"] == "DistrictSync_Daily"
         # The read-back subprocess is bounded by a timeout (a hung PowerShell can't freeze the UI).
         assert mock_run.call_args[1]["timeout"] == 10
+        # THE nav-click flasher: the read-back must pass the no-console flag (windowed exe).
+        assert _creationflags(mock_run) == subprocess_no_window_flags()
 
     @patch("src.scheduler.windows.sys.platform", "win32")
     @patch("src.scheduler.windows.subprocess.run")

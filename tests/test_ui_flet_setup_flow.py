@@ -57,11 +57,13 @@ def _inputs(**over) -> FlowInputs:
 # --------------------------------------------------------------------------- #
 class TestStepScaffolding:
     def test_five_named_steps_in_fixed_order(self):
-        # F1: DELIVERY precedes SCHEDULE so the sftp flag is committed BEFORE the task is baked.
+        # 2026-07-15 reorder: DISTRICT leads ("pick who you are first, then where files live"), then
+        # FOLDERS. F1 still holds: DELIVERY precedes SCHEDULE so the sftp flag is committed BEFORE the
+        # task is baked.
         assert TOTAL_STEPS == 5
         assert STEP_ORDER == (
-            SetupStep.FOLDERS,
             SetupStep.DISTRICT,
+            SetupStep.FOLDERS,
             SetupStep.DELIVERY,
             SetupStep.SCHEDULE,
             SetupStep.FINISH,
@@ -70,8 +72,8 @@ class TestStepScaffolding:
     @pytest.mark.parametrize(
         ("step", "number"),
         [
-            (SetupStep.FOLDERS, 1),
-            (SetupStep.DISTRICT, 2),
+            (SetupStep.DISTRICT, 1),
+            (SetupStep.FOLDERS, 2),
             (SetupStep.DELIVERY, 3),
             (SetupStep.SCHEDULE, 4),
             (SetupStep.FINISH, 5),
@@ -81,13 +83,14 @@ class TestStepScaffolding:
         assert step_number(step) == number
 
     def test_next_and_prev_step_walk_the_order(self):
-        assert next_step(SetupStep.FOLDERS) is SetupStep.DISTRICT
+        assert next_step(SetupStep.DISTRICT) is SetupStep.FOLDERS
+        assert next_step(SetupStep.FOLDERS) is SetupStep.DELIVERY
         assert next_step(SetupStep.DELIVERY) is SetupStep.SCHEDULE
         assert next_step(SetupStep.SCHEDULE) is SetupStep.FINISH
         assert next_step(SetupStep.FINISH) is None
-        assert prev_step(SetupStep.DISTRICT) is SetupStep.FOLDERS
+        assert prev_step(SetupStep.FOLDERS) is SetupStep.DISTRICT
         assert prev_step(SetupStep.SCHEDULE) is SetupStep.DELIVERY
-        assert prev_step(SetupStep.FOLDERS) is None
+        assert prev_step(SetupStep.DISTRICT) is None
 
     def test_only_schedule_and_delivery_are_skippable(self):
         assert is_skippable(SetupStep.SCHEDULE) is True
@@ -101,16 +104,17 @@ class TestStepScaffolding:
 # Resume derivation — first unsatisfied step from REAL state (no stored cursor) #
 # --------------------------------------------------------------------------- #
 class TestResumeDerivation:
-    def test_fresh_install_resumes_at_folders(self):
-        assert derive_flow(_inputs()).resume_step is SetupStep.FOLDERS
+    def test_fresh_install_resumes_at_district(self):
+        # 2026-07-15 reorder: District leads, so a fresh install lands on the District step first.
+        assert derive_flow(_inputs()).resume_step is SetupStep.DISTRICT
 
-    def test_folders_valid_only_resumes_at_district(self):
-        state = derive_flow(_inputs(folders_valid=True))
-        assert state.resume_step is SetupStep.DISTRICT
-        assert SetupStep.FOLDERS in state.satisfied
+    def test_district_chosen_only_resumes_at_folders(self):
+        state = derive_flow(_inputs(district_chosen=True))
+        assert state.resume_step is SetupStep.FOLDERS
+        assert SetupStep.DISTRICT in state.satisfied
 
-    def test_folders_and_district_resume_at_delivery(self):
-        # F1 reorder: Delivery is the first step after District (before Schedule).
+    def test_district_and_folders_resume_at_delivery(self):
+        # F1 reorder: Delivery is the first step after the two identity/location steps (before Schedule).
         state = derive_flow(_inputs(folders_valid=True, district_chosen=True))
         assert state.resume_step is SetupStep.DELIVERY
 
@@ -391,8 +395,8 @@ class TestFinishSummaryRows:
             district="New Westminster",
             schedule_time_display="3:00 AM",
         )
-        # Folders → District → Delivery → Schedule (the wizard input order; Finish is not a row).
-        assert [row.label for row in rows] == ["Folders", "District", "Delivery", "Schedule"]
+        # District → Folders → Delivery → Schedule (the wizard input order; Finish is not a row).
+        assert [row.label for row in rows] == ["District", "Folders", "Delivery", "Schedule"]
 
     def test_all_configured_every_row_done_with_concrete_values(self):
         rows = self._rows_by_label(

@@ -122,6 +122,7 @@ from pathlib import Path
 
 from src.scheduler import elevation
 from src.scheduler.elevation import ElevationOutcome, ElevationResult
+from src.utils.helpers import subprocess_no_window_flags
 from src.utils.validators import (
     validate_run_as_user,
     validate_run_time,
@@ -596,6 +597,7 @@ def register_task(
             env=child_env,
             capture_output=True,
             text=True,
+            creationflags=subprocess_no_window_flags(),  # no console flash in the windowed exe
         )
     except FileNotFoundError:
         # powershell.exe absent from PATH — fail loud, never crash the caller.
@@ -646,6 +648,7 @@ def delete_task(task_name: str) -> tuple[bool, str]:
         ["schtasks", "/Delete", "/F", "/TN", task_name],
         capture_output=True,
         text=True,
+        creationflags=subprocess_no_window_flags(),  # no console flash in the windowed exe
     )
     success = result.returncode == 0
     message = (result.stdout + result.stderr).strip()
@@ -1046,6 +1049,7 @@ def read_schedule(task_name: str) -> ScheduleReadback:
             capture_output=True,
             text=True,
             timeout=_READ_TIMEOUT_S,
+            creationflags=subprocess_no_window_flags(),  # THE nav-click flasher — no console in the windowed exe
         )
     except FileNotFoundError:
         # No powershell.exe on PATH — the query couldn't run → UNKNOWN, never "absent".

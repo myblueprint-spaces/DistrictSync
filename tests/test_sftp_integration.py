@@ -76,17 +76,17 @@ class TestSFTPRealUpload:
 
         assert sorted(captured_zip_names) == ["Family.csv", "Staff.csv", "Students.csv"]
 
-    def test_upload_empty_dir_skips_connection(self, sftpserver, tmp_path):
-        """If no CSV files exist, upload_csvs returns [] without connecting."""
+    def test_upload_empty_dir_raises_before_connecting(self, sftpserver, tmp_path):
+        """If no CSV files exist, upload_csvs fails loud (no silent [] → false 'delivered')
+        and never connects (the raise fires before ``_connect``)."""
         uploader = _make_uploader(sftpserver.port)
         with (
             patch("src.utils.validators.ALLOWED_SFTP_HOSTS", _PATCHED_HOSTS),
             patch.object(uploader, "_get_password", return_value="pass"),
             sftpserver.serve_content({"upload": {}}),
+            pytest.raises(RuntimeError, match="No CSV files found to upload"),
         ):
-            result = uploader.upload_csvs(tmp_path)
-
-        assert result == []
+            uploader.upload_csvs(tmp_path)
 
     def test_upload_zip_name_includes_today(self, sftpserver, tmp_path):
         """Default ZIP name must match districtsync_YYYY-MM-DD.zip."""

@@ -365,6 +365,35 @@ class TestNoSftpFlag:
 # ---------------------------------------------------------------------------
 
 
+class TestSftpEmptyOutputDirExit3:
+    """An empty output dir at delivery time is fail-loud (no silent []-as-delivered).
+
+    Unreachable from Convert (it always builds CSVs first), but reachable from a
+    CLI/scheduled misconfig pointing --output at a dir with no CSVs.
+    """
+
+    def test_empty_output_dir_upload_raises(self, tmp_path: Path) -> None:
+        """``upload_csvs`` on an empty dir raises RuntimeError instead of returning []."""
+        from src.sftp.uploader import SFTPUploader
+
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/files")
+        with pytest.raises(RuntimeError, match="No CSV files found to upload"):
+            uploader.upload_csvs(tmp_path)
+
+    def test_sftp_upload_seam_empty_dir_returns_false(self, tmp_path: Path) -> None:
+        """The pipeline seam catches the fail-loud raise → returns False → sftp_ok=False →
+        main.py exits 3 (the honest 'built but not delivered' verdict)."""
+        from src.etl.pipeline import _sftp_upload
+
+        mock_cfg = _make_mock_app_config()
+        with patch("src.etl.pipeline.AppConfig.load", return_value=mock_cfg):
+            ok = _sftp_upload(str(tmp_path))
+
+        assert ok is False
+        # Replicate main.py's guard input: attempted + not ok → exit 3.
+        assert not ok  # sftp_ok=False → run_pipeline exposes sftp_attempted=True, sftp_ok=False
+
+
 class TestDryRunWithSftp:
     def test_dry_run_sftp_not_attempted(self, gde_input: Path, gde_output: Path) -> None:
         """--dry-run skips the write step and therefore must never attempt upload."""
