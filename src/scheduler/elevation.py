@@ -62,6 +62,7 @@ from enum import Enum
 from pathlib import Path
 
 from src.utils import paths
+from src.utils.helpers import subprocess_no_window_flags
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +218,7 @@ def _set_owner_only_dacl(path: Path) -> None:  # pragma: no cover - Windows-only
             text=True,
             timeout=15,
             check=False,
+            creationflags=subprocess_no_window_flags(),  # no console flash in the windowed exe
         )
         if result.returncode != 0:
             logger.warning(

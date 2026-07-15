@@ -10,7 +10,7 @@ them to controls.
 **Two modes, one build entry (``build_setup``):**
 
 * **Wizard mode** — while ``not cfg.has_completed_setup()``: a five-step guided path
-  (Folders → District → Schedule → Delivery → Finish) with a "Step N of 5" indicator +
+  (District → Folders → Delivery → Schedule → Finish) with a "Step N of 5" indicator +
   Back, Enter/Continue gated per step, and focus moved to the new step's first field. The
   Schedule + Delivery steps are **skippable** ("Set up later") and **reconcile** against
   real side effects — a task the read-back already reports LIVE ("already scheduled") and a
@@ -39,6 +39,7 @@ never ``cfg``, never a log/message). The SFTP credential's only sinks are
 from __future__ import annotations
 
 import contextlib
+import datetime
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -252,7 +253,7 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
     # Shared mutable wizard state. Folders/district selections mirror the config; the schedule
     # status + delivery fact are the injected verification results the finish line + resume read.
     ws: dict[str, object] = {
-        "step": SetupStep.FOLDERS,
+        "step": SetupStep.DISTRICT,  # placeholder — overwritten by derive_flow(...).resume_step below
         "input": cfg.input_dir,
         "output": cfg.output_dir,
         "sis": cfg.sis_type or auto_selected_district(available),  # D9: auto-select iff one config
@@ -381,15 +382,7 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
             dialog_title="Select the output folder",
             initial_value=str(ws["output"]),
         )
-        # #4: ONE orientation line on step 1 only — the wizard shouldn't cold-open on folder pickers
-        # with zero context. (A fuller welcome screen is a close-out question, not built here.)
-        orientation = ft.Text(
-            "DistrictSync keeps your MyEd BC roster flowing to SpacesEDU — automatically, every night. "
-            "Let's set it up.",
-            size=14,
-            color=tokens.color_muted,
-        )
-        return ft.Column(spacing=22, controls=[orientation, input_field, output_field])
+        return ft.Column(spacing=22, controls=[input_field, output_field])
 
     def _district_body() -> ft.Control:
         def _on_pick(e: ft.ControlEvent) -> None:
@@ -408,6 +401,15 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
         return ft.Column(
             spacing=12,
             controls=[
+                # #4: ONE orientation line on the wizard's FIRST step (now District, 2026-07-15 reorder)
+                # — the wizard shouldn't cold-open with zero context. (A fuller welcome screen is a
+                # close-out question, not built here.)
+                ft.Text(
+                    "DistrictSync keeps your MyEd BC roster flowing to SpacesEDU — automatically, every "
+                    "night. Let's set it up.",
+                    size=14,
+                    color=tokens.color_muted,
+                ),
                 ft.Text(
                     "Pick the district whose MyEd BC layout matches your extract. "
                     "You can switch it later from the Mapping tab.",
@@ -609,9 +611,11 @@ def _mount_settings(  # pragma: no cover - Flet view glue
         controls.append(
             components.HealthVerdictBanner(Verdict.HEALTHY, headline="Setup complete", detail=TRANSITION_CUE)
         )
-    # #2a: schedule FIRST (the operational heart + where a MISSING fix-CTA lands the Firefighter),
-    # then delivery, then folders/district (rarely changed post-setup). Wizard step order is unchanged.
-    controls += [schedule_card, sftp_card, folders_card]
+    # Settings order (user decision 2026-07-15, overriding the earlier #2a "schedule FIRST"): folders
+    # & district FIRST (what/where), then schedule (when), then delivery (destination) — the user's
+    # stated mental model. Mirrors the wizard's lead-with-identity reorder. Wizard step order lives in
+    # setup_flow.STEP_ORDER; this is the flat post-setup scroll.
+    controls += [folders_card, schedule_card, sftp_card]
     root.controls = controls
     page.update()
 
@@ -746,6 +750,43 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         helper="When DistrictSync runs each day — pick a time after your SIS extract lands.",
     )
 
+    # Clock affordance that opens a TimePicker. The TextField stays the SINGLE SOURCE OF TRUTH
+    # (all gating — can_register_schedule / validate_run_time / TaskArgs — reads run_time_field.value);
+    # the picker only writes HH:MM back and typing remains allowed (an affordance, not a replacement).
+    def _seed_time() -> datetime.time:
+        """Seed the picker from the field's current HH:MM, falling back to the 03:00 default."""
+        raw = (run_time_field.value or "").strip()
+        try:
+            hours, minutes = raw.split(":")
+            return datetime.time(int(hours), int(minutes))
+        except (ValueError, TypeError):
+            return datetime.time(3, 0)
+
+    def _open_time_picker(_e: ft.ControlEvent | None = None) -> None:
+        def _on_time_confirmed(e: ft.ControlEvent) -> None:
+            picked = e.control.value  # datetime.time (None if dismissed)
+            if picked is None:
+                return
+            run_time_field.value = f"{picked.hour:02d}:{picked.minute:02d}"
+            _refresh_register_gate()  # the SAME handler the field's on_change uses — re-gates + page.update
+
+        # flet 0.85.3: TimePicker is a DialogControl → open via page.show_dialog; value is a
+        # datetime.time; confirm fires on_change, cancel fires on_dismiss (see FLET_1.0_CONVENTIONS.md).
+        page.show_dialog(
+            ft.TimePicker(
+                value=_seed_time(),
+                help_text="Daily run time",
+                confirm_text="Set",
+                on_change=_on_time_confirmed,
+            )
+        )
+
+    time_pick_button = ft.IconButton(
+        icon=ft.Icons.ACCESS_TIME_ROUNDED,
+        tooltip="Pick a time",
+        on_click=_open_time_picker,
+    )
+
     result_slot = ft.Column(spacing=0, controls=[])
     readout_slot = ft.Column(spacing=0, controls=[])
 
@@ -793,7 +834,13 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     if is_windows:
         readout_slot.controls = [ft.Text("Checking the schedule…", size=13, color=tokens.color_muted)]
         section_controls.append(readout_slot)
-    section_controls.append(run_time_field)
+    section_controls.append(
+        ft.Row(
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[run_time_field, time_pick_button],
+        )
+    )
 
     password_field: ft.TextField | None = None
     if is_windows:

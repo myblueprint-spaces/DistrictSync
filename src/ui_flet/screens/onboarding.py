@@ -8,8 +8,8 @@ a raw ``sd48myedbc``), and offers ONE prominent "Start setup" CTA into the wizar
 
 **One front door (D10):** while unconfigured there is exactly one entrance to setup —
 this hero's CTA (which navigates to the Setup **wizard**). The old three-step "Getting
-started" preview was removed: it duplicated the wizard's own guided path (Folders →
-District → Schedule → Delivery → finish) and read as a competing set of instructions.
+started" preview was removed: it duplicated the wizard's own guided path (District →
+Folders → Delivery → Schedule → finish) and read as a competing set of instructions.
 The launch already lands on the wizard while ``not setup_completed`` (Slice 3/5), so the
 hero is a friendly re-entry point, not a second, differently-worded set of steps.
 
@@ -79,7 +79,7 @@ def build_onboarding(
                 # input steps named at a glance + a time estimate — subdued/secondary, NOT a heading,
                 # and NOT the removed multi-step walkthrough (the wizard is still the only guided path).
                 ft.Text(
-                    "Four quick steps — your files, your district, how results are delivered, and "
+                    "Four quick steps — your district, your files, how results are delivered, and "
                     "when it runs. About 3 minutes.",
                     size=14,
                     color=ft.Colors.with_opacity(0.72, tokens.color_on_action),
