@@ -64,16 +64,30 @@ def bundle_mappings_dir() -> Path:
 
 
 def app_icon_path() -> Path:
-    """Path to the shipped brand ``.ico`` (window/taskbar/exe icon).
+    """Path to the DistrictSync sync-mark ``.ico`` (the EXE/file icon).
 
     A read-only *bundle* asset (not user-writable), so it resolves against
     ``bundle_root()`` exactly like the config dir: in dev this is
     ``<project root>/assets/districtsync.ico``; in a frozen PyInstaller build it is
     ``<_MEIPASS>/assets/districtsync.ico`` (the file is shipped there via the
-    ``flet pack`` ``--add-data "assets;assets"`` arg). Pure — resolves a path only;
-    the caller decides whether to set ``page.window.icon`` (Windows-only surface).
+    ``flet pack`` ``--add-data "assets;assets"`` arg). The EXE file icon is baked
+    from this same asset by ``flet pack --icon`` at build time. Pure — resolves a
+    path only. The running WINDOW's icon is :func:`window_icon_path` (the
+    myBlueprint mark) — owner decision 2026-07-15: myB on the title bar, the sync
+    mark for the app file itself.
     """
     return bundle_root() / "assets" / "districtsync.ico"
+
+
+def window_icon_path() -> Path:
+    """Path to the myBlueprint-mark ``.ico`` (the running window/title-bar/taskbar icon).
+
+    Same bundle-asset resolution as :func:`app_icon_path` (``--add-data "assets;assets"``
+    ships it into ``<_MEIPASS>/assets`` in the frozen exe). Sourced from the official
+    myB favicon (transparent 16/32/48 layers — native title-bar sizes, no upscaling).
+    Pure — resolves a path only; ``shell`` decides whether to set ``page.window.icon``.
+    """
+    return bundle_root() / "assets" / "myblueprint.ico"
 
 
 def _platform_data_dir() -> Path:

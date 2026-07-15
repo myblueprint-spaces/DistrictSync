@@ -23,7 +23,7 @@ import flet as ft
 import pytest
 
 from src.config.app_config import AppConfig
-from src.ui_flet import components
+from src.ui_flet import components, tokens
 from src.ui_flet.screens.convert import build_convert
 from src.ui_flet.screens.help import build_help
 from src.ui_flet.screens.home import build_home
@@ -163,6 +163,25 @@ class TestScreensRender:
         # The button label is a plain string on FilledButton.content (see components._filled_button).
         assert any(getattr(c, "content", None) == "Refresh" for c in _iter_controls(tree)), (
             "dashboard branch must render the Refresh affordance"
+        )
+
+    def test_home_is_verdict_first(self, stub_page, monkeypatch):
+        # Direction B (0033 Slice 2): the dashboard leads with the "Home" page_header title, then
+        # the verdict band is the FIRST content element (index 1) — a toned status tint, before any
+        # metric tile. Robust to run-store contents: every verdict paints one of the three tints.
+        configured = AppConfig(input_dir="in", output_dir="out", sis_type="myedbc", schedule_registered=True)
+        tree = _assert_renders(
+            lambda: build_home(stub_page, app_config=configured, on_navigate=lambda _d: None),
+            monkeypatch,
+        )
+        assert _has_text(tree, "Home"), "the Home page_header title must render"
+        verdict_tints = {
+            tokens.color_status_healthy_tint,
+            tokens.color_status_warning_tint,
+            tokens.color_status_failed_tint,
+        }
+        assert getattr(tree.controls[1], "bgcolor", None) in verdict_tints, (
+            "the verdict band must be the first content element after the page header"
         )
 
     def test_run_history(self, stub_page, app_cfg, monkeypatch):
@@ -321,6 +340,7 @@ def test_nav_rail_builds_and_exposes_rail_handle():
     drift in the rail the same way TestScreensRender guards the screens.
     """
     from src.ui_flet import nav, nav_rail
+    from src.utils.version import app_version
 
     ordered = nav.ordered_destinations(nav.nav_model(AppConfig()))
     view, rail = nav_rail.build_nav(
@@ -335,6 +355,9 @@ def test_nav_rail_builds_and_exposes_rail_handle():
     assert rail.selected_index == nav.selected_index_for("setup", ordered)
     # One rail destination per ordered entry — fixed order, nothing dropped.
     assert len(rail.destinations) == len(ordered)
+    # Direction B navy rail (0033 Slice 2): navy bg + the app-version foot line in the trailing.
+    assert rail.bgcolor == tokens.color_rail_bg
+    assert _has_text_containing(rail.trailing, f"v{app_version()}"), "the rail must show the version caption"
 
 
 def test_nav_rail_renders_setup_attention_badge():

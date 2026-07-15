@@ -46,32 +46,14 @@ from src.ui_flet.mapping_catalog import ConfigSummary, can_apply, list_configs, 
 from src.ui_flet.verdict import Verdict
 
 
-def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
-    return ft.Padding(left=h, top=v, right=h, bottom=v)
+def _greeting_header(app_config: AppConfig) -> ft.Control:  # noqa: ARG001 - uniform header form (config-voiceless title)
+    """The Direction B page header titling the surface "Mapping" (never a raw config id).
 
-
-def _greeting_header(app_config: AppConfig) -> ft.Control:  # noqa: ARG001 - uniform hero form (config-voiceless title)
-    """A branded hero titling the surface "Mapping" (never a raw config id).
-
-    A Mapping-local hero (not a shared ``components`` extraction): the subtitle differs from
-    Home's / Run History's / Help's, so a premature shared extraction of a 5-line hero would be
-    over-DRY — the local ``_greeting_header`` pattern IA-6/IA-7 landed.
+    The gradient hero demotes to a slim ``page_header`` (0033 Slice 2).
     """
-    return components.card(
-        content=ft.Column(
-            spacing=6,
-            controls=[
-                ft.Text("Mapping", size=26, weight=ft.FontWeight.W_800, color=tokens.color_on_action),
-                ft.Text(
-                    "Review the roster mapping DistrictSync uses, or switch to a different one.",
-                    size=15,
-                    color=ft.Colors.with_opacity(0.9, tokens.color_on_action),
-                ),
-            ],
-        ),
-        gradient=components.hero_gradient(),
-        padding=_pad_sym(32, 26),
-        border_radius=18,
+    return components.page_header(
+        "Mapping",
+        "Review the roster mapping DistrictSync uses, or switch to a different one.",
     )
 
 

@@ -48,17 +48,11 @@ HELP_CENTRE_URL = "https://help.spacesedu.com/en-ca/article/mx56qo"
 SUPPORT_EMAIL = "support@myBlueprint.ca"
 
 
-def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
-    return ft.Padding(left=h, top=v, right=h, bottom=v)
-
-
 def _greeting_header(app_config: AppConfig) -> ft.Control:
-    """A branded hero titling the surface "Help" (never a raw config id).
+    """The Direction B page header titling the surface "Help" (never a raw config id).
 
-    A Help-local hero (not a shared ``components`` extraction): the subtitle differs from
-    Home's / Run History's, so a premature shared extraction of a 5-line hero would be
-    over-DRY — promote only if a 3rd consumer needs the identical copy (the local
-    ``_greeting_header`` pattern IA-6 landed).
+    The gradient hero demotes to a slim ``page_header`` (0033 Slice 2); the district-voiced
+    subtitle is preserved as the header sub.
     """
     friendly = friendly_district_name(app_config.sis_type)
     subtitle = (
@@ -66,22 +60,7 @@ def _greeting_header(app_config: AppConfig) -> ft.Control:
         if friendly
         else "Getting you un-stuck — the answers, and a human to email."
     )
-    return components.card(
-        content=ft.Column(
-            spacing=6,
-            controls=[
-                ft.Text("Help", size=26, weight=ft.FontWeight.W_800, color=tokens.color_on_action),
-                ft.Text(
-                    subtitle,
-                    size=15,
-                    color=ft.Colors.with_opacity(0.9, tokens.color_on_action),
-                ),
-            ],
-        ),
-        gradient=components.hero_gradient(),
-        padding=_pad_sym(32, 26),
-        border_radius=18,
-    )
+    return components.page_header("Help", subtitle)
 
 
 def _get_help_card(page: ft.Page) -> ft.Control:

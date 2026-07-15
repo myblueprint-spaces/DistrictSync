@@ -598,21 +598,13 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
     _refresh_files()
     _refresh_convert_gate()
 
-    hero = components.card(
-        content=ft.Column(
-            spacing=6,
-            controls=[
-                ft.Text("Convert now", size=26, weight=ft.FontWeight.W_800, color=tokens.color_on_action),
-                ft.Text(
-                    "Build your roster on demand — pick the folder with your MyEd BC extract and convert.",
-                    size=15,
-                    color=ft.Colors.with_opacity(0.9, tokens.color_on_action),
-                ),
-            ],
-        ),
-        gradient=components.hero_gradient(),
-        padding=_pad_sym(32, 26),
-        border_radius=18,
+    # Direction B page header (0033 Slice 2): the gradient hero demotes to a slim header; the
+    # saved district identity rides in the header's right slot as a ``district_chip`` (the
+    # per-run selection stays the dropdown below — the chip reflects the configured district).
+    header = components.page_header(
+        "Convert",
+        "Build your roster now from your MyEd BC extract files",
+        trailing=components.district_chip(friendly_district_name(default_district)) if default_district else None,
     )
 
     form = components.card(
@@ -632,7 +624,7 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
         ),
     )
 
-    return ft.Column(spacing=22, controls=[hero, form, result_slot])
+    return ft.Column(spacing=22, controls=[header, form, result_slot])
 
 
 # --------------------------------------------------------------------------- #

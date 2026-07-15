@@ -50,6 +50,82 @@ class TestBrandPrimitives:
             assert _HEX_RE.match(value), f"{alias}={value!r} is not #RRGGBB"
 
 
+class TestDirectionBScales:
+    """Guard the Direction B scales/roles exist (a factory sizes against them — an
+    accidental deletion must fail the build, not silently drop a token)."""
+
+    def test_spacing_scale_is_ascending_positive_ints(self):
+        scale = [
+            tokens.space_xs,
+            tokens.space_sm,
+            tokens.space_md,
+            tokens.space_lg,
+            tokens.space_xl,
+            tokens.space_2xl,
+        ]
+        assert scale == [4, 8, 12, 16, 24, 32]
+        assert all(isinstance(v, int) and v > 0 for v in scale)
+        assert scale == sorted(scale)
+
+    def test_radius_scale_present(self):
+        assert (tokens.radius_sm, tokens.radius_md, tokens.radius_lg) == (8, 10, 12)
+
+    def test_type_ramp_is_ascending(self):
+        ramp = [
+            tokens.type_caption,
+            tokens.type_body,
+            tokens.type_emphasis,
+            tokens.type_section,
+            tokens.type_title,
+            tokens.type_metric,
+        ]
+        assert ramp == [12, 13, 14, 16, 20, 26]
+        assert ramp == sorted(ramp)
+
+    def test_direction_b_role_tokens_are_valid_hex(self):
+        for alias in (
+            "color_rail_bg",
+            "color_rail_text",
+            "color_rail_text_active",
+            "color_rail_active_accent",
+            "color_status_healthy_tint",
+            "color_status_healthy_line",
+            "color_on_healthy_tint",
+            "color_status_warning_tint",
+            "color_status_warning_line",
+            "color_on_warning_tint",
+            "color_status_failed_tint",
+            "color_status_failed_line",
+            "color_on_failed_tint",
+            "color_content_wash",
+            "color_chip_bg",
+            "color_action_primary_hover",
+            "color_action_outline",
+        ):
+            value = getattr(tokens, alias)
+            assert _HEX_RE.match(value), f"{alias}={value!r} is not #RRGGBB"
+
+    def test_content_wash_distinct_from_brand_page_tint(self):
+        # The quiet content wash is intentionally NOT the brand page tint.
+        assert tokens.color_content_wash != tokens.page_bg
+
+    def test_new_painted_pairs_are_in_the_contract(self):
+        """The Direction B fg/bg pairs the design system paints must be AA-gated
+        (in ``UI_CONTRAST_PAIRS``) — so a future palette tweak can't dodge the check."""
+        required = [
+            (tokens.color_on_healthy_tint, tokens.color_status_healthy_tint),
+            (tokens.color_on_warning_tint, tokens.color_status_warning_tint),
+            (tokens.color_on_failed_tint, tokens.color_status_failed_tint),
+            (tokens.color_rail_text, tokens.color_rail_bg),
+            (tokens.color_rail_text_active, tokens.color_rail_bg),
+            (tokens.MB_DARK, tokens.color_surface),
+            (tokens.color_muted, tokens.color_content_wash),
+            (tokens.color_text, tokens.color_content_wash),
+        ]
+        for pair in required:
+            assert pair in tokens.UI_CONTRAST_PAIRS, f"{pair} must be in the contrast contract"
+
+
 class TestContrastRatio:
     def test_identical_colours_ratio_is_one(self):
         assert tokens.contrast_ratio("#FFFFFF", "#FFFFFF") == pytest.approx(1.0)

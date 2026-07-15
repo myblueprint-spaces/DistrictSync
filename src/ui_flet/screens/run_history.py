@@ -34,7 +34,7 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.history.store import read_run_records, store_meta
-from src.ui_flet import components, tokens
+from src.ui_flet import components
 from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.run_history import derive_history_banner, to_run_rows
 from src.ui_flet.schedule_status import ScheduleStatus
@@ -44,16 +44,11 @@ LIMIT = 50
 pagination is a ROADMAP nice-to-have if the log could ever grow large, not built here (YAGNI)."""
 
 
-def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
-    return ft.Padding(left=h, top=v, right=h, bottom=v)
-
-
 def _greeting_header(app_config: AppConfig) -> ft.Control:
-    """A branded hero titling the surface "Run History" (never a raw config id).
+    """The Direction B page header titling the surface "Run History" (never a raw config id).
 
-    A Run-History-local hero (not a shared ``components`` extraction): the subtitle differs from
-    Home's greeting, so a premature shared extraction of a 5-line hero would be over-DRY — promote
-    only if a 3rd consumer needs the identical copy.
+    The gradient hero demotes to a slim ``page_header`` (0033 Slice 2); the district-voiced
+    subtitle is preserved as the header sub.
     """
     friendly = friendly_district_name(app_config.sis_type)
     subtitle = (
@@ -61,22 +56,7 @@ def _greeting_header(app_config: AppConfig) -> ft.Control:
         if friendly
         else "Every nightly roster sync, newest first."
     )
-    return components.card(
-        content=ft.Column(
-            spacing=6,
-            controls=[
-                ft.Text("Run History", size=26, weight=ft.FontWeight.W_800, color=tokens.color_on_action),
-                ft.Text(
-                    subtitle,
-                    size=15,
-                    color=ft.Colors.with_opacity(0.9, tokens.color_on_action),
-                ),
-            ],
-        ),
-        gradient=components.hero_gradient(),
-        padding=_pad_sym(32, 26),
-        border_radius=18,
-    )
+    return components.page_header("Run History", subtitle)
 
 
 def _refresh_button(on_refresh: Callable[[], None]) -> ft.Control:
