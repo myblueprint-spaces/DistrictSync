@@ -413,6 +413,70 @@ def downgrade_interrupt(*, registered_unattended: bool, password_supplied: bool)
 
 
 # --------------------------------------------------------------------------- #
+# Settings reconcile outcome — honest Save-note copy (0034 S3 correctness fix). #
+# --------------------------------------------------------------------------- #
+# The shared Settings reconcile either DISPATCHES a re-register, merely shows the downgrade
+# INTERRUPT (nothing registered — the admin must still choose), or does neither (NONE — no live
+# task, or no task-baked field changed). Both Save sites paint their schedule note from THIS
+# outcome, so a Save can never claim the nightly schedule is "updating" when the reconcile only
+# opened the choice dialog and returned without registering (the bug this fix closes: after Cancel
+# an optimistic "updating…" Save note contradicted the schedule card's "Schedule not updated").
+# "Saved" itself stays truthful — the config fields DID persist; only the schedule clause is gated
+# on what actually happened.
+_FOLDERS_SAVED = "Saved."
+_FOLDERS_SAVED_DISPATCHED = "Saved — updating the nightly schedule to match…"
+_FOLDERS_SAVED_INTERRUPTED = "Saved — confirm the schedule choice above."
+_SFTP_RECONCILE_DISPATCHED = " Updating the nightly schedule to deliver too…"
+_SFTP_RECONCILE_INTERRUPTED = " Confirm the schedule choice above to update the nightly sync."
+
+
+class ReconcileOutcome(Enum):
+    """What the shared Settings reconcile actually did with the live nightly task (S3 fix).
+
+    ``DISPATCHED`` — a re-register was genuinely started (the schedule section is now applying the
+    new settings). ``INTERRUPTED`` — the downgrade-choice dialog was shown INSTEAD and nothing was
+    registered (the admin must confirm first). ``NONE`` — no reconcile action (no registered task,
+    or no task-baked field changed). The two Settings Save sites paint their schedule note from
+    this, so an optimistic "updating…" note is never shown when the reconcile merely opened a
+    dialog and returned.
+    """
+
+    DISPATCHED = "dispatched"
+    INTERRUPTED = "interrupted"
+    NONE = "none"
+
+
+def folders_save_note(outcome: ReconcileOutcome) -> str:
+    """The folders/district Save note, honest to what the reconcile actually did (pure, TOTAL).
+
+    ``DISPATCHED`` → the "updating the nightly schedule to match" note; ``INTERRUPTED`` → an honest
+    "confirm the schedule choice above" (the dialog is open, nothing is updating yet); ``NONE`` (or
+    any unexpected value) → a plain "Saved." The "Saved" prefix is always truthful — the folders +
+    district persisted regardless of the schedule reconcile.
+    """
+    if outcome is ReconcileOutcome.DISPATCHED:
+        return _FOLDERS_SAVED_DISPATCHED
+    if outcome is ReconcileOutcome.INTERRUPTED:
+        return _FOLDERS_SAVED_INTERRUPTED
+    return _FOLDERS_SAVED
+
+
+def sftp_reconcile_suffix(outcome: ReconcileOutcome) -> str:
+    """The clause appended to the "SFTP credentials stored" note, honest to the outcome (pure).
+
+    ``DISPATCHED`` → the "updating the nightly schedule to deliver too" clause; ``INTERRUPTED`` →
+    an honest "confirm the schedule choice above" prompt (the dialog is open, nothing dispatched);
+    ``NONE`` (or any unexpected value) → empty (no live task to update, so the base stored-note
+    stands alone). Leading space so it appends cleanly to the base sentence.
+    """
+    if outcome is ReconcileOutcome.DISPATCHED:
+        return _SFTP_RECONCILE_DISPATCHED
+    if outcome is ReconcileOutcome.INTERRUPTED:
+        return _SFTP_RECONCILE_INTERRUPTED
+    return ""
+
+
+# --------------------------------------------------------------------------- #
 # Adaptive finish-line copy — honesty register (D8).                           #
 # --------------------------------------------------------------------------- #
 # The finish headline adapts to honesty (finding #1a): a scheduled install peaks on "You're all

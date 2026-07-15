@@ -34,7 +34,7 @@ from src.ui_flet.screens.mapping import build_mapping
 from src.ui_flet.screens.onboarding import build_onboarding
 from src.ui_flet.screens.run_history import build_run_history
 from src.ui_flet.screens.setup import build_setup
-from src.ui_flet.setup_flow import DowngradeInterrupt, TaskArgs, task_args_to_persisted
+from src.ui_flet.setup_flow import DowngradeInterrupt, ReconcileOutcome, TaskArgs, task_args_to_persisted
 
 
 @pytest.fixture
@@ -718,7 +718,7 @@ class TestWizardStepsRender:
             if on_status is not None:
                 on_status(live)  # deliver a LIVE read-back the moment the Schedule step builds
             return ft.Text("schedule"), setup_mod._ScheduleHandle(
-                trigger_register=lambda: None,
+                trigger_register=lambda: ReconcileOutcome.NONE,
                 run_time_value=lambda: "03:00",
                 persist_run_time=lambda: False,
             )
@@ -765,7 +765,12 @@ def test_settings_save_reconciles_reregistration_when_scheduled(tmp_path, stub_p
 
     def _spy_build(page, config, **kw):
         card, handle = real_build_schedule(page, config, **kw)
-        handle.trigger_register = lambda: triggered.__setitem__("count", triggered["count"] + 1)
+
+        def _fake_trigger() -> ReconcileOutcome:
+            triggered["count"] += 1
+            return ReconcileOutcome.DISPATCHED
+
+        handle.trigger_register = _fake_trigger
         return card, handle
 
     monkeypatch.setattr(setup_mod, "_build_schedule_section", _spy_build)
@@ -952,7 +957,12 @@ def _spy_trigger(monkeypatch) -> dict:
 
     def _spy_build(page, config, **kw):
         card, handle = real_build(page, config, **kw)
-        handle.trigger_register = lambda: triggered.__setitem__("count", triggered["count"] + 1)
+
+        def _fake_trigger() -> ReconcileOutcome:
+            triggered["count"] += 1
+            return ReconcileOutcome.DISPATCHED
+
+        handle.trigger_register = _fake_trigger
         return card, handle
 
     monkeypatch.setattr(setup_mod, "_build_schedule_section", _spy_build)
@@ -1071,6 +1081,22 @@ def _dialog_action(dialog, label):
     return next(b for b in dialog.actions if getattr(b, "content", None) == label)
 
 
+def _folders_save_note_text(tree):
+    """The folders-card Save note (the Text whose value starts with 'Saved') — or None.
+
+    The folders Save paints a single ``ft.Text`` note whose value always leads with "Saved"; no
+    other control on the scroll starts a value with that word, so this uniquely finds it.
+    """
+    return next(
+        (
+            v
+            for c in _iter_controls(tree)
+            if isinstance((v := getattr(c, "value", None)), str) and v.startswith("Saved")
+        ),
+        None,
+    )
+
+
 def test_downgrade_choice_signed_in_only_reregisters_and_updates_the_facts_honestly(tmp_path, monkeypatch):
     """S3-a: choosing "signed in only" registers with a BLANK password (logged-on-only) and the
     persisted facts update honestly (unattended=False; args now carry the new district)."""
@@ -1156,6 +1182,85 @@ def test_sftp_save_reconcile_is_also_guarded_against_the_silent_downgrade(tmp_pa
     assert cfg.sftp_enabled is True
     assert recorded["called"] == 0, "the SFTP-save reconcile must not silently downgrade either"
     assert isinstance(page.show_dialog.call_args[0][0], ft.AlertDialog)
+    # S3 correctness fix: nothing was dispatched (the dialog is open), so the stored-credentials
+    # note must be honest — it points at the open choice, never claims the schedule is updating.
+    assert _has_text_containing(tree, "Confirm the schedule choice above to update the nightly sync")
+    assert not _has_text_containing(tree, "Updating the nightly schedule to deliver too")
+
+
+def test_settings_save_interrupt_note_never_claims_updating_and_survives_cancel(tmp_path, monkeypatch):
+    """S3 correctness fix (BLOCKING): when a folders Save's reconcile only SHOWS the downgrade
+    dialog (nothing registered), the Save note must NOT claim the nightly schedule is 'updating' —
+    and after Cancel, the Save note and the schedule card's 'Schedule not updated' must not
+    contradict each other on the same scroll."""
+    cfg, recorded, _captured, page, tree, dialog = _open_downgrade_dialog(tmp_path, monkeypatch)
+
+    # The note painted alongside opening the dialog is honest: no register was dispatched.
+    note = _folders_save_note_text(tree)
+    assert note == "Saved — confirm the schedule choice above."
+    assert "updating" not in note.lower()
+
+    _dialog_action(dialog, DowngradeInterrupt().cancel_label).on_click(None)
+
+    assert recorded["called"] == 0
+    assert cfg.schedule_unattended is True  # task untouched — still unattended
+    assert _has_text(tree, DowngradeInterrupt().cancelled_headline)  # "Schedule not updated"
+    lingering = _folders_save_note_text(tree)
+    assert lingering is not None and "updating" not in lingering.lower(), "no 'updating' claim may linger"
+
+
+def test_settings_save_dispatched_paints_the_updating_note(tmp_path, monkeypatch):
+    """S3 correctness fix (happy path): a reconcile that genuinely DISPATCHES a re-register (no
+    interrupt possible — logged-on-only task) paints the optimistic 'updating the nightly
+    schedule' note; the honest signal that the schedule IS being updated now."""
+    _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)  # no downgrade → no interrupt
+    _record_register(monkeypatch)
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_setup(page)
+    _button_by_content(tree, "Save folders & district").on_click(None)  # args changed (post-switch)
+
+    assert page.show_dialog.call_count == 0
+    assert _folders_save_note_text(tree) == "Saved — updating the nightly schedule to match…"
+
+
+def test_settings_save_with_no_registered_task_paints_plain_saved(tmp_path, stub_page, monkeypatch):
+    """S3 correctness fix: a Save with no live task to reconcile paints a plain 'Saved.' — no
+    schedule clause at all (nothing was dispatched or interrupted)."""
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type="myedbc",
+        setup_completed=True,
+        schedule_registered=False,
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+
+    tree = build_setup(stub_page)
+    _button_by_content(tree, "Save folders & district").on_click(None)
+
+    assert _folders_save_note_text(tree) == "Saved."
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows password field renders only on win32")
+def test_signed_in_only_forces_blank_password_even_if_the_field_holds_a_value(tmp_path, monkeypatch):
+    """FIX 2: the 'continue signed-in only' choice registers with an EXPLICITLY blank password — it
+    must not depend on the transient password-field value. Even with text lingering in the field,
+    the register dispatches with run_as_password=None (logged-on only) and records unattended=False."""
+    cfg, recorded, captured, _page, tree, dialog = _open_downgrade_dialog(tmp_path, monkeypatch)
+    # Leftover text in the schedule password field — the old field-dependent path would read this.
+    _textfield_by_label(tree, "Windows account password").value = "leftover"
+
+    _dialog_action(dialog, DowngradeInterrupt().signed_in_only_label).on_click(None)
+
+    assert recorded["called"] == 1
+    assert recorded["run_as_password"] is None  # explicit blank, NOT the field's "leftover"
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))  # marshalled _apply_result
+    assert cfg.schedule_unattended is False
 
 
 def test_register_without_a_password_persists_the_registration_facts(tmp_path, monkeypatch):

@@ -19,6 +19,7 @@ from src.ui_flet.setup_flow import (
     DowngradeInterrupt,
     FinishSummaryRow,
     FlowInputs,
+    ReconcileOutcome,
     RunTimeSaveDecision,
     SetupStep,
     TaskArgs,
@@ -28,10 +29,12 @@ from src.ui_flet.setup_flow import (
     downgrade_interrupt,
     finish_copy,
     finish_summary_rows,
+    folders_save_note,
     is_skippable,
     next_step,
     prev_step,
     run_time_save_decision,
+    sftp_reconcile_suffix,
     step_number,
     task_args_changed,
     task_args_from_persisted,
@@ -696,6 +699,46 @@ class TestDowngradeInterrupt:
         interrupt = DowngradeInterrupt()
         assert all(isinstance(v, str) for v in vars(interrupt).values())
         assert "password" not in {k.lower() for k in vars(interrupt)}
+
+
+# --------------------------------------------------------------------------- #
+# Reconcile-outcome Save note — honest, never "updating…" for an interrupt.     #
+# --------------------------------------------------------------------------- #
+class TestReconcileSaveNote:
+    def test_folders_note_dispatched_claims_updating(self):
+        # A genuinely dispatched re-register earns the optimistic "updating the schedule" note.
+        assert folders_save_note(ReconcileOutcome.DISPATCHED) == "Saved — updating the nightly schedule to match…"
+
+    def test_folders_note_interrupted_is_honest_and_defers(self):
+        # The reconcile only opened the downgrade dialog — nothing is updating yet, so the note must
+        # NOT claim the schedule is updating; it points the admin at the open choice.
+        note = folders_save_note(ReconcileOutcome.INTERRUPTED)
+        assert note == "Saved — confirm the schedule choice above."
+        assert "updating" not in note.lower()
+
+    def test_folders_note_none_is_plain_saved(self):
+        assert folders_save_note(ReconcileOutcome.NONE) == "Saved."
+
+    def test_folders_note_always_leads_with_saved(self):
+        # "Saved" is truthful for every outcome — the config fields DID persist regardless of what
+        # the schedule reconcile did (only the schedule clause is conditioned on the outcome).
+        for outcome in ReconcileOutcome:
+            assert folders_save_note(outcome).startswith("Saved")
+
+    def test_sftp_suffix_dispatched_claims_delivering(self):
+        assert sftp_reconcile_suffix(ReconcileOutcome.DISPATCHED) == " Updating the nightly schedule to deliver too…"
+
+    def test_sftp_suffix_interrupted_is_honest_and_defers(self):
+        suffix = sftp_reconcile_suffix(ReconcileOutcome.INTERRUPTED)
+        assert suffix == " Confirm the schedule choice above to update the nightly sync."
+        assert "updating" not in suffix.lower()
+
+    def test_sftp_suffix_none_is_empty(self):
+        # No live task to update → the base "SFTP credentials stored" note stands alone.
+        assert sftp_reconcile_suffix(ReconcileOutcome.NONE) == ""
+
+    def test_reconcile_outcome_members_are_the_three_states(self):
+        assert {o.value for o in ReconcileOutcome} == {"dispatched", "interrupted", "none"}
 
 
 # --------------------------------------------------------------------------- #

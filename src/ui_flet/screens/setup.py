@@ -79,6 +79,7 @@ from src.ui_flet.setup_flow import (
     DowngradeInterrupt,
     FinishSummaryRow,
     FlowInputs,
+    ReconcileOutcome,
     SetupStep,
     TaskArgs,
     auto_selected_district,
@@ -87,10 +88,12 @@ from src.ui_flet.setup_flow import (
     downgrade_interrupt,
     finish_copy,
     finish_summary_rows,
+    folders_save_note,
     is_skippable,
     next_step,
     prev_step,
     run_time_save_decision,
+    sftp_reconcile_suffix,
     step_number,
     task_args_changed,
     task_args_from_persisted,
@@ -238,12 +241,15 @@ class _ScheduleHandle:
 
     ``trigger_register`` is the RECONCILE entry (0034 S3-a): unlike the Register button's
     direct handler, it first checks ``downgrade_interrupt`` and pauses on the explicit-choice
-    dialog when a blank-password re-register would silently downgrade an unattended task.
+    dialog when a blank-password re-register would silently downgrade an unattended task. It
+    returns a ``ReconcileOutcome`` — ``DISPATCHED`` when a re-register actually started,
+    ``INTERRUPTED`` when the choice dialog was shown instead — so the Save sites can paint an
+    honest note (never "updating…" when nothing was registered).
     ``persist_run_time`` is the S3-b seam: persist a valid run-time edit as plain config when
     no schedule is registered (invalid → the section's inline error, nothing persisted).
     """
 
-    trigger_register: Callable[[], None]
+    trigger_register: Callable[[], ReconcileOutcome]
     run_time_value: Callable[[], str]
     persist_run_time: Callable[[], bool]
 
@@ -591,7 +597,7 @@ def _mount_settings(  # pragma: no cover - Flet view glue
         persisted = task_args_from_persisted(cfg.schedule_task_args)
         return persisted if persisted is not None else saved["args"]
 
-    def _reconcile() -> bool:
+    def _reconcile() -> ReconcileOutcome:
         pending = TaskArgs.of(
             input_dir=cfg.input_dir,
             output_dir=cfg.output_dir,
@@ -602,13 +608,15 @@ def _mount_settings(  # pragma: no cover - Flet view glue
         if cfg.schedule_registered and task_args_changed(_baseline_args(), pending):
             # May pause on the explicit downgrade choice first (S3-a); on a confirmed success
             # → _on_registered refreshes the snapshot (and the durable record is re-written).
-            sched_handle.trigger_register()
-            return True
+            # Returns DISPATCHED (register started) vs INTERRUPTED (dialog shown, nothing
+            # registered) so the Save sites paint an honest note — never "updating…" for an
+            # interrupt that registered nothing (the S3 correctness fix).
+            return sched_handle.trigger_register()
         if not cfg.schedule_registered:
             # S3-b: with no task to re-register, a run-time edit is still CONFIG — persist a
             # valid one (invalid → the schedule section's inline error, nothing persisted).
             sched_handle.persist_run_time()
-        return False
+        return ReconcileOutcome.NONE
 
     sftp_card = _build_sftp_section(page, cfg, on_saved=_reconcile)
     folders_card = _build_settings_folders(page, cfg, reconcile=_reconcile)
@@ -634,7 +642,7 @@ def _mount_settings(  # pragma: no cover - Flet view glue
 
 
 def _build_settings_folders(  # pragma: no cover - Flet view glue
-    page: ft.Page, cfg: AppConfig, *, reconcile: Callable[[], bool]
+    page: ft.Page, cfg: AppConfig, *, reconcile: Callable[[], ReconcileOutcome]
 ) -> ft.Control:
     """The Settings folders/district card with the ONE reconciling Save (D8).
 
@@ -684,11 +692,10 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
         cfg.sis_type = state["sis"]
         cfg.save()
         # The shared reconcile re-registers the task when a task-baked field changed; the schedule
-        # section surfaces its own in-flight + confirmed/failed states when it fires.
-        if reconcile():
-            saved_note.value = "Saved — updating the nightly schedule to match…"
-        else:
-            saved_note.value = "Saved."
+        # section surfaces its own in-flight + confirmed/failed states when it fires. The note is
+        # honest to what actually happened (S3 fix): "updating…" ONLY when a register was
+        # dispatched — an interrupt that merely opened the downgrade dialog defers instead.
+        saved_note.value = folders_save_note(reconcile())
         saved_note.color = tokens.color_status_healthy
         page.update()
 
@@ -892,14 +899,17 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 
         return is_elevated()
 
-    def _register(_e: ft.ControlEvent | None = None) -> None:
+    def _register(_e: ft.ControlEvent | None = None, *, force_blank_password: bool = False) -> None:
         if not can_register_schedule(cfg.is_complete(), run_time_field.value or ""):
             return
 
         # I1/I3 (see module docstring — password contract): the Windows account password is a
         # handler-LOCAL var whose ONLY sink is register_task (DPAPI elevation handshake / child-env);
         # never cfg, never argv, never a log/message, never stashed past this handler.
-        password = password_field.value if password_field is not None else None
+        # ``force_blank_password`` (FIX 2) makes the signed-in-only downgrade choice register with an
+        # EXPLICITLY blank password rather than depending on transient UI state — the logged-on-only
+        # outcome no longer relies on the field happening to be empty at click time.
+        password = None if force_blank_password else (password_field.value if password_field is not None else None)
         run_time = (run_time_field.value or "").strip()
 
         try:
@@ -1130,9 +1140,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 
         def _signed_in_only(_e: ft.ControlEvent) -> None:
             page.pop_dialog()
-            # The explicit downgrade choice: register with a blank password (Interactive /
-            # logged-on-only). Success persists schedule_unattended=False honestly.
-            _register(None)
+            # The explicit downgrade choice: register with an EXPLICITLY blank password (Interactive
+            # / logged-on-only) via force_blank_password — never re-reading the transient password
+            # field (FIX 2). Success persists schedule_unattended=False honestly.
+            _register(force_blank_password=True)
 
         def _cancel(_e: ft.ControlEvent) -> None:
             page.pop_dialog()
@@ -1160,13 +1171,17 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             )
         )
 
-    def _trigger_register_reconciled() -> None:
+    def _trigger_register_reconciled() -> ReconcileOutcome:
         """The reconcile's register entry (S3-a): interrupt before any silent logon downgrade.
 
         The Register BUTTON deliberately does NOT route through here — a blank-password
         Register is a legitimate explicit choice there (the helper text offers it). Only the
         Settings-Save reconcile, which the admin never framed as a logon-type decision, must
         pause for the explicit choice.
+
+        Returns ``DISPATCHED`` when a re-register was actually started, ``INTERRUPTED`` when the
+        downgrade-choice dialog was shown instead (nothing registered) — the seam that lets both
+        Save sites paint an honest note (S3 correctness fix).
         """
         password = password_field.value if password_field is not None else None
         interrupt = downgrade_interrupt(
@@ -1175,8 +1190,9 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         )
         if interrupt is None:
             _register(None)
-            return
+            return ReconcileOutcome.DISPATCHED
         _show_downgrade_dialog(interrupt)
+        return ReconcileOutcome.INTERRUPTED
 
     register_btn = components.primary_button(
         "Register schedule",
@@ -1231,7 +1247,7 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
     cfg: AppConfig,
     *,
     on_delivery: Callable[[DeliveryFact, str, str], None] | None = None,
-    on_saved: Callable[[], bool] | None = None,
+    on_saved: Callable[[], ReconcileOutcome] | None = None,
 ) -> ft.Control:
     """The SFTP section — store SpacesEDU credentials in the OS keyring + test (Slice 7, D6).
 
@@ -1342,9 +1358,11 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
         # F1 reconcile (Settings only): enabling/confirming delivery must add --sftp to an
         # already-registered nightly task, or tonight builds but never delivers. Routed through the
         # SAME task-args reconcile the folders Save uses; a blank-password re-register keeps the
-        # existing visible-WARNING (logged-on-only) behaviour.
-        if on_saved is not None and on_saved():
-            detail += " Updating the nightly schedule to deliver too…"
+        # existing visible-WARNING (logged-on-only) behaviour. The appended clause is honest to the
+        # reconcile outcome (S3 fix): "updating…to deliver too" ONLY when a register was dispatched;
+        # an interrupt that opened the downgrade dialog prompts confirmation instead (empty for NONE).
+        if on_saved is not None:
+            detail += sftp_reconcile_suffix(on_saved())
         result_slot.controls = [
             components.HealthVerdictBanner(Verdict.HEALTHY, headline="SFTP credentials stored", detail=detail)
         ]
