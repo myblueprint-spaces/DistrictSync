@@ -196,8 +196,10 @@ def post_apply_presentation(
 
     Branches (the D4 honesty invariant — UNKNOWN never asserts):
 
-    - ``LIVE`` → an assertive notice naming the old district (a definitive read-back; the
-      config hint is irrelevant).
+    - ``LIVE`` → an assertive notice naming the old district (the read-back definitively
+      proves the task EXISTS; the named district is an inference from the pre-Apply
+      persisted config — after 2+ un-reconciled switches the task may carry an even older
+      district, but the guidance stays correct; the config hint is irrelevant).
     - ``UNKNOWN`` / ``None`` (probe pending, failed, or non-Windows) while the config hint
       says a schedule is registered → the SAME notice with hedged copy ("may still use") —
       a live schedule is never asserted from the hint alone.
