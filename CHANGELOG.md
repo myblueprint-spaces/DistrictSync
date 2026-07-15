@@ -9,6 +9,49 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-07-15
+
+The professional-grade desktop release: the "Branded Professional" design system
+across the whole app, no more console-window flashes, and delivery you can trust.
+
+### Added
+
+- **A formal DistrictSync design system.** The app now follows one documented
+  design language — navy navigation rail with the myBlueprint mark on the window
+  title bar, calm white content, one clear primary action per screen, and
+  status told through tinted verdict banners with plain words (never colour
+  alone). Every colour pairing is contrast-checked for accessibility as part of
+  the test suite. (#54)
+- **Pick the daily run time from a clock.** The schedule's run-time field now
+  opens a time picker; typing a time still works. (#53)
+- **App version visible in the app.** The navigation rail shows the running
+  version, so support conversations can start with facts. (#54)
+
+### Changed
+
+- **No more flashing console windows.** Clicking around the app no longer pops
+  brief black command windows — every background Windows check (schedule
+  read-back, registration, elevation) now runs fully hidden. (#53)
+- **Setup order matches how you think.** The first-run wizard now leads with
+  your District, then Folders, then Delivery, then Schedule; the Settings page
+  puts Folders & District on top. (#53)
+- **"Test connection" now tests what delivery actually needs.** Signing in is
+  the test; an upload-only SpacesEDU account that refuses folder *listing* is
+  reported as success-with-a-note instead of a false failure — so Test and a
+  real delivery can no longer contradict each other. (#53)
+- **Every screen opens with a slim page header** instead of a large decorative
+  banner; the health verdict is the first and loudest thing on Home. (#54)
+
+### Fixed
+
+- **Convert's "Deliver to SpacesEDU" no longer appears without a stored
+  credential.** If delivery is configured but no password is saved on the
+  Windows account, a calm note routes you to Setup instead of offering an
+  upload that would fail. (#53)
+- **An empty output folder can never report "delivered".** Attempting a
+  delivery with no CSVs now fails loudly instead of silently claiming success.
+  (#53)
+
 ## [3.5.0] - 2026-07-15
 
 The Flet UI trust & professionalism redesign (plan 0029) plus SD60 email
