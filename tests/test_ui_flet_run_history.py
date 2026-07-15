@@ -323,6 +323,45 @@ class TestToRunRowFields:
         assert row.duration == "—"
 
 
+def _delivery_record(**overrides: object) -> dict:
+    """A deliver-from-disk record (0034 Slice 2): zero count keys by shape + the rider."""
+    base = _record(
+        Students=0,
+        Staff=0,
+        Family=0,
+        Classes=0,
+        Enrollments=0,
+        delivery_only=True,
+        source="manual",
+    )
+    base.update(overrides)
+    return base
+
+
+class TestDeliveryOnlyRows:
+    """Deliver-from-disk rows must read as deliveries of saved files, never 0-row builds."""
+
+    def test_clean_delivery_row_labels_saved_files_with_no_counts(self) -> None:
+        row = to_run_row(_delivery_record(), now=_NOW)
+        assert row.status_label == "Delivered saved files"
+        assert row.status_verdict is Verdict.HEALTHY
+        assert row.entity_counts == {}  # the table renders "—" cells, never "0 Students"
+        assert row.entity_total == 0
+        assert row.sftp is SftpDelivery.DELIVERED
+
+    def test_failed_delivery_row_labels_delivery_failed(self) -> None:
+        # NOT "Built, not delivered" — this attempt built nothing; only the upload failed.
+        row = to_run_row(_delivery_record(sftp_ok=False), now=_NOW)
+        assert row.status_label == "Delivery failed"
+        assert row.status_verdict is Verdict.FAILED
+        assert row.sftp is SftpDelivery.FAILED
+        assert row.entity_counts == {}
+
+    def test_clean_delivery_banner_stays_healthy(self) -> None:
+        banner = _banner(_delivery_record())
+        assert banner.verdict is Verdict.HEALTHY
+
+
 # --------------------------------------------------------------------------- #
 # #3 — totality across every degradation axis (parametrized)                   #
 # --------------------------------------------------------------------------- #
@@ -337,6 +376,8 @@ _PARTIAL_RECORDS = [
     {"sftp_attempted": True},
     _record(),
     _record(status="failed", error=r"boom C:\path\x"),
+    _delivery_record(),
+    _delivery_record(sftp_ok=False),
 ]
 
 

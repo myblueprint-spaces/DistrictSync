@@ -188,6 +188,17 @@ def _data_errors_total(record: dict) -> int:
     return _as_int(data_errors.get("total", 0))
 
 
+def is_delivery_only(record: dict) -> bool:
+    """Whether this record is a deliver-from-disk attempt (0034 Slice 2) — pure + TOTAL.
+
+    A delivery ships an EARLIER build's committed CSVs, so its record deliberately carries
+    no build entity counts (the flat count keys are zeros by shape) — the ``delivery_only``
+    rider lets Home / Run History render it as a delivery, never as a 0-row build. Read via
+    ``.get`` so every pre-existing record (no rider) classifies as a build, unchanged.
+    """
+    return bool(record.get("delivery_only"))
+
+
 def verdict_for_reason(reason: LatestReason) -> Verdict:
     """Map a ``LatestReason`` to its ``Verdict`` — total over the enum.
 
@@ -230,13 +241,33 @@ def _as_int(value: object) -> int:
         return 0
 
 
-def _build_metrics(record: dict, *, now: datetime | None) -> HomeMetrics:
-    """Populate the metric tiles from a delivered-success record."""
+def _build_metrics(record: dict, *, now: datetime | None, counts_record: dict | None = None) -> HomeMetrics:
+    """Populate the metric tiles from a delivered-success record.
+
+    ``counts_record`` (default: the record itself) supplies the entity counts — a
+    delivery-only latest carries no build counts of its own, so the caller passes the
+    newest BUILD record instead (the roster the delivery actually shipped).
+    """
     return HomeMetrics(
-        entity_counts=_entity_counts(record),
+        entity_counts=_entity_counts(counts_record if counts_record is not None else record),
         last_run_display=friendly_timestamp(str(record.get("timestamp", "")), now=now),
         sftp_delivered=bool(record.get("sftp_ok")),
     )
+
+
+def _counts_source(records: list[dict], latest: dict) -> dict | None:
+    """The record whose entity counts describe what the latest run/delivery shipped.
+
+    A build record IS its own counts source. A delivery-only latest shipped the newest
+    BUILD's committed CSVs, so its tiles fall back to that record's counts; with no build
+    on record there is no honest count → ``None`` (no tiles — never a "0 Students" lie).
+    """
+    if not is_delivery_only(latest):
+        return latest
+    for record in records:
+        if not is_delivery_only(record):
+            return record
+    return None
 
 
 def derive_home_status(
@@ -393,12 +424,15 @@ def derive_home_status(
         )
 
     # Rule: healthy — a recent, clean, delivered success. The reassurance the surface exists to give.
+    # A clean delivery-only latest counts as a fresh sync (the roster genuinely reached SpacesEDU),
+    # but its tiles come from the newest BUILD record — or no tiles at all, never zeros.
+    counts_record = _counts_source(records, latest)
     return HomeStatus(
         verdict=Verdict.HEALTHY,
         headline="Your roster is syncing",
         detail=f"Last sync delivered cleanly {friendly_timestamp(timestamp, now=now)}.",
         fix=None,
-        metrics=_build_metrics(latest, now=now),
+        metrics=_build_metrics(latest, now=now, counts_record=counts_record) if counts_record is not None else None,
     )
 
 

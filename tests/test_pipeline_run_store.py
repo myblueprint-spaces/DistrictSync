@@ -279,3 +279,140 @@ class TestConvertManual:
         # The anti-regression is airtight: nothing was written into the INPUT folder
         # (the old fallback's exact failure mode), not merely "the call raised".
         assert sorted(p.name for p in gde_input.iterdir()) == before
+
+
+# --------------------------------------------------------------------------- #
+# deliver_job → deliver from disk (0034 Slice 2)                                #
+# --------------------------------------------------------------------------- #
+def _fake_uploader(calls: list[tuple[Path, str | None]], *, fail: bool = False) -> type:
+    """A test double for ``SFTPUploader`` recording ``upload_csvs`` calls (no network)."""
+
+    class _Fake:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def upload_csvs(self, output_dir: Path, zip_name: str | None = None, sis_type: str | None = None) -> list:
+            calls.append((output_dir, sis_type))
+            if fail:
+                raise RuntimeError("connection refused by 203.0.113.9")
+            return ["Students.csv"]
+
+    return _Fake
+
+
+class TestDeliverFromDisk:
+    """``deliver_job`` uploads the COMMITTED CSVs from disk — never a re-transform — and
+    records ONE ``delivery_only`` manual record per attempt that never double-counts a build."""
+
+    def _configure(self, gde_input: Path, gde_output: Path) -> None:
+        AppConfig(input_dir=str(gde_input), output_dir=str(gde_output), sis_type="myedbc").save()
+
+    def test_success_records_a_delivery_only_run_with_no_build_counts(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        from src.ui_flet.convert_result import ConvertStatus
+        from src.ui_flet.screens import convert as convert_screen
+
+        self._configure(gde_input, gde_output)
+        convert_screen.convert_job("myedbc", str(gde_input))  # a committed build on disk first
+        calls: list[tuple[Path, str | None]] = []
+        monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
+
+        result = convert_screen.deliver_job("myedbc")
+        assert result.status is ConvertStatus.DELIVERED_FROM_DISK
+        assert result.sftp_attempted is True and result.sftp_ok is True
+        assert calls == [(gde_output, "myedbc")]  # shipped from the OUTPUT dir, zip named per district
+
+        records = read_run_records()
+        assert records is not None and len(records) == 2  # the build record + the delivery record
+        delivery, build = records[0], records[1]
+        assert delivery["source"] == "manual" and delivery["status"] == "success"
+        assert delivery["delivery_only"] is True
+        assert delivery["sftp_attempted"] is True and delivery["sftp_ok"] is True
+        # Never double-counts the build: the delivery record carries NO entity counts…
+        assert delivery["Students"] == 0 and delivery["Enrollments"] == 0
+        # …while the build record keeps its own (the counts belong to the build alone).
+        assert build["Students"] == 2 and "delivery_only" not in build
+
+    def test_deliver_never_retransforms_or_reads_the_input_folder(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        """The acceptance lock: a between-build-and-deliver input change CANNOT alter what ships,
+        because delivery never touches the build seams — poison them all and deliver anyway."""
+        from src.ui_flet.convert_result import ConvertStatus
+        from src.ui_flet.screens import convert as convert_screen
+
+        self._configure(gde_input, gde_output)
+        convert_screen.convert_job("myedbc", str(gde_input))
+
+        def _boom(*_a: object, **_k: object) -> None:
+            raise AssertionError("deliver_job must not re-transform or read the input folder")
+
+        monkeypatch.setattr(convert_screen, "run_transform", _boom)
+        monkeypatch.setattr(convert_screen, "_read_gde_bytes", _boom)
+        monkeypatch.setattr(convert_screen.DataExtractor, "load_from_bytes", _boom)
+        calls: list[tuple[Path, str | None]] = []
+        monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
+
+        result = convert_screen.deliver_job("myedbc")
+        assert result.status is ConvertStatus.DELIVERED_FROM_DISK
+        assert calls and calls[0][0] == gde_output
+
+    def test_failed_upload_folds_into_built_not_delivered_and_records_honestly(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        import json as _json
+
+        from src.ui_flet.convert_result import ConvertStatus
+        from src.ui_flet.screens import convert as convert_screen
+
+        self._configure(gde_input, gde_output)
+        convert_screen.convert_job("myedbc", str(gde_input))
+        calls: list[tuple[Path, str | None]] = []
+        monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls, fail=True))
+
+        result = convert_screen.deliver_job("myedbc")
+        assert result.status is ConvertStatus.BUILT_NOT_DELIVERED
+        assert result.sftp_attempted is True and result.sftp_ok is False
+
+        records = read_run_records()
+        assert records is not None
+        latest = records[0]
+        assert latest["delivery_only"] is True
+        assert latest["status"] == "success"  # the ETL axis is untouched; only delivery failed
+        assert latest["sftp_attempted"] is True and latest["sftp_ok"] is False
+        # Privacy split: the raw upload error never enters the stored record.
+        assert "connection refused" not in _json.dumps(latest)
+
+    def test_unset_output_dir_fails_loud_and_records_nothing(self, gde_input: Path) -> None:
+        from src.ui_flet.screens.convert import deliver_job
+
+        AppConfig(input_dir=str(gde_input), output_dir="", sis_type="myedbc").save()
+        with pytest.raises(ValueError, match="output folder"):
+            deliver_job("myedbc")
+        assert read_run_records() == []
+
+    def test_delivery_record_drives_home_and_history_sensibly(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        """The stored delivery record renders honestly: Home falls back to the build's counts;
+        the Run History row reads 'Delivered saved files' with no 0-count cells."""
+        from src.ui_flet.screens import convert as convert_screen
+
+        self._configure(gde_input, gde_output)
+        convert_screen.convert_job("myedbc", str(gde_input))
+        calls: list[tuple[Path, str | None]] = []
+        monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
+        convert_screen.deliver_job("myedbc")
+
+        records = read_run_records()
+        assert records is not None and len(records) == 2
+        cfg = AppConfig(input_dir=str(gde_input), output_dir=str(gde_output), sis_type="myedbc")
+        status = derive_home_status(records, cfg)
+        assert status.verdict.name == "HEALTHY"
+        assert status.metrics is not None and status.metrics.entity_counts["Students"] == 2
+
+        rows = to_run_rows(records)
+        assert rows[0].status_label == "Delivered saved files"
+        assert rows[0].entity_counts == {}  # never a "0 Students" cell
+        assert rows[1].entity_counts["Students"] == 2

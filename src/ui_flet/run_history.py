@@ -43,6 +43,7 @@ from src.ui_flet.home_status import (
     _schedule_confirmed_missing,
     _schedule_is_live,
     classify_latest_reason,
+    is_delivery_only,
     is_stale,
     verdict_for_reason,
 )
@@ -236,8 +237,12 @@ def _row_entity_counts(record: dict) -> dict[str, int]:
     """The per-run entity counts: 5 rostering always + 2 myBlueprint+ when non-zero.
 
     Reuses ``home_status``'s entity tuples + ``_as_int`` (defensive coercion) so a malformed count
-    never crashes the row and the column vocabulary matches Home's tiles exactly.
+    never crashes the row and the column vocabulary matches Home's tiles exactly. A delivery-only
+    record (deliver-from-disk, 0034 Slice 2) built nothing this run — its count keys are zeros by
+    shape, so return ``{}`` and the table renders "—" cells, never a "0 Students" lie.
     """
+    if is_delivery_only(record):
+        return {}
     counts: dict[str, int] = {}
     for name in _ROSTERING_ENTITIES:
         counts[name] = _as_int(record.get(name))
@@ -253,14 +258,21 @@ def _status_label(reason: LatestReason, record: dict, *, sftp: SftpDelivery) -> 
 
     ``CLEAN`` resolves to "Delivered · N data warnings" when there were warnings, else "Delivered"
     (SFTP delivered/attempted) or "Completed" (SFTP not attempted). All other reasons map through
-    ``_REASON_LABELS``. Single-sourced so a row label + the banner can never contradict.
+    ``_REASON_LABELS``. Single-sourced so a row label + the banner can never contradict. A
+    delivery-only record (deliver-from-disk, 0034 Slice 2) labels honestly as a delivery of
+    already-saved files — "Delivered saved files" / "Delivery failed" — never as a build.
     """
     if reason in _REASON_LABELS:
+        if reason is LatestReason.FAILED_DELIVERY and is_delivery_only(record):
+            return "Delivery failed"
         return _REASON_LABELS[reason]
     if reason is LatestReason.DATA_WARNINGS:
         total = _data_errors_total(record)
         return f"Delivered · {total} data {pluralize('warning', total)}"
-    # reason is CLEAN — distinguish a delivered run from one that never attempted SFTP.
+    # reason is CLEAN — distinguish a delivered run from one that never attempted SFTP,
+    # and a deliver-from-disk (shipped an earlier build) from the build-and-deliver run.
+    if is_delivery_only(record):
+        return "Delivered saved files"
     return "Delivered" if sftp is SftpDelivery.DELIVERED else "Completed"
 
 
