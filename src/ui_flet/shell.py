@@ -237,7 +237,13 @@ def main(page: ft.Page) -> None:
         on_refresh=lambda: select_by_id("run_history"),
     )
     # Swap the `mapping` placeholder for the real review-and-switch district-config surface (IA-8a).
-    screens["mapping"] = lambda: build_mapping(page, app_config=AppConfig.load())
+    # `on_navigate` (Home's pattern) lets the post-Apply stale-schedule notice route to Settings
+    # with rail-follow (0034 Slice 1).
+    screens["mapping"] = lambda: build_mapping(
+        page,
+        app_config=AppConfig.load(),
+        on_navigate=lambda dest: select_by_id(dest),
+    )
     # Swap the `help` placeholder for the real link-out Help surface (IA-7). Placed BEFORE the
     # DISTRICTSYNC_UI_DEMO override below so the dev override still wins (it re-assigns last).
     screens["help"] = lambda: build_help(page, app_config=AppConfig.load())
