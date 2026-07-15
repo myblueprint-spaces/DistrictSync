@@ -388,6 +388,21 @@ class BaseTransformer(ABC):
             )
         return cls._DATE_FORMAT_TOKEN_RE.sub(lambda m: cls._DATE_FORMAT_TOKEN_MAP[m.group(0)], fmt)
 
+    @classmethod
+    def derive_date_part(cls, value: Any, strftime_fmt: str) -> str:
+        """Format a flexible GDE date to *strftime_fmt*, empty on blank OR unparseable.
+
+        Reuses :meth:`_coerce_date`. Unlike :meth:`format_date` (which passes
+        the original string through when no input format matches), this returns
+        ``""`` for a blank OR unparseable value — so a derived email suffix is
+        never a garbage passthrough (e.g. an unparseable admission date yields
+        ``firstlast`` with NO suffix rather than ``firstlastunknown`` under
+        ``sanitize``). ``strftime_fmt`` is the already-translated strftime string
+        (see :meth:`friendly_date_format_to_strftime`).
+        """
+        _s, parsed = cls._coerce_date(value)
+        return parsed.strftime(strftime_fmt) if parsed is not None else ""
+
     @staticmethod
     def truncate_name(name: str, max_len: int = 100) -> str:
         """Gracefully truncate a string, breaking at word boundaries."""
@@ -661,7 +676,7 @@ class BaseTransformer(ABC):
         return self.truncate_name(" ".join(parts).strip())
 
     @staticmethod
-    def generate_student_email(row: pd.Series, format_str: str) -> str:
+    def generate_student_email(row: pd.Series, format_str: str, sanitize: bool = False) -> str:
         """Interpolate row values into a lowercased email format string.
 
         StudentTransformer lowercases ``format_str`` before calling, so any
@@ -671,6 +686,12 @@ class BaseTransformer(ABC):
         normalised (lowercased, whitespace trimmed, internal spaces collapsed)
         so double-barrelled surnames like "Goodrick Hill" produce a
         deliverable local part ("goodrickhill"). NaN/None values become "".
+
+        When ``sanitize`` is True (opt-in), each substituted STRING value is
+        reduced to ``[a-z0-9]`` (lowercase) so apostrophes/hyphens/other
+        punctuation in names (e.g. "O'Brien-Smith") never leak into the local
+        part. The default path (``sanitize=False``) is unchanged and
+        byte-identical for every existing district.
         """
         try:
             normalised: dict[str, Any] = {}
@@ -679,7 +700,10 @@ class BaseTransformer(ABC):
                 if pd.isna(v):
                     normalised[key] = ""
                 elif isinstance(v, str):
-                    normalised[key] = v.strip().lower().replace(" ", "")
+                    if sanitize:
+                        normalised[key] = re.sub(r"[^a-z0-9]", "", v.strip().lower())
+                    else:
+                        normalised[key] = v.strip().lower().replace(" ", "")
                 else:
                     normalised[key] = v
             return format_str.format(**normalised)

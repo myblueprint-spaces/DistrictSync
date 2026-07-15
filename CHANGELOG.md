@@ -24,6 +24,11 @@ Per-release download links and auto-generated commit notes live on the
   back and reports it honestly — registered and next-run time when it can confirm
   it, "not scheduled" only when it's genuinely absent, and "couldn't confirm right
   now" rather than guessing. An **Unregister** action removes the schedule.
+- **District-configurable generated student emails.** A district config can now
+  build the student login email from a template that optionally strips punctuation
+  from names (`sanitize`) and derives a date part — e.g. a 2-digit year — from a
+  source date column (`derived_dates`). Opt-in per district; every other district's
+  email output is byte-for-byte unchanged.
 
 ### Changed
 
@@ -48,6 +53,13 @@ Per-release download links and auto-generated commit notes live on the
   refuses to run without an explicit district; the navigation order is now fixed;
   the window/taskbar/exe show the myBlueprint brand icon; Exit closes the app and
   Enter submits forms.
+- **SD60 (Peace River North): student emails standardized.** Every active student
+  now gets a generated `firstname+lastname+admission-year@learn60.ca` login
+  (previously the file's raw address across 70+ domains — many not deliverable to
+  SpacesEDU); students are rostered under their **Home School Number**; and
+  `Active No Primary` enrolments are excluded. Note for the district: this
+  standardizes ~59% of students onto a new login address (see the SpacesEDU
+  onboarding notes).
 
 ### Removed
 

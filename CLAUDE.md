@@ -145,7 +145,7 @@ All field mappings are in YAML files under `config/mappings/`. The `--sis` CLI a
 - Fixed values (dict with `value` key)
 - Academic year dates (dict with `use_academic_year` key). Override with `use_academic_year: false` + `value: "YYYY-MM-DD"` for districts where auto-detection picks the wrong year (SD40, SD51, SD74 use this).
 - ID year-appending (dict with `append_year_to_id` key)
-- Email format templates (dict with `format` key, e.g., `{student number}@sd40.bc.ca`)
+- Email format templates (dict with `format` key, e.g., `{student number}@sd40.bc.ca`). Opt-in (default off → other districts byte-identical): `sanitize: true` reduces each substituted value to `[a-z0-9]`; `derived_dates: {pseudo: {column, date_format}}` injects a date part (e.g. `yy`) derived from a source date column into the template (reuses base date machinery; empty on blank/unparseable; fail-loud on a missing column). SD60 uses both to generate `{legal first}{legal surname}{admission yy}@learn60.ca`.
 - Name config (dict with `primary teacher flag`, `teacher last name`, `course title`, `section letter`)
 - ID-role pair (dict with `student_id_col` and `staff_id_col`)
 - Headers for headerless files (dict with filename -> column name list)

@@ -1,9 +1,18 @@
 # SD60 - Peace River North School District
 # Inherits from: myedbc (standard MyEducation BC mapping).
-# SD60 is a distributed-learning district aggregating many independent schools:
-# student emails span 70+ domains, so emails are used AS-IS from the file (no
-# template) and ~729 active students with no email are kept (blank) pending
-# district clarification.
+# SD60 is a distributed-learning district aggregating many independent schools.
+# Per SD60's 2026-07 clarification (plan 0030):
+#   - Student emails are GENERATED as firstlast+2-digit-admission-year@learn60.ca
+#     (was: used AS-IS from the file across 70+ domains). This standardizes every
+#     active student onto a deterministic learn60 login and fixes the blanks +
+#     non-whitelisted domains in one move. NN = admission-year is a KNOWN-IMPERFECT
+#     proxy for "year joined the district" (the only join-year field available);
+#     ~41% of existing learn60 logins are reproduced exactly, the rest MIGRATED —
+#     a deliberate, recorded login-standardization (see DECISIONS 2026-07-14).
+#   - "Active No Primary" is DROPPED (was: retained) — online-course-only
+#     attachments, not real active enrolments; inherits base ["Active","PreReg"].
+#   - Students are rostered under their Home School Number (was: home-school row's
+#     per-row School Number).
 _base: myedbc
 version: '1.0'
 sis: MyEducationBC
@@ -21,6 +30,17 @@ global_config:
   # each school). Collapse to one Students row per User ID, keeping the
   # home-school row; class enrolments at BOTH schools are preserved (Enrollments
   # match by User ID). Opt-in — off for every other district.
+  #
+  # NOTE: because `SchoolCode` now maps to "Home school number" (below), the
+  # collapse's home-row priority is uniformly 0 (School == Home for every row),
+  # so it degenerates to keep-FIRST-row-per-User-ID. Deterministic on the current
+  # extract: on the real 2026-07-14 data all 386 cross-enrolled students have
+  # IDENTICAL admission-year AND homeroom across their rows, and the fully-generated
+  # email (legal names + admission-year) is identical under first-vs-home selection
+  # → 0 differing emails. Other kept-row output fields were NOT exhaustively diffed;
+  # the collapse dedupes to one row per User ID regardless. A future extract with
+  # cross-row variance would warrant an explicit `cross_enrollment.school_column`
+  # — not built (YAGNI).
   cross_enrollment:
     collapse: true
     home_school_column: "Home school number"
@@ -30,10 +50,22 @@ mappings:
     source_files:
       student_demographic: Student_demo_enh.txt
     field_map:
-      # Include cross-enrolled students whose PRIMARY enrolment is outside SD60
-      # (34 students are exclusively "Active No Primary").
-      "EnrollStatus":
-        active_values: ["Active", "PreReg", "Active No Primary"]
+      # EnrollStatus override REMOVED — inherit base default ["Active","PreReg"],
+      # dropping the 37 "Active No Primary" (online-course-only attachments).
+      # Roster every student under their home school (was per-row School Number).
+      "SchoolCode": "Home school number"
+      # Generate a deterministic learn60 login for every active student:
+      #   firstlast + 2-digit admission year @learn60.ca
+      # sanitize → strip apostrophes/hyphens/spaces from names to [a-z0-9];
+      # derived_dates → 2-digit year derived from the "Admission date" column
+      # (blank/unparseable admission date → no suffix, never a garbage suffix).
+      "Email Address":
+        format: "{legal first name}{legal surname}{admission yy}@learn60.ca"
+        sanitize: true
+        derived_dates:
+          "admission yy":
+            column: "Admission date"
+            date_format: "yy"
 
   Staff:
     source_files:

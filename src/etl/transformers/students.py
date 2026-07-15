@@ -152,10 +152,42 @@ class StudentTransformer(BaseTransformer):
         return {str(k): int(v) for k, v in counts.items()}
 
     def _generate_emails(self, working: pd.DataFrame, result: pd.DataFrame, field_map: dict[str, Any]) -> None:
+        """Generate the ``Email Address`` column from the template, if configured.
+
+        Opt-in extensions (default off → every existing district byte-identical):
+        - ``sanitize``: reduce each substituted string to ``[a-z0-9]``.
+        - ``derived_dates``: inject pseudo template fields (e.g. ``admission yy``)
+          computed from a source date column (fail-loud on a missing column,
+          empty on a blank/unparseable value — no garbage suffix).
+
+        Derived pseudo-columns are injected into a LOCAL copy only, so the
+        caller's ``working`` frame (later fed to ``apply_field_map``) never sees
+        them.
+        """
         email_config = field_map.get("Email Address", {})
-        if isinstance(email_config, dict):
-            email_format = email_config.get("format")
-            if email_format:
-                result["Email Address"] = working.apply(
-                    self.generate_student_email, format_str=email_format.lower(), axis=1
-                )
+        if not isinstance(email_config, dict):
+            return
+        email_format = email_config.get("format")
+        if not email_format:
+            return
+
+        sanitize = bool(email_config.get("sanitize", False))
+        derived = email_config.get("derived_dates") or {}
+
+        if derived:
+            src = working.copy()
+            for pseudo, spec in derived.items():
+                col = str(spec["column"]).strip().lower()
+                if col not in src.columns:
+                    raise ValueError(
+                        f"[Students] Email 'derived_dates' column {spec['column']!r} not found in "
+                        f"source columns. Available: {sorted(src.columns)}"
+                    )
+                strf = self.friendly_date_format_to_strftime(str(spec["date_format"]))
+                src[str(pseudo).strip().lower()] = src[col].apply(lambda v, f=strf: self.derive_date_part(v, f))
+        else:
+            src = working
+
+        result["Email Address"] = src.apply(
+            self.generate_student_email, format_str=email_format.lower(), sanitize=sanitize, axis=1
+        )

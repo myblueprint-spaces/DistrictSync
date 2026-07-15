@@ -51,10 +51,41 @@ class FieldAppendYear(BaseModel):
     append_year_to_id: bool = True
 
 
+class EmailDerivedDate(BaseModel):
+    """A pseudo-field derived from a date column for use in an email template.
+
+    Substitutes a formatted date part (e.g. a 2-digit year) into the email
+    ``format`` string. ``column`` is the source date column (resolved from the
+    normalized/lower-cased frame); ``date_format`` is a friendly token string
+    (``yyyy``/``yy``/``MMMM``/``MMM``/``MM``/``dd``) translated at transform
+    time by ``BaseTransformer.friendly_date_format_to_strftime``. Both are
+    ``min_length=1`` so an empty value fails loudly at config load rather than
+    silently producing a constant/garbled part. ``extra="forbid"`` catches
+    typo'd keys.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    column: str = Field(min_length=1)
+    date_format: str = Field(min_length=1)
+
+
 class FieldEmailFormat(BaseModel):
-    """Template-based email generation using row fields."""
+    """Template-based email generation using row fields.
+
+    ``sanitize`` (opt-in, default off) reduces each substituted string value to
+    ``[a-z0-9]`` (lowercase) so apostrophes/hyphens/spaces in names never leak
+    into a local part. ``derived_dates`` (opt-in, default empty) maps a pseudo
+    template field (e.g. ``"admission yy"``) to a date part derived from a
+    source column — see :class:`EmailDerivedDate`. Both default off →
+    every non-opted-in district's email output is byte-identical.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     format: str
+    sanitize: bool = False
+    derived_dates: dict[str, EmailDerivedDate] = Field(default_factory=dict)
 
 
 class FieldNameConfig(BaseModel):
@@ -432,7 +463,17 @@ class MappingConfig(BaseModel):
             elif isinstance(val, FieldAppendYear):
                 raw[key] = {"column": val.column, "append_year_to_id": val.append_year_to_id}
             elif isinstance(val, FieldEmailFormat):
-                raw[key] = {"format": val.format}
+                # Conditional-omit (mirrors the FieldEnrollStatus branch): only
+                # emit sanitize/derived_dates when non-default so districts that
+                # carry a bare `format:` round-trip to exactly {"format": ...}
+                # (keeps SD40/48/51/54/74 transform output byte-identical and
+                # test_sd51_custom_email green). Emit plain dicts via model_dump.
+                ef: dict[str, Any] = {"format": val.format}
+                if val.sanitize:
+                    ef["sanitize"] = True
+                if val.derived_dates:
+                    ef["derived_dates"] = {k: v.model_dump() for k, v in val.derived_dates.items()}
+                raw[key] = ef
             elif isinstance(val, FieldNameConfig):
                 raw[key] = {
                     "primary teacher flag": val.primary_teacher_flag,
