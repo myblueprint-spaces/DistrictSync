@@ -39,6 +39,7 @@ class ConvertStatus(str, Enum):
 
     DELIVERED = "delivered"  # ETL ok + (SFTP ok OR not requested)
     DELIVERED_WITH_DATA_ERRORS = "delivered_with_data_errors"  # ETL ok + delivered, but per-row errors present
+    DELIVERED_FROM_DISK = "delivered_from_disk"  # deliver-from-disk succeeded (no build this action)
     BUILT_NOT_DELIVERED = "built_not_delivered"  # ETL ok, SFTP attempted + failed (exit-3 shape)
     BUILT_WITH_DATA_ERRORS = "built_with_data_errors"  # ETL ok, per-row transform errors present
     NEEDS_ANOMALY_ACK = "needs_anomaly_ack"  # >20% drop — write withheld pending acknowledgment
@@ -107,6 +108,15 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
             Verdict.WARNING,
             f"Delivered to SpacesEDU with {total} data {warning_word}",
             "A few records had field problems and were left blank. The rest of the roster was built, saved, and delivered.",
+        )
+
+    if status is ConvertStatus.DELIVERED_FROM_DISK:
+        # Deliver-from-disk (0034 Slice 2): nothing was rebuilt — the copy must not claim
+        # a conversion happened, only that the already-saved files reached SpacesEDU.
+        return (
+            Verdict.HEALTHY,
+            "Files delivered to SpacesEDU",
+            "The files in your output folder were sent to SpacesEDU successfully.",
         )
 
     if status is ConvertStatus.BUILT_NOT_DELIVERED:

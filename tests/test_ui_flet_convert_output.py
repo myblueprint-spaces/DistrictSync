@@ -1,11 +1,14 @@
-"""Unit tests for the COUNTED Convert output-folder + run-gate logic (Plan 0029, Slice 9).
+"""Unit tests for the COUNTED Convert output-folder + run/deliver-gate logic (Plan 0029, Slice 9).
 
 Covers the path-bearing trust logic that keeps the silent fallbacks out (D9/D10):
 - ``can_run_convert`` gating table (no district / empty output dir / invalid input / all set);
 - ``output_dir_is_set`` blank/whitespace/None handling;
 - ``resolved_output_caption`` derivation (set → names the folder; unset → routed message);
 - ``open_folder`` per-OS dispatch (Windows/macOS/Linux) + blank-path and failure handling —
-  all mocked, so no real file browser opens under test.
+  all mocked, so no real file browser opens under test;
+- the deliver-from-disk facts + gate (0034 Slice 2): ``output_csvs_present`` /
+  ``newest_output_csv_mtime_iso`` (top-level-only, mirroring the SFTP glob) /
+  ``freshness_fact`` / the ``standalone_deliver_state`` table.
 
 The path lives HERE, never in ``ConvertResult`` — ``test_ui_flet_convert_result`` pins the
 result model stays path-free; this module is its deliberate counterpart.
@@ -13,14 +16,23 @@ result model stays path-free; this module is its deliberate counterpart.
 
 from __future__ import annotations
 
+import os
+from datetime import datetime, timedelta
+from pathlib import Path
+
 import pytest
 
 from src.ui_flet import convert_output
 from src.ui_flet.convert_output import (
+    DeliverReadiness,
     can_run_convert,
+    freshness_fact,
+    newest_output_csv_mtime_iso,
     open_folder,
+    output_csvs_present,
     output_dir_is_set,
     resolved_output_caption,
+    standalone_deliver_state,
 )
 
 
@@ -112,3 +124,98 @@ class TestOpenFolder:
         monkeypatch.setattr(convert_output.sys, "platform", "linux")
         monkeypatch.setattr(convert_output.subprocess, "run", _boom)
         assert open_folder("/out") is False  # calm degradation, not a crash
+
+
+class TestOutputCsvsPresent:
+    """The deliver gate's files-on-disk fact — top-level only, mirroring the SFTP glob."""
+
+    @pytest.mark.parametrize("value", ["", "   ", None])
+    def test_blank_dir_is_absent(self, value: str | None) -> None:
+        assert output_csvs_present(value) is False
+
+    def test_missing_dir_is_absent(self, tmp_path: Path) -> None:
+        assert output_csvs_present(str(tmp_path / "nope")) is False
+
+    def test_empty_dir_is_absent(self, tmp_path: Path) -> None:
+        assert output_csvs_present(str(tmp_path)) is False
+
+    def test_non_csv_files_do_not_count(self, tmp_path: Path) -> None:
+        (tmp_path / "notes.txt").write_text("x")
+        assert output_csvs_present(str(tmp_path)) is False
+
+    def test_top_level_csv_counts(self, tmp_path: Path) -> None:
+        (tmp_path / "Students.csv").write_text("id\n1\n")
+        assert output_csvs_present(str(tmp_path)) is True
+
+    def test_nested_csv_does_not_count(self, tmp_path: Path) -> None:
+        # archive_<ts>/ contents never ship (the SFTP glob is top-level) — the fact must agree.
+        nested = tmp_path / "archive_20260701"
+        nested.mkdir()
+        (nested / "Students.csv").write_text("id\n1\n")
+        assert output_csvs_present(str(tmp_path)) is False
+
+
+class TestNewestOutputCsvMtimeIso:
+    def test_no_csvs_is_empty(self, tmp_path: Path) -> None:
+        assert newest_output_csv_mtime_iso(str(tmp_path)) == ""
+
+    @pytest.mark.parametrize("value", ["", None])
+    def test_blank_dir_is_empty(self, value: str | None) -> None:
+        assert newest_output_csv_mtime_iso(value) == ""
+
+    def test_newest_of_several_wins(self, tmp_path: Path) -> None:
+        old = tmp_path / "Staff.csv"
+        new = tmp_path / "Students.csv"
+        old.write_text("id\n1\n")
+        new.write_text("id\n1\n")
+        old_ts = datetime(2026, 7, 1, 3, 0, 0).timestamp()
+        new_ts = datetime(2026, 7, 14, 3, 0, 0).timestamp()
+        os.utime(old, (old_ts, old_ts))
+        os.utime(new, (new_ts, new_ts))
+        assert newest_output_csv_mtime_iso(str(tmp_path)) == datetime.fromtimestamp(new_ts).isoformat(
+            timespec="seconds"
+        )
+
+    def test_nested_csv_is_invisible(self, tmp_path: Path) -> None:
+        nested = tmp_path / "archive_20260701"
+        nested.mkdir()
+        (nested / "Students.csv").write_text("id\n1\n")
+        assert newest_output_csv_mtime_iso(str(tmp_path)) == ""
+
+
+class TestFreshnessFact:
+    _NOW = datetime(2026, 7, 15, 8, 0, 0)
+
+    def test_names_the_vintage_plainly(self) -> None:
+        two_hours_ago = (self._NOW - timedelta(hours=2)).isoformat(timespec="seconds")
+        assert freshness_fact(two_hours_ago, now=self._NOW) == "Files last built 2 hours ago."
+
+    def test_empty_mtime_degrades_to_recently(self) -> None:
+        # TOTAL: an unstattable folder ("" upstream) still reads calmly, never raises.
+        assert freshness_fact("", now=self._NOW) == "Files last built recently."
+
+
+class TestStandaloneDeliverState:
+    """The deliver-from-disk gate table (0034 Slice 2) — hidden / not-ready / ready."""
+
+    def test_all_facts_present_is_ready(self) -> None:
+        state = standalone_deliver_state(sftp_configured=True, credential_present=True, csvs_present=True)
+        assert state is DeliverReadiness.READY
+
+    def test_unconfigured_hides(self) -> None:
+        state = standalone_deliver_state(sftp_configured=False, credential_present=True, csvs_present=True)
+        assert state is DeliverReadiness.HIDDEN
+
+    def test_no_csvs_hides(self) -> None:
+        # Nothing to deliver → no affordance at all (never a dead button).
+        state = standalone_deliver_state(sftp_configured=True, credential_present=True, csvs_present=False)
+        assert state is DeliverReadiness.HIDDEN
+
+    def test_missing_credential_is_the_calm_not_ready_state(self) -> None:
+        state = standalone_deliver_state(sftp_configured=True, credential_present=False, csvs_present=True)
+        assert state is DeliverReadiness.NEEDS_CREDENTIAL
+
+    def test_missing_credential_with_no_csvs_still_hides(self) -> None:
+        # Nothing to deliver dominates — don't nag about a credential for zero files.
+        state = standalone_deliver_state(sftp_configured=True, credential_present=False, csvs_present=False)
+        assert state is DeliverReadiness.HIDDEN

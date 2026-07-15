@@ -141,6 +141,64 @@ class TestScreensRender:
         assert _has_text_containing(tree, str(out_dir))
         assert _find(tree, ft.Dropdown)[0].value == "myedbc"
 
+    def _delivery_ready_config(self, tmp_path, monkeypatch, *, with_csv: bool = True) -> AppConfig:
+        """A configured install with delivery set up (+ optionally a committed CSV on disk)."""
+        out_dir = tmp_path / "out"
+        out_dir.mkdir(exist_ok=True)
+        if with_csv:
+            (out_dir / "Students.csv").write_text("id\n1\n")
+        cfg = AppConfig(
+            input_dir=str(tmp_path),
+            output_dir=str(out_dir),
+            sis_type="myedbc",
+            sftp_enabled=True,
+            sftp_host="sftp.ca.spacesedu.com",
+            sftp_username="district_x",
+            sftp_remote_path="/upload",
+        )
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        return cfg
+
+    def test_convert_standalone_deliver_card_when_ready(self, tmp_path, stub_page, monkeypatch):
+        # 0034 Slice 2: delivery configured + credential readable + CSVs on disk → the standalone
+        # card renders, freshness-labelled, with a SECONDARY deliver button (one filled primary).
+        import src.ui_flet.screens.convert as convert_mod
+
+        self._delivery_ready_config(tmp_path, monkeypatch)
+        monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert _has_text_containing(tree, "Deliver the files in your output folder")
+        assert _has_text_containing(tree, "Files last built")
+        deliver_btn = _button_by_content(tree, "Deliver to SpacesEDU")
+        assert isinstance(deliver_btn, ft.OutlinedButton)  # secondary tier — Convert now keeps the fill
+        # The new card must not add a second filled action ("Convert now" holds the screen's fill).
+        assert not any(getattr(b, "content", None) == "Deliver to SpacesEDU" for b in _find(tree, ft.FilledButton))
+
+    def test_convert_standalone_deliver_hidden_when_unconfigured(self, stub_page, monkeypatch):
+        # The default (unconfigured) install: no delivery setup, no CSVs → no deliver affordance.
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert not _has_text_containing(tree, "Deliver the files in your output folder")
+        assert not _has_text_containing(tree, "Delivery isn't ready on this account")
+
+    def test_convert_standalone_deliver_hidden_without_csvs(self, tmp_path, stub_page, monkeypatch):
+        # Delivery configured but nothing on disk to send → the affordance hides (never a dead button).
+        import src.ui_flet.screens.convert as convert_mod
+
+        self._delivery_ready_config(tmp_path, monkeypatch, with_csv=False)
+        monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert not _has_text_containing(tree, "Deliver the files in your output folder")
+
+    def test_convert_standalone_deliver_not_ready_without_credential(self, tmp_path, stub_page, monkeypatch):
+        # Configured + files on disk but no stored password → the calm route-to-Setup card.
+        import src.ui_flet.screens.convert as convert_mod
+
+        self._delivery_ready_config(tmp_path, monkeypatch)
+        monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: False)
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert _has_text_containing(tree, "Delivery isn't ready on this account")
+        assert not _has_text_containing(tree, "Deliver the files in your output folder")
+
     def test_home_with_refresh(self, stub_page, monkeypatch):
         # The Refresh affordance (D1) must render on the dashboard branch without
         # crashing — a configured+scheduled config is required to reach that branch

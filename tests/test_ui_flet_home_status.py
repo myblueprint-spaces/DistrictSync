@@ -22,6 +22,7 @@ from src.ui_flet.home_status import (
     LatestReason,
     classify_latest_reason,
     derive_home_status,
+    is_delivery_only,
     is_stale,
     verdict_for_reason,
 )
@@ -398,6 +399,58 @@ class TestVerdictForReason:
         assert verdict_for_reason(LatestReason.CLEAN) is Verdict.HEALTHY
 
 
+def _delivery_record(**overrides: object) -> dict:
+    """A deliver-from-disk record (0034 Slice 2): zero count keys by shape + the rider."""
+    base = _record(
+        Students=0,
+        Staff=0,
+        Family=0,
+        Classes=0,
+        Enrollments=0,
+        delivery_only=True,
+        source="manual",
+    )
+    base.update(overrides)
+    return base
+
+
+class TestDeliveryOnlyRecord:
+    """A delivery ships an EARLIER build — its record must never read as a 0-row build."""
+
+    def test_rider_discriminates_delivery_from_build(self) -> None:
+        assert is_delivery_only(_delivery_record()) is True
+        assert is_delivery_only(_record()) is False  # pre-existing records classify as builds
+
+    def test_clean_delivery_refreshes_freshness_with_the_builds_counts(self) -> None:
+        # The build is past the stale window, but the delivery re-dates the sync (the roster
+        # genuinely reached SpacesEDU) — and the tiles show the BUILD's counts, never zeros.
+        build = _record(timestamp=_OLD)
+        delivery = _delivery_record(timestamp=_RECENT)
+        status = derive_home_status([delivery, build], _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.metrics is not None
+        assert status.metrics.entity_counts["Students"] == 100
+        assert status.metrics.last_run_display == "5 hours ago"  # the delivery's timestamp
+        assert status.metrics.sftp_delivered is True
+
+    def test_delivery_with_no_build_on_record_shows_no_tiles(self) -> None:
+        # No build record to source counts from → no tiles at all — never a "0 Students" lie.
+        status = derive_home_status([_delivery_record()], _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.metrics is None
+
+    def test_failed_delivery_only_is_the_failed_delivery_verdict(self) -> None:
+        status = derive_home_status([_delivery_record(sftp_ok=False)], _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.FAILED
+        assert "didn't reach SpacesEDU" in status.headline
+
+    def test_build_latest_keeps_its_own_counts(self) -> None:
+        # Regression: a build latest is its own counts source (delivery records behind it).
+        status = derive_home_status([_record(), _delivery_record(timestamp=_OLD)], _CONFIGURED, now=_NOW)
+        assert status.metrics is not None
+        assert status.metrics.entity_counts["Students"] == 100
+
+
 # Every representative fixture → a valid HomeStatus, no exception (totality sweep).
 _SWEEP_INPUTS = [
     None,
@@ -412,6 +465,8 @@ _SWEEP_INPUTS = [
     [{}],
     [{"status": "success", "sftp_attempted": True}],
     [{"anomalies": "not-a-list"}],  # non-list anomalies must be tolerated
+    [_delivery_record()],
+    [_delivery_record(sftp_ok=False)],
 ]
 
 
