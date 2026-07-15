@@ -38,6 +38,7 @@ from src.ui_flet.home_status import (
     ENTITY_LABELS,
 )
 from src.ui_flet.humanize import friendly_district_name
+from src.ui_flet.schedule_status import ScheduleState
 
 # The canonical entity ORDER for the output-CSV summary — rostering entities first, then the
 # myBlueprint+ / attendance keys — reusing `home_status`'s entity tuples so the label order
@@ -154,3 +155,79 @@ def can_apply(pending: ConfigSummary | None, persisted_sis: str) -> bool:
     pure extraction. ``pending`` is ``None`` when nothing is selected → not applyable.
     """
     return pending is not None and pending.loaded_ok and pending.sis_type != persisted_sis
+
+
+# --------------------------------------------------------------------------- #
+# Post-Apply schedule honesty — does the switch leave a stale nightly task?      #
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class StaleScheduleNotice:
+    """The post-Apply warning that the registered nightly task still carries the OLD district.
+
+    A registered task bakes ``--sis <district>`` into its action args, so a Mapping switch
+    leaves a LIVE task converting the old district until Settings re-registers it. The copy
+    names only district DISPLAY names (Mapping already shows them) — never a path, a task
+    name, or a raw error.
+    """
+
+    headline: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class PostApplyPresentation:
+    """Everything the post-Apply confirmation paints — honest in every schedule branch.
+
+    ``healthy_detail`` supports the "Now using <new district>" HEALTHY band; ``notice`` is the
+    stale-schedule warning (``None`` when no schedule could be running the old district).
+    """
+
+    healthy_detail: str
+    notice: StaleScheduleNotice | None
+
+
+def post_apply_presentation(
+    old_district_name: str,
+    *,
+    schedule_state: ScheduleState | None,
+    hint_registered: bool,
+) -> PostApplyPresentation:
+    """Decide the post-Apply banner copy from the schedule truth (pure, TOTAL).
+
+    Branches (the D4 honesty invariant — UNKNOWN never asserts):
+
+    - ``LIVE`` → an assertive notice naming the old district (a definitive read-back; the
+      config hint is irrelevant).
+    - ``UNKNOWN`` / ``None`` (probe pending, failed, or non-Windows) while the config hint
+      says a schedule is registered → the SAME notice with hedged copy ("may still use") —
+      a live schedule is never asserted from the hint alone.
+    - ``MISSING``, or unconfirmed without the hint → no notice: there is no schedule to speak
+      of (an expected-but-missing schedule is Home/Setup's attention, not a stale-district risk).
+
+    ``healthy_detail`` claims only what is true in EVERY branch — the folders are untouched —
+    and never reassures about the schedule (the old "schedule ... unchanged" line was literally
+    true and exactly the hazard). A blank ``old_district_name`` (an unset pre-Apply district)
+    falls back to "the previous district" (total).
+    """
+    old_name = (old_district_name or "").strip() or "the previous district"
+    healthy_detail = "Your folders are unchanged."
+    if schedule_state is ScheduleState.LIVE:
+        return PostApplyPresentation(
+            healthy_detail=healthy_detail,
+            notice=StaleScheduleNotice(
+                headline=f"Your nightly schedule still uses {old_name}",
+                detail="Open Settings and Save to update it to the new district.",
+            ),
+        )
+    if schedule_state is not ScheduleState.MISSING and hint_registered:
+        return PostApplyPresentation(
+            healthy_detail=healthy_detail,
+            notice=StaleScheduleNotice(
+                headline=f"Your nightly schedule may still use {old_name}",
+                detail=(
+                    "We couldn't confirm the nightly schedule right now — "
+                    "open Settings and Save to make sure it uses the new district."
+                ),
+            ),
+        )
+    return PostApplyPresentation(healthy_detail=healthy_detail, notice=None)

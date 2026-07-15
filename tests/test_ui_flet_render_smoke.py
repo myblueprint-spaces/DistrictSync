@@ -17,6 +17,7 @@ time. ``page.add``/``update``/``window.*`` are no-ops on the mock.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 import flet as ft
@@ -283,9 +284,124 @@ def test_mapping_post_apply_rerenders_and_allows_revert(stub_page, monkeypatch):
     apply_btn.on_click(None)
     assert apply_btn.disabled is True
 
+    # 0034 Slice 1 honesty: the confirmation claims folders only — never "schedule ... unchanged"
+    # (an unchanged registered task still carries the OLD district). With no registered-schedule
+    # hint (the hermetic default config) there is nothing to warn about either.
+    assert _has_text(surface, "Your folders are unchanged.")
+    assert not _has_text_containing(surface, "schedule are unchanged")
+    assert not _has_text_containing(surface, "may still use")
+    assert not any(getattr(c, "content", None) == "Open Settings" for c in _iter_controls(surface))
+
     # THE fix: re-selecting the previous mapping is applyable — a switch can be reverted in place.
     dropdown.on_select(_pick_event(original))
     assert apply_btn.disabled is False
+
+
+def _mapping_apply(surface, target="mbp_core"):
+    """Drive the Mapping surface's real handlers: pick ``target``, then Apply."""
+    dropdown = _find(surface, ft.Dropdown)[0]
+    apply_btn = next(b for b in _find(surface, ft.FilledButton) if b.content == "Use this mapping")
+    dropdown.on_select(_pick_event(target))
+    apply_btn.on_click(None)
+    return dropdown, apply_btn
+
+
+def _scheduled_mapping_cfg(monkeypatch):
+    """A config whose hint says a nightly schedule is registered (the stale-task hazard case)."""
+    cfg = AppConfig(sis_type="myedbc", schedule_registered=True)
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    return cfg
+
+
+def test_mapping_apply_with_registered_hint_warns_hedged_and_routes_to_settings(stub_page, monkeypatch):
+    """0034 Slice 1: Apply with a registered-schedule hint paints the HEDGED notice immediately.
+
+    Before any probe returns, the record-based paint must already warn — honestly hedged ("may
+    still use", never asserted from the hint alone) — and the "Open Settings" affordance must
+    route via ``on_navigate("setup")`` (the Settings Save owns the actual re-registration).
+    """
+    cfg = _scheduled_mapping_cfg(monkeypatch)
+    routed: list[str] = []
+    surface = _assert_renders(
+        lambda: build_mapping(stub_page, app_config=cfg, on_navigate=routed.append),
+        monkeypatch,
+    )
+
+    _mapping_apply(surface)
+
+    assert _has_text_containing(surface, "may still use")
+    assert _has_text(surface, "Your folders are unchanged.")
+    open_settings = next(c for c in _iter_controls(surface) if getattr(c, "content", None) == "Open Settings")
+    open_settings.on_click(None)
+    assert routed == ["setup"]
+
+
+def test_mapping_apply_without_on_navigate_warns_without_routing_button(stub_page, monkeypatch):
+    """Defensive default: no ``on_navigate`` → the notice still renders, minus the button (no crash)."""
+    cfg = _scheduled_mapping_cfg(monkeypatch)
+    surface = _assert_renders(lambda: build_mapping(stub_page, app_config=cfg), monkeypatch)
+
+    _mapping_apply(surface)
+
+    assert _has_text_containing(surface, "may still use")
+    assert not any(getattr(c, "content", None) == "Open Settings" for c in _iter_controls(surface))
+
+
+def test_mapping_apply_live_probe_upgrades_to_assertive_notice(monkeypatch):
+    """Paint-then-refine (Home's pattern): a LIVE read-back upgrades the hedge to an assertion.
+
+    The off-thread worker is driven inline (``_driving_page``) with ``probe_schedule`` stubbed
+    LIVE and the win32 gate pinned, so the marshalled refine runs deterministically on any OS:
+    the banner must now say the schedule STILL USES the old district (no more "may").
+    """
+    import src.ui_flet.screens.mapping as mapping_mod
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    monkeypatch.setattr(mapping_mod.sys, "platform", "win32")
+    monkeypatch.setattr(
+        "src.ui_flet.schedule_probe.probe_schedule",
+        lambda *a, **k: ScheduleStatus(state=ScheduleState.LIVE, headline="", detail=""),
+    )
+    cfg = _scheduled_mapping_cfg(monkeypatch)
+
+    captured: list = []
+    page = _driving_page(captured)
+    surface = build_mapping(page, app_config=cfg, on_navigate=lambda _d: None)
+
+    _mapping_apply(surface)
+
+    assert len(captured) == 1, "Apply must marshal exactly one probe refine"
+    coro_fn, _args = captured[0]
+    asyncio.run(coro_fn())
+
+    assert _has_text_containing(surface, "still uses")
+    assert not _has_text_containing(surface, "may still use")
+
+
+def test_mapping_stale_probe_never_resurrects_a_cleared_banner(monkeypatch):
+    """A fresh pick clears the confirmation; a probe still in flight must NOT repaint it."""
+    import src.ui_flet.screens.mapping as mapping_mod
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    monkeypatch.setattr(mapping_mod.sys, "platform", "win32")
+    monkeypatch.setattr(
+        "src.ui_flet.schedule_probe.probe_schedule",
+        lambda *a, **k: ScheduleStatus(state=ScheduleState.LIVE, headline="", detail=""),
+    )
+    cfg = _scheduled_mapping_cfg(monkeypatch)
+
+    captured: list = []
+    page = _driving_page(captured)
+    surface = build_mapping(page, app_config=cfg, on_navigate=lambda _d: None)
+
+    dropdown, _apply_btn = _mapping_apply(surface)
+    dropdown.on_select(_pick_event("myedbc"))  # a fresh pick clears the banner slot
+
+    coro_fn, _args = captured[0]
+    asyncio.run(coro_fn())  # the (now stale) refine arrives after the pick
+
+    assert not _has_text_containing(surface, "still use")  # neither hedged nor assertive resurrected
 
 
 def _textfield_by_label(tree, label):

@@ -2,8 +2,19 @@
 
 VIEW glue (coverage-omitted): the trust-critical *derivation* lives COUNTED in the pure
 ``mapping_catalog`` (``summarize_config`` / ``list_configs`` — the empty-``enabled_entities``
--means-all output-CSV resolution + the total-over-a-failing-config degradation). This file only
+-means-all output-CSV resolution + the total-over-a-failing-config degradation — and
+``post_apply_presentation``, the post-Apply schedule-staleness honesty). This file only
 RENDERS that already-tested output: which config is active + what it produces, and a calm switch.
+
+**Post-Apply schedule honesty (plan 0034 Slice 1).** A registered nightly task bakes
+``--sis <district>`` into its action args, so switching the district here leaves a LIVE task
+converting the OLD district until Settings re-registers it. Apply therefore never claims the
+schedule is fine: the immediate banner is record-based honest (hint-hedged, per the pure
+``post_apply_presentation``), then the real schedule read-back — the same off-thread,
+win32-gated ``probe_schedule`` pattern Home uses — refines it in place. A LIVE (or
+unconfirmed-but-expected) schedule paints a WARNING notice naming the old district, with an
+"Open Settings" route (``on_navigate("setup")``) to the ONE re-register flow Settings owns —
+Mapping never re-registers and never collects credentials (owner decision 2026-07-15).
 
 **The select-a-pre-built-config sliver, NOT the full editor.** Per the 0013 scope-lock, the full
 column-mapping editor (YAML editing / column wizard / config creation) is DEFERRED to ROADMAP
@@ -27,7 +38,9 @@ the handler guards ``cfg.save()`` even if the gate were bypassed.
 **Sync read on mount** (the same justification as Home / Run History): ``list_configs`` reads a
 handful of small local YAMLs in microseconds — the worker-thread convention is scoped to
 ``run_pipeline`` (see ``docs/FLET_1.0_CONVENTIONS.md``); async here would add the doc's #1
-concurrency trap for no gain.
+concurrency trap for no gain. The ONE off-thread hop is the post-Apply schedule probe (a
+bounded PowerShell subprocess, ``page.run_thread`` → ``page.run_task``, fire-and-forget with a
+generation guard — Home's exact marshalling).
 
 Assembled ENTIRELY from ``components.py`` (card / hero / ``primary_button`` /
 ``HealthVerdictBanner`` / ``ErrorCard``) + ``tokens`` + the pure ``mapping_catalog`` — never
@@ -38,11 +51,22 @@ Owns no lifecycle. **Never-crash floor:** the whole body is wrapped in ``try/exc
 
 from __future__ import annotations
 
+import contextlib
+import sys
+from collections.abc import Callable
+
 import flet as ft
 
 from src.config.app_config import AppConfig
 from src.ui_flet import components, tokens
-from src.ui_flet.mapping_catalog import ConfigSummary, can_apply, list_configs, summarize_config
+from src.ui_flet.mapping_catalog import (
+    ConfigSummary,
+    can_apply,
+    list_configs,
+    post_apply_presentation,
+    summarize_config,
+)
+from src.ui_flet.schedule_status import ScheduleState
 from src.ui_flet.verdict import Verdict
 
 
@@ -101,7 +125,7 @@ def _summary_card(title: str, summary: ConfigSummary) -> ft.Control:
     )
 
 
-def _surface(page: ft.Page, app_config: AppConfig) -> ft.Control:
+def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], None] | None) -> ft.Control:
     """Render the current-mapping summary + the switch selector + the gated Apply.
 
     Apply writes through ``AppConfig`` and re-renders THIS surface in place (D1): the
@@ -119,6 +143,9 @@ def _surface(page: ft.Page, app_config: AppConfig) -> ft.Control:
 
     # Mutable pending selection — starts on the current config (so Apply is a no-op → disabled).
     pending = {"sis": app_config.sis_type}
+    # Apply/pick generation — an in-flight post-Apply schedule probe only paints if the banner
+    # it refines is still the current one (a fresh pick/Apply invalidates the stale refine).
+    apply_seq = {"n": 0}
 
     apply_btn = components.primary_button(
         "Use this mapping",
@@ -128,7 +155,7 @@ def _surface(page: ft.Page, app_config: AppConfig) -> ft.Control:
         icon=ft.Icons.CHECK_CIRCLE_ROUNDED,
     )
     current_card_slot = ft.Column(spacing=0, controls=[])
-    applied_banner_slot = ft.Column(spacing=0, controls=[])
+    applied_banner_slot = ft.Column(spacing=tokens.space_md, controls=[])
     pending_summary_slot = ft.Column(spacing=0, controls=[])
 
     def _summary_for(sis: str) -> ConfigSummary:
@@ -145,6 +172,7 @@ def _surface(page: ft.Page, app_config: AppConfig) -> ft.Control:
 
     def _on_pick(e: ft.ControlEvent) -> None:
         pending["sis"] = e.control.value or persisted["sis"]
+        apply_seq["n"] += 1  # invalidate any in-flight post-Apply probe (its banner is cleared)
         applied_banner_slot.controls = []  # a fresh pick clears a prior confirmation
         _refresh()
 
@@ -153,18 +181,83 @@ def _surface(page: ft.Page, app_config: AppConfig) -> ft.Control:
         # Re-check the gate so a broken / no-op config can never reach AppConfig.save().
         if not can_apply(pending_summary, persisted["sis"]):
             return
+        # Capture the OLD district's display name BEFORE overwriting — a registered nightly
+        # task keeps converting the pre-Apply district, so the notice must name that one.
+        old_summary = _summary_for(persisted["sis"])
         cfg = AppConfig.load()
         cfg.sis_type = pending_summary.sis_type
         cfg.save()
         persisted["sis"] = pending_summary.sis_type  # the switch is now the persisted current
-        applied_banner_slot.controls = [
-            components.HealthVerdictBanner(
-                Verdict.HEALTHY,
-                headline=f"Now using {pending_summary.district_name}",
-                detail="Your folders and schedule are unchanged.",
+        apply_seq["n"] += 1
+        gen = apply_seq["n"]
+        hint_registered = cfg.schedule_registered
+        task_name = cfg.schedule_task_name
+
+        def _paint_banner(schedule_state: ScheduleState | None) -> None:
+            # The pure decision: healthy detail + (optionally) the stale-schedule notice.
+            pres = post_apply_presentation(
+                old_summary.district_name,
+                schedule_state=schedule_state,
+                hint_registered=hint_registered,
             )
-        ]
+            banners: list[ft.Control] = [
+                components.HealthVerdictBanner(
+                    Verdict.HEALTHY,
+                    headline=f"Now using {pending_summary.district_name}",
+                    detail=pres.healthy_detail,
+                )
+            ]
+            if pres.notice is not None:
+                # The fix routes to the ONE re-register flow Settings owns (never re-register
+                # here). Secondary tier — "Use this mapping" is this screen's filled primary.
+                trailing = (
+                    components.secondary_button("Open Settings", lambda _e: on_navigate("setup"))
+                    if on_navigate is not None
+                    else None
+                )
+                banners.append(
+                    components.HealthVerdictBanner(
+                        Verdict.WARNING,
+                        headline=pres.notice.headline,
+                        detail=pres.notice.detail,
+                        trailing=trailing,
+                    )
+                )
+            applied_banner_slot.controls = banners
+
+        # Paint-then-refine (Home's pattern): the immediate banner is record-based honest
+        # (hint-hedged, never asserted), then the real read-back upgrades it in place.
+        _paint_banner(None)
         _refresh()  # re-render the current card + re-derive the gate (reverting is now possible)
+        _refine_from_probe(gen, task_name, hint_registered, _paint_banner)
+
+    def _refine_from_probe(
+        gen: int,
+        task_name: str,
+        hint_registered: bool,
+        paint: Callable[[ScheduleState | None], None],
+    ) -> None:
+        # Windows-only (like the shell's badge probe): elsewhere the hedged initial paint IS
+        # the honest final state — a live schedule is never asserted from the hint alone.
+        if sys.platform != "win32":
+            return
+
+        def _work() -> None:  # runs OFF the UI thread
+            from src.ui_flet.schedule_probe import probe_schedule
+
+            status = probe_schedule(task_name, hint_registered=hint_registered)
+
+            async def _apply() -> None:
+                if apply_seq["n"] != gen:
+                    return  # a newer pick/Apply owns the banner slot — drop the stale refine
+                paint(status.state)
+                page.update()
+
+            page.run_task(_apply)
+
+        # The read-back is advisory; a probe/thread failure keeps the hedged initial paint.
+        with contextlib.suppress(Exception):
+            page.run_thread(_work)
 
     apply_btn.on_click = _on_apply
 
@@ -208,16 +301,23 @@ def _surface(page: ft.Page, app_config: AppConfig) -> ft.Control:
     )
 
 
-def build_mapping(page: ft.Page, *, app_config: AppConfig) -> ft.Control:
+def build_mapping(
+    page: ft.Page,
+    *,
+    app_config: AppConfig,
+    on_navigate: Callable[[str], None] | None = None,
+) -> ft.Control:
     """Build the Mapping surface (review + switch the district config). ``page`` drives updates.
 
     Sync read on mount, verdict-first apply, wrapped in a never-crash ``ErrorCard`` fallback so
     even a view-layer bug shows a calm surface, never a stack trace (defense-in-depth — the
-    catalog derivation is already TOTAL). Owns no lifecycle — Apply stays on-surface with a
-    verdict banner (no navigation), so no ``on_navigate`` is threaded (KISS; the IA-6 precedent).
+    catalog derivation is already TOTAL). ``on_navigate`` (Home's exact pattern, injected by
+    the shell with rail-follow) routes the post-Apply stale-schedule notice to Settings; when
+    absent (``None``, defensive default) the notice renders without the routing button — never
+    a crash. The 0034 Slice 1 honesty fix supersedes the earlier no-``on_navigate`` decision.
     """
     try:
-        return _surface(page, app_config)
+        return _surface(page, app_config, on_navigate)
     except Exception:  # noqa: BLE001 - the reliability floor: a view bug shows a calm surface, never a trace
         return components.ErrorCard(
             "We couldn't open Mapping",
