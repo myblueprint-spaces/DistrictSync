@@ -9,6 +9,28 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Fixed
+
+- **Killed the false silence on early failures.** The early-exit failures inside
+  the pipeline (input folder missing, district config missing or invalid) now
+  write a failed run record to both the diagnostic log and Run History before
+  exiting — Task Scheduler's exit code and Run History can no longer disagree
+  about whether the nightly sync failed. Bounded categories only in the store;
+  the exit-code contract is unchanged. (plan 0034 slice 4)
+
+### Added
+
+- **Missed-run warning on Home.** When the schedule read-back confirms a LIVE
+  nightly task but no run has been recorded in the last 26 hours (and the run
+  store is itself old enough that a run was genuinely expected — a day-one
+  install is never falsely warned), Home shows "We expected a nightly sync that
+  didn't arrive" with a route to Run History. A red failure always outranks
+  this amber warning. (plan 0034 slice 4)
+- **Run History shows where each run came from.** A new Source column reads
+  "Nightly", "Manual", or "Command line" ("—" for older records), plus a muted
+  "Different district: …" note when a run belongs to a district other than the
+  active one. (plan 0034 slice 4)
+
 ### Changed
 
 - **Delivering to SpacesEDU now sends the files already on disk — never a
