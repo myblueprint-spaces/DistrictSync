@@ -23,6 +23,11 @@ them to controls.
   (input/output/district/SFTP flag/run time — ``setup_flow.task_args_changed``) changes and
   a schedule is live, the folders Save re-registers the task through the SAME register flow
   (incl. elevation) so tonight's run uses the new settings. The rail label stays "Setup".
+  Save trustworthiness (0034 S3): the reconcile compares against the durable
+  **last-REGISTERED args** (``cfg.schedule_task_args``, written on every confirmed register —
+  so a Mapping district switch + no-edit Save re-registers), a blank-password re-register of
+  an unattended task (``cfg.schedule_unattended``) pauses on an **explicit downgrade choice**
+  (never silent), and a valid run-time edit persists as config even with **no task registered**.
 
 The register/unregister flow (Slice 5/6) and the SFTP test/save flow (Slice 7) are **reused
 verbatim** in both modes — the wizard's Schedule/Delivery steps embed the SAME section
@@ -71,6 +76,7 @@ from src.ui_flet.setup_flow import (
     TOTAL_STEPS,
     TRANSITION_CUE,
     DeliveryFact,
+    DowngradeInterrupt,
     FinishSummaryRow,
     FlowInputs,
     SetupStep,
@@ -78,13 +84,17 @@ from src.ui_flet.setup_flow import (
     auto_selected_district,
     can_advance,
     derive_flow,
+    downgrade_interrupt,
     finish_copy,
     finish_summary_rows,
     is_skippable,
     next_step,
     prev_step,
+    run_time_save_decision,
     step_number,
     task_args_changed,
+    task_args_from_persisted,
+    task_args_to_persisted,
 )
 from src.ui_flet.setup_gates import can_register_schedule, can_save_sftp
 from src.ui_flet.sftp_copy import sftp_form_differs_from_saved, sftp_test_copy
@@ -104,6 +114,11 @@ _TRANSIENT_LOCATION_WARNING = (
 # must ALWAYS be released, so the worker marshals one of these instead of stranding the UI.
 _WORKER_ERROR_REGISTER = "We couldn't run the schedule registration just now. Please try again."
 _WORKER_ERROR_UNREGISTER = "We couldn't run the schedule removal just now. Please try again."
+
+# The ONE inline run-time error (shared by the register flow and the Settings-Save run-time
+# persist, 0034 S3-b — single source so the two paths can never drift).
+_RUN_TIME_ERROR_HEADLINE = "That run time isn't valid"
+_RUN_TIME_ERROR_DETAIL = "Enter the time as HH:MM in 24-hour form, e.g. 03:00."
 
 # Plain-language titles for the five wizard steps (the "Step N of 5 · <title>" indicator).
 _STEP_TITLES: dict[SetupStep, str] = {
@@ -219,10 +234,18 @@ def _stored_delivery_present(cfg: AppConfig) -> bool:
 
 @dataclass
 class _ScheduleHandle:
-    """A thin handle the Settings reconcile uses to drive the schedule section's register flow."""
+    """A thin handle the Settings reconcile uses to drive the schedule section's register flow.
+
+    ``trigger_register`` is the RECONCILE entry (0034 S3-a): unlike the Register button's
+    direct handler, it first checks ``downgrade_interrupt`` and pauses on the explicit-choice
+    dialog when a blank-password re-register would silently downgrade an unattended task.
+    ``persist_run_time`` is the S3-b seam: persist a valid run-time edit as plain config when
+    no schedule is registered (invalid → the section's inline error, nothing persisted).
+    """
 
     trigger_register: Callable[[], None]
     run_time_value: Callable[[], str]
+    persist_run_time: Callable[[], bool]
 
 
 # --------------------------------------------------------------------------- #
@@ -559,6 +582,15 @@ def _mount_settings(  # pragma: no cover - Flet view glue
     # Build the schedule section FIRST so both Saves can drive its register flow on a task-arg change.
     schedule_card, sched_handle = _build_schedule_section(page, cfg, on_registered=_on_registered)
 
+    def _baseline_args() -> TaskArgs:
+        # 0034 S3-d: compare against what was ACTUALLY registered (the durable record written at
+        # every confirmed register) — a Mapping district switch or an app restart must not reset
+        # the comparison baseline to the current config, or a no-edit Save silently skips the
+        # re-register the Mapping notice promised. Installs that registered before the record
+        # existed fall back to the mount snapshot (the pre-record behaviour).
+        persisted = task_args_from_persisted(cfg.schedule_task_args)
+        return persisted if persisted is not None else saved["args"]
+
     def _reconcile() -> bool:
         pending = TaskArgs.of(
             input_dir=cfg.input_dir,
@@ -567,9 +599,15 @@ def _mount_settings(  # pragma: no cover - Flet view glue
             sftp_enabled=cfg.sftp_enabled,
             run_time=sched_handle.run_time_value(),
         )
-        if cfg.schedule_registered and task_args_changed(saved["args"], pending):
-            sched_handle.trigger_register()  # on success → _on_registered refreshes the snapshot
+        if cfg.schedule_registered and task_args_changed(_baseline_args(), pending):
+            # May pause on the explicit downgrade choice first (S3-a); on a confirmed success
+            # → _on_registered refreshes the snapshot (and the durable record is re-written).
+            sched_handle.trigger_register()
             return True
+        if not cfg.schedule_registered:
+            # S3-b: with no task to re-register, a run-time edit is still CONFIG — persist a
+            # valid one (invalid → the schedule section's inline error, nothing persisted).
+            sched_handle.persist_run_time()
         return False
 
     sftp_card = _build_sftp_section(page, cfg, on_saved=_reconcile)
@@ -608,7 +646,9 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
     state = {"input": cfg.input_dir, "output": cfg.output_dir, "sis": cfg.sis_type}
 
     save_btn = components.primary_button(
-        "Save settings",
+        # Scope-accurate label (0034 S3-c): this button saves the folders + district (and runs
+        # the shared reconcile) — "Save settings" over-claimed the whole surface.
+        "Save folders & district",
         None,  # wired below
         disabled_bgcolor=tokens.color_border,
         icon=ft.Icons.CHECK_CIRCLE_ROUNDED,
@@ -866,10 +906,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             validate_run_time(run_time)
         except ValueError:
             result_slot.controls = [
-                components.ErrorCard(
-                    "That run time isn't valid",
-                    "Enter the time as HH:MM in 24-hour form, e.g. 03:00.",
-                ),
+                components.ErrorCard(_RUN_TIME_ERROR_HEADLINE, _RUN_TIME_ERROR_DETAIL),
             ]
             page.update()
             return
@@ -877,10 +914,25 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         exe_path = Path(sys.executable)
         transient = is_transient_location(str(exe_path))
         uac_path = is_windows and bool(password) and not _elevated_now()
+        # 0034 S3-d: the exact task-baked args this registration carries (captured at click time,
+        # alongside run_time) — persisted on confirmed success as the durable reconcile baseline.
+        registered_args = TaskArgs.of(
+            input_dir=cfg.input_dir,
+            output_dir=cfg.output_dir,
+            sis_type=cfg.sis_type,
+            sftp_enabled=cfg.sftp_enabled,
+            run_time=run_time,
+        )
 
         def _on_register_success(headline: str, detail: str, *, verdict: Verdict = Verdict.HEALTHY) -> None:
             cfg.schedule_time = run_time
             cfg.schedule_registered = True
+            # 0034 S3-a/d: record what was ACTUALLY registered — the unattended fact (a boolean
+            # only; the password itself stays handler-local per I1/I3) + the task-baked args.
+            # Choosing the signed-in-only path re-registers with a blank password, so this line
+            # also honestly flips the persisted flag to False on that path.
+            cfg.schedule_unattended = bool(password)
+            cfg.schedule_task_args = task_args_to_persisted(registered_args)
             cfg.save()
             if on_registered is not None:
                 on_registered()  # N1: refresh Settings' task-args snapshot after a confirmed register
@@ -997,6 +1049,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 outcome = interpret_unregister(ok, msg)
                 if outcome.success_shaped:
                     cfg.schedule_registered = False
+                    # 0034 S3: no task exists any more — the "what was registered" facts go too
+                    # (an honest record; a later register rewrites both).
+                    cfg.schedule_unattended = False
+                    cfg.schedule_task_args = None
                     cfg.save()
                     result_slot.controls = [
                         components.HealthVerdictBanner(
@@ -1030,6 +1086,98 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         page.update()
         page.run_thread(_work)
 
+    def _persist_run_time_if_edited() -> bool:
+        """0034 S3-b: persist a valid run-time edit as plain config (no register involved).
+
+        Driven by the Settings reconcile when NO schedule is registered — the run time is
+        config, not only a register side-effect, so a Save must not drop it. Invalid edits
+        paint the SAME inline error the register flow shows and persist nothing.
+        """
+        decision = run_time_save_decision(saved_run_time=cfg.schedule_time, field_run_time=run_time_field.value or "")
+        if decision.invalid:
+            result_slot.controls = [
+                components.ErrorCard(_RUN_TIME_ERROR_HEADLINE, _RUN_TIME_ERROR_DETAIL),
+            ]
+            page.update()
+            return False
+        if decision.persist is None:
+            return False
+        cfg.schedule_time = decision.persist
+        cfg.save()
+        return True
+
+    def _show_downgrade_dialog(interrupt: DowngradeInterrupt) -> None:
+        """The explicit-choice dialog before a reconcile re-register may downgrade (S3-a).
+
+        View glue only — every string comes from the pure ``DowngradeInterrupt``. The two
+        choices are EQUAL-WEIGHT outlined buttons (no filled default that could read as "just
+        continue" — the downgrade must be chosen, never defaulted); Cancel is the text tier.
+        The password is never collected here: choosing to stay unattended routes the admin to
+        the existing schedule-section password field (I1/I3 — the only sanctioned collection
+        point), and the task stays untouched until they register.
+        """
+
+        def _keep(_e: ft.ControlEvent) -> None:
+            page.pop_dialog()
+            result_slot.controls = [
+                components.HealthVerdictBanner(
+                    Verdict.WARNING,
+                    headline=interrupt.keep_next_headline,
+                    detail=interrupt.keep_next_detail,
+                )
+            ]
+            page.update()
+
+        def _signed_in_only(_e: ft.ControlEvent) -> None:
+            page.pop_dialog()
+            # The explicit downgrade choice: register with a blank password (Interactive /
+            # logged-on-only). Success persists schedule_unattended=False honestly.
+            _register(None)
+
+        def _cancel(_e: ft.ControlEvent) -> None:
+            page.pop_dialog()
+            # No change — the task is untouched; record honestly that the schedule still runs
+            # with the previous settings (the folders/SFTP Save itself already persisted).
+            result_slot.controls = [
+                components.HealthVerdictBanner(
+                    Verdict.WARNING,
+                    headline=interrupt.cancelled_headline,
+                    detail=interrupt.cancelled_detail,
+                )
+            ]
+            page.update()
+
+        page.show_dialog(
+            ft.AlertDialog(
+                modal=True,
+                title=ft.Text(interrupt.headline),
+                content=ft.Text(interrupt.detail),
+                actions=[
+                    components.text_button(interrupt.cancel_label, _cancel),
+                    components.secondary_button(interrupt.signed_in_only_label, _signed_in_only),
+                    components.secondary_button(interrupt.keep_unattended_label, _keep),
+                ],
+            )
+        )
+
+    def _trigger_register_reconciled() -> None:
+        """The reconcile's register entry (S3-a): interrupt before any silent logon downgrade.
+
+        The Register BUTTON deliberately does NOT route through here — a blank-password
+        Register is a legitimate explicit choice there (the helper text offers it). Only the
+        Settings-Save reconcile, which the admin never framed as a logon-type decision, must
+        pause for the explicit choice.
+        """
+        password = password_field.value if password_field is not None else None
+        interrupt = downgrade_interrupt(
+            registered_unattended=cfg.schedule_unattended,
+            password_supplied=bool(password),
+        )
+        if interrupt is None:
+            _register(None)
+            return
+        _show_downgrade_dialog(interrupt)
+
     register_btn = components.primary_button(
         "Register schedule",
         _register,
@@ -1057,7 +1205,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     _kick_readout_probe()
 
     card = components.card(content=ft.Column(spacing=18, controls=section_controls))
-    handle = _ScheduleHandle(trigger_register=_register, run_time_value=lambda: run_time_field.value or "")
+    handle = _ScheduleHandle(
+        trigger_register=_trigger_register_reconciled,
+        run_time_value=lambda: run_time_field.value or "",
+        persist_run_time=_persist_run_time_if_edited,
+    )
     return card, handle
 
 

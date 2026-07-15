@@ -30,10 +30,11 @@ Load-bearing invariants (the honesty + no-double-register spine):
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+from src.utils.validators import validate_run_time
 
 
 class SetupStep(Enum):
@@ -264,6 +265,151 @@ def task_args_changed(saved: TaskArgs, pending: TaskArgs) -> bool:
     leave the nightly task pointing at stale arguments.
     """
     return saved != pending
+
+
+# The exact key set a persisted task-args record must carry (mirrors ``TaskArgs``' fields).
+_TASK_ARGS_STR_FIELDS: tuple[str, ...] = ("input_dir", "output_dir", "sis_type", "run_time")
+_TASK_ARGS_FIELDS: tuple[str, ...] = (*_TASK_ARGS_STR_FIELDS, "sftp_enabled")
+
+
+def task_args_to_persisted(args: TaskArgs) -> dict[str, object]:
+    """Serialize just-registered ``TaskArgs`` for the durable AppConfig record (0034 S3-d).
+
+    Written at every CONFIRMED successful register so the Settings reconcile can compare a
+    pending Save against what the live task ACTUALLY carries — surviving app restarts and
+    Mapping district switches (a mount-time snapshot forgets both).
+    """
+    return asdict(args)
+
+
+def task_args_from_persisted(raw: object) -> TaskArgs | None:
+    """Rebuild the last-REGISTERED ``TaskArgs`` from its persisted form (total; 0034 S3-d).
+
+    ``None`` means "no usable record" — the caller falls back to its mount snapshot (the
+    pre-record reconcile baseline). DEFENSIVE rather than fail-loud by design: the record
+    lives in the user-profile ``config.json`` (hand-editable, and absent on installs that
+    registered before the field existed), so a missing/garbled record must degrade to the
+    old behaviour, never crash Settings. Values are normalized through ``TaskArgs.of`` so a
+    persisted record and a live snapshot compare on equal footing.
+    """
+    if not isinstance(raw, dict):
+        return None
+    if not all(field in raw for field in _TASK_ARGS_FIELDS):
+        return None
+    if not all(isinstance(raw[field], str) for field in _TASK_ARGS_STR_FIELDS):
+        return None
+    if not isinstance(raw["sftp_enabled"], bool):
+        return None
+    return TaskArgs.of(
+        input_dir=raw["input_dir"],
+        output_dir=raw["output_dir"],
+        sis_type=raw["sis_type"],
+        sftp_enabled=raw["sftp_enabled"],
+        run_time=raw["run_time"],
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Settings Save — run-time persistence decision (0034 S3-b).                    #
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class RunTimeSaveDecision:
+    """What a Settings Save must do with the run-time field when NO schedule is registered.
+
+    Attributes:
+        persist: the normalized (stripped) run time to write to ``cfg.schedule_time``, or
+            ``None`` when there is nothing to persist (unchanged, or invalid).
+        invalid: ``True`` when the field holds an EDITED value that failed ``validate_run_time``
+            — the view paints the existing inline run-time error and persists nothing.
+    """
+
+    persist: str | None
+    invalid: bool
+
+
+def run_time_save_decision(*, saved_run_time: str, field_run_time: str) -> RunTimeSaveDecision:
+    """Decide whether a Settings Save persists a run-time edit with no registered task (pure).
+
+    The run time is CONFIG, not only a register side-effect (0034 S3-b): with a registered
+    schedule an edit re-registers (and persists on success), but with no task the edit used to
+    evaporate on Save. This decision closes that: a changed, valid ``HH:MM`` persists; an
+    unchanged field is a no-op; a changed-but-invalid value persists NOTHING and flags
+    ``invalid`` so the view surfaces the same inline error the register flow shows.
+    """
+    pending = (field_run_time or "").strip()
+    if pending == (saved_run_time or "").strip():
+        return RunTimeSaveDecision(persist=None, invalid=False)
+    try:
+        validate_run_time(pending)
+    except ValueError:
+        return RunTimeSaveDecision(persist=None, invalid=True)
+    return RunTimeSaveDecision(persist=pending, invalid=False)
+
+
+# --------------------------------------------------------------------------- #
+# Reconcile re-register — the no-silent-downgrade interrupt (0034 S3-a).        #
+# --------------------------------------------------------------------------- #
+# Owner-approved copy (2026-07-15): the two explicit choices, verbatim. Calm, no default that
+# downgrades silently; Cancel = no change, task untouched.
+_DOWNGRADE_HEADLINE = "Keep the nightly sync running when you're signed out?"
+_DOWNGRADE_DETAIL = (
+    "Your nightly schedule currently runs whether or not anyone is signed in. "
+    "Updating it without your Windows password would change it to run only while you're signed in."
+)
+_DOWNGRADE_KEEP_LABEL = "Keep running when signed out — re-enter the Windows password"
+_DOWNGRADE_SIGNED_IN_ONLY_LABEL = "Continue — the sync will only run while signed in"
+_DOWNGRADE_CANCEL_LABEL = "Cancel"
+_DOWNGRADE_KEEP_NEXT_HEADLINE = "Enter your Windows password to update the schedule"
+_DOWNGRADE_KEEP_NEXT_DETAIL = (
+    "Type your Windows account password below, then choose Register schedule — your new "
+    "settings will apply and the sync will keep running when you're signed out."
+)
+_DOWNGRADE_CANCELLED_HEADLINE = "Schedule not updated"
+_DOWNGRADE_CANCELLED_DETAIL = (
+    "Your settings are saved, but the nightly schedule still runs with your previous settings. "
+    "Save again whenever you're ready to update it."
+)
+
+
+@dataclass(frozen=True)
+class DowngradeInterrupt:
+    """The explicit-choice dialog a reconcile re-register must show before a logon downgrade.
+
+    Produced by ``downgrade_interrupt`` when re-registering would silently turn an unattended
+    task (registered WITH a Windows password — runs while signed out) into a logged-on-only
+    one. The view renders exactly this copy: two equal-weight choices (neither is a default
+    that downgrades silently) plus Cancel (no change — the task is untouched).
+    ``keep_next_*`` is the guidance painted after choosing to stay unattended — the password
+    is collected ONLY through the existing schedule-section field flow (I1/I3: handler-local,
+    never a dialog stash, never persisted). ``cancelled_*`` is the honest post-Cancel record.
+    """
+
+    headline: str = _DOWNGRADE_HEADLINE
+    detail: str = _DOWNGRADE_DETAIL
+    keep_unattended_label: str = _DOWNGRADE_KEEP_LABEL
+    signed_in_only_label: str = _DOWNGRADE_SIGNED_IN_ONLY_LABEL
+    cancel_label: str = _DOWNGRADE_CANCEL_LABEL
+    keep_next_headline: str = _DOWNGRADE_KEEP_NEXT_HEADLINE
+    keep_next_detail: str = _DOWNGRADE_KEEP_NEXT_DETAIL
+    cancelled_headline: str = _DOWNGRADE_CANCELLED_HEADLINE
+    cancelled_detail: str = _DOWNGRADE_CANCELLED_DETAIL
+
+
+def downgrade_interrupt(*, registered_unattended: bool, password_supplied: bool) -> DowngradeInterrupt | None:
+    """Whether a reconcile-triggered re-register must pause for the explicit downgrade choice.
+
+    ``None`` → proceed (re-registering cannot downgrade the logon type: the task was never
+    unattended, or a password is supplied so it stays unattended). A ``DowngradeInterrupt`` →
+    the view MUST show the choice dialog before registering — a task registered to run while
+    signed out (``registered_unattended``, the durable AppConfig fact) would otherwise be
+    silently replaced by a logged-on-only one when the Settings password field is blank.
+
+    Applies ONLY to the reconcile path (Settings Save): a blank-password Register via the
+    button is a legitimate explicit user choice (the wizard offers it) and never interrupts.
+    """
+    if registered_unattended and not password_supplied:
+        return DowngradeInterrupt()
+    return None
 
 
 # --------------------------------------------------------------------------- #

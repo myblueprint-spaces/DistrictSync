@@ -18,12 +18,14 @@ time. ``page.add``/``update``/``window.*`` are no-ops on the mock.
 from __future__ import annotations
 
 import asyncio
+import json
+import sys
 from unittest.mock import MagicMock
 
 import flet as ft
 import pytest
 
-from src.config.app_config import AppConfig
+from src.config.app_config import AppConfig, config_file_path
 from src.ui_flet import components, tokens
 from src.ui_flet.screens.convert import build_convert
 from src.ui_flet.screens.help import build_help
@@ -32,6 +34,7 @@ from src.ui_flet.screens.mapping import build_mapping
 from src.ui_flet.screens.onboarding import build_onboarding
 from src.ui_flet.screens.run_history import build_run_history
 from src.ui_flet.screens.setup import build_setup
+from src.ui_flet.setup_flow import DowngradeInterrupt, TaskArgs, task_args_to_persisted
 
 
 @pytest.fixture
@@ -657,7 +660,9 @@ class TestWizardStepsRender:
             if on_status is not None:
                 on_status(live)  # deliver a LIVE read-back the moment the Schedule step builds
             return ft.Text("schedule"), setup_mod._ScheduleHandle(
-                trigger_register=lambda: None, run_time_value=lambda: "03:00"
+                trigger_register=lambda: None,
+                run_time_value=lambda: "03:00",
+                persist_run_time=lambda: False,
             )
 
         monkeypatch.setattr(setup_mod, "_build_schedule_section", _stub_schedule)
@@ -708,7 +713,8 @@ def test_settings_save_reconciles_reregistration_when_scheduled(tmp_path, stub_p
     monkeypatch.setattr(setup_mod, "_build_schedule_section", _spy_build)
 
     tree = build_setup(stub_page)
-    save_btn = _button_by_content(tree, "Save settings")
+    # 0034 S3-c scope-accurate relabel: the folders card's Save names what it saves.
+    save_btn = _button_by_content(tree, "Save folders & district")
 
     # The folders card holds two PickerFields; simulate a pick on the second (output).
     output_picker = [c for c in _iter_controls(tree) if isinstance(c, PickerField)][1]
@@ -817,6 +823,365 @@ def test_settings_enabling_sftp_reregisters_task_with_sftp(monkeypatch, tmp_path
 
     assert cfg.sftp_enabled is True
     assert recorded.get("sftp") is True, "enabling SFTP on a scheduled install must re-register with --sftp"
+
+
+# --------------------------------------------------------------------------- #
+# 0034 Slice 3 — Settings Save trustworthiness (drives the REAL setup handlers). #
+# --------------------------------------------------------------------------- #
+def _settings_dirs(tmp_path):
+    """A real (existing) input dir + a structurally-valid output dir for the Save gate."""
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    return in_dir, tmp_path / "out"
+
+
+def _record_register(monkeypatch) -> dict:
+    """Record every register call (both platform entry points) + the kwargs that matter."""
+    recorded: dict = {"called": 0}
+
+    def _fake_register(**kwargs):
+        recorded["called"] += 1
+        recorded["run_as_password"] = kwargs.get("run_as_password")
+        recorded["sis_type"] = kwargs.get("sis_type")
+        return True, "ok"
+
+    def _fake_cron(exe, sis, inp, out, run_time, *, sftp=False):
+        recorded["called"] += 1
+        recorded["run_as_password"] = None  # cron has no logon-type concept
+        recorded["sis_type"] = sis
+        return True, "ok"
+
+    monkeypatch.setattr("src.scheduler.windows.register_task", _fake_register)
+    monkeypatch.setattr("src.scheduler.linux.register_cron", _fake_cron)
+    return recorded
+
+
+def _registered_settings_cfg(tmp_path, monkeypatch, *, unattended, old_sis="myedbc", current_sis="mbp_core"):
+    """A Settings-mode config whose LIVE task was registered with ``old_sis`` (the durable record)
+    while the config now carries ``current_sis`` — the post-Mapping-switch / post-restart state."""
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    old_args = task_args_to_persisted(
+        TaskArgs.of(
+            input_dir=str(in_dir),
+            output_dir=str(out_dir),
+            sis_type=old_sis,
+            sftp_enabled=False,
+            run_time="03:00",
+        )
+    )
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type=current_sis,
+        setup_completed=True,
+        schedule_registered=True,
+        schedule_time="03:00",
+        schedule_unattended=unattended,
+        schedule_task_args=old_args,
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    _benign_probe(monkeypatch)
+    return cfg
+
+
+def _spy_trigger(monkeypatch) -> dict:
+    """Spy the schedule handle's reconcile trigger (the seam the Settings Save drives)."""
+    import src.ui_flet.screens.setup as setup_mod
+
+    triggered = {"count": 0}
+    real_build = setup_mod._build_schedule_section
+
+    def _spy_build(page, config, **kw):
+        card, handle = real_build(page, config, **kw)
+        handle.trigger_register = lambda: triggered.__setitem__("count", triggered["count"] + 1)
+        return card, handle
+
+    monkeypatch.setattr(setup_mod, "_build_schedule_section", _spy_build)
+    return triggered
+
+
+def test_settings_run_time_edit_survives_save_with_no_schedule_registered(tmp_path, stub_page, monkeypatch):
+    """S3-b acceptance: an edited run time persists on Save + survives an AppConfig reload
+    (read back from the on-disk config.json) even when NO schedule is registered."""
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type="myedbc",
+        setup_completed=True,
+        schedule_registered=False,
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    # save() is REAL — it writes to the per-test isolated app-data dir (conftest seam).
+
+    tree = build_setup(stub_page)
+    _textfield_by_label(tree, "Daily run time (24-hour, HH:MM)").value = "04:30"
+    _button_by_content(tree, "Save folders & district").on_click(None)
+
+    assert cfg.schedule_time == "04:30"
+    on_disk = json.loads(config_file_path().read_text(encoding="utf-8"))
+    assert on_disk["schedule_time"] == "04:30"  # survives a reload — it's on disk
+    assert on_disk["schedule_registered"] is False  # persisting the time registered nothing
+
+
+def test_settings_save_with_invalid_run_time_edit_persists_nothing_and_paints_the_inline_error(
+    tmp_path, stub_page, monkeypatch
+):
+    """S3-b: an invalid run-time edit persists NOTHING and surfaces the existing inline error."""
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type="myedbc",
+        setup_completed=True,
+        schedule_registered=False,
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+
+    tree = build_setup(stub_page)
+    _textfield_by_label(tree, "Daily run time (24-hour, HH:MM)").value = "25:99"
+    _button_by_content(tree, "Save folders & district").on_click(None)
+
+    assert cfg.schedule_time == "03:00"  # untouched
+    assert json.loads(config_file_path().read_text(encoding="utf-8"))["schedule_time"] == "03:00"
+    assert _has_text(tree, "That run time isn't valid")  # the register flow's exact inline error
+
+
+def test_no_edit_save_after_mapping_switch_reregisters_from_the_persisted_args(tmp_path, stub_page, monkeypatch):
+    """S3-d acceptance: after a Mapping district switch (config saved elsewhere), a Settings Save
+    with NO field edits must still re-register — the reconcile compares against the durable
+    last-REGISTERED args, not a mount-time snapshot of the already-switched config."""
+    _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)
+    triggered = _spy_trigger(monkeypatch)
+
+    tree = build_setup(stub_page)
+    _button_by_content(tree, "Save folders & district").on_click(None)  # NO edits
+
+    assert triggered["count"] == 1, "a no-edit Save must re-register the task with the new district"
+
+
+def test_no_edit_save_without_a_persisted_record_falls_back_to_the_mount_snapshot(tmp_path, stub_page, monkeypatch):
+    """S3-d back-compat: an install that registered before the record existed keeps the old
+    (mount-snapshot) reconcile — a no-edit Save does not re-register (documented limitation
+    until its next successful register writes the record)."""
+    cfg = _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)
+    cfg.schedule_task_args = None  # pre-record install
+    triggered = _spy_trigger(monkeypatch)
+
+    tree = build_setup(stub_page)
+    _button_by_content(tree, "Save folders & district").on_click(None)
+
+    assert triggered["count"] == 0
+
+
+def test_save_reregister_of_an_unattended_task_without_a_password_interrupts(tmp_path, monkeypatch):
+    """S3-a acceptance: a reconcile re-register that WOULD downgrade an unattended task pauses on
+    the explicit-choice dialog — no register fires until the admin chooses."""
+    _registered_settings_cfg(tmp_path, monkeypatch, unattended=True)
+    recorded = _record_register(monkeypatch)
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_setup(page)
+    _button_by_content(tree, "Save folders & district").on_click(None)
+
+    assert recorded["called"] == 0, "no silent downgrade-register may fire"
+    dialog = page.show_dialog.call_args[0][0]
+    assert isinstance(dialog, ft.AlertDialog)
+    labels = [getattr(b, "content", None) for b in dialog.actions]
+    interrupt = DowngradeInterrupt()
+    assert interrupt.keep_unattended_label in labels
+    assert interrupt.signed_in_only_label in labels
+    assert interrupt.cancel_label in labels
+
+
+def _open_downgrade_dialog(tmp_path, monkeypatch):
+    """Drive a Settings Save into the downgrade dialog; return (cfg, recorded, page, tree, dialog)."""
+    cfg = _registered_settings_cfg(tmp_path, monkeypatch, unattended=True)
+    recorded = _record_register(monkeypatch)
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_setup(page)
+    captured.clear()  # discard the on-mount readout-probe marshal
+    _button_by_content(tree, "Save folders & district").on_click(None)
+    dialog = page.show_dialog.call_args[0][0]
+    return cfg, recorded, captured, page, tree, dialog
+
+
+def _dialog_action(dialog, label):
+    return next(b for b in dialog.actions if getattr(b, "content", None) == label)
+
+
+def test_downgrade_choice_signed_in_only_reregisters_and_updates_the_facts_honestly(tmp_path, monkeypatch):
+    """S3-a: choosing "signed in only" registers with a BLANK password (logged-on-only) and the
+    persisted facts update honestly (unattended=False; args now carry the new district)."""
+    cfg, recorded, captured, _page, _tree, dialog = _open_downgrade_dialog(tmp_path, monkeypatch)
+
+    _dialog_action(dialog, DowngradeInterrupt().signed_in_only_label).on_click(None)
+
+    assert recorded["called"] == 1
+    assert recorded["run_as_password"] is None  # blank password → Interactive / logged-on-only
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))  # the register worker's marshalled _apply_result
+    assert cfg.schedule_registered is True
+    assert cfg.schedule_unattended is False  # the flag now tells the truth
+    assert cfg.schedule_task_args is not None
+    assert cfg.schedule_task_args["sis_type"] == "mbp_core"  # baseline = what was just registered
+
+
+def test_downgrade_choice_cancel_leaves_the_task_and_the_facts_untouched(tmp_path, monkeypatch):
+    """S3-a: Cancel = no change — nothing registers, the durable record keeps the old task's
+    truth, and the schedule section records honestly that the schedule was not updated."""
+    cfg, recorded, _captured, _page, tree, dialog = _open_downgrade_dialog(tmp_path, monkeypatch)
+
+    _dialog_action(dialog, DowngradeInterrupt().cancel_label).on_click(None)
+
+    assert recorded["called"] == 0
+    assert cfg.schedule_unattended is True  # record untouched — the task is still unattended
+    assert cfg.schedule_task_args["sis_type"] == "myedbc"  # still the old task's args
+    assert _has_text(tree, DowngradeInterrupt().cancelled_headline)
+
+
+def test_downgrade_choice_keep_routes_to_the_password_flow_and_a_later_save_reprompts(tmp_path, monkeypatch):
+    """S3-a: choosing "keep unattended" never collects the password in the dialog — it routes to
+    the existing schedule-section field flow; and because the task is untouched, a later Save
+    re-prompts (the baseline still holds the old args)."""
+    cfg, recorded, _captured, page, tree, dialog = _open_downgrade_dialog(tmp_path, monkeypatch)
+
+    _dialog_action(dialog, DowngradeInterrupt().keep_unattended_label).on_click(None)
+
+    assert recorded["called"] == 0  # nothing registered yet — the admin still holds the choice
+    assert cfg.schedule_unattended is True
+    assert _has_text(tree, DowngradeInterrupt().keep_next_headline)
+
+    _button_by_content(tree, "Save folders & district").on_click(None)  # the promise stays live
+    assert page.show_dialog.call_count == 2, "an unresolved downgrade must re-prompt on the next Save"
+
+
+def test_reconcile_without_the_unattended_fact_never_shows_the_dialog(tmp_path, monkeypatch):
+    """S3-a scope: a re-register of a logged-on-only task can't downgrade anything — it proceeds
+    directly (and S3-d end-to-end: the record updates to the new district on success)."""
+    cfg = _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)
+    recorded = _record_register(monkeypatch)
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_setup(page)
+    captured.clear()
+    _button_by_content(tree, "Save folders & district").on_click(None)
+
+    assert page.show_dialog.call_count == 0
+    assert recorded["called"] == 1
+    assert recorded["sis_type"] == "mbp_core"  # the task now carries the NEW district
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))
+    assert cfg.schedule_task_args["sis_type"] == "mbp_core"
+
+
+def test_sftp_save_reconcile_is_also_guarded_against_the_silent_downgrade(tmp_path, monkeypatch):
+    """S3-a: the SECOND reconcile route (Save SFTP credentials → on_saved) converges on the same
+    guarded trigger — enabling delivery on an unattended install interrupts too, never downgrades."""
+    from src.sftp.uploader import SFTPUploader
+
+    cfg = _registered_settings_cfg(tmp_path, monkeypatch, unattended=True, current_sis="myedbc")
+    monkeypatch.setattr(SFTPUploader, "store_password", lambda self, pw: None)
+    monkeypatch.setattr(SFTPUploader, "get_stored_password", lambda self: "pw")
+    recorded = _record_register(monkeypatch)
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_setup(page)
+    _fill_sftp(tree)
+    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # flips sftp_enabled → changed
+
+    assert cfg.sftp_enabled is True
+    assert recorded["called"] == 0, "the SFTP-save reconcile must not silently downgrade either"
+    assert isinstance(page.show_dialog.call_args[0][0], ft.AlertDialog)
+
+
+def test_register_without_a_password_persists_the_registration_facts(tmp_path, monkeypatch):
+    """S3-a/d: EVERY confirmed register (here the plain button, shared verbatim with the wizard's
+    Schedule step) records the two durable facts — unattended=False and the exact task args."""
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type="myedbc",
+        setup_completed=True,
+        schedule_registered=False,
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    _benign_probe(monkeypatch)
+    recorded = _record_register(monkeypatch)
+
+    captured: list = []
+    tree = build_setup(_driving_page(captured))
+    captured.clear()
+    _button_by_content(tree, "Register schedule").on_click(None)
+
+    assert recorded["called"] == 1
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))
+    assert cfg.schedule_registered is True
+    assert cfg.schedule_unattended is False  # no password → honestly NOT unattended
+    assert cfg.schedule_task_args == {
+        "input_dir": str(in_dir),
+        "output_dir": str(out_dir),
+        "sis_type": "myedbc",
+        "sftp_enabled": False,
+        "run_time": "03:00",
+    }
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows password field renders only on win32")
+def test_register_with_a_password_persists_the_unattended_fact(tmp_path, monkeypatch):
+    """S3-a: a password-backed register records unattended=True (the fact the downgrade guard
+    reads on the next reconcile). The password itself is never persisted (I1/I3 unchanged)."""
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type="myedbc",
+        setup_completed=True,
+        schedule_registered=False,
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    _benign_probe(monkeypatch)
+    recorded = _record_register(monkeypatch)
+
+    captured: list = []
+    tree = build_setup(_driving_page(captured))
+    _textfield_by_label(tree, "Windows account password").value = "hunter2"
+    captured.clear()
+    _button_by_content(tree, "Register schedule").on_click(None)
+
+    assert recorded["run_as_password"] == "hunter2"  # the ONLY sink — register_task
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))
+    assert cfg.schedule_unattended is True
+    assert cfg.schedule_task_args is not None
+    assert "hunter2" not in json.dumps(cfg.schedule_task_args)  # never persisted anywhere
+
+
+def test_unregister_clears_the_registration_facts(tmp_path, monkeypatch):
+    """S3: a confirmed unregister clears BOTH durable facts — no task, no record."""
+    cfg = _registered_settings_cfg(tmp_path, monkeypatch, unattended=True)
+    monkeypatch.setattr("src.scheduler.windows.delete_task", lambda name: (True, "ok"))
+    monkeypatch.setattr("src.scheduler.linux.delete_cron", lambda: (True, "ok"))
+
+    captured: list = []
+    tree = build_setup(_driving_page(captured))
+    captured.clear()
+    _button_by_content(tree, "Unregister schedule").on_click(None)
+
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))
+    assert cfg.schedule_registered is False
+    assert cfg.schedule_unattended is False
+    assert cfg.schedule_task_args is None
 
 
 def test_convert_output_folder_row_renders_open_folder():
