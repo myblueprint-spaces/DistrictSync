@@ -33,6 +33,20 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **Settings Save is now trustworthy about the nightly schedule.** Saving
+  Settings can no longer silently convert an unattended nightly task (one
+  registered with a Windows password, so it runs while signed out) into a
+  logged-on-only one: the app remembers how the task was registered and pauses
+  on an explicit choice — "Keep running when signed out — re-enter the Windows
+  password" or "Continue — the sync will only run while signed in" (Cancel
+  leaves the task untouched; the password itself is still never stored). The
+  Save also compares against what was *actually registered* — so after
+  switching districts in Mapping, opening Settings and pressing Save
+  re-registers the task with the new district even with no field edits,
+  exactly what the Mapping notice promises. An edited daily run time is saved
+  even when no schedule is registered (it previously silently reverted), and
+  the folders card's Save is now labelled "Save folders & district".
+  (plan 0034 slice 3)
 - **Delivering to SpacesEDU now sends the files already on disk — never a
   rebuild.** Every "Deliver to SpacesEDU" action — the post-build deliver, the
   failed-delivery retry, and a new standalone "Deliver the files in your output
