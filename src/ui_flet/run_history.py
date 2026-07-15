@@ -314,18 +314,22 @@ def _source_label(record: dict) -> str:
     return _SOURCE_LABELS.get(str(record.get("source", "")), _SOURCE_FALLBACK)
 
 
-def _district_note(record: dict, active_sis: str | None) -> str | None:
+def _district_note(record: dict, active_sis: str | None, district_displays: dict[str, str] | None = None) -> str | None:
     """A "Different district: <name>" note when the record's district differs from the active one.
 
-    Pure + total: BOTH sides must be known non-empty to establish a difference (an absent
+    Total: BOTH sides must be known non-empty to establish a difference (an absent
     ``sis_type`` / unset active district → ``None``, never a guess). The display resolves via
-    ``friendly_district_name`` (a bounded district id/display fact — never a path; the module's
-    privacy bar deliberately allows this one identity fact, see the module docstring).
+    ``friendly_district_name`` — a config READ (not pure), so ``to_run_rows`` pre-resolves each
+    distinct district once per render into ``district_displays`` (a bounded district id/display
+    fact — never a path; the module's privacy bar deliberately allows this one identity fact,
+    see the module docstring).
     """
     record_sis = str(record.get("sis_type", "") or "").strip()
     active = (active_sis or "").strip()
     if not record_sis or not active or record_sis == active:
         return None
+    if district_displays is not None and record_sis in district_displays:
+        return f"Different district: {district_displays[record_sis]}"
     return f"Different district: {friendly_district_name(record_sis)}"
 
 
@@ -340,13 +344,20 @@ def _duration(record: dict) -> str:
         return "—"
 
 
-def to_run_row(record: dict, *, now: datetime | None = None, active_sis: str | None = None) -> RunRow:
+def to_run_row(
+    record: dict,
+    *,
+    now: datetime | None = None,
+    active_sis: str | None = None,
+    district_displays: dict[str, str] | None = None,
+) -> RunRow:
     """Map one run record → a total, PII-free ``RunRow`` (never raises).
 
     Every field is read via ``.get`` + ``_as_int``; a missing ``status`` classifies as non-success
     → "Failed" (the honest fail-safe default). The raw ``error``/path is NEVER read. ``active_sis``
     (the active district id, injected by the view) enables the different-district note; ``None``
-    (the default) derives no note.
+    (the default) derives no note. ``district_displays`` is an optional pre-resolved
+    district-display cache (see ``to_run_rows``) so a single record resolves live when absent.
     """
     sftp = _sftp_delivery(record)
     reason = classify_latest_reason(record)
@@ -361,7 +372,7 @@ def to_run_row(record: dict, *, now: datetime | None = None, active_sis: str | N
         warnings=_data_errors_total(record),
         duration=_duration(record),
         source=_source_label(record),
-        district_note=_district_note(record, active_sis),
+        district_note=_district_note(record, active_sis, district_displays),
     )
 
 
@@ -370,5 +381,14 @@ def to_run_rows(records: list[dict], *, now: datetime | None = None, active_sis:
 
     The view branches on ``None``/``[]`` BEFORE calling this — ``to_run_rows`` is only ever handed
     an actual list (``[]`` → ``[]``; a mixed valid/partial list → one safe ``RunRow`` per record).
+    Each distinct differing district's display name is resolved ONCE per call (the resolution is
+    a config read — never repeated per row for the same district).
     """
-    return [to_run_row(record, now=now, active_sis=active_sis) for record in records]
+    active = (active_sis or "").strip()
+    displays: dict[str, str] = {}
+    if active:
+        for record in records:
+            sis = str(record.get("sis_type", "") or "").strip()
+            if sis and sis != active and sis not in displays:
+                displays[sis] = friendly_district_name(sis)
+    return [to_run_row(record, now=now, active_sis=active_sis, district_displays=displays) for record in records]

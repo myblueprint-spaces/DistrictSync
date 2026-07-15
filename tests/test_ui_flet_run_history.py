@@ -404,6 +404,21 @@ class TestDistrictNote:
         row = to_run_row(_record(sis_type="myedbc"), now=_NOW, active_sis="myedbc")
         assert row.district_note is None
 
+    def test_rows_resolve_each_distinct_district_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The display resolution is a config READ — to_run_rows must resolve each distinct
+        # differing district once per call, never once per row.
+        calls: list[str] = []
+
+        def _counting(sis: str) -> str:
+            calls.append(sis)
+            return f"District {sis}"
+
+        monkeypatch.setattr("src.ui_flet.run_history.friendly_district_name", _counting)
+        records = [_record(sis_type="sd40myedbc") for _ in range(3)]
+        rows = to_run_rows(records, now=_NOW, active_sis="myedbc")
+        assert [r.district_note for r in rows] == ["Different district: District sd40myedbc"] * 3
+        assert calls == ["sd40myedbc"]
+
     def test_note_when_district_differs(self) -> None:
         row = to_run_row(_record(sis_type="zz_not_a_config"), now=_NOW, active_sis="myedbc")
         # An unknown id falls back to the raw district id (a bounded config id, never a path).
