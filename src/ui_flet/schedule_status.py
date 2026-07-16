@@ -34,9 +34,11 @@ from src.scheduler.windows import ScheduleReadback
 # to it risks the "task fires, exe is gone, nothing recorded" blind spot (the Downloads case).
 _TRANSIENT_DIR_PARTS: frozenset[str] = frozenset({"downloads", "temp", "tmp"})
 
-# schtasks/delete "the task doesn't exist" phrasings — an absent task on Unregister is the
-# desired end state (idempotent success-shaped), not a failure.
-_ABSENT_DELETE_MARKERS: tuple[str, ...] = ("cannot find", "does not exist", "no such")
+# "The task doesn't exist" phrasings across BOTH platform delete paths — an absent task on
+# Unregister is the desired end state (idempotent success-shaped), not a failure. Covers
+# schtasks ("cannot find" / "does not exist" / "no such") AND crontab's own wording
+# ("no crontab for <user>"), so a Linux Unregister of a missing entry classifies the same way.
+_ABSENT_DELETE_MARKERS: tuple[str, ...] = ("cannot find", "does not exist", "no such", "no crontab")
 
 
 class ScheduleState(Enum):

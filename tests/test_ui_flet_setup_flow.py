@@ -34,6 +34,7 @@ from src.ui_flet.setup_flow import (
     next_step,
     prev_step,
     run_time_save_decision,
+    schedule_delivery_desync,
     sftp_reconcile_suffix,
     step_number,
     task_args_changed,
@@ -389,6 +390,51 @@ class TestFinishCopy:
         assert detail.startswith("DistrictSync will build Sea to Sky when you run a conversion.")
         assert "Tonight" not in detail
 
+    def test_delivery_desync_downgrades_the_persisted_delivery_claim(self):
+        # The backtrack guard: the credential IS saved but the LIVE task was baked without --sftp —
+        # the copy must NOT claim tonight delivers; it names the one Save in Settings that fixes it.
+        headline, detail = finish_copy(
+            schedule_live=True,
+            delivery=DeliveryFact.STORED_CRED_PRESENT,
+            district="New Westminster",
+            schedule_time_display="3:00 AM",
+            host="sftp.ca.spacesedu.com",
+            username="district_x",
+            delivery_desync=True,
+        )
+        assert headline == "You're set up — delivery needs one more save"
+        assert detail == (
+            "Tonight at 3:00 AM DistrictSync will build New Westminster into your output folder. "
+            "Your delivery password is saved, but the nightly schedule hasn't picked up the delivery "
+            "change yet — finish setup, then click Save in Settings to have the nightly sync deliver "
+            "it too."
+        )
+        assert "try to deliver" not in detail  # the nightly-delivery promise is withdrawn
+
+    def test_delivery_desync_only_affects_the_persisted_delivery_branch(self):
+        # A deferred delivery claims nothing about delivering, so the desync flag changes nothing.
+        base = dict(
+            schedule_live=True,
+            delivery=DeliveryFact.SKIPPED,
+            district="New Westminster",
+            schedule_time_display="3:00 AM",
+            host="",
+            username="",
+        )
+        assert finish_copy(**base, delivery_desync=True) == finish_copy(**base, delivery_desync=False)
+
+    def test_desync_default_false_keeps_the_confident_claim_byte_identical(self):
+        headline, detail = finish_copy(
+            schedule_live=True,
+            delivery=DeliveryFact.STORED_CRED_PRESENT,
+            district="New Westminster",
+            schedule_time_display="3:00 AM",
+            host="sftp.ca.spacesedu.com",
+            username="district_x",
+        )
+        assert headline == "You're all set"
+        assert "try to deliver it to SpacesEDU" in detail
+
 
 # --------------------------------------------------------------------------- #
 # Finish-line checked summary — configured-vs-deferred rows, honest + ordered   #
@@ -504,6 +550,110 @@ class TestFinishSummaryRows:
         deferred = [row for row in rows if not row.done]
         assert {row.label for row in deferred} == {"Delivery", "Schedule"}
         assert all(row.detail == "Set up later in Setup" for row in deferred)
+
+    def test_delivery_desync_annotates_the_live_schedule_row(self):
+        # Consistency with the downgraded finish copy: the LIVE schedule row must not read as if
+        # tonight delivers when the task was baked without --sftp.
+        rows = self._rows_by_label(
+            finish_summary_rows(
+                schedule_live=True,
+                delivery=DeliveryFact.STORED_CRED_PRESENT,
+                district="New Westminster",
+                schedule_time_display="3:00 AM",
+                delivery_desync=True,
+            )
+        )
+        assert rows["Schedule"].done is True  # the schedule IS live — only the delivery link is stale
+        assert rows["Schedule"].detail == "Nightly at 3:00 AM — delivery not included yet"
+        assert rows["Delivery"].detail == "SpacesEDU"  # the credential is genuinely configured
+
+    def test_delivery_desync_annotates_the_timeless_live_row_too(self):
+        rows = self._rows_by_label(
+            finish_summary_rows(
+                schedule_live=True,
+                delivery=DeliveryFact.STORED_CRED_PRESENT,
+                district="New Westminster",
+                schedule_time_display=None,
+                delivery_desync=True,
+            )
+        )
+        assert rows["Schedule"].detail == "Nightly sync scheduled — delivery not included yet"
+
+    def test_delivery_desync_never_touches_a_deferred_schedule_row(self):
+        # Not live → no task to be stale; the deferred detail stays byte-identical.
+        rows = self._rows_by_label(
+            finish_summary_rows(
+                schedule_live=False,
+                delivery=DeliveryFact.STORED_CRED_PRESENT,
+                district="New Westminster",
+                schedule_time_display=None,
+                delivery_desync=True,
+            )
+        )
+        assert rows["Schedule"].detail == "Set up later in Setup"
+
+
+# --------------------------------------------------------------------------- #
+# schedule_delivery_desync — the wizard backtrack guard (0029 close-out)        #
+# --------------------------------------------------------------------------- #
+class TestScheduleDeliveryDesync:
+    def _registered(self, *, sftp_enabled: bool) -> TaskArgs:
+        return TaskArgs.of(
+            input_dir="/in",
+            output_dir="/out",
+            sis_type="myedbc",
+            sftp_enabled=sftp_enabled,
+            run_time="03:00",
+        )
+
+    def test_live_task_baked_without_sftp_and_delivery_now_enabled_is_desync(self):
+        # THE backtrack case: register → Back → save a credential → Finish.
+        assert (
+            schedule_delivery_desync(
+                schedule_live=True,
+                registered=self._registered(sftp_enabled=False),
+                sftp_enabled=True,
+            )
+            is True
+        )
+
+    def test_task_baked_with_sftp_matching_enabled_delivery_is_not_desync(self):
+        assert (
+            schedule_delivery_desync(
+                schedule_live=True,
+                registered=self._registered(sftp_enabled=True),
+                sftp_enabled=True,
+            )
+            is False
+        )
+
+    def test_delivery_disabled_never_flags(self):
+        # The finish copy claims no delivery when sftp is off — nothing to downgrade (and the
+        # reverse direction, a baked --sftp with delivery now off, is unreachable from the wizard).
+        for baked in (True, False):
+            assert (
+                schedule_delivery_desync(
+                    schedule_live=True,
+                    registered=self._registered(sftp_enabled=baked),
+                    sftp_enabled=False,
+                )
+                is False
+            )
+
+    def test_no_live_schedule_never_flags(self):
+        assert (
+            schedule_delivery_desync(
+                schedule_live=False,
+                registered=self._registered(sftp_enabled=False),
+                sftp_enabled=True,
+            )
+            is False
+        )
+
+    def test_no_usable_record_never_flags(self):
+        # Defensive: a pre-record install (or a hand-edited config.json) has no evidence of what
+        # the task carries — never assert a desync without it.
+        assert schedule_delivery_desync(schedule_live=True, registered=None, sftp_enabled=True) is False
 
 
 # --------------------------------------------------------------------------- #
@@ -737,8 +887,25 @@ class TestReconcileSaveNote:
         # No live task to update → the base "SFTP credentials stored" note stands alone.
         assert sftp_reconcile_suffix(ReconcileOutcome.NONE) == ""
 
-    def test_reconcile_outcome_members_are_the_three_states(self):
-        assert {o.value for o in ReconcileOutcome} == {"dispatched", "interrupted", "none"}
+    def test_folders_note_blocked_is_honest_and_names_the_fix(self):
+        # The register flow early-returned (e.g. a malformed run time) — nothing dispatched, so
+        # the note must NOT claim "updating…"; it says the schedule wasn't updated + names the fix.
+        note = folders_save_note(ReconcileOutcome.BLOCKED)
+        assert note == (
+            "Saved — the nightly schedule wasn't updated. "
+            "Fix the run time in the Daily schedule section, then save again."
+        )
+        assert "updating" not in note.lower()
+
+    def test_sftp_suffix_blocked_is_honest_and_names_the_fix(self):
+        suffix = sftp_reconcile_suffix(ReconcileOutcome.BLOCKED)
+        assert suffix == (
+            " The nightly schedule wasn't updated — fix the run time in the Daily schedule section, then save again."
+        )
+        assert "updating" not in suffix.lower()
+
+    def test_reconcile_outcome_members_are_the_four_states(self):
+        assert {o.value for o in ReconcileOutcome} == {"dispatched", "interrupted", "blocked", "none"}
 
 
 # --------------------------------------------------------------------------- #
