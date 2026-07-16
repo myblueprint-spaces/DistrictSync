@@ -1,10 +1,10 @@
 """The Flet app shell — themed window + navigation assembly + branded placeholders.
 
 VIEW glue (coverage-omitted): the trust-critical logic lives in the pure modules
-(``tokens``/``theme``/``nav``); this file wires them into a window. It follows the
-PROVEN API forms from ``docs/reference/flet-prototype-spike/app.py`` verbatim
-(Flet 0.85.3) — do NOT regress to remembered 0.2x forms (see
-``docs/FLET_1.0_CONVENTIONS.md``).
+(``tokens``/``theme``/``nav``); this file wires them into a window. It uses only
+API forms PROVEN against the pinned Flet 0.85.3 in the 2026-06-29 bake-off spike
+and recorded in ``docs/FLET_1.0_CONVENTIONS.md`` — do NOT regress to remembered
+0.2x forms.
 
 Slimmed at IA-1 (plan 0014 F6 split): the rail VIEW moved to ``nav_rail.py`` — the
 shell now owns window paint + sizing, the placeholder host, id-keyed selection, and

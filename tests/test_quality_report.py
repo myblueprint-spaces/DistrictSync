@@ -222,3 +222,39 @@ class TestDataQualityReport:
         }
         report = DataQualityReport().analyze(outputs)
         assert report.cross_entity_warnings == []
+
+
+class TestMissingFieldWarningThreshold:
+    """Pin the >50%-missing per-entity warning (report.py `_check_missing_fields`).
+
+    The warning fires only STRICTLY above 50% — exactly 50% still counts in
+    ``missing_fields`` but must stay warning-silent (the documented boundary).
+    """
+
+    def test_over_50_percent_missing_emits_the_pinned_warning(self):
+        # 3 of 4 Email values missing (None + "" + None) = 75% → warn.
+        outputs = {
+            "Students": pd.DataFrame(
+                {
+                    "User ID": ["S1", "S2", "S3", "S4"],
+                    "Email": [None, "", None, "a@b.com"],
+                }
+            ),
+        }
+        report = DataQualityReport().analyze(outputs)
+        assert report.entities["Students"].missing_fields["Email"] == 3
+        assert "Email: 75% missing (3/4)" in report.entities["Students"].warnings
+
+    def test_exactly_50_percent_missing_does_not_warn(self):
+        # 2 of 4 missing = exactly 50% → counted, but NO warning (strict > boundary).
+        outputs = {
+            "Students": pd.DataFrame(
+                {
+                    "User ID": ["S1", "S2", "S3", "S4"],
+                    "Email": [None, "", "a@b.com", "b@c.com"],
+                }
+            ),
+        }
+        report = DataQualityReport().analyze(outputs)
+        assert report.entities["Students"].missing_fields["Email"] == 2
+        assert report.entities["Students"].warnings == []

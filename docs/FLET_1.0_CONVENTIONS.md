@@ -169,6 +169,5 @@
 - The UI lives entirely in **`src/ui_flet/`**. The Streamlit `src/ui/` was deleted at **CUT-1** (Flet is now the only UI; there is no rollback floor).
 
 ## Reference
-- **Working bake-off prototype:** [`docs/reference/flet-prototype-spike/app.py`](reference/flet-prototype-spike/app.py) (+ `NOTES.md`, `RUN.md`, `assets/`) — a proven Home + Convert in Flet 1.0 showing the shell, `ft.Theme` brand mapping, `ft.FilePicker`, the async-run-on-thread pattern, and the clean-close lifecycle. **Throwaway reference — delete after PLAT-1.**
-- Run it (from the prototype dir, with a Flet 1.0 venv): `python app.py` (native) · `SPIKE_WEB=1 python app.py` (web on :8701).
+- **Proven-API provenance:** every API form in this document was verified against the pinned Flet 0.85.3 in the **2026-06-29 bake-off spike** — a working Home + Convert exercising the shell, the `ft.Theme` brand mapping, `ft.FilePicker`, the async-run-on-thread pattern, and the clean-close lifecycle. The spike itself was throwaway and has been deleted; **this document is the durable proven-API record**, and the landed `src/ui_flet/` shell + `scripts/ci_flet_pack_smoke.py` are the living proof.
 - **Docs (version-matched):** https://flet.dev/docs/getting-started/ · https://flet.dev/docs/controls/ · https://flet.dev/docs/reference/  — **NOT** old `0.2x` blog tutorials.

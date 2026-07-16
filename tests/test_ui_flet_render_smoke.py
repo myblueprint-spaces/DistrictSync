@@ -1022,8 +1022,14 @@ def test_no_edit_save_after_mapping_switch_reregisters_from_the_persisted_args(t
     """S3-d acceptance: after a Mapping district switch (config saved elsewhere), a Settings Save
     with NO field edits must still re-register — the reconcile compares against the durable
     last-REGISTERED args, not a mount-time snapshot of the already-switched config."""
+    import src.ui_flet.screens.setup as setup_mod
+
     _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)
     triggered = _spy_trigger(monkeypatch)
+    # Determinism (ROADMAP 2026-07-15 flake): stub the probe-kick SEAM itself so no
+    # background schedule-readout probe ever runs during this test — the assertion
+    # must never race a paint-then-refine worker.
+    monkeypatch.setattr(setup_mod, "_kick_probe_thread", lambda _page, _work: None)
 
     tree = build_setup(stub_page)
     _button_by_content(tree, "Save folders & district").on_click(None)  # NO edits
@@ -1523,3 +1529,67 @@ def test_no_ft_dropdown_uses_on_change():
             ):
                 offenders.append(f"{os.path.relpath(path, root)}:{node.lineno} ft.Dropdown(on_change=)")
     assert not offenders, "ft.Dropdown has no on_change on flet 0.85.3 — use on_select: " + "; ".join(offenders)
+
+
+def test_no_unawaited_async_window_calls():
+    """Static-ban the 0029 silent-no-op-Exit class: ``page.window.destroy()``/``.close()``/
+    ``.center()`` are ASYNC coroutine methods on flet 0.85.3 — a bare synchronous call
+    silently no-ops (the window just doesn't close, no error, no log). Every call whose
+    attribute chain ends ``window.<destroy|close|center>`` must sit inside an ``await``
+    expression or be dispatched through ``page.run_task(...)``.
+
+    Allowlist: empty today (the current tree is clean). Add a ``"relpath:lineno"`` entry
+    ONLY for a reviewed, proven-safe form — never to mute a real offender.
+    """
+    import ast
+    import glob
+    import os
+
+    async_window_methods = {"destroy", "close", "center"}
+    allowlist: set[str] = set()  # e.g. {"src\\ui_flet\\example.py:42"} — reviewed exceptions only
+
+    def _targets_window(call: ast.Call) -> bool:
+        # Attribute chain ending `window.<method>`: `<anything>.window.destroy(...)` or a
+        # bare `window.destroy(...)` local alias.
+        if not (isinstance(call.func, ast.Attribute) and call.func.attr in async_window_methods):
+            return False
+        owner = call.func.value
+        return (isinstance(owner, ast.Attribute) and owner.attr == "window") or (
+            isinstance(owner, ast.Name) and owner.id == "window"
+        )
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    offenders: list[str] = []
+    for path in glob.glob(os.path.join(root, "src", "ui_flet", "**", "*.py"), recursive=True):
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), filename=path)
+        parents: dict[ast.AST, ast.AST] = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                parents[child] = node
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and _targets_window(node)):
+                continue
+            sanctioned = False
+            probe: ast.AST | None = parents.get(node)
+            while probe is not None:
+                # `await page.window.destroy()` (incl. wrapped, e.g. asyncio.wait_for(...)).
+                if isinstance(probe, ast.Await):
+                    sanctioned = True
+                    break
+                # An argument inside a `page.run_task(...)` dispatch.
+                if (
+                    isinstance(probe, ast.Call)
+                    and isinstance(probe.func, ast.Attribute)
+                    and probe.func.attr == "run_task"
+                ):
+                    sanctioned = True
+                    break
+                probe = parents.get(probe)
+            rel = f"{os.path.relpath(path, root)}:{node.lineno}"
+            if not sanctioned and rel not in allowlist:
+                offenders.append(f"{rel} window.{node.func.attr}() without await/page.run_task")
+    assert not offenders, (
+        "async window calls silently no-op on flet 0.85.3 unless awaited or run via page.run_task: "
+        + "; ".join(offenders)
+    )
