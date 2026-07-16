@@ -309,6 +309,33 @@ def task_args_from_persisted(raw: object) -> TaskArgs | None:
     )
 
 
+def schedule_delivery_desync(
+    *,
+    schedule_live: bool,
+    registered: TaskArgs | None,
+    sftp_enabled: bool,
+) -> bool:
+    """Whether the LIVE task was baked WITHOUT ``--sftp`` while delivery is now enabled (pure).
+
+    The wizard backtrack gap (0029 close-out): register on the Schedule step, Back to Delivery,
+    save a credential (``sftp_enabled`` flips on), then Finish — the live task's baked ``--sftp``
+    is stale, so tonight builds but never delivers while the finish line would otherwise claim
+    delivery. The finish body reads this to downgrade its copy honestly (the Settings Save
+    self-heals via the same persisted record later).
+
+    Keyed off the durable last-REGISTERED record (``cfg.schedule_task_args``) rather than
+    session-local state, so a resumed wizard whose task was registered in an EARLIER session is
+    guarded too. Defensive-total: no live task, or no usable record (pre-record installs), →
+    ``False`` — never assert a desync without evidence. Deliberately one-directional: a task
+    baked WITH ``--sftp`` while delivery is now off is unreachable from the wizard (it has no
+    disable affordance) and the finish copy claims nothing for it, so only the over-claiming
+    direction (enabled now, not baked) flags.
+    """
+    if not schedule_live or registered is None:
+        return False
+    return bool(sftp_enabled) and not registered.sftp_enabled
+
+
 # --------------------------------------------------------------------------- #
 # Settings Save — run-time persistence decision (0034 S3-b).                    #
 # --------------------------------------------------------------------------- #
@@ -416,18 +443,26 @@ def downgrade_interrupt(*, registered_unattended: bool, password_supplied: bool)
 # Settings reconcile outcome — honest Save-note copy (0034 S3 correctness fix). #
 # --------------------------------------------------------------------------- #
 # The shared Settings reconcile either DISPATCHES a re-register, merely shows the downgrade
-# INTERRUPT (nothing registered — the admin must still choose), or does neither (NONE — no live
-# task, or no task-baked field changed). Both Save sites paint their schedule note from THIS
-# outcome, so a Save can never claim the nightly schedule is "updating" when the reconcile only
-# opened the choice dialog and returned without registering (the bug this fix closes: after Cancel
-# an optimistic "updating…" Save note contradicted the schedule card's "Schedule not updated").
-# "Saved" itself stays truthful — the config fields DID persist; only the schedule clause is gated
-# on what actually happened.
+# INTERRUPT (nothing registered — the admin must still choose), is BLOCKED by the register flow's
+# own gate (nothing registered — e.g. an invalid run time, whose inline error the schedule section
+# paints), or does neither (NONE — no live task, or no task-baked field changed). Both Save sites
+# paint their schedule note from THIS outcome, so a Save can never claim the nightly schedule is
+# "updating" when the reconcile only opened the choice dialog / hit a gate and returned without
+# registering (the bug this fix closes: after Cancel an optimistic "updating…" Save note
+# contradicted the schedule card's "Schedule not updated"; the same optimistic note also painted
+# beside a run-time ErrorCard). "Saved" itself stays truthful — the config fields DID persist;
+# only the schedule clause is gated on what actually happened.
 _FOLDERS_SAVED = "Saved."
 _FOLDERS_SAVED_DISPATCHED = "Saved — updating the nightly schedule to match…"
 _FOLDERS_SAVED_INTERRUPTED = "Saved — confirm the schedule choice above."
+_FOLDERS_SAVED_BLOCKED = (
+    "Saved — the nightly schedule wasn't updated. Fix the run time in the Daily schedule section, then save again."
+)
 _SFTP_RECONCILE_DISPATCHED = " Updating the nightly schedule to deliver too…"
 _SFTP_RECONCILE_INTERRUPTED = " Confirm the schedule choice above to update the nightly sync."
+_SFTP_RECONCILE_BLOCKED = (
+    " The nightly schedule wasn't updated — fix the run time in the Daily schedule section, then save again."
+)
 
 
 class ReconcileOutcome(Enum):
@@ -435,14 +470,17 @@ class ReconcileOutcome(Enum):
 
     ``DISPATCHED`` — a re-register was genuinely started (the schedule section is now applying the
     new settings). ``INTERRUPTED`` — the downgrade-choice dialog was shown INSTEAD and nothing was
-    registered (the admin must confirm first). ``NONE`` — no reconcile action (no registered task,
-    or no task-baked field changed). The two Settings Save sites paint their schedule note from
-    this, so an optimistic "updating…" note is never shown when the reconcile merely opened a
-    dialog and returned.
+    registered (the admin must confirm first). ``BLOCKED`` — a re-register was needed but the
+    register flow early-returned WITHOUT dispatching (its own gate refused — e.g. a malformed run
+    time, whose inline error the schedule section paints). ``NONE`` — no reconcile action (no
+    registered task, or no task-baked field changed). The two Settings Save sites paint their
+    schedule note from this, so an optimistic "updating…" note is never shown when the reconcile
+    merely opened a dialog / hit a gate and returned.
     """
 
     DISPATCHED = "dispatched"
     INTERRUPTED = "interrupted"
+    BLOCKED = "blocked"
     NONE = "none"
 
 
@@ -450,14 +488,18 @@ def folders_save_note(outcome: ReconcileOutcome) -> str:
     """The folders/district Save note, honest to what the reconcile actually did (pure, TOTAL).
 
     ``DISPATCHED`` → the "updating the nightly schedule to match" note; ``INTERRUPTED`` → an honest
-    "confirm the schedule choice above" (the dialog is open, nothing is updating yet); ``NONE`` (or
-    any unexpected value) → a plain "Saved." The "Saved" prefix is always truthful — the folders +
-    district persisted regardless of the schedule reconcile.
+    "confirm the schedule choice above" (the dialog is open, nothing is updating yet); ``BLOCKED``
+    → an honest "the schedule wasn't updated — fix the run time" (the register flow refused to
+    dispatch and painted its inline error); ``NONE`` (or any unexpected value) → a plain "Saved."
+    The "Saved" prefix is always truthful — the folders + district persisted regardless of the
+    schedule reconcile.
     """
     if outcome is ReconcileOutcome.DISPATCHED:
         return _FOLDERS_SAVED_DISPATCHED
     if outcome is ReconcileOutcome.INTERRUPTED:
         return _FOLDERS_SAVED_INTERRUPTED
+    if outcome is ReconcileOutcome.BLOCKED:
+        return _FOLDERS_SAVED_BLOCKED
     return _FOLDERS_SAVED
 
 
@@ -466,13 +508,16 @@ def sftp_reconcile_suffix(outcome: ReconcileOutcome) -> str:
 
     ``DISPATCHED`` → the "updating the nightly schedule to deliver too" clause; ``INTERRUPTED`` →
     an honest "confirm the schedule choice above" prompt (the dialog is open, nothing dispatched);
-    ``NONE`` (or any unexpected value) → empty (no live task to update, so the base stored-note
-    stands alone). Leading space so it appends cleanly to the base sentence.
+    ``BLOCKED`` → an honest "the schedule wasn't updated — fix the run time" (the register flow
+    refused to dispatch); ``NONE`` (or any unexpected value) → empty (no live task to update, so
+    the base stored-note stands alone). Leading space so it appends cleanly to the base sentence.
     """
     if outcome is ReconcileOutcome.DISPATCHED:
         return _SFTP_RECONCILE_DISPATCHED
     if outcome is ReconcileOutcome.INTERRUPTED:
         return _SFTP_RECONCILE_INTERRUPTED
+    if outcome is ReconcileOutcome.BLOCKED:
+        return _SFTP_RECONCILE_BLOCKED
     return ""
 
 
@@ -481,9 +526,15 @@ def sftp_reconcile_suffix(outcome: ReconcileOutcome) -> str:
 # --------------------------------------------------------------------------- #
 # The finish headline adapts to honesty (finding #1a): a scheduled install peaks on "You're all
 # set."; a schedule-skipped install must NOT over-signal at the peak moment — it names the one
-# thing still open (no nightly schedule) right in the headline.
+# thing still open (no nightly schedule) right in the headline. The delivery-desync variant
+# (backtrack guard) names its one open item the same way.
 _FINISH_HEADLINE_SCHEDULED = "You're all set"
 _FINISH_HEADLINE_UNSCHEDULED = "You're set up — nightly sync not scheduled yet"
+_FINISH_HEADLINE_DESYNC = "You're set up — delivery needs one more save"
+
+# Appended to the LIVE schedule summary row when the delivery-desync guard fires, so the checked
+# summary can never contradict the downgraded finish copy (the task is live but carries no --sftp).
+_SUMMARY_SCHEDULE_DESYNC_SUFFIX = " — delivery not included yet"
 
 # One-time cue shown after the finish confirmation, when the surface graduates to Settings.
 TRANSITION_CUE = "You're all set — this is now your Settings page; edit anything here anytime."
@@ -507,6 +558,7 @@ def finish_copy(
     schedule_time_display: str | None,
     host: str,
     username: str,
+    delivery_desync: bool = False,
 ) -> tuple[str, str]:
     """The adaptive (headline, detail) for the finish line — honest, never a future guarantee.
 
@@ -516,12 +568,20 @@ def finish_copy(
     (``TESTED_OK``) says the connection worked and prompts Save, WITHOUT claiming the nightly will
     deliver (the nightly reads saved config, so an unsaved test changes nothing tonight).
 
-    Four cases:
+    ``delivery_desync`` (the backtrack guard — ``schedule_delivery_desync``) downgrades the
+    persisted-delivery promise: the credential IS saved, but the live task was baked without
+    ``--sftp``, so the copy must NOT claim tonight delivers — it names the one Save in Settings
+    that will pick the change up. Only the ``STORED_CRED_PRESENT`` branch claims delivery, so
+    only it downgrades.
+
+    Four cases (plus the desync downgrade of the second):
 
     * **schedule skipped** (not live): the Convert-tab path + "add a schedule whenever you're
       ready" — no "tonight" claim, because nothing is scheduled.
     * **schedule live + delivery persisted** (``STORED_CRED_PRESENT``): the district built + a
-      real "will try to deliver to SpacesEDU" (the saved credential backs the claim).
+      real "will try to deliver to SpacesEDU" (the saved credential backs the claim) — unless
+      ``delivery_desync``, which swaps in the honest "the schedule hasn't picked up the delivery
+      change yet" variant.
     * **schedule live + delivery tested-but-unsaved** (``TESTED_OK``): the connection to <host>
       as <user> worked, but it isn't saved — click Save; NO nightly-delivery claim.
     * **schedule live + delivery deferred/absent/failed**: built into the output folder + the
@@ -533,6 +593,12 @@ def finish_copy(
             "Run conversions from the Convert tab; add a nightly schedule whenever you're ready."
         )
     prefix = _tonight_prefix(schedule_time_display)
+    if delivery is DeliveryFact.STORED_CRED_PRESENT and delivery_desync:
+        return _FINISH_HEADLINE_DESYNC, (
+            f"{prefix} DistrictSync will build {district} into your output folder. Your delivery "
+            "password is saved, but the nightly schedule hasn't picked up the delivery change yet — "
+            "finish setup, then click Save in Settings to have the nightly sync deliver it too."
+        )
     if delivery is DeliveryFact.STORED_CRED_PRESENT:
         detail = (
             f"{prefix} DistrictSync will build {district} and try to deliver it to SpacesEDU — "
@@ -589,13 +655,14 @@ def finish_summary_rows(
     delivery: DeliveryFact,
     district: str,
     schedule_time_display: str | None,
+    delivery_desync: bool = False,
 ) -> list[FinishSummaryRow]:
     """The ordered configured-vs-deferred checklist the finish card renders (pure, TOTAL).
 
     Rows follow the WIZARD input order — District, Folders, Delivery, Schedule (District leads per
     the 2026-07-15 reorder) — and derive from the SAME injected facts ``finish_copy`` consumes
-    (``schedule_live``, ``delivery``, ``district``,
-    ``schedule_time_display``), so the card can NEVER contradict the honest finish copy. The caller
+    (``schedule_live``, ``delivery``, ``district``, ``schedule_time_display``,
+    ``delivery_desync``), so the card can NEVER contradict the honest finish copy. The caller
     passes ``district`` already resolved to its friendly name (as it does for ``finish_copy``), so
     a raw config id never reaches the card.
 
@@ -607,11 +674,16 @@ def finish_summary_rows(
       configured" never means "data was delivered".
     * **Schedule is done only when the read-back is LIVE**; a skipped / unconfirmed schedule is
       deferred, and the LIVE detail names the OS-reported time when known (never a config hint —
-      timeless "Nightly sync scheduled" when the read-back reported no next-run time).
+      timeless "Nightly sync scheduled" when the read-back reported no next-run time). With
+      ``delivery_desync`` (the backtrack guard) the LIVE detail also carries the honest
+      "delivery not included yet" — the live task was baked without ``--sftp``, so the row must
+      not read as if tonight delivers.
     """
     delivery_done = delivery in _DELIVERY_CONFIGURED
     if schedule_live:
         schedule_detail = f"Nightly at {schedule_time_display}" if schedule_time_display else "Nightly sync scheduled"
+        if delivery_desync:
+            schedule_detail += _SUMMARY_SCHEDULE_DESYNC_SUFFIX
     else:
         schedule_detail = _SUMMARY_DEFERRED_DETAIL
     return [

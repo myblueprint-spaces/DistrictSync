@@ -93,6 +93,7 @@ from src.ui_flet.setup_flow import (
     next_step,
     prev_step,
     run_time_save_decision,
+    schedule_delivery_desync,
     sftp_reconcile_suffix,
     step_number,
     task_args_changed,
@@ -100,7 +101,13 @@ from src.ui_flet.setup_flow import (
     task_args_to_persisted,
 )
 from src.ui_flet.setup_gates import can_register_schedule, can_save_sftp
-from src.ui_flet.sftp_copy import sftp_form_differs_from_saved, sftp_test_copy
+from src.ui_flet.sftp_copy import (
+    PORT_ERROR_DETAIL,
+    PORT_ERROR_HEADLINE,
+    parse_port,
+    sftp_form_differs_from_saved,
+    sftp_test_copy,
+)
 from src.ui_flet.verdict import Verdict
 from src.utils.validators import ALLOWED_SFTP_HOSTS, validate_run_time
 
@@ -243,8 +250,10 @@ class _ScheduleHandle:
     direct handler, it first checks ``downgrade_interrupt`` and pauses on the explicit-choice
     dialog when a blank-password re-register would silently downgrade an unattended task. It
     returns a ``ReconcileOutcome`` — ``DISPATCHED`` when a re-register actually started,
-    ``INTERRUPTED`` when the choice dialog was shown instead — so the Save sites can paint an
-    honest note (never "updating…" when nothing was registered).
+    ``INTERRUPTED`` when the choice dialog was shown instead, ``BLOCKED`` when the register
+    flow early-returned without dispatching (e.g. an invalid run time, whose inline error it
+    paints) — so the Save sites can paint an honest note (never "updating…" when nothing was
+    registered).
     ``persist_run_time`` is the S3-b seam: persist a valid run-time edit as plain config when
     no schedule is registered (invalid → the section's inline error, nothing persisted).
     """
@@ -469,6 +478,16 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
         schedule_live = (not ws["schedule_skipped"]) and status is not None and status.state is ScheduleState.LIVE  # type: ignore[union-attr]
         district = friendly_district_name(str(ws["sis"])) or str(ws["sis"])
         next_run = status.next_run_display if (schedule_live and status is not None) else None  # type: ignore[union-attr]
+        # Backtrack guard (0029 close-out): a LIVE task baked WITHOUT --sftp while delivery is now
+        # enabled (register → Back → save a credential → Finish) must NOT let the finish line claim
+        # tonight delivers. The pure decision reads the durable last-REGISTERED record; the honest
+        # downgraded copy points at the one Save in Settings that picks the change up (the Settings
+        # reconcile self-heals from the same record — no re-register/UAC plumbing at the finish line).
+        desync = schedule_delivery_desync(
+            schedule_live=bool(schedule_live),
+            registered=task_args_from_persisted(cfg.schedule_task_args),
+            sftp_enabled=cfg.sftp_enabled,
+        )
         headline, detail = finish_copy(
             schedule_live=bool(schedule_live),
             delivery=ws["delivery"],  # type: ignore[arg-type]  # F1: keyed off PERSISTED delivery, not a transient test
@@ -476,6 +495,7 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
             schedule_time_display=next_run,
             host=str(ws["delivery_host"]),
             username=str(ws["delivery_user"]),
+            delivery_desync=desync,
         )
         # The checked summary is derived from the SAME computed facts as the banner copy (single
         # source — no independent re-derivation), so the calm per-step card can never contradict it.
@@ -484,11 +504,14 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
             delivery=ws["delivery"],  # type: ignore[arg-type]
             district=district,
             schedule_time_display=next_run,
+            delivery_desync=desync,
         )
+        # Amber (attention) for the desync — a follow-up Save is genuinely needed; calm green else.
+        verdict = Verdict.WARNING if desync else Verdict.HEALTHY
         return ft.Column(
             spacing=18,
             controls=[
-                components.HealthVerdictBanner(Verdict.HEALTHY, headline=headline, detail=detail),
+                components.HealthVerdictBanner(verdict, headline=headline, detail=detail),
                 _finish_summary_card(rows),
             ],
         )
@@ -899,9 +922,16 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 
         return is_elevated()
 
-    def _register(_e: ft.ControlEvent | None = None, *, force_blank_password: bool = False) -> None:
+    def _register(_e: ft.ControlEvent | None = None, *, force_blank_password: bool = False) -> bool:
+        """Start the off-thread register; True iff a register was actually DISPATCHED.
+
+        The return value is the reconcile's honesty seam (0034 S3 residual): an early
+        return (gate closed, or an invalid run time — whose inline error paints below)
+        dispatches NOTHING, and the Settings-Save note must not claim "updating…" for it.
+        The button/Enter callers ignore the return value.
+        """
         if not can_register_schedule(cfg.is_complete(), run_time_field.value or ""):
-            return
+            return False
 
         # I1/I3 (see module docstring — password contract): the Windows account password is a
         # handler-LOCAL var whose ONLY sink is register_task (DPAPI elevation handshake / child-env);
@@ -919,7 +949,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 components.ErrorCard(_RUN_TIME_ERROR_HEADLINE, _RUN_TIME_ERROR_DETAIL),
             ]
             page.update()
-            return
+            return False
 
         exe_path = Path(sys.executable)
         transient = is_transient_location(str(exe_path))
@@ -1036,6 +1066,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         ]
         page.update()
         page.run_thread(_work)
+        return True
 
     def _unregister(_e: ft.ControlEvent | None = None) -> None:
         async def _apply_unregister(ok: bool, msg: str) -> None:
@@ -1180,8 +1211,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         pause for the explicit choice.
 
         Returns ``DISPATCHED`` when a re-register was actually started, ``INTERRUPTED`` when the
-        downgrade-choice dialog was shown instead (nothing registered) — the seam that lets both
-        Save sites paint an honest note (S3 correctness fix).
+        downgrade-choice dialog was shown instead (nothing registered), and ``BLOCKED`` when
+        ``_register`` early-returned without dispatching (its gate refused — e.g. a malformed run
+        time, whose inline error it just painted). The seam that lets both Save sites paint an
+        honest note (S3 correctness fix): "updating…" is claimed ONLY for a real dispatch.
         """
         password = password_field.value if password_field is not None else None
         interrupt = downgrade_interrupt(
@@ -1189,8 +1222,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             password_supplied=bool(password),
         )
         if interrupt is None:
-            _register(None)
-            return ReconcileOutcome.DISPATCHED
+            return ReconcileOutcome.DISPATCHED if _register(None) else ReconcileOutcome.BLOCKED
         _show_downgrade_dialog(interrupt)
         return ReconcileOutcome.INTERRUPTED
 
@@ -1306,8 +1338,16 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
         ):
             return
 
+        # Parse the port FIRST (pure seam) — a port typo must get the port error, not fall into
+        # the SFTPUploader ValueError below and misreport as a host-allowlist failure.
+        port_num = parse_port(port)
+        if port_num is None:
+            result_slot.controls = [components.ErrorCard(PORT_ERROR_HEADLINE, PORT_ERROR_DETAIL)]
+            page.update()
+            return
+
         try:
-            uploader = SFTPUploader(host, int(port or 22), username, remote_path)
+            uploader = SFTPUploader(host, port_num, username, remote_path)
         except ValueError:
             result_slot.controls = [
                 components.ErrorCard(
@@ -1349,7 +1389,7 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
 
         cfg.sftp_enabled = True
         cfg.sftp_host = host
-        cfg.sftp_port = int(port or 22)
+        cfg.sftp_port = port_num
         cfg.sftp_username = username
         cfg.sftp_remote_path = remote_path
         cfg.save()
@@ -1407,8 +1447,15 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
         password = password_field.value or ""
         host, username, remote_path, port = _current_fields()
 
+        # Same pre-parse as _save: a port typo gets the port error, never the host one.
+        port_num = parse_port(port)
+        if port_num is None:
+            result_slot.controls = [components.ErrorCard(PORT_ERROR_HEADLINE, PORT_ERROR_DETAIL)]
+            page.update()
+            return
+
         try:
-            uploader = SFTPUploader(host, int(port or 22), username, remote_path)
+            uploader = SFTPUploader(host, port_num, username, remote_path)
         except ValueError:
             result_slot.controls = [
                 components.ErrorCard(

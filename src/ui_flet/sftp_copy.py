@@ -7,11 +7,14 @@ checked). This trust decision lives here as a unit-tested pure helper instead of
 the coverage-omitted view glue (``screens/setup.py``), mirroring how ``setup_gates``
 single-sources the pure submit-gate predicates.
 
-Two pure functions, no I/O:
+Three pure functions, no I/O:
   - ``sftp_form_differs_from_saved`` — did the admin edit host/user/port/remote away
     from the persisted ``AppConfig``? (drives the "unsaved" softening).
   - ``sftp_test_copy`` — the (headline, detail) for a successful Test, honest about
     provenance (stored vs typed credential) and about unsaved edits.
+  - ``parse_port`` — the total form-port parse (blank → 22, unparseable → ``None``),
+    the seam that lets the view show the fixed ``PORT_ERROR_*`` copy for a port typo
+    instead of misreporting it as a host-allowlist failure.
 """
 
 from __future__ import annotations
@@ -38,9 +41,20 @@ _UNSAVED_TAIL = "These settings work — click Save to use them for the nightly 
 # ``screens/setup._show_result``, not here.
 _LISTING_DENIED_TAIL = "This account can't list the remote folder — that's normal for upload-only delivery accounts."
 
+# The FIXED inline error for a non-numeric port on Test/Save — distinct from the host-allowlist
+# error (a port typo used to fall into the same ``except ValueError`` and misreport as "That SFTP
+# host isn't allowed"). Single-sourced here (the pure copy layer) so both view sites can't drift.
+PORT_ERROR_HEADLINE = "That port isn't a number"
+PORT_ERROR_DETAIL = "The port must be a number — SpacesEDU delivery usually uses 22."
 
-def _parse_port(port: str, default: int = 22) -> int | None:
-    """Best-effort int() of a form port string; None (never a raise) when unparseable."""
+
+def parse_port(port: str, default: int = 22) -> int | None:
+    """Best-effort int() of a form port string; None (never a raise) when unparseable.
+
+    Blank falls back to ``default`` (22 — the standard SFTP port). The view's Test/Save
+    handlers use this as their pre-parse seam so a port typo gets the fixed port error
+    above rather than misreporting as a host-allowlist failure.
+    """
     try:
         return int((port or "").strip() or default)
     except (TypeError, ValueError):
@@ -72,7 +86,7 @@ def sftp_form_differs_from_saved(
         return True
     if _norm(remote_path) != _norm(cfg.sftp_remote_path):
         return True
-    return _parse_port(port) != cfg.sftp_port
+    return parse_port(port) != cfg.sftp_port
 
 
 def sftp_test_copy(

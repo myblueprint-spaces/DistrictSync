@@ -865,6 +865,55 @@ class TestLinuxRegisterCron:
                 run_time="03:00",
             )
 
+    @patch("src.scheduler.linux._run")
+    def test_register_read_failure_aborts_without_rewrite(self, mock_run):
+        """A failed `crontab -l` (permission denied etc.) must ABORT loudly, never rewrite.
+
+        The old code treated ANY read failure as an empty crontab and then installed a
+        crontab containing only the DistrictSync line — destroying the user's other jobs.
+        """
+        from src.scheduler.linux import register_cron
+
+        mock_run.return_value = (1, "crontab: you are not allowed to use this program")
+
+        ok, msg = register_cron(
+            exe_path=Path("/opt/districtsync/DistrictSync"),
+            sis_type="myedbc",
+            input_dir=Path("/data/input"),
+            output_dir=Path("/data/output"),
+            run_time="03:00",
+        )
+        assert ok is False
+        assert "Couldn't read the existing crontab" in msg
+        # Only the read ran — no `crontab -` install call may follow a failed read.
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0] == ["crontab", "-l"]
+
+    @patch("src.scheduler.linux._run")
+    def test_register_exit_zero_content_mentioning_no_crontab_is_preserved(self, mock_run):
+        """An exit-0 crontab whose JOB TEXT happens to contain "no crontab" is real content.
+
+        The read is classified by EXIT CODE first — the "no crontab" phrase only matters on a
+        non-zero exit (the genuinely-empty case). The old text-only match discarded such lines.
+        """
+        from src.scheduler.linux import register_cron
+
+        mock_run.side_effect = [
+            (0, '30 12 * * * /bin/echo "no crontab here"'),  # crontab -l (real job)
+            (0, ""),  # crontab -
+        ]
+
+        ok, _ = register_cron(
+            exe_path=Path("/opt/districtsync/DistrictSync"),
+            sis_type="myedbc",
+            input_dir=Path("/data/input"),
+            output_dir=Path("/data/output"),
+            run_time="03:00",
+        )
+        assert ok is True
+        install_stdin = mock_run.call_args_list[1][1].get("stdin", "")
+        assert '/bin/echo "no crontab here"' in install_stdin  # the user's job survives
+
 
 class TestLinuxDeleteCron:
     @patch("src.scheduler.linux._run")
@@ -889,6 +938,19 @@ class TestLinuxDeleteCron:
         ok, msg = delete_cron()
         assert ok is True
         assert "No crontab" in msg
+
+    @patch("src.scheduler.linux._run")
+    def test_delete_read_failure_aborts_without_rewrite(self, mock_run):
+        """Same fail-loud contract as register: an unreadable crontab is never rewritten."""
+        from src.scheduler.linux import delete_cron
+
+        mock_run.return_value = (1, "crontab: permission denied")
+
+        ok, msg = delete_cron()
+        assert ok is False
+        assert "Couldn't read the existing crontab" in msg
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0] == ["crontab", "-l"]
 
 
 class TestLinuxCronEntryExists:

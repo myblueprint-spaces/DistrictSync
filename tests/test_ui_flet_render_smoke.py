@@ -506,7 +506,9 @@ def test_setup_enter_respects_gate_when_config_incomplete(stub_page, monkeypatch
     tree = _settings_tree(stub_page, monkeypatch, input_dir="", output_dir="")
     run_time = _textfield_by_label(tree, "Daily run time (24-hour, HH:MM)")
     assert run_time is not None
-    assert run_time.on_submit(None) is None  # no-op: gate closed, no raise
+    # No-op: gate closed, no raise. _register reports "not dispatched" (False) — the honesty
+    # seam the Settings-Save reconcile reads (0034 S3 residual); Enter callers ignore it.
+    assert run_time.on_submit(None) is False
 
 
 def test_nav_rail_builds_and_exposes_rail_handle():
@@ -1243,6 +1245,141 @@ def test_settings_save_with_no_registered_task_paints_plain_saved(tmp_path, stub
     _button_by_content(tree, "Save folders & district").on_click(None)
 
     assert _folders_save_note_text(tree) == "Saved."
+
+
+def test_settings_save_with_malformed_run_time_paints_the_blocked_note_and_inline_error(
+    tmp_path, stub_page, monkeypatch
+):
+    """0034 S3 residual (_register early-return vs DISPATCHED): an args-changed Save whose
+    re-register is refused by the register flow's own gate (a malformed run time) must NOT claim
+    'updating…' — the honest BLOCKED note paints, the run-time inline error still paints, and
+    nothing registers."""
+    _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)  # args changed (district switch)
+    recorded = _record_register(monkeypatch)
+
+    tree = build_setup(stub_page)
+    _textfield_by_label(tree, "Daily run time (24-hour, HH:MM)").value = "99:99"
+    _button_by_content(tree, "Save folders & district").on_click(None)
+
+    assert recorded["called"] == 0, "no register may dispatch with a malformed run time"
+    note = _folders_save_note_text(tree)
+    assert note == (
+        "Saved — the nightly schedule wasn't updated. Fix the run time in the Daily schedule section, then save again."
+    )
+    assert "updating" not in note.lower()
+    assert _has_text(tree, "That run time isn't valid")  # the run-time error still paints
+
+
+def test_sftp_save_with_malformed_run_time_paints_the_blocked_suffix(tmp_path, monkeypatch):
+    """0034 S3 residual, second Save site: the SFTP Save's reconcile suffix must be honest too —
+    a refused re-register never claims 'Updating the nightly schedule to deliver too…'."""
+    from src.sftp.uploader import SFTPUploader
+
+    cfg = _registered_settings_cfg(tmp_path, monkeypatch, unattended=False, current_sis="myedbc")
+    monkeypatch.setattr(SFTPUploader, "store_password", lambda self, pw: None)
+    monkeypatch.setattr(SFTPUploader, "get_stored_password", lambda self: "pw")
+    recorded = _record_register(monkeypatch)
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_setup(page)
+    _textfield_by_label(tree, "Daily run time (24-hour, HH:MM)").value = "99:99"
+    _fill_sftp(tree)
+    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # flips sftp_enabled → changed
+
+    assert cfg.sftp_enabled is True  # the credential save itself persisted (Saved stays truthful)
+    assert recorded["called"] == 0
+    assert _has_text_containing(
+        tree, "The nightly schedule wasn't updated — fix the run time in the Daily schedule section"
+    )
+    assert not _has_text_containing(tree, "Updating the nightly schedule to deliver too")
+    assert _has_text(tree, "That run time isn't valid")
+
+
+def _drain(captured: list) -> None:
+    """Run every marshalled coroutine (probe read-backs / register results) and clear the list."""
+    for coro, args in captured:
+        asyncio.run(coro(*args))
+    captured.clear()
+
+
+def test_wizard_backtrack_delivery_change_downgrades_the_finish_copy(tmp_path, monkeypatch):
+    """The wizard backtrack desync guard (0029 close-out): register on the Schedule step (task
+    baked WITHOUT --sftp), Back to Delivery, save a credential, Finish — the finish line must be
+    HONEST: no 'try to deliver' claim; the copy names the one Save in Settings that picks the
+    change up, and the checked summary stays consistent ('delivery not included yet')."""
+    from src.sftp.uploader import SFTPUploader
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    monkeypatch.setattr(SFTPUploader, "store_password", lambda self, pw: None)
+    monkeypatch.setattr(SFTPUploader, "get_stored_password", lambda self: "pw")
+    _capture_register_sftp(monkeypatch)  # both platform register entry points → (True, "ok")
+    live = ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="3:00 AM")
+    monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: live)
+
+    captured: list = []
+    tree = build_setup(_driving_page(captured))  # folders + district done → Delivery (step 3)
+
+    _button_by_content(tree, "Set up later").on_click(None)  # defer delivery → Schedule (step 4)
+    _drain(captured)  # the on-mount read-back
+    _button_by_content(tree, "Register schedule").on_click(None)  # bakes the task WITHOUT --sftp
+    _drain(captured)  # the register result + the post-register read-back
+    assert cfg.schedule_registered is True
+    assert cfg.schedule_task_args is not None and cfg.schedule_task_args["sftp_enabled"] is False
+
+    _button_by_content(tree, "Back").on_click(None)  # backtrack → Delivery
+    _fill_sftp(tree)
+    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # delivery enabled AFTER the bake
+    assert cfg.sftp_enabled is True
+    _button_by_content(tree, "Continue").on_click(None)  # → Schedule (already LIVE)
+    _drain(captured)
+    _button_by_content(tree, "Continue").on_click(None)  # LIVE → addressed → Finish
+
+    assert _has_text(tree, "You're set up — delivery needs one more save")
+    assert _has_text_containing(tree, "the nightly schedule hasn't picked up the delivery change yet")
+    assert _has_text_containing(tree, "click Save in Settings")
+    assert not _has_text_containing(tree, "try to deliver it to SpacesEDU")
+    assert _has_text(tree, "Nightly at 3:00 AM — delivery not included yet")  # the summary agrees
+
+
+def test_wizard_finish_without_a_delivery_change_keeps_the_confident_claim(tmp_path, monkeypatch):
+    """The no-desync control: the natural in-order walk (Delivery BEFORE Schedule, F1) bakes the
+    task WITH --sftp, so the finish line keeps the confident delivery claim (the guard must not
+    downgrade an install that is actually consistent)."""
+    from src.sftp.uploader import SFTPUploader
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    monkeypatch.setattr(SFTPUploader, "store_password", lambda self, pw: None)
+    monkeypatch.setattr(SFTPUploader, "get_stored_password", lambda self: "pw")
+    _capture_register_sftp(monkeypatch)
+    live = ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="3:00 AM")
+    monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: live)
+
+    captured: list = []
+    tree = build_setup(_driving_page(captured))  # → Delivery (step 3, F1 order)
+
+    _fill_sftp(tree)
+    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # sftp_enabled BEFORE the bake
+    _button_by_content(tree, "Continue").on_click(None)  # delivery addressed → Schedule
+    _drain(captured)
+    _button_by_content(tree, "Register schedule").on_click(None)  # bakes the task WITH --sftp
+    _drain(captured)
+    assert cfg.schedule_task_args is not None and cfg.schedule_task_args["sftp_enabled"] is True
+    _button_by_content(tree, "Continue").on_click(None)  # LIVE → addressed → Finish
+
+    assert _has_text(tree, "You're all set")
+    assert _has_text_containing(tree, "try to deliver it to SpacesEDU")
+    assert not _has_text_containing(tree, "delivery not included yet")
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="the Windows password field renders only on win32")

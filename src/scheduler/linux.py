@@ -46,6 +46,26 @@ def _run(args: list[str], stdin: str | None = None) -> tuple[int, str]:
     return result.returncode, (result.stdout + result.stderr).strip()
 
 
+def _read_crontab_lines() -> tuple[list[str] | None, str]:
+    """Read the current user's crontab lines — fail LOUD on an unreadable crontab.
+
+    Returns ``(lines, "")`` when the read is trustworthy: exit 0 (the parsed lines) or
+    the benign ``no crontab for <user>`` (a genuinely empty crontab → ``[]``). ANY other
+    failure (permission denied, a broken crontab wrapper, …) returns ``(None, message)``
+    and the caller MUST abort without rewriting: treating an unreadable crontab as empty
+    would replace the user's other cron jobs with only the DistrictSync line
+    (``crontab -`` installs a WHOLE new crontab, not an append).
+    """
+    code, output = _run(["crontab", "-l"])
+    if code == 0:
+        return (output.splitlines() if output else []), ""
+    if "no crontab" in output.lower():
+        return [], ""
+    msg = f"Couldn't read the existing crontab (crontab -l exited {code}): {output or 'unknown error'}"
+    logger.error(msg)
+    return None, msg
+
+
 def register_cron(
     exe_path: Path,
     sis_type: str,
@@ -103,9 +123,11 @@ def register_cron(
 
     cron_line = f"{minute} {hour} * * * {cmd} {CRON_SENTINEL}"
 
-    # Read existing crontab (ignore error if none exists yet)
-    _, existing = _run(["crontab", "-l"])
-    lines = existing.splitlines() if existing and "no crontab" not in existing.lower() else []
+    # Read the existing crontab first; a failed read (other than the benign "no crontab")
+    # aborts loudly — rewriting from a blind read would wipe the user's other cron jobs.
+    lines, read_error = _read_crontab_lines()
+    if lines is None:
+        return False, read_error
 
     # Remove any previous DistrictSync entry
     lines = [ln for ln in lines if CRON_SENTINEL not in ln]
@@ -127,11 +149,15 @@ def delete_cron() -> tuple[bool, str]:
     Returns:
         (success, message)
     """
-    _, existing = _run(["crontab", "-l"])
-    if not existing or "no crontab" in existing.lower():
+    # Same fail-loud read as register_cron: an unreadable crontab must never be
+    # rewritten as if it were empty (that would destroy the user's other entries).
+    existing_lines, read_error = _read_crontab_lines()
+    if existing_lines is None:
+        return False, read_error
+    if not existing_lines:
         return True, "No crontab to remove."
 
-    lines = [ln for ln in existing.splitlines() if CRON_SENTINEL not in ln]
+    lines = [ln for ln in existing_lines if CRON_SENTINEL not in ln]
     new_crontab = "\n".join(lines) + "\n"
     code, msg = _run(["crontab", "-"], stdin=new_crontab)
     return code == 0, msg or "Cron entry removed."
