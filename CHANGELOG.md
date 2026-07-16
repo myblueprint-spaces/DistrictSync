@@ -28,6 +28,30 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Fixed
 
+- **A vanishing roster file now raises the same alarm as a big drop.** An
+  entity the district config produces that suddenly transforms to zero rows
+  (or disappears entirely) fires the ANOMALY warning — on the CLI it warns and
+  rides the run record; in the app it stops before writing until an admin
+  acknowledges. An unreadable previous CSV warns loudly instead of silently
+  skipping the check, and the expected-entity set derives from
+  `enabled_entities` so another config's CSV sharing the folder never fires a
+  false alarm. (pre-partner batch W1b)
+- **Manual conversions archive stale entity CSVs** into `archive_<ts>/`
+  exactly like scheduled runs — a stale file can no longer ride an SFTP zip
+  after a manual convert. Two conversions landing in the same second can no
+  longer collide on the atomic writer's staging/backup folders (unique
+  suffixes; collisions fail loud), and a run that was hard-killed mid-commit
+  is detected on the next run: the leftover backup moves to
+  `archive_<ts>_recovered/` with a warning (nothing deleted), and abandoned
+  staging folders older than 7 days are swept. (W1b)
+- **Silent data-quality failures in the transformers now surface loudly**
+  (never failing the run): a student-email template naming a missing column
+  records per-row data errors instead of invisibly blanking every email; a
+  non-blank, non-numeric StudentCourses mark (letter grades, "Pass") records a
+  data error instead of silently nulling earned credits (scoring unchanged);
+  mixed-vintage input sets trigger a school-year disagreement warning naming
+  every year found; and the active-roster filter logs an aggregate
+  dropped-rows warning per entity (counts only — never student ids). (W1c)
 - **Killed the false silence on early failures.** The early-exit failures inside
   the pipeline (input folder missing, district config missing or invalid) now
   write a failed run record to both the diagnostic log and Run History before
