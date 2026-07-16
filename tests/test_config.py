@@ -306,6 +306,13 @@ class TestDeepMerge:
         _deep_merge(base, {"x": {"b": 2}})
         assert base == {"x": {"a": 1}}
 
+    def test_lists_replace_wholesale_not_merged(self):
+        """Lists REPLACE — an enabled_entities override never unions with the base."""
+        base = {"global_config": {"enabled_entities": ["Students", "Staff", "Family", "Classes", "Enrollments"]}}
+        override = {"global_config": {"enabled_entities": ["Students"]}}
+        result = _deep_merge(base, override)
+        assert result["global_config"]["enabled_entities"] == ["Students"]
+
 
 # -----------------------------------------------------------------------
 # load_config against real YAML files
