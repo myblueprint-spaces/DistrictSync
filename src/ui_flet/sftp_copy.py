@@ -27,7 +27,11 @@ from src.config.app_config import AppConfig
 # vs the one the admin just typed into the form (not yet persisted).
 Provenance = Literal["stored", "typed"]
 
-_HEADLINE = "SFTP connection succeeded"
+# Vocabulary (0032 T1 #6): plain language, no "SFTP" jargon in admin-facing copy — the connection
+# being tested IS the delivery route to SpacesEDU (host allowlist). Test-scoped honesty kept: it
+# claims a connection happened, never that a delivery did. (The technical "SFTP host" FIELD label
+# in screens/setup.py is the one sanctioned exception.)
+_HEADLINE = "Connected to SpacesEDU"
 
 # Present-tense, test-scoped softener for unsaved settings — NEVER promises the nightly
 # sync can deliver for values that aren't in the saved config yet.

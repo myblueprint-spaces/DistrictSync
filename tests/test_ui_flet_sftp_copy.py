@@ -51,10 +51,22 @@ class TestSftpTestCopy:
     @pytest.mark.parametrize("unsaved_edits", [False, True])
     def test_always_names_host_and_user(self, provenance, unsaved_edits):
         headline, detail = self._copy(provenance=provenance, unsaved_edits=unsaved_edits)
-        assert headline == "SFTP connection succeeded"
+        # 0032 T1 #6 vocabulary: plain language — the delivery route, not the protocol.
+        # Still test-scoped honest: a CONNECTION happened; no delivery is claimed.
+        assert headline == "Connected to SpacesEDU"
         # Every success names WHAT it checked: which host, as which user.
         assert _HOST in detail
         assert _USER in detail
+
+    @pytest.mark.parametrize("provenance", ["stored", "typed"])
+    @pytest.mark.parametrize("unsaved_edits", [False, True])
+    def test_success_copy_has_no_sftp_jargon(self, provenance, unsaved_edits):
+        # 0032 T1 #6: "SFTP" never appears in the admin-facing success copy. (The lowercase
+        # "sftp." inside the HOST value is the technical hostname, not jargon copy — the
+        # "SFTP host" FIELD label in screens/setup.py is the one sanctioned exception.)
+        headline, detail = self._copy(provenance=provenance, unsaved_edits=unsaved_edits)
+        assert "SFTP" not in headline
+        assert "SFTP" not in detail
 
     @pytest.mark.parametrize("provenance", ["stored", "typed"])
     @pytest.mark.parametrize("unsaved_edits", [False, True])

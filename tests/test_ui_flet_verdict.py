@@ -50,6 +50,15 @@ class TestNonColourCueInvariant:
         assert verdict_visuals(v).headline.strip(), f"{v} has no headline"
 
 
+class TestHealthyDefaultHeadlineIsScheduleNeutral:
+    def test_healthy_default_headline_never_asserts_automation(self):
+        # 0032 T1 #1c: the DEFAULT healthy headline must be honest with no schedule fact in hand —
+        # "up to date" describes the record; "syncing" (ongoing automation) is derived only by
+        # home_status when a LIVE schedule read-back confirms it.
+        assert verdict_visuals(Verdict.HEALTHY).headline == "Your roster is up to date"
+        assert "syncing" not in verdict_visuals(Verdict.HEALTHY).headline
+
+
 class TestVerdictColours:
     @pytest.mark.parametrize("v", list(Verdict))
     def test_colour_is_an_aa_safe_verdict_token(self, v: Verdict):
