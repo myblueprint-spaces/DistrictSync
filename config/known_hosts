@@ -1,0 +1,19 @@
+# DistrictSync pinned SSH host keys (standard OpenSSH known_hosts format).
+#
+# When this file contains an entry for an SFTP server, DistrictSync verifies the
+# server's identity against it on every connection and REFUSES to deliver if the
+# offered key does not match (protection against man-in-the-middle attacks).
+# Servers with NO entry here are still accepted, with a warning in the log —
+# pinning only ever tightens security, it never blocks delivery before keys exist.
+#
+# To populate or rotate the pinned keys, run this from any machine that can reach
+# the servers on port 22, then paste the output lines below (one per line):
+#
+#   ssh-keyscan -t ed25519,ecdsa,rsa sftp.ca.spacesedu.com sftp.app.spacesedu.com sftp.myblueprint.ca
+#
+# Each entry line looks like:  <hostname> <key-type> <base64-public-key>
+#
+# No-release hotfix path: a known_hosts file placed in the DistrictSync app-data
+# folder (Windows: %LOCALAPPDATA%\DistrictSync\known_hosts) takes precedence over
+# this bundled file, so keys can be added or rotated on a district server without
+# shipping a new build.

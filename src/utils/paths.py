@@ -63,6 +63,26 @@ def bundle_mappings_dir() -> Path:
     return bundle_config_dir() / "mappings"
 
 
+def bundle_known_hosts_file() -> Path:
+    """Bundled SSH ``known_hosts`` file pinning the SpacesEDU SFTP host keys.
+
+    Read-only bundle asset (shipped via ``--add-data "config;config"``, so it
+    rides along with the mappings). The user-writable override lives at
+    :func:`user_known_hosts_file` and takes precedence.
+    """
+    return bundle_config_dir() / "known_hosts"
+
+
+def user_known_hosts_file() -> Path:
+    """Per-user ``known_hosts`` override for pinned SFTP host keys.
+
+    Mirrors the mappings hotfix path: a file dropped here wins over the bundled
+    :func:`bundle_known_hosts_file`, so host keys can be added or rotated on a
+    district server without shipping a new release.
+    """
+    return user_data_dir() / "known_hosts"
+
+
 def app_icon_path() -> Path:
     """Path to the DistrictSync sync-mark ``.ico`` (the EXE/file icon).
 
