@@ -181,6 +181,47 @@ class TestDetermineSchoolYear:
         )
         assert year == 2026  # June < default rollover → today's calendar year
 
+    def test_agreeing_sources_do_not_warn(self, caplog):
+        """Multiple sources with the SAME end year stay silent (no disagreement)."""
+        raw_data = {
+            "a.txt": pd.DataFrame({"school year": ["2025/2026"]}),
+            "b.txt": pd.DataFrame({"school year": ["2026"]}),  # same end year, different format
+        }
+        source_config = {"role_a": "a.txt", "role_b": "b.txt"}
+
+        with caplog.at_level("WARNING"):
+            year = self.transformer.determine_school_year(raw_data, source_config, rollover_month_day="07-25")
+        assert year == 2026
+        assert not any("disagree" in r.message for r in caplog.records)
+
+    def test_disagreeing_sources_warn_and_keep_first(self, caplog):
+        """A mixed-vintage input set warns loudly, naming both end years and the choice."""
+        raw_data = {
+            "a.txt": pd.DataFrame({"school year": ["2025/2026"]}),
+            "b.txt": pd.DataFrame({"school year": ["2026/2027"]}),
+        }
+        source_config = {"role_a": "a.txt", "role_b": "b.txt"}
+
+        with caplog.at_level("WARNING"):
+            year = self.transformer.determine_school_year(raw_data, source_config, rollover_month_day="07-25")
+        # Behavior-preserving: the FIRST parseable value still wins.
+        assert year == 2026
+        disagreements = [r.message for r in caplog.records if "disagree" in r.message]
+        assert len(disagreements) == 1
+        assert "2026" in disagreements[0]
+        assert "2027" in disagreements[0]
+        assert "using 2026" in disagreements[0]
+
+    def test_disagreement_within_one_source_warns(self, caplog):
+        """Two distinct end years in a SINGLE source column also warn."""
+        raw_data = {"a.txt": pd.DataFrame({"school year": ["2025/2026", "2026/2027"]})}
+        source_config = {"role_a": "a.txt"}
+
+        with caplog.at_level("WARNING"):
+            year = self.transformer.determine_school_year(raw_data, source_config, rollover_month_day="07-25")
+        assert year == 2026
+        assert any("disagree" in r.message for r in caplog.records)
+
     def test_uses_real_now_when_today_not_passed(self):
         """When ``today`` is omitted, falls back to datetime.now(). Smoke test."""
         with patch("src.etl.transformers.base.datetime") as mock_dt:

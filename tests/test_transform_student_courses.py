@@ -923,3 +923,119 @@ class TestRegressionScenario:
         s002 = result[result["Student ID"] == "S002"]
         s002_codes_and_marks = sorted([(r["Course Code"], r["Final Mark"]) for _, r in s002.iterrows()])
         assert s002_codes_and_marks == sorted([("ENG12", ""), ("ENG11", "")])
+
+
+class TestNonNumericMarkDataError:
+    """A non-blank, non-"W", non-numeric Final Mark (letter grades, "Pass") is
+    scored as not-passing (legacy-PowerShell parity — scoring unchanged) but is
+    now RECORDED as a data error so an alpha-marks district sees "Completed
+    with N data errors" instead of silently nulled credits.
+    """
+
+    def _history_row(self, mark, student="S001", code="MAT10"):
+        return {
+            "student number": student,
+            "school number": "6262013",
+            "course code": code,
+            "full course code": code,
+            "section": "",
+            "final mark": mark,
+            "dl start date": "15-Sep-2024",
+            "dl completion date": "30-Jan-2025",
+        }
+
+    def test_numeric_blank_and_w_marks_record_nothing(self, transformer, sc_mapping, myedbc_global_config):
+        history = _history(
+            [
+                self._history_row("85"),
+                self._history_row("30", code="ENG12"),
+                self._history_row("", code="ENG11"),
+                self._history_row("W", code="SCI09"),
+            ]
+        )
+        _run(transformer, sc_mapping, myedbc_global_config, history=history)
+        assert transformer.data_errors == []
+
+    def test_letter_and_pass_marks_record_data_errors_with_unchanged_output(
+        self, transformer, sc_mapping, myedbc_global_config, course_info_df, caplog
+    ):
+        history = _history(
+            [
+                self._history_row("A"),
+                self._history_row("Pass", code="ENG12"),
+                self._history_row("85", code="ENG11"),
+            ]
+        )
+        with caplog.at_level("ERROR"):
+            result = _run(transformer, sc_mapping, myedbc_global_config, history=history, info=course_info_df)
+
+        # Output unchanged: all three rows emitted; alpha marks pass through
+        # not-passing (null credits — NaN once pandas coerces the mixed column),
+        # the numeric pass keeps its credits.
+        assert len(result) == 3
+        alpha = result[result["Final Mark"] == "A"].iloc[0]
+        assert pd.isna(alpha["Credits Earned"])
+        numeric = result[result["Final Mark"] == "85"].iloc[0]
+        assert numeric["Credits Earned"] == 4
+
+        errors = transformer.data_errors
+        assert len(errors) == 1
+        assert errors[0]["entity"] == "StudentCourses"
+        assert errors[0]["field"] == "Final Mark"
+        assert errors[0]["failed_rows"] == 2
+        assert "'A'" in errors[0]["sample"]
+        assert any("non-numeric Final Mark" in r.message for r in caplog.records)
+
+
+class TestStudentCoursesActiveFiltering:
+    """Zero-orphan invariant: transcripts only for students on the active
+    roster (Students.csv). Fail-safe unchanged when no roster exists (mbponly).
+    """
+
+    def _history(self):
+        return _history(
+            [
+                {
+                    "student number": "S001",
+                    "school number": "6262013",
+                    "course code": "MAT10",
+                    "full course code": "MAT10",
+                    "section": "",
+                    "final mark": "85",
+                    "dl start date": "15-Sep-2024",
+                    "dl completion date": "30-Jan-2025",
+                },
+                {
+                    "student number": "S999",
+                    "school number": "6262013",
+                    "course code": "ENG12",
+                    "full course code": "ENG12",
+                    "section": "",
+                    "final mark": "70",
+                    "dl start date": "15-Sep-2024",
+                    "dl completion date": "30-Jan-2025",
+                },
+            ]
+        )
+
+    def test_non_rostered_student_rows_dropped(self, transformer, sc_mapping, myedbc_global_config):
+        transformer._context.active_student_ids = {"S001"}
+        result = _run(transformer, sc_mapping, myedbc_global_config, history=self._history())
+        assert set(result["Student ID"]) == {"S001"}
+
+    def test_selection_rows_also_filtered(self, transformer, sc_mapping, myedbc_global_config):
+        transformer._context.active_student_ids = {"S001"}
+        selection = _selection(
+            [
+                {"student number": "S001", "school number": "6262013", "course code": "ENG11", "dl start date": ""},
+                {"student number": "S999", "school number": "6262013", "course code": "ENG11", "dl start date": ""},
+            ]
+        )
+        result = _run(transformer, sc_mapping, myedbc_global_config, selection=selection)
+        assert set(result["Student ID"]) == {"S001"}
+
+    def test_empty_roster_keeps_all_rows_and_warns(self, transformer, sc_mapping, myedbc_global_config, caplog):
+        with caplog.at_level("WARNING"):
+            result = _run(transformer, sc_mapping, myedbc_global_config, history=self._history())
+        assert set(result["Student ID"]) == {"S001", "S999"}
+        assert any("[StudentCourses]" in r.message and "active_student_ids empty" in r.message for r in caplog.records)

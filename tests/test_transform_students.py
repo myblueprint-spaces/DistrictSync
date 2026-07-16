@@ -348,14 +348,43 @@ class TestStudentEmailGeneration:
         # Direct invariant behind the isolation claim: _generate_emails injects the
         # derived pseudo-column onto a LOCAL copy only, so the `working` frame that
         # transform() later hands to apply_field_map is never polluted.
+        from src.etl.transformers.context import TransformContext
         from src.etl.transformers.students import StudentTransformer
 
         working = self._df("Alice", "Smith", "15-Sep-2018")  # columns already lower-cased
         result = pd.DataFrame()
         field_map = self._mapping(self._SD60_EMAIL)["field_map"]
-        StudentTransformer()._generate_emails(working, result, field_map)
+        StudentTransformer()._generate_emails(working, result, field_map, TransformContext())
         assert "admission yy" not in working.columns  # source frame untouched
         assert result["Email Address"].iloc[0] == "alicesmith18@learn60.ca"
+
+    def test_bad_template_key_blanks_cells_and_records_data_error(self, caplog):
+        # A template naming a column absent from the frame must not silently
+        # blank every email: each cell still becomes "" (row-resilient), but the
+        # failure lands in context.data_errors + one ERROR log — surfacing as
+        # "Completed with N data errors" instead of invisible blanks.
+        email_cfg = {"format": "{no such column}@learn60.ca"}
+        df = pd.concat(
+            [self._df("Alice", "Smith", "15-Sep-2018"), self._df("Bob", "Jones", "15-Sep-2019")],
+            ignore_index=True,
+        )
+        df["student number"] = ["S001", "S002"]
+        with caplog.at_level("ERROR"):
+            result = self._run(email_cfg, df)
+        assert list(result["Email Address"]) == ["", ""]
+        errors = self.transformer.data_errors
+        assert len(errors) == 1
+        assert errors[0]["entity"] == "Students"
+        assert errors[0]["field"] == "Email Address"
+        assert errors[0]["failed_rows"] == 2
+        assert "no such column" in errors[0]["sample"]
+        assert any("Students.Email Address" in r.message for r in caplog.records)
+
+    def test_good_template_records_no_data_error(self):
+        email_cfg = {"format": "{legal first name}.{legal surname}@learn60.ca"}
+        result = self._run(email_cfg, self._df("Alice", "Smith", "15-Sep-2018"))
+        assert result["Email Address"].iloc[0] == "alice.smith@learn60.ca"
+        assert self.transformer.data_errors == []
 
     def test_default_path_preserves_apostrophe_regression(self):
         # SD54-shape template with NO sanitize/derived_dates -> legacy path:

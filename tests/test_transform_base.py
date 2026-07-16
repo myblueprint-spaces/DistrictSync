@@ -575,6 +575,27 @@ class TestFilterToActive:
             BaseTransformer.filter_to_active(df, "student number", self._ctx(set()), caller="Enrollments")
         assert any("[Enrollments]" in r.message for r in caplog.records)
 
+    def test_dropped_rows_warn_with_aggregate_counts_only(self, caplog):
+        # 3 rows dropped for 2 distinct non-rostered students → ONE aggregate
+        # warning with counts; student ids must never appear (PII rule).
+        df = pd.DataFrame({"student number": ["S001", "S998", "S998", "S999"], "x": [1, 2, 3, 4]})
+        with caplog.at_level("WARNING"):
+            out = BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001"}), caller="Enrollments")
+        assert list(out["student number"]) == ["S001"]
+        dropped_msgs = [r.message for r in caplog.records if "Dropped" in r.message]
+        assert len(dropped_msgs) == 1
+        assert "3 row(s)" in dropped_msgs[0]
+        assert "2 student(s)" in dropped_msgs[0]
+        assert "[Enrollments]" in dropped_msgs[0]
+        assert "S998" not in dropped_msgs[0]
+        assert "S999" not in dropped_msgs[0]
+
+    def test_no_dropped_rows_stays_silent(self, caplog):
+        df = pd.DataFrame({"student number": ["S001", "S002"]})
+        with caplog.at_level("WARNING"):
+            BaseTransformer.filter_to_active(df, "student number", self._ctx({"S001", "S002"}))
+        assert not any("Dropped" in r.message for r in caplog.records)
+
 
 class TestPastWithdrawDate:
     @pytest.mark.parametrize("value", ["", None, np.nan])

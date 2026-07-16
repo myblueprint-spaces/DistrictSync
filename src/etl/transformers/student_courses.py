@@ -22,6 +22,7 @@ against a single-entry-per-prefix dictionary. Falls back to credits=4 only
 when the row is a pass.
 """
 
+import logging
 from datetime import datetime
 from typing import Any, Optional
 
@@ -29,6 +30,8 @@ import pandas as pd
 
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
+
+logger = logging.getLogger(__name__)
 
 
 class StudentCoursesTransformer(BaseTransformer):
@@ -65,10 +68,15 @@ class StudentCoursesTransformer(BaseTransformer):
         rows: list[dict[str, Any]] = []
         sch_lookup: dict[tuple[str, str], dict[str, Any]] = {}
 
-        self._process_history(history_df, patterns, flavors, info_exact, info_prefix, sch_lookup, rows)
+        self._process_history(history_df, patterns, flavors, info_exact, info_prefix, sch_lookup, rows, context)
         self._process_selection(selection_df, patterns, flavors, info_exact, info_prefix, sch_lookup, rows)
 
         result = pd.DataFrame(rows, columns=self.OUTPUT_COLUMNS)
+        # Zero-orphan invariant: emit transcripts only for students on the
+        # active roster (Students.csv). When the roster is unavailable (e.g.
+        # the mbponly tier runs without the Students entity), filter_to_active
+        # warns and returns the frame unchanged — same convention as Enrollments.
+        result = self.filter_to_active(result, "Student ID", context, caller="StudentCourses")
         if not result.empty:
             # Match PowerShell's lexical sort (Completion Date is a string here).
             result = result.sort_values(
@@ -120,11 +128,14 @@ class StudentCoursesTransformer(BaseTransformer):
         info_prefix: dict[str, dict[str, Any]],
         sch_lookup: dict[tuple[str, str], dict[str, Any]],
         rows: list[dict[str, Any]],
+        context: TransformContext,
     ) -> None:
         if history_df.empty:
             return
         filtered = self.filter_excluded_course_code_patterns(history_df, patterns, column="course code")
 
+        non_numeric_marks = 0
+        first_sample = ""
         for record in filtered.to_dict("records"):
             mark_str = self._str(record.get("final mark"))
             if mark_str.upper() == "W":
@@ -144,6 +155,14 @@ class StudentCoursesTransformer(BaseTransformer):
 
             cleaned = self._derive_history_code(course_code, full_code, section, flavors)
             is_pass = self._parse_mark_passing(mark_str)
+            # A non-blank, non-"W", non-numeric mark (letter grades, "Pass") is
+            # scored as not-passing for legacy-PowerShell parity — record it as
+            # a data error so an alpha-marks district sees "Completed with N
+            # data errors" instead of silently nulled credits.
+            if mark_str and self._parse_mark_numeric(mark_str) is None:
+                non_numeric_marks += 1
+                if not first_sample:
+                    first_sample = f"{mark_str!r}: non-numeric mark scored as not-passing"
             start_date = self._parse_date(raw_start)
             is_in_progress = not raw_completion
 
@@ -164,6 +183,15 @@ class StudentCoursesTransformer(BaseTransformer):
                     "Potential Credits Earned": potential,
                     "Term Grade": "",
                 }
+            )
+
+        if non_numeric_marks:
+            logger.error(
+                f"[StudentCourses] {non_numeric_marks} history row(s) carry a non-numeric Final Mark "
+                f"(scored as not-passing; credits not earned) — sample {first_sample}"
+            )
+            self._record_data_error(
+                context, "StudentCourses", "Final Mark", failed_rows=non_numeric_marks, sample=first_sample
             )
 
     @staticmethod
@@ -320,11 +348,21 @@ class StudentCoursesTransformer(BaseTransformer):
         return str(value).strip()
 
     @staticmethod
-    def _parse_mark_passing(mark_str: str) -> bool:
+    def _parse_mark_numeric(mark_str: str) -> Optional[float]:
+        """Numeric value of a mark, or None when it does not parse as a number."""
         try:
-            return float(mark_str) >= 50
+            return float(mark_str)
         except (ValueError, TypeError):
-            return False
+            return None
+
+    @classmethod
+    def _parse_mark_passing(cls, mark_str: str) -> bool:
+        """Passing = numeric mark >= 50. Non-numeric marks (letter grades,
+        "Pass") score as not-passing — legacy-PowerShell parity; the history
+        pass records those as data errors rather than changing the scoring.
+        """
+        value = cls._parse_mark_numeric(mark_str)
+        return value is not None and value >= 50
 
     @classmethod
     def _parse_date(cls, raw: str) -> Optional[datetime]:

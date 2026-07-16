@@ -1,6 +1,7 @@
 """Tests for student email generation from templates."""
 
 import pandas as pd
+import pytest
 
 from src.etl.transformer import DataTransformer
 
@@ -50,10 +51,14 @@ class TestGenerateStudentEmail:
         result = self.transformer.generate_student_email(row, "{student number}@school.ca")
         assert result == "12345@school.ca"
 
-    def test_missing_key_returns_empty(self):
+    def test_missing_key_raises_key_error(self):
+        """Fail-loud: a template key absent from the row is a config/column
+        mismatch and raises. StudentTransformer._generate_emails is the
+        resilient caller — it blanks only that cell and records a data error
+        (pinned in test_transform_students.py)."""
         row = pd.Series({"first name": "Alice"})
-        result = self.transformer.generate_student_email(row, "{student number}@school.ca")
-        assert result == ""
+        with pytest.raises(KeyError):
+            self.transformer.generate_student_email(row, "{student number}@school.ca")
 
     def test_empty_format_string(self):
         row = pd.Series({"student number": "12345"})
