@@ -16,20 +16,29 @@ from src.ui_flet.setup_flow import (
     STEP_ORDER,
     TOTAL_STEPS,
     DeliveryFact,
+    DowngradeInterrupt,
     FinishSummaryRow,
     FlowInputs,
+    ReconcileOutcome,
+    RunTimeSaveDecision,
     SetupStep,
     TaskArgs,
     auto_selected_district,
     can_advance,
     derive_flow,
+    downgrade_interrupt,
     finish_copy,
     finish_summary_rows,
+    folders_save_note,
     is_skippable,
     next_step,
     prev_step,
+    run_time_save_decision,
+    sftp_reconcile_suffix,
     step_number,
     task_args_changed,
+    task_args_from_persisted,
+    task_args_to_persisted,
 )
 
 # --------------------------------------------------------------------------- #
@@ -543,6 +552,193 @@ class TestTaskArgsChanged:
         # TaskArgs, so a change to them can never force a re-register (they're read at run time).
         fields = set(vars(self._args()))
         assert fields == {"input_dir", "output_dir", "sis_type", "sftp_enabled", "run_time"}
+
+
+# --------------------------------------------------------------------------- #
+# Persisted last-REGISTERED TaskArgs — the durable reconcile baseline (0034 S3-d)
+# --------------------------------------------------------------------------- #
+class TestTaskArgsPersistedRoundTrip:
+    def _args(self, **over) -> TaskArgs:
+        base = {
+            "input_dir": "/in",
+            "output_dir": "/out",
+            "sis_type": "myedbc",
+            "sftp_enabled": True,
+            "run_time": "03:00",
+        }
+        base.update(over)
+        return TaskArgs.of(**base)
+
+    def test_round_trip_is_lossless(self):
+        args = self._args()
+        assert task_args_from_persisted(task_args_to_persisted(args)) == args
+
+    def test_serialized_form_is_json_shaped(self):
+        # The record lives in config.json — plain str/bool values only, exactly the 5 fields.
+        raw = task_args_to_persisted(self._args())
+        assert set(raw) == {"input_dir", "output_dir", "sis_type", "sftp_enabled", "run_time"}
+        assert all(isinstance(v, (str, bool)) for v in raw.values())
+
+    def test_round_trip_survives_a_district_switch_comparison(self):
+        # The load-bearing S3-d scenario: the persisted record (old district) differs from a
+        # pending snapshot built after a Mapping switch — the reconcile must see a change.
+        registered = task_args_from_persisted(task_args_to_persisted(self._args(sis_type="myedbc")))
+        pending = self._args(sis_type="sd48myedbc")
+        assert registered is not None
+        assert task_args_changed(registered, pending) is True
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            None,  # no record (pre-field installs)
+            "not a dict",
+            42,
+            {},  # empty
+            {"input_dir": "/in"},  # missing fields
+            {  # wrong-typed string field
+                "input_dir": 5,
+                "output_dir": "/out",
+                "sis_type": "myedbc",
+                "sftp_enabled": True,
+                "run_time": "03:00",
+            },
+            {  # wrong-typed bool field
+                "input_dir": "/in",
+                "output_dir": "/out",
+                "sis_type": "myedbc",
+                "sftp_enabled": "yes",
+                "run_time": "03:00",
+            },
+        ],
+    )
+    def test_unusable_record_returns_none_never_raises(self, raw):
+        # Defensive-total by design: a hand-edited/absent record degrades to the mount-snapshot
+        # fallback (None) instead of crashing Settings.
+        assert task_args_from_persisted(raw) is None
+
+    def test_extra_keys_are_ignored(self):
+        raw = task_args_to_persisted(self._args())
+        raw["future_field"] = "ignored"
+        assert task_args_from_persisted(raw) == self._args()
+
+    def test_values_normalize_like_a_live_snapshot(self):
+        # Persisted values run through TaskArgs.of, so cosmetic whitespace never reads as a change.
+        raw = task_args_to_persisted(self._args())
+        raw["output_dir"] = "  /out  "
+        assert task_args_from_persisted(raw) == self._args()
+
+
+# --------------------------------------------------------------------------- #
+# Settings Save run-time persistence — config, not a register side-effect (0034 S3-b)
+# --------------------------------------------------------------------------- #
+class TestRunTimeSaveDecision:
+    def test_unchanged_value_persists_nothing(self):
+        assert run_time_save_decision(saved_run_time="03:00", field_run_time="03:00") == RunTimeSaveDecision(
+            persist=None, invalid=False
+        )
+
+    def test_whitespace_only_difference_is_unchanged(self):
+        assert run_time_save_decision(saved_run_time="03:00", field_run_time="  03:00  ") == RunTimeSaveDecision(
+            persist=None, invalid=False
+        )
+
+    def test_valid_edit_persists_the_normalized_value(self):
+        assert run_time_save_decision(saved_run_time="03:00", field_run_time=" 04:30 ") == RunTimeSaveDecision(
+            persist="04:30", invalid=False
+        )
+
+    @pytest.mark.parametrize("bad", ["25:00", "03:60", "3 am", "0300", ""])
+    def test_invalid_edit_flags_invalid_and_persists_nothing(self, bad):
+        decision = run_time_save_decision(saved_run_time="03:00", field_run_time=bad)
+        assert decision == RunTimeSaveDecision(persist=None, invalid=True)
+
+
+# --------------------------------------------------------------------------- #
+# Reconcile downgrade interrupt — no silent logon-type downgrade (0034 S3-a)     #
+# --------------------------------------------------------------------------- #
+class TestDowngradeInterrupt:
+    @pytest.mark.parametrize(
+        ("registered_unattended", "password_supplied", "interrupts"),
+        [
+            (True, False, True),  # THE case: unattended task + blank password → must ask
+            (True, True, False),  # password supplied → stays unattended, no downgrade possible
+            (False, False, False),  # was never unattended → nothing to downgrade
+            (False, True, False),
+        ],
+    )
+    def test_interrupt_truth_table(self, registered_unattended, password_supplied, interrupts):
+        result = downgrade_interrupt(registered_unattended=registered_unattended, password_supplied=password_supplied)
+        assert (result is not None) is interrupts
+
+    def test_choice_copy_is_byte_pinned(self):
+        # Owner-approved copy (2026-07-15) — the two explicit choices, verbatim; calm framing;
+        # no default that downgrades silently; cancel = no change.
+        interrupt = downgrade_interrupt(registered_unattended=True, password_supplied=False)
+        assert interrupt == DowngradeInterrupt()
+        assert interrupt.headline == "Keep the nightly sync running when you're signed out?"
+        assert interrupt.detail == (
+            "Your nightly schedule currently runs whether or not anyone is signed in. "
+            "Updating it without your Windows password would change it to run only while you're signed in."
+        )
+        assert interrupt.keep_unattended_label == "Keep running when signed out — re-enter the Windows password"
+        assert interrupt.signed_in_only_label == "Continue — the sync will only run while signed in"
+        assert interrupt.cancel_label == "Cancel"
+        assert interrupt.keep_next_headline == "Enter your Windows password to update the schedule"
+        assert interrupt.keep_next_detail == (
+            "Type your Windows account password below, then choose Register schedule — your new "
+            "settings will apply and the sync will keep running when you're signed out."
+        )
+        assert interrupt.cancelled_headline == "Schedule not updated"
+        assert interrupt.cancelled_detail == (
+            "Your settings are saved, but the nightly schedule still runs with your previous settings. "
+            "Save again whenever you're ready to update it."
+        )
+
+    def test_interrupt_carries_no_password_shaped_field(self):
+        # I1/I3 structural guard: the interrupt is COPY only — a password can't even ride it.
+        interrupt = DowngradeInterrupt()
+        assert all(isinstance(v, str) for v in vars(interrupt).values())
+        assert "password" not in {k.lower() for k in vars(interrupt)}
+
+
+# --------------------------------------------------------------------------- #
+# Reconcile-outcome Save note — honest, never "updating…" for an interrupt.     #
+# --------------------------------------------------------------------------- #
+class TestReconcileSaveNote:
+    def test_folders_note_dispatched_claims_updating(self):
+        # A genuinely dispatched re-register earns the optimistic "updating the schedule" note.
+        assert folders_save_note(ReconcileOutcome.DISPATCHED) == "Saved — updating the nightly schedule to match…"
+
+    def test_folders_note_interrupted_is_honest_and_defers(self):
+        # The reconcile only opened the downgrade dialog — nothing is updating yet, so the note must
+        # NOT claim the schedule is updating; it points the admin at the open choice.
+        note = folders_save_note(ReconcileOutcome.INTERRUPTED)
+        assert note == "Saved — confirm the schedule choice above."
+        assert "updating" not in note.lower()
+
+    def test_folders_note_none_is_plain_saved(self):
+        assert folders_save_note(ReconcileOutcome.NONE) == "Saved."
+
+    def test_folders_note_always_leads_with_saved(self):
+        # "Saved" is truthful for every outcome — the config fields DID persist regardless of what
+        # the schedule reconcile did (only the schedule clause is conditioned on the outcome).
+        for outcome in ReconcileOutcome:
+            assert folders_save_note(outcome).startswith("Saved")
+
+    def test_sftp_suffix_dispatched_claims_delivering(self):
+        assert sftp_reconcile_suffix(ReconcileOutcome.DISPATCHED) == " Updating the nightly schedule to deliver too…"
+
+    def test_sftp_suffix_interrupted_is_honest_and_defers(self):
+        suffix = sftp_reconcile_suffix(ReconcileOutcome.INTERRUPTED)
+        assert suffix == " Confirm the schedule choice above to update the nightly sync."
+        assert "updating" not in suffix.lower()
+
+    def test_sftp_suffix_none_is_empty(self):
+        # No live task to update → the base "SFTP credentials stored" note stands alone.
+        assert sftp_reconcile_suffix(ReconcileOutcome.NONE) == ""
+
+    def test_reconcile_outcome_members_are_the_three_states(self):
+        assert {o.value for o in ReconcileOutcome} == {"dispatched", "interrupted", "none"}
 
 
 # --------------------------------------------------------------------------- #

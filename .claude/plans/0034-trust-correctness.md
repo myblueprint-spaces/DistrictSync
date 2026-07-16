@@ -1,6 +1,25 @@
 # 0034 — Trust & correctness batch (post-v3.6.0)
 
-- **Status:** Queued — owner approved the batch 2026-07-15 **and pre-approved AUTONOMOUS
+## Verification record (2026-07-15, autonomous run, main @ 3ab300f)
+All cited claims re-verified against current main before implementation. Slices 1/2/3 grounding
+CONFIRMED (anchors: `mapping.py:151-167 _on_apply`; `convert.py:443-481 _confirm_and_deliver`
+rebuild-with-`anomaly_ack=True` at ~460; `setup.py:562-573 _reconcile` silent-downgrade path).
+ONE divergence: Slice 4(a)'s premise is partly stale — the no-usable-input path ALREADY writes a
+failed record (`src/etl/pipeline.py:471-477`, `error_category='no_input'`). Scope decision (per
+the escalation rule, no owner question needed): 4(a) covers only the still-silent `SystemExit`
+paths inside `run_pipeline` (input-dir missing ~428-430, config-load failure ~434-441);
+`main.py` argparse-level exits are out of scope (unreachable from tests; scheduled tasks bake
+validated args). Gate note: `bandit` requires `-c pyproject.toml` (bare form false-fails);
+`make` absent on this machine → direct python equivalent of `validate-config` used.
+
+- **Status:** IMPLEMENTED, PR-ready (2026-07-15 autonomous run) — all 4 slices landed on
+  `fix/0034-trust-correctness` one at a time, full gate suite green after each landing,
+  per-slice adversarial verify complete (slice 1 PASS + docstring polish; slice 2
+  CHANGES_REQUIRED → `_counts_source` success-guard + delivery-aware FAILED_DELIVERY copy,
+  re-gated PASS; slice 4 PASS + district-display memoization + 2 ROADMAP notes; slice 3
+  CHANGES_REQUIRED → `ReconcileOutcome` honest Save notes + `force_blank_password`,
+  re-gated). No blocked questions — the escalation rule was never triggered.
+  Owner approved the batch 2026-07-15 **and pre-approved AUTONOMOUS
   execution** ("can it do it in parallel autonomously so that i can … step away"). A fresh
   session executes end-to-end per the §Autonomous execution addendum below — no owner
   questions mid-run; it STOPS at a verified, PR-ready state (merge + release stay with the owner).

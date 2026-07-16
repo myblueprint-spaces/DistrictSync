@@ -323,6 +323,122 @@ class TestToRunRowFields:
         assert row.duration == "—"
 
 
+def _delivery_record(**overrides: object) -> dict:
+    """A deliver-from-disk record (0034 Slice 2): zero count keys by shape + the rider."""
+    base = _record(
+        Students=0,
+        Staff=0,
+        Family=0,
+        Classes=0,
+        Enrollments=0,
+        delivery_only=True,
+        source="manual",
+    )
+    base.update(overrides)
+    return base
+
+
+class TestDeliveryOnlyRows:
+    """Deliver-from-disk rows must read as deliveries of saved files, never 0-row builds."""
+
+    def test_clean_delivery_row_labels_saved_files_with_no_counts(self) -> None:
+        row = to_run_row(_delivery_record(), now=_NOW)
+        assert row.status_label == "Delivered saved files"
+        assert row.status_verdict is Verdict.HEALTHY
+        assert row.entity_counts == {}  # the table renders "—" cells, never "0 Students"
+        assert row.entity_total == 0
+        assert row.sftp is SftpDelivery.DELIVERED
+
+    def test_failed_delivery_row_labels_delivery_failed(self) -> None:
+        # NOT "Built, not delivered" — this attempt built nothing; only the upload failed.
+        row = to_run_row(_delivery_record(sftp_ok=False), now=_NOW)
+        assert row.status_label == "Delivery failed"
+        assert row.status_verdict is Verdict.FAILED
+        assert row.sftp is SftpDelivery.FAILED
+        assert row.entity_counts == {}
+
+    def test_clean_delivery_banner_stays_healthy(self) -> None:
+        banner = _banner(_delivery_record())
+        assert banner.verdict is Verdict.HEALTHY
+
+    def test_failed_delivery_only_banner_never_claims_a_build(self) -> None:
+        # The row label says "Delivery failed"; the banner above it must agree —
+        # a delivery-only failure built nothing this run.
+        banner = _banner(_delivery_record(sftp_ok=False))
+        assert banner.verdict is Verdict.FAILED
+        assert banner.detail == "The upload of your saved files failed."
+
+    def test_failed_delivery_after_a_build_keeps_the_build_copy(self) -> None:
+        banner = _banner(_record(sftp_attempted=True, sftp_ok=False))
+        assert banner.detail == "The most recent run built the data but the upload failed."
+
+
+# --------------------------------------------------------------------------- #
+# #3 — the Source column + the different-district note (0034 Slice 4)           #
+# --------------------------------------------------------------------------- #
+class TestSourceLabel:
+    @pytest.mark.parametrize(
+        ("source", "label"),
+        [
+            ("scheduled", "Nightly"),
+            ("manual", "Manual"),
+            ("cli", "Command line"),
+            ("unknown", "—"),
+        ],
+    )
+    def test_bounded_source_maps_to_friendly_label(self, source: str, label: str) -> None:
+        assert to_run_row(_record(source=source), now=_NOW).source == label
+
+    def test_missing_source_renders_dash(self) -> None:
+        # A pre-enrichment record has no source key — TOTAL, the neutral fallback.
+        assert to_run_row(_record(), now=_NOW).source == "—"
+
+    def test_out_of_set_source_is_never_echoed(self) -> None:
+        # Anything outside the bounded vocabulary renders the fallback, never the raw value.
+        row = to_run_row(_record(source=r"C:\evil\path"), now=_NOW)
+        assert row.source == "—"
+
+
+class TestDistrictNote:
+    def test_no_note_when_district_matches_active(self) -> None:
+        row = to_run_row(_record(sis_type="myedbc"), now=_NOW, active_sis="myedbc")
+        assert row.district_note is None
+
+    def test_rows_resolve_each_distinct_district_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The display resolution is a config READ — to_run_rows must resolve each distinct
+        # differing district once per call, never once per row.
+        calls: list[str] = []
+
+        def _counting(sis: str) -> str:
+            calls.append(sis)
+            return f"District {sis}"
+
+        monkeypatch.setattr("src.ui_flet.run_history.friendly_district_name", _counting)
+        records = [_record(sis_type="sd40myedbc") for _ in range(3)]
+        rows = to_run_rows(records, now=_NOW, active_sis="myedbc")
+        assert [r.district_note for r in rows] == ["Different district: District sd40myedbc"] * 3
+        assert calls == ["sd40myedbc"]
+
+    def test_note_when_district_differs(self) -> None:
+        row = to_run_row(_record(sis_type="zz_not_a_config"), now=_NOW, active_sis="myedbc")
+        # An unknown id falls back to the raw district id (a bounded config id, never a path).
+        assert row.district_note == "Different district: zz_not_a_config"
+
+    def test_real_district_resolves_to_friendly_display(self) -> None:
+        row = to_run_row(_record(sis_type="sd74myedbc"), now=_NOW, active_sis="myedbc")
+        assert row.district_note is not None
+        assert row.district_note.startswith("Different district: ")
+
+    def test_no_note_without_active_district(self) -> None:
+        # The active district must be KNOWN to establish a difference (never a guess).
+        row = to_run_row(_record(sis_type="sd74myedbc"), now=_NOW)
+        assert row.district_note is None
+
+    def test_no_note_when_record_lacks_district(self) -> None:
+        row = to_run_row(_record(), now=_NOW, active_sis="myedbc")
+        assert row.district_note is None
+
+
 # --------------------------------------------------------------------------- #
 # #3 — totality across every degradation axis (parametrized)                   #
 # --------------------------------------------------------------------------- #
@@ -337,6 +453,8 @@ _PARTIAL_RECORDS = [
     {"sftp_attempted": True},
     _record(),
     _record(status="failed", error=r"boom C:\path\x"),
+    _delivery_record(),
+    _delivery_record(sftp_ok=False),
 ]
 
 
@@ -390,7 +508,14 @@ class TestPrivacyNoLeak:
             rec = _record(error=f"FileNotFoundError: {self._SECRET}\\input.csv", sis_type="sd48myedbc", **extra)
 
             row = to_run_row(rec, now=_NOW)
-            row_strings = [row.when, row.status_label, row.duration, *[str(v) for v in row.entity_counts]]
+            row_strings = [
+                row.when,
+                row.status_label,
+                row.duration,
+                row.source,
+                str(row.district_note),
+                *[str(v) for v in row.entity_counts],
+            ]
             for s in row_strings:
                 assert self._SECRET not in s
                 assert self._RAW_ANOMALY not in s

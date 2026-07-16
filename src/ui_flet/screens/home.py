@@ -183,12 +183,11 @@ def _dashboard(
     only the schedule probe is threaded (it may spawn PowerShell).
     """
     records = read_run_records()
-    # Only the empty branch needs the store's birth stamp (fresh-start vs first-run copy);
-    # fetch it just there so a populated-history mount pays for exactly one store read.
-    store_created_at = None
-    if records == []:
-        meta = store_meta()
-        store_created_at = meta.get("created_at") if meta else None
+    # The store's birth stamp feeds the fresh-start empty copy AND the missed-run fresh-start
+    # guard (which must also hold when a populated table's newest run is old) — fetched
+    # unconditionally; a second tiny SQLite read on mount is the honest price.
+    meta = store_meta()
+    store_created_at = meta.get("created_at") if meta else None
     latest_ts = records[0].get("timestamp") if records else None
 
     container = ft.Column(spacing=22)

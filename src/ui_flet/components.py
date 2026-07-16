@@ -529,18 +529,40 @@ def _cell(text: str, *, weight: ft.FontWeight = ft.FontWeight.W_500, color: str 
     return ft.DataCell(content=ft.Text(text, size=13, weight=weight, color=color))
 
 
+def _source_cell(row: RunRow) -> ft.DataCell:
+    """The Source cell: the friendly origin label, with the muted different-district note beneath.
+
+    Both strings come pre-derived from the pure ``RunRow`` (bounded vocabulary / district display
+    — never a raw record value); this only stacks them when the note is present.
+    """
+    if not row.district_note:
+        return _cell(row.source)
+    return ft.DataCell(
+        content=ft.Column(
+            spacing=2,
+            tight=True,
+            controls=[
+                ft.Text(row.source, size=tokens.type_body, weight=ft.FontWeight.W_500, color=tokens.color_text),
+                ft.Text(row.district_note, size=tokens.type_caption, color=tokens.color_muted),
+            ],
+        )
+    )
+
+
 def run_table(rows: list[RunRow]) -> ft.Control:
     """The DS-1-styled ``ft.DataTable`` of past runs — the first ``ft.DataTable`` consumer.
 
     Columns mirror the proven Streamlit set MINUS the raw ``Error`` column (dropped for privacy):
-    **When · Status · Students · Staff · Family · Classes · Enrollments · [Courses · Student
-    courses] · SFTP · Warnings · Duration**. The 2 myBlueprint+ count columns render ONLY when at
-    least one displayed row has a non-zero count for them — decided TABLE-WIDE (one scan of all
-    rows), so a SpacesEDU district shows 5 count columns, not 7 with two all-zero columns.
+    **When · Status · Source · Students · Staff · Family · Classes · Enrollments · [Courses ·
+    Student courses] · SFTP · Warnings · Duration**. The 2 myBlueprint+ count columns render ONLY
+    when at least one displayed row has a non-zero count for them — decided TABLE-WIDE (one scan of
+    all rows), so a SpacesEDU district shows 5 count columns, not 7 with two all-zero columns.
 
     Every cell is a uniform string (a not-produced entity → "—"). Status is TEXT-first
     (``status_label``), with an optional AA-safe row tint from ``status_verdict`` (never
-    colour-only). SFTP renders a glyph + word. No sort / select / checkbox (YAGNI, read-only).
+    colour-only). Source is the bounded origin label ("Nightly" / "Manual" / "Command line" / "—"),
+    with the muted different-district note stacked beneath when present. SFTP renders a glyph +
+    word. No sort / select / checkbox (YAGNI, read-only).
     """
     # Table-wide decision: show a myBlueprint+ column only if ANY row carries a non-zero count.
     show_mbp = {key: any(row.entity_counts.get(key, 0) > 0 for row in rows) for key, _label in _ROW_MYBLUEPRINT_COLUMNS}
@@ -554,6 +576,7 @@ def run_table(rows: list[RunRow]) -> ft.Control:
     columns: list[ft.DataColumn] = [
         ft.DataColumn(label=_head("When")),
         ft.DataColumn(label=_head("Status")),
+        ft.DataColumn(label=_head("Source")),
     ]
     columns += [ft.DataColumn(label=_head(label), numeric=True) for _key, label in count_columns]
     columns.append(ft.DataColumn(label=_head("SFTP")))
@@ -565,6 +588,7 @@ def run_table(rows: list[RunRow]) -> ft.Control:
         cells: list[ft.DataCell] = [
             _cell(row.when),
             _cell(row.status_label, weight=ft.FontWeight.W_700),
+            _source_cell(row),
         ]
         for key, _label in count_columns:
             value = row.entity_counts.get(key)

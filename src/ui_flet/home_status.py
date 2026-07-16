@@ -69,6 +69,12 @@ STALE_AFTER_HOURS = 36
 One generous constant absorbs timezone/clock skew (KISS — no per-tz math for a tool an
 admin opens 2-3x/yr); staleness is only ever a WARNING, never a FAILED."""
 
+MISSED_RUN_AFTER_HOURS = 26
+"""The missed-run window (owner rule, 2026-07-15): a CONFIRMED-LIVE nightly schedule with no
+recorded run inside ~1 nightly cycle (+ 2h skew) means the sync we promised didn't arrive.
+Deliberately tighter than the schedule-unaware ``STALE_AFTER_HOURS`` proxy — this rule demands
+a LIVE read-back (never the config hint), so it can afford to warn a whole cycle earlier."""
+
 _RUN_HISTORY_FIX = "run_history"
 
 _CHECK_RUN_HISTORY_LABEL = "Check Run History"
@@ -188,6 +194,17 @@ def _data_errors_total(record: dict) -> int:
     return _as_int(data_errors.get("total", 0))
 
 
+def is_delivery_only(record: dict) -> bool:
+    """Whether this record is a deliver-from-disk attempt (0034 Slice 2) — pure + TOTAL.
+
+    A delivery ships an EARLIER build's committed CSVs, so its record deliberately carries
+    no build entity counts (the flat count keys are zeros by shape) — the ``delivery_only``
+    rider lets Home / Run History render it as a delivery, never as a 0-row build. Read via
+    ``.get`` so every pre-existing record (no rider) classifies as a build, unchanged.
+    """
+    return bool(record.get("delivery_only"))
+
+
 def verdict_for_reason(reason: LatestReason) -> Verdict:
     """Map a ``LatestReason`` to its ``Verdict`` — total over the enum.
 
@@ -230,13 +247,35 @@ def _as_int(value: object) -> int:
         return 0
 
 
-def _build_metrics(record: dict, *, now: datetime | None) -> HomeMetrics:
-    """Populate the metric tiles from a delivered-success record."""
+def _build_metrics(record: dict, *, now: datetime | None, counts_record: dict | None = None) -> HomeMetrics:
+    """Populate the metric tiles from a delivered-success record.
+
+    ``counts_record`` (default: the record itself) supplies the entity counts — a
+    delivery-only latest carries no build counts of its own, so the caller passes the
+    newest BUILD record instead (the roster the delivery actually shipped).
+    """
     return HomeMetrics(
-        entity_counts=_entity_counts(record),
+        entity_counts=_entity_counts(counts_record if counts_record is not None else record),
         last_run_display=friendly_timestamp(str(record.get("timestamp", "")), now=now),
         sftp_delivered=bool(record.get("sftp_ok")),
     )
+
+
+def _counts_source(records: list[dict], latest: dict) -> dict | None:
+    """The record whose entity counts describe what the latest run/delivery shipped.
+
+    A build record IS its own counts source. A delivery-only latest shipped the newest
+    SUCCESSFUL build's committed CSVs (a failed build never commits — atomic ``save_all``
+    rolls back — and its record carries zero counts), so its tiles fall back to the newest
+    ``status == "success"`` build; with no successful build on record there is no honest
+    count → ``None`` (no tiles — never a "0 Students" lie).
+    """
+    if not is_delivery_only(latest):
+        return latest
+    for record in records:
+        if not is_delivery_only(record) and record.get("status") == "success":
+            return record
+    return None
 
 
 def derive_home_status(
@@ -280,6 +319,13 @@ def derive_home_status(
     if schedule_attention is not None:
         return schedule_attention
 
+    # The missed-run fact (owner rule, 2026-07-15): a CONFIRMED-LIVE schedule, an established
+    # store, and no run record inside the window. Computed once, consulted at two slots below —
+    # it must beat the empty-state reassurance AND the warning-tier record rules (whose copy
+    # would describe a run that is over a day old by construction), but it must NEVER mask a
+    # FAILED verdict (failures above warnings — amber can't downgrade red).
+    missed_run = _is_missed_run(records, now=now, store_created_at=store_created_at, schedule_status=schedule_status)
+
     # Rule: no runs yet (empty but readable, configured). Two honest sub-states — the
     # run store is fresh for EVERY install after this update (no backfill from the polluted
     # log), so an established install must NOT be told "No sync has run yet":
@@ -292,6 +338,10 @@ def derive_home_status(
     # therefore conditioned ("If you used an earlier version…"), never a flat claim of hidden
     # history. The next-run reassurance derives from the LIVE read-back, never the raw config flag.
     if not records:
+        # Rule: missed run (empty store) — a LIVE schedule over an ESTABLISHED store with no
+        # runs at all is not a calm fresh start: the nightly we promised never arrived.
+        if missed_run:
+            return _missed_run_status()
         if app_config.has_completed_setup() or store_created_at:
             fresh = (
                 "New syncs will appear here from now on. "
@@ -347,14 +397,26 @@ def derive_home_status(
         )
 
     # Rule: SFTP delivery failed (ETL succeeded but the roster didn't reach SpacesEDU).
+    # A delivery-only failure built nothing this run — say so (0034 Slice 2 honesty).
     if reason is LatestReason.FAILED_DELIVERY:
         return HomeStatus(
             verdict=verdict_for_reason(reason),
             headline="Your roster didn't reach SpacesEDU",
-            detail="The data was built but the upload failed.",
+            detail=(
+                "The upload of your saved files failed."
+                if is_delivery_only(latest)
+                else "The data was built but the upload failed."
+            ),
             fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
             metrics=None,
         )
+
+    # Rule: missed run — the newest record is older than the window while the schedule is LIVE.
+    # Slotted below the two FAILED reasons (a red verdict is never downgraded to this amber) and
+    # above the warning-tier reasons: when it fires, their copy ("the last sync…") would describe
+    # a run over a day old — "nothing arrived last night" is the fresher, more actionable fact.
+    if missed_run:
+        return _missed_run_status()
 
     # Rule: anomaly / >20% drop — delivered but suspicious → attention, not failure.
     if reason is LatestReason.ANOMALY:
@@ -393,12 +455,15 @@ def derive_home_status(
         )
 
     # Rule: healthy — a recent, clean, delivered success. The reassurance the surface exists to give.
+    # A clean delivery-only latest counts as a fresh sync (the roster genuinely reached SpacesEDU),
+    # but its tiles come from the newest BUILD record — or no tiles at all, never zeros.
+    counts_record = _counts_source(records, latest)
     return HomeStatus(
         verdict=Verdict.HEALTHY,
         headline="Your roster is syncing",
         detail=f"Last sync delivered cleanly {friendly_timestamp(timestamp, now=now)}.",
         fix=None,
-        metrics=_build_metrics(latest, now=now),
+        metrics=_build_metrics(latest, now=now, counts_record=counts_record) if counts_record is not None else None,
     )
 
 
@@ -417,6 +482,49 @@ def _schedule_attention(schedule_status: ScheduleStatus | None) -> HomeStatus | 
         headline=schedule_status.headline,
         detail=schedule_status.detail,
         fix=FixAction(_OPEN_SETUP_LABEL, _SETUP_FIX),
+        metrics=None,
+    )
+
+
+def _is_missed_run(
+    records: list[dict],
+    *,
+    now: datetime | None,
+    store_created_at: str | None,
+    schedule_status: ScheduleStatus | None,
+) -> bool:
+    """Whether a CONFIRMED-LIVE schedule produced no run record inside the missed-run window.
+
+    Every fact must POSITIVELY hold (when in doubt, stay silent — a false "missed run" on day
+    one costs more trust than a one-day-late first warning; owner rule, 2026-07-15):
+
+    - the read-back is LIVE (the probe result, NEVER the config hint alone — D4 honesty);
+    - the fresh-start guard: the store's ``created_at`` is itself older than the window (a
+      day-one install hasn't missed anything yet; ``None``/unparseable → silent);
+    - no record's timestamp falls inside the last ``MISSED_RUN_AFTER_HOURS`` — an empty,
+      readable store counts (nothing ever arrived); with records, the newest must be
+      POSITIVELY older than the window (unparseable → can't establish the gap → silent).
+    """
+    if schedule_status is None or schedule_status.state is not ScheduleState.LIVE:
+        return False
+    if not is_stale(store_created_at or "", now, stale_after_hours=MISSED_RUN_AFTER_HOURS):
+        return False
+    if records:
+        return is_stale(str(records[0].get("timestamp", "")), now, stale_after_hours=MISSED_RUN_AFTER_HOURS)
+    return True
+
+
+def _missed_run_status() -> HomeStatus:
+    """The missed-run WARNING — a LIVE schedule promised a nightly sync and none arrived."""
+    return HomeStatus(
+        verdict=Verdict.WARNING,
+        headline="We expected a nightly sync that didn't arrive",
+        detail=(
+            "Your nightly schedule is registered, but no sync has been recorded in the last day. "
+            "If this computer was off overnight, the next sync should arrive normally — otherwise "
+            "check Run History and the schedule in Settings."
+        ),
+        fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
         metrics=None,
     )
 

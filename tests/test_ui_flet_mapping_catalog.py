@@ -23,7 +23,14 @@ from pathlib import Path
 
 import pytest
 
-from src.ui_flet.mapping_catalog import ConfigSummary, can_apply, list_configs, summarize_config
+from src.ui_flet.mapping_catalog import (
+    ConfigSummary,
+    can_apply,
+    list_configs,
+    post_apply_presentation,
+    summarize_config,
+)
+from src.ui_flet.schedule_status import ScheduleState
 from src.utils.paths import bundle_mappings_dir
 
 
@@ -428,3 +435,88 @@ def test_can_apply_revert_after_apply_is_possible() -> None:
     assert can_apply(b, "mbp_core") is False
     # Revert: persisted=B, pending=A → applyable again (the previously-impossible case).
     assert can_apply(a, "mbp_core") is True
+
+
+# --------------------------------------------------------------------------- #
+# post_apply_presentation — the post-Apply schedule-honesty truth table          #
+# (plan 0034 Slice 1: a registered task keeps converting the OLD district)       #
+# --------------------------------------------------------------------------- #
+_ALL_STATES: tuple[ScheduleState | None, ...] = (
+    ScheduleState.LIVE,
+    ScheduleState.MISSING,
+    ScheduleState.UNKNOWN,
+    None,  # probe pending / not run (non-Windows) — same honesty tier as UNKNOWN
+)
+
+
+@pytest.mark.parametrize("hint", [True, False])
+def test_live_schedule_warns_assertively_regardless_of_hint(hint: bool) -> None:
+    """A LIVE read-back is definitive: the notice asserts the stale district, hint irrelevant."""
+    pres = post_apply_presentation("Old District", schedule_state=ScheduleState.LIVE, hint_registered=hint)
+
+    assert pres.notice is not None
+    assert pres.notice.headline == "Your nightly schedule still uses Old District"
+    assert pres.notice.detail == "Open Settings and Save to update it to the new district."
+
+
+@pytest.mark.parametrize("state", [ScheduleState.UNKNOWN, None])
+def test_unconfirmed_with_hint_hedges_never_asserts(state: ScheduleState | None) -> None:
+    """UNKNOWN / probe-pending + the registered hint → the SAME notice, honestly hedged (D4).
+
+    The hint alone must never assert a live schedule — the copy says "may still use", and the
+    fix routing is identical (open Settings and Save).
+    """
+    pres = post_apply_presentation("Old District", schedule_state=state, hint_registered=True)
+
+    assert pres.notice is not None
+    assert pres.notice.headline == "Your nightly schedule may still use Old District"
+    assert pres.notice.detail == (
+        "We couldn't confirm the nightly schedule right now — "
+        "open Settings and Save to make sure it uses the new district."
+    )
+    # Hedged means hedged: the assertive claim never appears in the unconfirmed branch.
+    assert "still uses" not in pres.notice.headline
+
+
+@pytest.mark.parametrize("state", [ScheduleState.UNKNOWN, None])
+def test_unconfirmed_without_hint_raises_no_notice(state: ScheduleState | None) -> None:
+    """Unconfirmed + no registered hint → no notice (never nag over a schedule nobody set up)."""
+    pres = post_apply_presentation("Old District", schedule_state=state, hint_registered=False)
+
+    assert pres.notice is None
+
+
+@pytest.mark.parametrize("hint", [True, False])
+def test_missing_schedule_raises_no_notice(hint: bool) -> None:
+    """A definitively-absent task → no stale-district notice, even when the config expected one.
+
+    An expected-but-missing schedule is Home/Setup's attention signal (re-register), not a
+    stale-district risk — no task exists to keep converting the old district.
+    """
+    pres = post_apply_presentation("Old District", schedule_state=ScheduleState.MISSING, hint_registered=hint)
+
+    assert pres.notice is None
+
+
+@pytest.mark.parametrize("state", _ALL_STATES)
+@pytest.mark.parametrize("hint", [True, False])
+def test_healthy_detail_claims_folders_only_in_every_branch(state: ScheduleState | None, hint: bool) -> None:
+    """The HEALTHY band's detail is honest in EVERY branch: folders only, never the schedule.
+
+    Pins the removal of the old "Your folders and schedule are unchanged." reassurance — an
+    unchanged LIVE task still carries the OLD ``--sis``, so "schedule unchanged" was exactly
+    the hazard being masked.
+    """
+    pres = post_apply_presentation("Old District", schedule_state=state, hint_registered=hint)
+
+    assert pres.healthy_detail == "Your folders are unchanged."
+    assert "schedule" not in pres.healthy_detail.lower()
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_old_district_name_falls_back(blank: str) -> None:
+    """A blank pre-Apply district name (unset district) → "the previous district" (total)."""
+    pres = post_apply_presentation(blank, schedule_state=ScheduleState.LIVE, hint_registered=True)
+
+    assert pres.notice is not None
+    assert pres.notice.headline == "Your nightly schedule still uses the previous district"

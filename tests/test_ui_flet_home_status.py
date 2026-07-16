@@ -17,11 +17,13 @@ import pytest
 from src.config.app_config import AppConfig
 from src.scheduler.windows import ScheduleReadback
 from src.ui_flet.home_status import (
+    MISSED_RUN_AFTER_HOURS,
     STALE_AFTER_HOURS,
     HomeStatus,
     LatestReason,
     classify_latest_reason,
     derive_home_status,
+    is_delivery_only,
     is_stale,
     verdict_for_reason,
 )
@@ -221,6 +223,147 @@ class TestScheduleAttention:
         assert status.verdict is Verdict.HEALTHY
 
 
+class TestMissedRun:
+    """The owner rule (2026-07-15): a CONFIRMED-LIVE schedule + no run record in the last 26h +
+    an established store → the missed-run WARNING. Every guard failing → stay silent (a false
+    "missed run" on day one costs more trust than a one-day-late first warning)."""
+
+    _MISSED_HEADLINE = "We expected a nightly sync that didn't arrive"
+    # The store's birth stamp, comfortably older than the missed-run window.
+    _ESTABLISHED = (_NOW - timedelta(hours=MISSED_RUN_AFTER_HOURS + 48)).isoformat(timespec="seconds")
+    # A clean record just past the window (but well inside STALE_AFTER_HOURS).
+    _PAST_WINDOW = (_NOW - timedelta(hours=MISSED_RUN_AFTER_HOURS + 1)).isoformat(timespec="seconds")
+
+    def test_live_empty_established_store_warns_missed(self) -> None:
+        status = derive_home_status(
+            [], _CONFIGURED, now=_NOW, store_created_at=self._ESTABLISHED, schedule_status=_live_schedule()
+        )
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == self._MISSED_HEADLINE
+        assert status.fix is not None and status.fix.dest_id == "run_history"
+        assert status.metrics is None
+
+    def test_live_record_past_window_warns_missed(self) -> None:
+        status = derive_home_status(
+            [_record(timestamp=self._PAST_WINDOW)],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=self._ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == self._MISSED_HEADLINE
+
+    def test_live_recent_record_stays_healthy(self) -> None:
+        status = derive_home_status(
+            [_record()], _CONFIGURED, now=_NOW, store_created_at=self._ESTABLISHED, schedule_status=_live_schedule()
+        )
+        assert status.verdict is Verdict.HEALTHY
+
+    def test_fresh_store_guard_stays_silent(self) -> None:
+        # A store younger than the window (day-one install) has not missed anything yet.
+        fresh = (_NOW - timedelta(hours=2)).isoformat(timespec="seconds")
+        status = derive_home_status([], _CONFIGURED, now=_NOW, store_created_at=fresh, schedule_status=_live_schedule())
+        assert status.headline == "Run history starts fresh here"
+
+    def test_no_store_meta_stays_silent(self) -> None:
+        status = derive_home_status([], _CONFIGURED, now=_NOW, store_created_at=None, schedule_status=_live_schedule())
+        assert status.headline != self._MISSED_HEADLINE
+
+    def test_unparseable_created_at_stays_silent(self) -> None:
+        status = derive_home_status(
+            [], _CONFIGURED, now=_NOW, store_created_at="garbage", schedule_status=_live_schedule()
+        )
+        assert status.headline == "Run history starts fresh here"
+
+    def test_unconfirmed_schedule_never_fires_missed(self) -> None:
+        # D4 honesty: None (not probed) and UNKNOWN (query failed) never assert a miss — the
+        # schedule-unaware staleness proxy remains the honest fallback for an old clean record.
+        unknown = derive_schedule_status(
+            ScheduleReadback(found=None, error="denied"), hint_registered=True, latest_record_ts=None
+        )
+        for sched in (None, unknown):
+            status = derive_home_status(
+                [_record(timestamp=_OLD)],
+                _CONFIGURED,
+                now=_NOW,
+                store_created_at=self._ESTABLISHED,
+                schedule_status=sched,
+            )
+            assert status.headline == "No recent sync"
+
+    def test_confirmed_missing_schedule_does_not_fire_missed(self) -> None:
+        # An unexpected MISSING (manual-only install) is not a missed run — nothing was promised.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        status = derive_home_status([], cfg, now=_NOW, store_created_at=self._ESTABLISHED, schedule_status=missing)
+        assert status.headline != self._MISSED_HEADLINE
+
+    def test_failed_latest_is_never_masked_by_missed_run(self) -> None:
+        # Failures above warnings: an old FAILED record keeps the red verdict, not this amber.
+        status = derive_home_status(
+            [_record(status="failed", timestamp=self._PAST_WINDOW)],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=self._ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Last sync failed"
+
+    def test_failed_delivery_latest_is_never_masked_by_missed_run(self) -> None:
+        status = derive_home_status(
+            [_record(sftp_attempted=True, sftp_ok=False, timestamp=self._PAST_WINDOW)],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=self._ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Your roster didn't reach SpacesEDU"
+
+    def test_missed_run_precedes_old_anomaly_warning(self) -> None:
+        # Among WARNINGs the missed run is the fresher fact — the anomaly copy would describe
+        # a run that is over a day old.
+        status = derive_home_status(
+            [_record(anomalies=["ANOMALY: x"], timestamp=self._PAST_WINDOW)],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=self._ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.headline == self._MISSED_HEADLINE
+
+    def test_boundary_exactly_at_window_stays_silent(self) -> None:
+        exactly = (_NOW - timedelta(hours=MISSED_RUN_AFTER_HOURS)).isoformat(timespec="seconds")
+        status = derive_home_status(
+            [_record(timestamp=exactly)],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=self._ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.verdict is Verdict.HEALTHY  # strictly-greater-than, mirrors is_stale
+
+    def test_unparseable_newest_timestamp_stays_silent(self) -> None:
+        # Can't establish the gap → don't cry wolf (the record still classifies normally).
+        status = derive_home_status(
+            [_record(timestamp="garbage")],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=self._ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.headline != self._MISSED_HEADLINE
+
+    def test_detail_is_plain_language_no_raw_values(self) -> None:
+        status = derive_home_status(
+            [], _CONFIGURED, now=_NOW, store_created_at=self._ESTABLISHED, schedule_status=_live_schedule()
+        )
+        assert "26" not in status.detail  # the window is copy-free plain language ("the last day")
+        assert self._ESTABLISHED not in status.detail  # never the raw ISO
+
+
 class TestFailedRules:
     def test_failed_etl_is_failed_verdict(self) -> None:
         status = _derive(_record(status="failed"))
@@ -398,6 +541,84 @@ class TestVerdictForReason:
         assert verdict_for_reason(LatestReason.CLEAN) is Verdict.HEALTHY
 
 
+def _delivery_record(**overrides: object) -> dict:
+    """A deliver-from-disk record (0034 Slice 2): zero count keys by shape + the rider."""
+    base = _record(
+        Students=0,
+        Staff=0,
+        Family=0,
+        Classes=0,
+        Enrollments=0,
+        delivery_only=True,
+        source="manual",
+    )
+    base.update(overrides)
+    return base
+
+
+class TestDeliveryOnlyRecord:
+    """A delivery ships an EARLIER build — its record must never read as a 0-row build."""
+
+    def test_rider_discriminates_delivery_from_build(self) -> None:
+        assert is_delivery_only(_delivery_record()) is True
+        assert is_delivery_only(_record()) is False  # pre-existing records classify as builds
+
+    def test_clean_delivery_refreshes_freshness_with_the_builds_counts(self) -> None:
+        # The build is past the stale window, but the delivery re-dates the sync (the roster
+        # genuinely reached SpacesEDU) — and the tiles show the BUILD's counts, never zeros.
+        build = _record(timestamp=_OLD)
+        delivery = _delivery_record(timestamp=_RECENT)
+        status = derive_home_status([delivery, build], _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.metrics is not None
+        assert status.metrics.entity_counts["Students"] == 100
+        assert status.metrics.last_run_display == "5 hours ago"  # the delivery's timestamp
+        assert status.metrics.sftp_delivered is True
+
+    def test_delivery_with_no_build_on_record_shows_no_tiles(self) -> None:
+        # No build record to source counts from → no tiles at all — never a "0 Students" lie.
+        status = derive_home_status([_delivery_record()], _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.metrics is None
+
+    def test_delivery_over_failed_build_uses_the_successful_builds_counts(self) -> None:
+        # A failed build (zero counts — atomic save_all rolled back, nothing committed)
+        # sitting between the good build and the delivery must never feed the HEALTHY
+        # tiles: the delivery shipped the GOOD build's on-disk CSVs.
+        good = _record(timestamp=_OLD)
+        failed = _record(status="failed", timestamp=_OLD, Students=0, Staff=0, Family=0, Classes=0, Enrollments=0)
+        delivery = _delivery_record(timestamp=_RECENT)
+        status = derive_home_status([delivery, failed, good], _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.metrics is not None
+        assert status.metrics.entity_counts["Students"] == 100
+
+    def test_delivery_with_only_failed_builds_shows_no_tiles(self) -> None:
+        # No SUCCESSFUL build on record → no honest count exists → no tiles, never zeros.
+        failed = _record(status="failed", timestamp=_OLD, Students=0, Staff=0, Family=0, Classes=0, Enrollments=0)
+        status = derive_home_status([_delivery_record(), failed], _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.metrics is None
+
+    def test_failed_delivery_only_is_the_failed_delivery_verdict(self) -> None:
+        status = derive_home_status([_delivery_record(sftp_ok=False)], _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.FAILED
+        assert "didn't reach SpacesEDU" in status.headline
+        # Delivery-only failure built nothing this run — the copy must not claim a build.
+        assert status.detail == "The upload of your saved files failed."
+
+    def test_failed_delivery_after_a_build_keeps_the_build_copy(self) -> None:
+        status = derive_home_status([_record(sftp_ok=False)], _CONFIGURED, now=_NOW)
+        assert status.verdict is Verdict.FAILED
+        assert status.detail == "The data was built but the upload failed."
+
+    def test_build_latest_keeps_its_own_counts(self) -> None:
+        # Regression: a build latest is its own counts source (delivery records behind it).
+        status = derive_home_status([_record(), _delivery_record(timestamp=_OLD)], _CONFIGURED, now=_NOW)
+        assert status.metrics is not None
+        assert status.metrics.entity_counts["Students"] == 100
+
+
 # Every representative fixture → a valid HomeStatus, no exception (totality sweep).
 _SWEEP_INPUTS = [
     None,
@@ -412,6 +633,8 @@ _SWEEP_INPUTS = [
     [{}],
     [{"status": "success", "sftp_attempted": True}],
     [{"anomalies": "not-a-list"}],  # non-list anomalies must be tolerated
+    [_delivery_record()],
+    [_delivery_record(sftp_ok=False)],
 ]
 
 

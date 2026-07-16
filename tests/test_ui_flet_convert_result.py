@@ -36,6 +36,24 @@ class TestSummarizeDelivered:
         assert "SpacesEDU" not in headline
 
 
+class TestSummarizeDeliveredFromDisk:
+    def test_delivered_from_disk_is_healthy_and_never_claims_a_build(self) -> None:
+        """Deliver-from-disk (0034 Slice 2): the files shipped, but NOTHING was converted."""
+        result = ConvertResult(
+            status=ConvertStatus.DELIVERED_FROM_DISK,
+            sftp_attempted=True,
+            sftp_ok=True,
+        )
+        verdict, headline, detail = summarize(result)
+        assert verdict is Verdict.HEALTHY
+        assert headline == "Files delivered to SpacesEDU"
+        assert detail == "The files in your output folder were sent to SpacesEDU successfully."
+        # Honesty: a delivery-of-saved-files must not read as a fresh conversion/build.
+        for word in ("converted", "built"):
+            assert word not in headline.lower()
+            assert word not in detail.lower()
+
+
 class TestSummarizeBuiltNotDelivered:
     def test_exit3_booleans_map_to_failed_built_but_not_delivered(self) -> None:
         """sftp_attempted=True + sftp_ok=False → FAILED 'built but didn't reach SpacesEDU'."""

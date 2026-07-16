@@ -37,6 +37,16 @@ failure in the earlier steps still PROPAGATES to ``on_error`` (fail-loud); the u
 catch never widens over the build. A failed delivery never rolls back the build —
 the files stay written and the admin can retry.
 
+**Deliver from disk (0034 Slice 2):** EVERY deliver action — the post-build card, the
+BUILT_NOT_DELIVERED retry, and the standalone "Deliver the files in your output folder"
+card — runs ``deliver_job``, which uploads the ALREADY-COMMITTED top-level output CSVs
+(``save_all`` is atomic, so that set is never torn) and NEVER re-transforms. A
+between-build-and-deliver input change therefore cannot alter what ships, and the
+anomaly write-gate is untouched (it guards WRITES; a delivery writes nothing — the old
+deliver-by-rebuild's hardcoded ``anomaly_ack=True`` bypass is gone with the rebuild).
+The confirm dialog names the server + local folder once and carries the honest
+freshness fact ("Files last built …", from the newest on-disk CSV's mtime).
+
 **Write-in-flight close guard (IA-5b, C6):** a module-level flag
 (``_WRITE_IN_FLIGHT``) is set immediately before ``save_all`` and cleared in a
 ``finally``; ``is_write_in_flight()`` exposes it for ``shell._on_leave``. It is
@@ -68,10 +78,15 @@ from src.quality.report import DataQualityReport
 from src.sftp.uploader import SFTPUploader
 from src.ui_flet import components, tokens
 from src.ui_flet.convert_output import (
+    DeliverReadiness,
     can_run_convert,
+    freshness_fact,
+    newest_output_csv_mtime_iso,
     open_folder,
+    output_csvs_present,
     output_dir_is_set,
     resolved_output_caption,
+    standalone_deliver_state,
 )
 from src.ui_flet.convert_result import ConvertResult, ConvertStatus, summarize
 from src.ui_flet.filepicker import validate_input_dir
@@ -245,6 +260,45 @@ def convert_job(
     return built
 
 
+def deliver_job(sis_type: str) -> ConvertResult:
+    """Deliver the ALREADY-COMMITTED output CSVs from disk — never a re-transform (0034 Slice 2).
+
+    Off the UI thread (the same ``JobRunner`` seam as ``convert_job``). Uploads the
+    top-level ``*.csv`` set the last committed build left in the resolved output folder
+    (``save_all``'s atomic commit means that set is never torn); the input folder is
+    NEVER read, so a between-build-and-deliver input change cannot alter what ships, and
+    the anomaly write-gate is untouched (it guards WRITES; a delivery writes nothing).
+
+    Outcomes fold into the result shapes ``summarize`` already maps: success →
+    ``DELIVERED_FROM_DISK``; a failed upload (including a raced-away empty folder —
+    ``upload_csvs`` fails loud on no CSVs) → ``BUILT_NOT_DELIVERED`` (the exit-3 shape, a
+    CATEGORY only — never the raw exception / host / path). An unset output folder is a
+    gate/programming error → fail loud to ``on_error``. Both outcomes are recorded to the
+    run store as a ``delivery_only`` record (``source="manual"``) carrying NO build entity
+    counts — a delivery ships an earlier build, it isn't one.
+    """
+    t0 = time.monotonic()
+    cfg = AppConfig.load()
+    output_dir_value = (cfg.output_dir or "").strip()
+    if not output_dir_value:
+        raise ValueError("No output folder is configured — set one in Settings before delivering.")
+
+    try:
+        SFTPUploader(
+            host=cfg.sftp_host,
+            port=cfg.sftp_port,
+            username=cfg.sftp_username,
+            remote_path=cfg.sftp_remote_path,
+        ).upload_csvs(Path(output_dir_value), sis_type=sis_type or None)
+    except Exception:  # noqa: BLE001 - exit-3 shape: a failed delivery is a RESULT, not on_error
+        failed = ConvertResult(status=ConvertStatus.BUILT_NOT_DELIVERED, sftp_attempted=True, sftp_ok=False)
+        _record_manual_run(failed, sis_type=sis_type, elapsed=time.monotonic() - t0, delivery_only=True)
+        return failed
+    delivered = ConvertResult(status=ConvertStatus.DELIVERED_FROM_DISK, sftp_attempted=True, sftp_ok=True)
+    _record_manual_run(delivered, sis_type=sis_type, elapsed=time.monotonic() - t0, delivery_only=True)
+    return delivered
+
+
 def _read_gde_bytes(input_dir: Path) -> dict[str, bytes]:
     """Read every GDE file (``.csv``/``.txt``) in the folder as bytes, keyed by filename.
 
@@ -271,7 +325,7 @@ def _data_errors_total(data_errors: list[dict]) -> int:
     return sum(int(e.get("failed_rows", 0)) for e in (data_errors or []))
 
 
-def _record_manual_run(result: ConvertResult, *, sis_type: str, elapsed: float) -> None:
+def _record_manual_run(result: ConvertResult, *, sis_type: str, elapsed: float, delivery_only: bool = False) -> None:
     """Write a manual Convert run to the run-history store (source="manual"), best-effort.
 
     Manual runs used to never appear in Run History (``convert_job`` bypasses
@@ -280,6 +334,11 @@ def _record_manual_run(result: ConvertResult, *, sis_type: str, elapsed: float) 
     manual run finally shows up tagged ``manual``. A committed Convert always BUILT
     successfully → ``status="success"``; a failed SFTP delivery is the separate ``sftp_*``
     axis (the exit-3 shape). Strictly non-fatal — never changes the returned ``ConvertResult``.
+
+    ``delivery_only`` (0034 Slice 2) marks a ``deliver_job`` attempt: the record's flat count
+    keys stay zeros (a delivery ships an earlier build — its counts belong to that build's
+    record, never repeated here) and the rider lets ``home_status``/``run_history`` render it
+    as a delivery, not a 0-row build.
 
     Deliberate asymmetry with ``run_pipeline``: only COMMITTED manual runs are recorded —
     ``NO_INPUT``/``NO_OUTPUT``/``NEEDS_ANOMALY_ACK`` and mid-build failures write nothing,
@@ -298,6 +357,8 @@ def _record_manual_run(result: ConvertResult, *, sis_type: str, elapsed: float) 
         sis_type=sis_type,
         error_category="none",
     )
+    if delivery_only:
+        record["delivery_only"] = True  # rides free in the store's JSON blob (additive, no schema change)
     # Recording a manual run is best-effort — never fail the conversion. ``write_run_record``
     # already swallows sqlite/OS errors; suppress anything else too (belt-and-suspenders).
     with contextlib.suppress(Exception):
@@ -348,6 +409,7 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
     # File chips + missing-file warning (recomputed when the folder changes).
     # ------------------------------------------------------------------ #
     files_slot = ft.Column(spacing=10)
+    deliver_slot = ft.Column(spacing=18)
     result_slot = ft.Column(spacing=18)
     convert_spinner = ft.ProgressRing(width=20, height=20, visible=False)
     convert_caption = ft.Text("", size=13, color=tokens.color_muted, visible=False)
@@ -397,19 +459,23 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
     # ------------------------------------------------------------------ #
     # Run + result rendering (all UI mutation on the loop, never the worker).
     # ------------------------------------------------------------------ #
-    def _set_running(running: bool) -> None:
+    def _set_running(running: bool, *, caption: str = "Converting… this can take a moment for large extracts.") -> None:
         if running:
             convert_btn.disabled = True
         else:
             _refresh_convert_gate()  # single-source: re-derive district + output + input + can_start
         convert_spinner.visible = running
         convert_caption.visible = running
-        convert_caption.value = "Converting… this can take a moment for large extracts." if running else ""
+        convert_caption.value = caption if running else ""
 
     def _start_convert(*, anomaly_ack: bool = False, sftp_requested: bool = False) -> None:
         district = selected["district"]
         input_dir = input_field.value
         _set_running(True)
+        # The pre-run standalone deliver card retires once a job starts — from here the
+        # result flow owns every deliver affordance (one affordance at a time, and the
+        # card's build-time freshness fact can never go stale on screen).
+        deliver_slot.controls = []
         result_slot.controls = []
         page.update()
 
@@ -440,24 +506,60 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
             _set_running(True)
             page.update()
 
-    def _confirm_and_deliver() -> None:
-        """SFTP pre-flight confirm: name the destination (config values, never a secret).
+    def _start_deliver() -> None:
+        """Run ``deliver_job`` through the shared runner — the ONE deliver code path.
 
-        A SEPARATE explicit action after a successful build (mirrors the Streamlit
-        page's separate "Upload via SFTP" step) — never an auto-run side effect. On
-        Deliver, re-runs the ONE job with ``sftp_requested=True`` (re-transform +
-        write + upload). The exit-3 result renders the FAILED "built but not
-        delivered" verdict from booleans (never ``on_error``).
+        Deliver-from-disk (0034 Slice 2): the post-build card, the BUILT_NOT_DELIVERED
+        retry, and the standalone card all land here. The zip is named from the per-run
+        district when one is chosen, else the saved district (a standalone delivery may
+        have no dropdown pick). Honest progress + a terminal verdict banner; a pre-upload
+        failure (unset output folder) routes to the calm ``on_error`` card.
+        """
+        sis = selected["district"] or AppConfig.load().sis_type or ""
+        runner.state.reset()
+        _set_running(True, caption="Delivering… sending your files to SpacesEDU.")
+        deliver_slot.controls = []
+        result_slot.controls = []
+        page.update()
+
+        def _on_done(result: ConvertResult) -> None:
+            _set_running(False)
+            _render_result(result, selected["district"], input_field.value)
+            page.update()
+
+        def _on_error(_exc: BaseException) -> None:
+            # Privacy: the raw exception is NEVER surfaced — fixed category copy only.
+            _set_running(False)
+            result_slot.controls = [
+                components.ErrorCard(
+                    "The delivery couldn't start",
+                    "Something went wrong before the upload began. Your files were not changed.",
+                )
+            ]
+            page.update()
+
+        started = runner.run(page, lambda: deliver_job(sis), on_done=_on_done, on_error=_on_error)
+        if not started:  # already running — the single-flight guard held (C4)
+            _set_running(True, caption="Delivering… sending your files to SpacesEDU.")
+            page.update()
+
+    def _confirm_and_deliver() -> None:
+        """Deliver pre-flight confirm: labelled Server / Folder facts + the freshness fact.
+
+        A SEPARATE explicit action — never an auto-run side effect. Names the SFTP host
+        ONCE and the resolved local output folder (config values, never a secret), plus
+        the honest vintage of what would ship ("Files last built …", from the newest
+        on-disk CSV's mtime). On Deliver, runs ``deliver_job`` — uploads the committed
+        files from disk, NEVER a re-transform (the old rebuild path, with its hardcoded
+        ``anomaly_ack=True`` bypass, is gone). The exit-3 result renders the FAILED
+        "built but not delivered" verdict from booleans (never ``on_error``).
         """
         cfg = AppConfig.load()
-        destination = f"{cfg.sftp_host}:{cfg.sftp_port}{cfg.sftp_remote_path}"
+        local_folder = (cfg.output_dir or "").strip()
 
         def _on_deliver(_e: ft.ControlEvent) -> None:
             page.pop_dialog()
-            runner.state.reset()
-            result_slot.controls = []
-            page.update()
-            _start_convert(anomaly_ack=True, sftp_requested=True)
+            _start_deliver()
 
         def _on_cancel(_e: ft.ControlEvent) -> None:
             page.pop_dialog()
@@ -466,8 +568,18 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
             ft.AlertDialog(
                 modal=True,
                 title=ft.Text("Deliver to SpacesEDU?"),
-                content=ft.Text(
-                    f"Deliver the converted roster to {cfg.sftp_host}?\n\nDestination: {destination}",
+                content=ft.Column(
+                    tight=True,
+                    spacing=8,
+                    controls=[
+                        ft.Text(f"Server: {cfg.sftp_host}", size=13, color=tokens.color_text),
+                        ft.Text(f"Folder: {local_folder}", size=13, color=tokens.color_text),
+                        ft.Text(
+                            freshness_fact(newest_output_csv_mtime_iso(local_folder)),
+                            size=13,
+                            color=tokens.color_muted,
+                        ),
+                    ],
                 ),
                 actions=[
                     components.text_button("Cancel", _on_cancel),
@@ -595,8 +707,70 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
             ),
         )
 
+    def _standalone_deliver_card() -> ft.Control:
+        """The pre-run "Deliver the files in your output folder" card (0034 Slice 2).
+
+        The deliver-what's-on-disk affordance — also the post-navigation retry path after
+        a failed delivery (screens rebuild per visit, so the in-result retry card doesn't
+        survive navigation; this one re-derives from disk every visit). Carries the honest
+        freshness fact so the admin always knows the vintage of what would ship. Secondary
+        tier — "Convert now" stays the screen's one filled primary.
+        """
+        fact = freshness_fact(newest_output_csv_mtime_iso(output_dir_value))
+        return components.card(
+            content=ft.Column(
+                spacing=12,
+                controls=[
+                    ft.Text(
+                        "Deliver the files in your output folder",
+                        size=15,
+                        weight=ft.FontWeight.W_700,
+                        color=tokens.color_text,
+                    ),
+                    ft.Text(
+                        "Send the roster files already saved in your output folder to SpacesEDU — nothing is rebuilt.",
+                        size=13,
+                        color=tokens.color_muted,
+                    ),
+                    ft.Text(fact, size=13, color=tokens.color_muted),
+                    ft.Row(
+                        controls=[
+                            components.secondary_button(
+                                "Deliver to SpacesEDU",
+                                lambda _e: _confirm_and_deliver(),
+                                icon=ft.Icons.CLOUD_UPLOAD_ROUNDED,
+                            )
+                        ]
+                    ),
+                ],
+            ),
+        )
+
+    def _standalone_deliver_controls() -> list[ft.Control]:
+        """Render the pure ``standalone_deliver_state`` gate: hidden / not-ready / the card.
+
+        The keyring probe (``_sftp_credential_present``) runs only when delivery is
+        configured AND files exist — never a pointless credential read on an
+        unconfigured install. Disk facts are cheap build-time reads; the SFTP
+        CONNECT stays strictly on the ``JobRunner`` worker.
+        """
+        sftp_cfg = AppConfig.load()
+        configured = sftp_cfg.sftp_is_configured()
+        csvs_present = output_csvs_present(output_dir_value)
+        state = standalone_deliver_state(
+            sftp_configured=configured,
+            credential_present=configured and csvs_present and _sftp_credential_present(sftp_cfg),
+            csvs_present=csvs_present,
+        )
+        if state is DeliverReadiness.READY:
+            return [_standalone_deliver_card()]
+        if state is DeliverReadiness.NEEDS_CREDENTIAL:
+            return [_delivery_not_ready_card()]
+        return []
+
     _refresh_files()
     _refresh_convert_gate()
+    deliver_slot.controls = _standalone_deliver_controls()
 
     # Direction B page header (0033 Slice 2): the gradient hero demotes to a slim header; the
     # saved district identity rides in the header's right slot as a ``district_chip`` (the
@@ -624,7 +798,7 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
         ),
     )
 
-    return ft.Column(spacing=22, controls=[header, form, result_slot])
+    return ft.Column(spacing=22, controls=[header, form, deliver_slot, result_slot])
 
 
 # --------------------------------------------------------------------------- #
@@ -668,7 +842,8 @@ def _delivery_not_ready_card() -> ft.Control:  # pragma: no cover - Flet view gl
 
     Delivery is one credential away — route the admin to Setup rather than block the build
     (rendered above, untouched) or offer a deliver button that would fail. No button: Setup
-    is one rail-click away.
+    is one rail-click away. Shown both post-build and as the standalone deliver card's
+    gated state (0034 Slice 2), so the copy routes back HERE to deliver, not to a rebuild.
     """
     return components.card(
         content=ft.Column(
@@ -682,7 +857,7 @@ def _delivery_not_ready_card() -> ft.Control:  # pragma: no cover - Flet view gl
                 ),
                 ft.Text(
                     "SFTP delivery is set up, but no password is stored for this Windows account. "
-                    "Add it in Setup → SFTP delivery, then convert again to deliver.",
+                    "Add it in Setup → SFTP delivery, then come back here to deliver.",
                     size=13,
                     color=tokens.color_muted,
                 ),

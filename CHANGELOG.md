@@ -9,6 +9,65 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Fixed
+
+- **Killed the false silence on early failures.** The early-exit failures inside
+  the pipeline (input folder missing, district config missing or invalid) now
+  write a failed run record to both the diagnostic log and Run History before
+  exiting — Task Scheduler's exit code and Run History can no longer disagree
+  about whether the nightly sync failed. Bounded categories only in the store;
+  the exit-code contract is unchanged. (plan 0034 slice 4)
+
+### Added
+
+- **Missed-run warning on Home.** When the schedule read-back confirms a LIVE
+  nightly task but no run has been recorded in the last 26 hours (and the run
+  store is itself old enough that a run was genuinely expected — a day-one
+  install is never falsely warned), Home shows "We expected a nightly sync that
+  didn't arrive" with a route to Run History. A red failure always outranks
+  this amber warning. (plan 0034 slice 4)
+- **Run History shows where each run came from.** A new Source column reads
+  "Nightly", "Manual", or "Command line" ("—" for older records), plus a muted
+  "Different district: …" note when a run belongs to a district other than the
+  active one. (plan 0034 slice 4)
+
+### Changed
+
+- **Settings Save is now trustworthy about the nightly schedule.** Saving
+  Settings can no longer silently convert an unattended nightly task (one
+  registered with a Windows password, so it runs while signed out) into a
+  logged-on-only one: the app remembers how the task was registered and pauses
+  on an explicit choice — "Keep running when signed out — re-enter the Windows
+  password" or "Continue — the sync will only run while signed in" (Cancel
+  leaves the task untouched; the password itself is still never stored). The
+  Save also compares against what was *actually registered* — so after
+  switching districts in Mapping, opening Settings and pressing Save
+  re-registers the task with the new district even with no field edits,
+  exactly what the Mapping notice promises. An edited daily run time is saved
+  even when no schedule is registered (it previously silently reverted), and
+  the folders card's Save is now labelled "Save folders & district".
+  (plan 0034 slice 3)
+- **Delivering to SpacesEDU now sends the files already on disk — never a
+  rebuild.** Every "Deliver to SpacesEDU" action — the post-build deliver, the
+  failed-delivery retry, and a new standalone "Deliver the files in your output
+  folder" card on Convert — uploads the already-committed output CSVs straight
+  from your output folder. Delivering never re-runs the conversion, so what you
+  reviewed is exactly what ships, and a delivery can no longer silently
+  re-acknowledge a large roster-drop warning (the old rebuild-with-auto-ack
+  path is removed). The deliver confirmation shows labelled Server / Folder
+  facts plus an honest freshness line ("Files last built …") derived from the
+  files on disk; deliveries record in Run History as "Delivered saved files"
+  (or "Delivery failed") without pretending to be builds, and Home's tiles
+  keep showing the delivered build's real counts. (plan 0034 slice 2)
+- **Mapping is now honest about the nightly schedule when you switch districts.**
+  The post-Apply confirmation no longer claims "your folders and schedule are
+  unchanged" — it says "Your folders are unchanged." and, when a registered
+  nightly schedule exists (or can't be confirmed but is expected), shows a
+  warning that the schedule still uses (or may still use) the old district,
+  with an "Open Settings" button that routes to the Settings Save/re-register
+  flow. Schedule truth comes from the real off-thread Windows read-back —
+  never asserted from the saved setting alone. (plan 0034 slice 1)
+
 ## [3.6.0] - 2026-07-15
 
 The professional-grade desktop release: the "Branded Professional" design system
