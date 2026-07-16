@@ -232,6 +232,45 @@ class TestScheduleRegistrationFacts:
         assert cfg.schedule_task_args is None
 
 
+class TestWindowGeometryFields:
+    """0032 T2 #8: the additive window-geometry fields (persisted on exit, restored clamped)."""
+
+    def test_defaults_are_never_saved(self):
+        cfg = AppConfig()
+        assert cfg.window_width is None
+        assert cfg.window_height is None
+        assert cfg.window_left is None
+        assert cfg.window_top is None
+        assert cfg.window_maximized is False
+
+    def test_geometry_survives_save_roundtrip(self, config_dir):
+        AppConfig(
+            window_width=1100.0,
+            window_height=750.5,
+            window_left=-10.0,
+            window_top=40.0,
+            window_maximized=True,
+        ).save()
+        loaded = AppConfig.load()
+        assert loaded.window_width == 1100.0
+        assert loaded.window_height == 750.5
+        assert loaded.window_left == -10.0
+        assert loaded.window_top == 40.0
+        assert loaded.window_maximized is True
+
+    def test_old_config_file_without_the_fields_loads_defaults(self, config_dir):
+        # Back-compat: a pre-geometry config.json has none of the keys → additive defaults.
+        cfg_dir, cfg_file = config_dir
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg_file.write_text(
+            json.dumps({"input_dir": "/in", "output_dir": "/out", "sis_type": "myedbc"}),
+            encoding="utf-8",
+        )
+        cfg = AppConfig.load()
+        assert cfg.window_width is None
+        assert cfg.window_maximized is False
+
+
 class TestSftpIsConfigured:
     def test_not_configured_when_disabled(self):
         cfg = AppConfig(sftp_enabled=False)

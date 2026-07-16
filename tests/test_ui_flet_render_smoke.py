@@ -570,7 +570,7 @@ def test_setup_renders_unregister_affordance(stub_page, monkeypatch):
     Exercised via Settings mode, where the schedule section renders at the top level.
     """
     tree = _settings_tree(stub_page, monkeypatch)
-    assert any(getattr(c, "content", None) == "Unregister schedule" for c in _iter_controls(tree)), (
+    assert any(getattr(c, "content", None) == "Remove nightly sync" for c in _iter_controls(tree)), (
         "the schedule section must render an Unregister button"
     )
 
@@ -619,7 +619,7 @@ def test_register_worker_survives_crash(monkeypatch):
     captured: list = []
     tree = build_setup(_driving_page(captured))
     captured.clear()  # discard the on-mount readout probe marshal
-    _button_by_content(tree, "Register schedule").on_click(None)
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)
 
     assert len(captured) == 1, "the crashed worker must marshal exactly one result (no strand)"
     _coro, args = captured[0]
@@ -641,7 +641,7 @@ def test_unregister_worker_survives_crash(monkeypatch):
     captured: list = []
     tree = build_setup(_driving_page(captured))
     captured.clear()
-    _button_by_content(tree, "Unregister schedule").on_click(None)
+    _button_by_content(tree, "Remove nightly sync").on_click(None)
 
     assert len(captured) == 1, "the crashed worker must marshal exactly one result (no strand)"
     _coro, args = captured[0]
@@ -691,7 +691,7 @@ class TestWizardStepsRender:
 
         # Schedule step (step 4, skippable) reuses the register/unregister section.
         assert _has_text(tree, "Step 4 of 5")
-        assert any(getattr(c, "content", None) == "Register schedule" for c in _iter_controls(tree))
+        assert any(getattr(c, "content", None) == "Schedule nightly sync" for c in _iter_controls(tree))
         _button_by_content(tree, "Set up later").on_click(None)  # defer schedule → Finish
 
         # Finish step: neutral step title (#5) + the schedule-skipped honest headline (#1a) + copy.
@@ -719,7 +719,7 @@ class TestWizardStepsRender:
 
         live = ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="3:00 AM")
 
-        def _stub_schedule(page, config, *, on_status=None, on_registered=None):
+        def _stub_schedule(page, config, *, on_status=None, on_registered=None, on_schedule_changed=None):
             if on_status is not None:
                 on_status(live)  # deliver a LIVE read-back the moment the Schedule step builds
             return ft.Text("schedule"), setup_mod._ScheduleHandle(
@@ -856,7 +856,7 @@ def test_wizard_natural_order_bakes_sftp_into_registered_task(tmp_path, monkeypa
     assert cfg.sftp_enabled is True
 
     _button_by_content(tree, "Continue").on_click(None)  # delivery addressed → Schedule (step 4)
-    _button_by_content(tree, "Register schedule").on_click(None)  # bakes the task
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)  # bakes the task
 
     assert recorded.get("sftp") is True, "the task registered after Delivery must carry --sftp"
 
@@ -1336,7 +1336,7 @@ def test_wizard_backtrack_delivery_change_downgrades_the_finish_copy(tmp_path, m
 
     _button_by_content(tree, "Set up later").on_click(None)  # defer delivery → Schedule (step 4)
     _drain(captured)  # the on-mount read-back
-    _button_by_content(tree, "Register schedule").on_click(None)  # bakes the task WITHOUT --sftp
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)  # bakes the task WITHOUT --sftp
     _drain(captured)  # the register result + the post-register read-back
     assert cfg.schedule_registered is True
     assert cfg.schedule_task_args is not None and cfg.schedule_task_args["sftp_enabled"] is False
@@ -1381,7 +1381,7 @@ def test_wizard_finish_without_a_delivery_change_keeps_the_confident_claim(tmp_p
     _button_by_content(tree, "Save SFTP credentials").on_click(None)  # sftp_enabled BEFORE the bake
     _button_by_content(tree, "Continue").on_click(None)  # delivery addressed → Schedule
     _drain(captured)
-    _button_by_content(tree, "Register schedule").on_click(None)  # bakes the task WITH --sftp
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)  # bakes the task WITH --sftp
     _drain(captured)
     assert cfg.schedule_task_args is not None and cfg.schedule_task_args["sftp_enabled"] is True
     _button_by_content(tree, "Continue").on_click(None)  # LIVE → addressed → Finish
@@ -1428,7 +1428,7 @@ def test_register_without_a_password_persists_the_registration_facts(tmp_path, m
     captured: list = []
     tree = build_setup(_driving_page(captured))
     captured.clear()
-    _button_by_content(tree, "Register schedule").on_click(None)
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)
 
     assert recorded["called"] == 1
     coro, args = captured[-1]
@@ -1465,7 +1465,7 @@ def test_register_with_a_password_persists_the_unattended_fact(tmp_path, monkeyp
     tree = build_setup(_driving_page(captured))
     _textfield_by_label(tree, "Windows account password").value = "hunter2"
     captured.clear()
-    _button_by_content(tree, "Register schedule").on_click(None)
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)
 
     assert recorded["run_as_password"] == "hunter2"  # the ONLY sink — register_task
     coro, args = captured[-1]
@@ -1484,7 +1484,7 @@ def test_unregister_clears_the_registration_facts(tmp_path, monkeypatch):
     captured: list = []
     tree = build_setup(_driving_page(captured))
     captured.clear()
-    _button_by_content(tree, "Unregister schedule").on_click(None)
+    _button_by_content(tree, "Remove nightly sync").on_click(None)
 
     coro, args = captured[-1]
     asyncio.run(coro(*args))
@@ -1707,3 +1707,156 @@ class TestConvertColdStateAndInteraction:
         assert not _has_text_containing(tree, "Expected files not found in this folder")
         assert _has_text_containing(tree, "Not found yet")
         assert _has_text_containing(tree, "You can still convert")
+
+
+# 0032 W3c appends — About/support context + badge-freshness wiring            #
+# --------------------------------------------------------------------------- #
+def test_help_renders_the_about_block(stub_page, app_cfg, monkeypatch):
+    """T1 #9 render-smoke: the Help surface carries the About block — version line,
+    a "Copy version" affordance, and the release-notes link (all on 0.85.3 forms)."""
+    from src.ui_flet import about
+    from src.utils.version import app_version
+
+    tree = _assert_renders(lambda: build_help(stub_page, app_config=app_cfg), monkeypatch)
+
+    assert _has_text(tree, "About DistrictSync")
+    assert _has_text(tree, about.version_display(app_version()))
+    assert _has_text(tree, about.RELEASE_NOTES_URL)  # selectable offline fallback
+    copy_tooltips = [getattr(c, "tooltip", None) for c in _iter_controls(tree) if isinstance(c, ft.IconButton)]
+    assert "Copy version" in copy_tooltips
+    assert any(getattr(c, "content", None) == "See what's new" for c in _iter_controls(tree))
+
+
+def test_error_card_offers_the_log_folder_and_can_opt_out(monkeypatch, tmp_path):
+    """T1 #9: ErrorCard carries the "Open log folder" support affordance by default (the log
+    holds the detail the card deliberately hides), opens the app-data log dir through the ONE
+    OS-open helper, and a validation-style card can opt out."""
+    from pathlib import Path
+
+    card = components.ErrorCard("Something broke", "Calm detail.")
+    button = next(c for c in _iter_controls(card) if getattr(c, "content", None) == "Open log folder")
+
+    opened: list[str] = []
+    monkeypatch.setattr(components, "open_folder", lambda path: opened.append(path) or True)
+    monkeypatch.setattr(components, "user_log_file", lambda: tmp_path / "logs" / "etl_tool.log")
+    button.on_click(None)
+    assert opened == [str(Path(tmp_path) / "logs")]
+
+    plain = components.ErrorCard("Inline validation", log_folder=False)
+    assert not any(getattr(c, "content", None) == "Open log folder" for c in _iter_controls(plain))
+
+
+def test_open_log_folder_never_raises(monkeypatch):
+    """The affordance is best-effort: a broken profile path must never crash a view."""
+
+    def _boom():
+        raise OSError("profile locked")
+
+    monkeypatch.setattr(components, "user_log_file", _boom)
+    components.open_log_folder()  # must not raise
+
+
+def test_copy_button_copies_and_confirms(monkeypatch):
+    """The copy_button factory: an async 0.85.3 handler that awaits Clipboard.set and
+    confirms with a SnackBar ("Copied."); a clipboard failure paints the manual fallback."""
+    page = MagicMock()
+    copied: list[str] = []
+
+    class _StubClip:
+        async def set(self, value: str) -> None:
+            copied.append(value)
+
+    monkeypatch.setattr(components, "_ensure_clipboard", lambda p: _StubClip())
+    button = components.copy_button(page, "3.4.0", tooltip="Copy version")
+    assert isinstance(button, ft.IconButton)
+    assert button.tooltip == "Copy version"
+
+    asyncio.run(button.on_click(None))
+    assert copied == ["3.4.0"]
+    snack = page.show_dialog.call_args[0][0]
+    assert isinstance(snack, ft.SnackBar)
+    assert snack.content.value == "Copied."
+
+    # Failure path: the calm manual fallback (the value is always selectable beside it).
+    class _BrokenClip:
+        async def set(self, value: str) -> None:
+            raise RuntimeError("no session")
+
+    monkeypatch.setattr(components, "_ensure_clipboard", lambda p: _BrokenClip())
+    asyncio.run(components.copy_button(page, "x").on_click(None))
+    snack = page.show_dialog.call_args[0][0]
+    assert "select the text" in snack.content.value
+
+
+def test_ensure_clipboard_registers_the_service_once():
+    """The Clipboard service registers on page.services ONCE (the filepicker precedent)."""
+    page = MagicMock()
+    page.services = []
+    first = components._ensure_clipboard(page)
+    second = components._ensure_clipboard(page)
+    assert first is second
+    assert page.services == [first]
+    assert isinstance(first, ft.Clipboard)
+
+
+def test_confirmed_register_and_unregister_fire_the_shell_badge_refresh(tmp_path, monkeypatch):
+    """T1 #8: build_setup threads on_schedule_changed to the schedule section — a CONFIRMED
+    register success AND a confirmed unregister both fire it (the shell re-probes the rail's
+    Setup badge), so the boot-time badge can't go stale after an in-app schedule change."""
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type="myedbc",
+        setup_completed=True,
+        schedule_registered=False,
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    _benign_probe(monkeypatch)
+    _record_register(monkeypatch)
+    monkeypatch.setattr("src.scheduler.windows.delete_task", lambda name: (True, "ok"))
+    monkeypatch.setattr("src.scheduler.linux.delete_cron", lambda: (True, "ok"))
+
+    fired: list[str] = []
+    captured: list = []
+    tree = build_setup(_driving_page(captured), on_schedule_changed=lambda: fired.append("changed"))
+    captured.clear()
+
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))  # marshalled _apply_result → confirmed success
+    assert fired == ["changed"]
+
+    captured.clear()
+    _button_by_content(tree, "Remove nightly sync").on_click(None)
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))  # marshalled _apply_unregister → confirmed removal
+    assert fired == ["changed", "changed"]
+
+
+def test_failed_register_does_not_fire_the_badge_refresh(tmp_path, monkeypatch):
+    """T1 #8 negative: a register that FAILS changes no schedule — the badge callback stays quiet."""
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type="myedbc",
+        setup_completed=True,
+        schedule_registered=False,
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    _benign_probe(monkeypatch)
+    monkeypatch.setattr("src.scheduler.windows.register_task", lambda **kw: (False, "access is denied"))
+    monkeypatch.setattr("src.scheduler.linux.register_cron", lambda *a, **kw: (False, "crontab missing"))
+
+    fired: list[str] = []
+    captured: list = []
+    tree = build_setup(_driving_page(captured), on_schedule_changed=lambda: fired.append("changed"))
+    captured.clear()
+
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))
+    assert fired == []

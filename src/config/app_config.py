@@ -78,6 +78,17 @@ class AppConfig:
     sftp_username: str = ""
     sftp_remote_path: str = "/files"
 
+    # Window geometry (0032 T2 #8): the last-seen window bounds, persisted on exit by the
+    # Flet shell and restored CLAMPED to the current work area at the next launch — the
+    # saved values are never trusted raw (see ``src/ui_flet/geometry.py``: an off-screen
+    # position is pulled back so the title bar is always reachable). Additive with safe
+    # defaults so old config.json files load unchanged; ``None`` = "never saved".
+    window_width: float | None = None
+    window_height: float | None = None
+    window_left: float | None = None
+    window_top: float | None = None
+    window_maximized: bool = False
+
     @classmethod
     def load(cls) -> AppConfig:
         """Load config from disk, returning defaults if the file doesn't exist."""
