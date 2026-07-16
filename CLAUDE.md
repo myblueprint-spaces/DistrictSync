@@ -51,8 +51,10 @@ Enforced in CI (non-UI modules). Requires `types-paramiko` and `types-PyYAML` st
 
 ### Security Scan
 ```bash
-bandit -r src/ -q
+bandit -r src/ -q -c pyproject.toml
 ```
+
+The `-c pyproject.toml` flag is REQUIRED — it applies the `[tool.bandit]` skips (B404/B603/B607). The bare form false-fails with 4 pre-existing Low subprocess findings in `src/scheduler/`. CI uses the `-c` form.
 
 ### Validate configs
 ```bash
