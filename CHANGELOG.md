@@ -9,6 +9,23 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Security
+
+- **The SFTP upload now verifies the server's identity, not just its name.**
+  Delivery checks the server's SSH host key against pinned keys in
+  `config/known_hosts` (a per-district override in the DistrictSync app-data
+  folder wins without a new release). A pinned-key mismatch hard-fails delivery
+  with a clear "server identity changed" error — the man-in-the-middle case —
+  and is never retried; hosts without a pinned key connect exactly as before,
+  with a log warning pointing at the pinning file. Replaces the previous
+  trust-on-first-use policy. (pre-partner batch W1a)
+- **Transient delivery failures now retry.** A network blip during upload
+  retries up to 3 attempts with 2s/4s backoff instead of failing the nightly
+  run outright. Wrong-password and host-key failures are never retried
+  (account-lockout / MITM safety); the exit-code contract is unchanged, and
+  Setup's "Test connection" still answers immediately. A failed connect also
+  no longer leaks the SSH client socket. (W1a)
+
 ### Fixed
 
 - **Killed the false silence on early failures.** The early-exit failures inside
