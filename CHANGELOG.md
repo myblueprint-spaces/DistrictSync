@@ -28,6 +28,24 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Fixed
 
+- **Linux scheduling can no longer wipe other cron jobs.** A failed
+  `crontab -l` read (e.g. permission denied) now aborts Register/Unregister
+  with a loud error instead of rewriting the whole crontab from a blind read;
+  classification is exit-code-first. Unregistering a missing entry reads as
+  the calm "No schedule was registered — nothing changed". (pre-partner W2b)
+- **Settings Save honesty, completed.** A Save whose schedule re-register is
+  refused by the register flow's own gate (e.g. an invalid run time) no longer
+  claims "updating the nightly schedule…" — both Save sites say the schedule
+  wasn't updated and name the fix (`ReconcileOutcome.BLOCKED`). SFTP port
+  typos now get "That port isn't a number" instead of the host-allowlist
+  message. And registering the schedule, going Back, and enabling delivery
+  before Finish gets an honest amber finish line instead of claiming tonight's
+  run will deliver with a task baked without `--sftp`. (W2b)
+- **Dev hygiene.** The logging fallback now rotates (5 MB × 3) instead of
+  growing unbounded; the >50%-missing quality warning and its exactly-50%
+  boundary are test-pinned; the flaky schedule-probe render-smoke test is
+  deterministic; a new static guard fails CI on un-awaited async window calls;
+  the throwaway Flet prototype spike is deleted. (W2d)
 - **A vanishing roster file now raises the same alarm as a big drop.** An
   entity the district config produces that suddenly transforms to zero rows
   (or disappears entirely) fires the ANOMALY warning — on the CLI it warns and

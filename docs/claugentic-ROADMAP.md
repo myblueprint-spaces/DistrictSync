@@ -48,15 +48,10 @@ _Housekeeping 2026-07-16: the 2026-06-25 audit backlog was verified item-by-item
 ## Later  _(verified still open 2026-07-16; post-launch)_
 
 **Correctness & resilience (small):**
-- Linux `crontab -l` read failure wipes other cron jobs (`linux.py:107-115` ignores the exit code; destructive). **Promote to Now the moment any partner runs Linux/macOS.** _(audit #5)_
 - Same-second staging/backup dir collision — add a PID/uuid suffix + `exist_ok=False` or an output-dir lock (`loader.py:71-74`). _(audit #7)_
 - Hard-kill torn-output reconcile + aged `.tmp_`/`.bak_`/`archive_` sweep on startup. _(audit #8 · M)_
 - `_connect` leaks the paramiko client on a failed Test Connection — close before re-raising (`uploader.py:96-129`). _(audit #10)_
 - School-year disagreement across sources silently picks the first — collect + warn (`base.py:762-768`). _(audit #14)_
-- Fallback logging handler has no rotation (`logger.py`). _(audit #17)_
-- `_register` early-return still reports `DISPATCHED` — a malformed run time paints "updating…" beside a run-time error; have `_register` report actual dispatch. _(0034 S3 re-gate residual)_
-- Non-numeric SFTP port mislabels as "host not allowed" (`setup.py:1309-1318`) — fold into the 0035 no-dead-end copy sweep. _(0029 deferral)_
-- Wizard backtrack desync guard — Schedule re-entry/Finish doesn't re-register when `sftp_enabled` changed after registering (Settings Save self-heals since 0034 S3). _(0029 deferral · M)_
 - Surface schedule students absent from the demographic as a quality warning (silently dropped today; large gaps already trip the >20% alarm) — fold into 0035 quality-signal work. _(in-house process item)_
 
 **Config & data (owner input where noted):**
@@ -66,13 +61,8 @@ _Housekeeping 2026-07-16: the 2026-06-25 audit backlog was verified item-by-item
 - StudentCourses active filtering — **owner decision**: should inactive/graduated students' transcripts be emitted? _(T3.12)_
 
 **Test & dev hygiene:**
-- Assert the >50%-missing quality warning (+ exact-50% boundary) in tests. _(audit #13)_
-- Flaky render-smoke test `test_no_edit_save_after_mapping_switch_reregisters_from_the_persisted_args` — stub the probe-thread kick, not just the probe. _(0034 residual)_
-- Session-teardown real-profile assertion (the isolation canary runs mid-suite; a leak scheduled after it goes uncaught). _(0029 deferral)_
-- Static-ban un-awaited `page.window.destroy()/close()/center()` in the AST scan (the silent-no-op-Exit class). _(0029 deferral)_
 - SHA-pin all GitHub Actions (every action is a mutable `@vN`; do `softprops/action-gh-release` first). _(security hygiene)_
-- Delete `docs/reference/flet-prototype-spike/` + fork branch `ci/flet-xplatform-verify`; re-home the two doc references first (`shell.py:5`, `FLET_1.0_CONVENTIONS.md:172`). _(CUT-1 leftover)_
-- Linux `interpret_unregister` absent-markers don't match crontab's "no crontab for user" phrasing. _(0029 deferral; Linux-partner trigger)_
+- Delete the fork branch `ci/flet-xplatform-verify` (owner-only): `git push https://github.com/sh4npeiris/DistrictSync.git --delete ci/flet-xplatform-verify` — the spike dir itself was deleted in the pre-partner batch. _(CUT-1 remainder.)_
 
 **Refactor program (owner-queued after 0035/0036; landing a large refactor pre-launch is risk, not value — YAGNI verdict 2026-07-16):**
 - T1.1 typed-config field Strategy (L — kills `classify_field`/`to_raw_dict` round-trip; subsumes T3.10 idempotence nit) · T1.2 debloat `BaseTransformer` + fix the `BlendedClassDetector` LSP smell (L) · T2.1 typed `ClassArtifacts` handoff (M — KISS-check when picked up) · T2.2 single `config.active_entities()` for the 4 duplicated selection sites (M) · T2.3 Scheduler Protocol + factory (M — platform dispatch now at ~17 sites) · T2.4 validate-at-boundary finish (M — `astype(str).str.strip()` grew 22→33 sites; dead `check_required_entities`) · T3.1 `EnrollmentSource` strategies (M — KISS-check) · T3.2 decompose `BlendedClassDetector.detect` (S) · T3.4 hoist the grade→CEDS→homeroom split (S, 4 sites) · T3.5 delete dead `helpers.py` trio + re-home zip helpers (S) · T3.8 `resolve_column()` helper + one shared `DATE_FORMATS` (S) · T3.9 document `_deep_merge` list-replace semantics (S).
