@@ -29,7 +29,7 @@ from collections.abc import Callable
 import flet as ft
 
 from src.config.app_config import AppConfig
-from src.ui_flet import components, nav, nav_rail, tokens
+from src.ui_flet import components, geometry, nav, nav_rail, tokens
 from src.ui_flet.screens.convert import build_convert, is_write_in_flight
 from src.ui_flet.screens.help import build_help
 from src.ui_flet.screens.home import build_home
@@ -151,6 +151,41 @@ def _on_leave(page: ft.Page) -> None:  # noqa: ARG001  (seam — read-only, neve
     return None
 
 
+def _persist_window_geometry(page: ft.Page) -> None:
+    """Best-effort: remember the window bounds for the next launch (0032 T2 #8).
+
+    Reads whatever ``page.window`` currently reports (the Flet client patches window
+    properties back to the Python dataclass) through the TOTAL ``geometry.persist_plan``:
+    a mock/absent/NaN value keeps the previously-saved one, and a maximized window keeps
+    its previous normal-state bounds while recording ``maximized=True``. NEVER raises —
+    geometry persistence must never block or break an exit path.
+    """
+    try:
+        cfg = AppConfig.load()
+        saved = geometry.persist_plan(
+            current_width=getattr(page.window, "width", None),
+            current_height=getattr(page.window, "height", None),
+            current_left=getattr(page.window, "left", None),
+            current_top=getattr(page.window, "top", None),
+            current_maximized=getattr(page.window, "maximized", None),
+            previous=geometry.SavedGeometry(
+                width=cfg.window_width,
+                height=cfg.window_height,
+                left=cfg.window_left,
+                top=cfg.window_top,
+                maximized=cfg.window_maximized,
+            ),
+        )
+        cfg.window_width = saved.width
+        cfg.window_height = saved.height
+        cfg.window_left = saved.left
+        cfg.window_top = saved.top
+        cfg.window_maximized = saved.maximized
+        cfg.save()
+    except Exception:  # noqa: BLE001 - advisory persistence; the exit path must stay unblockable
+        logger.debug("Window geometry not persisted (best-effort).", exc_info=True)
+
+
 async def _close_window(page: ft.Page) -> None:
     """The ONE exit path — shared by the Exit button (``do_exit``) and the OS close
     event (``on_window_event``) so the two can never drift.
@@ -162,8 +197,14 @@ async def _close_window(page: ft.Page) -> None:
     the ``python → python → flet.exe`` tree — zero orphans, PLAT-0). ``os._exit(0)`` stays
     as the last-resort fallback if ``destroy()`` can't complete, so the host process can
     never orphan. The zero-orphan ``page.on_disconnect`` path is untouched.
+
+    Window geometry is persisted HERE, before ``destroy()`` (0032 T2 #8): the in-app Exit
+    button always passes through, and the OS title-bar close does too whenever its CLOSE
+    event reaches Python before teardown (best-effort by design — persistence is advisory
+    and never blocks the proven zero-orphan close).
     """
     _on_leave(page)
+    _persist_window_geometry(page)
     try:
         await page.window.destroy()
     except Exception:
@@ -185,12 +226,40 @@ def main(page: ft.Page) -> None:
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme = build_theme()
 
+    # Startup-only snapshot: drives the nav MODEL's launch selection at build time (the rail
+    # ORDER is fixed and config-independent — D7). Keeping the startup config here is a bounded,
+    # known remainder — the launch predicate re-keys from `needs_setup` to `setup_completed` in
+    # Slice 5; every SCREEN below already loads AppConfig fresh, so display state is never stale.
+    # Loaded BEFORE the sizing block since the geometry restore reads the saved window bounds.
+    app_cfg = AppConfig.load()
+
     # --- window sizing + brand icon (native mode only; harmless in web) ----- #
     try:
-        page.window.width = 1180
-        page.window.height = 860
-        page.window.min_width = 940
-        page.window.min_height = 680
+        # Geometry restore (0032 T2 #8): the saved bounds via the pure `geometry.restore_plan`
+        # — size shrunk to the current work area, position applied only CLAMPED inside it (a
+        # window restored onto a since-removed monitor is a support call), first-run height
+        # min(860, work-area height). Defaults/minimums are single-sourced in `geometry`.
+        plan = geometry.restore_plan(
+            geometry.SavedGeometry(
+                width=app_cfg.window_width,
+                height=app_cfg.window_height,
+                left=app_cfg.window_left,
+                top=app_cfg.window_top,
+                maximized=app_cfg.window_maximized,
+            ),
+            geometry.probe_work_area(),
+        )
+        page.window.width = plan.width
+        page.window.height = plan.height
+        page.window.min_width = geometry.MIN_WIDTH
+        page.window.min_height = geometry.MIN_HEIGHT
+        if plan.left is not None:
+            page.window.left = plan.left
+        if plan.top is not None:
+            page.window.top = plan.top
+        if plan.maximized:
+            # Set LAST among the bounds so an unmaximize returns to the restored size.
+            page.window.maximized = True
         # Brand the running window/title-bar/taskbar with the myBlueprint mark
         # (owner decision 2026-07-15: myB on the bar up top; the EXE file keeps the
         # DistrictSync sync mark via flet-pack --icon). Resolved via the pure
@@ -199,23 +268,30 @@ def main(page: ft.Page) -> None:
         page.window.icon = str(paths.window_icon_path())
     except Exception:  # nosec B110 — window sizing/icon are native-only; harmless no-op in web mode
         pass
-
-    # Startup-only snapshot: drives the nav MODEL's launch selection at build time (the rail
-    # ORDER is fixed and config-independent — D7). Keeping the startup config here is a bounded,
-    # known remainder — the launch predicate re-keys from `needs_setup` to `setup_completed` in
-    # Slice 5; every SCREEN below already loads AppConfig fresh, so display state is never stale.
-    app_cfg = AppConfig.load()
     model = nav.nav_model(app_cfg)
     screens = build_screens(model.destinations)
+
     # Config-freshness (D1): the screens that render config-derived state bind a fresh
     # `AppConfig.load()` per invocation (the supplier pattern Setup/Convert already use) — NOT the
     # startup instance — so switching district / finishing setup propagates on the next navigation
     # or Refresh, never only after a restart. `build_screens` values stay `Callable[[], ft.Control]`
     # (a plain lambda), so `render_by_id`'s uniform `screens[dest_id]()` call is untouched (RC4).
     #
-    # Setup + Convert already load AppConfig fresh internally (they take only `page`), so they keep
-    # the `functools.partial(build_*, page)` mount form.
-    screens["setup"] = functools.partial(build_setup, page)
+    # Setup + Convert already load AppConfig fresh internally, so they keep the
+    # page-only mount form (Convert stays a `functools.partial`).
+    #
+    # Setup-badge freshness (0032 T1 #8): the rail's attention badge is probed once at boot,
+    # so a register/unregister SUCCESS inside Setup could leave it stale until a restart. The
+    # shell (the badge owner) hands Setup a re-probe callback — fired only after a CONFIRMED
+    # register/unregister — that re-runs the SAME off-thread probe + rail repaint machinery
+    # (`_refresh_setup_badge`, resolved late at call time like `select_by_id`). Advisory:
+    # a probe/thread failure simply leaves the badge as-is.
+    def _on_schedule_changed() -> None:
+        if sys.platform == "win32":
+            with contextlib.suppress(Exception):
+                page.run_thread(_refresh_setup_badge)
+
+    screens["setup"] = lambda: build_setup(page, on_schedule_changed=_on_schedule_changed)
     # Swap the `home` placeholder for the three-way health dashboard UNCONDITIONALLY —
     # `build_home` owns the branch decision itself (branch (a) reuses `build_onboarding`
     # when `nav.needs_setup(...)`, (b)/(c) render the verdict-first dashboard). The `on_navigate`

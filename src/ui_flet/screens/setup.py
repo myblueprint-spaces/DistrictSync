@@ -117,13 +117,13 @@ from src.utils.validators import ALLOWED_SFTP_HOSTS, validate_run_time
 _TRANSIENT_LOCATION_WARNING = (
     "Heads up: DistrictSync is running from a temporary location (like Downloads or Temp). "
     "If you move or delete it, the nightly sync will stop — move it to a permanent folder "
-    "and re-register."
+    "and schedule the nightly sync again."
 )
 
 # Calm fallbacks when an off-thread schedule worker itself raises (D5): the spinner + buttons
 # must ALWAYS be released, so the worker marshals one of these instead of stranding the UI.
-_WORKER_ERROR_REGISTER = "We couldn't run the schedule registration just now. Please try again."
-_WORKER_ERROR_UNREGISTER = "We couldn't run the schedule removal just now. Please try again."
+_WORKER_ERROR_REGISTER = "We couldn't set up the nightly sync just now. Please try again."
+_WORKER_ERROR_UNREGISTER = "We couldn't remove the nightly sync just now. Please try again."
 
 
 def _kick_probe_thread(page: ft.Page, work: Callable[[], None]) -> None:  # pragma: no cover - view glue
@@ -280,21 +280,37 @@ class _ScheduleHandle:
 # --------------------------------------------------------------------------- #
 # Entry: wizard while not completed, else the flat Settings scroll.            #
 # --------------------------------------------------------------------------- #
-def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view glue
-    """Build the Setup surface — the first-run wizard, or the Settings page once completed."""
+def build_setup(
+    page: ft.Page,
+    *,
+    on_schedule_changed: Callable[[], None] | None = None,
+) -> ft.Control:  # pragma: no cover - Flet view glue
+    """Build the Setup surface — the first-run wizard, or the Settings page once completed.
+
+    ``on_schedule_changed`` (0032 T1 #8, shell-owned): fired after a CONFIRMED
+    register/unregister success so the shell can re-probe the rail's Setup attention
+    badge (probed once at boot, so it would otherwise stay stale until a restart).
+    Defensive ``None`` default — every caller without a badge to refresh is unchanged.
+    """
     cfg = AppConfig.load()
     root = ft.Column(spacing=22)
     if not cfg.has_completed_setup():
-        _mount_wizard(page, cfg, root)
+        _mount_wizard(page, cfg, root, on_schedule_changed=on_schedule_changed)
     else:
-        _mount_settings(page, cfg, root, transition_cue=False)
+        _mount_settings(page, cfg, root, transition_cue=False, on_schedule_changed=on_schedule_changed)
     return root
 
 
 # --------------------------------------------------------------------------- #
 # Wizard mode (D8).                                                            #
 # --------------------------------------------------------------------------- #
-def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pragma: no cover - Flet view glue
+def _mount_wizard(
+    page: ft.Page,
+    cfg: AppConfig,
+    root: ft.Column,
+    *,
+    on_schedule_changed: Callable[[], None] | None = None,
+) -> None:  # pragma: no cover - Flet view glue
     """Render the five-step first-run wizard into ``root`` (resume derived from real state)."""
     available = available_configs()
 
@@ -389,7 +405,7 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
         # marks the install set up. Then graduate this surface to Settings mode in place.
         cfg.setup_completed = True
         cfg.save()
-        _mount_settings(page, AppConfig.load(), root, transition_cue=True)
+        _mount_settings(page, AppConfig.load(), root, transition_cue=True, on_schedule_changed=on_schedule_changed)
         page.update()
 
     def _on_sched_status(status: ScheduleStatus) -> None:
@@ -469,7 +485,9 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
         )
 
     def _schedule_body() -> ft.Control:
-        card, _handle = _build_schedule_section(page, cfg, on_status=_on_sched_status)
+        card, _handle = _build_schedule_section(
+            page, cfg, on_status=_on_sched_status, on_schedule_changed=on_schedule_changed
+        )
         return card
 
     def _delivery_body() -> ft.Control:
@@ -590,7 +608,12 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
 # Settings mode (D8): the flat scroll + one reconciling Save.                  #
 # --------------------------------------------------------------------------- #
 def _mount_settings(  # pragma: no cover - Flet view glue
-    page: ft.Page, cfg: AppConfig, root: ft.Column, *, transition_cue: bool
+    page: ft.Page,
+    cfg: AppConfig,
+    root: ft.Column,
+    *,
+    transition_cue: bool,
+    on_schedule_changed: Callable[[], None] | None = None,
 ) -> None:
     """Render the completed-install Settings scroll into ``root`` (folders + schedule + SFTP)."""
     # The ONE task-args snapshot + reconcile the folders Save AND the SFTP Save both drive (D8/F1):
@@ -623,7 +646,9 @@ def _mount_settings(  # pragma: no cover - Flet view glue
         saved["args"] = _snapshot_args()
 
     # Build the schedule section FIRST so both Saves can drive its register flow on a task-arg change.
-    schedule_card, sched_handle = _build_schedule_section(page, cfg, on_registered=_on_registered)
+    schedule_card, sched_handle = _build_schedule_section(
+        page, cfg, on_registered=_on_registered, on_schedule_changed=on_schedule_changed
+    )
 
     def _baseline_args() -> TaskArgs:
         # 0034 S3-d: compare against what was ACTUALLY registered (the durable record written at
@@ -790,14 +815,18 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     *,
     on_status: Callable[[ScheduleStatus], None] | None = None,
     on_registered: Callable[[], None] | None = None,
+    on_schedule_changed: Callable[[], None] | None = None,
 ) -> tuple[ft.Control, _ScheduleHandle]:
     """The scheduler section — run time + (Windows) run-as password → register (Slice 5/6).
 
     Returns the card AND a ``_ScheduleHandle`` so Settings mode can drive re-registration on a
     task-arg change. ``on_status`` (when given) is called with each schedule read-back so the
     wizard can track live-ness for its resume + finish copy. ``on_registered`` (when given) fires
-    after a CONFIRMED successful register so Settings can refresh its task-args snapshot (N1). The
-    register/unregister flow is UNCHANGED from Slice 5/6 (off-thread, elevation-aware, save-after-success).
+    after a CONFIRMED successful register so Settings can refresh its task-args snapshot (N1).
+    ``on_schedule_changed`` (when given — the shell's badge re-probe, 0032 T1 #8) fires after a
+    CONFIRMED register OR unregister success; advisory and exception-suppressed, so it can never
+    break the result paint. The register/unregister flow is UNCHANGED from Slice 5/6 (off-thread,
+    elevation-aware, save-after-success).
     """
     is_windows = sys.platform == "win32"
 
@@ -884,7 +913,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     section_controls: list[ft.Control] = [
         ft.Text("Daily schedule", size=20, weight=ft.FontWeight.W_800, color=tokens.color_text),
         ft.Text(
-            "Register an unattended nightly sync so the roster keeps flowing without anyone signing in.",
+            "Schedule an unattended nightly sync so the roster keeps flowing without anyone signing in.",
             size=14,
             color=tokens.color_muted,
         ),
@@ -915,7 +944,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             border_color=tokens.color_border,
             helper=(
                 "Lets the nightly sync run after a reboot with no one logged in. "
-                "Used once to register the task — DistrictSync does not store it."
+                "Used once to schedule the task — DistrictSync does not store it."
             ),
         )
         section_controls.append(password_field)
@@ -989,6 +1018,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             cfg.save()
             if on_registered is not None:
                 on_registered()  # N1: refresh Settings' task-args snapshot after a confirmed register
+            if on_schedule_changed is not None:
+                # 0032 T1 #8: a confirmed register invalidates the boot-time rail badge —
+                # let the shell re-probe. Advisory: never let it break the result paint.
+                with contextlib.suppress(Exception):
+                    on_schedule_changed()
             local_verdict, local_detail = verdict, detail
             if transient:
                 local_verdict = Verdict.WARNING
@@ -1011,12 +1045,12 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 elif ok:
                     _on_register_success(
                         "Scheduled — logged-on only",
-                        "It will only run while you're logged in. Re-register with your "
+                        "It will only run while you're logged in. Schedule it again with your "
                         "Windows password for unattended operation across reboots.",
                         verdict=Verdict.WARNING,
                     )
                 elif msg == _WORKER_ERROR_REGISTER:
-                    result_slot.controls = [components.ErrorCard("Couldn't register the schedule", msg)]
+                    result_slot.controls = [components.ErrorCard("Couldn't schedule the nightly sync", msg)]
                 elif msg in (windows._MSG_ELEVATION_NO_RESULT, windows._MSG_ELEVATION_TIMEOUT):
                     result_slot.controls = [
                         components.ErrorCard(
@@ -1026,14 +1060,14 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 else:
                     result_slot.controls = [
                         components.ErrorCard(
-                            "Couldn't register the schedule", classify_schedule_error(msg, _elevated_now())
+                            "Couldn't schedule the nightly sync", classify_schedule_error(msg, _elevated_now())
                         )
                     ]
             elif ok:
                 _on_register_success("Nightly sync scheduled", f"Runs daily at {run_time}.")
             else:
                 detail = _WORKER_ERROR_REGISTER if msg == _WORKER_ERROR_REGISTER else msg
-                result_slot.controls = [components.ErrorCard("Couldn't create the schedule", detail)]
+                result_slot.controls = [components.ErrorCard("Couldn't schedule the nightly sync", detail)]
             page.update()
             _refresh_readout()
 
@@ -1072,9 +1106,9 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         unregister_btn.disabled = True
         result_slot.controls = [
             _inflight_row(
-                "Asking Windows for permission and registering the schedule…"
+                "Asking Windows for permission and scheduling the nightly sync…"
                 if uac_path
-                else "Registering the schedule…"
+                else "Scheduling the nightly sync…"
             )
         ]
         page.update()
@@ -1086,7 +1120,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             register_btn.disabled = not can_register_schedule(cfg.is_complete(), run_time_field.value or "")
             unregister_btn.disabled = False
             if not ok and msg == _WORKER_ERROR_UNREGISTER:
-                result_slot.controls = [components.ErrorCard("Couldn't remove the schedule", msg)]
+                result_slot.controls = [components.ErrorCard("Couldn't remove the nightly sync", msg)]
             elif not ok and msg == windows._MSG_ELEVATION_REMOVE_UNCONFIRMED:
                 result_slot.controls = [
                     components.ErrorCard(
@@ -1108,6 +1142,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     cfg.schedule_unattended = False
                     cfg.schedule_task_args = None
                     cfg.save()
+                    if on_schedule_changed is not None:
+                        # 0032 T1 #8: a confirmed removal invalidates the boot-time rail badge too.
+                        with contextlib.suppress(Exception):
+                            on_schedule_changed()
                     result_slot.controls = [
                         components.HealthVerdictBanner(
                             Verdict.HEALTHY, headline=outcome.headline, detail=outcome.detail
@@ -1136,7 +1174,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 
         register_btn.disabled = True
         unregister_btn.disabled = True
-        result_slot.controls = [_inflight_row("Removing the schedule…")]
+        result_slot.controls = [_inflight_row("Removing the nightly sync…")]
         page.update()
         page.run_thread(_work)
 
@@ -1239,14 +1277,16 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         _show_downgrade_dialog(interrupt)
         return ReconcileOutcome.INTERRUPTED
 
+    # 0032 T1 #6 vocabulary: plain "Schedule nightly sync"/"Remove nightly sync" — never the
+    # Windows-jargon "Register"/"Unregister" pair on a user-facing control.
     register_btn = components.primary_button(
-        "Register schedule",
+        "Schedule nightly sync",
         _register,
         disabled=not can_register_schedule(cfg.is_complete(), run_time_field.value or ""),
         icon=ft.Icons.SCHEDULE_ROUNDED,
     )
     unregister_btn = components.secondary_button(
-        "Unregister schedule",
+        "Remove nightly sync",
         _unregister,
         icon=ft.Icons.EVENT_BUSY_ROUNDED,
     )

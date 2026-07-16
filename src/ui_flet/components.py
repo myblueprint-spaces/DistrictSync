@@ -42,11 +42,13 @@ Follows the PROVEN Flet 0.85.3 forms from ``shell.py`` verbatim
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 
 import flet as ft
 
 from src.ui_flet import tokens
+from src.ui_flet.convert_output import open_folder
 from src.ui_flet.home_status import (
     _MYBLUEPRINT_ENTITIES,
     _ROSTERING_ENTITIES,
@@ -54,6 +56,7 @@ from src.ui_flet.home_status import (
 )
 from src.ui_flet.run_history import RunRow, SftpDelivery
 from src.ui_flet.verdict import Verdict, verdict_visuals
+from src.utils.paths import user_log_file
 
 
 # --------------------------------------------------------------------------- #
@@ -274,6 +277,71 @@ def text_button(
             text_style=ft.TextStyle(size=text_size, weight=text_weight),
         ),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Copy-to-clipboard affordance (About/support context, 0032 T1 #9)              #
+# --------------------------------------------------------------------------- #
+def _ensure_clipboard(page: ft.Page) -> ft.Clipboard:
+    """Register a module-managed ``ft.Clipboard`` service on ``page.services`` ONCE.
+
+    Idempotent — mirrors ``filepicker._ensure_picker`` (the proven 0.85.3 service
+    pattern: register on ``page.services``, then ``await`` the service method).
+    """
+    services = page.services
+    for service in services:
+        if isinstance(service, ft.Clipboard):
+            return service
+    clip = ft.Clipboard()
+    services.append(clip)
+    return clip
+
+
+def copy_button(page: ft.Page, text: str, *, tooltip: str = "Copy") -> ft.IconButton:
+    """A small copy-to-clipboard icon button (the Help About/version/email/URL rows).
+
+    Flet 0.85.3: the clipboard is the ``ft.Clipboard`` SERVICE — ``Clipboard.set()`` is
+    an async coroutine, so the click handler is ``async`` (0.85.3 awaits coroutine
+    handlers; the gone 0.2x form was ``page.set_clipboard``). A SnackBar confirms the
+    copy; a failure shows the calm manual fallback (every value this rides beside is
+    ALSO rendered as selectable text, so nothing is ever copy-button-only).
+
+    ``text`` is app-owned copy (a version / support address / docs URL) — never PII.
+    """
+
+    async def _copy(_e: ft.ControlEvent) -> None:
+        note = "Copied."
+        try:
+            await _ensure_clipboard(page).set(text)
+        except Exception:  # noqa: BLE001 - clipboard is best-effort; the value stays selectable beside it
+            note = "Couldn't copy — select the text and copy it manually."
+        page.show_dialog(
+            ft.SnackBar(
+                content=ft.Text(note, color=tokens.color_on_action),
+                bgcolor=tokens.color_action_primary_strong,
+            )
+        )
+
+    return ft.IconButton(
+        icon=ft.Icons.CONTENT_COPY_ROUNDED,
+        icon_color=tokens.color_action_primary,
+        icon_size=tokens.type_section,
+        tooltip=tooltip,
+        on_click=_copy,
+    )
+
+
+def open_log_folder(_e: object | None = None) -> None:
+    """Open the app-data folder holding DistrictSync's log (best-effort; never raises).
+
+    Reuses ``convert_output.open_folder`` (the ONE OS-open helper — per-OS dispatch,
+    no shell interpolation) on the parent of the canonical ``paths.user_log_file()``:
+    the same file the launcher's boot-failure dialog and support point at. Usable
+    directly as a button ``on_click`` handler.
+    """
+    # open_folder never raises; a broken profile path (user_log_file) must not crash a view.
+    with contextlib.suppress(Exception):
+        open_folder(str(user_log_file().parent))
 
 
 # --------------------------------------------------------------------------- #
@@ -725,12 +793,18 @@ def ErrorCard(  # noqa: N802 - a view-factory named like a component
     detail: str | None = None,
     *,
     action: ft.Control | None = None,
+    log_folder: bool = True,
 ) -> ft.Container:
     """The reusable never-crash error surface: a red-bordered card with a clear cause.
 
     The shell's reliability net — a surface that fails renders this instead of a
     raw stack trace. Uses the failed-verdict colour for the icon/headline (red text
     on white clears AA — ``UI_CONTRAST_PAIRS``), keeping body text legible.
+
+    ``log_folder`` (default ON, 0032 T1 #9): a text-tier "Open log folder" affordance —
+    the log holds the technical detail this card deliberately does NOT show (privacy:
+    paths/traces live in the log, never on screen), so every error surface offers the
+    support path. Pass ``False`` for a purely-inline validation card where it's noise.
     """
     body: list[ft.Control] = [
         ft.Row(
@@ -746,6 +820,8 @@ def ErrorCard(  # noqa: N802 - a view-factory named like a component
         body.append(ft.Text(detail, size=14, color=tokens.color_text))
     if action is not None:
         body.append(action)
+    if log_folder:
+        body.append(text_button("Open log folder", open_log_folder, icon=ft.Icons.FOLDER_OPEN_ROUNDED))
 
     return ft.Container(
         bgcolor=tokens.color_surface,
