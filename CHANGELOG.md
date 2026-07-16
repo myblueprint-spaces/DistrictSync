@@ -26,6 +26,21 @@ Per-release download links and auto-generated commit notes live on the
   Setup's "Test connection" still answers immediately. A failed connect also
   no longer leaks the SSH client socket. (W1a)
 
+### Added
+
+- **The output-CSV contract is now test-pinned for ALL 7 launch district
+  configs** (was 3): per-district fixtures mirror each district's real GDE
+  header shape (synthetic rows) and exercise every quirk end-to-end — SD40's
+  headerless schedule and ATT exclusions, SD54's status-column-less
+  withdraw-date detection, SD60's guardian row-filters, sanitized learn60
+  emails, home-school rostering, and cross-enrollment collapse. (pre-partner W2a)
+- **Config version gate.** A mapping config whose major version differs from
+  the supported range is rejected with an actionable error (an out-of-range
+  config must not drive a student-data conversion); newer minor drift warns;
+  and whenever a user-dir mapping file shadows a bundled one (the sanctioned
+  hotfix path), the loader names both paths in the log — a stale override can
+  no longer take effect invisibly. (W2c)
+
 ### Fixed
 
 - **Linux scheduling can no longer wipe other cron jobs.** A failed
