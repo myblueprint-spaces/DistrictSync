@@ -112,4 +112,13 @@ def classify_schedule_error(msg: str, elevated: bool) -> str:
             "microsoft.com password), and that the account is allowed to "
             "'Log on as a batch job'."
         )
-    return f"Failed to register schedule: {msg}"
+    # Unclassified (0035 W3b, T1 #2): lead with calm FIXED copy + a support path, and demote
+    # the raw (already-sanitized) message to a trailing details clause — the admin reads a
+    # next step first, never a wall of PowerShell. Phrased "schedule change" (not "register")
+    # because Setup routes remove failures through this same classifier. ``msg`` still passes
+    # through VERBATIM inside the parenthetical (the core owns having sanitized it — the
+    # non-leak contract in the module docstring is unchanged).
+    return (
+        "The schedule change didn't go through. Try again in a moment — if it keeps failing, "
+        f"the Help page has our support contact. (Details: {msg})"
+    )

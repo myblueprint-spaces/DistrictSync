@@ -55,9 +55,15 @@ class TestClassifyScheduleError:
             assert "too old to schedule tasks" in msg
             assert "Run as administrator" not in msg
 
-    def test_unknown_message_passes_through_clean(self) -> None:
+    def test_unknown_message_leads_calm_and_demotes_details(self) -> None:
+        # 0035 W3b (T1 #2): the else branch LEADS with fixed calm copy + a support path;
+        # the raw (core-sanitized) message is demoted to a trailing "(Details: …)" clause.
         msg = classify_schedule_error("The user name or password is incorrect.", elevated=True)
-        assert msg == "Failed to register schedule: The user name or password is incorrect."
+        assert msg == (
+            "The schedule change didn't go through. Try again in a moment — if it keeps failing, "
+            "the Help page has our support contact. "
+            "(Details: The user name or password is incorrect.)"
+        )
 
     def test_lowercase_access_denied_classified(self) -> None:
         # Defensive: a lowercase "access denied" phrasing still classifies.
@@ -116,13 +122,18 @@ class TestClassifierNeverLeaksSecret:
         assert "DSYNC_TASK_PW" not in out
 
     def test_else_branch_passes_msg_verbatim_and_adds_no_credential(self) -> None:
-        # The ONE branch where msg surfaces — verbatim (the core sanitized it).
-        # The classifier only prefixes fixed copy; it introduces no new secret.
+        # The ONE branch where msg surfaces — verbatim, demoted into the trailing
+        # "(Details: …)" clause (the core sanitized it). The classifier only wraps
+        # FIXED copy around it; it introduces no new secret.
         raw = "Some unclassified failure text"
         out = classify_schedule_error(raw, elevated=False)
-        assert out == f"Failed to register schedule: {raw}"
-        # Nothing beyond the fixed prefix + the (core-sanitized) msg.
-        assert out.replace(raw, "") == "Failed to register schedule: "
+        assert out.endswith(f"(Details: {raw})")
+        # Nothing beyond the fixed lead + the (core-sanitized) msg — the wrapper is
+        # byte-identical no matter what msg carries.
+        assert out.replace(raw, "") == (
+            "The schedule change didn't go through. Try again in a moment — if it keeps failing, "
+            "the Help page has our support contact. (Details: )"
+        )
 
 
 class TestClassifyElevationOutcomes:
@@ -182,3 +193,47 @@ class TestClassifyElevationOutcomes:
             windows._MSG_ELEVATION_LAUNCH_FAILED,
         ):
             assert "**" not in classify_schedule_error(marker, elevated=False)
+
+
+class TestElseBranchNoDeadEnd:
+    """0035 W3b (T1 #2): the unclassified branch is calm-first — never a raw-text-first dead end.
+
+    The fixed lead offers a next step (try again) and a support path (the Help page)
+    BEFORE any technical text; the raw PowerShell message survives only as the trailing
+    parenthetical so support can still diagnose from a screenshot.
+    """
+
+    def test_else_leads_with_calm_copy_not_the_raw_message(self) -> None:
+        raw = "CIM exception 0x80041318 at Microsoft.Management.Infrastructure"
+        out = classify_schedule_error(raw, elevated=False)
+        assert out.startswith("The schedule change didn't go through.")
+        assert not out.startswith(raw)
+
+    def test_else_offers_a_support_path_and_a_retry(self) -> None:
+        out = classify_schedule_error("weird failure", elevated=True)
+        assert "Try again" in out
+        assert "Help page" in out
+        assert "support" in out
+
+    def test_else_demotes_the_raw_message_to_a_trailing_details_clause(self) -> None:
+        raw = "weird failure"
+        out = classify_schedule_error(raw, elevated=False)
+        assert out.endswith(f"(Details: {raw})")
+        # Demoted means AFTER the calm copy — the raw text appears exactly once, at the end.
+        assert out.index(raw) > out.index("support")
+
+    def test_else_wraps_neutrally_for_remove_failures_too(self) -> None:
+        # Setup routes UNREGISTER failures through this same classifier — the fixed lead
+        # must not claim a registration was attempted ("schedule change", not "register").
+        out = classify_schedule_error("could not delete task", elevated=False)
+        assert "register" not in out.split("(Details:")[0].lower()
+
+    def test_else_classified_branches_have_no_details_clause(self) -> None:
+        # The demotion is else-only: classified branches keep their byte-intact fixed copy.
+        for known in (
+            "PowerShell not found",
+            "ScheduledTasks module not available",
+            "Access is denied.",
+        ):
+            for elevated in (True, False):
+                assert "(Details:" not in classify_schedule_error(known, elevated=elevated)

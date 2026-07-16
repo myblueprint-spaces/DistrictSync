@@ -125,8 +125,11 @@ class TestScreensRender:
     def test_convert_blocks_without_output_dir(self, stub_page, monkeypatch):
         # D9/D10: the default (unconfigured) config has no district and no output folder, so the
         # form shows the routed blocked caption, disables Convert, and shows the district placeholder.
+        # 0035 W3b: pre-setup, the unset-output caption routes to the Setup WIZARD (there is no
+        # graduated Settings scroll yet) — the Settings-routed copy is pinned in the appended
+        # post-setup smoke below.
         tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
-        assert _has_text_containing(tree, "Set your output folder in Settings first")
+        assert _has_text_containing(tree, "Finish setup first — the Setup wizard will set your output folder")
         assert _button_by_content(tree, "Convert now").disabled is True
         dropdown = _find(tree, ft.Dropdown)[0]
         assert dropdown.value is None  # no configs[0] fallback (D9)
@@ -1593,3 +1596,114 @@ def test_no_unawaited_async_window_calls():
         "async window calls silently no-op on flet 0.85.3 unless awaited or run via page.run_task: "
         + "; ".join(offenders)
     )
+
+
+# --------------------------------------------------------------------------- #
+# Convert cold-state + interaction smokes (0035 W3b) — appended, convert-owned  #
+# --------------------------------------------------------------------------- #
+class TestConvertColdStateAndInteraction:
+    """Glue smokes for the 0035 W3b Convert sweep — the pure decisions are unit-tested in
+    ``test_ui_flet_convert_output``; these drive the real (coverage-omitted) view wiring."""
+
+    def test_pre_setup_card_routes_to_setup(self, stub_page, monkeypatch):
+        # Default (unconfigured) config + an injected on_navigate → the routed card renders
+        # with a SECONDARY "Open Setup" (Convert now keeps the screen's one filled primary),
+        # and clicking it navigates to "setup".
+        routed: list[str] = []
+        tree = _assert_renders(lambda: build_convert(stub_page, on_navigate=routed.append), monkeypatch)
+        assert _has_text_containing(tree, "Finish setup first")
+        assert _has_text_containing(tree, "district and folders")
+        open_setup = _button_by_content(tree, "Open Setup")
+        assert isinstance(open_setup, ft.OutlinedButton)
+        open_setup.on_click(MagicMock())
+        assert routed == ["setup"]
+
+    def test_pre_setup_card_is_defensive_without_on_navigate(self, stub_page, monkeypatch):
+        # An un-wired mount (no on_navigate) still shows the card's copy — just no button.
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert _has_text_containing(tree, "Finish setup first")
+        assert not any(getattr(c, "content", None) == "Open Setup" for c in _iter_controls(tree))
+
+    def test_completed_setup_hides_the_card_and_routes_unset_output_to_settings(self, stub_page, monkeypatch):
+        # Post-setup with a blanked output folder: the card stays away (setup is done) and the
+        # unset caption routes to the graduated Settings scroll — mode-aware honesty.
+        cfg = AppConfig(sis_type="myedbc", input_dir="/in", output_dir="", setup_completed=True)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        tree = _assert_renders(lambda: build_convert(stub_page, on_navigate=lambda _d: None), monkeypatch)
+        assert not _has_text_containing(tree, "Finish setup first")
+        assert _has_text_containing(tree, "Set your output folder in Settings first")
+
+    def test_partial_setup_with_essentials_in_place_is_not_nagged(self, tmp_path, stub_page, monkeypatch):
+        # Saved district + folders but wizard never finished → Convert is usable; no card.
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        tree = _assert_renders(lambda: build_convert(stub_page, on_navigate=lambda _d: None), monkeypatch)
+        assert not _has_text_containing(tree, "Finish setup first")
+        assert _has_text_containing(tree, "Files will be written to")
+
+    def test_district_override_paints_the_amber_mismatch_note(self, tmp_path, stub_page, monkeypatch):
+        # Saved district myedbc; picking another district fires the differs-from-saved note,
+        # and picking the saved one back clears it.
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        dropdown = _find(tree, ft.Dropdown)[0]
+        assert not _has_text_containing(tree, "differs from your saved district")  # saved pick → quiet
+        dropdown.value = "sd40myedbc"
+        dropdown.on_select(_pick_event("sd40myedbc"))
+        note = next(
+            c for c in _iter_controls(tree) if "differs from your saved district" in (getattr(c, "value", "") or "")
+        )
+        assert note.visible is True
+        assert note.color == tokens.color_status_warning
+        dropdown.value = "myedbc"
+        dropdown.on_select(_pick_event("myedbc"))
+        assert note.visible is False
+
+    def test_running_job_disables_the_form_with_an_honest_caption(self, tmp_path, stub_page, monkeypatch):
+        # Item 3 (T1 #10): once a job starts, the button AND the district/input controls all
+        # disable (no dead clicks, no double-start, no mid-run edits) and the busy caption shows.
+        import src.ui_flet.screens.convert as convert_mod
+        from src.ui_flet.picker_field import PickerField
+
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        (in_dir / "StudentInformation.csv").write_text("id\n1\n")
+        cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        # The runner never actually launches a thread — the smoke drives only the view wiring.
+        monkeypatch.setattr(
+            convert_mod.JobRunner,
+            "run",
+            lambda self, page, work, *, on_done, on_error: True,
+        )
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        convert_btn = _button_by_content(tree, "Convert now")
+        dropdown = _find(tree, ft.Dropdown)[0]
+        picker = _find(tree, PickerField)[0]
+        assert convert_btn.disabled is False  # gates satisfied → idle state is enabled
+        assert dropdown.disabled is not True
+        convert_btn.on_click(MagicMock())  # start the (stubbed) job
+        assert convert_btn.disabled is True
+        assert dropdown.disabled is True
+        assert picker.disabled is True
+        assert _has_text_containing(tree, "Converting…")
+        spinner = _find(tree, ft.ProgressRing)[0]
+        assert spinner.visible is True
+
+    def test_missing_files_list_is_soft_and_reassuring(self, tmp_path, stub_page, monkeypatch):
+        # The expected-but-missing list leads with the softened heading and closes with the
+        # honest skip-on-empty reassurance (pure copy pinned in test_ui_flet_convert_output).
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        (in_dir / "StudentInformation.csv").write_text("id\n1\n")  # present → others missing
+        cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert not _has_text_containing(tree, "Expected files not found in this folder")
+        assert _has_text_containing(tree, "Not found yet")
+        assert _has_text_containing(tree, "You can still convert")
