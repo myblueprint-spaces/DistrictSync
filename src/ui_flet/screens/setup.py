@@ -118,6 +118,20 @@ _TRANSIENT_LOCATION_WARNING = (
 _WORKER_ERROR_REGISTER = "We couldn't run the schedule registration just now. Please try again."
 _WORKER_ERROR_UNREGISTER = "We couldn't run the schedule removal just now. Please try again."
 
+
+def _kick_probe_thread(page: ft.Page, work: Callable[[], None]) -> None:  # pragma: no cover - view glue
+    """Dispatch the schedule-readout probe worker off the UI thread.
+
+    Module-level SEAM (not a closure) so tests can stub the kick itself and run with
+    NO background probe thread at all: the readout probe is paint-then-refine glue,
+    never load-bearing for a test assertion, and an unstubbed kick raced the
+    render-smoke assertions (the 2026-07-15 flake). Behaviour is unchanged — the
+    suppress matches the old inline call (a dead page must never crash the build).
+    """
+    with contextlib.suppress(Exception):
+        page.run_thread(work)
+
+
 # The ONE inline run-time error (shared by the register flow and the Settings-Save run-time
 # persist, 0034 S3-b — single source so the two paths can never drift).
 _RUN_TIME_ERROR_HEADLINE = "That run time isn't valid"
@@ -835,8 +849,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 
             page.run_task(_apply)
 
-        with contextlib.suppress(Exception):
-            page.run_thread(_work)
+        _kick_probe_thread(page, _work)
 
     def _refresh_readout() -> None:
         if not is_windows:
