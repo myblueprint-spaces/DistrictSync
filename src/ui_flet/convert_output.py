@@ -14,6 +14,13 @@ missing) and carries the honest vintage line from :func:`freshness_fact` over
 :func:`newest_output_csv_mtime_iso` — the admin always knows how old the files that
 would ship are.
 
+**Convert cold-state + interaction sweep (0035 W3b):** the pre-setup routing decision
+(:func:`show_setup_first_card` + :func:`setup_first_copy`), the mode-aware unset-output
+caption (``resolved_output_caption``'s ``setup_completed`` axis), the saved-vs-picked
+district heads-up (:func:`district_mismatch_note`), the softened missing-files copy
+(:func:`missing_files_copy`), and the busy/idle disabled table
+(:func:`interaction_state`) all live HERE, pure and tested — the screen only paints them.
+
 **Why a SEPARATE module from ``convert_result``:** ``ConvertResult`` is the PII-free
 result model and must stay *path-free* (a roster path can never enter a summary object).
 The output-folder path, by contrast, is app-owned config (never student PII) and belongs
@@ -28,11 +35,12 @@ import logging
 import os
 import subprocess  # nosec B404 - launching the OS file browser; no shell, list-form args
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
-from src.ui_flet.humanize import friendly_timestamp
+from src.ui_flet.humanize import friendly_district_name, friendly_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -52,17 +60,108 @@ def can_run_convert(*, district_chosen: bool, output_dir_set: bool, input_valid:
     return bool(district_chosen) and bool(output_dir_set) and bool(input_valid)
 
 
-def resolved_output_caption(output_dir: str | None) -> str:
+def resolved_output_caption(output_dir: str | None, *, setup_completed: bool = True) -> str:
     """The pre-run, read-only caption naming where files will be written (or the unset prompt).
 
     Set → "Files will be written to <dir> — change it in Settings." (pre-run visibility).
-    Unset → the routed blocked message "Set your output folder in Settings first …" — the
-    admin changes it on the graduated **Settings** surface (Slice 8), never a silent write
-    into the input folder.
+    Unset → MODE-AWARE honesty (0035 W3b): after setup has completed the fix lives on the
+    graduated **Settings** surface ("Set your output folder in Settings first …"); BEFORE
+    setup completes there is no Settings scroll yet — the Setup *wizard* owns the folder,
+    so the caption routes there instead of naming a surface that doesn't exist. Never a
+    silent write into the input folder either way.
     """
     if output_dir_is_set(output_dir):
         return f"Files will be written to {(output_dir or '').strip()} — change it in Settings."
-    return "Set your output folder in Settings first — DistrictSync doesn't know where to write yet."
+    if setup_completed:
+        return "Set your output folder in Settings first — DistrictSync doesn't know where to write yet."
+    return "Finish setup first — the Setup wizard will set your output folder."
+
+
+def show_setup_first_card(*, setup_completed: bool, output_dir_set: bool, district_saved: bool) -> bool:
+    """Whether Convert leads with the routed "Finish setup first" card (0035 W3b).
+
+    Pre-setup with the run essentials missing → the fix genuinely lives in Setup, so the
+    screen leads with a calm card that routes there instead of a dead disabled button.
+    A PARTIALLY-set-up install whose essentials are already in place (saved district AND
+    output folder) keeps the working form un-nagged — Convert is usable there today, and
+    blocking it behind wizard completion would be a regression, not a kindness.
+    """
+    return not setup_completed and not (output_dir_set and district_saved)
+
+
+def setup_first_copy() -> tuple[str, str]:
+    """The (title, body) copy for the pre-setup "Finish setup first" card — fixed, jargon-free.
+
+    The body names what Setup provides (district + folders) and reassures on effort; the
+    view adds the routed "Open Setup" action when the shell injects ``on_navigate`` (and
+    stays honest without it — the body stands alone, no dangling "click below").
+    """
+    return (
+        "Finish setup first",
+        "DistrictSync needs to know your district and folders before it can convert. "
+        "Setup walks you through it in a few minutes.",
+    )
+
+
+def district_mismatch_note(selected: str | None, saved: str | None, *, config_dir: Path | None = None) -> str | None:
+    """The amber heads-up when the per-run district pick differs from the saved district.
+
+    ``None`` (no note) when there is no explicit pick, no saved district, or they match —
+    the note only fires on a REAL override, so the common path stays quiet. The saved
+    district renders via ``friendly_district_name`` (TOTAL — falls back to the raw id,
+    never raises); ``config_dir`` is that helper's test seam, threaded through. The note
+    names only config-derived district identity — never PII.
+    """
+    sel = (selected or "").strip()
+    sav = (saved or "").strip()
+    if not sel or not sav or sel == sav:
+        return None
+    display = friendly_district_name(sav, config_dir=config_dir)
+    return f"This differs from your saved district — your nightly sync uses {display}."
+
+
+def missing_files_copy() -> tuple[str, str]:
+    """The softened (heading, reassurance) copy over the expected-but-missing file chips.
+
+    0035 W3b: the old "Expected files not found in this folder:" read as a fault. A missing
+    source file is legitimate (per-entity skip-on-empty is by design), so the heading is a
+    calm observation and the reassurance line states the honest consequence — the run still
+    works, and whatever a missing file feeds is skipped, never guessed.
+    """
+    return (
+        "Not found yet — your district's extracts usually include:",
+        "You can still convert — anything a missing file feeds is skipped, not guessed.",
+    )
+
+
+@dataclass(frozen=True)
+class ConvertInteraction:
+    """The disabled-flags the Convert surface paints for one (gates, running) state.
+
+    - ``convert_disabled`` — the Convert button: blocked while a job runs (single-flight,
+      matching ``JobRunner``'s guard so the VIEW never offers a dead click) or while any
+      input gate is unmet.
+    - ``inputs_disabled`` — the district dropdown + input-folder picker: locked ONLY while
+      a job runs (the job snapshotted its inputs at start; editing mid-run would show a
+      form that no longer matches the work in flight).
+    """
+
+    convert_disabled: bool
+    inputs_disabled: bool
+
+
+def interaction_state(*, gates_ok: bool, job_running: bool) -> ConvertInteraction:
+    """The Convert interaction table (0035 W3b) — pure, the view just paints it.
+
+    Single-sources the busy/idle disabled decisions so the button state can never drift
+    from the ``JobRunner`` guard: a running job disables everything (no dead clicks, no
+    double-start, no mid-run input edits); idle re-derives the button from the input gates
+    (``can_run_convert``) and re-enables the inputs.
+    """
+    return ConvertInteraction(
+        convert_disabled=job_running or not gates_ok,
+        inputs_disabled=job_running,
+    )
 
 
 class DeliverReadiness(Enum):

@@ -9,7 +9,13 @@ are named by CATEGORY only — mirrors ``home_status``'s privacy test).
 
 from __future__ import annotations
 
-from src.ui_flet.convert_result import ConvertResult, ConvertStatus, summarize
+from src.ui_flet.convert_result import (
+    ConvertResult,
+    ConvertStatus,
+    convert_error_copy,
+    deliver_error_copy,
+    summarize,
+)
 from src.ui_flet.verdict import Verdict
 
 
@@ -132,6 +138,12 @@ class TestSummarizeNoInputNoOutput:
         assert "No files could be read" in headline
         assert detail
 
+    def test_no_input_uses_plain_language_not_gde(self) -> None:
+        # Vocabulary map (0035 W3b): GDE → "MyEd BC extract files" — no jargon in copy.
+        _verdict, headline, detail = summarize(ConvertResult(status=ConvertStatus.NO_INPUT))
+        assert "GDE" not in headline and "GDE" not in detail
+        assert "MyEd BC extract files" in detail
+
     def test_no_output_is_failed_plain(self) -> None:
         verdict, headline, detail = summarize(ConvertResult(status=ConvertStatus.NO_OUTPUT))
         assert verdict is Verdict.FAILED
@@ -181,3 +193,39 @@ class TestSummarizePrivacy:
             )
             _verdict, headline, detail = summarize(result)
             self._assert_clean(headline, detail)
+
+
+class TestOnErrorCardCopy:
+    """0035 W3b (T1 #2): the generic ``on_error`` cards are fixed, bounded, and never a dead end.
+
+    Both providers are ZERO-ARG by contract — no exception, path, or column name can be
+    interpolated, so nothing can leak — and each detail ends with a concrete next step
+    (what to check → try again → the Help page's support path).
+    """
+
+    def test_convert_error_copy_ends_with_a_concrete_next_step(self) -> None:
+        headline, detail = convert_error_copy()
+        assert headline == "The conversion couldn't finish"
+        assert "Your existing files were not changed." in detail
+        assert "Check that your input folder" in detail  # the concrete check
+        assert "try" in detail and "again" in detail  # the retry
+        assert "Help page" in detail and "support" in detail  # the support path
+
+    def test_deliver_error_copy_ends_with_a_concrete_next_step(self) -> None:
+        headline, detail = deliver_error_copy()
+        assert headline == "The delivery couldn't start"
+        assert "Your files were not changed." in detail
+        assert "Check your output folder in Settings" in detail  # the fix lives in Settings
+        assert "Help page" in detail and "support" in detail
+
+    def test_error_copy_is_plain_language(self) -> None:
+        for headline, detail in (convert_error_copy(), deliver_error_copy()):
+            for jargon in ("SFTP", "GDE", "exception", "traceback", "SSH"):
+                assert jargon not in headline
+                assert jargon not in detail
+
+    def test_error_copy_has_no_interpolation_slots(self) -> None:
+        # Belt-and-suspenders: fixed copy means no format placeholders a future edit
+        # could accidentally feed a raw exception into.
+        for headline, detail in (convert_error_copy(), deliver_error_copy()):
+            assert "{" not in headline + detail and "}" not in headline + detail

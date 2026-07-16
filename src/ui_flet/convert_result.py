@@ -147,7 +147,7 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
         return (
             Verdict.FAILED,
             "No files could be read",
-            "We couldn't read any GDE files from the folder you chose. Check the folder and try again.",
+            "We couldn't read any MyEd BC extract files from the folder you chose. Check the folder and try again.",
         )
 
     if status is ConvertStatus.NO_OUTPUT:
@@ -158,3 +158,37 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
         )
 
     raise ValueError(f"Unmapped ConvertStatus: {status!r}")  # pragma: no cover - totality guard
+
+
+def convert_error_copy() -> tuple[str, str]:
+    """The (headline, detail) for Convert's generic ``on_error`` card — fixed, no dead end.
+
+    0035 W3b (T1 #2): a mid-build failure routed to ``on_error`` surfaces a BOUNDED
+    category message only — the raw exception (which may carry a path / column name)
+    stays in the log, NEVER in the banner. Zero-arg by design: nothing can be
+    interpolated, so nothing can leak. The copy ends with a concrete next step
+    (check the input folder → try again → the Help page's support path) so a failure
+    is never a dead end.
+    """
+    return (
+        "The conversion couldn't finish",
+        "Something went wrong while building your roster. Your existing files were not changed. "
+        "Check that your input folder holds this district's MyEd BC extract files, then try "
+        "again — if it keeps failing, the Help page has our support contact.",
+    )
+
+
+def deliver_error_copy() -> tuple[str, str]:
+    """The (headline, detail) for the deliver pre-flight ``on_error`` card — fixed, no dead end.
+
+    Reached only when ``deliver_job`` fails BEFORE the upload begins (an unset output
+    folder — a gate/programming error surfaced loudly). Same contract as
+    :func:`convert_error_copy`: bounded fixed copy, zero-arg (nothing to leak), and a
+    concrete next step (the output folder lives in Settings; Help carries the support path).
+    """
+    return (
+        "The delivery couldn't start",
+        "Something went wrong before the upload began. Your files were not changed. "
+        "Check your output folder in Settings, then try again — if it keeps failing, "
+        "the Help page has our support contact.",
+    )
