@@ -1,6 +1,8 @@
 import logging
 import os
 import shutil
+import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -11,18 +13,26 @@ from src.utils.helpers import ensure_directory
 
 logger = logging.getLogger(__name__)
 
+# Aged-staging sweep threshold (see ``DataLoader._reconcile_output_dir``):
+# ``.tmp_*`` dirs are pure, re-creatable staging — deletable once clearly
+# abandoned. ``.bak_*`` (an interrupted run's pre-commit originals) and
+# ``archive_*`` (stale-output / recovered data) are DATA and are never
+# auto-deleted — a stranded ``.bak_*`` is MOVED into an archive instead.
+_STALE_TMP_MAX_AGE_DAYS = 7
+
 
 class DataLoader:
     """Saves transformed DataFrames as CSV files in the output directory.
 
     The primary write path is ``save_all()``, whose commit is **backup-and-
-    restore atomic**: every entity is staged in a hidden ``.tmp_<ts>/`` first,
-    then committed one file at a time — each existing target is moved aside into
-    ``.bak_<ts>/`` and the staged file promoted into place with ``os.replace``
+    restore atomic**: every entity is staged in a hidden ``.tmp_<ts>_<uid>/``
+    first (the ``uuid4`` suffix keeps same-second runs from sharing dirs), then
+    committed one file at a time — each existing target is moved aside into
+    ``.bak_<ts>_<uid>/`` and the staged file promoted into place with ``os.replace``
     (an atomic same-filesystem overwrite).  If any commit step fails, the
     already-committed files are rolled back (new files removed, prior files
-    restored from ``.bak_<ts>/``) so the output directory is left **exactly as
-    it was before the call** — never a torn mix of new and stale files.
+    restored from ``.bak_<ts>_<uid>/``) so the output directory is left **exactly
+    as it was before the call** — never a torn mix of new and stale files.
     """
 
     # CSVs are written UTF-8 **with BOM** (``utf-8-sig``) so districts can open
@@ -53,25 +63,34 @@ class DataLoader:
     ) -> None:
         """Write all entities atomically — all succeed or none are committed.
 
-        Files are staged under a hidden ``<output_dir>/.tmp_<timestamp>/``
-        directory first.  Commit then promotes the staged files one at a time
-        via :meth:`_commit_staged`, which moves each existing target aside into
-        ``<output_dir>/.bak_<timestamp>/`` and rolls back every promoted file on
-        any failure (so the output directory is left exactly as before the call).
-        The ``finally`` block removes both the staging and backup directories —
-        and runs **only after** rollback has finished restoring originals from
-        the backup directory (rollback lives inside :meth:`_commit_staged`'s
-        ``except`` and re-raises, so ``finally`` cannot delete a backup that is
-        still needed for restore).
+        First reconciles interrupted-run leftovers (:meth:`_reconcile_output_dir`:
+        a stranded ``.bak_*`` warns loudly and is archived; aged ``.tmp_*``
+        staging is swept). Files are then staged under a hidden
+        ``<output_dir>/.tmp_<timestamp>_<uid>/`` directory.  Commit promotes the
+        staged files one at a time via :meth:`_commit_staged`, which moves each
+        existing target aside into ``<output_dir>/.bak_<timestamp>_<uid>/`` and
+        rolls back every promoted file on any failure (so the output directory is
+        left exactly as before the call). The ``finally`` block removes both the
+        staging and backup directories — and runs **only after** rollback has
+        finished restoring originals from the backup directory (rollback lives
+        inside :meth:`_commit_staged`'s ``except`` and re-raises, so ``finally``
+        cannot delete a backup that is still needed for restore).
+
+        The staging/backup names share a per-call ``uuid4`` suffix and are
+        created with ``exist_ok=False``: two runs landing in the same second can
+        never share — or ``rmtree`` — each other's dirs, and any residual name
+        collision fails loud instead of interleaving commits.
 
         Args:
             outputs: Mapping of entity name → transformed DataFrame.
             field_orders: Mapping of entity name → ordered column list.
         """
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        tmp_dir = self.output_path / f".tmp_{timestamp}"
-        backup_dir = self.output_path / f".bak_{timestamp}"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
+        self._reconcile_output_dir()
+
+        stamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        tmp_dir = self.output_path / f".tmp_{stamp}"
+        backup_dir = self.output_path / f".bak_{stamp}"
+        tmp_dir.mkdir(parents=True, exist_ok=False)
 
         try:
             for entity_name, df in outputs.items():
@@ -90,6 +109,60 @@ class DataLoader:
             # both dirs here never destroys a backup that is still needed.
             shutil.rmtree(tmp_dir, ignore_errors=True)
             shutil.rmtree(backup_dir, ignore_errors=True)
+
+    def _reconcile_output_dir(self) -> None:
+        """Reconcile leftovers a hard-killed previous run may have stranded.
+
+        Runs at the START of :meth:`save_all`, before this run creates its own
+        staging/backup dirs, so everything found here predates this call:
+
+        * ``.bak_*`` — an interrupted run's pre-commit originals (DATA; an
+          in-process failure restores and removes its backup dir, so one still
+          on disk means the process died mid-commit). Warn loudly and MOVE each
+          into ``archive_<ts>_recovered/`` — preserved for hand recovery and out
+          of the way of future commits. Never deleted.
+        * ``.tmp_*`` — pure staging (re-creatable scratch). Dirs older than
+          :data:`_STALE_TMP_MAX_AGE_DAYS` days are deleted and logged; younger
+          ones are left untouched (they may belong to a live concurrent run).
+        * ``archive_*`` — data; never touched.
+
+        Best-effort throughout: a reconcile hiccup logs at ERROR and is skipped —
+        cleaning up an OLD run must never block THIS run's write.
+        """
+        try:
+            entries = sorted(self.output_path.iterdir())
+        except OSError as ex:
+            logger.error(f"Could not scan output directory for interrupted-run leftovers: {ex}")
+            return
+
+        recovered_dir: Optional[Path] = None
+        cutoff = time.time() - _STALE_TMP_MAX_AGE_DAYS * 86400
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            if entry.name.startswith(".bak_"):
+                logger.warning(
+                    f"A previous run was interrupted mid-commit: leftover backup {entry.name} found in "
+                    f"{self.output_path}. Moving it into an archive_*_recovered/ folder — nothing is deleted."
+                )
+                try:
+                    if recovered_dir is None:
+                        candidate = self.output_path / f"archive_{datetime.now().strftime('%Y%m%d_%H%M%S')}_recovered"
+                        candidate.mkdir(parents=True, exist_ok=False)
+                        recovered_dir = candidate
+                    os.replace(entry, recovered_dir / entry.name)
+                except OSError as ex:
+                    logger.error(f"Could not move leftover backup {entry.name} aside: {ex}")
+            elif entry.name.startswith(".tmp_"):
+                try:
+                    if entry.stat().st_mtime < cutoff:
+                        shutil.rmtree(entry)
+                        logger.info(
+                            f"Removed abandoned staging directory {entry.name} "
+                            f"(older than {_STALE_TMP_MAX_AGE_DAYS} days; staging is re-creatable scratch)"
+                        )
+                except OSError as ex:
+                    logger.error(f"Could not sweep abandoned staging directory {entry.name}: {ex}")
 
     def _commit_staged(self, staged_files: list[Path], backup_dir: Path) -> None:
         """Promote each staged file into ``output_path`` with backup-and-restore
@@ -122,7 +195,9 @@ class DataLoader:
                 dest = self.output_path / tmp_file.name
                 backup: Optional[Path] = None
                 if dest.exists():
-                    backup_dir.mkdir(parents=True, exist_ok=True)
+                    if not backup_dir.exists():
+                        # Lazily, once; exist_ok=False so a collision fails loud.
+                        backup_dir.mkdir(parents=True, exist_ok=False)
                     backup = backup_dir / tmp_file.name
                     os.replace(dest, backup)  # move existing target aside (atomic)
                 applied.append((dest, backup))  # record BEFORE promote

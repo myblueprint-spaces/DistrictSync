@@ -10,7 +10,12 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from src.etl.pipeline import TransformOutputs, compute_anomalies, run_transform
+from src.etl.pipeline import (
+    TransformOutputs,
+    compute_anomalies,
+    configured_entity_order,
+    run_transform,
+)
 from src.main import (
     _check_anomalies,
     _emit_run_log,
@@ -137,13 +142,16 @@ class TestCheckAnomalies:
         warnings = _check_anomalies(outputs, tmp_path)
         assert warnings == []
 
-    def test_handles_unreadable_previous(self, tmp_path):
-        # Create a directory instead of file — triggers the except branch
+    def test_unreadable_previous_warns_as_degradation(self, tmp_path):
+        # A directory where a CSV is expected raises on open — surfaced LOUDLY as
+        # an anomaly-check degradation (never a silent skip, never a hard failure).
         (tmp_path / "Students.csv").mkdir()
 
         outputs = {"Students": pd.DataFrame({"id": range(10)})}
         warnings = _check_anomalies(outputs, tmp_path)
-        assert warnings == []
+        assert len(warnings) == 1
+        assert warnings[0].startswith("ANOMALY: Students:")
+        assert "could not be read" in warnings[0]
 
     def test_cli_wrapper_adds_anomaly_prefix_and_logs(self, tmp_path, caplog):
         """_check_anomalies is a thin CLI renderer over compute_anomalies: it
@@ -199,12 +207,23 @@ class TestComputeAnomalies:
         outputs = {"Students": pd.DataFrame({"id": range(85)})}
         assert compute_anomalies(outputs, tmp_path) == []
 
-    def test_skips_unreadable_previous_file(self, tmp_path):
-        # A directory where a CSV is expected raises on open → skipped, not raised.
+    def test_unreadable_previous_file_warns_never_silently_skips(self, tmp_path):
+        # A directory where a CSV is expected raises on open → an anomaly-check
+        # degradation warning for that entity (loud), never a raise, never silence.
         (tmp_path / "Students.csv").mkdir()
 
         outputs = {"Students": pd.DataFrame({"id": range(10)})}
-        assert compute_anomalies(outputs, tmp_path) == []
+        assert compute_anomalies(outputs, tmp_path) == [
+            "Students: the previous output file could not be read, so the drop check was skipped for this entity"
+        ]
+
+    def test_zero_row_output_frame_is_a_full_drop(self, tmp_path):
+        # N→0 with the entity still IN outputs is caught by the drop leg itself.
+        prev = tmp_path / "Students.csv"
+        prev.write_text("id\n1\n2\n", encoding="utf-8")
+
+        outputs = {"Students": pd.DataFrame({"id": []})}
+        assert compute_anomalies(outputs, tmp_path) == ["Students dropped from 2 to 0 rows (100% decrease)"]
 
     def test_empty_previous_file_is_not_an_anomaly(self, tmp_path):
         # Header-only previous file (0 data rows) is a missing baseline, not a drop.
@@ -231,6 +250,104 @@ class TestComputeAnomalies:
         assert [f"Anomaly detected: {msg}" for msg in base] == [
             "Anomaly detected: Students dropped from 100 to 40 rows (60% decrease)"
         ]
+
+
+# -----------------------------------------------------------------------
+# compute_anomalies — vanished-entity leg (present→absent / N→0)
+# -----------------------------------------------------------------------
+
+
+class TestComputeAnomaliesVanish:
+    """The vanished-entity leg: an entity the run was CONFIGURED to produce
+    (``expected_entities`` — the enabled-entities-derived set from
+    ``configured_entity_order``) that produced nothing while a non-empty
+    previous CSV sits on disk. ``run_transform`` drops a zero-row entity from
+    ``outputs`` entirely, so this leg is the only way a vanishing roster file
+    surfaces to the anomaly check.
+    """
+
+    def test_present_to_absent_fires(self, tmp_path):
+        prev = tmp_path / "Family.csv"
+        prev.write_text("id\n" + "\n".join(str(i) for i in range(10)) + "\n", encoding="utf-8")
+
+        outputs = {"Students": pd.DataFrame({"id": range(100)})}
+        warnings = compute_anomalies(outputs, tmp_path, ["Students", "Family"])
+        assert warnings == ["Family produced no output this run (previous run had 10 rows)"]
+
+    def test_n_to_zero_fires_via_the_vanish_leg(self, tmp_path):
+        # A zero-row transform never enters outputs (run_transform skips it), so
+        # N→0 surfaces through the SAME present→absent leg.
+        prev = tmp_path / "Students.csv"
+        prev.write_text("id\n1\n2\n3\n", encoding="utf-8")
+
+        warnings = compute_anomalies({}, tmp_path, ["Students"])
+        assert warnings == ["Students produced no output this run (previous run had 3 rows)"]
+
+    def test_first_run_is_silent(self, tmp_path):
+        # No previous CSVs on disk → nothing to vanish against (not an anomaly).
+        outputs = {"Students": pd.DataFrame({"id": range(5)})}
+        assert compute_anomalies(outputs, tmp_path, ["Students", "Family", "Classes"]) == []
+
+    def test_empty_previous_file_is_silent(self, tmp_path):
+        # Header-only previous file (0 data rows) is a missing baseline, not a vanish.
+        (tmp_path / "Family.csv").write_text("id\n", encoding="utf-8")
+        assert compute_anomalies({}, tmp_path, ["Family"]) == []
+
+    def test_unreadable_previous_for_expected_entity_warns(self, tmp_path):
+        # The degradation warning fires for a vanished entity's corrupt baseline too.
+        (tmp_path / "Family.csv").mkdir()
+        assert compute_anomalies({}, tmp_path, ["Family"]) == [
+            "Family: the previous output file could not be read, so the drop check was skipped for this entity"
+        ]
+
+    def test_produced_entities_never_hit_the_vanish_leg(self, tmp_path):
+        # An entity in outputs is judged by the drop leg only (within threshold → silent).
+        prev = tmp_path / "Students.csv"
+        prev.write_text("id\n" + "\n".join(str(i) for i in range(100)) + "\n", encoding="utf-8")
+
+        outputs = {"Students": pd.DataFrame({"id": range(95)})}
+        assert compute_anomalies(outputs, tmp_path, ["Students"]) == []
+
+    def test_default_no_expected_entities_keeps_drop_only_behavior(self, tmp_path):
+        # Callers that pass no expected set (back-compat) get the drop leg alone.
+        prev = tmp_path / "Family.csv"
+        prev.write_text("id\n1\n2\n", encoding="utf-8")
+        assert compute_anomalies({}, tmp_path) == []
+
+
+# -----------------------------------------------------------------------
+# configured_entity_order (the enabled-entities-derived expected set)
+# -----------------------------------------------------------------------
+
+
+class TestConfiguredEntityOrder:
+    """The single source of "what this run is configured to produce" — shared by
+    ``run_transform`` (iteration) and the anomaly vanish leg (expectation).
+    NEVER raw ``mappings.keys()`` when an ``enabled_entities`` filter is set."""
+
+    def test_enabled_entities_controls_inclusion(self):
+        mappings = {"Students": {}, "Staff": {}, "CourseInfo": {}}
+        gc = {"entity_order": [], "enabled_entities": ["Students", "Staff"]}
+        assert configured_entity_order(mappings, gc) == ["Students", "Staff"]
+
+    def test_empty_enabled_means_all_mappings(self):
+        # Back-compat: empty/absent enabled_entities → every mapping runs.
+        mappings = {"Students": {}, "Staff": {}}
+        gc = {"entity_order": [], "enabled_entities": []}
+        assert configured_entity_order(mappings, gc) == ["Students", "Staff"]
+
+    def test_entity_order_controls_ordering(self):
+        mappings = {"Students": {}, "Staff": {}}
+        gc = {"entity_order": ["Staff", "Students"], "enabled_entities": []}
+        assert configured_entity_order(mappings, gc) == ["Staff", "Students"]
+
+    def test_inherited_but_disabled_entity_is_not_expected(self):
+        # The _base-inheritance foot-gun: CourseInfo lives in mappings but is NOT
+        # enabled → it must not be "expected" (a different config's CSV sharing
+        # the output dir would otherwise fire a false vanish anomaly).
+        mappings = {"Students": {}, "CourseInfo": {}}
+        gc = {"entity_order": [], "enabled_entities": ["Students"]}
+        assert "CourseInfo" not in configured_entity_order(mappings, gc)
 
 
 # -----------------------------------------------------------------------

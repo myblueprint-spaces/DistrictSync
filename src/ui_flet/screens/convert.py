@@ -70,6 +70,7 @@ from src.etl.loader import DataLoader
 from src.etl.pipeline import (
     build_run_record,
     compute_anomalies,
+    configured_entity_order,
     extract_required_files,
     run_transform,
 )
@@ -135,9 +136,10 @@ def convert_job(
 
     Off the UI thread (``JobRunner`` runs it via ``page.run_thread``):
     ``load_config → load_from_bytes → run_transform → compute_anomalies`` and — only
-    when clear or acknowledged — ``save_all`` + the quality report, then (only when
-    ``sftp_requested``) an SFTP delivery. When a >20% anomaly fires without
-    ``anomaly_ack`` it returns ``NEEDS_ANOMALY_ACK`` **without writing**.
+    when clear or acknowledged — ``save_all`` + stale-output archival + the quality
+    report, then (only when ``sftp_requested``) an SFTP delivery. When an anomaly
+    (a >20% drop, or a configured entity that vanished against its previous CSV)
+    fires without ``anomaly_ack`` it returns ``NEEDS_ANOMALY_ACK`` **without writing**.
 
     ETL-level failures (a missing field-map column → ``save_all``'s ``ValueError``,
     ``load_config``'s errors) propagate as exceptions → the runner's ``on_error``
@@ -183,8 +185,10 @@ def convert_job(
     if not outputs:
         return ConvertResult(status=ConvertStatus.NO_OUTPUT)
 
-    # Anomaly gate BEFORE writing: a >20% drop, un-acknowledged, withholds the write.
-    anomalies = compute_anomalies(outputs, output_dir)
+    # Anomaly gate BEFORE writing: a >20% drop — or an entity this run was configured
+    # to produce that vanished (present→absent / N→0, judged against the
+    # enabled-entities-derived set) — un-acknowledged, withholds the write.
+    anomalies = compute_anomalies(outputs, output_dir, configured_entity_order(mappings, global_config))
     if anomalies and not anomaly_ack:
         return ConvertResult(
             status=ConvertStatus.NEEDS_ANOMALY_ACK,
@@ -198,12 +202,20 @@ def convert_job(
     # backup-and-restore atomicity is the real net; the flag is reassurance for
     # `shell._on_leave`. A `save_all` failure PROPAGATES (fail-loud), and the flag
     # is cleared in the `finally` either way.
+    loader = DataLoader(str(output_dir))
     global _WRITE_IN_FLIGHT
     _WRITE_IN_FLIGHT = True
     try:
-        DataLoader(str(output_dir)).save_all(outputs, field_orders)
+        loader.save_all(outputs, field_orders)
     finally:
         _WRITE_IN_FLIGHT = False
+
+    # Archive (non-destructive) entity CSVs left in the output dir that this run
+    # did NOT produce — mirrors run_pipeline: a stale CSV must never ship in an
+    # SFTP zip (the delivery leg below, or a later deliver-from-disk, globs the
+    # top-level *.csv set). Moving them into archive_<ts>/ (a SUBfolder) excludes
+    # them without deleting anything; best-effort — never fails a committed build.
+    loader.archive_stale_outputs(set(outputs))
 
     quality_text = DataQualityReport().analyze(outputs).to_text()
     entity_counts = {name: len(df) for name, df in outputs.items()}
