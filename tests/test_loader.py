@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from src.etl.loader import _STALE_TMP_MAX_AGE_DAYS, DataLoader
+from src.etl.loader import _STALE_BAK_MIN_AGE_SECONDS, _STALE_TMP_MAX_AGE_DAYS, DataLoader
 
 
 def _replace_side_effect(*, fail_role, fail_entity):
@@ -377,6 +377,8 @@ class TestReconcileOutputDir:
         stale_bak = tmp_path / ".bak_20200101_000000_aaaaaaaa"
         stale_bak.mkdir()
         (stale_bak / "Students.csv").write_text("pre-crash originals", encoding="utf-8")
+        aged = time.time() - (_STALE_BAK_MIN_AGE_SECONDS + 60)
+        os.utime(stale_bak, (aged, aged))
 
         with caplog.at_level(logging.WARNING, logger="src.etl.loader"):
             loader.save_all(self._outputs(), self._orders())
@@ -391,6 +393,22 @@ class TestReconcileOutputDir:
         assert moved.read_text(encoding="utf-8") == "pre-crash originals"
         # And this run's write still committed normally.
         assert (tmp_path / "Students.csv").exists()
+
+    def test_fresh_backup_is_left_alone(self, tmp_path, caplog):
+        # A young .bak_ may be a LIVE concurrent run's in-flight backup — moving
+        # it would break that run's rollback (restore-before-cleanup invariant).
+        loader = DataLoader(str(tmp_path))
+        fresh_bak = tmp_path / ".bak_20260716_120000_bbbbbbbb"
+        fresh_bak.mkdir()
+        (fresh_bak / "Students.csv").write_text("live in-flight backup", encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="src.etl.loader"):
+            loader.save_all(self._outputs(), self._orders())
+
+        assert fresh_bak.exists()
+        assert (fresh_bak / "Students.csv").read_text(encoding="utf-8") == "live in-flight backup"
+        assert not any("interrupted mid-commit" in r.message for r in caplog.records)
+        assert self._recovered_dirs(tmp_path) == []
 
     def test_aged_tmp_swept_and_fresh_tmp_untouched(self, tmp_path, caplog):
         loader = DataLoader(str(tmp_path))
@@ -432,6 +450,8 @@ class TestReconcileOutputDir:
         stale_bak = tmp_path / ".bak_stale"
         stale_bak.mkdir()
         (stale_bak / "Students.csv").write_text("pre-crash originals", encoding="utf-8")
+        aged = time.time() - (_STALE_BAK_MIN_AGE_SECONDS + 60)
+        os.utime(stale_bak, (aged, aged))
 
         real = os.replace
 

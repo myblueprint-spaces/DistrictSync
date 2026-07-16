@@ -163,6 +163,17 @@ class PinnedHostKeyPolicy(paramiko.MissingHostKeyPolicy):
 
     def missing_host_key(self, client: paramiko.SSHClient, hostname: str, key: paramiko.PKey) -> None:
         if self._pinned.lookup(hostname) is None:
+            # Non-22 ports look up as "[host]:port" — a plain-host pin does NOT
+            # apply to them. Say so distinctly, or the owner believes they're pinned.
+            bare_host = hostname[1:].split("]")[0] if hostname.startswith("[") else None
+            if bare_host and self._pinned.lookup(bare_host) is not None:
+                logger.warning(
+                    f"A pinned SSH host key exists for {bare_host} but this connection uses a "
+                    f"non-standard port ({hostname}), which the plain-hostname pin does NOT cover — "
+                    "accepting the server's key for this session UNVERIFIED. Add a bracketed "
+                    f"'{hostname}' entry to known_hosts (scan with ssh-keyscan -p PORT) to pin it."
+                )
+                return
             logger.warning(
                 f"No pinned SSH host key for {hostname} — accepting the server's key for "
                 "this session. To protect against server-identity spoofing, add this "

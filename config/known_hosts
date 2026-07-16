@@ -13,6 +13,11 @@
 #
 # Each entry line looks like:  <hostname> <key-type> <base64-public-key>
 #
+# NON-STANDARD PORT: if delivery uses any port other than 22, the lookup name is
+# "[hostname]:port" — scan with `ssh-keyscan -p PORT -t ed25519,ecdsa,rsa <host>`
+# (its output already uses the bracketed form) and paste that line as-is. A
+# plain-hostname entry does NOT pin a non-22 connection.
+#
 # No-release hotfix path: a known_hosts file placed in the DistrictSync app-data
 # folder (Windows: %LOCALAPPDATA%\DistrictSync\known_hosts) takes precedence over
 # this bundled file, so keys can be added or rotated on a district server without

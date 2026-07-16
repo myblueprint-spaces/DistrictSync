@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 # auto-deleted — a stranded ``.bak_*`` is MOVED into an archive instead.
 _STALE_TMP_MAX_AGE_DAYS = 7
 
+# A ``.bak_*`` younger than this may belong to a LIVE concurrent run's in-flight
+# commit (scheduled run + manual Convert into the same folder) — moving it would
+# break that run's rollback (restore-before-cleanup invariant). A real commit
+# completes in seconds; one hour is a >1000x margin, so anything older is
+# genuinely stranded by a hard-killed run.
+_STALE_BAK_MIN_AGE_SECONDS = 3600
+
 
 class DataLoader:
     """Saves transformed DataFrames as CSV files in the output directory.
@@ -118,8 +125,11 @@ class DataLoader:
 
         * ``.bak_*`` — an interrupted run's pre-commit originals (DATA; an
           in-process failure restores and removes its backup dir, so one still
-          on disk means the process died mid-commit). Warn loudly and MOVE each
-          into ``archive_<ts>_recovered/`` — preserved for hand recovery and out
+          on disk means the process died mid-commit). Only dirs older than
+          :data:`_STALE_BAK_MIN_AGE_SECONDS` are touched — a younger one may be
+          a LIVE concurrent run's in-flight backup, and moving it would break
+          that run's rollback. Past the gate: warn loudly and MOVE each into
+          ``archive_<ts>_recovered/`` — preserved for hand recovery and out
           of the way of future commits. Never deleted.
         * ``.tmp_*`` — pure staging (re-creatable scratch). Dirs older than
           :data:`_STALE_TMP_MAX_AGE_DAYS` days are deleted and logged; younger
@@ -141,9 +151,15 @@ class DataLoader:
             if not entry.is_dir():
                 continue
             if entry.name.startswith(".bak_"):
+                try:
+                    if entry.stat().st_mtime >= time.time() - _STALE_BAK_MIN_AGE_SECONDS:
+                        continue  # may be a live concurrent run's in-flight backup
+                except OSError:
+                    continue
                 logger.warning(
-                    f"A previous run was interrupted mid-commit: leftover backup {entry.name} found in "
-                    f"{self.output_path}. Moving it into an archive_*_recovered/ folder — nothing is deleted."
+                    f"A previous run appears to have been interrupted mid-commit: leftover backup "
+                    f"{entry.name} found in {self.output_path}. Moving it into an "
+                    f"archive_*_recovered/ folder — nothing is deleted."
                 )
                 try:
                     if recovered_dir is None:

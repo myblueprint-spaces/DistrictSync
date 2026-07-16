@@ -107,6 +107,23 @@ class TestPinnedHostKeyPolicy:
         policy = PinnedHostKeyPolicy(_pinned(OTHER_HOST, key_a))
         assert policy.missing_host_key(MagicMock(), HOST, key_b) is None
 
+    def test_nonstandard_port_with_plain_pin_warns_distinctly(self, key_a, caplog):
+        """A non-22 port looks up as "[host]:port" — a plain-host pin does NOT cover it.
+        The owner must hear that their pin was bypassed, not the generic unpinned copy."""
+        policy = PinnedHostKeyPolicy(_pinned(HOST, key_a))
+        bracketed = f"[{HOST}]:2222"
+        with caplog.at_level(logging.WARNING, logger="src.sftp.uploader"):
+            assert policy.missing_host_key(MagicMock(), bracketed, key_a) is None
+        assert "non-standard port" in caplog.text
+        assert "does NOT cover" in caplog.text
+        assert "ssh-keyscan -p PORT" in caplog.text
+
+    def test_nonstandard_port_without_any_pin_keeps_the_generic_warning(self, key_a, caplog):
+        policy = PinnedHostKeyPolicy(paramiko.HostKeys())
+        with caplog.at_level(logging.WARNING, logger="src.sftp.uploader"):
+            assert policy.missing_host_key(MagicMock(), f"[{HOST}]:2222", key_a) is None
+        assert "No pinned SSH host key" in caplog.text
+
     def test_reject_message_never_retried_type(self):
         """The reject is deliberately NOT an SSHException subclass (the retry loop
         treats SSHException as transient — a changed identity must never be retried)."""
