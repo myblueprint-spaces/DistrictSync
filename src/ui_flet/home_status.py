@@ -88,6 +88,11 @@ _SETUP_FIX = "setup"
 # "fix the schedule", not "open a screen"; still routes to Setup (dest_id stays `_SETUP_FIX`).
 _OPEN_SETUP_LABEL = "Fix the nightly schedule"
 
+# The FAILED_DELIVERY fix CTA (0032 T2 #4): a failed upload is fixed in Settings' delivery
+# section (host/credentials), not in the read-only run ledger — and the label says where it
+# goes (the rail label graduates to Settings; "Open Settings" matches Mapping's existing route).
+_OPEN_SETTINGS_LABEL = "Open Settings"
+
 
 @dataclass(frozen=True)
 class FixAction:
@@ -205,6 +210,16 @@ def is_delivery_only(record: dict) -> bool:
     return bool(record.get("delivery_only"))
 
 
+def sftp_delivered(record: dict) -> bool:
+    """Whether this record's files genuinely reached SpacesEDU (``sftp_ok``) — pure + TOTAL.
+
+    The single-source SFTP-success predicate the CLEAN/healthy detail branches on (0032 T1 #1a):
+    Home and Run History both consult it, so neither surface can claim a delivery that never
+    happened — a run with no SFTP attempt reads "completed", never "delivered to SpacesEDU".
+    """
+    return bool(record.get("sftp_ok"))
+
+
 def verdict_for_reason(reason: LatestReason) -> Verdict:
     """Map a ``LatestReason`` to its ``Verdict`` — total over the enum.
 
@@ -257,7 +272,7 @@ def _build_metrics(record: dict, *, now: datetime | None, counts_record: dict | 
     return HomeMetrics(
         entity_counts=_entity_counts(counts_record if counts_record is not None else record),
         last_run_display=friendly_timestamp(str(record.get("timestamp", "")), now=now),
-        sftp_delivered=bool(record.get("sftp_ok")),
+        sftp_delivered=sftp_delivered(record),
     )
 
 
@@ -381,23 +396,30 @@ def derive_home_status(
     # Classify the latest record's fault axis via the SINGLE-SOURCE precedence (shared with IA-6's
     # Run History so a Home verdict + a Run-History row/banner can never drift). Staleness is a
     # separate time-relative axis layered on top of the CLEAN reason below. Each branch keeps its
-    # OWN Home copy ("your roster"/"last night's sync") + fix/metrics — the reason drives ONLY the
-    # verdict selection, never the wording. NEVER interpolate the record's free-text `error`
-    # (privacy) — every headline/detail is a FIXED category sentence.
+    # OWN Home copy — the reason drives ONLY the verdict selection, never the wording. NEVER
+    # interpolate the record's free-text `error` (privacy) — every headline/detail is a FIXED
+    # category sentence (only the record's own timestamp is rendered, via `friendly_timestamp`).
     reason = classify_latest_reason(latest)
 
     # Rule: last run failed — the dominant fault (precedence over SFTP/anomaly/data-errors).
+    # 0032 T1 #1b: never the hard-coded "Last night's…" — a failed latest can be any age, so
+    # the copy derives from the record's own timestamp ("recently" when unknown/unparseable).
     if reason is LatestReason.FAILED_ETL:
         return HomeStatus(
             verdict=verdict_for_reason(reason),
             headline="Last sync failed",
-            detail="Last night's sync hit a problem and didn't finish.",
+            detail=(
+                f"The sync that ran {friendly_timestamp(str(latest.get('timestamp', '')), now=now)} "
+                "hit a problem and didn't finish."
+            ),
             fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
             metrics=None,
         )
 
     # Rule: SFTP delivery failed (ETL succeeded but the roster didn't reach SpacesEDU).
     # A delivery-only failure built nothing this run — say so (0034 Slice 2 honesty).
+    # 0032 T2 #4: the fix lives in Settings' delivery section (host/credentials), so the CTA
+    # routes there — not to the read-only run ledger — and the label says where it goes.
     if reason is LatestReason.FAILED_DELIVERY:
         return HomeStatus(
             verdict=verdict_for_reason(reason),
@@ -407,7 +429,7 @@ def derive_home_status(
                 if is_delivery_only(latest)
                 else "The data was built but the upload failed."
             ),
-            fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
+            fix=FixAction(_OPEN_SETTINGS_LABEL, _SETUP_FIX),
             metrics=None,
         )
 
@@ -454,14 +476,25 @@ def derive_home_status(
             metrics=None,
         )
 
-    # Rule: healthy — a recent, clean, delivered success. The reassurance the surface exists to give.
-    # A clean delivery-only latest counts as a fresh sync (the roster genuinely reached SpacesEDU),
-    # but its tiles come from the newest BUILD record — or no tiles at all, never zeros.
+    # Rule: healthy — a recent, clean success. The reassurance the surface exists to give,
+    # honest on BOTH axes (0032 T1 #1a/#1c): "syncing" (ongoing automation) is asserted only on a
+    # CONFIRMED-LIVE schedule read-back — anything less keeps the record-scoped "up to date"; and
+    # "delivered to SpacesEDU" only when the record's SFTP axis says it genuinely shipped — a
+    # local-only run says where the files actually went. A clean delivery-only latest counts as a
+    # fresh sync (its sftp_ok is the delivery), but its tiles come from the newest BUILD record —
+    # or no tiles at all, never zeros.
     counts_record = _counts_source(records, latest)
+    when = friendly_timestamp(timestamp, now=now)
     return HomeStatus(
         verdict=Verdict.HEALTHY,
-        headline="Your roster is syncing",
-        detail=f"Last sync delivered cleanly {friendly_timestamp(timestamp, now=now)}.",
+        headline=(
+            "Your roster is syncing" if _schedule_confirmed_live(schedule_status) else "Your roster is up to date"
+        ),
+        detail=(
+            f"Last sync delivered to SpacesEDU {when}."
+            if sftp_delivered(latest)
+            else f"Last sync completed {when} — files were written to your output folder."
+        ),
         fix=None,
         metrics=_build_metrics(latest, now=now, counts_record=counts_record) if counts_record is not None else None,
     )
@@ -529,11 +562,23 @@ def _missed_run_status() -> HomeStatus:
     )
 
 
+def _schedule_confirmed_live(schedule_status: ScheduleStatus | None) -> bool:
+    """Whether the read-back POSITIVELY confirms a LIVE nightly schedule (state alone).
+
+    The healthy-headline scope (0032 T1 #1c): "Your roster is syncing" asserts ongoing
+    automation, so it demands a CONFIRMED-LIVE read-back; anything less (``None`` / UNKNOWN /
+    MISSING) keeps the schedule-neutral "up to date" claim. Unlike ``_schedule_is_live`` it
+    does not require a next-run display — the assertion is that the schedule exists, not a
+    promise to name its time.
+    """
+    return schedule_status is not None and schedule_status.state is ScheduleState.LIVE
+
+
 def _schedule_is_live(schedule_status: ScheduleStatus | None) -> bool:
     """Whether the injected read-back confirms a LIVE schedule with a known next-run time."""
     return (
         schedule_status is not None
-        and schedule_status.state is ScheduleState.LIVE
+        and _schedule_confirmed_live(schedule_status)
         and bool(schedule_status.next_run_display)
     )
 

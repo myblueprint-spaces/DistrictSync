@@ -236,8 +236,24 @@ class TestBannerLatestRules:
     def test_clean_delivered_is_healthy(self) -> None:
         banner = _banner(_record())
         assert banner.verdict is Verdict.HEALTHY
-        assert banner.headline == "Your sync is running"
+        # 0032 T1 #1c: no schedule read-back → the record-scoped claim, never "running".
+        assert banner.headline == "Your last sync worked"
+        # 0032 T1 #1a: sftp_ok names the actual destination (mirrors Home's healthy detail).
+        assert banner.detail == "Your last sync delivered to SpacesEDU 5 hours ago."
         assert _RECENT not in banner.detail  # plain relative phrase, not the raw ISO
+
+    def test_clean_with_live_readback_asserts_running(self) -> None:
+        # "Your sync is running" (ongoing automation) demands a CONFIRMED-LIVE read-back.
+        banner = derive_history_banner([_record()], _CONFIGURED, now=_NOW, schedule_status=_live_schedule())
+        assert banner.verdict is Verdict.HEALTHY
+        assert banner.headline == "Your sync is running"
+
+    def test_clean_no_sftp_says_completed_to_output_folder(self) -> None:
+        # A run that never attempted SFTP must NEVER claim a delivery that didn't happen.
+        banner = _banner(_record(sftp_attempted=False, sftp_ok=False))
+        assert banner.verdict is Verdict.HEALTHY
+        assert banner.detail == "Your last sync completed 5 hours ago — files were written to your output folder."
+        assert "delivered" not in banner.detail
 
 
 class TestBannerStalenessReuse:

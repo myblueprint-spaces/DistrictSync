@@ -44,11 +44,13 @@ from src.ui_flet.home_status import (
     LatestReason,
     _as_int,
     _data_errors_total,
+    _schedule_confirmed_live,
     _schedule_confirmed_missing,
     _schedule_is_live,
     classify_latest_reason,
     is_delivery_only,
     is_stale,
+    sftp_delivered,
     verdict_for_reason,
 )
 from src.ui_flet.humanize import (
@@ -250,10 +252,18 @@ def derive_history_banner(
             ),
         )
 
+    # 0032 T1 #1 (mirrors Home's healthy branch, same shared predicates): "running" (ongoing
+    # automation) only on a CONFIRMED-LIVE schedule read-back, else the record-scoped claim; and
+    # "delivered to SpacesEDU" only when the record's SFTP axis says it genuinely shipped.
+    when = friendly_timestamp(timestamp, now=now)
     return HistoryBanner(
         verdict=verdict_for_reason(reason),
-        headline="Your sync is running",
-        detail=f"Your last sync delivered cleanly {friendly_timestamp(timestamp, now=now)}.",
+        headline=("Your sync is running" if _schedule_confirmed_live(schedule_status) else "Your last sync worked"),
+        detail=(
+            f"Your last sync delivered to SpacesEDU {when}."
+            if sftp_delivered(latest)
+            else f"Your last sync completed {when} — files were written to your output folder."
+        ),
     )
 
 

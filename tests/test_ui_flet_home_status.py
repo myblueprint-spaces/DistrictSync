@@ -369,7 +369,22 @@ class TestFailedRules:
         status = _derive(_record(status="failed"))
         assert status.verdict is Verdict.FAILED
         assert status.headline == "Last sync failed"
+        # 0032 T2 #4: an ETL failure is investigated in Run History — the label says where it goes.
         assert status.fix is not None and status.fix.dest_id == "run_history"
+        assert status.fix.label == "Check Run History"
+
+    def test_failed_etl_detail_derives_from_the_records_timestamp(self) -> None:
+        # 0032 T1 #1b: never the hard-coded "Last night's…" — a failed latest can be any age,
+        # so the copy dates the failed run from its own timestamp via friendly_timestamp.
+        status = _derive(_record(status="failed"))
+        assert status.detail == "The sync that ran 5 hours ago hit a problem and didn't finish."
+
+    def test_failed_etl_detail_missing_timestamp_reads_recently(self) -> None:
+        # Totality: no timestamp → friendly_timestamp's safe fallback, never a raw/blank slot.
+        rec = _record(status="failed")
+        del rec["timestamp"]
+        status = _derive(rec)
+        assert status.detail == "The sync that ran recently hit a problem and didn't finish."
 
     def test_failed_etl_precedes_sftp_and_data_errors(self) -> None:
         # A failed ETL is the dominant fault even with an SFTP failure + data errors also set.
@@ -381,7 +396,10 @@ class TestFailedRules:
         status = _derive(_record(sftp_attempted=True, sftp_ok=False))
         assert status.verdict is Verdict.FAILED
         assert status.headline == "Your roster didn't reach SpacesEDU"
-        assert status.fix is not None and status.fix.dest_id == "run_history"
+        # 0032 T2 #4: the delivery fix (host/credentials) lives in Settings' delivery section,
+        # not the read-only run ledger — and the label names the destination.
+        assert status.fix is not None and status.fix.dest_id == "setup"
+        assert status.fix.label == "Open Settings"
 
     def test_sftp_failed_precedes_data_errors(self) -> None:
         status = _derive(_record(sftp_attempted=True, sftp_ok=False, data_errors={"total": 3}))
@@ -427,12 +445,42 @@ class TestHealthy:
     def test_recent_clean_delivered_success_is_healthy_with_metrics(self) -> None:
         status = _derive(_record())
         assert status.verdict is Verdict.HEALTHY
-        assert status.headline == "Your roster is syncing"
+        # 0032 T1 #1c: no schedule read-back injected → never assert ongoing automation.
+        assert status.headline == "Your roster is up to date"
         assert status.fix is None
         assert status.metrics is not None
         assert status.metrics.sftp_delivered is True
         # Raw ISO never leaks into the healthy detail.
         assert _RECENT not in status.detail
+
+    def test_healthy_headline_asserts_syncing_only_on_live_readback(self) -> None:
+        # 0032 T1 #1c: "syncing" claims ongoing automation → demands a CONFIRMED-LIVE read-back.
+        status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=_live_schedule())
+        assert status.verdict is Verdict.HEALTHY
+        assert status.headline == "Your roster is syncing"
+
+    def test_healthy_headline_stays_neutral_on_unconfirmed_readback(self) -> None:
+        # An UNKNOWN read-back (query failed) must not upgrade the claim — honesty inverse of D4.
+        unknown = derive_schedule_status(
+            ScheduleReadback(found=None, error="denied"), hint_registered=True, latest_record_ts=None
+        )
+        status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=unknown)
+        assert status.headline == "Your roster is up to date"
+
+    def test_healthy_delivered_detail_names_spacesedu(self) -> None:
+        # 0032 T1 #1a: "delivered" claims branch on the record's SFTP axis — sftp_ok names the
+        # actual destination, never the old axis-blind "delivered cleanly".
+        status = _derive(_record())
+        assert status.detail == "Last sync delivered to SpacesEDU 5 hours ago."
+
+    def test_healthy_no_sftp_detail_says_completed_to_output_folder(self) -> None:
+        # A run that never attempted SFTP must NEVER claim a delivery that didn't happen.
+        status = _derive(_record(sftp_attempted=False, sftp_ok=False))
+        assert status.verdict is Verdict.HEALTHY
+        assert status.detail == "Last sync completed 5 hours ago — files were written to your output folder."
+        assert "delivered" not in status.detail
+        assert status.metrics is not None
+        assert status.metrics.sftp_delivered is False
 
     def test_metrics_show_5_rostering_tiles_not_7_with_zeros(self) -> None:
         # A SpacesEDU district run (myBlueprint+ counts 0) shows exactly the 5 rostering tiles.
@@ -459,7 +507,8 @@ class TestPrivacyNoErrorLeak:
         assert self._SECRET not in status.detail
         assert self._SECRET not in status.headline
         assert "secret" not in status.detail
-        assert status.detail == "Last night's sync hit a problem and didn't finish."
+        # The FIXED category sentence — only the record's own timestamp is rendered (plain phrase).
+        assert status.detail == "The sync that ran 5 hours ago hit a problem and didn't finish."
 
     def test_secret_never_leaks_across_any_rule(self) -> None:
         # Even on delivered/anomaly/data-error rules where `error` may be populated, it never leaks.
