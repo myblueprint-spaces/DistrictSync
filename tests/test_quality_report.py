@@ -222,3 +222,47 @@ class TestDataQualityReport:
         }
         report = DataQualityReport().analyze(outputs)
         assert report.cross_entity_warnings == []
+
+
+class TestMissingFieldThresholdWarnings:
+    """The >50%-missing per-column warning (EntityReport.warnings).
+
+    ``missing_fields`` records EVERY column with any blanks; the ``warnings``
+    list is the louder signal reserved for columns that are MOSTLY blank
+    (strictly more than 50% of rows) — the shape of a broken column mapping
+    rather than ordinary sparse data.
+    """
+
+    def test_over_threshold_emits_pct_warning(self):
+        outputs = {
+            "Students": pd.DataFrame(
+                {
+                    "User ID": ["S1", "S2", "S3"],
+                    "Email": [None, "", "a@b.com"],  # 2/3 = 67% missing
+                }
+            ),
+        }
+        report = DataQualityReport().analyze(outputs)
+        assert report.entities["Students"].warnings == ["Email: 67% missing (2/3)"]
+
+    def test_at_threshold_no_warning(self):
+        """Exactly 50% missing is NOT flagged — the threshold is strictly >50%."""
+        outputs = {
+            "Students": pd.DataFrame(
+                {
+                    "User ID": ["S1", "S2", "S3", "S4"],
+                    "Email": ["", None, "a@b.com", "b@c.com"],  # 2/4 = 50%
+                }
+            ),
+        }
+        report = DataQualityReport().analyze(outputs)
+        assert report.entities["Students"].warnings == []
+        # Still surfaced as a missing-field count, just not warning-worthy.
+        assert report.entities["Students"].missing_fields["Email"] == 2
+
+    def test_threshold_warning_rendered_in_text_report(self):
+        outputs = {
+            "Staff": pd.DataFrame({"User ID": ["T1", "T2"], "Email": ["", None]}),  # 100% missing
+        }
+        report = DataQualityReport().analyze(outputs)
+        assert "! Email: 100% missing (2/2)" in report.to_text()
