@@ -298,6 +298,12 @@ class BaseTransformer(ABC):
         return ``df`` unchanged rather than dropping every row. ``caller`` names
         the consumer in that warning.
 
+        When rows ARE dropped, one aggregate WARNING per call reports the row
+        count and the count of DISTINCT students involved — a mixed-vintage
+        input set (e.g. a schedule referencing students missing from the
+        demographic) is loudly visible instead of silently shrinking output.
+        Counts only: student ids/names never appear in the message (PII rule).
+
         Returns a new frame (copy) so callers own it and can mutate columns
         without a ``SettingWithCopyWarning``, matching the other ``filter_*``
         helpers here.
@@ -306,7 +312,15 @@ class BaseTransformer(ABC):
             logger.warning(f"[{caller}] active_student_ids empty — skipping active filter")
             return df
         normalized = df[student_col].astype(str).str.strip()
-        return df[normalized.isin(context.active_student_ids)].copy()  # type: ignore[return-value]
+        keep = normalized.isin(context.active_student_ids)
+        dropped_rows = int((~keep).sum())
+        if dropped_rows:
+            distinct_students = int(normalized[~keep].nunique())
+            logger.warning(
+                f"[{caller}] Dropped {dropped_rows} row(s) referencing {distinct_students} "
+                "student(s) absent from the active Students roster."
+            )
+        return df[keep].copy()  # type: ignore[return-value]
 
     # Recognized GDE input date formats, tried in order. Districts vary, so input
     # date parsing is deliberately flexible; OUTPUT shape is chosen by the caller.
@@ -692,24 +706,26 @@ class BaseTransformer(ABC):
         punctuation in names (e.g. "O'Brien-Smith") never leak into the local
         part. The default path (``sanitize=False``) is unchanged and
         byte-identical for every existing district.
+
+        Fail-loud: a template key absent from the row raises ``KeyError`` (a
+        config/column mismatch must never silently blank every email).
+        ``StudentTransformer._generate_emails`` is the resilient caller — it
+        blanks only the failing cell and records the failure to
+        ``context.data_errors``.
         """
-        try:
-            normalised: dict[str, Any] = {}
-            for k, v in row.to_dict().items():
-                key = str(k).lower()
-                if pd.isna(v):
-                    normalised[key] = ""
-                elif isinstance(v, str):
-                    if sanitize:
-                        normalised[key] = re.sub(r"[^a-z0-9]", "", v.strip().lower())
-                    else:
-                        normalised[key] = v.strip().lower().replace(" ", "")
+        normalised: dict[str, Any] = {}
+        for k, v in row.to_dict().items():
+            key = str(k).lower()
+            if pd.isna(v):
+                normalised[key] = ""
+            elif isinstance(v, str):
+                if sanitize:
+                    normalised[key] = re.sub(r"[^a-z0-9]", "", v.strip().lower())
                 else:
-                    normalised[key] = v
-            return format_str.format(**normalised)
-        except KeyError as e:
-            logger.warning(f"Could not generate email. Missing key: {e}")
-            return ""
+                    normalised[key] = v.strip().lower().replace(" ", "")
+            else:
+                normalised[key] = v
+        return format_str.format(**normalised)
 
     @staticmethod
     def generate_user_role(row: pd.Series, staff_id_col: str, student_id_col: str) -> str:
@@ -757,15 +773,31 @@ class BaseTransformer(ABC):
         few weeks before the new year officially starts. Districts that
         upload even earlier can lower the rollover via the
         ``academic_year_rollover_month_day`` global_config field.
+
+        All configured sources are scanned; the FIRST parsed value is used
+        (behavior-preserving), but when the sources disagree — a mixed-vintage
+        input set that would silently produce wrong academic dates and Class
+        IDs — one loud WARNING names every end year found and which was chosen.
         """
         normalized = self.normalize_source_config(source_config)
+        found_years: list[int] = []
         for _role, filename in normalized.items():
             df = all_data.get(filename)
             if df is not None and "school year" in df.columns:
                 for raw in df["school year"].dropna().astype(str).str.strip().unique():
                     parsed = self._parse_school_year_to_end(str(raw), school_year_naming)
-                    if parsed is not None:
-                        return parsed
+                    if parsed is not None and parsed not in found_years:
+                        found_years.append(parsed)
+
+        if found_years:
+            chosen = found_years[0]
+            if len(found_years) > 1:
+                logger.warning(
+                    f"School-year sources disagree: found end years {found_years}; using {chosen}. "
+                    "Academic dates and Class IDs derive from this value — check that every "
+                    "GDE file comes from the same export period."
+                )
+            return chosen
 
         return self._fallback_school_year(today or datetime.now().date(), rollover_month_day)
 
