@@ -13,6 +13,8 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from src.config.models import ALLOWED_TRANSFORMS as _ALLOWED_TRANSFORMS
+from src.config.models import ConfiguredField, ensure_field_mapping
 from src.etl.column_names import COURSE_CODE, DISTRICT_COURSE_CODE, MASTER_TIMETABLE_ID
 from src.etl.transformers.context import TransformContext
 from src.utils.helpers import normalize_columns as _normalize_columns
@@ -23,16 +25,13 @@ logger = logging.getLogger(__name__)
 class BaseTransformer(ABC):
     # -----------------------------------------------------------------------
     # Allowlist of YAML-callable transform functions (security: prevents
-    # arbitrary method invocation via getattr on user-supplied config)
+    # arbitrary method invocation via getattr on user-supplied config).
+    # Canonical set lives in src/config/models.py (single source of truth —
+    # enforced fail-fast at config load by EntityConfig.validate_fields);
+    # kept as a class attribute here so subclasses/tests can allow extra
+    # transform methods for the defensive runtime check.
     # -----------------------------------------------------------------------
-    ALLOWED_TRANSFORMS: frozenset[str] = frozenset(
-        {
-            "grade_to_ceds",
-            "map_role",
-            "truncate_name",
-            "normalize_iso_date",
-        }
-    )
+    ALLOWED_TRANSFORMS: frozenset[str] = _ALLOWED_TRANSFORMS
 
     # -----------------------------------------------------------------------
     # CEDS grade mapping (class-level constant)
@@ -850,6 +849,13 @@ class BaseTransformer(ABC):
     ) -> pd.DataFrame:
         """Apply the generic YAML field_map to produce output columns.
 
+        Thin TYPED dispatch: each entry is normalized ONCE at this boundary
+        via ``ensure_field_mapping`` (already-typed variants from the validated
+        ``MappingConfig`` pass through untouched; raw YAML-shaped values from
+        direct callers are classified) and then dispatched to the variant's
+        ``.apply(...)`` Strategy (``src/config/models.py``). The legacy
+        per-branch dict sniffing is gone; the semantics are unchanged:
+
         Fail-loud, never silent, never fails the run (data errors are a
         separate axis from ETL success). NOTE: only the ``transform:`` path is
         per-row resilient — other computed branches (e.g. ``append_year_to_id``)
@@ -860,7 +866,10 @@ class BaseTransformer(ABC):
           per-row; a row whose ``func`` raises gets ``pd.NA`` in **that cell only**
           while every other row keeps its correct value. Those per-row failures are
           recorded.
-        - **Column-level errors** — an unknown transform name (config error), the
+        - **Column-level errors** — an unknown transform name (config error — now
+          also rejected fail-fast at CONFIG LOAD by ``EntityConfig``, so on the
+          pipeline path it cannot reach this loop; the check in
+          ``FieldTransform.apply`` is defensive for direct callers), the
           ``append_year_to_id`` row-wise branch, or any structural failure — blank
           the whole column and continue (do NOT raise), recorded the same loud way.
           The ``append_year_to_id`` branch is deliberately **column-level**, not
@@ -876,56 +885,25 @@ class BaseTransformer(ABC):
         - **Intended blank** (the config column is simply absent from the frame)
           is NOT an error: it stays ``pd.NA`` and is NOT recorded.
         """
-        for tgt_field, src_info in field_map.items():
+        for tgt_field, raw_spec in field_map.items():
             try:
                 if tgt_field in result.columns:
                     continue
 
-                if isinstance(src_info, dict) and "value" in src_info:
-                    result[tgt_field] = src_info["value"]
-                elif isinstance(src_info, dict) and src_info.get("use_academic_year"):
-                    result[tgt_field] = context.academic_start if tgt_field == "Start Date" else context.academic_end
-                elif isinstance(src_info, dict) and src_info.get("append_year_to_id"):
-                    col_name = src_info.get("column", "").lower()
-                    result[tgt_field] = working.apply(
-                        lambda row, c=col_name: self.generate_class_id(
-                            row, mt_id_col=c, append_year=True, context=context
-                        ),
-                        axis=1,
-                    )
-                elif isinstance(src_info, dict):
-                    column_name = src_info.get("column", "").lower()
-                    transform_name = src_info.get("transform", "")
-                    if column_name in working.columns:
-                        series = working[column_name]
-                        if transform_name:
-                            if transform_name not in self.ALLOWED_TRANSFORMS:
-                                # Config error (unknown transform). Blank this
-                                # column + record loudly; do NOT raise — config
-                                # fail-fast validation of ALLOWED_TRANSFORMS is a
-                                # separate backlog item (T2.4).
-                                raise ValueError(
-                                    f"Unknown transform '{transform_name}' for field '{tgt_field}'. "
-                                    f"Allowed: {sorted(self.ALLOWED_TRANSFORMS)}"
-                                )
-                            func = getattr(self, transform_name)
-                            result[tgt_field] = self._apply_transform_resilient(
-                                series, func, entity, tgt_field, context
-                            )
-                        else:
-                            result[tgt_field] = series
-                    else:
-                        # Intended blank: the config column is absent from the
-                        # frame. NOT an error — do not record.
-                        result[tgt_field] = pd.NA
+                spec = ensure_field_mapping(raw_spec)
+                if isinstance(spec, ConfiguredField):
+                    result[tgt_field] = spec.apply(working, self, tgt_field, entity, context)
+                elif isinstance(spec, dict):
+                    # classify_field's warn-passthrough (unrecognized dict
+                    # structure): no usable 'column' key by definition — the
+                    # legacy loop yielded an intended blank. NOT recorded.
+                    result[tgt_field] = pd.NA
                 else:
-                    col = str(src_info).lower()
-                    if col in working.columns:
-                        result[tgt_field] = working[col]
-                    else:
-                        # Intended blank (direct mapping, column absent). NOT an
-                        # error — do not record.
-                        result[tgt_field] = pd.NA
+                    # Bare column name (str) or the auto-detect None sentinel —
+                    # the direct read. An absent column is an intended blank
+                    # (NOT an error — do not record).
+                    col = str(spec).lower()
+                    result[tgt_field] = working[col] if col in working.columns else pd.NA
 
             except Exception as ex:
                 # Column-level error (unknown transform or any structural
