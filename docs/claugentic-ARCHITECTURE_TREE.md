@@ -66,6 +66,7 @@ _Last generated from `main` @ c669404._
 
 ## src/scheduler/
 
+- `src/scheduler/__init__.py` — the ONE platform-dispatch point (W4a T2.3): `Scheduler` Protocol + honest asymmetric capability flags, thin `WindowsTaskScheduler`/`CronScheduler` adapters (Windows delete owns the access-denied → elevated retry; cron password FAILS LOUD; cron read-back UNKNOWN-shaped), `get_scheduler()` reading `sys.platform` at call time.
 - `src/scheduler/windows.py` — Windows Task Scheduler: `register_task` = FIXED `Register-ScheduledTask` script (`-EncodedCommand`, only `$env:DSYNC_*`, `--source scheduled`, de-CLIXML'd); `is_elevated()`; `read_schedule -> ScheduleReadback` (D4 tri-state, ~10s); `delete_task`. D5: non-elevated `register_task` self-elevates via `elevation` (child bootstrap runs `_register_body`, DPAPI, fail-closed, read-back-confirmed) + `delete_task_elevated`.
 - `src/scheduler/elevation.py` — Generic Windows elevation IPC primitive (D5): DPAPI CurrentUser `protect_blob`/`unprotect_blob` (app entropy, never LocalMachine); `write_request`/`read_result`/`new_result_path` (`dsync_elev_*` handshake, owner-only DACL, plaintext atomic result); `run_elevated_powershell` (ShellExecuteExW `runas`, System32 pin, bounded wait → `ElevationOutcome`); `sweep_orphans`.
 - `src/scheduler/linux.py` — Linux/macOS cron integration: `register_cron()` / `delete_cron()` append/remove a sentinel-tagged crontab entry via the system `crontab` command; uses `shlex.quote()` for safe shell escaping.

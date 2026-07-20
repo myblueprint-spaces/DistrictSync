@@ -207,7 +207,7 @@ The **full, reusable quality bar** — every dimension an implementation is held
 GDE/source column names MUST come from the district `field_map` — never hardcoded in transformer code. Districts rename columns, so the mapping layer is the single source of truth.
 - Map outputs via `BaseTransformer.apply_field_map(...)`. For direct column access, resolve the name from the entity's `field_map` with a sensible default — no inline literals like `record.get("final mark")`.
 - The ONLY sanctioned hardcoded column names are the shared structural join keys in `src/etl/column_names.py` (`SCHOOL_NUMBER`, `MASTER_TIMETABLE_ID`, …). Add new shared keys there, not as scattered literals.
-- Known debt: `student_courses.py` bypasses this (hardcodes ~10 source columns and ignores its `field_map` for input — the field_map there only sets output column order). Migrate to config-driven columns; see `docs/claugentic-DECISIONS.md`.
+- `student_courses.py` is config-driven since 2026-07-20 (W4b1): output-keyed reads resolve through the field_map, auxiliary inputs through the optional per-entity `source_columns:` block, and `OUTPUT_COLUMNS` derives from the field_map keys.
 
 ## Output Targeting (`enabled_entities`)
 

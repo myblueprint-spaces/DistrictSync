@@ -19,6 +19,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -216,7 +217,17 @@ def migrate_legacy_data_dir() -> bool:
         staging = Path(tempfile.mkdtemp(prefix=f"{new.name}.migrating-", dir=new.parent))
         # Copy the whole tree into staging; promote only when it fully succeeds.
         shutil.copytree(legacy, staging, dirs_exist_ok=True, copy_function=shutil.copy2)
-        os.replace(staging, new)
+        # Windows AV/indexers can briefly hold a freshly-written directory, failing
+        # the promote with a transient Access-denied — retry a couple of times
+        # before falling back (the fallback itself stays safe either way).
+        for attempt in range(3):
+            try:
+                os.replace(staging, new)
+                break
+            except PermissionError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.2 * (attempt + 1))
         staging = None  # promoted — must NOT be cleaned up in the except path
     except (OSError, shutil.Error) as exc:
         # `new` can exist here despite the entry guard: a concurrent process may

@@ -66,6 +66,25 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Fixed
 
+- **The Class "Name" mapping config now actually drives class naming.** The
+  consumers read the spaced YAML authoring keys every mapping file emits, so
+  the primary-teacher flag is live and districts with a renamed section column
+  (SD60/SD74: "Section") now include the section letter — SD74-style names
+  change from "Clark Music 10 2026" to "Clark Carol Music 10 (B) 2026"
+  (partner-visible, made deliberately before partners depend on the names;
+  SD74 golden regenerated — Classes.csv Name column only). StudentCourses
+  source columns are now fully config-driven (the last Configurable-Columns
+  debt), byte-identical for every bundled config. (pre-partner W4b1)
+- **One platform-dispatch point for scheduling.** `src/scheduler` now exposes
+  a `Scheduler` protocol with honest per-platform capability flags and a
+  `get_scheduler()` factory; every UI caller goes through it instead of
+  scattered platform branches (Windows security invariants untouched; cron
+  register fails loud on a password it can't honor). Setup's delivery section
+  finished the plain-language sweep: "Delivery to SpacesEDU", "Save delivery
+  settings", "Couldn't connect to SpacesEDU"; the wizard finish banner's tone
+  and words now always agree; classified schedule-error copy uses the
+  "schedule the nightly sync" vocabulary; Convert's district-mismatch note no
+  longer asserts a nightly sync that may not exist. (W4a + wave-3 panel)
 - **Linux scheduling can no longer wipe other cron jobs.** A failed
   `crontab -l` read (e.g. permission denied) now aborts Register/Unregister
   with a loud error instead of rewriting the whole crontab from a blind read;
