@@ -27,13 +27,13 @@ hand-rolled controls (the ``FilledButton(text=)`` trap; see ``docs/FLET_1.0_CONV
 from __future__ import annotations
 
 import contextlib
-import sys
 from collections.abc import Callable
 
 import flet as ft
 
 from src.config.app_config import AppConfig
 from src.history.store import read_run_records, store_meta
+from src.scheduler import get_scheduler
 from src.ui_flet import components
 from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.run_history import derive_history_banner, to_run_rows
@@ -136,8 +136,8 @@ def _probe_schedule_async(
     latest_ts: str | None,
     on_status: Callable[[ScheduleStatus], None],
 ) -> None:
-    """Fetch the schedule read-back OFF the UI thread and re-render on the loop (Windows only)."""
-    if sys.platform != "win32":
+    """Fetch the schedule read-back OFF the UI thread and re-render on the loop (where supported)."""
+    if not get_scheduler().supports_read_schedule:
         return
 
     def _work() -> None:  # runs OFF the UI thread

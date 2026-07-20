@@ -23,12 +23,12 @@ import contextlib
 import functools
 import logging
 import os
-import sys
 from collections.abc import Callable
 
 import flet as ft
 
 from src.config.app_config import AppConfig
+from src.scheduler import get_scheduler
 from src.ui_flet import components, geometry, nav, nav_rail, tokens
 from src.ui_flet.screens.convert import build_convert, is_write_in_flight
 from src.ui_flet.screens.help import build_help
@@ -287,7 +287,7 @@ def main(page: ft.Page) -> None:
     # (`_refresh_setup_badge`, resolved late at call time like `select_by_id`). Advisory:
     # a probe/thread failure simply leaves the badge as-is.
     def _on_schedule_changed() -> None:
-        if sys.platform == "win32":
+        if get_scheduler().supports_read_schedule:
             with contextlib.suppress(Exception):
                 page.run_thread(_refresh_setup_badge)
 
@@ -402,7 +402,7 @@ def main(page: ft.Page) -> None:
 
         page.run_task(_apply)
 
-    if sys.platform == "win32":
+    if get_scheduler().supports_read_schedule:
         # The badge is advisory; a probe/thread failure simply leaves it clear.
         with contextlib.suppress(Exception):
             page.run_thread(_refresh_setup_badge)

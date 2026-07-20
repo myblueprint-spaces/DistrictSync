@@ -97,6 +97,13 @@ _DELIVERY_SATISFIED: frozenset[DeliveryFact] = frozenset(
     {DeliveryFact.TESTED_OK, DeliveryFact.STORED_CRED_PRESENT, DeliveryFact.SKIPPED}
 )
 
+# A delivery counts as CONFIGURED when a credential was tested-ok or is already stored —
+# deliberately NARROWER than ``_DELIVERY_SATISFIED`` (which also counts ``SKIPPED``): a skipped
+# delivery is "safe to advance" for the flow, but it configures nothing. Shared by the finish
+# summary (deferred-vs-configured rows) AND the desync downgrade (``finish_needs_attention``):
+# a failed/absent test is never configured.
+_DELIVERY_CONFIGURED: frozenset[DeliveryFact] = frozenset({DeliveryFact.TESTED_OK, DeliveryFact.STORED_CRED_PRESENT})
+
 
 @dataclass(frozen=True)
 class FlowInputs:
@@ -504,7 +511,7 @@ def folders_save_note(outcome: ReconcileOutcome) -> str:
 
 
 def sftp_reconcile_suffix(outcome: ReconcileOutcome) -> str:
-    """The clause appended to the "SFTP credentials stored" note, honest to the outcome (pure).
+    """The clause appended to the "Delivery settings saved" note, honest to the outcome (pure).
 
     ``DISPATCHED`` → the "updating the nightly schedule to deliver too" clause; ``INTERRUPTED`` →
     an honest "confirm the schedule choice above" prompt (the dialog is open, nothing dispatched);
@@ -540,6 +547,21 @@ _SUMMARY_SCHEDULE_DESYNC_SUFFIX = " — delivery not included yet"
 TRANSITION_CUE = "You're all set — this is now your Settings page; edit anything here anytime."
 
 
+def finish_needs_attention(*, delivery: DeliveryFact, delivery_desync: bool) -> bool:
+    """Whether the finish banner needs the amber (attention) tone (pure, the single source).
+
+    TRUE exactly when ``finish_copy`` downgrades to the desync headline: a CONFIGURED
+    delivery (tested-ok or stored — either way ``sftp_enabled`` was flipped by a real Save,
+    so a saved credential backs the claim) whose live task was baked without ``--sftp``.
+    The view derives the banner ``Verdict`` from THIS predicate — never from the raw desync
+    fact alone — so the amber tone can never sit under a confident "You're all set"
+    headline (W4a nit: on the Save-then-Test path the post-save Test flipped the session's
+    delivery fact from ``STORED_CRED_PRESENT`` to ``TESTED_OK``, the copy stayed confident,
+    and the verdict went amber on the raw desync — tone and words disagreed).
+    """
+    return delivery_desync and delivery in _DELIVERY_CONFIGURED
+
+
 def _tonight_prefix(schedule_time_display: str | None) -> str:
     """ "Tonight at 3:00 AM" when a real next-run time is known, else a timeless "Tonight".
 
@@ -569,12 +591,15 @@ def finish_copy(
     deliver (the nightly reads saved config, so an unsaved test changes nothing tonight).
 
     ``delivery_desync`` (the backtrack guard — ``schedule_delivery_desync``) downgrades the
-    persisted-delivery promise: the credential IS saved, but the live task was baked without
-    ``--sftp``, so the copy must NOT claim tonight delivers — it names the one Save in Settings
-    that will pick the change up. Only the ``STORED_CRED_PRESENT`` branch claims delivery, so
-    only it downgrades.
+    delivery promise for a CONFIGURED delivery (``finish_needs_attention`` — the single source
+    the view's banner verdict shares, so tone and words always agree): the credential IS saved
+    (``sftp_enabled`` only flips on a real Save, so the ``TESTED_OK`` session fact after a
+    Save-then-Test is backed by a stored credential too), but the live task was baked without
+    ``--sftp``, so the copy must NOT claim tonight delivers — it names the one Save in
+    Settings that will pick the change up. An unconfigured delivery (skipped/absent/failed)
+    claims nothing about delivering, so the desync flag changes nothing there.
 
-    Four cases (plus the desync downgrade of the second):
+    Four cases (plus the desync downgrade of the two configured-delivery ones):
 
     * **schedule skipped** (not live): the Convert-tab path + "add a schedule whenever you're
       ready" — no "tonight" claim, because nothing is scheduled.
@@ -593,7 +618,7 @@ def finish_copy(
             "Run conversions from the Convert tab; add a nightly schedule whenever you're ready."
         )
     prefix = _tonight_prefix(schedule_time_display)
-    if delivery is DeliveryFact.STORED_CRED_PRESENT and delivery_desync:
+    if finish_needs_attention(delivery=delivery, delivery_desync=delivery_desync):
         return _FINISH_HEADLINE_DESYNC, (
             f"{prefix} DistrictSync will build {district} into your output folder. Your delivery "
             "password is saved, but the nightly schedule hasn't picked up the delivery change yet — "
@@ -621,12 +646,6 @@ def finish_copy(
 # --------------------------------------------------------------------------- #
 # Finish-line checked summary — the honest "here's what you set up" card (D8).  #
 # --------------------------------------------------------------------------- #
-# A delivery counts as CONFIGURED for the summary when a credential was tested-ok or is already
-# stored — deliberately NARROWER than ``_DELIVERY_SATISFIED`` (which also counts ``SKIPPED``): a
-# skipped delivery is "safe to advance" for the flow, but the summary must show it as a *deferred*
-# step, matching the honest finish copy. A failed/absent test is never configured.
-_DELIVERY_CONFIGURED: frozenset[DeliveryFact] = frozenset({DeliveryFact.TESTED_OK, DeliveryFact.STORED_CRED_PRESENT})
-
 # The shared deferral phrase for a skippable step the admin left for later (Delivery / Schedule).
 _SUMMARY_DEFERRED_DETAIL = "Set up later in Setup"
 

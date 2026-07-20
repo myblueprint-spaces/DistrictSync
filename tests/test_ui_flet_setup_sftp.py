@@ -201,7 +201,7 @@ class TestSaveWritesKeyringExactlyOnce:
         captured: list = []
         tree = _mount(monkeypatch, _configured_cfg(), captured)
         _textfield_by_label(tree, "Password").value = "typed-pw"
-        _button_by_content(tree, "Save SFTP credentials").on_click(None)
+        _button_by_content(tree, "Save delivery settings").on_click(None)
 
         store_spy.assert_called_once_with("typed-pw")
 
@@ -235,7 +235,7 @@ class TestNonNumericPortMessage:
         tree = _mount(monkeypatch, _configured_cfg(), [])
         _textfield_by_label(tree, "Password").value = "typed-pw"
         _textfield_by_label(tree, "Port").value = "22a"
-        _button_by_content(tree, "Save SFTP credentials").on_click(None)
+        _button_by_content(tree, "Save delivery settings").on_click(None)
 
         assert _has_text(tree, "That port isn't a number")
         assert not _has_text(tree, "That SFTP host isn't allowed")

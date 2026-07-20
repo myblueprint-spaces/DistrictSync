@@ -41,13 +41,13 @@ async path here would add the doc's #1 concurrency trap for no user-perceptible 
 from __future__ import annotations
 
 import contextlib
-import sys
 from collections.abc import Callable
 
 import flet as ft
 
 from src.config.app_config import AppConfig
 from src.history.store import read_run_records, store_meta
+from src.scheduler import get_scheduler
 from src.ui_flet import components, nav, tokens
 from src.ui_flet.home_status import ENTITY_LABELS, FixAction, HomeMetrics, derive_home_status
 from src.ui_flet.humanize import friendly_district_name
@@ -228,13 +228,14 @@ def _probe_schedule_async(
     latest_ts: str | None,
     on_status: Callable[[ScheduleStatus], None],
 ) -> None:
-    """Fetch the schedule read-back OFF the UI thread and re-render on the loop (Windows only).
+    """Fetch the schedule read-back OFF the UI thread and re-render on the loop (where supported).
 
     Mirrors the SFTP-test marshalling (``page.run_thread`` → ``page.run_task``): the bounded
     PowerShell probe runs on a worker thread; ``on_status`` + ``page.update()`` fire only inside
     the loop-owned coroutine. A probe/thread failure is swallowed — the record-based paint stays.
+    Gated on the scheduler's honest read-back capability (W4a T2.3), not ``sys.platform``.
     """
-    if sys.platform != "win32":
+    if not get_scheduler().supports_read_schedule:
         return
 
     def _work() -> None:  # runs OFF the UI thread
