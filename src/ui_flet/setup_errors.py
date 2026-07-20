@@ -66,24 +66,24 @@ def classify_schedule_error(msg: str, elevated: bool) -> str:
         # terminated child may already have created the schedule — never claim "before it was
         # answered" / "nothing was changed". The register flow already tried a read-back.
         return (
-            "DistrictSync stopped waiting for the elevated registration to finish — the schedule "
-            "may or may not have been created. Check the schedule status below, then register "
-            "again if needed."
+            "DistrictSync stopped waiting for the elevated request to finish — the nightly sync "
+            "may or may not have been scheduled. Check the schedule status below, then schedule "
+            "it again if needed."
         )
     if msg == _MSG_ELEVATION_NO_RESULT:
         return (
-            "The permission prompt was accepted but we couldn't confirm the registration — "
+            "The permission prompt was accepted but we couldn't confirm the schedule change — "
             "check the schedule status below."
         )
     if msg == _MSG_DIFFERENT_ACCOUNT:
         return (
             "The permission prompt ran as a different account — log in as an administrator, or "
-            "register without the Windows password (runs only while you're logged in)."
+            "schedule the nightly sync without the Windows password (runs only while you're logged in)."
         )
     if msg == _MSG_ELEVATION_LAUNCH_FAILED:
         return (
             "Windows couldn't show the permission prompt. Try again, or run DistrictSync as an "
-            "administrator to register the schedule."
+            "administrator to schedule the nightly sync."
         )
 
     access_denied = "Access is denied" in msg or "access denied" in msg.lower()
@@ -106,7 +106,7 @@ def classify_schedule_error(msg: str, elevated: bool) -> str:
         )
     if access_denied and elevated:
         return (
-            "Registration was denied even though you're running as administrator. The account "
+            "Windows refused the schedule change even though you're running as administrator. The account "
             "likely can't be used for an unattended task: make sure you entered your Windows "
             "account password (not your Windows Hello PIN — for a Microsoft Account, your "
             "microsoft.com password), and that the account is allowed to "

@@ -117,7 +117,10 @@ def district_mismatch_note(selected: str | None, saved: str | None, *, config_di
     if not sel or not sav or sel == sav:
         return None
     display = friendly_district_name(sav, config_dir=config_dir)
-    return f"This differs from your saved district — your nightly sync uses {display}."
+    return (
+        f"This differs from your saved district ({display}) — "
+        "this one-time conversion won't change your saved settings."
+    )
 
 
 def missing_files_copy() -> tuple[str, str]:
