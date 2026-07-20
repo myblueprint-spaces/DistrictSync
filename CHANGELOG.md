@@ -9,6 +9,15 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-07-20
+
+The pre-partner completion release: every open backlog item landed ahead of
+district distribution — SFTP server-identity pinning (keys bundled, zero
+setup), data-integrity hardening across the whole pipeline, the full 0035
+polish batch, and a behavior-preserving internal refactor program — plus the
+0034 trust batch (Mapping schedule honesty, deliver-from-disk, Settings Save
+trustworthiness, and the false-green kill).
+
 ### Security
 
 - **The SFTP upload now verifies the server's identity, not just its name.**

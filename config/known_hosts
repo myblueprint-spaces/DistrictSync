@@ -6,7 +6,7 @@
 # Servers with NO entry here are still accepted, with a warning in the log —
 # pinning only ever tightens security, it never blocks delivery before keys exist.
 #
-# To populate or rotate the pinned keys, run this from any machine that can reach
+# Keys below were scanned 2026-07-20. To ROTATE them, run this from any machine that can reach
 # the servers on port 22, then paste the output lines below (one per line):
 #
 #   ssh-keyscan -t ed25519,ecdsa,rsa sftp.ca.spacesedu.com sftp.app.spacesedu.com sftp.myblueprint.ca
@@ -22,3 +22,12 @@
 # folder (Windows: %LOCALAPPDATA%\DistrictSync\known_hosts) takes precedence over
 # this bundled file, so keys can be added or rotated on a district server without
 # shipping a new build.
+sftp.app.spacesedu.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBNlaBmVmoFfN6vrE04dcAsE70jhXw6wj4iFViXof4gaYFFFOhlFLKuTNWngT8InUk3D39ckqvkU0FQnRPO7KayU=
+sftp.app.spacesedu.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPxBtjBnb69WmfeFndeQQtzHLMu+M9VE+5aHmMD0Ojxa
+sftp.app.spacesedu.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCa640ro3AGIjF3v6Owuj9J0k0o1U+/JVlPNuG1gQdJyZWPXUoEltjTPAusGk+O3OC2R/TpJCh5X2BkJ3lz72Ka263vTZsN/Wyq0srQsQ6eI/R6jDJTS9wHtSgw2Vd9zBDaEOF5+E20wtbN8vvJL/H/DC/02VBX7o3Xnj71JnXx9iOlC6fQIAGdQR1nOGSVFUwbKVSuPGY+xrl/JwJzAznpstGJDuGC0Z2UyY5pl0sRCun+CffqScXgvWUHCOmw1msEs58pKKEQrzaKK3HIaVl8VZ/gnEFa7bxgF6/wmVjDjF5+RzunZYEbIg/sK6offgsscvfviMHoPIhf2W1JgVk17bd/bdRzyEtQ+tdPU3cg0v5x6D6y3yqpSTvRoJHoby6gdm2AeDrpXTVT1u+Zw2n3cpBvRhOR/bJXE+IwxakY7mx5mHPRPmFm7OLB0AH9HtFrqzpK439W5Q15a51pSbCwuBk87El+kDT7+RPVeGISXe3jtVfbkSgfUN631pJdsW0=
+sftp.ca.spacesedu.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBNZo7f+SSgTpwO5FkTxEgAjrtzXkaO/oMlo32E0d4mMiIaNE/f2K7DnZv6F26BdGhe4Q8EbflW4Of7BcLxu7Kj4=
+sftp.ca.spacesedu.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII+Z9Hmt2exPFjiWplMl4AyFcKf0litdDwfbwVWLwz9K
+sftp.ca.spacesedu.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDeP27ND/RPYDHNl0zw7ija4i5QCphp/1MNSP873FUECWat66Vsoxo5Td4xAoyB/mwzcp/ikxZ9aaeiEpuLIp7W73S5HN7o6vIeXwmkvV4wKvPtAv5bufgwW8WO7VW8fwx8w7zVhPmSjDjqo7ucnIajgfnh/CkZR6eKq+zVunPRNLFxsgnNIcwF7oaOJL9CYWTaZPiLj/HwJQV9yS/myCo0hHQmsb/sngen+5od0EX6tbotwh0AIWf3FF5BozkrJ4YrZOHPa30nxgX9Q1/nB5jg1b8S2b9nHEEXSV7yfN7BQVKyFTz6HCNbZH0wDXQZjlHYUMVbp6pPPHyzUL8c+n34Aw5mPk/q6cPRMm9f07N+VO67N+m7GagjByBr3uyLqjUgL73JnkAbIIzmSKioCQhureNlqBGnpUAgeaE48l3zYJp3lPi6iNTUJGd55vOOfbu8T9wBwOEGp2Gx5bCcAGJ6ZKPnUPLS2dbT9cnRWo4jTsyHAfIGRUvCt3dudREAgsU=
+sftp.myblueprint.ca ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBPHGRzocv6W4dgIpqsTOXFBUNjFnJV1dI6y+GveyVu2rBShVCOgeCNwXrU45nKxTgO8bl3TtBcuoWDul+9Hb/Fw=
+sftp.myblueprint.ca ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHyEsGNnPbmX1elYYGxNHb4YPmRG1Z41x8V9jYZdfLpz
+sftp.myblueprint.ca ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDeWdTbRTa4e+NlqjuRQbPBIgwI/9PZfMplcUxQXTKRow1NDhvG4Fs7kHxPOfFtj4qU35zZ8UzJagLsWABzhW1WDX8VOMzDfqOC0kL/Q+0EG8KYakVVu9poFeSxvR/FujCqxQ9b3ctRs7YoQw4yUa/jyS9hS1JpxgD0pJvNFR/FAyINO6qyzLNAL6HdDBMMZWwpxioWevkOGiD9yS3wDq3xBlI1T5b/nxO76eQrnvCzDDRW5OAHp+rIX8LZXJLr7xy233W/C72MU40q+NJw3c1k9cwpEHut3KFQbskwU0+QEope938EL/sru9VXOypkMJNhraxKrqbshTzxD9VWuD+T2NGDSwzYen6GZhn7l0RrkSZNsG4hvo2ak2k6EILPj/N87pE3JenhHLsCWpbqpgPs4Qi3zxTRxDOHSUP/PvPHOa30it8fs8VfDTGLEmdQmyoEP00CG0V2RZlrkXiavxO0sXxsS0vItzGomAL5yDGGB3nsIt/aHumfddkYwDEcZJk=

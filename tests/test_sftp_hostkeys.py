@@ -179,17 +179,22 @@ class TestKnownHostsResolution:
         assert "unreadable pinned-host-key file" in caplog.text
         assert pinned.check(HOST, key_a)
 
-    def test_shipped_template_has_no_keys(self):
-        """The bundled config/known_hosts ships comment-only (owner populates the real
-        keys via ssh-keyscan) — it must parse cleanly to ZERO pinned entries."""
+    def test_shipped_file_pins_every_allowed_host(self):
+        """The bundled config/known_hosts ships POPULATED (keys scanned 2026-07-20):
+        every host in the SFTP allowlist must carry at least one pinned key, so a
+        fresh download verifies server identity with zero user action. The rotation
+        instructions (ssh-keyscan command) must survive as comments."""
         from src.utils.paths import bundle_known_hosts_file
+        from src.utils.validators import ALLOWED_SFTP_HOSTS
 
-        template = bundle_known_hosts_file()
-        assert template.is_file()
+        shipped = bundle_known_hosts_file()
+        assert shipped.is_file()
         host_keys = paramiko.HostKeys()
-        host_keys.load(str(template))
-        assert len(host_keys) == 0
-        assert "ssh-keyscan -t ed25519,ecdsa,rsa" in template.read_text(encoding="utf-8")
+        host_keys.load(str(shipped))
+        pinned_hosts = set(host_keys.keys())
+        for host in ALLOWED_SFTP_HOSTS:
+            assert host in pinned_hosts, f"allowlisted host {host} has no pinned key"
+        assert "ssh-keyscan -t ed25519,ecdsa,rsa" in shipped.read_text(encoding="utf-8")
 
 
 class TestConnectHostKeyWiring:
