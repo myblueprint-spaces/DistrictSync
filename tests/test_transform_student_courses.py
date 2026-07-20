@@ -987,6 +987,152 @@ class TestNonNumericMarkDataError:
         assert any("non-numeric Final Mark" in r.message for r in caplog.records)
 
 
+class TestConfigDrivenSourceColumns:
+    """Configurable Columns: every StudentCourses source-column read resolves
+    through the entity config with the MyEd BC literals as defaults.
+
+    Output-keyed reads resolve through the field_map (a string or
+    ``{column: ...}`` value overrides the source column; the base config's
+    ``{value: ""}`` placeholders keep the defaults — byte-identical output,
+    pinned by every other test in this module). Auxiliary inputs with no
+    output counterpart resolve through the entity-level ``source_columns``
+    block. ``school number`` stays the shared structural join key.
+    """
+
+    @pytest.fixture
+    def renamed_mapping(self):
+        return {
+            "source_files": {
+                "course_info": "CourseInformation.txt",
+                "course_history": "StudentCourseHistory.txt",
+                "course_selection": "StudentCourseSelection.txt",
+            },
+            "field_map": {
+                "Student ID": {"column": "Pupil No"},
+                "Course Code": {"column": "Crs Code"},
+                "IntegrationId": {"value": ""},
+                "Course Name": {"column": "Crs Title"},
+                "Completion Date": {"column": "Finish Date"},
+                "Final Mark": "Mark Pct",  # plain-string form also supported
+                "Credits Earned": {"column": "Credit Amt"},
+                "Alternate Course Code": {"value": ""},
+                "Potential Credits Earned": {"value": ""},
+                "Term Grade": {"value": ""},
+            },
+            "source_columns": {
+                "full_course_code": "Full Crs Code",
+                "section": "Sec",
+                "dl_start_date": "Begin Date",
+            },
+        }
+
+    def test_renamed_columns_resolve_through_config(self, transformer, renamed_mapping, myedbc_global_config):
+        info = pd.DataFrame(
+            {
+                "Crs Code": ["MAT10", "ENG11", "ENG12"],
+                "school number": ["6262013"] * 3,
+                "Crs Title": ["Math 10", "English 11", "English 12"],
+                "Credit Amt": [3, 4, 4],
+            }
+        )
+        history = _history(
+            [
+                # Passed, with a sectioned full code — exercises full_course_code
+                # + section stripping AND the mark/completion/credit columns.
+                {
+                    "Pupil No": "S001",
+                    "school number": "6262013",
+                    "Crs Code": "MAT10",
+                    "Full Crs Code": "MAT10-A",
+                    "Sec": "A",
+                    "Mark Pct": "85",
+                    "Begin Date": "15-Sep-2024",
+                    "Finish Date": "30-Jan-2025",
+                },
+                # Failed with a NEWER start than the selection retake below —
+                # exercises dl_start_date on BOTH files (a broken resolution
+                # would null the history start date and wrongly include the
+                # older selection via the null-start fallback).
+                {
+                    "Pupil No": "S001",
+                    "school number": "6262013",
+                    "Crs Code": "ENG11",
+                    "Full Crs Code": "ENG11",
+                    "Sec": "",
+                    "Mark Pct": "30",
+                    "Begin Date": "15-Sep-2025",
+                    "Finish Date": "30-Jan-2026",
+                },
+            ]
+        )
+        selection = _selection(
+            [
+                # Already passed -> excluded (exercises student_id/course_code keys).
+                {"Pupil No": "S001", "school number": "6262013", "Crs Code": "MAT10", "Begin Date": "15-Sep-2025"},
+                # OLDER retake start than the failed history -> excluded.
+                {"Pupil No": "S001", "school number": "6262013", "Crs Code": "ENG11", "Begin Date": "15-Sep-2024"},
+                # No history -> included, title from the renamed info columns.
+                {"Pupil No": "S001", "school number": "6262013", "Crs Code": "ENG12", "Begin Date": "15-Sep-2025"},
+            ]
+        )
+        result = _run(
+            transformer, renamed_mapping, myedbc_global_config, history=history, selection=selection, info=info
+        )
+
+        assert sorted(zip(result["Course Code"], result["Final Mark"])) == [
+            ("ENG11", "30"),
+            ("ENG12", ""),
+            ("MAT10", "85"),
+        ]
+        mat = result[result["Course Code"] == "MAT10"].iloc[0]
+        assert mat["Student ID"] == "S001"
+        assert mat["Course Name"] == "Math 10"  # section stripped -> exact info match
+        assert mat["Completion Date"] == "2025-01-30"
+        assert mat["Credits Earned"] == 3
+        assert mat["Potential Credits Earned"] == 3
+        eng12 = result[result["Course Code"] == "ENG12"].iloc[0]
+        assert eng12["Course Name"] == "English 12"
+        assert eng12["Potential Credits Earned"] == 4
+
+    def test_output_columns_follow_field_map_keys(self, transformer, myedbc_global_config, course_info_df):
+        """OUTPUT_COLUMNS is derived from field_map.keys() — a config that keeps
+        a subset emits exactly that subset, in field_map order (empty inputs
+        included)."""
+        mapping = {
+            "source_files": {
+                "course_info": "CourseInformation.txt",
+                "course_history": "StudentCourseHistory.txt",
+                "course_selection": "StudentCourseSelection.txt",
+            },
+            "field_map": {
+                "Student ID": {"value": ""},
+                "Course Code": {"value": ""},
+                "Final Mark": {"value": ""},
+            },
+        }
+        history = _history(
+            [
+                {
+                    "student number": "S001",
+                    "school number": "6262013",
+                    "course code": "MAT10",
+                    "full course code": "MAT10",
+                    "section": "",
+                    "final mark": "85",
+                    "dl start date": "15-Sep-2024",
+                    "dl completion date": "30-Jan-2025",
+                }
+            ]
+        )
+        result = _run(transformer, mapping, myedbc_global_config, history=history, info=course_info_df)
+        assert list(result.columns) == ["Student ID", "Course Code", "Final Mark"]
+        assert list(result["Course Code"]) == ["MAT10"]
+
+        empty = _run(transformer, mapping, myedbc_global_config, info=course_info_df)
+        assert empty.empty
+        assert list(empty.columns) == ["Student ID", "Course Code", "Final Mark"]
+
+
 class TestStudentCoursesActiveFiltering:
     """Zero-orphan invariant: transcripts only for students on the active
     roster (Students.csv). Fail-safe unchanged when no roster exists (mbponly).

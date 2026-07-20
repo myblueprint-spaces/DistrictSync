@@ -28,6 +28,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from src.etl.column_names import SCHOOL_NUMBER
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
 
@@ -38,7 +39,10 @@ class StudentCoursesTransformer(BaseTransformer):
     DATE_FORMAT = "%d-%b-%Y"  # e.g., "15-Sep-2024"
     PREFIX_LEN = 7
 
-    OUTPUT_COLUMNS: list[str] = [
+    # Fallback output shape when a mapping carries no field_map. The real
+    # output columns are derived from field_map.keys() at transform time so
+    # the YAML config stays the single source of truth for column order.
+    DEFAULT_OUTPUT_COLUMNS: list[str] = [
         "Student ID",
         "Course Code",
         "IntegrationId",
@@ -51,27 +55,58 @@ class StudentCoursesTransformer(BaseTransformer):
         "Term Grade",
     ]
 
+    # Configurable Columns rule: every source-column read resolves through the
+    # district config with the MyEd BC literals as defaults (bundled configs
+    # declare no overrides -> byte-identical output).
+    #
+    # Output-keyed reads resolve through the entity field_map (the family.py
+    # pattern): logical role -> (field_map output key, MyEd BC default column).
+    # One resolution per role is applied across all three source files
+    # (history / selection / course-info), matching MyEd BC's shared GDE
+    # column vocabulary.
+    FIELD_MAP_SOURCE_DEFAULTS: dict[str, tuple[str, str]] = {
+        "student_id": ("Student ID", "student number"),
+        "course_code": ("Course Code", "course code"),
+        "title": ("Course Name", "title"),
+        "completion_date": ("Completion Date", "dl completion date"),
+        "final_mark": ("Final Mark", "final mark"),
+        "credit_value": ("Credits Earned", "credit value"),
+    }
+    # Auxiliary inputs with NO output counterpart resolve through the entity's
+    # optional `source_columns` block (see EntityConfig.source_columns).
+    # School Number is intentionally NOT configurable here: it is the shared
+    # structural join key from src/etl/column_names.py.
+    AUX_SOURCE_DEFAULTS: dict[str, str] = {
+        "full_course_code": "full course code",
+        "section": "section",
+        "dl_start_date": "dl start date",
+    }
+
     def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         source_files = mapping.get("source_files", {})
+        field_map = mapping.get("field_map", {})
+        output_columns = list(field_map.keys()) if field_map else list(self.DEFAULT_OUTPUT_COLUMNS)
+        cols = self._resolve_source_columns(mapping)
+
         history_df = self._load(context, source_files, "course_history")
         selection_df = self._load(context, source_files, "course_selection")
         info_df = self._load(context, source_files, "course_info")
 
         if history_df.empty and selection_df.empty:
-            return pd.DataFrame(columns=self.OUTPUT_COLUMNS)
+            return pd.DataFrame(columns=output_columns)
 
         patterns = self.effective_course_code_patterns(context.global_config)
         flavors = context.global_config.get("excluded_course_flavors", [])
 
-        info_exact, info_prefix = self._build_info_lookups(info_df)
+        info_exact, info_prefix = self._build_info_lookups(info_df, cols)
 
         rows: list[dict[str, Any]] = []
         sch_lookup: dict[tuple[str, str], dict[str, Any]] = {}
 
-        self._process_history(history_df, patterns, flavors, info_exact, info_prefix, sch_lookup, rows, context)
-        self._process_selection(selection_df, patterns, flavors, info_exact, info_prefix, sch_lookup, rows)
+        self._process_history(history_df, patterns, flavors, info_exact, info_prefix, sch_lookup, rows, context, cols)
+        self._process_selection(selection_df, patterns, flavors, info_exact, info_prefix, sch_lookup, rows, cols)
 
-        result = pd.DataFrame(rows, columns=self.OUTPUT_COLUMNS)
+        result = pd.DataFrame(rows, columns=output_columns)
         # Zero-orphan invariant: emit transcripts only for students on the
         # active roster (Students.csv). When the roster is unavailable (e.g.
         # the mbponly tier runs without the Students entity), filter_to_active
@@ -79,11 +114,44 @@ class StudentCoursesTransformer(BaseTransformer):
         result = self.filter_to_active(result, "Student ID", context, caller="StudentCourses")
         if not result.empty:
             # Match PowerShell's lexical sort (Completion Date is a string here).
-            result = result.sort_values(
-                ["Student ID", "Completion Date"],
-                kind="stable",
-            ).reset_index(drop=True)
+            # Output columns follow field_map.keys(), so sort only on the sort
+            # keys a config actually kept.
+            sort_keys = [col for col in ("Student ID", "Completion Date") if col in result.columns]
+            if sort_keys:
+                result = result.sort_values(sort_keys, kind="stable").reset_index(drop=True)
         return result
+
+    # ------------------------------------------------------------------
+    # Source-column resolution (Configurable Columns)
+    # ------------------------------------------------------------------
+    @classmethod
+    def _resolve_source_columns(cls, mapping: dict[str, Any]) -> dict[str, str]:
+        """Resolve every configurable source-column read for this entity.
+
+        Output-keyed columns resolve through the entity ``field_map`` — a plain
+        string value or a ``{column: ...}`` dict overrides the MyEd BC default
+        (the family.py pattern; the base config's ``{value: ""}`` placeholders
+        keep the defaults). Auxiliary inputs with no output counterpart resolve
+        through the entity-level ``source_columns`` block. All resolved names
+        are lower-cased to match ``normalize_columns`` output.
+        """
+        field_map = mapping.get("field_map", {})
+        resolved: dict[str, str] = {}
+        for role, (fm_key, default) in cls.FIELD_MAP_SOURCE_DEFAULTS.items():
+            resolved[role] = cls._field_map_source(field_map, fm_key, default)
+        aux = mapping.get("source_columns") or {}
+        for role, default in cls.AUX_SOURCE_DEFAULTS.items():
+            resolved[role] = str(aux.get(role) or default).strip().lower() or default
+        return resolved
+
+    @staticmethod
+    def _field_map_source(field_map: dict[str, Any], key: str, default: str) -> str:
+        config = field_map.get(key, default)
+        if isinstance(config, dict):
+            return str(config.get("column") or default).strip().lower() or default
+        if isinstance(config, str) and config.strip():
+            return config.strip().lower()
+        return default
 
     # ------------------------------------------------------------------
     # Source loading
@@ -98,18 +166,18 @@ class StudentCoursesTransformer(BaseTransformer):
     # CourseInfo lookup tables
     # ------------------------------------------------------------------
     def _build_info_lookups(
-        self, info_df: pd.DataFrame
+        self, info_df: pd.DataFrame, cols: dict[str, str]
     ) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str, dict[str, Any]]]:
         exact: dict[tuple[str, str], dict[str, Any]] = {}
         prefix: dict[str, dict[str, Any]] = {}
         if info_df.empty:
             return exact, prefix
         for record in info_df.to_dict("records"):
-            code = self._str(record.get("course code"))
+            code = self._str(record.get(cols["course_code"]))
             if not code:
                 continue
-            school = self._str(record.get("school number"))
-            entry = {"title": self._str(record.get("title")), "credit_value": record.get("credit value")}
+            school = self._str(record.get(SCHOOL_NUMBER))
+            entry = {"title": self._str(record.get(cols["title"])), "credit_value": record.get(cols["credit_value"])}
             exact[(code, school)] = entry
             pre = code[: self.PREFIX_LEN]
             if pre not in prefix:
@@ -129,28 +197,29 @@ class StudentCoursesTransformer(BaseTransformer):
         sch_lookup: dict[tuple[str, str], dict[str, Any]],
         rows: list[dict[str, Any]],
         context: TransformContext,
+        cols: dict[str, str],
     ) -> None:
         if history_df.empty:
             return
-        filtered = self.filter_excluded_course_code_patterns(history_df, patterns, column="course code")
+        filtered = self.filter_excluded_course_code_patterns(history_df, patterns, column=cols["course_code"])
 
         non_numeric_marks = 0
         first_sample = ""
         for record in filtered.to_dict("records"):
-            mark_str = self._str(record.get("final mark"))
+            mark_str = self._str(record.get(cols["final_mark"]))
             if mark_str.upper() == "W":
                 continue
 
-            course_code = self._str(record.get("course code"))
-            student_id = self._str(record.get("student number"))
+            course_code = self._str(record.get(cols["course_code"]))
+            student_id = self._str(record.get(cols["student_id"]))
             if not student_id or not course_code:
                 continue
 
-            school_number = self._str(record.get("school number"))
-            full_code = self._str(record.get("full course code"))
-            section = self._str(record.get("section"))
-            raw_completion = self._str(record.get("dl completion date"))
-            raw_start = self._str(record.get("dl start date"))
+            school_number = self._str(record.get(SCHOOL_NUMBER))
+            full_code = self._str(record.get(cols["full_course_code"]))
+            section = self._str(record.get(cols["section"]))
+            raw_completion = self._str(record.get(cols["completion_date"]))
+            raw_start = self._str(record.get(cols["dl_start_date"]))
             iso_completion = self.normalize_iso_date(raw_completion)
 
             cleaned = self._derive_history_code(course_code, full_code, section, flavors)
@@ -245,19 +314,20 @@ class StudentCoursesTransformer(BaseTransformer):
         info_prefix: dict[str, dict[str, Any]],
         sch_lookup: dict[tuple[str, str], dict[str, Any]],
         rows: list[dict[str, Any]],
+        cols: dict[str, str],
     ) -> None:
         if selection_df.empty:
             return
-        filtered = self.filter_excluded_course_code_patterns(selection_df, patterns, column="course code")
+        filtered = self.filter_excluded_course_code_patterns(selection_df, patterns, column=cols["course_code"])
 
         for record in filtered.to_dict("records"):
-            course_code = self._str(record.get("course code"))
-            student_id = self._str(record.get("student number"))
+            course_code = self._str(record.get(cols["course_code"]))
+            student_id = self._str(record.get(cols["student_id"]))
             if not student_id or not course_code:
                 continue
 
-            school_number = self._str(record.get("school number"))
-            raw_start = self._str(record.get("dl start date"))
+            school_number = self._str(record.get(SCHOOL_NUMBER))
+            raw_start = self._str(record.get(cols["dl_start_date"]))
 
             cleaned = self.clean_course_code_flavor(course_code, flavors)
             sel_start = self._parse_date(raw_start)

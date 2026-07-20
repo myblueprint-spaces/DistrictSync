@@ -75,7 +75,7 @@ class TestCreateBlendedClassName:
                 "master timetable id": ["MT1", "MT2"],
             }
         )
-        field_map = {"Name": {"teacher_last_name": "Teacher Name"}}
+        field_map = {"Name": {"teacher last name": "Teacher Name"}}
         course_map = {"ENG01": "English 1", "ENG02": "English 2"}
 
         result = self.transformer._create_blended_class_name(group, field_map, "01/02", course_map)
@@ -85,6 +85,23 @@ class TestCreateBlendedClassName:
         assert "01/02" in result
         assert "2025" in result
 
+    def test_spaced_key_name_config_drives_teacher_column(self):
+        """The SPACED YAML authoring key ("teacher last name") must drive which
+        column supplies the teacher part — pinned with a column name that the
+        hardcoded default ("teacher name") would never find."""
+        group = pd.DataFrame(
+            {
+                "instructor": ["Nguyen", "Nguyen"],
+                "course code": ["ENG01", "ENG02"],
+                "master timetable id": ["MT1", "MT2"],
+            }
+        )
+        field_map = {"Name": {"teacher last name": "Instructor"}}
+        course_map = {"ENG01": "English 1", "ENG02": "English 2"}
+
+        result = self.transformer._create_blended_class_name(group, field_map, "01/02", course_map)
+        assert result == "Nguyen English 1 / English 2 (01/02) 2025"
+
     def test_fallback_when_no_teacher(self):
         group = pd.DataFrame(
             {
@@ -92,7 +109,7 @@ class TestCreateBlendedClassName:
                 "master timetable id": ["MT1", "MT2"],
             }
         )
-        field_map = {"Name": {"teacher_last_name": "teacher name"}}
+        field_map = {"Name": {"teacher last name": "teacher name"}}
         course_map = {"SCI01": "Science 1", "SCI02": "Science 2"}
 
         result = self.transformer._create_blended_class_name(group, field_map, "01/02", course_map)
@@ -121,7 +138,7 @@ class TestDetectBlendedClasses:
                 "class_info": "ClassInformationEnh.txt",
             },
             "field_map": {
-                "Name": {"teacher_last_name": "Teacher Name"},
+                "Name": {"teacher last name": "Teacher Name"},
             },
         }
         global_config = {

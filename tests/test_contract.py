@@ -688,17 +688,13 @@ class TestDistrictQuirks:
     @pytest.mark.parametrize("district_output", ["sd60myedbc"], indirect=True)
     def test_sd60_class_name_without_primary_teacher_flag(self, district_output):
         """SD60's schedule has no Primary-Teacher flag; class names still carry
-        the teacher's last name and the course-info Title.
+        the teacher name, the course-info Title, AND the section letter.
 
-        Deliberately does NOT assert the section letter: ``to_raw_dict`` emits
-        the Name config with spaced keys ("section letter") while
-        ``ClassTransformer._assign_class_names`` looks up underscore keys
-        ("section_letter"), so the configured section column is currently
-        ignored and SD60 names omit "(A)". The prefix/suffix assertion holds
-        both today and after that key mismatch is fixed.
+        The section letter comes from SD60's configured "section letter":
+        "Section" column (the schedule has no "Section Letter") — pinned
+        exactly since the spaced-key Name config drives naming.
         """
         _, out = district_output
         classes = _read_output(out, "Classes")
         name = classes[classes["Class ID"].astype(str).str.startswith("MT002_")]["Name"].iloc[0]
-        assert name.startswith("Liu Math 10"), name
-        assert name.endswith("2026"), name
+        assert name == "Liu Math 10 (A) 2026", name
