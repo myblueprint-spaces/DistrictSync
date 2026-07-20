@@ -17,6 +17,8 @@ from src.etl.column_names import (
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.blended import BlendedClassDetector
 from src.etl.transformers.context import TransformContext
+from src.etl.transformers.grades import split_by_homeroom_grades
+from src.etl.transformers.ids import normalize_id_series
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +65,9 @@ class ClassTransformer(BaseTransformer):
 
         class_info_df = self.normalize_columns(class_info_df)
         if teacher_id_col in class_info_df.columns:
-            class_info_df[teacher_id_col] = class_info_df[teacher_id_col].astype(str).str.strip()
+            class_info_df[teacher_id_col] = normalize_id_series(class_info_df[teacher_id_col])
         if MASTER_TIMETABLE_ID in class_info_df.columns:
-            class_info_df[MASTER_TIMETABLE_ID] = class_info_df[MASTER_TIMETABLE_ID].astype(str).str.strip()
+            class_info_df[MASTER_TIMETABLE_ID] = normalize_id_series(class_info_df[MASTER_TIMETABLE_ID])
 
         excluded_codes = context.global_config.get("excluded_course_codes", [])
         class_info_df = self.filter_excluded_course_codes(class_info_df, excluded_codes)
@@ -95,7 +97,7 @@ class ClassTransformer(BaseTransformer):
 
         student_demo_df = self.normalize_columns(student_demo_df)
         if teacher_id_col in student_demo_df.columns:
-            student_demo_df[teacher_id_col] = student_demo_df[teacher_id_col].astype(str).str.strip()
+            student_demo_df[teacher_id_col] = normalize_id_series(student_demo_df[teacher_id_col])
 
         students_field_map = context.get_students_config().get("field_map", {})
 
@@ -107,10 +109,8 @@ class ClassTransformer(BaseTransformer):
         if student_demo_df.empty:
             return
 
-        grade_config = students_field_map.get("Grade", {})
-        grade_col = grade_config.get("column", "grade").lower() if isinstance(grade_config, dict) else "grade"
-        student_demo_df[grade_col] = student_demo_df[grade_col].apply(self.grade_to_ceds)
-        homeroom_students: pd.DataFrame = student_demo_df[student_demo_df[grade_col].isin(homeroom_grades)]  # type: ignore[assignment]
+        grade_col = self.resolve_column(students_field_map, "Grade", "grade")
+        homeroom_students = split_by_homeroom_grades(student_demo_df, grade_col, homeroom_grades, keep="homeroom")
 
         if homeroom_students.empty:
             return
@@ -190,17 +190,16 @@ class ClassTransformer(BaseTransformer):
 
         schedule_df = self.normalize_columns(schedule_df)
         if teacher_id_col in schedule_df.columns:
-            schedule_df[teacher_id_col] = schedule_df[teacher_id_col].astype(str).str.strip()
+            schedule_df[teacher_id_col] = normalize_id_series(schedule_df[teacher_id_col])
         if MASTER_TIMETABLE_ID in schedule_df.columns:
-            schedule_df[MASTER_TIMETABLE_ID] = schedule_df[MASTER_TIMETABLE_ID].astype(str).str.strip()
+            schedule_df[MASTER_TIMETABLE_ID] = normalize_id_series(schedule_df[MASTER_TIMETABLE_ID])
 
         excluded_codes = context.global_config.get("excluded_course_codes", [])
         schedule_df = self.filter_excluded_course_codes(schedule_df, excluded_codes)
         if schedule_df.empty:
             return
 
-        schedule_df["grade_ceds"] = schedule_df["grade"].apply(self.grade_to_ceds)
-        non_homeroom_df: pd.DataFrame = schedule_df[~schedule_df["grade_ceds"].isin(homeroom_grades)].copy()  # type: ignore[assignment]
+        non_homeroom_df = split_by_homeroom_grades(schedule_df, "grade", homeroom_grades, keep="subject")
         if non_homeroom_df.empty:
             return
 
@@ -212,12 +211,7 @@ class ClassTransformer(BaseTransformer):
         self._assign_class_names(subject_output, merged, field_map, context)
         self._assign_grades(subject_output, merged, field_map, context)
 
-        school_id_config = field_map.get("School ID", {})
-        school_col = (
-            school_id_config.get("column", SCHOOL_NUMBER).lower()
-            if isinstance(school_id_config, dict)
-            else SCHOOL_NUMBER
-        )
+        school_col = self.resolve_column(field_map, "School ID", SCHOOL_NUMBER)
         subject_output["School ID"] = merged.get(school_col, "")
         subject_output["Start Date"] = self.resolve_date(field_map, "Start Date", context)
         subject_output["End Date"] = self.resolve_date(field_map, "End Date", context)
@@ -291,7 +285,7 @@ class ClassTransformer(BaseTransformer):
         if not staff_df.empty:
             staff_df = self.normalize_columns(staff_df)
             if teacher_id_col in staff_df.columns:
-                staff_df[teacher_id_col] = staff_df[teacher_id_col].astype(str).str.strip()
+                staff_df[teacher_id_col] = normalize_id_series(staff_df[teacher_id_col])
             merged = merged.merge(
                 staff_df[[teacher_id_col, LAST_NAME]],
                 on=teacher_id_col,

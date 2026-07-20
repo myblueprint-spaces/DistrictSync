@@ -1,12 +1,30 @@
-"""Base transformer with shared utilities and the generic field-mapping loop.
+"""Base transformer: the per-entity contract + thin delegation to helper modules.
 
-All entity-specific transformers inherit from this.
-DRY: column normalization, date resolution, ID cleaning, source file access,
-and the generic field_map application are defined once here.
+``BaseTransformer`` owns what is genuinely PER-ENTITY: the abstract
+``transform`` interface, the generic ``apply_field_map`` dispatch, the shared
+Class-ID assignment, the zero-orphan ``filter_to_active`` roster filter, the
+config-driven ``row_filters``, the active-student predicate, and the fail-loud
+data-error ledger.
+
+The stateless helper families live in focused sibling modules and are
+re-exposed here as SAME-SIGNATURE delegating wrappers (compatibility surface —
+subclasses, tests, and the legacy ``DataTransformer`` facade keep calling
+``self.<helper>`` / ``BaseTransformer.<helper>``):
+
+- :mod:`src.etl.transformers.grades` — CEDS mapping + homeroom/subject split
+- :mod:`src.etl.transformers.dates` — date parse/format grid + school-year math
+- :mod:`src.etl.transformers.course_codes` — course-code exclusion/cleaning
+- :mod:`src.etl.transformers.emails` — email template interpolation
+- :mod:`src.etl.transformers.ids` — ID/join-key normalization
+- :mod:`src.etl.transformers.naming` — class-name construction
+- :mod:`src.etl.transformers.sources` — source_files normalization + access
+
+``datetime.now()`` is resolved ONLY in this module (the established test seam
+patches ``src.etl.transformers.base.datetime``); the helper modules take
+``today`` as an explicit parameter.
 """
 
 import logging
-import re
 from abc import ABC, abstractmethod
 from datetime import date, datetime
 from typing import Any, Optional
@@ -15,7 +33,14 @@ import pandas as pd
 
 from src.config.models import ALLOWED_TRANSFORMS as _ALLOWED_TRANSFORMS
 from src.config.models import ConfiguredField, ensure_field_mapping
-from src.etl.column_names import COURSE_CODE, DISTRICT_COURSE_CODE, MASTER_TIMETABLE_ID
+from src.etl.column_names import MASTER_TIMETABLE_ID
+from src.etl.transformers import course_codes as _course_codes
+from src.etl.transformers import dates as _dates
+from src.etl.transformers import emails as _emails
+from src.etl.transformers import grades as _grades
+from src.etl.transformers import ids as _ids
+from src.etl.transformers import naming as _naming
+from src.etl.transformers import sources as _sources
 from src.etl.transformers.context import TransformContext
 from src.utils.helpers import normalize_columns as _normalize_columns
 
@@ -33,48 +58,8 @@ class BaseTransformer(ABC):
     # -----------------------------------------------------------------------
     ALLOWED_TRANSFORMS: frozenset[str] = _ALLOWED_TRANSFORMS
 
-    # -----------------------------------------------------------------------
-    # CEDS grade mapping (class-level constant)
-    # -----------------------------------------------------------------------
-    CEDS_MAPPING: dict[str, str] = {
-        "INFANT/TODDLER": "IT",
-        "PRESCHOOL": "PR",
-        "PRE-K": "PK",
-        "PREKINDERGARTEN": "PK",
-        "TK": "TK",
-        "TRANSITIONAL KINDERGARTEN": "TK",
-        "KINDERGARTEN": "KG",
-        "K": "KG",
-        "01": "01",
-        "1": "01",
-        "02": "02",
-        "2": "02",
-        "03": "03",
-        "3": "03",
-        "04": "04",
-        "4": "04",
-        "05": "05",
-        "5": "05",
-        "06": "06",
-        "6": "06",
-        "07": "07",
-        "7": "07",
-        "08": "08",
-        "8": "08",
-        "09": "09",
-        "9": "09",
-        "10": "10",
-        "11": "11",
-        "12": "12",
-        "13": "13",
-        "POSTSECONDARY": "PS",
-        "UGRADED": "UG",
-        "UNGRADED": "UG",
-        "UG": "UG",
-        "OTHER": "Other",
-        "EL": "KG",
-        "KF": "KG",
-    }
+    # CEDS grade mapping — canonical table lives in grades.py (same object).
+    CEDS_MAPPING: dict[str, str] = _grades.CEDS_MAPPING
 
     # -----------------------------------------------------------------------
     # Abstract interface
@@ -83,12 +68,12 @@ class BaseTransformer(ABC):
     def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame: ...
 
     # -----------------------------------------------------------------------
-    # Static utility methods
+    # Grade helpers (delegates → grades.py)
     # -----------------------------------------------------------------------
     @staticmethod
     def grade_to_ceds(grade_value: Any) -> str:
-        original = str(grade_value).strip().upper() if pd.notna(grade_value) else ""
-        return BaseTransformer.CEDS_MAPPING.get(original, "UG")
+        """Map a raw source grade to its CEDS code (see :func:`grades.grade_to_ceds`)."""
+        return _grades.grade_to_ceds(grade_value)
 
     @staticmethod
     def map_role(teaching_flag: Any) -> str:
@@ -97,9 +82,9 @@ class BaseTransformer(ABC):
 
     # -----------------------------------------------------------------------
     # Active-student detection (single source of truth — used by Students for
-    # roster filtering and, in a later slice, by Classes/Enrollments to drop
-    # orphan rows). Source column names resolve from the Students field_map
-    # (Configurable Columns rule); MyEd BC defaults apply when unconfigured.
+    # roster filtering and by Classes/Enrollments to drop orphan rows).
+    # Source column names resolve from the Students field_map (Configurable
+    # Columns rule); MyEd BC defaults apply when unconfigured.
     # -----------------------------------------------------------------------
     # Default status-column alias. Resolution picks the first spelling present
     # in the (normalized, lower-cased) frame: real two-L MyEd exports
@@ -108,7 +93,6 @@ class BaseTransformer(ABC):
     DEFAULT_STATUS_COLUMN_ALIASES: tuple[str, ...] = ("enrollment status", "enrolment status")
     DEFAULT_WITHDRAW_DATE_COLUMN: str = "withdraw date"
     DEFAULT_ACTIVE_VALUES: tuple[str, ...] = ("Active", "PreReg")
-    _WITHDRAW_DATE_FORMATS: tuple[str, ...] = ("%d-%b-%Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y")
 
     @classmethod
     def resolve_active_config(
@@ -163,33 +147,13 @@ class BaseTransformer(ABC):
 
     @classmethod
     def _classify_withdraw(cls, value: Any, today: date) -> tuple[bool, bool]:
-        """Classify a withdraw-date cell as ``(is_withdrawn, was_unparseable)``.
-
-        - Blank / NaN → ``(False, False)`` (no withdrawal).
-        - Parses to a date on/before ``today`` → ``(True, False)``.
-        - Parses to a future date → ``(False, False)`` (still enrolled).
-        - Non-blank but unparseable → ``(True, True)`` (fail-safe to Inactive;
-          the caller aggregates these into one warning).
-        """
-        if pd.isna(value) or str(value).strip() == "":
-            return False, False
-        date_str = str(value).strip()
-        for fmt in cls._WITHDRAW_DATE_FORMATS:
-            try:
-                return datetime.strptime(date_str, fmt).date() <= today, False
-            except ValueError:
-                continue
-        return True, True
+        """Classify a withdraw-date cell (see :func:`dates.classify_withdraw`)."""
+        return _dates.classify_withdraw(value, today)
 
     @classmethod
     def past_withdraw_date(cls, value: Any, today: date) -> bool:
-        """True when ``value`` is a past/unparseable withdraw date.
-
-        Thin per-value predicate over :meth:`_classify_withdraw` (a blank or
-        future date is not a withdrawal). Exposed for reuse by callers that
-        need the boolean directly.
-        """
-        return cls._classify_withdraw(value, today)[0]
+        """True when ``value`` is a past/unparseable withdraw date (see :func:`dates.past_withdraw_date`)."""
+        return _dates.past_withdraw_date(value, today)
 
     @classmethod
     def compute_enroll_status(cls, df: pd.DataFrame, students_field_map: dict[str, Any]) -> pd.Series:
@@ -229,7 +193,7 @@ class BaseTransformer(ABC):
                 f"[Students] Active-status resolved via status column '{status_column}' "
                 f"(active values {active_values}); withdraw date used only as a per-row fallback."
             )
-            status_vals = df[status_column].astype(str).str.strip()
+            status_vals = _ids.normalize_id_series(df[status_column])
             has_status = status_vals.ne("") & status_vals.str.lower().ne("nan")
             status_label = status_vals.apply(lambda v: v if v in allowed else "Inactive")
             labels = status_label.where(has_status, date_label)
@@ -288,9 +252,10 @@ class BaseTransformer(ABC):
         from ``Students.csv``. The roster is ``context.active_student_ids`` —
         published by :class:`StudentTransformer` from its filtered output.
 
-        Matching normalizes both sides with ``astype(str).str.strip()`` because
-        the demographic ``Student Number`` and schedule ``Student ID`` carry the
-        same pupil-number values but may differ in incidental whitespace.
+        Matching normalizes both sides with :func:`ids.normalize_id_series`
+        because the demographic ``Student Number`` and schedule ``Student ID``
+        carry the same pupil-number values but may differ in incidental
+        whitespace.
 
         Fail-safe (never filter-to-empty): when the roster is empty (Students
         disabled or ran later) or ``student_col`` is absent, log a WARNING and
@@ -310,7 +275,7 @@ class BaseTransformer(ABC):
         if not context.active_student_ids or student_col not in df.columns:
             logger.warning(f"[{caller}] active_student_ids empty — skipping active filter")
             return df
-        normalized = df[student_col].astype(str).str.strip()
+        normalized = _ids.normalize_id_series(df[student_col])
         keep = normalized.isin(context.active_student_ids)
         dropped_rows = int((~keep).sum())
         if dropped_rows:
@@ -321,111 +286,37 @@ class BaseTransformer(ABC):
             )
         return df[keep].copy()  # type: ignore[return-value]
 
-    # Recognized GDE input date formats, tried in order. Districts vary, so input
-    # date parsing is deliberately flexible; OUTPUT shape is chosen by the caller.
-    _INPUT_DATE_FORMATS: tuple[str, ...] = ("%d-%b-%Y", "%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y")
-
-    # Friendly date-format tokens -> strftime directives. Zero-padded only (Windows
-    # strftime has no portable non-padded directive). Longest token per letter
-    # family first so the alternation regex matches `yyyy` before `yy`, etc.
-    _DATE_FORMAT_TOKENS: tuple[tuple[str, str], ...] = (
-        ("yyyy", "%Y"),
-        ("yy", "%y"),
-        ("MMMM", "%B"),
-        ("MMM", "%b"),
-        ("MM", "%m"),
-        ("dd", "%d"),
-    )
-    _DATE_FORMAT_TOKEN_RE = re.compile("|".join(tok for tok, _ in _DATE_FORMAT_TOKENS))
-    _DATE_FORMAT_TOKEN_MAP: dict[str, str] = dict(_DATE_FORMAT_TOKENS)
-
-    @classmethod
-    def _coerce_date(cls, value: Any) -> tuple[str, Optional[datetime]]:
-        """Parse *value* against the recognized input formats.
-
-        Returns ``(trimmed_string, parsed_datetime_or_None)``. Blank/NaN/"nan"
-        inputs yield ``("", None)``; an unparseable non-blank value yields
-        ``(s, None)`` so callers can pass the original through (fail-visible).
-        """
-        if value is None or (isinstance(value, float) and pd.isna(value)):
-            return "", None
-        s = str(value).strip()
-        if not s or s.lower() == "nan":
-            return "", None
-        for fmt in cls._INPUT_DATE_FORMATS:
-            try:
-                return s, datetime.strptime(s, fmt)
-            except ValueError:
-                continue
-        return s, None
-
-    @classmethod
-    def normalize_iso_date(cls, value: Any) -> str:
-        """Convert various date formats to ISO 8601 (yyyy-mm-dd).
-
-        Accepts dd-MMM-yyyy (e.g. '15-Sep-2024'), already-ISO yyyy-mm-dd,
-        and m/d/yyyy / d/m/yyyy. Returns the original trimmed string if
-        no format matches, or '' for NaN/None/empty inputs.
-        """
-        s, parsed = cls._coerce_date(value)
-        return parsed.strftime("%Y-%m-%d") if parsed is not None else s
-
-    @classmethod
-    def format_date(cls, value: Any, strftime_format: str) -> str:
-        """Reformat a flexible GDE date to *strftime_format* (a strftime string).
-
-        Same parse grid as :meth:`normalize_iso_date`; the original trimmed
-        string passes through unchanged when no input format matches
-        (fail-visible), and blank/NaN inputs return ''. ``strftime_format`` is
-        the already-translated strftime string (see
-        :meth:`friendly_date_format_to_strftime`).
-        """
-        s, parsed = cls._coerce_date(value)
-        return parsed.strftime(strftime_format) if parsed is not None else s
-
-    @classmethod
-    def friendly_date_format_to_strftime(cls, fmt: str) -> str:
-        """Translate a friendly date format (e.g. ``yyyy-MM-dd``) to a strftime string.
-
-        Supported tokens: ``yyyy`` ``yy`` ``MMMM`` ``MMM`` ``MM`` ``dd`` plus
-        literal separators. Fails loud (``ValueError``) on any unrecognized
-        alphabetic token (e.g. a lowercase ``mm`` typo) so a misconfigured
-        district date format is caught at the boundary instead of silently
-        producing a constant/garbled date.
-        """
-        residue = cls._DATE_FORMAT_TOKEN_RE.sub("", fmt)
-        if any(c.isalpha() for c in residue):
-            raise ValueError(
-                f"Unsupported date_format {fmt!r}. Use tokens yyyy, yy, MMMM, MMM, MM, dd "
-                "with separators — e.g. 'yyyy-MM-dd' or 'dd-MMM-yyyy'."
-            )
-        return cls._DATE_FORMAT_TOKEN_RE.sub(lambda m: cls._DATE_FORMAT_TOKEN_MAP[m.group(0)], fmt)
-
-    @classmethod
-    def derive_date_part(cls, value: Any, strftime_fmt: str) -> str:
-        """Format a flexible GDE date to *strftime_fmt*, empty on blank OR unparseable.
-
-        Reuses :meth:`_coerce_date`. Unlike :meth:`format_date` (which passes
-        the original string through when no input format matches), this returns
-        ``""`` for a blank OR unparseable value — so a derived email suffix is
-        never a garbage passthrough (e.g. an unparseable admission date yields
-        ``firstlast`` with NO suffix rather than ``firstlastunknown`` under
-        ``sanitize``). ``strftime_fmt`` is the already-translated strftime string
-        (see :meth:`friendly_date_format_to_strftime`).
-        """
-        _s, parsed = cls._coerce_date(value)
-        return parsed.strftime(strftime_fmt) if parsed is not None else ""
+    # -----------------------------------------------------------------------
+    # Date helpers (delegates → dates.py; kept as methods because
+    # normalize_iso_date is an ALLOWED_TRANSFORMS name resolved via getattr)
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def normalize_iso_date(value: Any) -> str:
+        """Convert various date formats to ISO 8601 (see :func:`dates.normalize_iso_date`)."""
+        return _dates.normalize_iso_date(value)
 
     @staticmethod
+    def format_date(value: Any, strftime_format: str) -> str:
+        """Reformat a flexible GDE date (see :func:`dates.format_date`)."""
+        return _dates.format_date(value, strftime_format)
+
+    @staticmethod
+    def friendly_date_format_to_strftime(fmt: str) -> str:
+        """Translate friendly tokens to strftime (see :func:`dates.friendly_date_format_to_strftime`)."""
+        return _dates.friendly_date_format_to_strftime(fmt)
+
+    @staticmethod
+    def derive_date_part(value: Any, strftime_fmt: str) -> str:
+        """Date part for derived email fields (see :func:`dates.derive_date_part`)."""
+        return _dates.derive_date_part(value, strftime_fmt)
+
+    # -----------------------------------------------------------------------
+    # Text / column / ID helpers (delegates)
+    # -----------------------------------------------------------------------
+    @staticmethod
     def truncate_name(name: str, max_len: int = 100) -> str:
-        """Gracefully truncate a string, breaking at word boundaries."""
-        if len(name) <= max_len:
-            return name
-        trunc_len = max_len - 3
-        last_space = name.rfind(" ", 0, trunc_len)
-        if last_space != -1:
-            return name[:last_space] + "..."
-        return name[:trunc_len] + "..."
+        """Word-boundary truncation (see :func:`naming.truncate_name`)."""
+        return _naming.truncate_name(name, max_len)
 
     @staticmethod
     def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -434,27 +325,44 @@ class BaseTransformer(ABC):
 
     @staticmethod
     def clean_invalid_ids(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
-        """Remove rows where id_col is NaN, empty, or the literal string 'nan'."""
-        clean = df[id_col].astype(str).str.strip().str.lower()
-        return df[df[id_col].notna() & (clean != "") & (clean != "nan")]  # type: ignore[return-value]
+        """Remove rows with NaN/empty/'nan' ids (see :func:`ids.clean_invalid_ids`)."""
+        return _ids.clean_invalid_ids(df, id_col)
 
+    # -----------------------------------------------------------------------
+    # Course-code helpers (delegates → course_codes.py)
+    # -----------------------------------------------------------------------
     @staticmethod
     def filter_excluded_course_codes(df: pd.DataFrame, excluded_codes: list[str]) -> pd.DataFrame:
-        """Drop rows whose course code matches an entry in excluded_codes.
+        """Drop rows by exact excluded course code (see :func:`course_codes.filter_excluded_course_codes`)."""
+        return _course_codes.filter_excluded_course_codes(df, excluded_codes)
 
-        Checks `course code` first, then `district course code`. Match is
-        case-insensitive and whitespace-trimmed. Returns df unchanged when
-        excluded_codes is empty or neither column is present.
-        """
-        if not excluded_codes or df.empty:
-            return df
-        exclusion_set = {str(c).strip().upper() for c in excluded_codes}
-        for col in (COURSE_CODE, DISTRICT_COURSE_CODE):
-            if col in df.columns:
-                values = df[col].astype(str).str.strip().str.upper()
-                return df[~values.isin(exclusion_set)].copy()  # type: ignore[return-value]
-        return df
+    @staticmethod
+    def filter_excluded_course_code_patterns(
+        df: pd.DataFrame,
+        patterns: list[str],
+        column: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Drop rows by course-code regex (see :func:`course_codes.filter_excluded_course_code_patterns`)."""
+        return _course_codes.filter_excluded_course_code_patterns(df, patterns, column)
 
+    @staticmethod
+    def early_grade_exclusion_pattern(start_grade: Any) -> Optional[str]:
+        """Early-grade course-code floor regex (see :func:`course_codes.early_grade_exclusion_pattern`)."""
+        return _course_codes.early_grade_exclusion_pattern(start_grade)
+
+    @staticmethod
+    def effective_course_code_patterns(global_config: dict) -> list[str]:
+        """Configured patterns + derived grade floor (see :func:`course_codes.effective_course_code_patterns`)."""
+        return _course_codes.effective_course_code_patterns(global_config)
+
+    @staticmethod
+    def clean_course_code_flavor(code: Any, flavors: list[str]) -> str:
+        """Flavor-substring truncation (see :func:`course_codes.clean_course_code_flavor`)."""
+        return _course_codes.clean_course_code_flavor(code, flavors)
+
+    # -----------------------------------------------------------------------
+    # Config-driven row filtering (per-entity contract)
+    # -----------------------------------------------------------------------
     @staticmethod
     def apply_row_filters(
         df: pd.DataFrame,
@@ -488,121 +396,44 @@ class BaseTransformer(ABC):
                     f"Available: {sorted(df.columns)}"
                 )
             include = {str(v).strip().lower() for v in row_filter.get("include", [])}
-            values = df[col].astype(str).str.strip().str.lower()
+            values = _ids.normalize_id_series(df[col]).str.lower()
             mask &= values.isin(include)
         kept = int(mask.sum())
         logger.info(f"[{entity_name}] row_filters kept {kept}/{total} rows")
         return df[mask].copy()  # type: ignore[return-value]
 
-    @staticmethod
-    def filter_excluded_course_code_patterns(
-        df: pd.DataFrame,
-        patterns: list[str],
-        column: Optional[str] = None,
-    ) -> pd.DataFrame:
-        """Drop rows whose course code matches any regex in `patterns`.
-
-        Patterns are combined into a single case-insensitive alternation
-        and applied to the trimmed string value. When `column` is None,
-        checks `course code` then `district course code` (first found
-        wins), matching `filter_excluded_course_codes`. Patterns are
-        expected to be pre-validated at config load time.
-        """
-        if not patterns or df.empty:
-            return df
-        combined = "|".join(f"(?:{p})" for p in patterns)
-        candidate_cols = [column] if column else [COURSE_CODE, DISTRICT_COURSE_CODE]
-        for col in candidate_cols:
-            if col and col in df.columns:
-                values = df[col].astype(str).str.strip()
-                matches = values.str.contains(combined, regex=True, case=False, na=False)
-                return df[~matches].copy()  # type: ignore[return-value]
-        return df
-
-    @staticmethod
-    def early_grade_exclusion_pattern(start_grade: Any) -> Optional[str]:
-        """Regex that drops MyEd BC course codes for grades below `start_grade`.
-
-        MyEd BC encodes the grade in the 6th-7th characters of the course code
-        as a two-digit number; single-digit grades 01-09 appear as "0X".
-        This builds a pattern matching "0" followed by any digit strictly below
-        `start_grade`, so grades >= start_grade (including 10-12, which begin
-        with "1") survive. With start_grade=10 the result is equivalent to the
-        legacy ``^.{5}0\\d`` pattern (excludes 00-09). Returns None when
-        start_grade <= 1 (nothing to exclude).
-        """
-        try:
-            sg = int(start_grade)
-        except (TypeError, ValueError):
-            sg = 10
-        sg = min(sg, 10)
-        if sg <= 1:
-            return None
-        return rf"^.{{5}}0[0-{sg - 1}]"
-
-    @classmethod
-    def effective_course_code_patterns(cls, global_config: dict) -> list[str]:
-        """Configured exclusion patterns plus the grade floor derived from
-        `course_start_grade` (default 10). Used by the CourseInfo and
-        StudentCourses transformers so the minimum grade is a single,
-        editable knob rather than a hand-written regex.
-        """
-        patterns = list(global_config.get("excluded_course_code_patterns", []))
-        early = cls.early_grade_exclusion_pattern(global_config.get("course_start_grade", 10))
-        if early:
-            patterns.append(early)
-        return patterns
-
-    @staticmethod
-    def clean_course_code_flavor(code: Any, flavors: list[str]) -> str:
-        """Truncate course code to first 7 chars if it contains any flavor substring.
-
-        Mirrors the PowerShell Get-CleanedCourseCode helper. Matching is
-        case-insensitive substring (e.g., "DL" matches "MATH-DL01" -> "MATH-DL").
-        Returns the original code as a string when no flavor matches, or ""
-        for NaN/None inputs.
-        """
-        if code is None or (isinstance(code, float) and pd.isna(code)):
-            return ""
-        code_str = str(code)
-        if not code_str or not flavors:
-            return code_str
-        upper = code_str.upper()
-        for flavor in flavors:
-            f = str(flavor).strip().upper()
-            if f and f in upper:
-                return code_str[:7]
-        return code_str
-
+    # -----------------------------------------------------------------------
+    # Source-file access (delegates → sources.py)
+    # -----------------------------------------------------------------------
     @staticmethod
     def normalize_source_config(source_config: Any) -> dict[str, str]:
-        """Convert various config formats (dict, list-of-dicts, list-of-strings) to {role: filename}."""
-        if isinstance(source_config, dict):
-            return source_config
+        """Canonicalize source_files config to {role: filename} (see :func:`sources.normalize_source_config`)."""
+        return _sources.normalize_source_config(source_config)
 
-        normalized: dict[str, str] = {}
-        if isinstance(source_config, list):
-            if all(isinstance(item, dict) for item in source_config):
-                for item in source_config:
-                    if "role" in item and "file" in item:
-                        normalized[item["role"]] = item["file"]
-            elif all(isinstance(item, str) for item in source_config):
-                roles = ["student_schedule", "course_info", "staff_info", "student_demographic"]
-                for i, filename in enumerate(source_config):
-                    if i < len(roles):
-                        normalized[roles[i]] = filename
-        return normalized
-
-    # -----------------------------------------------------------------------
-    # Data access helpers
-    # -----------------------------------------------------------------------
     def get_source_file(self, context: TransformContext, source_config: Any, role: str) -> pd.DataFrame:
-        normalized = self.normalize_source_config(source_config)
-        filename = normalized.get(role)
-        if filename and filename in context.raw_data:
-            return context.raw_data[filename].copy()
-        logger.warning(f"Source file for role '{role}' not found in configuration")
-        return pd.DataFrame()
+        """Resolve a role to a copied frame from raw_data (see :func:`sources.get_source_file`)."""
+        return _sources.get_source_file(context, source_config, role)
+
+    # -----------------------------------------------------------------------
+    # Field-map resolution + date resolution (per-entity contract)
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def resolve_column(field_map: dict[str, Any], key: str, default: str) -> str:
+        """Resolve a source-column name from a field_map entry, with a default.
+
+        The shared spelling of the repeated resolve-with-default idiom
+        (Configurable Columns rule): a dict entry contributes its ``column``
+        value (lower-cased, ``default`` when the key is absent); ANY other
+        shape — missing entry, bare string, null sentinel — yields ``default``.
+        NOTE: a bare string is deliberately NOT honored here, matching the
+        legacy inline sites this replaces (Class ID / Grade / School ID); use
+        the entity's own resolver where a bare string must win (e.g.
+        ``FamilyTransformer._student_number_col``).
+        """
+        config = field_map.get(key, {})
+        if isinstance(config, dict):
+            return str(config.get("column", default)).lower()
+        return default
 
     def resolve_date(self, field_map: dict[str, Any], field_name: str, context: TransformContext) -> str:
         """Resolve a date field from config — either a fixed value or academic year date.
@@ -629,15 +460,10 @@ class BaseTransformer(ABC):
         Shared by ClassTransformer and EnrollmentTransformer to ensure IDs
         are computed identically across Classes and Enrollments output.
         """
-        class_id_config = field_map.get("Class ID", {})
-        mt_id_col = (
-            class_id_config.get("column", MASTER_TIMETABLE_ID).lower()
-            if isinstance(class_id_config, dict)
-            else MASTER_TIMETABLE_ID
-        )
+        mt_id_col = self.resolve_column(field_map, "Class ID", MASTER_TIMETABLE_ID)
 
         if mt_id_col in df.columns:
-            df[mt_id_col] = df[mt_id_col].astype(str).str.strip()
+            df[mt_id_col] = _ids.normalize_id_series(df[mt_id_col])
             df["Class ID"] = df[mt_id_col].map(context.blended_class_map)
             fallback = df.apply(
                 lambda row: self.generate_class_id(row, mt_id_col=mt_id_col, append_year=True, context=context),
@@ -660,71 +486,15 @@ class BaseTransformer(ABC):
         section_letter_col: str,
         context: TransformContext,
     ) -> str:
-        course_title = str(row.get(course_title_col, row.get("title", "Unknown Course"))).strip()
-        teacher_last = ""
-
-        if teacher_flag_col and teacher_flag_col in row:
-            if str(row.get(teacher_flag_col, "")).strip().lower() == "y":
-                teacher_last = str(row.get(teacher_last_col, "")).strip()
-        else:
-            teacher_last = str(row.get(teacher_last_col, "")).strip()
-
-        if pd.isna(teacher_last) or teacher_last.lower() == "nan":
-            teacher_last = ""
-
-        section = str(row.get(section_letter_col, "")).strip()
-        year = context.school_year
-
-        parts = []
-        if teacher_last:
-            parts.append(teacher_last)
-        parts.append(course_title)
-        if section:
-            if parts:
-                parts[-1] = f"{parts[-1]} ({section})"
-            else:
-                parts.append(f"({section})")
-        parts.append(str(year))
-
-        return self.truncate_name(" ".join(parts).strip())
+        """Build a subject-class display name (see :func:`naming.generate_class_name`)."""
+        return _naming.generate_class_name(
+            row, teacher_flag_col, teacher_last_col, course_title_col, section_letter_col, context
+        )
 
     @staticmethod
     def generate_student_email(row: pd.Series, format_str: str, sanitize: bool = False) -> str:
-        """Interpolate row values into a lowercased email format string.
-
-        StudentTransformer lowercases ``format_str`` before calling, so any
-        template like ``{Legal Surname}.{Usual First Name}@sd54.bc.ca``
-        becomes ``{legal surname}.{usual first name}@sd54.bc.ca`` — matching
-        the lowercased column names. String row values are similarly
-        normalised (lowercased, whitespace trimmed, internal spaces collapsed)
-        so double-barrelled surnames like "Goodrick Hill" produce a
-        deliverable local part ("goodrickhill"). NaN/None values become "".
-
-        When ``sanitize`` is True (opt-in), each substituted STRING value is
-        reduced to ``[a-z0-9]`` (lowercase) so apostrophes/hyphens/other
-        punctuation in names (e.g. "O'Brien-Smith") never leak into the local
-        part. The default path (``sanitize=False``) is unchanged and
-        byte-identical for every existing district.
-
-        Fail-loud: a template key absent from the row raises ``KeyError`` (a
-        config/column mismatch must never silently blank every email).
-        ``StudentTransformer._generate_emails`` is the resilient caller — it
-        blanks only the failing cell and records the failure to
-        ``context.data_errors``.
-        """
-        normalised: dict[str, Any] = {}
-        for k, v in row.to_dict().items():
-            key = str(k).lower()
-            if pd.isna(v):
-                normalised[key] = ""
-            elif isinstance(v, str):
-                if sanitize:
-                    normalised[key] = re.sub(r"[^a-z0-9]", "", v.strip().lower())
-                else:
-                    normalised[key] = v.strip().lower().replace(" ", "")
-            else:
-                normalised[key] = v
-        return format_str.format(**normalised)
+        """Interpolate row values into an email template (see :func:`emails.generate_student_email`)."""
+        return _emails.generate_student_email(row, format_str, sanitize=sanitize)
 
     @staticmethod
     def generate_user_role(row: pd.Series, staff_id_col: str, student_id_col: str) -> str:
@@ -746,8 +516,13 @@ class BaseTransformer(ABC):
             return str(student_val)
         return "UNKNOWN_ID"
 
+    # -----------------------------------------------------------------------
+    # School-year determination (delegates → dates.py; now() resolved HERE so
+    # the `src.etl.transformers.base.datetime` test seam keeps working)
+    # -----------------------------------------------------------------------
+    @classmethod
     def determine_school_year(
-        self,
+        cls,
         all_data: dict[str, pd.DataFrame],
         source_config: Any,
         rollover_month_day: str,
@@ -776,65 +551,21 @@ class BaseTransformer(ABC):
         All configured sources are scanned; the FIRST parsed value is used
         (behavior-preserving), but when the sources disagree — a mixed-vintage
         input set that would silently produce wrong academic dates and Class
-        IDs — one loud WARNING names every end year found and which was chosen.
+        IDs — one loud WARNING names every end year found and which was chosen
+        (see :func:`dates.determine_school_year`).
         """
-        normalized = self.normalize_source_config(source_config)
-        found_years: list[int] = []
-        for _role, filename in normalized.items():
-            df = all_data.get(filename)
-            if df is not None and "school year" in df.columns:
-                for raw in df["school year"].dropna().astype(str).str.strip().unique():
-                    parsed = self._parse_school_year_to_end(str(raw), school_year_naming)
-                    if parsed is not None and parsed not in found_years:
-                        found_years.append(parsed)
-
-        if found_years:
-            chosen = found_years[0]
-            if len(found_years) > 1:
-                logger.warning(
-                    f"School-year sources disagree: found end years {found_years}; using {chosen}. "
-                    "Academic dates and Class IDs derive from this value — check that every "
-                    "GDE file comes from the same export period."
-                )
-            return chosen
-
-        return self._fallback_school_year(today or datetime.now().date(), rollover_month_day)
+        return _dates.determine_school_year(
+            all_data,
+            cls.normalize_source_config(source_config),
+            rollover_month_day,
+            today or datetime.now().date(),
+            school_year_naming,
+        )
 
     @staticmethod
     def _parse_school_year_to_end(raw: str, naming: str = "end") -> Optional[int]:
-        """Parse a 'school year' cell value to the academic-period END year.
-
-        - ``YYYY/YYYY`` or ``YYYY-YYYY`` → second year (range is unambiguous;
-          ``naming`` is ignored)
-        - ``YYYY`` with ``naming="end"`` → year as-is
-        - ``YYYY`` with ``naming="start"`` → ``year + 1``
-        - anything else → None
-        """
-        raw = raw.strip()
-        parts = re.split(r"[/-]", raw)
-        if len(parts) == 2 and all(p.isdigit() and len(p) == 4 for p in parts):
-            return int(parts[1])
-        if raw.isdigit() and len(raw) == 4:
-            year = int(raw)
-            return year + 1 if naming == "start" else year
-        return None
-
-    @staticmethod
-    def _fallback_school_year(today: date, rollover_month_day: str) -> int:
-        """End-year fallback when no 'school year' source column is found.
-
-        Returns ``today.year`` before the rollover (still in current academic
-        year ending this calendar year) and ``today.year + 1`` from the
-        rollover onwards (next academic year about to start, ending next
-        calendar year).
-        """
-        try:
-            month, day = map(int, rollover_month_day.split("-"))
-            rollover = date(today.year, month, day)
-        except (ValueError, TypeError):
-            logger.warning(f"Invalid academic_year_rollover_month_day '{rollover_month_day}'; using 08-01 cutoff.")
-            rollover = date(today.year, 8, 1)
-        return today.year if today < rollover else today.year + 1
+        """Parse a 'school year' cell to the END year (see :func:`dates.parse_school_year_to_end`)."""
+        return _dates.parse_school_year_to_end(raw, naming)
 
     # -----------------------------------------------------------------------
     # Generic field-map application (used by Students, Staff, Family)

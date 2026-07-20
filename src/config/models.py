@@ -565,15 +565,29 @@ class MappingConfig(BaseModel):
 
     @model_validator(mode="after")
     def check_required_entities(self):
-        """Log which standard entities are present — non-standard entities are valid."""
+        """LOG (never raise) which standard rostering entities are absent.
+
+        A partial config is legitimate (tiers like ``mbponly`` run without the
+        rostering entities, and ``enabled_entities`` governs what is actually
+        produced), so a missing standard entity is a load-time WARNING — an
+        operator hand-rolling a new YAML sees the gap immediately instead of
+        discovering a missing CSV at upload. Non-standard entities (CourseInfo,
+        StudentCourses, StudentAttendance, ...) are valid and logged at DEBUG
+        only. (Previously this set private attributes nothing read — dead code;
+        now it actually emits the log its docstring promised.)
+        """
         standard = {"Students", "Staff", "Family", "Classes", "Enrollments"}
         present = set(self.mappings.keys())
-        extra = present - standard
         missing = standard - present
+        extra = present - standard
         if missing:
-            self._missing_standard_entities = missing
+            logger.warning(
+                f"Mapping config '{self.sis}' does not define standard rostering entities "
+                f"{sorted(missing)} (defined: {sorted(present)}). Valid for partial tiers — "
+                "enabled_entities decides output — but the SpacesEDU rostering upload needs all five."
+            )
         if extra:
-            self._extra_entities = extra
+            logger.debug(f"Mapping config '{self.sis}' defines non-standard entities: {sorted(extra)}")
         return self
 
     @model_validator(mode="after")
