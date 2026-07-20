@@ -104,7 +104,7 @@ Entity-specific transformers using Strategy Pattern with a registry:
 - `enrollments.py` — Student + teacher enrollment rows from schedule data; `.copy()` before mutations
 - `blended.py` — Blended class detection (same teacher/time with 2+ grade levels -> merged class). Falls back to deduplicated schedule when ClassInfo lacks required columns.
 - `course_info.py` — (myBlueprint+, opt-in) Course catalog from CourseInformation.txt; pattern-excludes K/early-grade/X/ATT codes; uses `apply_field_map` (config-driven).
-- `student_courses.py` — (myBlueprint+, opt-in) Per-student transcript joining course history + selection + info; retake/in-progress/passed dedup. NOTE: currently hardcodes source columns and bypasses its `field_map` for input — see **Configurable Columns** (tech debt).
+- `student_courses.py` — (myBlueprint+, opt-in) Per-student transcript joining course history + selection + info; retake/in-progress/passed dedup; config-driven source columns since W4b1 (field_map + optional `source_columns:` block).
 
 ### Loader (`src/etl/loader.py`)
 Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. `save_all()` uses atomic transactional writes: stages to `.tmp_<timestamp>/`, commits all on success, rolls back on failure.

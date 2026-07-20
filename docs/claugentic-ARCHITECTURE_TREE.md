@@ -2,7 +2,7 @@
 
 > Single-source index of the codebase: every source file with a one-line description. **Read this first to locate relevant files instead of exploring blindly.** Keep it current — adding/moving/removing a file requires updating this index in the same change (enforced in CI via `make check-tree`).
 
-_Last generated from `main` @ c669404._
+_Last reconciled on `feat/pre-partner-completion` @ b772054 (2026-07-20)._
 
 ---
 
