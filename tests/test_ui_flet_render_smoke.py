@@ -1314,6 +1314,10 @@ def _drain(captured: list) -> None:
     captured.clear()
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="walks the Windows-shaped Schedule step (register affordances); the desync logic is platform-neutral and pinned in test_ui_flet_setup_flow",
+)
 def test_wizard_backtrack_delivery_change_downgrades_the_finish_copy(tmp_path, monkeypatch):
     """The wizard backtrack desync guard (0029 close-out): register on the Schedule step (task
     baked WITHOUT --sftp), Back to Delivery, save a credential, Finish — the finish line must be
@@ -1358,6 +1362,10 @@ def test_wizard_backtrack_delivery_change_downgrades_the_finish_copy(tmp_path, m
     assert _has_text(tree, "Nightly at 3:00 AM — delivery not included yet")  # the summary agrees
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="walks the Windows-shaped Schedule step (register affordances); the desync logic is platform-neutral and pinned in test_ui_flet_setup_flow",
+)
 def test_wizard_finish_without_a_delivery_change_keeps_the_confident_claim(tmp_path, monkeypatch):
     """The no-desync control: the natural in-order walk (Delivery BEFORE Schedule, F1) bakes the
     task WITH --sftp, so the finish line keeps the confident delivery claim (the guard must not
