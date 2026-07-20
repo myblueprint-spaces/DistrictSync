@@ -41,6 +41,29 @@ Per-release download links and auto-generated commit notes live on the
   hotfix path), the loader names both paths in the log — a stale override can
   no longer take effect invisibly. (W2c)
 
+### Changed
+
+- **Trust-copy honesty pass (0035 polish).** Home and Run History claim only
+  what was verified: "delivered to SpacesEDU" appears only when the upload
+  actually succeeded; a local-only run reads "completed — files were written
+  to your output folder"; "Your roster is syncing" is asserted only on a
+  confirmed-LIVE schedule read-back (else "Your roster is up to date"); a
+  failed sync is dated from its own record instead of "Last night's sync…".
+  Fix routing is reason-aware: a failed delivery's button reads "Open
+  Settings" and lands where the fix lives. (W3a)
+- **Convert never dead-ends (0035 polish).** A fresh install leads with a
+  routed "Finish setup first" card; error cards end with a concrete next step
+  and a support path (raw PowerShell text demoted to a trailing "Details"
+  clause); an amber note flags a per-run district pick that differs from the
+  saved district; the whole form locks while a job runs — no dead clicks, no
+  double-starts. (W3b)
+- **The window remembers its size and position** (restored safely clamped to
+  the current screen); the Setup attention dot refreshes immediately after
+  scheduling or removing the nightly sync; Help gained an About block (version
+  + copy buttons + release notes + prefilled PII-free support email) and every
+  error card offers "Open log folder". Plainer language throughout: "Schedule
+  nightly sync" / "Remove nightly sync". (W3c)
+
 ### Fixed
 
 - **Linux scheduling can no longer wipe other cron jobs.** A failed
