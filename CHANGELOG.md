@@ -66,6 +66,13 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **Artifact refactors (behavior-preserving; W4d).** One
+  `MappingConfig.active_entities()` accessor serves every enabled-entities
+  selection site; the Classes→Enrollments handoff is an explicit frozen
+  `ClassArtifacts` bundle with a fail-loud ordering assertion; enrollment
+  source builders return frames instead of mutating a shared list (row order
+  byte-identical); dead helpers deleted and zip naming re-homed beside its
+  only consumer.
 - **Internal refactor wave (behavior-preserving; district output byte-identical
   by snapshot proof).** Field mappings apply through a typed Strategy with
   unknown `transform:` names rejected at config load with an actionable error;

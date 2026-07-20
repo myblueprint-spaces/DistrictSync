@@ -191,6 +191,8 @@ Docs live in `docs/` (Markdown) — partner + developer guides, read by the harn
 - **Config inheritance** — district configs inherit from base via `_base` key with recursive deep merge and cycle detection
 - **Pydantic validation** — all YAML configs validated at startup before any ETL processing begins
 - **`to_raw_dict()`** — `MappingConfig.to_raw_dict()` converts validated config back to raw dicts for the transformer pipeline
+- **Enabled-entities selection** routes through `MappingConfig.active_entities()` / `models.filter_enabled_entities` — never respell `enabled_entities or []`
+- **Classes→Enrollments handoff** = the frozen `ClassArtifacts` bundle in `context.class_artifacts` (published once by Classes; Enrollments fails loud on absence)
 - **Entity order gotcha** — `global_config.entity_order` defaults to `[]` (not None). Use `global_config.get("entity_order") or list(mappings.keys())`
 
 ## Engineering Principles (non-negotiable)
