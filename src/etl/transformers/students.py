@@ -7,6 +7,7 @@ import pandas as pd
 
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
+from src.etl.transformers.ids import normalize_id_series
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class StudentTransformer(BaseTransformer):
         # student. Same value space as the schedule's `Student ID` (pupil
         # numbers); normalized so the cross-frame join matches.
         if "User ID" in result.columns:
-            context.active_student_ids = set(result["User ID"].astype(str).str.strip())
+            context.active_student_ids = set(normalize_id_series(result["User ID"]))
 
         return result
 
@@ -55,7 +56,7 @@ class StudentTransformer(BaseTransformer):
         ):
             if primary not in result.columns or fallback not in result.columns:
                 continue
-            is_blank = result[primary].isna() | result[primary].astype(str).str.strip().str.lower().isin(["", "nan"])
+            is_blank = result[primary].isna() | normalize_id_series(result[primary]).str.lower().isin(["", "nan"])
             result.loc[is_blank, primary] = result.loc[is_blank, fallback]
 
     def _collapse_cross_enrollment(
@@ -94,8 +95,8 @@ class StudentTransformer(BaseTransformer):
 
         before = len(working)
         working = working.copy()
-        school_norm = working[school_col].astype(str).str.strip()
-        home_norm = working[home_col].astype(str).str.strip()
+        school_norm = normalize_id_series(working[school_col])
+        home_norm = normalize_id_series(working[home_col])
         # Priority 0 = home-school row (School == Home School), 1 otherwise. A
         # stable sort brings the home row first within each User ID group, so
         # keep="first" retains it (or the first row when no home match exists).
@@ -148,7 +149,7 @@ class StudentTransformer(BaseTransformer):
         status_column, _, _ = cls.resolve_active_config(field_map, dropped.columns)
         if status_column is None or dropped.empty:
             return {}
-        counts = dropped[status_column].astype(str).str.strip().value_counts()
+        counts = normalize_id_series(dropped[status_column]).value_counts()
         return {str(k): int(v) for k, v in counts.items()}
 
     def _generate_emails(

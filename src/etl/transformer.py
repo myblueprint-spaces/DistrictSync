@@ -10,6 +10,8 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from src.etl.transformers import naming as _naming
+from src.etl.transformers import sources as _sources
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.blended import BlendedClassDetector
 from src.etl.transformers.context import TransformContext
@@ -103,7 +105,7 @@ class DataTransformer:
         school_year_naming: str = "end",
     ) -> int:
         """No in-code default for ``rollover_month_day`` — caller must pass it."""
-        return self._blended_detector.determine_school_year(
+        return BaseTransformer.determine_school_year(
             all_data, source_config, rollover_month_day, today, school_year_naming
         )
 
@@ -139,10 +141,10 @@ class DataTransformer:
         return BaseTransformer.normalize_source_config(source_config)
 
     def get_source_file(self, raw_data: dict[str, pd.DataFrame], source_config: Any, role: str) -> pd.DataFrame:
-        # Temporarily set raw_data on context for the base method
+        # Temporarily set raw_data on context for the shared sources helper
         old = self._context.raw_data
         self._context.raw_data = raw_data
-        result = self._blended_detector.get_source_file(self._context, source_config, role)
+        result = _sources.get_source_file(self._context, source_config, role)
         self._context.raw_data = old
         return result
 
@@ -162,7 +164,7 @@ class DataTransformer:
         course_title_col: str,
         section_letter_col: str,
     ) -> str:
-        return self._blended_detector.generate_class_name(
+        return _naming.generate_class_name(
             row, teacher_flag_col, teacher_last_col, course_title_col, section_letter_col, self._context
         )
 

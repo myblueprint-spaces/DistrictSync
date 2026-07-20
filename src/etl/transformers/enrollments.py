@@ -8,6 +8,8 @@ import pandas as pd
 from src.etl.column_names import MASTER_TIMETABLE_ID, SCHOOL_NUMBER
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
+from src.etl.transformers.grades import split_by_homeroom_grades
+from src.etl.transformers.ids import normalize_id_series
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +59,7 @@ class EnrollmentTransformer(BaseTransformer):
             return df
         df = self.normalize_columns(df)
         if staff_id_col in df.columns:
-            df[staff_id_col] = df[staff_id_col].astype(str).str.strip()
+            df[staff_id_col] = normalize_id_series(df[staff_id_col])
         return df
 
     # -------------------------------------------------------------------
@@ -78,23 +80,20 @@ class EnrollmentTransformer(BaseTransformer):
         student_demo_df = student_demo_df.copy()
 
         students_field_map = context.get_students_config().get("field_map", {})
-        grade_col = students_field_map.get("Grade", {}).get("column", "grade").lower()
+        grade_col = self.resolve_column(students_field_map, "Grade", "grade")
         homeroom_col = students_field_map.get("Homeroom", "homeroom").lower()
         # The demographic student-ID column comes from Students config (not the
         # schedule-targeted Enrollments ID config) — see get_demo_student_col.
         demo_student_col = context.get_demo_student_col()
 
-        if grade_col in student_demo_df.columns:
-            student_demo_df[grade_col] = student_demo_df[grade_col].apply(self.grade_to_ceds)
-
-        homeroom_students = student_demo_df[student_demo_df[grade_col].isin(homeroom_grades)]
+        homeroom_students = split_by_homeroom_grades(student_demo_df, grade_col, homeroom_grades, keep="homeroom")
         if homeroom_students.empty:
             return
 
         try:
             hr_classes = context.homeroom_classes_df.copy()
             if staff_id_col in hr_classes.columns:
-                hr_classes[staff_id_col] = hr_classes[staff_id_col].astype(str).str.strip()
+                hr_classes[staff_id_col] = normalize_id_series(hr_classes[staff_id_col])
 
             merged = homeroom_students.merge(hr_classes, on=[SCHOOL_NUMBER, homeroom_col], how="left")
             valid = merged[merged["Class ID"].notna()]
@@ -144,15 +143,14 @@ class EnrollmentTransformer(BaseTransformer):
         schedule_df = schedule_df.copy()
 
         if staff_id_col in schedule_df.columns:
-            schedule_df[staff_id_col] = schedule_df[staff_id_col].astype(str).str.strip()
+            schedule_df[staff_id_col] = normalize_id_series(schedule_df[staff_id_col])
 
         excluded_codes = context.global_config.get("excluded_course_codes", [])
         schedule_df = self.filter_excluded_course_codes(schedule_df, excluded_codes)
         if schedule_df.empty:
             return
 
-        schedule_df["grade_ceds"] = schedule_df["grade"].apply(self.grade_to_ceds)
-        non_homeroom: pd.DataFrame = schedule_df[~schedule_df["grade_ceds"].isin(homeroom_grades)].copy()  # type: ignore[assignment]
+        non_homeroom = split_by_homeroom_grades(schedule_df, "grade", homeroom_grades, keep="subject")
         if non_homeroom.empty:
             return
 
@@ -241,15 +239,15 @@ class EnrollmentTransformer(BaseTransformer):
             return
 
         primary_rows: pd.DataFrame = class_info_df[
-            class_info_df[primary_col].astype(str).str.strip().str.upper() == "Y"
+            normalize_id_series(class_info_df[primary_col]).str.upper() == "Y"
         ].copy()  # type: ignore[assignment]
         if primary_rows.empty:
             return
 
-        primary_rows[staff_id_col] = primary_rows[staff_id_col].astype(str).str.strip()
-        primary_rows[SCHOOL_NUMBER] = primary_rows[SCHOOL_NUMBER].astype(str).str.strip()
+        primary_rows[staff_id_col] = normalize_id_series(primary_rows[staff_id_col])
+        primary_rows[SCHOOL_NUMBER] = normalize_id_series(primary_rows[SCHOOL_NUMBER])
         if section_col in primary_rows.columns:
-            primary_rows[section_col] = primary_rows[section_col].astype(str).str.strip()
+            primary_rows[section_col] = normalize_id_series(primary_rows[section_col])
 
         rows: list[dict[str, Any]] = []
 
@@ -260,8 +258,8 @@ class EnrollmentTransformer(BaseTransformer):
             homeroom_col = students_field_map.get("Homeroom", "homeroom").lower()
             if homeroom_col in hr_df.columns and SCHOOL_NUMBER in hr_df.columns:
                 hr_lookup = hr_df[[SCHOOL_NUMBER, homeroom_col, "Class ID"]].copy()
-                hr_lookup[SCHOOL_NUMBER] = hr_lookup[SCHOOL_NUMBER].astype(str).str.strip()
-                hr_lookup[homeroom_col] = hr_lookup[homeroom_col].astype(str).str.strip()
+                hr_lookup[SCHOOL_NUMBER] = normalize_id_series(hr_lookup[SCHOOL_NUMBER])
+                hr_lookup[homeroom_col] = normalize_id_series(hr_lookup[homeroom_col])
                 hr_lookup = hr_lookup.drop_duplicates(subset=[SCHOOL_NUMBER, homeroom_col])
 
                 merged = primary_rows.merge(
@@ -282,7 +280,7 @@ class EnrollmentTransformer(BaseTransformer):
 
         # Path 2: Master Timetable ID → blended class id
         if MASTER_TIMETABLE_ID in primary_rows.columns and context.blended_class_map:
-            primary_rows[MASTER_TIMETABLE_ID] = primary_rows[MASTER_TIMETABLE_ID].astype(str).str.strip()
+            primary_rows[MASTER_TIMETABLE_ID] = normalize_id_series(primary_rows[MASTER_TIMETABLE_ID])
             for _, row in primary_rows.iterrows():
                 mt_id = row[MASTER_TIMETABLE_ID]
                 blended_id = context.blended_class_map.get(mt_id)
