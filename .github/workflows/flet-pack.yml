@@ -51,7 +51,7 @@ jobs:
     env:
       FLET_DESKTOP_FLAVOR: ${{ matrix.flavor }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # Stamp the release version so the built exe's `--version` reports the real
       # tag. A frozen PyInstaller build ships no package metadata, so importlib
@@ -70,7 +70,7 @@ jobs:
           fi
           cat src/_version.py
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
 
@@ -95,7 +95,7 @@ jobs:
       # pure optimization — a miss self-downloads in the warm-up below and the
       # cache-populated assert still gates, so a miss can never silently break the
       # offline guarantee.
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.flet
           key: flet-client-${{ runner.os }}-${{ env.FLET_VERSION }}-${{ env.FLET_DESKTOP_FLAVOR }}
@@ -214,7 +214,7 @@ jobs:
         if: runner.os == 'Linux'
         run: xvfb-run -a python scripts/ci_flet_pack_smoke.py dist DistrictSync ${{ matrix.require_close }}
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: DistrictSync-${{ matrix.os }}

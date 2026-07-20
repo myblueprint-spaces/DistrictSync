@@ -110,8 +110,8 @@ class TestScreensRender:
         values = [getattr(c, "value", None) for c in _iter_controls(tree)]
         assert "Settings" in values, "Settings mode must render the 'Settings' title"
         # 2026-07-15 user decision: folders/district FIRST (what/where), then schedule (when), then delivery.
-        order = [v for v in values if v in ("Daily schedule", "SFTP delivery (SpacesEDU)", "Folders & district")]
-        assert order == ["Folders & district", "Daily schedule", "SFTP delivery (SpacesEDU)"]
+        order = [v for v in values if v in ("Daily schedule", "Delivery to SpacesEDU", "Folders & district")]
+        assert order == ["Folders & district", "Daily schedule", "Delivery to SpacesEDU"]
 
     def test_home(self, stub_page, app_cfg, monkeypatch):
         _assert_renders(
@@ -125,8 +125,11 @@ class TestScreensRender:
     def test_convert_blocks_without_output_dir(self, stub_page, monkeypatch):
         # D9/D10: the default (unconfigured) config has no district and no output folder, so the
         # form shows the routed blocked caption, disables Convert, and shows the district placeholder.
+        # 0035 W3b: pre-setup, the unset-output caption routes to the Setup WIZARD (there is no
+        # graduated Settings scroll yet) — the Settings-routed copy is pinned in the appended
+        # post-setup smoke below.
         tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
-        assert _has_text_containing(tree, "Set your output folder in Settings first")
+        assert _has_text_containing(tree, "Finish setup first — the Setup wizard will set your output folder")
         assert _button_by_content(tree, "Convert now").disabled is True
         dropdown = _find(tree, ft.Dropdown)[0]
         assert dropdown.value is None  # no configs[0] fallback (D9)
@@ -416,10 +419,11 @@ def test_mapping_apply_live_probe_upgrades_to_assertive_notice(monkeypatch):
     LIVE and the win32 gate pinned, so the marshalled refine runs deterministically on any OS:
     the banner must now say the schedule STILL USES the old district (no more "may").
     """
-    import src.ui_flet.screens.mapping as mapping_mod
     from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 
-    monkeypatch.setattr(mapping_mod.sys, "platform", "win32")
+    # The probe gate now dispatches via get_scheduler() (W4a T2.3), which reads the GLOBAL
+    # sys.platform at call time — patch it directly (mapping no longer imports sys).
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
         "src.ui_flet.schedule_probe.probe_schedule",
         lambda *a, **k: ScheduleStatus(state=ScheduleState.LIVE, headline="", detail=""),
@@ -442,10 +446,11 @@ def test_mapping_apply_live_probe_upgrades_to_assertive_notice(monkeypatch):
 
 def test_mapping_stale_probe_never_resurrects_a_cleared_banner(monkeypatch):
     """A fresh pick clears the confirmation; a probe still in flight must NOT repaint it."""
-    import src.ui_flet.screens.mapping as mapping_mod
     from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 
-    monkeypatch.setattr(mapping_mod.sys, "platform", "win32")
+    # The probe gate now dispatches via get_scheduler() (W4a T2.3), which reads the GLOBAL
+    # sys.platform at call time — patch it directly (mapping no longer imports sys).
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
         "src.ui_flet.schedule_probe.probe_schedule",
         lambda *a, **k: ScheduleStatus(state=ScheduleState.LIVE, headline="", detail=""),
@@ -506,7 +511,9 @@ def test_setup_enter_respects_gate_when_config_incomplete(stub_page, monkeypatch
     tree = _settings_tree(stub_page, monkeypatch, input_dir="", output_dir="")
     run_time = _textfield_by_label(tree, "Daily run time (24-hour, HH:MM)")
     assert run_time is not None
-    assert run_time.on_submit(None) is None  # no-op: gate closed, no raise
+    # No-op: gate closed, no raise. _register reports "not dispatched" (False) — the honesty
+    # seam the Settings-Save reconcile reads (0034 S3 residual); Enter callers ignore it.
+    assert run_time.on_submit(None) is False
 
 
 def test_nav_rail_builds_and_exposes_rail_handle():
@@ -565,7 +572,7 @@ def test_setup_renders_unregister_affordance(stub_page, monkeypatch):
     Exercised via Settings mode, where the schedule section renders at the top level.
     """
     tree = _settings_tree(stub_page, monkeypatch)
-    assert any(getattr(c, "content", None) == "Unregister schedule" for c in _iter_controls(tree)), (
+    assert any(getattr(c, "content", None) == "Remove nightly sync" for c in _iter_controls(tree)), (
         "the schedule section must render an Unregister button"
     )
 
@@ -614,7 +621,7 @@ def test_register_worker_survives_crash(monkeypatch):
     captured: list = []
     tree = build_setup(_driving_page(captured))
     captured.clear()  # discard the on-mount readout probe marshal
-    _button_by_content(tree, "Register schedule").on_click(None)
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)
 
     assert len(captured) == 1, "the crashed worker must marshal exactly one result (no strand)"
     _coro, args = captured[0]
@@ -636,7 +643,7 @@ def test_unregister_worker_survives_crash(monkeypatch):
     captured: list = []
     tree = build_setup(_driving_page(captured))
     captured.clear()
-    _button_by_content(tree, "Unregister schedule").on_click(None)
+    _button_by_content(tree, "Remove nightly sync").on_click(None)
 
     assert len(captured) == 1, "the crashed worker must marshal exactly one result (no strand)"
     _coro, args = captured[0]
@@ -686,7 +693,7 @@ class TestWizardStepsRender:
 
         # Schedule step (step 4, skippable) reuses the register/unregister section.
         assert _has_text(tree, "Step 4 of 5")
-        assert any(getattr(c, "content", None) == "Register schedule" for c in _iter_controls(tree))
+        assert any(getattr(c, "content", None) == "Schedule nightly sync" for c in _iter_controls(tree))
         _button_by_content(tree, "Set up later").on_click(None)  # defer schedule → Finish
 
         # Finish step: neutral step title (#5) + the schedule-skipped honest headline (#1a) + copy.
@@ -714,7 +721,7 @@ class TestWizardStepsRender:
 
         live = ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="3:00 AM")
 
-        def _stub_schedule(page, config, *, on_status=None, on_registered=None):
+        def _stub_schedule(page, config, *, on_status=None, on_registered=None, on_schedule_changed=None):
             if on_status is not None:
                 on_status(live)  # deliver a LIVE read-back the moment the Schedule step builds
             return ft.Text("schedule"), setup_mod._ScheduleHandle(
@@ -847,11 +854,11 @@ def test_wizard_natural_order_bakes_sftp_into_registered_task(tmp_path, monkeypa
     tree = build_setup(_driving_page(captured))  # folders + district done → Delivery (step 3, F1 order)
 
     _fill_sftp(tree)
-    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # cfg.sftp_enabled = True
+    _button_by_content(tree, "Save delivery settings").on_click(None)  # cfg.sftp_enabled = True
     assert cfg.sftp_enabled is True
 
     _button_by_content(tree, "Continue").on_click(None)  # delivery addressed → Schedule (step 4)
-    _button_by_content(tree, "Register schedule").on_click(None)  # bakes the task
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)  # bakes the task
 
     assert recorded.get("sftp") is True, "the task registered after Delivery must carry --sftp"
 
@@ -882,7 +889,7 @@ def test_settings_enabling_sftp_reregisters_task_with_sftp(monkeypatch, tmp_path
     tree = build_setup(_driving_page(captured))  # Settings mode (completed config)
 
     _fill_sftp(tree)
-    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # enable SFTP → reconcile re-register
+    _button_by_content(tree, "Save delivery settings").on_click(None)  # enable SFTP → reconcile re-register
 
     assert cfg.sftp_enabled is True
     assert recorded.get("sftp") is True, "enabling SFTP on a scheduled install must re-register with --sftp"
@@ -1020,8 +1027,14 @@ def test_no_edit_save_after_mapping_switch_reregisters_from_the_persisted_args(t
     """S3-d acceptance: after a Mapping district switch (config saved elsewhere), a Settings Save
     with NO field edits must still re-register — the reconcile compares against the durable
     last-REGISTERED args, not a mount-time snapshot of the already-switched config."""
+    import src.ui_flet.screens.setup as setup_mod
+
     _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)
     triggered = _spy_trigger(monkeypatch)
+    # Determinism (ROADMAP 2026-07-15 flake): stub the probe-kick SEAM itself so no
+    # background schedule-readout probe ever runs during this test — the assertion
+    # must never race a paint-then-refine worker.
+    monkeypatch.setattr(setup_mod, "_kick_probe_thread", lambda _page, _work: None)
 
     tree = build_setup(stub_page)
     _button_by_content(tree, "Save folders & district").on_click(None)  # NO edits
@@ -1164,7 +1177,7 @@ def test_reconcile_without_the_unattended_fact_never_shows_the_dialog(tmp_path, 
 
 
 def test_sftp_save_reconcile_is_also_guarded_against_the_silent_downgrade(tmp_path, monkeypatch):
-    """S3-a: the SECOND reconcile route (Save SFTP credentials → on_saved) converges on the same
+    """S3-a: the SECOND reconcile route (Save delivery settings → on_saved) converges on the same
     guarded trigger — enabling delivery on an unattended install interrupts too, never downgrades."""
     from src.sftp.uploader import SFTPUploader
 
@@ -1177,7 +1190,7 @@ def test_sftp_save_reconcile_is_also_guarded_against_the_silent_downgrade(tmp_pa
     page = _driving_page(captured)
     tree = build_setup(page)
     _fill_sftp(tree)
-    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # flips sftp_enabled → changed
+    _button_by_content(tree, "Save delivery settings").on_click(None)  # flips sftp_enabled → changed
 
     assert cfg.sftp_enabled is True
     assert recorded["called"] == 0, "the SFTP-save reconcile must not silently downgrade either"
@@ -1245,6 +1258,141 @@ def test_settings_save_with_no_registered_task_paints_plain_saved(tmp_path, stub
     assert _folders_save_note_text(tree) == "Saved."
 
 
+def test_settings_save_with_malformed_run_time_paints_the_blocked_note_and_inline_error(
+    tmp_path, stub_page, monkeypatch
+):
+    """0034 S3 residual (_register early-return vs DISPATCHED): an args-changed Save whose
+    re-register is refused by the register flow's own gate (a malformed run time) must NOT claim
+    'updating…' — the honest BLOCKED note paints, the run-time inline error still paints, and
+    nothing registers."""
+    _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)  # args changed (district switch)
+    recorded = _record_register(monkeypatch)
+
+    tree = build_setup(stub_page)
+    _textfield_by_label(tree, "Daily run time (24-hour, HH:MM)").value = "99:99"
+    _button_by_content(tree, "Save folders & district").on_click(None)
+
+    assert recorded["called"] == 0, "no register may dispatch with a malformed run time"
+    note = _folders_save_note_text(tree)
+    assert note == (
+        "Saved — the nightly schedule wasn't updated. Fix the run time in the Daily schedule section, then save again."
+    )
+    assert "updating" not in note.lower()
+    assert _has_text(tree, "That run time isn't valid")  # the run-time error still paints
+
+
+def test_sftp_save_with_malformed_run_time_paints_the_blocked_suffix(tmp_path, monkeypatch):
+    """0034 S3 residual, second Save site: the SFTP Save's reconcile suffix must be honest too —
+    a refused re-register never claims 'Updating the nightly schedule to deliver too…'."""
+    from src.sftp.uploader import SFTPUploader
+
+    cfg = _registered_settings_cfg(tmp_path, monkeypatch, unattended=False, current_sis="myedbc")
+    monkeypatch.setattr(SFTPUploader, "store_password", lambda self, pw: None)
+    monkeypatch.setattr(SFTPUploader, "get_stored_password", lambda self: "pw")
+    recorded = _record_register(monkeypatch)
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_setup(page)
+    _textfield_by_label(tree, "Daily run time (24-hour, HH:MM)").value = "99:99"
+    _fill_sftp(tree)
+    _button_by_content(tree, "Save delivery settings").on_click(None)  # flips sftp_enabled → changed
+
+    assert cfg.sftp_enabled is True  # the credential save itself persisted (Saved stays truthful)
+    assert recorded["called"] == 0
+    assert _has_text_containing(
+        tree, "The nightly schedule wasn't updated — fix the run time in the Daily schedule section"
+    )
+    assert not _has_text_containing(tree, "Updating the nightly schedule to deliver too")
+    assert _has_text(tree, "That run time isn't valid")
+
+
+def _drain(captured: list) -> None:
+    """Run every marshalled coroutine (probe read-backs / register results) and clear the list."""
+    for coro, args in captured:
+        asyncio.run(coro(*args))
+    captured.clear()
+
+
+def test_wizard_backtrack_delivery_change_downgrades_the_finish_copy(tmp_path, monkeypatch):
+    """The wizard backtrack desync guard (0029 close-out): register on the Schedule step (task
+    baked WITHOUT --sftp), Back to Delivery, save a credential, Finish — the finish line must be
+    HONEST: no 'try to deliver' claim; the copy names the one Save in Settings that picks the
+    change up, and the checked summary stays consistent ('delivery not included yet')."""
+    from src.sftp.uploader import SFTPUploader
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    monkeypatch.setattr(SFTPUploader, "store_password", lambda self, pw: None)
+    monkeypatch.setattr(SFTPUploader, "get_stored_password", lambda self: "pw")
+    _capture_register_sftp(monkeypatch)  # both platform register entry points → (True, "ok")
+    live = ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="3:00 AM")
+    monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: live)
+
+    captured: list = []
+    tree = build_setup(_driving_page(captured))  # folders + district done → Delivery (step 3)
+
+    _button_by_content(tree, "Set up later").on_click(None)  # defer delivery → Schedule (step 4)
+    _drain(captured)  # the on-mount read-back
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)  # bakes the task WITHOUT --sftp
+    _drain(captured)  # the register result + the post-register read-back
+    assert cfg.schedule_registered is True
+    assert cfg.schedule_task_args is not None and cfg.schedule_task_args["sftp_enabled"] is False
+
+    _button_by_content(tree, "Back").on_click(None)  # backtrack → Delivery
+    _fill_sftp(tree)
+    _button_by_content(tree, "Save delivery settings").on_click(None)  # delivery enabled AFTER the bake
+    assert cfg.sftp_enabled is True
+    _button_by_content(tree, "Continue").on_click(None)  # → Schedule (already LIVE)
+    _drain(captured)
+    _button_by_content(tree, "Continue").on_click(None)  # LIVE → addressed → Finish
+
+    assert _has_text(tree, "You're set up — delivery needs one more save")
+    assert _has_text_containing(tree, "the nightly schedule hasn't picked up the delivery change yet")
+    assert _has_text_containing(tree, "click Save in Settings")
+    assert not _has_text_containing(tree, "try to deliver it to SpacesEDU")
+    assert _has_text(tree, "Nightly at 3:00 AM — delivery not included yet")  # the summary agrees
+
+
+def test_wizard_finish_without_a_delivery_change_keeps_the_confident_claim(tmp_path, monkeypatch):
+    """The no-desync control: the natural in-order walk (Delivery BEFORE Schedule, F1) bakes the
+    task WITH --sftp, so the finish line keeps the confident delivery claim (the guard must not
+    downgrade an install that is actually consistent)."""
+    from src.sftp.uploader import SFTPUploader
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    monkeypatch.setattr(SFTPUploader, "store_password", lambda self, pw: None)
+    monkeypatch.setattr(SFTPUploader, "get_stored_password", lambda self: "pw")
+    _capture_register_sftp(monkeypatch)
+    live = ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="3:00 AM")
+    monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: live)
+
+    captured: list = []
+    tree = build_setup(_driving_page(captured))  # → Delivery (step 3, F1 order)
+
+    _fill_sftp(tree)
+    _button_by_content(tree, "Save delivery settings").on_click(None)  # sftp_enabled BEFORE the bake
+    _button_by_content(tree, "Continue").on_click(None)  # delivery addressed → Schedule
+    _drain(captured)
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)  # bakes the task WITH --sftp
+    _drain(captured)
+    assert cfg.schedule_task_args is not None and cfg.schedule_task_args["sftp_enabled"] is True
+    _button_by_content(tree, "Continue").on_click(None)  # LIVE → addressed → Finish
+
+    assert _has_text(tree, "You're all set")
+    assert _has_text_containing(tree, "try to deliver it to SpacesEDU")
+    assert not _has_text_containing(tree, "delivery not included yet")
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="the Windows password field renders only on win32")
 def test_signed_in_only_forces_blank_password_even_if_the_field_holds_a_value(tmp_path, monkeypatch):
     """FIX 2: the 'continue signed-in only' choice registers with an EXPLICITLY blank password — it
@@ -1282,7 +1430,7 @@ def test_register_without_a_password_persists_the_registration_facts(tmp_path, m
     captured: list = []
     tree = build_setup(_driving_page(captured))
     captured.clear()
-    _button_by_content(tree, "Register schedule").on_click(None)
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)
 
     assert recorded["called"] == 1
     coro, args = captured[-1]
@@ -1319,7 +1467,7 @@ def test_register_with_a_password_persists_the_unattended_fact(tmp_path, monkeyp
     tree = build_setup(_driving_page(captured))
     _textfield_by_label(tree, "Windows account password").value = "hunter2"
     captured.clear()
-    _button_by_content(tree, "Register schedule").on_click(None)
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)
 
     assert recorded["run_as_password"] == "hunter2"  # the ONLY sink — register_task
     coro, args = captured[-1]
@@ -1338,7 +1486,7 @@ def test_unregister_clears_the_registration_facts(tmp_path, monkeypatch):
     captured: list = []
     tree = build_setup(_driving_page(captured))
     captured.clear()
-    _button_by_content(tree, "Unregister schedule").on_click(None)
+    _button_by_content(tree, "Remove nightly sync").on_click(None)
 
     coro, args = captured[-1]
     asyncio.run(coro(*args))
@@ -1386,3 +1534,331 @@ def test_no_ft_dropdown_uses_on_change():
             ):
                 offenders.append(f"{os.path.relpath(path, root)}:{node.lineno} ft.Dropdown(on_change=)")
     assert not offenders, "ft.Dropdown has no on_change on flet 0.85.3 — use on_select: " + "; ".join(offenders)
+
+
+def test_no_unawaited_async_window_calls():
+    """Static-ban the 0029 silent-no-op-Exit class: ``page.window.destroy()``/``.close()``/
+    ``.center()`` are ASYNC coroutine methods on flet 0.85.3 — a bare synchronous call
+    silently no-ops (the window just doesn't close, no error, no log). Every call whose
+    attribute chain ends ``window.<destroy|close|center>`` must sit inside an ``await``
+    expression or be dispatched through ``page.run_task(...)``.
+
+    Allowlist: empty today (the current tree is clean). Add a ``"relpath:lineno"`` entry
+    ONLY for a reviewed, proven-safe form — never to mute a real offender.
+    """
+    import ast
+    import glob
+    import os
+
+    async_window_methods = {"destroy", "close", "center"}
+    allowlist: set[str] = set()  # e.g. {"src\\ui_flet\\example.py:42"} — reviewed exceptions only
+
+    def _targets_window(call: ast.Call) -> bool:
+        # Attribute chain ending `window.<method>`: `<anything>.window.destroy(...)` or a
+        # bare `window.destroy(...)` local alias.
+        if not (isinstance(call.func, ast.Attribute) and call.func.attr in async_window_methods):
+            return False
+        owner = call.func.value
+        return (isinstance(owner, ast.Attribute) and owner.attr == "window") or (
+            isinstance(owner, ast.Name) and owner.id == "window"
+        )
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    offenders: list[str] = []
+    for path in glob.glob(os.path.join(root, "src", "ui_flet", "**", "*.py"), recursive=True):
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), filename=path)
+        parents: dict[ast.AST, ast.AST] = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                parents[child] = node
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and _targets_window(node)):
+                continue
+            sanctioned = False
+            probe: ast.AST | None = parents.get(node)
+            while probe is not None:
+                # `await page.window.destroy()` (incl. wrapped, e.g. asyncio.wait_for(...)).
+                if isinstance(probe, ast.Await):
+                    sanctioned = True
+                    break
+                # An argument inside a `page.run_task(...)` dispatch.
+                if (
+                    isinstance(probe, ast.Call)
+                    and isinstance(probe.func, ast.Attribute)
+                    and probe.func.attr == "run_task"
+                ):
+                    sanctioned = True
+                    break
+                probe = parents.get(probe)
+            rel = f"{os.path.relpath(path, root)}:{node.lineno}"
+            if not sanctioned and rel not in allowlist:
+                offenders.append(f"{rel} window.{node.func.attr}() without await/page.run_task")
+    assert not offenders, (
+        "async window calls silently no-op on flet 0.85.3 unless awaited or run via page.run_task: "
+        + "; ".join(offenders)
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Convert cold-state + interaction smokes (0035 W3b) — appended, convert-owned  #
+# --------------------------------------------------------------------------- #
+class TestConvertColdStateAndInteraction:
+    """Glue smokes for the 0035 W3b Convert sweep — the pure decisions are unit-tested in
+    ``test_ui_flet_convert_output``; these drive the real (coverage-omitted) view wiring."""
+
+    def test_pre_setup_card_routes_to_setup(self, stub_page, monkeypatch):
+        # Default (unconfigured) config + an injected on_navigate → the routed card renders
+        # with a SECONDARY "Open Setup" (Convert now keeps the screen's one filled primary),
+        # and clicking it navigates to "setup".
+        routed: list[str] = []
+        tree = _assert_renders(lambda: build_convert(stub_page, on_navigate=routed.append), monkeypatch)
+        assert _has_text_containing(tree, "Finish setup first")
+        assert _has_text_containing(tree, "district and folders")
+        open_setup = _button_by_content(tree, "Open Setup")
+        assert isinstance(open_setup, ft.OutlinedButton)
+        open_setup.on_click(MagicMock())
+        assert routed == ["setup"]
+
+    def test_pre_setup_card_is_defensive_without_on_navigate(self, stub_page, monkeypatch):
+        # An un-wired mount (no on_navigate) still shows the card's copy — just no button.
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert _has_text_containing(tree, "Finish setup first")
+        assert not any(getattr(c, "content", None) == "Open Setup" for c in _iter_controls(tree))
+
+    def test_completed_setup_hides_the_card_and_routes_unset_output_to_settings(self, stub_page, monkeypatch):
+        # Post-setup with a blanked output folder: the card stays away (setup is done) and the
+        # unset caption routes to the graduated Settings scroll — mode-aware honesty.
+        cfg = AppConfig(sis_type="myedbc", input_dir="/in", output_dir="", setup_completed=True)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        tree = _assert_renders(lambda: build_convert(stub_page, on_navigate=lambda _d: None), monkeypatch)
+        assert not _has_text_containing(tree, "Finish setup first")
+        assert _has_text_containing(tree, "Set your output folder in Settings first")
+
+    def test_partial_setup_with_essentials_in_place_is_not_nagged(self, tmp_path, stub_page, monkeypatch):
+        # Saved district + folders but wizard never finished → Convert is usable; no card.
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        tree = _assert_renders(lambda: build_convert(stub_page, on_navigate=lambda _d: None), monkeypatch)
+        assert not _has_text_containing(tree, "Finish setup first")
+        assert _has_text_containing(tree, "Files will be written to")
+
+    def test_district_override_paints_the_amber_mismatch_note(self, tmp_path, stub_page, monkeypatch):
+        # Saved district myedbc; picking another district fires the differs-from-saved note,
+        # and picking the saved one back clears it.
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        dropdown = _find(tree, ft.Dropdown)[0]
+        assert not _has_text_containing(tree, "differs from your saved district")  # saved pick → quiet
+        dropdown.value = "sd40myedbc"
+        dropdown.on_select(_pick_event("sd40myedbc"))
+        note = next(
+            c for c in _iter_controls(tree) if "differs from your saved district" in (getattr(c, "value", "") or "")
+        )
+        assert note.visible is True
+        assert note.color == tokens.color_status_warning
+        dropdown.value = "myedbc"
+        dropdown.on_select(_pick_event("myedbc"))
+        assert note.visible is False
+
+    def test_running_job_disables_the_form_with_an_honest_caption(self, tmp_path, stub_page, monkeypatch):
+        # Item 3 (T1 #10): once a job starts, the button AND the district/input controls all
+        # disable (no dead clicks, no double-start, no mid-run edits) and the busy caption shows.
+        import src.ui_flet.screens.convert as convert_mod
+        from src.ui_flet.picker_field import PickerField
+
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        (in_dir / "StudentInformation.csv").write_text("id\n1\n")
+        cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        # The runner never actually launches a thread — the smoke drives only the view wiring.
+        monkeypatch.setattr(
+            convert_mod.JobRunner,
+            "run",
+            lambda self, page, work, *, on_done, on_error: True,
+        )
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        convert_btn = _button_by_content(tree, "Convert now")
+        dropdown = _find(tree, ft.Dropdown)[0]
+        picker = _find(tree, PickerField)[0]
+        assert convert_btn.disabled is False  # gates satisfied → idle state is enabled
+        assert dropdown.disabled is not True
+        convert_btn.on_click(MagicMock())  # start the (stubbed) job
+        assert convert_btn.disabled is True
+        assert dropdown.disabled is True
+        assert picker.disabled is True
+        assert _has_text_containing(tree, "Converting…")
+        spinner = _find(tree, ft.ProgressRing)[0]
+        assert spinner.visible is True
+
+    def test_missing_files_list_is_soft_and_reassuring(self, tmp_path, stub_page, monkeypatch):
+        # The expected-but-missing list leads with the softened heading and closes with the
+        # honest skip-on-empty reassurance (pure copy pinned in test_ui_flet_convert_output).
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        (in_dir / "StudentInformation.csv").write_text("id\n1\n")  # present → others missing
+        cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert not _has_text_containing(tree, "Expected files not found in this folder")
+        assert _has_text_containing(tree, "Not found yet")
+        assert _has_text_containing(tree, "You can still convert")
+
+
+# 0032 W3c appends — About/support context + badge-freshness wiring            #
+# --------------------------------------------------------------------------- #
+def test_help_renders_the_about_block(stub_page, app_cfg, monkeypatch):
+    """T1 #9 render-smoke: the Help surface carries the About block — version line,
+    a "Copy version" affordance, and the release-notes link (all on 0.85.3 forms)."""
+    from src.ui_flet import about
+    from src.utils.version import app_version
+
+    tree = _assert_renders(lambda: build_help(stub_page, app_config=app_cfg), monkeypatch)
+
+    assert _has_text(tree, "About DistrictSync")
+    assert _has_text(tree, about.version_display(app_version()))
+    assert _has_text(tree, about.RELEASE_NOTES_URL)  # selectable offline fallback
+    copy_tooltips = [getattr(c, "tooltip", None) for c in _iter_controls(tree) if isinstance(c, ft.IconButton)]
+    assert "Copy version" in copy_tooltips
+    assert any(getattr(c, "content", None) == "See what's new" for c in _iter_controls(tree))
+
+
+def test_error_card_offers_the_log_folder_and_can_opt_out(monkeypatch, tmp_path):
+    """T1 #9: ErrorCard carries the "Open log folder" support affordance by default (the log
+    holds the detail the card deliberately hides), opens the app-data log dir through the ONE
+    OS-open helper, and a validation-style card can opt out."""
+    from pathlib import Path
+
+    card = components.ErrorCard("Something broke", "Calm detail.")
+    button = next(c for c in _iter_controls(card) if getattr(c, "content", None) == "Open log folder")
+
+    opened: list[str] = []
+    monkeypatch.setattr(components, "open_folder", lambda path: opened.append(path) or True)
+    monkeypatch.setattr(components, "user_log_file", lambda: tmp_path / "logs" / "etl_tool.log")
+    button.on_click(None)
+    assert opened == [str(Path(tmp_path) / "logs")]
+
+    plain = components.ErrorCard("Inline validation", log_folder=False)
+    assert not any(getattr(c, "content", None) == "Open log folder" for c in _iter_controls(plain))
+
+
+def test_open_log_folder_never_raises(monkeypatch):
+    """The affordance is best-effort: a broken profile path must never crash a view."""
+
+    def _boom():
+        raise OSError("profile locked")
+
+    monkeypatch.setattr(components, "user_log_file", _boom)
+    components.open_log_folder()  # must not raise
+
+
+def test_copy_button_copies_and_confirms(monkeypatch):
+    """The copy_button factory: an async 0.85.3 handler that awaits Clipboard.set and
+    confirms with a SnackBar ("Copied."); a clipboard failure paints the manual fallback."""
+    page = MagicMock()
+    copied: list[str] = []
+
+    class _StubClip:
+        async def set(self, value: str) -> None:
+            copied.append(value)
+
+    monkeypatch.setattr(components, "_ensure_clipboard", lambda p: _StubClip())
+    button = components.copy_button(page, "3.4.0", tooltip="Copy version")
+    assert isinstance(button, ft.IconButton)
+    assert button.tooltip == "Copy version"
+
+    asyncio.run(button.on_click(None))
+    assert copied == ["3.4.0"]
+    snack = page.show_dialog.call_args[0][0]
+    assert isinstance(snack, ft.SnackBar)
+    assert snack.content.value == "Copied."
+
+    # Failure path: the calm manual fallback (the value is always selectable beside it).
+    class _BrokenClip:
+        async def set(self, value: str) -> None:
+            raise RuntimeError("no session")
+
+    monkeypatch.setattr(components, "_ensure_clipboard", lambda p: _BrokenClip())
+    asyncio.run(components.copy_button(page, "x").on_click(None))
+    snack = page.show_dialog.call_args[0][0]
+    assert "select the text" in snack.content.value
+
+
+def test_ensure_clipboard_registers_the_service_once():
+    """The Clipboard service registers on page.services ONCE (the filepicker precedent)."""
+    page = MagicMock()
+    page.services = []
+    first = components._ensure_clipboard(page)
+    second = components._ensure_clipboard(page)
+    assert first is second
+    assert page.services == [first]
+    assert isinstance(first, ft.Clipboard)
+
+
+def test_confirmed_register_and_unregister_fire_the_shell_badge_refresh(tmp_path, monkeypatch):
+    """T1 #8: build_setup threads on_schedule_changed to the schedule section — a CONFIRMED
+    register success AND a confirmed unregister both fire it (the shell re-probes the rail's
+    Setup badge), so the boot-time badge can't go stale after an in-app schedule change."""
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type="myedbc",
+        setup_completed=True,
+        schedule_registered=False,
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    _benign_probe(monkeypatch)
+    _record_register(monkeypatch)
+    monkeypatch.setattr("src.scheduler.windows.delete_task", lambda name: (True, "ok"))
+    monkeypatch.setattr("src.scheduler.linux.delete_cron", lambda: (True, "ok"))
+
+    fired: list[str] = []
+    captured: list = []
+    tree = build_setup(_driving_page(captured), on_schedule_changed=lambda: fired.append("changed"))
+    captured.clear()
+
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))  # marshalled _apply_result → confirmed success
+    assert fired == ["changed"]
+
+    captured.clear()
+    _button_by_content(tree, "Remove nightly sync").on_click(None)
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))  # marshalled _apply_unregister → confirmed removal
+    assert fired == ["changed", "changed"]
+
+
+def test_failed_register_does_not_fire_the_badge_refresh(tmp_path, monkeypatch):
+    """T1 #8 negative: a register that FAILS changes no schedule — the badge callback stays quiet."""
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type="myedbc",
+        setup_completed=True,
+        schedule_registered=False,
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    _benign_probe(monkeypatch)
+    monkeypatch.setattr("src.scheduler.windows.register_task", lambda **kw: (False, "access is denied"))
+    monkeypatch.setattr("src.scheduler.linux.register_cron", lambda *a, **kw: (False, "crontab missing"))
+
+    fired: list[str] = []
+    captured: list = []
+    tree = build_setup(_driving_page(captured), on_schedule_changed=lambda: fired.append("changed"))
+    captured.clear()
+
+    _button_by_content(tree, "Schedule nightly sync").on_click(None)
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))
+    assert fired == []

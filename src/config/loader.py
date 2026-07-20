@@ -16,10 +16,19 @@ Mapping YAMLs are discovered from two directories, in order:
 This lets partners customize a shipped config (e.g. override `sd40myedbc`)
 without waiting for a new release, while built-ins remain available as
 fallbacks and as `_base:` parents.
+
+Two guardrails keep that override path honest:
+
+- Every user-dir file that shadows a bundled one is named in an INFO log
+  line, so a stale hotfix config can never *silently* drive a conversion.
+- The resolved config's ``version`` is gated against the supported range
+  (see ``SUPPORTED_CONFIG_MAJOR``): a different major fails loudly, a
+  newer minor warns.
 """
 
 import copy
 import logging
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -30,6 +39,14 @@ from src.config.models import MappingConfig
 from src.utils.paths import bundle_mappings_dir, user_mappings_dir
 
 logger = logging.getLogger(__name__)
+
+# Supported mapping-config format version (derived from the bundled configs,
+# which declare 1.0–1.9 today). Bump MINOR when the bundled configs start
+# using new same-major features; bump MAJOR only on a breaking config-format
+# change (and migrate every bundled config in the same release, so the
+# bundled set always loads clean against these constants).
+SUPPORTED_CONFIG_MAJOR = 1
+SUPPORTED_CONFIG_MINOR = 9
 
 
 def _search_dirs(explicit: Optional[Path]) -> list[Path]:
@@ -45,17 +62,90 @@ def _search_dirs(explicit: Optional[Path]) -> list[Path]:
 
 
 def _find_mapping_file(sis_type: str, search_dirs: list[Path]) -> Optional[Path]:
-    """Return the first existing ``<dir>/<sis_type>_mapping.yaml`` in search order."""
+    """Return the first existing ``<dir>/<sis_type>_mapping.yaml`` in search order.
+
+    When the winning file shadows a same-named file in a later search dir
+    (i.e. a user-dir override hides a bundled config), an INFO line names
+    both paths — visibility even when the versions match, so a stale
+    override can never take effect silently.
+    """
     filename = f"{sis_type}_mapping.yaml"
-    for directory in search_dirs:
+    for index, directory in enumerate(search_dirs):
         candidate = directory / filename
         if candidate.exists():
+            for later_dir in search_dirs[index + 1 :]:
+                shadowed = later_dir / filename
+                if shadowed.exists():
+                    logger.info("Mapping config '%s' loaded from '%s' — shadows '%s'", filename, candidate, shadowed)
             return candidate
     return None
 
 
+def _parse_version(version: object, path: Path) -> tuple[int, int]:
+    """Parse a config ``version`` value into ``(major, minor)`` integers.
+
+    The version MUST be a quoted YAML string (``'1.9'``; an optional patch
+    component ``'1.9.2'`` is ignored). A bare YAML float is REJECTED fail-loud:
+    PyYAML collapses ``version: 1.10`` to the float ``1.1``, silently reading
+    minor 10 as minor 1 and skipping the newer-minor warning — the information
+    is unrecoverable once parsed, so the string form is required at the source.
+    """
+    if not isinstance(version, str):
+        raise ValueError(
+            f"Mapping config '{path}' declares its version as a bare YAML scalar "
+            f"({version!r}) — quote it as a string (e.g. version: "
+            f"'{SUPPORTED_CONFIG_MAJOR}.{SUPPORTED_CONFIG_MINOR}'). Bare floats lose "
+            f"trailing zeros (1.10 reads as 1.1), so the version gate cannot trust them."
+        )
+    match = re.fullmatch(r"(\d+)(?:\.(\d+))?(?:\.\d+)?", version.strip())
+    if match is None:
+        raise ValueError(
+            f"Mapping config '{path}' declares an unreadable version {version!r} — "
+            f"expected '<major>.<minor>' (e.g. '{SUPPORTED_CONFIG_MAJOR}.{SUPPORTED_CONFIG_MINOR}'). "
+            f"Fix the 'version' field, or obtain a current config from the DistrictSync team."
+        )
+    return int(match.group(1)), int(match.group(2) or 0)
+
+
+def _check_config_version(version: object, path: Path) -> None:
+    """Gate the resolved config's version against the supported range.
+
+    - Same major, minor <= supported: silent (in range).
+    - Same major, newer minor: loud WARNING — the config may use features
+      this build ignores, but same-major semantics are still safe to run.
+    - Different major (older OR newer): fail-loud ValueError — an
+      out-of-major-range config cannot silently drive a conversion.
+    """
+    major, minor = _parse_version(version, path)
+    if major != SUPPORTED_CONFIG_MAJOR:
+        raise ValueError(
+            f"Mapping config '{path}' declares version {version} (major {major}), but this "
+            f"DistrictSync build supports major version {SUPPORTED_CONFIG_MAJOR} "
+            f"(up to {SUPPORTED_CONFIG_MAJOR}.{SUPPORTED_CONFIG_MINOR}). A config from a different "
+            f"major version cannot drive a conversion. Obtain a major-{SUPPORTED_CONFIG_MAJOR} config "
+            f"from the DistrictSync team, or install the DistrictSync release that matches this config."
+        )
+    if minor > SUPPORTED_CONFIG_MINOR:
+        logger.warning(
+            "Mapping config '%s' declares version %s, newer than the supported %s.%s — "
+            "newer config features may be ignored; consider upgrading DistrictSync.",
+            path,
+            version,
+            SUPPORTED_CONFIG_MAJOR,
+            SUPPORTED_CONFIG_MINOR,
+        )
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Recursively merge override into base. Override values win."""
+    """Recursively merge ``override`` into ``base``. Override values win.
+
+    Only dicts merge key-by-key (recursively). Every other value type —
+    **including lists — REPLACES the base value wholesale**; there is no
+    list concatenation or element-wise merge. E.g. a district config that
+    sets ``global_config.enabled_entities: [Students]`` over a base
+    declaring all seven entities ends up with exactly ``[Students]``, not
+    a union — an override must restate the FULL list it wants.
+    """
     result = copy.deepcopy(base)
     for key, val in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(val, dict):
@@ -149,7 +239,9 @@ def load_config(
 
     Raises:
         FileNotFoundError: If the mapping file doesn't exist in any search path.
-        ValueError: If validation fails (wraps Pydantic errors with clear messages).
+        ValueError: If validation fails (wraps Pydantic errors with clear
+            messages), or if the resolved config's version is outside the
+            supported major range (see ``_check_config_version``).
     """
     search_dirs = _search_dirs(config_dir)
     path = _find_mapping_file(sis_type, search_dirs)
@@ -159,6 +251,13 @@ def load_config(
 
     raw = _load_yaml(path)
     raw = _resolve_inheritance(raw, search_dirs)
+
+    # Version-gate the RESOLVED config (a version may be inherited via _base)
+    # BEFORE Pydantic validation, so an out-of-range config gets the actionable
+    # version message rather than confusing field-level schema errors. A missing
+    # version falls through to Pydantic's required-field error.
+    if "version" in raw:
+        _check_config_version(raw["version"], path)
 
     try:
         return MappingConfig(**raw)

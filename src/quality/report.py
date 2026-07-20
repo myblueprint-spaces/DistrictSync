@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
+from src.etl.transformers.ids import normalize_id_series
+
 
 @dataclass
 class EntityReport:
@@ -40,6 +42,7 @@ class DataQualityReport:
             self.entities[name] = report
 
         self._check_orphaned_enrollments(outputs)
+        self._check_orphaned_student_refs(outputs)
         self._check_grade_distribution(outputs)
         return self
 
@@ -47,7 +50,7 @@ class DataQualityReport:
         """Flag columns where values are missing or empty."""
         for col in df.columns:
             null_count = df[col].isna().sum()
-            empty_count = (df[col].astype(str).str.strip() == "").sum()
+            empty_count = (normalize_id_series(df[col]) == "").sum()
             total_missing = int(null_count + empty_count)
             if total_missing > 0:
                 report.missing_fields[col] = total_missing
@@ -117,6 +120,28 @@ class DataQualityReport:
                     self.cross_entity_warnings.append(
                         f"{len(orphaned)} enrollment user IDs not found in Students/Staff output"
                     )
+
+    def _check_orphaned_student_refs(self, outputs: dict[str, pd.DataFrame]) -> None:
+        """Check Family / StudentCourses rows referencing students absent from Students.
+
+        Backstop for the zero-orphan filtering in those transformers — a
+        regression there surfaces here as a cross-entity warning. Counts only
+        (never student ids), keeping the report PII-free.
+        """
+        students = outputs.get("Students")
+        if students is None or "User ID" not in students.columns:
+            return
+        roster = {str(x).strip() for x in students["User ID"].dropna()}
+        if not roster:
+            return
+        for entity, col in (("Family", "Student User ID"), ("StudentCourses", "Student ID")):
+            df = outputs.get(entity)
+            if df is None or col not in df.columns:
+                continue
+            referenced = {str(x).strip() for x in df[col].dropna()}
+            orphaned = referenced - roster
+            if orphaned:
+                self.cross_entity_warnings.append(f"{len(orphaned)} {entity} student IDs not found in Students output")
 
     def _check_grade_distribution(self, outputs: dict[str, pd.DataFrame]) -> None:
         """Report grade distribution in Students for visibility."""

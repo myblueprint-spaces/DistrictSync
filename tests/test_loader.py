@@ -1,13 +1,17 @@
 """Tests for the DataLoader — CSV output with field ordering."""
 
+import logging
 import os
+import re
+import time
+from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
 
-from src.etl.loader import DataLoader
+from src.etl.loader import _STALE_BAK_MIN_AGE_SECONDS, _STALE_TMP_MAX_AGE_DAYS, DataLoader
 
 
 def _replace_side_effect(*, fail_role, fail_entity):
@@ -284,6 +288,188 @@ class TestAtomicWriteRollback:
         family = pd.read_csv(tmp_path / "Family.csv")
         assert family["Email"].iloc[0] == "john@test.ca"
         self._no_temp_or_backup_dirs(tmp_path)
+
+
+class TestStagingBackupUniqueness:
+    """W1b Item 3: two ``save_all`` calls in the same wall-clock second must never
+    share — or ``rmtree`` — each other's staging/backup dirs. The dir names carry
+    a per-call ``uuid4`` suffix, and creation uses ``exist_ok=False`` so any
+    residual collision fails LOUD instead of interleaving commits."""
+
+    def _outputs(self):
+        return {"Students": pd.DataFrame({"Name": ["Alice"]})}
+
+    def _orders(self):
+        return {"Students": ["Name"]}
+
+    def test_staging_and_backup_names_carry_matching_unique_suffix(self, tmp_path):
+        """Observed via the commit's real ``os.replace`` calls: both dirs are
+        ``.<kind>_<YYYYMMDD>_<HHMMSS>_<8-hex>`` and share the same stamp."""
+        loader = DataLoader(str(tmp_path))
+        (tmp_path / "Students.csv").write_text("old", encoding="utf-8")  # forces a backup-aside
+
+        seen: set[str] = set()
+        real = os.replace
+
+        def spy(src, dst):
+            for p in (Path(src).parent, Path(dst).parent):
+                if p.name.startswith((".tmp_", ".bak_")):
+                    seen.add(p.name)
+            return real(src, dst)
+
+        with patch("src.etl.loader.os.replace", side_effect=spy):
+            loader.save_all(self._outputs(), self._orders())
+
+        tmp_names = {n for n in seen if n.startswith(".tmp_")}
+        bak_names = {n for n in seen if n.startswith(".bak_")}
+        assert len(tmp_names) == 1 and len(bak_names) == 1
+        tmp_name, bak_name = tmp_names.pop(), bak_names.pop()
+        assert re.fullmatch(r"\.tmp_\d{8}_\d{6}_[0-9a-f]{8}", tmp_name)
+        assert re.fullmatch(r"\.bak_\d{8}_\d{6}_[0-9a-f]{8}", bak_name)
+        # One call → one shared stamp (rollback restores from THIS run's backup only).
+        assert tmp_name.removeprefix(".tmp_") == bak_name.removeprefix(".bak_")
+
+    def test_staging_dir_collision_fails_loud(self, tmp_path):
+        """A residual dir with the exact staging name (frozen clock + pinned uuid)
+        raises instead of being silently shared/deleted."""
+        loader = DataLoader(str(tmp_path))
+        fixed_uuid = MagicMock()
+        fixed_uuid.hex = "deadbeefcafe0000"
+        # The colliding dir is FRESH, so the aged-.tmp_ sweep must leave it alone —
+        # the collision then surfaces through exist_ok=False (fail loud).
+        (tmp_path / ".tmp_20260716_030000_deadbeef").mkdir()
+
+        with (
+            patch("src.etl.loader.datetime") as dt,
+            patch("src.etl.loader.uuid.uuid4", return_value=fixed_uuid),
+            pytest.raises(FileExistsError),
+        ):
+            dt.now.return_value = datetime(2026, 7, 16, 3, 0, 0)
+            loader.save_all(self._outputs(), self._orders())
+
+        # Nothing was committed and the foreign dir was not destroyed.
+        assert not (tmp_path / "Students.csv").exists()
+        assert (tmp_path / ".tmp_20260716_030000_deadbeef").exists()
+
+
+class TestReconcileOutputDir:
+    """W1b Item 4: ``save_all`` reconciles interrupted-run leftovers up front —
+    a stranded ``.bak_*`` (DATA) warns + is MOVED into ``archive_<ts>_recovered/``
+    (never deleted); aged ``.tmp_*`` staging (re-creatable scratch) is swept;
+    fresh ``.tmp_*`` and every ``archive_*`` dir are left untouched."""
+
+    def _outputs(self):
+        return {"Students": pd.DataFrame({"Name": ["Alice"]})}
+
+    def _orders(self):
+        return {"Students": ["Name"]}
+
+    @staticmethod
+    def _recovered_dirs(tmp_path):
+        return [
+            p
+            for p in tmp_path.iterdir()
+            if p.is_dir() and p.name.startswith("archive_") and p.name.endswith("_recovered")
+        ]
+
+    def test_stale_backup_is_archived_with_a_loud_warning(self, tmp_path, caplog):
+        loader = DataLoader(str(tmp_path))
+        stale_bak = tmp_path / ".bak_20200101_000000_aaaaaaaa"
+        stale_bak.mkdir()
+        (stale_bak / "Students.csv").write_text("pre-crash originals", encoding="utf-8")
+        aged = time.time() - (_STALE_BAK_MIN_AGE_SECONDS + 60)
+        os.utime(stale_bak, (aged, aged))
+
+        with caplog.at_level(logging.WARNING, logger="src.etl.loader"):
+            loader.save_all(self._outputs(), self._orders())
+
+        # Warned loudly that a previous run was interrupted.
+        assert any("interrupted mid-commit" in r.message for r in caplog.records)
+        # Moved aside — never deleted: the bytes survive inside archive_<ts>_recovered/.
+        assert not stale_bak.exists()
+        recovered = self._recovered_dirs(tmp_path)
+        assert len(recovered) == 1
+        moved = recovered[0] / stale_bak.name / "Students.csv"
+        assert moved.read_text(encoding="utf-8") == "pre-crash originals"
+        # And this run's write still committed normally.
+        assert (tmp_path / "Students.csv").exists()
+
+    def test_fresh_backup_is_left_alone(self, tmp_path, caplog):
+        # A young .bak_ may be a LIVE concurrent run's in-flight backup — moving
+        # it would break that run's rollback (restore-before-cleanup invariant).
+        loader = DataLoader(str(tmp_path))
+        fresh_bak = tmp_path / ".bak_20260716_120000_bbbbbbbb"
+        fresh_bak.mkdir()
+        (fresh_bak / "Students.csv").write_text("live in-flight backup", encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="src.etl.loader"):
+            loader.save_all(self._outputs(), self._orders())
+
+        assert fresh_bak.exists()
+        assert (fresh_bak / "Students.csv").read_text(encoding="utf-8") == "live in-flight backup"
+        assert not any("interrupted mid-commit" in r.message for r in caplog.records)
+        assert self._recovered_dirs(tmp_path) == []
+
+    def test_aged_tmp_swept_and_fresh_tmp_untouched(self, tmp_path, caplog):
+        loader = DataLoader(str(tmp_path))
+        old_tmp = tmp_path / ".tmp_old_leftover"
+        old_tmp.mkdir()
+        (old_tmp / "Staged.csv").write_text("abandoned staging", encoding="utf-8")
+        aged = time.time() - (_STALE_TMP_MAX_AGE_DAYS + 1) * 86400
+        os.utime(old_tmp, (aged, aged))
+        fresh_tmp = tmp_path / ".tmp_fresh_leftover"
+        fresh_tmp.mkdir()
+
+        with caplog.at_level(logging.INFO, logger="src.etl.loader"):
+            loader.save_all(self._outputs(), self._orders())
+
+        # Aged staging is deleted (pure scratch) and the removal is logged.
+        assert not old_tmp.exists()
+        assert any("Removed abandoned staging directory .tmp_old_leftover" in r.message for r in caplog.records)
+        # A fresh .tmp_ may belong to a live concurrent run — left alone.
+        assert fresh_tmp.exists()
+
+    def test_archive_dirs_are_never_touched(self, tmp_path):
+        loader = DataLoader(str(tmp_path))
+        archive = tmp_path / "archive_20200101_000000"
+        archive.mkdir()
+        (archive / "Family.csv").write_text("archived data", encoding="utf-8")
+        ancient = time.time() - 400 * 86400
+        os.utime(archive, (ancient, ancient))
+
+        loader.save_all(self._outputs(), self._orders())
+
+        # Even an ancient archive dir is DATA — never swept, moved, or renamed.
+        assert (archive / "Family.csv").read_text(encoding="utf-8") == "archived data"
+
+    def test_reconcile_hiccup_never_blocks_the_write(self, tmp_path, caplog):
+        """A failure moving the stale backup aside is logged at ERROR and skipped —
+        cleaning up an OLD run must never block THIS run's commit, and the stale
+        backup's data stays in place (nothing deleted)."""
+        loader = DataLoader(str(tmp_path))
+        stale_bak = tmp_path / ".bak_stale"
+        stale_bak.mkdir()
+        (stale_bak / "Students.csv").write_text("pre-crash originals", encoding="utf-8")
+        aged = time.time() - (_STALE_BAK_MIN_AGE_SECONDS + 60)
+        os.utime(stale_bak, (aged, aged))
+
+        real = os.replace
+
+        def deny_bak_move(src, dst):
+            if Path(src).name.startswith(".bak_"):
+                raise OSError("simulated lock on the stale backup dir")
+            return real(src, dst)
+
+        with (
+            caplog.at_level(logging.ERROR, logger="src.etl.loader"),
+            patch("src.etl.loader.os.replace", side_effect=deny_bak_move),
+        ):
+            loader.save_all(self._outputs(), self._orders())
+
+        assert any("Could not move leftover backup" in r.message for r in caplog.records)
+        # The run still committed; the stale backup's bytes were never deleted.
+        assert (tmp_path / "Students.csv").exists()
+        assert (stale_bak / "Students.csv").read_text(encoding="utf-8") == "pre-crash originals"
 
 
 class TestDetectStaleOutputs:

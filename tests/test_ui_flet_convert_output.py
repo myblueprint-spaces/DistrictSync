@@ -26,12 +26,17 @@ from src.ui_flet import convert_output
 from src.ui_flet.convert_output import (
     DeliverReadiness,
     can_run_convert,
+    district_mismatch_note,
     freshness_fact,
+    interaction_state,
+    missing_files_copy,
     newest_output_csv_mtime_iso,
     open_folder,
     output_csvs_present,
     output_dir_is_set,
     resolved_output_caption,
+    setup_first_copy,
+    show_setup_first_card,
     standalone_deliver_state,
 )
 
@@ -219,3 +224,141 @@ class TestStandaloneDeliverState:
         # Nothing to deliver dominates — don't nag about a credential for zero files.
         state = standalone_deliver_state(sftp_configured=True, credential_present=False, csvs_present=False)
         assert state is DeliverReadiness.HIDDEN
+
+
+class TestResolvedOutputCaptionModeAware:
+    """0035 W3b: the unset-output prompt is honest about WHICH surface owns the fix.
+
+    Post-setup the fix lives on the graduated Settings scroll; pre-setup there IS no
+    Settings scroll yet — the Setup wizard owns the folder, so the caption routes there.
+    A SET output folder renders the normal caption in either mode.
+    """
+
+    def test_unset_pre_setup_routes_to_the_wizard(self) -> None:
+        caption = resolved_output_caption("", setup_completed=False)
+        assert caption == "Finish setup first — the Setup wizard will set your output folder."
+
+    def test_unset_post_setup_keeps_the_settings_route(self) -> None:
+        caption = resolved_output_caption("", setup_completed=True)
+        assert "Set your output folder in Settings first" in caption
+
+    def test_set_ignores_the_mode_axis(self) -> None:
+        # A known folder is a known folder — the mode only matters for the unset prompt.
+        for completed in (True, False):
+            caption = resolved_output_caption("/out", setup_completed=completed)
+            assert "Files will be written to /out" in caption
+
+    def test_default_mode_is_post_setup(self) -> None:
+        # Back-compat: existing call sites that never pass the kwarg keep the old copy.
+        assert resolved_output_caption("") == resolved_output_caption("", setup_completed=True)
+
+
+class TestShowSetupFirstCard:
+    """The pre-setup routed-card gate (0035 W3b) — nag only when Setup genuinely owns the fix."""
+
+    def test_pre_setup_with_nothing_saved_shows(self) -> None:
+        assert show_setup_first_card(setup_completed=False, output_dir_set=False, district_saved=False) is True
+
+    def test_pre_setup_missing_output_shows(self) -> None:
+        assert show_setup_first_card(setup_completed=False, output_dir_set=False, district_saved=True) is True
+
+    def test_pre_setup_missing_district_shows(self) -> None:
+        assert show_setup_first_card(setup_completed=False, output_dir_set=True, district_saved=False) is True
+
+    def test_pre_setup_with_essentials_in_place_stays_quiet(self) -> None:
+        # A partially-set-up install whose district + output folder already work keeps the
+        # usable form un-nagged — blocking it behind wizard completion would be a regression.
+        assert show_setup_first_card(setup_completed=False, output_dir_set=True, district_saved=True) is False
+
+    def test_completed_setup_never_shows(self) -> None:
+        for output_set in (True, False):
+            for district in (True, False):
+                assert (
+                    show_setup_first_card(setup_completed=True, output_dir_set=output_set, district_saved=district)
+                    is False
+                )
+
+
+class TestSetupFirstCopy:
+    def test_copy_is_calm_and_jargon_free(self) -> None:
+        title, body = setup_first_copy()
+        assert title == "Finish setup first"
+        assert "district" in body and "folders" in body
+        for jargon in ("SFTP", "GDE", "config", "sis_type"):
+            assert jargon not in title
+            assert jargon not in body
+
+    def test_body_stands_alone_without_the_routed_button(self) -> None:
+        # Defensive mounts render the card without "Open Setup" — the body must not
+        # point at a button that may be absent.
+        _title, body = setup_first_copy()
+        assert "below" not in body.lower()
+        assert "button" not in body.lower()
+
+
+class TestDistrictMismatchNote:
+    """The amber saved-vs-picked heads-up — fires ONLY on a real override (0035 W3b)."""
+
+    def test_matching_pick_is_quiet(self, tmp_path: Path) -> None:
+        assert district_mismatch_note("myedbc", "myedbc", config_dir=tmp_path) is None
+
+    def test_no_pick_is_quiet(self, tmp_path: Path) -> None:
+        assert district_mismatch_note(None, "myedbc", config_dir=tmp_path) is None
+        assert district_mismatch_note("", "myedbc", config_dir=tmp_path) is None
+
+    def test_no_saved_district_is_quiet(self, tmp_path: Path) -> None:
+        # A fresh install has nothing saved — an explicit pick is just the pick, no nag.
+        assert district_mismatch_note("myedbc", None, config_dir=tmp_path) is None
+        assert district_mismatch_note("myedbc", "   ", config_dir=tmp_path) is None
+
+    def test_whitespace_variants_of_the_same_district_are_quiet(self, tmp_path: Path) -> None:
+        assert district_mismatch_note(" myedbc ", "myedbc", config_dir=tmp_path) is None
+
+    def test_override_names_the_saved_district(self, tmp_path: Path) -> None:
+        # config_dir is an empty dir → friendly_district_name falls back to the raw id
+        # (TOTAL, hermetic — no dependency on the repo's real mapping files).
+        note = district_mismatch_note("sd40myedbc", "sd99custom", config_dir=tmp_path)
+        assert note is not None
+        assert "differs from your saved district" in note
+        assert "sd99custom" in note
+
+    def test_note_names_the_saved_not_the_picked(self, tmp_path: Path) -> None:
+        # The note explains what the NIGHTLY sync uses — the pick is already on screen.
+        note = district_mismatch_note("sd40myedbc", "sd99custom", config_dir=tmp_path)
+        assert note is not None
+        assert "sd40myedbc" not in note
+
+
+class TestMissingFilesCopy:
+    def test_heading_softened_and_reassurance_is_honest(self) -> None:
+        heading, reassurance = missing_files_copy()
+        # The old alarm phrasing is gone; the new heading observes calmly.
+        assert "Expected files not found" not in heading
+        assert heading == "Not found yet — your district's extracts usually include:"
+        # The reassurance states the real consequence: skip-on-empty, never guessed data.
+        assert reassurance == "You can still convert — anything a missing file feeds is skipped, not guessed."
+
+
+class TestInteractionState:
+    """The busy/idle disabled table (0035 W3b) — the view paints exactly this."""
+
+    def test_running_disables_everything_even_with_gates_ok(self) -> None:
+        state = interaction_state(gates_ok=True, job_running=True)
+        assert state.convert_disabled is True  # no double-start — mirrors the JobRunner guard
+        assert state.inputs_disabled is True  # no mid-run edits desynchronizing the form
+
+    def test_running_with_gates_unmet_also_disables_everything(self) -> None:
+        state = interaction_state(gates_ok=False, job_running=True)
+        assert state.convert_disabled is True
+        assert state.inputs_disabled is True
+
+    def test_idle_with_gates_ok_enables_everything(self) -> None:
+        state = interaction_state(gates_ok=True, job_running=False)
+        assert state.convert_disabled is False
+        assert state.inputs_disabled is False
+
+    def test_idle_with_gates_unmet_disables_only_the_button(self) -> None:
+        # The inputs stay editable — that's HOW the admin satisfies the gates.
+        state = interaction_state(gates_ok=False, job_running=False)
+        assert state.convert_disabled is True
+        assert state.inputs_disabled is False

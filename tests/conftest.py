@@ -62,6 +62,26 @@ def real_profile_baseline() -> dict[str, tuple[Path, int | None]]:
     return _REAL_PROFILE_BASELINE
 
 
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Session-END real-profile assertion (0029 deferral, closed 2026-07-16).
+
+    The mid-suite canary (tests/test_isolation_canary.py) can miss a fixture leak
+    in any test scheduled AFTER it; this teardown re-checks the byte-untouched
+    invariant once ALL tests have run. A drift marks the whole session failed.
+    """
+    drifted = [
+        name
+        for name, (path, baseline_mtime) in _REAL_PROFILE_BASELINE.items()
+        if _snapshot_mtime(path) != baseline_mtime
+    ]
+    if drifted:
+        session.exitstatus = 1
+        print(
+            f"\nREAL-PROFILE LEAK: {', '.join(drifted)} in {_REAL_PROFILE_DIR} changed during the "
+            "test session — a fixture failed to isolate the user profile (see tests/conftest.py)."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Autouse isolation — redirect every user-profile write into a tmp dir + guard
 # the real one.

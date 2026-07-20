@@ -7,31 +7,169 @@ rather than cryptic KeyErrors deep in the pipeline.
 
 import logging
 import re
-from typing import Any, Literal, Optional, Union
+from collections.abc import Iterable
+from typing import Any, Literal, Optional, Protocol, Union, cast
 
+import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------
-# Field mapping variants — the polymorphic heart of the config
+# Allowlist of YAML-callable transform functions (security: prevents
+# arbitrary method invocation via getattr on user-supplied config).
+# Single source of truth — enforced at CONFIG LOAD by
+# ``EntityConfig.validate_fields`` and referenced by
+# ``BaseTransformer.ALLOWED_TRANSFORMS`` for the defensive runtime check
+# (subclass-overridable there, so tests/extensions can allow extra names).
+# -----------------------------------------------------------------------
+ALLOWED_TRANSFORMS: frozenset[str] = frozenset(
+    {
+        "grade_to_ceds",
+        "map_role",
+        "truncate_name",
+        "normalize_iso_date",
+    }
+)
+
+
+# -----------------------------------------------------------------------
+# Structural protocols for the field-apply Strategy. The config layer
+# depends on these ABSTRACTIONS only — never on the ETL classes — so the
+# dependency direction stays etl -> config (SOLID: DIP).
 # -----------------------------------------------------------------------
 
 
-class FieldTransform(BaseModel):
+class TransformContextLike(Protocol):
+    """The slice of ``TransformContext`` the field Strategies read."""
+
+    school_year: int
+    academic_start: str
+    academic_end: str
+
+
+class FieldApplyHost(Protocol):
+    """The transformer surface the field Strategies call back into.
+
+    Structurally satisfied by ``BaseTransformer``: the allowlist for the
+    defensive runtime transform check (subclass-overridable), the transform
+    methods themselves (resolved by name via ``getattr``), the row-resilient
+    per-row applicator, and the Class-ID generator.
+    """
+
+    ALLOWED_TRANSFORMS: frozenset[str]
+
+    def generate_class_id(self, row: pd.Series, mt_id_col: str, append_year: bool, context: Any) -> str: ...
+
+    def _apply_transform_resilient(
+        self, series: pd.Series, func: Any, entity: str, tgt_field: str, context: Any
+    ) -> list[Any]: ...
+
+
+# -----------------------------------------------------------------------
+# Field mapping variants — the polymorphic heart of the config.
+# Each structured variant is a Strategy: ``.apply(...)`` produces exactly
+# the value the generic field-map loop assigns for that variant, so
+# ``BaseTransformer.apply_field_map`` is a thin typed dispatch with no
+# dict sniffing.
+# -----------------------------------------------------------------------
+
+
+class ConfiguredField(BaseModel):
+    """Common base of all structured (dict-shaped) field-mapping variants.
+
+    Subclasses MUST implement :meth:`apply` — the Strategy the generic
+    field-map loop dispatches to. Fail-loud: a future variant that forgets
+    to implement it raises instead of silently blanking a column.
+    """
+
+    def apply(
+        self,
+        working: pd.DataFrame,
+        host: FieldApplyHost,
+        tgt_field: str,
+        entity: str,
+        context: TransformContextLike,
+    ) -> Any:
+        """Return the value ``apply_field_map`` assigns to ``result[tgt_field]``."""
+        raise NotImplementedError(f"{type(self).__name__} must implement apply()")
+
+
+class ConfigCarrierField(ConfiguredField):
+    """A variant that CONFIGURES dedicated machinery elsewhere (email
+    generation, class naming, id/role pairing, active-status detection)
+    rather than producing a column in the generic loop.
+
+    In the generic loop these yield an intended blank (``pd.NA``) — exactly
+    what the legacy dict-sniffing produced for them (no ``column`` key to
+    read). The entity transformers that consume them fill the real column
+    BEFORE ``apply_field_map`` runs, so the loop's already-present check
+    skips them on the normal path.
+    """
+
+    def apply(
+        self,
+        working: pd.DataFrame,
+        host: FieldApplyHost,
+        tgt_field: str,
+        entity: str,
+        context: TransformContextLike,
+    ) -> Any:
+        return pd.NA
+
+
+class FieldTransform(ConfiguredField):
     """Column mapping with an optional transform function (e.g., grade_to_ceds)."""
 
     column: str
     transform: str = ""
 
+    def apply(
+        self,
+        working: pd.DataFrame,
+        host: FieldApplyHost,
+        tgt_field: str,
+        entity: str,
+        context: TransformContextLike,
+    ) -> Any:
+        column_name = self.column.lower()
+        if column_name not in working.columns:
+            # Intended blank: the config column is absent from the frame.
+            # NOT an error — the caller does not record it.
+            return pd.NA
+        series = working[column_name]
+        if not self.transform:
+            return series
+        if self.transform not in host.ALLOWED_TRANSFORMS:
+            # Defensive runtime check. Config load already rejects unknown
+            # names (EntityConfig.validate_fields), so on the pipeline path
+            # this is unreachable; direct callers get the legacy column-level
+            # error (caught + recorded by apply_field_map, never raised out).
+            raise ValueError(
+                f"Unknown transform '{self.transform}' for field '{tgt_field}'. "
+                f"Allowed: {sorted(host.ALLOWED_TRANSFORMS)}"
+            )
+        func = getattr(host, self.transform)
+        return host._apply_transform_resilient(series, func, entity, tgt_field, context)
 
-class FieldFixedValue(BaseModel):
+
+class FieldFixedValue(ConfiguredField):
     """Fixed literal value injected into every row."""
 
     value: str
 
+    def apply(
+        self,
+        working: pd.DataFrame,
+        host: FieldApplyHost,
+        tgt_field: str,
+        entity: str,
+        context: TransformContextLike,
+    ) -> Any:
+        return self.value
 
-class FieldAcademicYear(BaseModel):
+
+class FieldAcademicYear(ConfiguredField):
     """Date resolved from the computed academic year bounds."""
 
     use_academic_year: bool = True
@@ -43,12 +181,45 @@ class FieldAcademicYear(BaseModel):
             raise ValueError("When use_academic_year is false, a 'value' must be provided")
         return self
 
+    def apply(
+        self,
+        working: pd.DataFrame,
+        host: FieldApplyHost,
+        tgt_field: str,
+        entity: str,
+        context: TransformContextLike,
+    ) -> Any:
+        # An explicit value wins (mirrors the legacy loop, where a raw dict
+        # carrying a 'value' key hit the fixed-value branch first); otherwise
+        # the field resolves from the computed academic-year bounds.
+        if self.value is not None:
+            return self.value
+        return context.academic_start if tgt_field == "Start Date" else context.academic_end
 
-class FieldAppendYear(BaseModel):
+
+class FieldAppendYear(ConfiguredField):
     """Column whose value gets the school year appended (e.g., MTID_2025)."""
 
     column: str
     append_year_to_id: bool = True
+
+    def apply(
+        self,
+        working: pd.DataFrame,
+        host: FieldApplyHost,
+        tgt_field: str,
+        entity: str,
+        context: TransformContextLike,
+    ) -> Any:
+        col_name = self.column.lower()
+        if not self.append_year_to_id:
+            # Legacy fallthrough: append disabled reads the column directly
+            # (absent column → intended blank, not recorded).
+            return working[col_name] if col_name in working.columns else pd.NA
+        return working.apply(
+            lambda row: host.generate_class_id(row, mt_id_col=col_name, append_year=True, context=context),
+            axis=1,
+        )
 
 
 class EmailDerivedDate(BaseModel):
@@ -70,7 +241,7 @@ class EmailDerivedDate(BaseModel):
     date_format: str = Field(min_length=1)
 
 
-class FieldEmailFormat(BaseModel):
+class FieldEmailFormat(ConfigCarrierField):
     """Template-based email generation using row fields.
 
     ``sanitize`` (opt-in, default off) reduces each substituted string value to
@@ -88,7 +259,7 @@ class FieldEmailFormat(BaseModel):
     derived_dates: dict[str, EmailDerivedDate] = Field(default_factory=dict)
 
 
-class FieldNameConfig(BaseModel):
+class FieldNameConfig(ConfigCarrierField):
     """Class Name config — references multiple source columns."""
 
     primary_teacher_flag: str = Field(alias="primary teacher flag", default="")
@@ -99,14 +270,14 @@ class FieldNameConfig(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class FieldIdRolePair(BaseModel):
+class FieldIdRolePair(ConfigCarrierField):
     """Paired student/staff ID columns for User ID or Role resolution."""
 
     student_id_col: str
     staff_id_col: str
 
 
-class FieldEnrollStatus(BaseModel):
+class FieldEnrollStatus(ConfigCarrierField):
     """Active-student detection overrides for the Students ``EnrollStatus`` field.
 
     All keys are optional — a bare ``null`` keeps MyEd BC defaults (status
@@ -180,6 +351,24 @@ def classify_field(raw: Any) -> FieldMapping:
     return raw  # type: ignore[return-value]
 
 
+def ensure_field_mapping(raw: Any) -> FieldMapping:
+    """Normalize one field_map value to its typed variant — idempotent.
+
+    The single boundary through which apply-time consumers accept EITHER an
+    already-typed variant (the pipeline's validated ``MappingConfig``) OR a raw
+    YAML-shaped value (direct callers and tests). An already-typed value passes
+    through by identity — it must never re-enter :func:`classify_field`, whose
+    non-dict fallback would stringify a model instance (the re-entry hazard).
+    """
+    if raw is None or isinstance(raw, str):
+        return raw
+    if isinstance(raw, ConfiguredField):
+        # Every concrete ConfiguredField subclass is a FieldMapping member;
+        # the base class itself is never instantiated (apply() raises).
+        return cast(FieldMapping, raw)
+    return classify_field(raw)
+
+
 # -----------------------------------------------------------------------
 # Entity and top-level config
 # -----------------------------------------------------------------------
@@ -209,6 +398,14 @@ class EntityConfig(BaseModel):
     # Optional config-driven row filters applied at transform entry (before
     # apply_field_map). Empty = keep every row (default, back-compatible).
     row_filters: list[RowFilter] = Field(default_factory=list)
+    # Optional overrides for AUXILIARY source columns an entity reads but never
+    # emits (no output-key counterpart in field_map — e.g. StudentCourses'
+    # full-course-code / section / DL-start-date inputs). Keys are the
+    # transformer's documented logical role names; values are the district's
+    # source column names. Empty = the transformer's MyEd BC defaults apply
+    # (default, back-compatible). Output-keyed source columns are configured
+    # through field_map entries instead (string or {column: ...}).
+    source_columns: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -227,10 +424,24 @@ class EntityConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_fields(self):
-        """Classify and validate each field_map entry."""
+        """Classify and validate each field_map entry.
+
+        Also enforces :data:`ALLOWED_TRANSFORMS` at CONFIG LOAD (fail-fast):
+        an unknown ``transform:`` name is a config error and must never reach
+        the transform loop. The error names the field, the bad name, and the
+        allowed set; Pydantic's error location supplies the entity name when
+        raised through ``MappingConfig`` (``mappings.<Entity>``).
+        """
         validated = {}
         for key, raw in self.field_map.items():
-            validated[key] = classify_field(raw)
+            spec = ensure_field_mapping(raw)
+            if isinstance(spec, FieldTransform) and spec.transform and spec.transform not in ALLOWED_TRANSFORMS:
+                raise ValueError(
+                    f"Unknown transform '{spec.transform}' for field '{key}'. "
+                    f"Allowed transforms: {sorted(ALLOWED_TRANSFORMS)}. "
+                    "Fix this entity's field_map in the mapping YAML."
+                )
+            validated[key] = spec
         self.field_map = validated
         return self
 
@@ -344,6 +555,22 @@ class GlobalConfig(BaseModel):
         return self
 
 
+def filter_enabled_entities(names: Iterable[str], enabled: Optional[Iterable[str]]) -> list[str]:
+    """Apply the ``enabled_entities`` inclusion contract to an ordered entity list.
+
+    THE single spelling of the selection rule (SSOT): an empty/None ``enabled``
+    means ALL names pass (back-compat — mirror of the ``entity_order`` gotcha:
+    both default to ``[]``, never ``None``, at the model layer); otherwise only
+    names in the enabled set pass, preserving input order. Used by
+    :meth:`MappingConfig.active_entities` (model-shaped callers) and the raw-dict
+    pipeline boundary (``src.etl.pipeline.configured_entity_order``).
+    """
+    if not enabled:
+        return list(names)
+    enabled_set = set(enabled)
+    return [name for name in names if name in enabled_set]
+
+
 class MappingConfig(BaseModel):
     """Root config model — validated representation of the YAML mapping file."""
 
@@ -355,15 +582,29 @@ class MappingConfig(BaseModel):
 
     @model_validator(mode="after")
     def check_required_entities(self):
-        """Log which standard entities are present — non-standard entities are valid."""
+        """LOG (never raise) which standard rostering entities are absent.
+
+        A partial config is legitimate (tiers like ``mbponly`` run without the
+        rostering entities, and ``enabled_entities`` governs what is actually
+        produced), so a missing standard entity is a load-time WARNING — an
+        operator hand-rolling a new YAML sees the gap immediately instead of
+        discovering a missing CSV at upload. Non-standard entities (CourseInfo,
+        StudentCourses, StudentAttendance, ...) are valid and logged at DEBUG
+        only. (Previously this set private attributes nothing read — dead code;
+        now it actually emits the log its docstring promised.)
+        """
         standard = {"Students", "Staff", "Family", "Classes", "Enrollments"}
         present = set(self.mappings.keys())
-        extra = present - standard
         missing = standard - present
+        extra = present - standard
         if missing:
-            self._missing_standard_entities = missing
+            logger.warning(
+                f"Mapping config '{self.sis}' does not define standard rostering entities "
+                f"{sorted(missing)} (defined: {sorted(present)}). Valid for partial tiers — "
+                "enabled_entities decides output — but the SpacesEDU rostering upload needs all five."
+            )
         if extra:
-            self._extra_entities = extra
+            logger.debug(f"Mapping config '{self.sis}' defines non-standard entities: {sorted(extra)}")
         return self
 
     @model_validator(mode="after")
@@ -376,12 +617,7 @@ class MappingConfig(BaseModel):
         configs that forget to set them fail loudly so they don't silently
         get BC defaults.
         """
-        enabled = (
-            set(self.global_config.enabled_entities)
-            if self.global_config.enabled_entities
-            else set(self.mappings.keys())
-        )
-        if "Classes" not in enabled or "Classes" not in self.mappings:
+        if "Classes" not in self.active_entities():
             return self
         gc = self.global_config
         missing = [name for name in ("academic_start_month_day", "academic_end_month_day") if getattr(gc, name) is None]
@@ -399,6 +635,19 @@ class MappingConfig(BaseModel):
     def get_entity(self, name: str) -> Optional[EntityConfig]:
         return self.mappings.get(name)
 
+    def active_entities(self) -> set[str]:
+        """Entity names this config will actually produce (→ which CSVs are emitted).
+
+        THE single accessor for the ``enabled_entities`` selection: empty
+        ``enabled_entities`` = ALL defined mappings (back-compat), otherwise the
+        enabled subset — always intersected with the DEFINED ``mappings`` so an
+        enabled-but-undefined name (possible under ``_base`` inheritance or a
+        partner-only entity like ``StudentAttendance``) never reports as
+        produced (the pipeline gates on ``entity in mappings`` too). Ordering is
+        a separate concern — see ``src.etl.pipeline.configured_entity_order``.
+        """
+        return set(filter_enabled_entities(self.mappings, self.global_config.enabled_entities))
+
     def to_raw_dict(self) -> dict[str, Any]:
         """Return the full raw dict for backward compatibility with the pipeline.
 
@@ -415,6 +664,8 @@ class MappingConfig(BaseModel):
                 entry["headers"] = dict(entity_cfg.headers)
             if entity_cfg.row_filters:
                 entry["row_filters"] = [rf.model_dump() for rf in entity_cfg.row_filters]
+            if entity_cfg.source_columns:
+                entry["source_columns"] = dict(entity_cfg.source_columns)
             mappings_raw[entity_name] = entry
 
         global_raw: dict[str, Any] = {

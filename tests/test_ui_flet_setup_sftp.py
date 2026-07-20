@@ -201,6 +201,58 @@ class TestSaveWritesKeyringExactlyOnce:
         captured: list = []
         tree = _mount(monkeypatch, _configured_cfg(), captured)
         _textfield_by_label(tree, "Password").value = "typed-pw"
-        _button_by_content(tree, "Save SFTP credentials").on_click(None)
+        _button_by_content(tree, "Save delivery settings").on_click(None)
 
         store_spy.assert_called_once_with("typed-pw")
+
+
+def _has_text(tree, exact: str) -> bool:
+    return any(getattr(c, "value", None) == exact for c in _iter_controls(tree))
+
+
+class TestNonNumericPortMessage:
+    """A port typo must get the fixed PORT error at BOTH sites (Test + Save) — it used to fall
+    into the same ``except ValueError`` as the host-allowlist check and misreport as
+    "That SFTP host isn't allowed"."""
+
+    def test_port_typo_on_test_shows_port_error_not_host_error(self, monkeypatch):
+        test_spy = MagicMock()
+        monkeypatch.setattr(SFTPUploader, "test_connection", test_spy)
+
+        tree = _mount(monkeypatch, _configured_cfg(), [])
+        _textfield_by_label(tree, "Port").value = "not-a-port"
+        _button_by_content(tree, "Test connection").on_click(None)
+
+        assert _has_text(tree, "That port isn't a number")
+        assert _has_text(tree, "The port must be a number — SpacesEDU delivery usually uses 22.")
+        assert not _has_text(tree, "That SFTP host isn't allowed")
+        test_spy.assert_not_called()  # no connection attempt with an unparseable port
+
+    def test_port_typo_on_save_shows_port_error_and_stores_nothing(self, monkeypatch):
+        store_spy = MagicMock()
+        monkeypatch.setattr(SFTPUploader, "store_password", store_spy)
+
+        tree = _mount(monkeypatch, _configured_cfg(), [])
+        _textfield_by_label(tree, "Password").value = "typed-pw"
+        _textfield_by_label(tree, "Port").value = "22a"
+        _button_by_content(tree, "Save delivery settings").on_click(None)
+
+        assert _has_text(tree, "That port isn't a number")
+        assert not _has_text(tree, "That SFTP host isn't allowed")
+        store_spy.assert_not_called()  # nothing persisted on a blocked Save
+
+    def test_disallowed_host_on_test_still_shows_the_host_error(self, monkeypatch):
+        # The host-allowlist message survives the split — pinned at the same site.
+        test_spy = MagicMock()
+        monkeypatch.setattr(SFTPUploader, "test_connection", test_spy)
+
+        tree = _mount(monkeypatch, _configured_cfg(), [])
+        host_dropdown = next(
+            d for d in _iter_controls(tree) if isinstance(d, ft.Dropdown) and (d.label or "") == "SFTP host (SpacesEDU)"
+        )
+        host_dropdown.value = "evil.example.com"
+        _button_by_content(tree, "Test connection").on_click(None)
+
+        assert _has_text(tree, "That SFTP host isn't allowed")
+        assert not _has_text(tree, "That port isn't a number")
+        test_spy.assert_not_called()

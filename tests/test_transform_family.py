@@ -91,6 +91,43 @@ class TestFamilyTransform:
         for field in family_mapping["field_map"]:
             assert field in result.columns, f"Missing expected output column: {field}"
 
+    def test_contacts_filtered_to_active_roster(self, emergency_contact_df, family_mapping, global_config, raw_data):
+        """Zero-orphan invariant: a withdrawn (non-rostered) student's contacts are
+        dropped; active students' contacts are kept.
+
+        The fixture has contacts for S001 (x2), S002, S003, S004 — publishing a
+        roster without S002 must drop exactly Robert's row.
+        """
+        students_mapping = global_config["mappings"]["Students"]
+        # Run Students first (registry order in the real pipeline) with S002
+        # withdrawn so the published roster excludes them.
+        demo = pd.DataFrame(
+            {
+                "student number": ["S001", "S002", "S003", "S004"],
+                "legal first name": ["Alice", "Bob", "Charlie", "Diana"],
+                "legal surname": ["Smith", "Jones", "Brown", "White"],
+                "grade": ["3", "5", "7", "10"],
+                "school number": ["100", "100", "100", "200"],
+                "homeroom": ["A1", "A1", "B2", "C3"],
+                "enrolment status": ["Active", "Withdrawn", "Active", "Active"],
+            }
+        )
+        self.transformer.transform(demo, students_mapping, "Students", raw_data, global_config)
+        result = self.transformer.transform(emergency_contact_df, family_mapping, "Family", raw_data, global_config)
+        assert set(result["Student User ID"]) == {"S001", "S003", "S004"}
+        assert "Robert" not in set(result["First Name"])
+        assert len(result[result["Student User ID"] == "S001"]) == 2  # both of S001's contacts kept
+
+    def test_missing_roster_keeps_all_contacts_and_warns(
+        self, emergency_contact_df, family_mapping, global_config, raw_data, caplog
+    ):
+        """Fail-safe (same convention as Enrollments): no published roster →
+        loud warning, contacts pass through unchanged (never filter-to-empty)."""
+        with caplog.at_level("WARNING"):
+            result = self.transformer.transform(emergency_contact_df, family_mapping, "Family", raw_data, global_config)
+        assert len(result) == len(emergency_contact_df)
+        assert any("[Family]" in r.message and "active_student_ids empty" in r.message for r in caplog.records)
+
     def test_row_filters_drop_non_matching_rows(self, global_config):
         """A config-driven row_filter (SD60 guardians-only) drops non-matching contacts."""
         df = pd.DataFrame(

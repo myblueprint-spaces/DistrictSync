@@ -10,9 +10,11 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from src.etl.transformers import naming as _naming
+from src.etl.transformers import sources as _sources
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.blended import BlendedClassDetector
-from src.etl.transformers.context import TransformContext
+from src.etl.transformers.context import ClassArtifacts, TransformContext
 from src.etl.transformers.registry import get_transformer
 
 
@@ -51,37 +53,25 @@ class DataTransformer:
     def academic_end(self, value: str):
         self._context.academic_end = value
 
+    # Read-only views over the Classes-published ClassArtifacts bundle (the
+    # setters are gone with the loose context fields — Classes is the sole
+    # writer, via ONE `context.class_artifacts` assignment).
+
     @property
     def homeroom_classes_df(self) -> pd.DataFrame:
         return self._context.homeroom_classes_df
-
-    @homeroom_classes_df.setter
-    def homeroom_classes_df(self, value):
-        self._context.homeroom_classes_df = value
 
     @property
     def blended_class_map(self) -> dict[str, str]:
         return self._context.blended_class_map
 
-    @blended_class_map.setter
-    def blended_class_map(self, value):
-        self._context.blended_class_map = value
-
     @property
     def blended_class_metadata(self) -> dict[str, dict[str, Any]]:
         return self._context.blended_class_metadata
 
-    @blended_class_metadata.setter
-    def blended_class_metadata(self, value):
-        self._context.blended_class_metadata = value
-
     @property
     def blended_teacher_map(self) -> dict[str, list[str]]:
         return self._context.blended_teacher_map
-
-    @blended_teacher_map.setter
-    def blended_teacher_map(self, value):
-        self._context.blended_teacher_map = value
 
     @property
     def data_errors(self) -> list[dict[str, Any]]:
@@ -103,7 +93,7 @@ class DataTransformer:
         school_year_naming: str = "end",
     ) -> int:
         """No in-code default for ``rollover_month_day`` — caller must pass it."""
-        return self._blended_detector.determine_school_year(
+        return BaseTransformer.determine_school_year(
             all_data, source_config, rollover_month_day, today, school_year_naming
         )
 
@@ -139,10 +129,10 @@ class DataTransformer:
         return BaseTransformer.normalize_source_config(source_config)
 
     def get_source_file(self, raw_data: dict[str, pd.DataFrame], source_config: Any, role: str) -> pd.DataFrame:
-        # Temporarily set raw_data on context for the base method
+        # Temporarily set raw_data on context for the shared sources helper
         old = self._context.raw_data
         self._context.raw_data = raw_data
-        result = self._blended_detector.get_source_file(self._context, source_config, role)
+        result = _sources.get_source_file(self._context, source_config, role)
         self._context.raw_data = old
         return result
 
@@ -162,7 +152,7 @@ class DataTransformer:
         course_title_col: str,
         section_letter_col: str,
     ) -> str:
-        return self._blended_detector.generate_class_name(
+        return _naming.generate_class_name(
             row, teacher_flag_col, teacher_last_col, course_title_col, section_letter_col, self._context
         )
 
@@ -201,6 +191,20 @@ class DataTransformer:
         raw_data: dict[str, pd.DataFrame],
         global_config: dict[str, Any],
     ) -> None:
+        """Run standalone blended detection and publish the maps as ClassArtifacts.
+
+        Test-facing shim: in the real pipeline ClassTransformer publishes the
+        bundle itself; here the detected maps are published (preserving any
+        already-published homeroom/class_info facts) so the read properties
+        above reflect the detection result.
+        """
         self._context.raw_data = raw_data
         self._context.global_config = global_config
-        self._blended_detector.detect(class_info_df, mapping, self._context)
+        detection = self._blended_detector.detect(class_info_df, mapping, self._context)
+        self._context.class_artifacts = ClassArtifacts(
+            homeroom_classes_df=self._context.homeroom_classes_df,
+            class_info_df=self._context.class_info_df,
+            blended_class_map=detection.class_map,
+            blended_class_metadata=detection.metadata,
+            blended_teacher_map=detection.teacher_map,
+        )

@@ -7,9 +7,8 @@ reads. The Mapping surface (``screens/mapping.py``) renders these to let an admi
 active mapping and SWITCH to a different pre-built one, seeing what each produces first.
 
 **Single-sourced with the pipeline.** ``output_labels`` is derived by the SAME empty-means-all
-rule the core uses to decide which entities (→ CSVs) a config emits (``MappingConfig``:
-``set(enabled_entities) if enabled_entities else set(mappings.keys())`` — empty/absent = all),
-ordered by ``home_status``'s rostering-then-myBlueprint entity tuples and labelled through the
+rule the core uses to decide which entities (→ CSVs) a config emits
+(``MappingConfig.active_entities()`` — enabled ∩ defined; empty/absent = all), ordered by ``home_status``'s rostering-then-myBlueprint entity tuples and labelled through the
 single-source ``home_status.ENTITY_LABELS`` map — so the Mapping summary can never disagree
 with Home / Run History / the actual output CSV set.
 
@@ -90,13 +89,10 @@ def summarize_config(sis_type: str, *, config_dir: Path | None = None) -> Config
     """
     try:
         cfg = load_config(sis_type, config_dir)
-        enabled = (
-            set(cfg.global_config.enabled_entities) if cfg.global_config.enabled_entities else set(cfg.mappings.keys())
-        )
-        # Intersect with the DEFINED entities: an entity enabled but absent from `mappings`
+        # `active_entities` is enabled ∩ DEFINED: an entity enabled but absent from `mappings`
         # produces no CSV (the pipeline's own enforcement gates on `entity in mappings` too),
         # so the summary reflects only what actually gets produced (truthful, never a phantom CSV).
-        produced = enabled & set(cfg.mappings.keys())
+        produced = cfg.active_entities()
         output_labels = _output_labels(produced)
         source_file_count = _source_file_count(cfg, produced)
         return ConfigSummary(

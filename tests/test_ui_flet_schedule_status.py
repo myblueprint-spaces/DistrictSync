@@ -249,6 +249,26 @@ class TestUnregisterPresentation:
         outcome = interpret_unregister(False, "ERROR: The system cannot find the file specified.")
         assert outcome.success_shaped is True  # already not scheduled — the desired end state holds
 
+    def test_absent_cron_entry_is_success_shaped_idempotent(self) -> None:
+        # crontab's own "the task doesn't exist" wording — a Linux Unregister of a missing
+        # entry must classify as the idempotent success shape, same as schtasks' phrasings.
+        outcome = interpret_unregister(False, "no crontab for jane")
+        assert outcome.success_shaped is True
+        assert outcome.headline == "No schedule was registered"
+
+    def test_no_crontab_to_remove_message_is_success_shaped(self) -> None:
+        # delete_cron's own benign message carries the same marker — belt and braces.
+        outcome = interpret_unregister(False, "No crontab to remove.")
+        assert outcome.success_shaped is True
+
     def test_real_failure_is_not_success_shaped(self) -> None:
         outcome = interpret_unregister(False, "ERROR: Access is denied.")
+        assert outcome.success_shaped is False
+
+    def test_failed_crontab_read_is_not_success_shaped(self) -> None:
+        # The fail-loud read abort (register/delete refuse to rewrite an unreadable crontab)
+        # is a REAL failure — it must never be mistaken for the absent-entry success shape.
+        outcome = interpret_unregister(
+            False, "Couldn't read the existing crontab (crontab -l exited 1): permission denied"
+        )
         assert outcome.success_shaped is False

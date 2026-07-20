@@ -104,7 +104,7 @@ Entity-specific transformers using Strategy Pattern with a registry:
 - `enrollments.py` — Student + teacher enrollment rows from schedule data; `.copy()` before mutations
 - `blended.py` — Blended class detection (same teacher/time with 2+ grade levels -> merged class). Falls back to deduplicated schedule when ClassInfo lacks required columns.
 - `course_info.py` — (myBlueprint+, opt-in) Course catalog from CourseInformation.txt; pattern-excludes K/early-grade/X/ATT codes; uses `apply_field_map` (config-driven).
-- `student_courses.py` — (myBlueprint+, opt-in) Per-student transcript joining course history + selection + info; retake/in-progress/passed dedup. NOTE: currently hardcodes source columns and bypasses its `field_map` for input — see **Configurable Columns** (tech debt).
+- `student_courses.py` — (myBlueprint+, opt-in) Per-student transcript joining course history + selection + info; retake/in-progress/passed dedup; config-driven source columns since W4b1 (field_map + optional `source_columns:` block).
 
 ### Loader (`src/etl/loader.py`)
 Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. `save_all()` uses atomic transactional writes: stages to `.tmp_<timestamp>/`, commits all on success, rolls back on failure.
@@ -176,7 +176,7 @@ An entity may declare `row_filters` (list of `{column, include: [...]}`) to keep
 
 - SFTP connections restricted to 3 known hosts via `validators.ALLOWED_SFTP_HOSTS`
 - Scheduler inputs (sis_type, task_name, paths, run_time) validated before subprocess/crontab calls
-- Transform dispatch uses `ALLOWED_TRANSFORMS` allowlist (prevents arbitrary method invocation via YAML)
+- Transform dispatch uses the `ALLOWED_TRANSFORMS` allowlist (prevents arbitrary method invocation via YAML) — enforced FAIL-FAST at config load since W4b2 (single source: `src/config/models.py`; `base.py` keeps a defensive subclass-overridable runtime reference)
 - Config file permissions set to 0o700/0o600 on Unix
 - `bandit` security scan in CI
 
@@ -191,6 +191,8 @@ Docs live in `docs/` (Markdown) — partner + developer guides, read by the harn
 - **Config inheritance** — district configs inherit from base via `_base` key with recursive deep merge and cycle detection
 - **Pydantic validation** — all YAML configs validated at startup before any ETL processing begins
 - **`to_raw_dict()`** — `MappingConfig.to_raw_dict()` converts validated config back to raw dicts for the transformer pipeline
+- **Enabled-entities selection** routes through `MappingConfig.active_entities()` / `models.filter_enabled_entities` — never respell `enabled_entities or []`
+- **Classes→Enrollments handoff** = the frozen `ClassArtifacts` bundle in `context.class_artifacts` (published once by Classes; Enrollments fails loud on absence)
 - **Entity order gotcha** — `global_config.entity_order` defaults to `[]` (not None). Use `global_config.get("entity_order") or list(mappings.keys())`
 
 ## Engineering Principles (non-negotiable)
@@ -207,7 +209,7 @@ The **full, reusable quality bar** — every dimension an implementation is held
 GDE/source column names MUST come from the district `field_map` — never hardcoded in transformer code. Districts rename columns, so the mapping layer is the single source of truth.
 - Map outputs via `BaseTransformer.apply_field_map(...)`. For direct column access, resolve the name from the entity's `field_map` with a sensible default — no inline literals like `record.get("final mark")`.
 - The ONLY sanctioned hardcoded column names are the shared structural join keys in `src/etl/column_names.py` (`SCHOOL_NUMBER`, `MASTER_TIMETABLE_ID`, …). Add new shared keys there, not as scattered literals.
-- Known debt: `student_courses.py` bypasses this (hardcodes ~10 source columns and ignores its `field_map` for input — the field_map there only sets output column order). Migrate to config-driven columns; see `docs/claugentic-DECISIONS.md`.
+- `student_courses.py` is config-driven since 2026-07-20 (W4b1): output-keyed reads resolve through the field_map, auxiliary inputs through the optional per-entity `source_columns:` block, and `OUTPUT_COLUMNS` derives from the field_map keys.
 
 ## Output Targeting (`enabled_entities`)
 

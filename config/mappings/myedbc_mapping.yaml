@@ -1,5 +1,5 @@
 # Version 1.9 - MyEducation BC GDE to Advanced CSV Mapping (Standard)
-version: 1.9
+version: '1.9'
 sis: MyEducationBC
 district_name: MyEducation BC (default)
 
@@ -237,8 +237,12 @@ mappings:
         value: ""
 
   # StudentCourses joins course history + selection + info. The transformer
-  # implements all logic; field_map values are ignored — the keys exist only
-  # to set the output column order. source_files order matters: course_info
+  # implements all logic; field_map KEYS set the output column order, and a
+  # value may override that output's SOURCE column (a plain string or
+  # {column: ...} — the {value: ""} placeholders below keep the MyEd BC
+  # defaults). Auxiliary inputs with no output counterpart are overridable
+  # via an entity-level `source_columns:` block (roles: full_course_code,
+  # section, dl_start_date). source_files order matters: course_info
   # is first so the pipeline's primary_df.empty check doesn't skip the entity
   # when history is empty (CourseInformation.txt is the most reliable source).
   StudentCourses:

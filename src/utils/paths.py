@@ -19,6 +19,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -61,6 +62,26 @@ def bundle_config_dir() -> Path:
 def bundle_mappings_dir() -> Path:
     """Directory containing built-in mapping YAMLs shipped with the binary."""
     return bundle_config_dir() / "mappings"
+
+
+def bundle_known_hosts_file() -> Path:
+    """Bundled SSH ``known_hosts`` file pinning the SpacesEDU SFTP host keys.
+
+    Read-only bundle asset (shipped via ``--add-data "config;config"``, so it
+    rides along with the mappings). The user-writable override lives at
+    :func:`user_known_hosts_file` and takes precedence.
+    """
+    return bundle_config_dir() / "known_hosts"
+
+
+def user_known_hosts_file() -> Path:
+    """Per-user ``known_hosts`` override for pinned SFTP host keys.
+
+    Mirrors the mappings hotfix path: a file dropped here wins over the bundled
+    :func:`bundle_known_hosts_file`, so host keys can be added or rotated on a
+    district server without shipping a new release.
+    """
+    return user_data_dir() / "known_hosts"
 
 
 def app_icon_path() -> Path:
@@ -196,7 +217,17 @@ def migrate_legacy_data_dir() -> bool:
         staging = Path(tempfile.mkdtemp(prefix=f"{new.name}.migrating-", dir=new.parent))
         # Copy the whole tree into staging; promote only when it fully succeeds.
         shutil.copytree(legacy, staging, dirs_exist_ok=True, copy_function=shutil.copy2)
-        os.replace(staging, new)
+        # Windows AV/indexers can briefly hold a freshly-written directory, failing
+        # the promote with a transient Access-denied — retry a couple of times
+        # before falling back (the fallback itself stays safe either way).
+        for attempt in range(3):
+            try:
+                os.replace(staging, new)
+                break
+            except PermissionError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.2 * (attempt + 1))
         staging = None  # promoted — must NOT be cleaned up in the except path
     except (OSError, shutil.Error) as exc:
         # `new` can exist here despite the entry guard: a concurrent process may

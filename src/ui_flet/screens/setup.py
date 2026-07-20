@@ -54,7 +54,7 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.config.loader import available_configs
-from src.scheduler import windows
+from src.scheduler import get_scheduler, windows
 from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
 from src.ui_flet import components, tokens
 from src.ui_flet.filepicker import (
@@ -87,12 +87,14 @@ from src.ui_flet.setup_flow import (
     derive_flow,
     downgrade_interrupt,
     finish_copy,
+    finish_needs_attention,
     finish_summary_rows,
     folders_save_note,
     is_skippable,
     next_step,
     prev_step,
     run_time_save_decision,
+    schedule_delivery_desync,
     sftp_reconcile_suffix,
     step_number,
     task_args_changed,
@@ -100,7 +102,13 @@ from src.ui_flet.setup_flow import (
     task_args_to_persisted,
 )
 from src.ui_flet.setup_gates import can_register_schedule, can_save_sftp
-from src.ui_flet.sftp_copy import sftp_form_differs_from_saved, sftp_test_copy
+from src.ui_flet.sftp_copy import (
+    PORT_ERROR_DETAIL,
+    PORT_ERROR_HEADLINE,
+    parse_port,
+    sftp_form_differs_from_saved,
+    sftp_test_copy,
+)
 from src.ui_flet.verdict import Verdict
 from src.utils.validators import ALLOWED_SFTP_HOSTS, validate_run_time
 
@@ -110,13 +118,27 @@ from src.utils.validators import ALLOWED_SFTP_HOSTS, validate_run_time
 _TRANSIENT_LOCATION_WARNING = (
     "Heads up: DistrictSync is running from a temporary location (like Downloads or Temp). "
     "If you move or delete it, the nightly sync will stop — move it to a permanent folder "
-    "and re-register."
+    "and schedule the nightly sync again."
 )
 
 # Calm fallbacks when an off-thread schedule worker itself raises (D5): the spinner + buttons
 # must ALWAYS be released, so the worker marshals one of these instead of stranding the UI.
-_WORKER_ERROR_REGISTER = "We couldn't run the schedule registration just now. Please try again."
-_WORKER_ERROR_UNREGISTER = "We couldn't run the schedule removal just now. Please try again."
+_WORKER_ERROR_REGISTER = "We couldn't set up the nightly sync just now. Please try again."
+_WORKER_ERROR_UNREGISTER = "We couldn't remove the nightly sync just now. Please try again."
+
+
+def _kick_probe_thread(page: ft.Page, work: Callable[[], None]) -> None:  # pragma: no cover - view glue
+    """Dispatch the schedule-readout probe worker off the UI thread.
+
+    Module-level SEAM (not a closure) so tests can stub the kick itself and run with
+    NO background probe thread at all: the readout probe is paint-then-refine glue,
+    never load-bearing for a test assertion, and an unstubbed kick raced the
+    render-smoke assertions (the 2026-07-15 flake). Behaviour is unchanged — the
+    suppress matches the old inline call (a dead page must never crash the build).
+    """
+    with contextlib.suppress(Exception):
+        page.run_thread(work)
+
 
 # The ONE inline run-time error (shared by the register flow and the Settings-Save run-time
 # persist, 0034 S3-b — single source so the two paths can never drift).
@@ -243,8 +265,10 @@ class _ScheduleHandle:
     direct handler, it first checks ``downgrade_interrupt`` and pauses on the explicit-choice
     dialog when a blank-password re-register would silently downgrade an unattended task. It
     returns a ``ReconcileOutcome`` — ``DISPATCHED`` when a re-register actually started,
-    ``INTERRUPTED`` when the choice dialog was shown instead — so the Save sites can paint an
-    honest note (never "updating…" when nothing was registered).
+    ``INTERRUPTED`` when the choice dialog was shown instead, ``BLOCKED`` when the register
+    flow early-returned without dispatching (e.g. an invalid run time, whose inline error it
+    paints) — so the Save sites can paint an honest note (never "updating…" when nothing was
+    registered).
     ``persist_run_time`` is the S3-b seam: persist a valid run-time edit as plain config when
     no schedule is registered (invalid → the section's inline error, nothing persisted).
     """
@@ -257,21 +281,37 @@ class _ScheduleHandle:
 # --------------------------------------------------------------------------- #
 # Entry: wizard while not completed, else the flat Settings scroll.            #
 # --------------------------------------------------------------------------- #
-def build_setup(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view glue
-    """Build the Setup surface — the first-run wizard, or the Settings page once completed."""
+def build_setup(
+    page: ft.Page,
+    *,
+    on_schedule_changed: Callable[[], None] | None = None,
+) -> ft.Control:  # pragma: no cover - Flet view glue
+    """Build the Setup surface — the first-run wizard, or the Settings page once completed.
+
+    ``on_schedule_changed`` (0032 T1 #8, shell-owned): fired after a CONFIRMED
+    register/unregister success so the shell can re-probe the rail's Setup attention
+    badge (probed once at boot, so it would otherwise stay stale until a restart).
+    Defensive ``None`` default — every caller without a badge to refresh is unchanged.
+    """
     cfg = AppConfig.load()
     root = ft.Column(spacing=22)
     if not cfg.has_completed_setup():
-        _mount_wizard(page, cfg, root)
+        _mount_wizard(page, cfg, root, on_schedule_changed=on_schedule_changed)
     else:
-        _mount_settings(page, cfg, root, transition_cue=False)
+        _mount_settings(page, cfg, root, transition_cue=False, on_schedule_changed=on_schedule_changed)
     return root
 
 
 # --------------------------------------------------------------------------- #
 # Wizard mode (D8).                                                            #
 # --------------------------------------------------------------------------- #
-def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pragma: no cover - Flet view glue
+def _mount_wizard(
+    page: ft.Page,
+    cfg: AppConfig,
+    root: ft.Column,
+    *,
+    on_schedule_changed: Callable[[], None] | None = None,
+) -> None:  # pragma: no cover - Flet view glue
     """Render the five-step first-run wizard into ``root`` (resume derived from real state)."""
     available = available_configs()
 
@@ -366,7 +406,7 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
         # marks the install set up. Then graduate this surface to Settings mode in place.
         cfg.setup_completed = True
         cfg.save()
-        _mount_settings(page, AppConfig.load(), root, transition_cue=True)
+        _mount_settings(page, AppConfig.load(), root, transition_cue=True, on_schedule_changed=on_schedule_changed)
         page.update()
 
     def _on_sched_status(status: ScheduleStatus) -> None:
@@ -446,7 +486,9 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
         )
 
     def _schedule_body() -> ft.Control:
-        card, _handle = _build_schedule_section(page, cfg, on_status=_on_sched_status)
+        card, _handle = _build_schedule_section(
+            page, cfg, on_status=_on_sched_status, on_schedule_changed=on_schedule_changed
+        )
         return card
 
     def _delivery_body() -> ft.Control:
@@ -469,6 +511,16 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
         schedule_live = (not ws["schedule_skipped"]) and status is not None and status.state is ScheduleState.LIVE  # type: ignore[union-attr]
         district = friendly_district_name(str(ws["sis"])) or str(ws["sis"])
         next_run = status.next_run_display if (schedule_live and status is not None) else None  # type: ignore[union-attr]
+        # Backtrack guard (0029 close-out): a LIVE task baked WITHOUT --sftp while delivery is now
+        # enabled (register → Back → save a credential → Finish) must NOT let the finish line claim
+        # tonight delivers. The pure decision reads the durable last-REGISTERED record; the honest
+        # downgraded copy points at the one Save in Settings that picks the change up (the Settings
+        # reconcile self-heals from the same record — no re-register/UAC plumbing at the finish line).
+        desync = schedule_delivery_desync(
+            schedule_live=bool(schedule_live),
+            registered=task_args_from_persisted(cfg.schedule_task_args),
+            sftp_enabled=cfg.sftp_enabled,
+        )
         headline, detail = finish_copy(
             schedule_live=bool(schedule_live),
             delivery=ws["delivery"],  # type: ignore[arg-type]  # F1: keyed off PERSISTED delivery, not a transient test
@@ -476,6 +528,7 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
             schedule_time_display=next_run,
             host=str(ws["delivery_host"]),
             username=str(ws["delivery_user"]),
+            delivery_desync=desync,
         )
         # The checked summary is derived from the SAME computed facts as the banner copy (single
         # source — no independent re-derivation), so the calm per-step card can never contradict it.
@@ -484,11 +537,18 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
             delivery=ws["delivery"],  # type: ignore[arg-type]
             district=district,
             schedule_time_display=next_run,
+            delivery_desync=desync,
         )
+        # Amber (attention) ONLY when the finish copy itself downgrades to the desync headline —
+        # single-sourced via finish_needs_attention so tone and words always agree (W4a nit: the
+        # raw desync fact alone painted an amber band under a confident "You're all set" headline
+        # on the Save-then-Test path, whose Test flips the session delivery fact to TESTED_OK).
+        attention = finish_needs_attention(delivery=ws["delivery"], delivery_desync=desync)  # type: ignore[arg-type]
+        verdict = Verdict.WARNING if attention else Verdict.HEALTHY
         return ft.Column(
             spacing=18,
             controls=[
-                components.HealthVerdictBanner(Verdict.HEALTHY, headline=headline, detail=detail),
+                components.HealthVerdictBanner(verdict, headline=headline, detail=detail),
                 _finish_summary_card(rows),
             ],
         )
@@ -553,7 +613,12 @@ def _mount_wizard(page: ft.Page, cfg: AppConfig, root: ft.Column) -> None:  # pr
 # Settings mode (D8): the flat scroll + one reconciling Save.                  #
 # --------------------------------------------------------------------------- #
 def _mount_settings(  # pragma: no cover - Flet view glue
-    page: ft.Page, cfg: AppConfig, root: ft.Column, *, transition_cue: bool
+    page: ft.Page,
+    cfg: AppConfig,
+    root: ft.Column,
+    *,
+    transition_cue: bool,
+    on_schedule_changed: Callable[[], None] | None = None,
 ) -> None:
     """Render the completed-install Settings scroll into ``root`` (folders + schedule + SFTP)."""
     # The ONE task-args snapshot + reconcile the folders Save AND the SFTP Save both drive (D8/F1):
@@ -586,7 +651,9 @@ def _mount_settings(  # pragma: no cover - Flet view glue
         saved["args"] = _snapshot_args()
 
     # Build the schedule section FIRST so both Saves can drive its register flow on a task-arg change.
-    schedule_card, sched_handle = _build_schedule_section(page, cfg, on_registered=_on_registered)
+    schedule_card, sched_handle = _build_schedule_section(
+        page, cfg, on_registered=_on_registered, on_schedule_changed=on_schedule_changed
+    )
 
     def _baseline_args() -> TaskArgs:
         # 0034 S3-d: compare against what was ACTUALLY registered (the durable record written at
@@ -753,16 +820,22 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     *,
     on_status: Callable[[ScheduleStatus], None] | None = None,
     on_registered: Callable[[], None] | None = None,
+    on_schedule_changed: Callable[[], None] | None = None,
 ) -> tuple[ft.Control, _ScheduleHandle]:
-    """The scheduler section — run time + (Windows) run-as password → register (Slice 5/6).
+    """The scheduler section — run time + (where supported) run-as password → register (Slice 5/6).
 
     Returns the card AND a ``_ScheduleHandle`` so Settings mode can drive re-registration on a
     task-arg change. ``on_status`` (when given) is called with each schedule read-back so the
     wizard can track live-ness for its resume + finish copy. ``on_registered`` (when given) fires
-    after a CONFIRMED successful register so Settings can refresh its task-args snapshot (N1). The
-    register/unregister flow is UNCHANGED from Slice 5/6 (off-thread, elevation-aware, save-after-success).
+    after a CONFIRMED successful register so Settings can refresh its task-args snapshot (N1).
+    ``on_schedule_changed`` (when given — the shell's badge re-probe, 0032 T1 #8) fires after a
+    CONFIRMED register OR unregister success; advisory and exception-suppressed, so it can never
+    break the result paint. The register/unregister flow is UNCHANGED from Slice 5/6 (off-thread,
+    elevation-aware, save-after-success). Platform dispatch goes through the ONE
+    ``get_scheduler()`` factory (W4a T2.3): affordances gate on the scheduler's honest
+    capability flags, never on ``sys.platform`` here.
     """
-    is_windows = sys.platform == "win32"
+    scheduler = get_scheduler()
 
     run_time_field = ft.TextField(
         label="Daily run time (24-hour, HH:MM)",
@@ -813,8 +886,8 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     readout_slot = ft.Column(spacing=0, controls=[])
 
     def _kick_readout_probe() -> None:
-        """Fetch the real schedule OFF the UI thread and render the tri-state readout (Windows only)."""
-        if not is_windows:
+        """Fetch the real schedule OFF the UI thread and render the tri-state readout (where supported)."""
+        if not scheduler.supports_read_schedule:
             return
 
         def _work() -> None:  # runs OFF the UI thread
@@ -835,11 +908,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 
             page.run_task(_apply)
 
-        with contextlib.suppress(Exception):
-            page.run_thread(_work)
+        _kick_probe_thread(page, _work)
 
     def _refresh_readout() -> None:
-        if not is_windows:
+        if not scheduler.supports_read_schedule:
             return
         readout_slot.controls = [ft.Text("Checking the schedule…", size=13, color=tokens.color_muted)]
         page.update()
@@ -848,12 +920,12 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     section_controls: list[ft.Control] = [
         ft.Text("Daily schedule", size=20, weight=ft.FontWeight.W_800, color=tokens.color_text),
         ft.Text(
-            "Register an unattended nightly sync so the roster keeps flowing without anyone signing in.",
+            "Schedule an unattended nightly sync so the roster keeps flowing without anyone signing in.",
             size=14,
             color=tokens.color_muted,
         ),
     ]
-    if is_windows:
+    if scheduler.supports_read_schedule:
         readout_slot.controls = [ft.Text("Checking the schedule…", size=13, color=tokens.color_muted)]
         section_controls.append(readout_slot)
     section_controls.append(
@@ -865,11 +937,9 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     )
 
     password_field: ft.TextField | None = None
-    if is_windows:
-        from src.scheduler.windows import current_run_as_user
-
+    if scheduler.supports_unattended_password:
         section_controls.append(
-            ft.Text(f"This task will run as: {current_run_as_user()}", size=13, color=tokens.color_muted)
+            ft.Text(f"This task will run as: {scheduler.run_as_user()}", size=13, color=tokens.color_muted)
         )
         password_field = ft.TextField(
             label="Windows account password",
@@ -879,7 +949,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             border_color=tokens.color_border,
             helper=(
                 "Lets the nightly sync run after a reboot with no one logged in. "
-                "Used once to register the task — DistrictSync does not store it."
+                "Used once to schedule the task — DistrictSync does not store it."
             ),
         )
         section_controls.append(password_field)
@@ -893,15 +963,18 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         )
 
     def _elevated_now() -> bool:
-        if not is_windows:
-            return False
-        from src.scheduler.windows import is_elevated
+        return scheduler.is_elevated()  # always False where elevation has no meaning (cron)
 
-        return is_elevated()
+    def _register(_e: ft.ControlEvent | None = None, *, force_blank_password: bool = False) -> bool:
+        """Start the off-thread register; True iff a register was actually DISPATCHED.
 
-    def _register(_e: ft.ControlEvent | None = None, *, force_blank_password: bool = False) -> None:
+        The return value is the reconcile's honesty seam (0034 S3 residual): an early
+        return (gate closed, or an invalid run time — whose inline error paints below)
+        dispatches NOTHING, and the Settings-Save note must not claim "updating…" for it.
+        The button/Enter callers ignore the return value.
+        """
         if not can_register_schedule(cfg.is_complete(), run_time_field.value or ""):
-            return
+            return False
 
         # I1/I3 (see module docstring — password contract): the Windows account password is a
         # handler-LOCAL var whose ONLY sink is register_task (DPAPI elevation handshake / child-env);
@@ -919,11 +992,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 components.ErrorCard(_RUN_TIME_ERROR_HEADLINE, _RUN_TIME_ERROR_DETAIL),
             ]
             page.update()
-            return
+            return False
 
         exe_path = Path(sys.executable)
         transient = is_transient_location(str(exe_path))
-        uac_path = is_windows and bool(password) and not _elevated_now()
+        uac_path = scheduler.supports_unattended_password and bool(password) and not _elevated_now()
         # 0034 S3-d: the exact task-baked args this registration carries (captured at click time,
         # alongside run_time) — persisted on confirmed success as the durable reconcile baseline.
         registered_args = TaskArgs.of(
@@ -946,6 +1019,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             cfg.save()
             if on_registered is not None:
                 on_registered()  # N1: refresh Settings' task-args snapshot after a confirmed register
+            if on_schedule_changed is not None:
+                # 0032 T1 #8: a confirmed register invalidates the boot-time rail badge —
+                # let the shell re-probe. Advisory: never let it break the result paint.
+                with contextlib.suppress(Exception):
+                    on_schedule_changed()
             local_verdict, local_detail = verdict, detail
             if transient:
                 local_verdict = Verdict.WARNING
@@ -957,70 +1035,55 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         async def _apply_result(ok: bool, msg: str) -> None:
             register_btn.disabled = not can_register_schedule(cfg.is_complete(), run_time_field.value or "")
             unregister_btn.disabled = False
-            if is_windows:
-                if ok and password:
-                    from src.scheduler.windows import current_run_as_user
-
-                    _on_register_success(
-                        "Nightly sync scheduled",
-                        f"Runs as {current_run_as_user()}, whether or not you're logged in, daily at {run_time}.",
-                    )
-                elif ok:
-                    _on_register_success(
-                        "Scheduled — logged-on only",
-                        "It will only run while you're logged in. Re-register with your "
-                        "Windows password for unattended operation across reboots.",
-                        verdict=Verdict.WARNING,
-                    )
-                elif msg == _WORKER_ERROR_REGISTER:
-                    result_slot.controls = [components.ErrorCard("Couldn't register the schedule", msg)]
-                elif msg in (windows._MSG_ELEVATION_NO_RESULT, windows._MSG_ELEVATION_TIMEOUT):
-                    result_slot.controls = [
-                        components.ErrorCard(
-                            "Couldn't confirm the schedule", classify_schedule_error(msg, _elevated_now())
-                        )
-                    ]
-                else:
-                    result_slot.controls = [
-                        components.ErrorCard(
-                            "Couldn't register the schedule", classify_schedule_error(msg, _elevated_now())
-                        )
-                    ]
+            if ok and password:
+                # Only reachable where the password affordance exists (supports_unattended_password).
+                _on_register_success(
+                    "Nightly sync scheduled",
+                    f"Runs as {scheduler.run_as_user()}, whether or not you're logged in, daily at {run_time}.",
+                )
+            elif ok and scheduler.supports_unattended_password:
+                _on_register_success(
+                    "Scheduled — logged-on only",
+                    "It will only run while you're logged in. Schedule it again with your "
+                    "Windows password for unattended operation across reboots.",
+                    verdict=Verdict.WARNING,
+                )
             elif ok:
+                # No unattended/interactive logon distinction on this platform (cron) — plain success.
                 _on_register_success("Nightly sync scheduled", f"Runs daily at {run_time}.")
+            elif msg == _WORKER_ERROR_REGISTER:
+                result_slot.controls = [components.ErrorCard("Couldn't schedule the nightly sync", msg)]
+            elif msg in (windows._MSG_ELEVATION_NO_RESULT, windows._MSG_ELEVATION_TIMEOUT):
+                # Canonical elevation markers (exact equality) — cron never produces these strings.
+                result_slot.controls = [
+                    components.ErrorCard("Couldn't confirm the schedule", classify_schedule_error(msg, _elevated_now()))
+                ]
+            elif scheduler.supports_unattended_password:
+                # The Windows message contract → the calm classifier (setup_errors).
+                result_slot.controls = [
+                    components.ErrorCard(
+                        "Couldn't schedule the nightly sync", classify_schedule_error(msg, _elevated_now())
+                    )
+                ]
             else:
-                detail = _WORKER_ERROR_REGISTER if msg == _WORKER_ERROR_REGISTER else msg
-                result_slot.controls = [components.ErrorCard("Couldn't create the schedule", detail)]
+                # Cron failures carry crontab's own short message — surfaced as-is (no Windows contract).
+                result_slot.controls = [components.ErrorCard("Couldn't schedule the nightly sync", msg)]
             page.update()
             _refresh_readout()
 
         def _work() -> None:  # runs OFF the UI thread (the register call can block on the UAC prompt)
             try:
-                if is_windows:
-                    from src.scheduler.windows import register_task
-
-                    ok, msg = register_task(
-                        task_name=cfg.schedule_task_name,
-                        exe_path=exe_path,
-                        sis_type=cfg.sis_type,
-                        input_dir=Path(cfg.input_dir),
-                        output_dir=Path(cfg.output_dir),
-                        run_time=run_time,
-                        sftp=cfg.sftp_enabled,
-                        run_as_user=None,
-                        run_as_password=(password or None),
-                    )
-                else:
-                    from src.scheduler.linux import register_cron
-
-                    ok, msg = register_cron(
-                        exe_path,
-                        cfg.sis_type,
-                        Path(cfg.input_dir),
-                        Path(cfg.output_dir),
-                        run_time,
-                        sftp=cfg.sftp_enabled,
-                    )
+                ok, msg = scheduler.register(
+                    task_name=cfg.schedule_task_name,
+                    exe_path=exe_path,
+                    sis_type=cfg.sis_type,
+                    input_dir=Path(cfg.input_dir),
+                    output_dir=Path(cfg.output_dir),
+                    run_time=run_time,
+                    sftp=cfg.sftp_enabled,
+                    run_as_user=None,
+                    run_as_password=(password or None),
+                )
             except Exception:  # noqa: BLE001 - a worker crash must not strand the spinner
                 ok, msg = False, _WORKER_ERROR_REGISTER
             page.run_task(_apply_result, ok, msg)
@@ -1029,20 +1092,21 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         unregister_btn.disabled = True
         result_slot.controls = [
             _inflight_row(
-                "Asking Windows for permission and registering the schedule…"
+                "Asking Windows for permission and scheduling the nightly sync…"
                 if uac_path
-                else "Registering the schedule…"
+                else "Scheduling the nightly sync…"
             )
         ]
         page.update()
         page.run_thread(_work)
+        return True
 
     def _unregister(_e: ft.ControlEvent | None = None) -> None:
         async def _apply_unregister(ok: bool, msg: str) -> None:
             register_btn.disabled = not can_register_schedule(cfg.is_complete(), run_time_field.value or "")
             unregister_btn.disabled = False
             if not ok and msg == _WORKER_ERROR_UNREGISTER:
-                result_slot.controls = [components.ErrorCard("Couldn't remove the schedule", msg)]
+                result_slot.controls = [components.ErrorCard("Couldn't remove the nightly sync", msg)]
             elif not ok and msg == windows._MSG_ELEVATION_REMOVE_UNCONFIRMED:
                 result_slot.controls = [
                     components.ErrorCard(
@@ -1064,6 +1128,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     cfg.schedule_unattended = False
                     cfg.schedule_task_args = None
                     cfg.save()
+                    if on_schedule_changed is not None:
+                        # 0032 T1 #8: a confirmed removal invalidates the boot-time rail badge too.
+                        with contextlib.suppress(Exception):
+                            on_schedule_changed()
                     result_slot.controls = [
                         components.HealthVerdictBanner(
                             Verdict.HEALTHY, headline=outcome.headline, detail=outcome.detail
@@ -1076,23 +1144,15 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 
         def _work() -> None:  # runs OFF the UI thread (an elevated delete can block on UAC)
             try:
-                if is_windows:
-                    from src.scheduler.windows import delete_task, delete_task_elevated
-
-                    ok, msg = delete_task(cfg.schedule_task_name)
-                    if not ok and "access is denied" in (msg or "").lower() and not _elevated_now():
-                        ok, msg = delete_task_elevated(cfg.schedule_task_name)
-                else:
-                    from src.scheduler.linux import delete_cron
-
-                    ok, msg = delete_cron()
+                # The Windows adapter owns the access-denied → one-UAC-prompt elevated retry.
+                ok, msg = scheduler.delete(cfg.schedule_task_name)
             except Exception:  # noqa: BLE001 - a worker crash must not strand the spinner
                 ok, msg = False, _WORKER_ERROR_UNREGISTER
             page.run_task(_apply_unregister, ok, msg)
 
         register_btn.disabled = True
         unregister_btn.disabled = True
-        result_slot.controls = [_inflight_row("Removing the schedule…")]
+        result_slot.controls = [_inflight_row("Removing the nightly sync…")]
         page.update()
         page.run_thread(_work)
 
@@ -1180,8 +1240,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         pause for the explicit choice.
 
         Returns ``DISPATCHED`` when a re-register was actually started, ``INTERRUPTED`` when the
-        downgrade-choice dialog was shown instead (nothing registered) — the seam that lets both
-        Save sites paint an honest note (S3 correctness fix).
+        downgrade-choice dialog was shown instead (nothing registered), and ``BLOCKED`` when
+        ``_register`` early-returned without dispatching (its gate refused — e.g. a malformed run
+        time, whose inline error it just painted). The seam that lets both Save sites paint an
+        honest note (S3 correctness fix): "updating…" is claimed ONLY for a real dispatch.
         """
         password = password_field.value if password_field is not None else None
         interrupt = downgrade_interrupt(
@@ -1189,19 +1251,20 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             password_supplied=bool(password),
         )
         if interrupt is None:
-            _register(None)
-            return ReconcileOutcome.DISPATCHED
+            return ReconcileOutcome.DISPATCHED if _register(None) else ReconcileOutcome.BLOCKED
         _show_downgrade_dialog(interrupt)
         return ReconcileOutcome.INTERRUPTED
 
+    # 0032 T1 #6 vocabulary: plain "Schedule nightly sync"/"Remove nightly sync" — never the
+    # Windows-jargon "Register"/"Unregister" pair on a user-facing control.
     register_btn = components.primary_button(
-        "Register schedule",
+        "Schedule nightly sync",
         _register,
         disabled=not can_register_schedule(cfg.is_complete(), run_time_field.value or ""),
         icon=ft.Icons.SCHEDULE_ROUNDED,
     )
     unregister_btn = components.secondary_button(
-        "Unregister schedule",
+        "Remove nightly sync",
         _unregister,
         icon=ft.Icons.EVENT_BUSY_ROUNDED,
     )
@@ -1232,9 +1295,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 def _run_as_account() -> str:
     """The account whose keyring must hold the SFTP credential (defensive)."""
     try:
-        from src.scheduler.windows import current_run_as_user
-
-        return current_run_as_user()
+        return get_scheduler().run_as_user()
     except Exception:
         return "this account"
 
@@ -1306,8 +1367,16 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
         ):
             return
 
+        # Parse the port FIRST (pure seam) — a port typo must get the port error, not fall into
+        # the SFTPUploader ValueError below and misreport as a host-allowlist failure.
+        port_num = parse_port(port)
+        if port_num is None:
+            result_slot.controls = [components.ErrorCard(PORT_ERROR_HEADLINE, PORT_ERROR_DETAIL)]
+            page.update()
+            return
+
         try:
-            uploader = SFTPUploader(host, int(port or 22), username, remote_path)
+            uploader = SFTPUploader(host, port_num, username, remote_path)
         except ValueError:
             result_slot.controls = [
                 components.ErrorCard(
@@ -1349,12 +1418,15 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
 
         cfg.sftp_enabled = True
         cfg.sftp_host = host
-        cfg.sftp_port = int(port or 22)
+        cfg.sftp_port = port_num
         cfg.sftp_username = username
         cfg.sftp_remote_path = remote_path
         cfg.save()
 
-        detail = f"SFTP credentials stored and readable by {_run_as_account()}."
+        # Vocabulary (W4a sweep): delivery-flavored plain language — "SFTP" stays only on the
+        # sanctioned technical host FIELD label. Truthful for a blank-password Save too: the
+        # read-back above just verified a credential IS in the keyring and readable.
+        detail = f"Your delivery password is saved and readable by {_run_as_account()}."
         # F1 reconcile (Settings only): enabling/confirming delivery must add --sftp to an
         # already-registered nightly task, or tonight builds but never delivers. Routed through the
         # SAME task-args reconcile the folders Save uses; a blank-password re-register keeps the
@@ -1364,14 +1436,14 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
         if on_saved is not None:
             detail += sftp_reconcile_suffix(on_saved())
         result_slot.controls = [
-            components.HealthVerdictBanner(Verdict.HEALTHY, headline="SFTP credentials stored", detail=detail)
+            components.HealthVerdictBanner(Verdict.HEALTHY, headline="Delivery settings saved", detail=detail)
         ]
         if on_delivery is not None:
             on_delivery(DeliveryFact.STORED_CRED_PRESENT, host, username)
         page.update()
 
     save_btn = components.primary_button(
-        "Save SFTP credentials",
+        "Save delivery settings",
         _save,
         disabled=True,
         disabled_bgcolor=tokens.color_border,
@@ -1407,8 +1479,15 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
         password = password_field.value or ""
         host, username, remote_path, port = _current_fields()
 
+        # Same pre-parse as _save: a port typo gets the port error, never the host one.
+        port_num = parse_port(port)
+        if port_num is None:
+            result_slot.controls = [components.ErrorCard(PORT_ERROR_HEADLINE, PORT_ERROR_DETAIL)]
+            page.update()
+            return
+
         try:
-            uploader = SFTPUploader(host, int(port or 22), username, remote_path)
+            uploader = SFTPUploader(host, port_num, username, remote_path)
         except ValueError:
             result_slot.controls = [
                 components.ErrorCard(
@@ -1446,7 +1525,8 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
                     listing_denied=listing_denied,
                 )
             else:
-                headline, detail = "SFTP connection failed", friendly_sftp_reason(msg)
+                # Honest pair for the landed success headline ("Connected to SpacesEDU").
+                headline, detail = "Couldn't connect to SpacesEDU", friendly_sftp_reason(msg)
             result_slot.controls = [components.HealthVerdictBanner(verdict, headline=headline, detail=detail)]
             if on_delivery is not None:
                 on_delivery(DeliveryFact.TESTED_OK if ok else DeliveryFact.TESTED_FAILED, host, username)
@@ -1466,9 +1546,9 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
     _refresh_save_gate()
 
     section_controls: list[ft.Control] = [
-        ft.Text("SFTP delivery (SpacesEDU)", size=20, weight=ft.FontWeight.W_800, color=tokens.color_text),
+        ft.Text("Delivery to SpacesEDU", size=20, weight=ft.FontWeight.W_800, color=tokens.color_text),
         ft.Text(
-            "Store your SpacesEDU SFTP credentials so the nightly sync can deliver the roster. "
+            "Store your SpacesEDU delivery credentials so the nightly sync can deliver the roster. "
             "The password is saved in this computer's credential manager — never in plain files.",
             size=14,
             color=tokens.color_muted,

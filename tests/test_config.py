@@ -21,6 +21,7 @@ from src.config.models import (
     MappingConfig,
     RowFilter,
     classify_field,
+    filter_enabled_entities,
 )
 
 
@@ -305,6 +306,13 @@ class TestDeepMerge:
         base = {"x": {"a": 1}}
         _deep_merge(base, {"x": {"b": 2}})
         assert base == {"x": {"a": 1}}
+
+    def test_lists_replace_wholesale_not_merged(self):
+        """Lists REPLACE — an enabled_entities override never unions with the base."""
+        base = {"global_config": {"enabled_entities": ["Students", "Staff", "Family", "Classes", "Enrollments"]}}
+        override = {"global_config": {"enabled_entities": ["Students"]}}
+        result = _deep_merge(base, override)
+        assert result["global_config"]["enabled_entities"] == ["Students"]
 
 
 # -----------------------------------------------------------------------
@@ -684,6 +692,53 @@ class TestEnabledEntities:
         ]
 
 
+class TestActiveEntities:
+    """`MappingConfig.active_entities()` — the single enabled-entities accessor."""
+
+    def _cfg(self, entity_names, enabled):
+        mappings = {
+            name: {"source_files": {"primary": f"{name}.txt"}, "field_map": {"User ID": "id"}} for name in entity_names
+        }
+        return MappingConfig(
+            version="1.0",
+            sis="test",
+            global_config={"enabled_entities": enabled},
+            mappings=mappings,
+        )
+
+    def test_empty_enabled_means_all_defined(self):
+        cfg = self._cfg(["Students", "Staff"], [])
+        assert cfg.active_entities() == {"Students", "Staff"}
+
+    def test_enabled_subset_selects(self):
+        cfg = self._cfg(["Students", "Staff", "Family"], ["Students"])
+        assert cfg.active_entities() == {"Students"}
+
+    def test_enabled_but_undefined_never_reported(self):
+        """An enabled name with no mapping (e.g. StudentAttendance under `_base`
+        inheritance quirks) is intersected away — never a phantom entity."""
+        cfg = self._cfg(["Students"], ["Students", "StudentAttendance"])
+        assert cfg.active_entities() == {"Students"}
+
+    def test_real_config_matches_enabled_list(self):
+        cfg = load_config("sd51myedbc")
+        assert cfg.active_entities() == set(cfg.global_config.enabled_entities)
+
+
+class TestFilterEnabledEntities:
+    """The order-preserving inclusion kernel behind active_entities/configured_entity_order."""
+
+    def test_none_keeps_all(self):
+        assert filter_enabled_entities(["A", "B"], None) == ["A", "B"]
+
+    def test_empty_keeps_all(self):
+        """The `entity_order`-style gotcha: [] means no filter, not 'nothing'."""
+        assert filter_enabled_entities(["A", "B"], []) == ["A", "B"]
+
+    def test_filters_preserving_order(self):
+        assert filter_enabled_entities(["C", "A", "B"], ["B", "C"]) == ["C", "B"]
+
+
 # -----------------------------------------------------------------------
 # RowFilter (config-driven row inclusion) + CrossEnrollmentConfig
 # -----------------------------------------------------------------------
@@ -750,6 +805,70 @@ mappings:
         assert len(rf) == 1
         assert isinstance(rf[0], RowFilter)
         assert rf[0].column == "Parent Auth / Guardian"
+
+
+class TestEntitySourceColumns:
+    """EntityConfig.source_columns — auxiliary source-column overrides for
+    reads with no output-key counterpart (e.g. StudentCourses' section /
+    full-course-code / DL-start-date inputs)."""
+
+    def test_default_empty(self):
+        cfg = EntityConfig(source_files={"course_info": "C.txt"}, field_map={"Course Code": {"value": ""}})
+        assert cfg.source_columns == {}
+
+    def test_roundtrip_via_to_raw_dict(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            mappings={
+                "StudentCourses": EntityConfig(
+                    source_files={"course_info": "C.txt"},
+                    field_map={"Course Code": {"value": ""}},
+                    source_columns={"section": "Sec", "dl_start_date": "Begin Date"},
+                ),
+            },
+        )
+        raw = cfg.to_raw_dict()
+        assert raw["mappings"]["StudentCourses"]["source_columns"] == {
+            "section": "Sec",
+            "dl_start_date": "Begin Date",
+        }
+
+    def test_absent_key_when_unset(self):
+        """No source_columns → the key is omitted (back-compatible raw dict)."""
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            mappings={
+                "StudentCourses": EntityConfig(
+                    source_files={"course_info": "C.txt"},
+                    field_map={"Course Code": {"value": ""}},
+                ),
+            },
+        )
+        assert "source_columns" not in cfg.to_raw_dict()["mappings"]["StudentCourses"]
+
+    def test_yaml_source_columns_parse_and_validate(self, tmp_path):
+        yaml_text = """
+version: "1.9"
+sis: test
+mappings:
+  StudentCourses:
+    source_files:
+      course_info: C.txt
+    field_map:
+      "Course Code":
+        value: ""
+    source_columns:
+      full_course_code: "Full Crs Code"
+      section: "Sec"
+"""
+        (tmp_path / "test_mapping.yaml").write_text(yaml_text)
+        cfg = load_config("test", config_dir=tmp_path)
+        assert cfg.mappings["StudentCourses"].source_columns == {
+            "full_course_code": "Full Crs Code",
+            "section": "Sec",
+        }
 
 
 class TestCrossEnrollmentConfig:

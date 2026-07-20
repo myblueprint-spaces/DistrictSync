@@ -126,6 +126,53 @@ class TestClassesTransformBlended:
                 assert (blended_rows["Grade"] == "").all()
 
 
+class TestNameConfigDrivesClassNames:
+    """The spaced-key YAML Name config (the authoring format every mapping file
+    uses) must actually drive subject-class naming.
+
+    Regression pin for the key mismatch where ``_assign_class_names`` read
+    underscore keys ("section_letter", ...) that no config ever produced, so
+    the hardcoded defaults always applied: districts with a renamed section
+    column (SD60/SD74 use "Section") silently lost the section letter and the
+    primary-teacher flag was never consulted.
+    """
+
+    def setup_method(self):
+        self.transformer = DataTransformer()
+        self.transformer.set_school_year(2025, "08-25", "07-25")
+
+    def test_spaced_keys_drive_section_letter_and_primary_teacher_flag(
+        self, student_schedule_df, classes_mapping, global_config, raw_data
+    ):
+        # Rename the schedule's flag + section columns so ONLY the configured
+        # Name columns can find them (the old hardcoded defaults would miss).
+        schedule = student_schedule_df.rename(
+            columns={"section letter": "sec code", "primary teacher": "lead teacher"}
+        ).copy()
+        schedule.loc[schedule["master timetable id"] == "MT004", "lead teacher"] = "N"
+        mapping = {
+            **classes_mapping,
+            "field_map": {
+                **classes_mapping["field_map"],
+                "Name": {
+                    "primary teacher flag": "Lead Teacher",
+                    "teacher last name": "Teacher Name",
+                    "course title": "Course Title",
+                    "section letter": "Sec Code",
+                },
+            },
+        }
+        raw = {**raw_data, "StudentSchedule.txt": schedule}
+
+        result = self.transformer.transform(schedule, mapping, "Classes", raw, global_config)
+        names = dict(zip(result["Class ID"], result["Name"]))
+
+        # Flag = Y -> teacher included; configured section column drives "(A)".
+        assert names["MT005_2025"] == "Singh English 12 (A) 2025"
+        # Flag = N -> the primary-teacher flag is LIVE and drops the teacher.
+        assert names["MT004_2025"] == "Math 10 (A) 2025"
+
+
 class TestExcludedCourseCodes:
     """Rows whose course code is in global_config.excluded_course_codes
     must not become Classes.csv rows (e.g. MyEd BC's ATT--AM/ATT--PM

@@ -6,7 +6,7 @@
 # from the base — districts with non-standard file names should layer
 # their own override on top with `_base: mbp_all`.
 _base: myedbc
-version: 1.0
+version: '1.0'
 sis: MyEducationBC
 district_name: myBlueprint+ (full)
 

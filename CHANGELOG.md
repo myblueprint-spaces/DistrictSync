@@ -9,17 +9,37 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
-### Fixed
+### Security
 
-- **Killed the false silence on early failures.** The early-exit failures inside
-  the pipeline (input folder missing, district config missing or invalid) now
-  write a failed run record to both the diagnostic log and Run History before
-  exiting — Task Scheduler's exit code and Run History can no longer disagree
-  about whether the nightly sync failed. Bounded categories only in the store;
-  the exit-code contract is unchanged. (plan 0034 slice 4)
+- **The SFTP upload now verifies the server's identity, not just its name.**
+  Delivery checks the server's SSH host key against pinned keys in
+  `config/known_hosts` (a per-district override in the DistrictSync app-data
+  folder wins without a new release). A pinned-key mismatch hard-fails delivery
+  with a clear "server identity changed" error — the man-in-the-middle case —
+  and is never retried; hosts without a pinned key connect exactly as before,
+  with a log warning pointing at the pinning file. Replaces the previous
+  trust-on-first-use policy. (pre-partner batch W1a)
+- **Transient delivery failures now retry.** A network blip during upload
+  retries up to 3 attempts with 2s/4s backoff instead of failing the nightly
+  run outright. Wrong-password and host-key failures are never retried
+  (account-lockout / MITM safety); the exit-code contract is unchanged, and
+  Setup's "Test connection" still answers immediately. A failed connect also
+  no longer leaks the SSH client socket. (W1a)
 
 ### Added
 
+- **The output-CSV contract is now test-pinned for ALL 7 launch district
+  configs** (was 3): per-district fixtures mirror each district's real GDE
+  header shape (synthetic rows) and exercise every quirk end-to-end — SD40's
+  headerless schedule and ATT exclusions, SD54's status-column-less
+  withdraw-date detection, SD60's guardian row-filters, sanitized learn60
+  emails, home-school rostering, and cross-enrollment collapse. (pre-partner W2a)
+- **Config version gate.** A mapping config whose major version differs from
+  the supported range is rejected with an actionable error (an out-of-range
+  config must not drive a student-data conversion); newer minor drift warns;
+  and whenever a user-dir mapping file shadows a bundled one (the sanctioned
+  hotfix path), the loader names both paths in the log — a stale override can
+  no longer take effect invisibly. (W2c)
 - **Missed-run warning on Home.** When the schedule read-back confirms a LIVE
   nightly task but no run has been recorded in the last 26 hours (and the run
   store is itself old enough that a run was genuinely expected — a day-one
@@ -33,6 +53,41 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **Trust-copy honesty pass (0035 polish).** Home and Run History claim only
+  what was verified: "delivered to SpacesEDU" appears only when the upload
+  actually succeeded; a local-only run reads "completed — files were written
+  to your output folder"; "Your roster is syncing" is asserted only on a
+  confirmed-LIVE schedule read-back (else "Your roster is up to date"); a
+  failed sync is dated from its own record instead of "Last night's sync…".
+  Fix routing is reason-aware: a failed delivery's button reads "Open
+  Settings" and lands where the fix lives. (W3a)
+- **Convert never dead-ends (0035 polish).** A fresh install leads with a
+  routed "Finish setup first" card; error cards end with a concrete next step
+  and a support path (raw PowerShell text demoted to a trailing "Details"
+  clause); an amber note flags a per-run district pick that differs from the
+  saved district; the whole form locks while a job runs — no dead clicks, no
+  double-starts. (W3b)
+- **The window remembers its size and position** (restored safely clamped to
+  the current screen); the Setup attention dot refreshes immediately after
+  scheduling or removing the nightly sync; Help gained an About block (version
+  + copy buttons + release notes + prefilled PII-free support email) and every
+  error card offers "Open log folder". Plainer language throughout: "Schedule
+  nightly sync" / "Remove nightly sync". (W3c)
+- **Artifact refactors (behavior-preserving; W4d).** One
+  `MappingConfig.active_entities()` accessor serves every enabled-entities
+  selection site; the Classes→Enrollments handoff is an explicit frozen
+  `ClassArtifacts` bundle with a fail-loud ordering assertion; enrollment
+  source builders return frames instead of mutating a shared list (row order
+  byte-identical); dead helpers deleted and zip naming re-homed beside its
+  only consumer.
+- **Internal refactor wave (behavior-preserving; district output byte-identical
+  by snapshot proof).** Field mappings apply through a typed Strategy with
+  unknown `transform:` names rejected at config load with an actionable error;
+  `BaseTransformer` slimmed by composition into focused helper modules; the
+  blended-class detector is a plain service with a single-pass teacher index;
+  duplicated grade-split/date-format/ID-normalization idioms collapsed to
+  single sources; a config missing standard rostering entities now warns at
+  load. (W4b2 + W4c)
 - **Settings Save is now trustworthy about the nightly schedule.** Saving
   Settings can no longer silently convert an unattended nightly task (one
   registered with a Windows password, so it runs while signed out) into a
@@ -67,6 +122,76 @@ Per-release download links and auto-generated commit notes live on the
   with an "Open Settings" button that routes to the Settings Save/re-register
   flow. Schedule truth comes from the real off-thread Windows read-back —
   never asserted from the saved setting alone. (plan 0034 slice 1)
+
+### Fixed
+
+- **The Class "Name" mapping config now actually drives class naming.** The
+  consumers read the spaced YAML authoring keys every mapping file emits, so
+  the primary-teacher flag is live and districts with a renamed section column
+  (SD60/SD74: "Section") now include the section letter — SD74-style names
+  change from "Clark Music 10 2026" to "Clark Carol Music 10 (B) 2026"
+  (partner-visible, made deliberately before partners depend on the names;
+  SD74 golden regenerated — Classes.csv Name column only). StudentCourses
+  source columns are now fully config-driven (the last Configurable-Columns
+  debt), byte-identical for every bundled config. (pre-partner W4b1)
+- **One platform-dispatch point for scheduling.** `src/scheduler` now exposes
+  a `Scheduler` protocol with honest per-platform capability flags and a
+  `get_scheduler()` factory; every UI caller goes through it instead of
+  scattered platform branches (Windows security invariants untouched; cron
+  register fails loud on a password it can't honor). Setup's delivery section
+  finished the plain-language sweep: "Delivery to SpacesEDU", "Save delivery
+  settings", "Couldn't connect to SpacesEDU"; the wizard finish banner's tone
+  and words now always agree; classified schedule-error copy uses the
+  "schedule the nightly sync" vocabulary; Convert's district-mismatch note no
+  longer asserts a nightly sync that may not exist. (W4a + wave-3 panel)
+- **Linux scheduling can no longer wipe other cron jobs.** A failed
+  `crontab -l` read (e.g. permission denied) now aborts Register/Unregister
+  with a loud error instead of rewriting the whole crontab from a blind read;
+  classification is exit-code-first. Unregistering a missing entry reads as
+  the calm "No schedule was registered — nothing changed". (pre-partner W2b)
+- **Settings Save honesty, completed.** A Save whose schedule re-register is
+  refused by the register flow's own gate (e.g. an invalid run time) no longer
+  claims "updating the nightly schedule…" — both Save sites say the schedule
+  wasn't updated and name the fix (`ReconcileOutcome.BLOCKED`). SFTP port
+  typos now get "That port isn't a number" instead of the host-allowlist
+  message. And registering the schedule, going Back, and enabling delivery
+  before Finish gets an honest amber finish line instead of claiming tonight's
+  run will deliver with a task baked without `--sftp`. (W2b)
+- **Dev hygiene.** The logging fallback now rotates (5 MB × 3) instead of
+  growing unbounded; the >50%-missing quality warning and its exactly-50%
+  boundary are test-pinned; the flaky schedule-probe render-smoke test is
+  deterministic; a new static guard fails CI on un-awaited async window calls;
+  the throwaway Flet prototype spike is deleted. (W2d)
+- **A vanishing roster file now raises the same alarm as a big drop.** An
+  entity the district config produces that suddenly transforms to zero rows
+  (or disappears entirely) fires the ANOMALY warning — on the CLI it warns and
+  rides the run record; in the app it stops before writing until an admin
+  acknowledges. An unreadable previous CSV warns loudly instead of silently
+  skipping the check, and the expected-entity set derives from
+  `enabled_entities` so another config's CSV sharing the folder never fires a
+  false alarm. (pre-partner batch W1b)
+- **Manual conversions archive stale entity CSVs** into `archive_<ts>/`
+  exactly like scheduled runs — a stale file can no longer ride an SFTP zip
+  after a manual convert. Two conversions landing in the same second can no
+  longer collide on the atomic writer's staging/backup folders (unique
+  suffixes; collisions fail loud), and a run that was hard-killed mid-commit
+  is detected on the next run: the leftover backup moves to
+  `archive_<ts>_recovered/` with a warning (nothing deleted), and abandoned
+  staging folders older than 7 days are swept. (W1b)
+- **Silent data-quality failures in the transformers now surface loudly**
+  (never failing the run): a student-email template naming a missing column
+  records per-row data errors instead of invisibly blanking every email; a
+  non-blank, non-numeric StudentCourses mark (letter grades, "Pass") records a
+  data error instead of silently nulling earned credits (scoring unchanged);
+  mixed-vintage input sets trigger a school-year disagreement warning naming
+  every year found; and the active-roster filter logs an aggregate
+  dropped-rows warning per entity (counts only — never student ids). (W1c)
+- **Killed the false silence on early failures.** The early-exit failures inside
+  the pipeline (input folder missing, district config missing or invalid) now
+  write a failed run record to both the diagnostic log and Run History before
+  exiting — Task Scheduler's exit code and Run History can no longer disagree
+  about whether the nightly sync failed. Bounded categories only in the store;
+  the exit-code contract is unchanged. (plan 0034 slice 4)
 
 ## [3.6.0] - 2026-07-15
 

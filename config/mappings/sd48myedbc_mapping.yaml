@@ -1,7 +1,7 @@
 # SD48 - Inherits from standard MyEducation BC mapping
 # Differences: StudentDemographicEnhanced.txt, StaffInformation.txt (no "Enhanced" suffix)
 _base: myedbc
-version: 1.9
+version: '1.9'
 sis: MyEducationBC
 district_name: SD48 - Sea to Sky School District
 

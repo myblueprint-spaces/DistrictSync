@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -24,6 +25,7 @@ import pandas as pd
 
 from src.config.app_config import AppConfig
 from src.config.loader import load_config
+from src.config.models import filter_enabled_entities
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader
 from src.etl.transformer import DataTransformer
@@ -84,15 +86,35 @@ def extract_required_files(config) -> list[str]:
     by an enabled entity — when they aren't, ``determine_school_year``
     falls back to the calendar-date heuristic in BaseTransformer.
     """
-    enabled_attr = getattr(config.global_config, "enabled_entities", None)
-    enabled = set(enabled_attr) if isinstance(enabled_attr, list) and enabled_attr else None
+    active = config.active_entities()
 
     files: set[str] = set()
     for entity_name, entity_cfg in config.mappings.items():
-        if enabled is not None and entity_name not in enabled:
+        if entity_name not in active:
             continue
         files.update(entity_cfg.source_files.values())
     return list(files)
+
+
+def configured_entity_order(mappings: dict, global_config: dict) -> list[str]:
+    """The ordered entity list this run is configured to produce.
+
+    ``entity_order`` (ordering — defaults to the mapping keys) filtered by
+    ``enabled_entities`` (inclusion) — exactly the list :func:`run_transform`
+    iterates. Exposed so callers reasoning about what a run SHOULD have produced
+    (the vanished-entity anomaly leg) derive from enabled entities, never raw
+    ``mappings.keys()``: ``_base`` inheritance leaves inherited-but-disabled
+    entities in the mapping (see CLAUDE.md "Output Targeting"), and treating
+    those as expected would fire false anomalies against a DIFFERENT config's
+    legitimate CSV sharing the output dir.
+    """
+    entity_order = global_config.get("entity_order") or list(mappings.keys())
+    # `enabled_entities` (when non-empty) filters which mappings actually run.
+    # This lets the base config define more entity templates than it
+    # activates by default — districts opt in by listing them. The selection
+    # rule itself is single-sourced in `filter_enabled_entities` (the same
+    # kernel behind `MappingConfig.active_entities`).
+    return filter_enabled_entities(entity_order, global_config.get("enabled_entities"))
 
 
 class TransformOutputs(NamedTuple):
@@ -151,15 +173,7 @@ def run_transform(
     transformer.set_school_year(sy, start_md, end_md)
     logger.info(f"Using school year {sy}, academic start={transformer.academic_start}, end={transformer.academic_end}")
 
-    entity_order = global_config.get("entity_order") or list(mappings.keys())
-    # `enabled_entities` (when non-empty) filters which mappings actually run.
-    # This lets the base config define more entity templates than it
-    # activates by default — districts opt in by listing them.
-    enabled = global_config.get("enabled_entities") or []
-    if enabled:
-        enabled_set = set(enabled)
-        entity_order = [e for e in entity_order if e in enabled_set]
-    for entity_name in entity_order:
+    for entity_name in configured_entity_order(mappings, global_config):
         entity_cfg = mappings.get(entity_name, {})
         source_config = entity_cfg.get("source_files", {})
 
@@ -198,37 +212,85 @@ def run_transform(
     return TransformOutputs(outputs, field_orders, transformer.data_errors)
 
 
-def compute_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list[str]:
-    """Pure row-count-drop compute shared by the CLI and the Convert page.
+def _previous_row_count(prev_path: Path) -> int | None:
+    """Data-row count of a previous output CSV, or ``None`` when unreadable.
 
-    Compares each output entity's row count against its previous run's CSV in
-    ``output_dir`` and returns a plain per-entity warning string for every
-    entity that dropped by more than :data:`ANOMALY_THRESHOLD`. The base
-    message — ``"{entity} dropped from {prev} to {new} rows ({pct}% decrease)"``
-    — carries NO surface-specific presentation (no ``ANOMALY:`` prefix, no
-    logging/printing); each caller adds its own (CLI logs, UI renders).
+    ``None`` (locked file, corrupt bytes, a directory squatting on the name) is
+    NOT equivalent to "no baseline": callers surface it as an anomaly-check
+    degradation warning instead of silently skipping the drop check.
+    """
+    try:
+        with open(prev_path, encoding="utf-8") as f:
+            return sum(1 for _ in f) - 1
+    except Exception:  # noqa: BLE001 - any read failure means "unreadable baseline"; the caller warns loudly
+        return None
 
-    Entities with no previous file, an unreadable previous file, or an empty
-    previous file are skipped — a missing baseline is fine, not an anomaly.
+
+def _unreadable_baseline_msg(entity: str) -> str:
+    """The anomaly-check degradation warning for an unreadable previous CSV."""
+    return f"{entity}: the previous output file could not be read, so the drop check was skipped for this entity"
+
+
+def compute_anomalies(
+    outputs: dict[str, pd.DataFrame],
+    output_dir: Path,
+    expected_entities: Iterable[str] | None = None,
+) -> list[str]:
+    """Pure anomaly compute shared by the CLI and the Convert page.
+
+    Two checks, one plain warning-string list. Each base message carries NO
+    surface-specific presentation (no ``ANOMALY:`` prefix, no logging/printing);
+    each caller adds its own (CLI logs, UI renders).
+
+    * **Row-count drop** — each output entity's row count vs its previous run's
+      CSV in ``output_dir``: a drop over :data:`ANOMALY_THRESHOLD` warns
+      (``"{entity} dropped from {prev} to {new} rows ({pct}% decrease)"``).
+    * **Vanished entity** (present→absent / N→0) — each entity in
+      ``expected_entities`` (the enabled-entities-derived set this run was
+      CONFIGURED to produce — :func:`configured_entity_order`, never raw
+      ``mappings.keys()``) that produced nothing while a non-empty previous CSV
+      sits on disk. An entity that transforms to zero rows never enters
+      ``outputs`` (``run_transform`` drops it), so without this leg a vanishing
+      roster file was invisible to the anomaly check.
+
+    A missing or empty previous file is fine — a first run / new entity is not
+    an anomaly. An UNREADABLE previous file warns as an anomaly-check
+    degradation for that entity — never silently skipped, and never a hard
+    failure (a corrupt baseline must not fail the run).
     """
     warnings: list[str] = []
     for entity, df in outputs.items():
         prev_path = output_dir / f"{entity}.csv"
         if not prev_path.exists():
             continue
-        try:
-            with open(prev_path, encoding="utf-8") as f:
-                prev_count = sum(1 for _ in f) - 1
-        # Skip unreadable previous output files — missing baseline is fine
-        except Exception:  # nosec B112
+        prev_count = _previous_row_count(prev_path)
+        if prev_count is None:
+            warnings.append(_unreadable_baseline_msg(entity))
             continue
         if prev_count > 0 and len(df) < prev_count * (1 - ANOMALY_THRESHOLD):
             pct = ((prev_count - len(df)) / prev_count) * 100
             warnings.append(f"{entity} dropped from {prev_count} to {len(df)} rows ({pct:.0f}% decrease)")
+
+    # Vanished entities: configured to be produced, produced nothing this run,
+    # and a previous CSV is on disk (sorted for a deterministic warning order).
+    for entity in sorted(set(expected_entities or ()) - set(outputs)):
+        prev_path = output_dir / f"{entity}.csv"
+        if not prev_path.exists():
+            continue  # never produced before — a missing baseline is fine
+        prev_count = _previous_row_count(prev_path)
+        if prev_count is None:
+            warnings.append(_unreadable_baseline_msg(entity))
+            continue
+        if prev_count > 0:
+            warnings.append(f"{entity} produced no output this run (previous run had {prev_count} rows)")
     return warnings
 
 
-def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list[str]:
+def _check_anomalies(
+    outputs: dict[str, pd.DataFrame],
+    output_dir: Path,
+    expected_entities: Iterable[str] | None = None,
+) -> list[str]:
     """CLI renderer over :func:`compute_anomalies`: prefix ``ANOMALY:`` and log.
 
     Thin wrapper that adds the CLI's existing presentation to each shared base
@@ -236,7 +298,7 @@ def _check_anomalies(outputs: dict[str, pd.DataFrame], output_dir: Path) -> list
     the prefixed strings (consumed by the structured run-log's ``anomalies``).
     """
     warnings: list[str] = []
-    for msg in compute_anomalies(outputs, output_dir):
+    for msg in compute_anomalies(outputs, output_dir, expected_entities):
         prefixed = f"ANOMALY: {msg}"
         logger.warning(prefixed)
         warnings.append(prefixed)
@@ -537,9 +599,13 @@ def run_pipeline(
                 f"{len(data_errors_summary['by_field'])} field(s): {data_errors_summary['by_field']}"
             )
 
-        # Check for anomalies before writing
-        if outputs and not dry_run:
-            anomalies = _check_anomalies(outputs, Path(output_path))
+        # Check for anomalies before writing — including entities this run was
+        # configured to produce (enabled-entities-derived, NEVER mappings.keys())
+        # that produced nothing while a previous non-empty CSV sits on disk
+        # (present→absent / N→0). A partial run with some empty sources stays
+        # exit 0 by design — these are warnings, not failures.
+        if not dry_run:
+            anomalies = _check_anomalies(outputs, Path(output_path), configured_entity_order(mappings, global_config))
 
         # Write all outputs transactionally (all-or-nothing commit)
         if not dry_run and outputs:

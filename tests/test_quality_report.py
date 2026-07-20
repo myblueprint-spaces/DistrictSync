@@ -173,3 +173,88 @@ class TestDataQualityReport:
         }
         report = DataQualityReport().analyze(outputs)
         assert report.entities["StudentCourses"].duplicate_count == 2
+
+    def test_orphaned_family_student_ids(self):
+        """Family rows referencing students absent from Students warn (count only)."""
+        outputs = {
+            "Students": pd.DataFrame({"User ID": ["S1"]}),
+            "Family": pd.DataFrame(
+                {
+                    "First Name": ["John", "Mary"],
+                    "Student User ID": ["S1", "S999"],
+                    "Email": ["j@x.com", "m@x.com"],
+                }
+            ),
+        }
+        report = DataQualityReport().analyze(outputs)
+        warnings = [w for w in report.cross_entity_warnings if "Family student IDs" in w]
+        assert warnings == ["1 Family student IDs not found in Students output"]
+        # PII rule: counts only, never the student id itself.
+        assert "S999" not in warnings[0]
+
+    def test_orphaned_studentcourses_student_ids(self):
+        outputs = {
+            "Students": pd.DataFrame({"User ID": ["S1"]}),
+            "StudentCourses": pd.DataFrame(
+                {
+                    "Student ID": ["S1", "S998", "S999"],
+                    "Course Code": ["MATH10", "ENG11", "SCI10"],
+                    "Completion Date": ["", "", ""],
+                }
+            ),
+        }
+        report = DataQualityReport().analyze(outputs)
+        assert "2 StudentCourses student IDs not found in Students output" in report.cross_entity_warnings
+
+    def test_no_student_ref_warning_when_all_rostered(self):
+        outputs = {
+            "Students": pd.DataFrame({"User ID": ["S1", "S2"]}),
+            "Family": pd.DataFrame({"Student User ID": ["S1", "S2"], "Email": ["a@x.com", "b@x.com"]}),
+            "StudentCourses": pd.DataFrame({"Student ID": ["S1"], "Course Code": ["MATH10"], "Completion Date": [""]}),
+        }
+        report = DataQualityReport().analyze(outputs)
+        assert not any("student IDs not found" in w for w in report.cross_entity_warnings)
+
+    def test_no_student_ref_warning_without_students_output(self):
+        """mbponly-style runs (no Students output) must not warn on StudentCourses."""
+        outputs = {
+            "StudentCourses": pd.DataFrame({"Student ID": ["S1"], "Course Code": ["MATH10"], "Completion Date": [""]}),
+        }
+        report = DataQualityReport().analyze(outputs)
+        assert report.cross_entity_warnings == []
+
+
+class TestMissingFieldWarningThreshold:
+    """Pin the >50%-missing per-entity warning (report.py `_check_missing_fields`).
+
+    The warning fires only STRICTLY above 50% — exactly 50% still counts in
+    ``missing_fields`` but must stay warning-silent (the documented boundary).
+    """
+
+    def test_over_50_percent_missing_emits_the_pinned_warning(self):
+        # 3 of 4 Email values missing (None + "" + None) = 75% → warn.
+        outputs = {
+            "Students": pd.DataFrame(
+                {
+                    "User ID": ["S1", "S2", "S3", "S4"],
+                    "Email": [None, "", None, "a@b.com"],
+                }
+            ),
+        }
+        report = DataQualityReport().analyze(outputs)
+        assert report.entities["Students"].missing_fields["Email"] == 3
+        assert "Email: 75% missing (3/4)" in report.entities["Students"].warnings
+
+    def test_exactly_50_percent_missing_does_not_warn(self):
+        # 2 of 4 missing = exactly 50% → counted, but NO warning (strict > boundary).
+        outputs = {
+            "Students": pd.DataFrame(
+                {
+                    "User ID": ["S1", "S2", "S3", "S4"],
+                    "Email": [None, "", "a@b.com", "b@c.com"],
+                }
+            ),
+        }
+        report = DataQualityReport().analyze(outputs)
+        assert report.entities["Students"].missing_fields["Email"] == 2
+        assert report.entities["Students"].warnings == []

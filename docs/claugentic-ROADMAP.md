@@ -28,7 +28,7 @@ _Inferred from project structure, manifests, and docs — not from running the a
 _Housekeeping 2026-07-16: the 2026-06-25 audit backlog was verified item-by-item against the code — resolved items closed (#3 by plan 0034, #16 by 0029; #6's UI/store halves fixed, its log half is the accepted D2a decision), survivors merged into **Now** / **Later** below. Re-run `/claugentic-dev-harness:audit` to regenerate this section._
 <!-- harness-audit:backlog:end -->
 
-## Now — pre-partner batch  _(verified open 2026-07-16 · YAGNI-gated: bugs/PII/data-integrity that bite real partners in the first weeks; everything else deliberately waits)_
+## Now — pre-partner batch  _(ALL 7 ITEMS LANDED in the pre-partner completion branch, 2026-07-20 — host-key pinning W1a · vanish anomaly W1b · email data-errors W1c · 7-district contract W2a · convert_job archive W1b · Next-school-code VERIFIED (DECISIONS 2026-07-16) · SFTP retry W1a. Kept for the release record; prune after the release ships.)_
 
 1. **Pin the SpacesEDU SSH host keys.** `[security · S]` `src/sftp/uploader.py:118-120` still trusts any server on first connect (`AutoAddPolicy`) — the host *allowlist* checks the name, not the identity, so a first-connect MITM can harvest the SFTP password + a zipped student-data file. Ship/pin the 3 known SpacesEDU host keys, switch to a rejecting policy, drop the `# nosec B507`. _(audit #1)_
 2. **Make the anomaly check see a vanishing roster file.** `[bug · M]` An entity that transforms to zero rows never enters `outputs`, so `compute_anomalies` (`src/etl/pipeline.py:214`) can't flag a present→absent / N→0 transition, and an unreadable previous CSV is silently skipped (`:222-224`). Also diff against previous-run CSVs on disk; fail loud on an unreadable baseline; add the pinning test. _(audit #2)_
@@ -40,42 +40,27 @@ _Housekeeping 2026-07-16: the 2026-06-25 audit backlog was verified item-by-item
 
 ## Queued feature batches  _(owner-approved program, DECISIONS 2026-07-15 — detail lives in [`.claude/plans/0032-ui-ux-sweep-proposal.md`](../.claude/plans/0032-ui-ux-sweep-proposal.md))_
 
-- **0035 polish batch** — the 0032 items not yet executed by 0031/0033/0034: banner-copy honesty pass (T1 #1) · no-dead-end failure copy (#2) · plain-language vocabulary sweep (#6) · Convert cold-state fixes (#7) · setup-badge re-probe after register (#8) · About/support context + copy buttons + open-log-folder (#9) · interaction-state sweep (#10) · Firefighter fix-routing (T2 #4) · window-geometry persistence (T2 #8).
+- **0035 polish batch — LANDED 2026-07-20 (W3a/W3b/W3c + W4a):** banner-copy honesty pass (T1 #1) · no-dead-end failure copy (#2) · plain-language vocabulary sweep (#6) · Convert cold-state fixes (#7) · setup-badge re-probe after register (#8) · About/support context + copy buttons + open-log-folder (#9) · interaction-state sweep (#10) · Firefighter fix-routing (T2 #4) · window-geometry persistence (T2 #8).
 - **0036 bigger bets (discovery-first)** — startup/installer spike · keyboard + UNC paths · "Check My Setup" self-diagnostic + PII-safe diagnostics export. **NO email alerting** (owner decision).
 - **Mapping transparency (read-only)** — re-scoped epic (editor DROPPED): plain-language per-entity detail + a "request a change" support path + internal capability-catalog docs. Build only if prioritized.
-- **Code-debt batch** — `student_courses.py` config-driven source columns (+ derive `OUTPUT_COLUMNS` from the field_map); the T1/T2 refactors below.
+- **Code-debt batch — LANDED 2026-07-20** (student_courses config-driven columns W4b1; T1/T2/T3 refactors W4a/W4b2/W4c/W4d — see DECISIONS).
 
 ## Later  _(verified still open 2026-07-16; post-launch)_
 
 **Correctness & resilience (small):**
-- Linux `crontab -l` read failure wipes other cron jobs (`linux.py:107-115` ignores the exit code; destructive). **Promote to Now the moment any partner runs Linux/macOS.** _(audit #5)_
-- Same-second staging/backup dir collision — add a PID/uuid suffix + `exist_ok=False` or an output-dir lock (`loader.py:71-74`). _(audit #7)_
-- Hard-kill torn-output reconcile + aged `.tmp_`/`.bak_`/`archive_` sweep on startup. _(audit #8 · M)_
-- `_connect` leaks the paramiko client on a failed Test Connection — close before re-raising (`uploader.py:96-129`). _(audit #10)_
-- School-year disagreement across sources silently picks the first — collect + warn (`base.py:762-768`). _(audit #14)_
-- Fallback logging handler has no rotation (`logger.py`). _(audit #17)_
-- `_register` early-return still reports `DISPATCHED` — a malformed run time paints "updating…" beside a run-time error; have `_register` report actual dispatch. _(0034 S3 re-gate residual)_
-- Non-numeric SFTP port mislabels as "host not allowed" (`setup.py:1309-1318`) — fold into the 0035 no-dead-end copy sweep. _(0029 deferral)_
-- Wizard backtrack desync guard — Schedule re-entry/Finish doesn't re-register when `sftp_enabled` changed after registering (Settings Save self-heals since 0034 S3). _(0029 deferral · M)_
 - Surface schedule students absent from the demographic as a quality warning (silently dropped today; large gaps already trip the >20% alarm) — fold into 0035 quality-signal work. _(in-house process item)_
 
 **Config & data (owner input where noted):**
-- Config `version` field is never checked and a stale user-dir config shadows the bundled one — validate a supported range in `load_config`. _(audit #11 · M)_
-- StudentCourses letter/"Pass" marks score as fails, nulling earned credits — **owner: is legacy-PowerShell parity intended?** Promote if a letter-grade myBlueprint+ partner joins; minimally record a data_error on non-blank non-numeric marks. _(audit #15)_
-- Family.csv isn't filtered to the active roster (zero-orphan invariant covers Enrollments/Classes only) — **verify SpacesEDU's tolerance of orphaned Family rows first**, then decide. _(T3.11 · S)_
-- StudentCourses active filtering — **owner decision**: should inactive/graduated students' transcripts be emitted? _(T3.12)_
+- **Owner decision (residual):** should alpha marks ('A', 'Pass') ever score as passing / earn credits? Scoring stays legacy-parity; the W1c data_error now measures the affected volume per district — decide with data.
+- **Owner decision (residual):** mbp tiers now exclude non-rostered (incl. GRADUATED) students' transcripts (W1c) — if myBlueprint+ needs graduate transcripts, add a per-tier opt-out.
 
 **Test & dev hygiene:**
-- Assert the >50%-missing quality warning (+ exact-50% boundary) in tests. _(audit #13)_
-- Flaky render-smoke test `test_no_edit_save_after_mapping_switch_reregisters_from_the_persisted_args` — stub the probe-thread kick, not just the probe. _(0034 residual)_
-- Session-teardown real-profile assertion (the isolation canary runs mid-suite; a leak scheduled after it goes uncaught). _(0029 deferral)_
-- Static-ban un-awaited `page.window.destroy()/close()/center()` in the AST scan (the silent-no-op-Exit class). _(0029 deferral)_
 - SHA-pin all GitHub Actions (every action is a mutable `@vN`; do `softprops/action-gh-release` first). _(security hygiene)_
-- Delete `docs/reference/flet-prototype-spike/` + fork branch `ci/flet-xplatform-verify`; re-home the two doc references first (`shell.py:5`, `FLET_1.0_CONVENTIONS.md:172`). _(CUT-1 leftover)_
-- Linux `interpret_unregister` absent-markers don't match crontab's "no crontab for user" phrasing. _(0029 deferral; Linux-partner trigger)_
+- Delete the fork branch `ci/flet-xplatform-verify` (owner-only): `git push https://github.com/sh4npeiris/DistrictSync.git --delete ci/flet-xplatform-verify` — the spike dir itself was deleted in the pre-partner batch. _(CUT-1 remainder.)_
 
-**Refactor program (owner-queued after 0035/0036; landing a large refactor pre-launch is risk, not value — YAGNI verdict 2026-07-16):**
-- T1.1 typed-config field Strategy (L — kills `classify_field`/`to_raw_dict` round-trip; subsumes T3.10 idempotence nit) · T1.2 debloat `BaseTransformer` + fix the `BlendedClassDetector` LSP smell (L) · T2.1 typed `ClassArtifacts` handoff (M — KISS-check when picked up) · T2.2 single `config.active_entities()` for the 4 duplicated selection sites (M) · T2.3 Scheduler Protocol + factory (M — platform dispatch now at ~17 sites) · T2.4 validate-at-boundary finish (M — `astype(str).str.strip()` grew 22→33 sites; dead `check_required_entities`) · T3.1 `EnrollmentSource` strategies (M — KISS-check) · T3.2 decompose `BlendedClassDetector.detect` (S) · T3.4 hoist the grade→CEDS→homeroom split (S, 4 sites) · T3.5 delete dead `helpers.py` trio + re-home zip helpers (S) · T3.8 `resolve_column()` helper + one shared `DATE_FORMATS` (S) · T3.9 document `_deep_merge` list-replace semantics (S).
+**T1.1 stage 2 — raw-dict deletion (deferred from W4b2 with a mapped consumer list).** Delete `to_raw_dict()`/`get_raw_field_map()` and consume the TYPED `MappingConfig` end-to-end (consumers mapped in the W4b2 report: pipeline.py ~:558, transformer.py facade, context.py helpers, every entity-transformer seam, quality/report.py, screens/convert.py ~:188, mapping_catalog.py; normalize per-seam via `ensure_field_mapping`). **HAZARD the follow-up must preserve:** in real runs `context.global_config` carries no `mappings` key, so `get_teacher_id_col()`/`get_demo_student_col()` ALWAYS resolve MyEd BC defaults — a naive typed migration would change output bytes for districts overriding those columns; preserve as-is, or fix as its own snapshot-evidenced slice. _(Deferred 2026-07-20 — pre-release byte-change risk outweighed cleanup value.)_
+
+**Refactor program — LANDED 2026-07-20** (W4a/W4b1/W4b2/W4c/W4d; the 2026-07-16 pre-launch-refactor deferral was REVERSED by the owner's "do them all" directive — see DECISIONS). Remaining: T3.1 enrollment strategy classes (consciously DECLINED — builder functions suffice) and T1.1 stage 2 (raw-dict deletion, tracked above with its byte-change hazard).
 
 **Owner-deferred (explicit decisions, not debt):**
 - Email/push alerting on failed **or missed** nightly runs — the pull-cockpit ceiling stands by owner choice (2026-07-15: "ignore email alert for now"; 0036 queue says NO email alerting). Revisit when a real support load justifies it.

@@ -118,6 +118,18 @@ def _show_error_dialog(message: str) -> None:  # pragma: no cover - view glue
                 except Exception:
                     os._exit(0)
 
+            def _open_logs(_e: ft.ControlEvent) -> None:
+                # Best-effort (0032 T1 #9): open the folder holding the traceback so the
+                # admin can hand the log to support without hunting for the path (which
+                # stays readable in the selectable message text if this fails). Imported
+                # lazily — this dialog is the "boot failed" path, so keep its needs minimal.
+                try:
+                    from src.ui_flet.convert_output import open_folder
+
+                    open_folder(str(resolve_log_path().parent))
+                except Exception:  # nosec B110 — the log path stays visible in the dialog text
+                    pass
+
             page.add(
                 ft.Container(
                     padding=ft.Padding(left=28, top=28, right=28, bottom=28),
@@ -126,7 +138,13 @@ def _show_error_dialog(message: str) -> None:  # pragma: no cover - view glue
                         controls=[
                             ft.Text("DistrictSync", size=20, weight=ft.FontWeight.W_800),
                             ft.Text(message, size=14, selectable=True),
-                            ft.FilledButton("Close", on_click=_close),
+                            ft.Row(
+                                spacing=12,
+                                controls=[
+                                    ft.FilledButton("Close", on_click=_close),
+                                    ft.TextButton("Open log folder", on_click=_open_logs),
+                                ],
+                            ),
                         ],
                     ),
                 )

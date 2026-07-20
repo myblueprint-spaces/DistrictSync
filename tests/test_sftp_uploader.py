@@ -1,10 +1,61 @@
 """Tests for src/sftp/uploader.py — SFTP upload with mocked paramiko/keyring."""
 
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.sftp.uploader import KEYRING_SERVICE, LISTING_DENIED_NOTE, SFTPUploader
+from src.sftp.uploader import (
+    KEYRING_SERVICE,
+    LISTING_DENIED_NOTE,
+    SFTPUploader,
+    build_zip_name,
+    district_slug,
+)
+
+
+class TestDistrictSlug:
+    def test_strips_myedbc_suffix(self):
+        assert district_slug("sd40myedbc") == "sd40"
+        assert district_slug("sd48myedbc") == "sd48"
+        assert district_slug("sd51myedbc") == "sd51"
+        assert district_slug("sd74myedbc") == "sd74"
+
+    def test_base_myedbc_unchanged(self):
+        assert district_slug("myedbc") == "myedbc"
+
+    def test_sanitizes_special_characters(self):
+        assert district_slug("myBlueprint+") == "myBlueprint"
+        assert district_slug("sis with spaces") == "sis_with_spaces"
+        assert district_slug("sis/with\\slashes") == "sis_with_slashes"
+
+    def test_fallback_when_all_stripped(self):
+        assert district_slug("+++") == "district"
+        assert district_slug("   ") == "district"
+
+
+class TestBuildZipName:
+    def test_with_district(self):
+        result = build_zip_name("sd40myedbc", for_date=date(2026, 4, 10))
+        assert result == "districtsync_sd40_2026-04-10.zip"
+
+    def test_with_base_district(self):
+        result = build_zip_name("myedbc", for_date=date(2026, 4, 10))
+        assert result == "districtsync_myedbc_2026-04-10.zip"
+
+    def test_without_district_falls_back_to_date_only(self):
+        """Legacy callers that don't know the district get the old format."""
+        result = build_zip_name(for_date=date(2026, 4, 10))
+        assert result == "districtsync_2026-04-10.zip"
+
+    def test_none_district_matches_default(self):
+        result = build_zip_name(sis_type=None, for_date=date(2026, 4, 10))
+        assert result == "districtsync_2026-04-10.zip"
+
+    def test_uses_today_when_no_date_provided(self):
+        result = build_zip_name("sd40myedbc")
+        today = date.today().isoformat()
+        assert result == f"districtsync_sd40_{today}.zip"
 
 
 class TestSFTPUploaderInit:

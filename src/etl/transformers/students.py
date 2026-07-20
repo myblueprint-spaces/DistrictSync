@@ -7,6 +7,7 @@ import pandas as pd
 
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
+from src.etl.transformers.ids import normalize_id_series
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ class StudentTransformer(BaseTransformer):
         working = self._filter_active(working, field_map)
         working = self._collapse_cross_enrollment(working, field_map, context)
         result["EnrollStatus"] = working["EnrollStatus"]
-        self._generate_emails(working, result, field_map)
+        self._generate_emails(working, result, field_map, context)
 
         result = self.apply_field_map(working, result, field_map, "Students", context)
         if "Date of Birth" in result.columns:
@@ -35,7 +36,7 @@ class StudentTransformer(BaseTransformer):
         # student. Same value space as the schedule's `Student ID` (pupil
         # numbers); normalized so the cross-frame join matches.
         if "User ID" in result.columns:
-            context.active_student_ids = set(result["User ID"].astype(str).str.strip())
+            context.active_student_ids = set(normalize_id_series(result["User ID"]))
 
         return result
 
@@ -55,7 +56,7 @@ class StudentTransformer(BaseTransformer):
         ):
             if primary not in result.columns or fallback not in result.columns:
                 continue
-            is_blank = result[primary].isna() | result[primary].astype(str).str.strip().str.lower().isin(["", "nan"])
+            is_blank = result[primary].isna() | normalize_id_series(result[primary]).str.lower().isin(["", "nan"])
             result.loc[is_blank, primary] = result.loc[is_blank, fallback]
 
     def _collapse_cross_enrollment(
@@ -94,8 +95,8 @@ class StudentTransformer(BaseTransformer):
 
         before = len(working)
         working = working.copy()
-        school_norm = working[school_col].astype(str).str.strip()
-        home_norm = working[home_col].astype(str).str.strip()
+        school_norm = normalize_id_series(working[school_col])
+        home_norm = normalize_id_series(working[home_col])
         # Priority 0 = home-school row (School == Home School), 1 otherwise. A
         # stable sort brings the home row first within each User ID group, so
         # keep="first" retains it (or the first row when no home match exists).
@@ -148,10 +149,16 @@ class StudentTransformer(BaseTransformer):
         status_column, _, _ = cls.resolve_active_config(field_map, dropped.columns)
         if status_column is None or dropped.empty:
             return {}
-        counts = dropped[status_column].astype(str).str.strip().value_counts()
+        counts = normalize_id_series(dropped[status_column]).value_counts()
         return {str(k): int(v) for k, v in counts.items()}
 
-    def _generate_emails(self, working: pd.DataFrame, result: pd.DataFrame, field_map: dict[str, Any]) -> None:
+    def _generate_emails(
+        self,
+        working: pd.DataFrame,
+        result: pd.DataFrame,
+        field_map: dict[str, Any],
+        context: TransformContext,
+    ) -> None:
         """Generate the ``Email Address`` column from the template, if configured.
 
         Opt-in extensions (default off → every existing district byte-identical):
@@ -163,6 +170,11 @@ class StudentTransformer(BaseTransformer):
         Derived pseudo-columns are injected into a LOCAL copy only, so the
         caller's ``working`` frame (later fed to ``apply_field_map``) never sees
         them.
+
+        Row-resilient + loud (same convention as ``apply_field_map``): a row
+        whose template raises ``KeyError`` (template key absent from the row)
+        gets ``""`` for that cell only; every failure is aggregated into ONE
+        ERROR log + one ``context.data_errors`` record — never silently blanked.
         """
         email_config = field_map.get("Email Address", {})
         if not isinstance(email_config, dict):
@@ -188,6 +200,22 @@ class StudentTransformer(BaseTransformer):
         else:
             src = working
 
-        result["Email Address"] = src.apply(
-            self.generate_student_email, format_str=email_format.lower(), sanitize=sanitize, axis=1
-        )
+        fmt = email_format.lower()
+        emails: list[str] = []
+        failures = 0
+        first_sample = ""
+        for _, row in src.iterrows():
+            try:
+                emails.append(self.generate_student_email(row, format_str=fmt, sanitize=sanitize))
+            except KeyError as ex:
+                emails.append("")
+                failures += 1
+                if not first_sample:
+                    first_sample = f"missing template key {ex}"
+        if failures:
+            logger.error(
+                f"Error transforming Students.Email Address: {failures} row(s) failed "
+                f"(email left blank) — sample {first_sample}"
+            )
+            self._record_data_error(context, "Students", "Email Address", failed_rows=failures, sample=first_sample)
+        result["Email Address"] = pd.Series(emails, index=src.index, dtype="object")

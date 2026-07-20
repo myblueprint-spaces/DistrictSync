@@ -59,9 +59,12 @@ class VerdictVisual:
 # AA-safe verdict token + each carries a non-empty icon and tone).
 _VERDICT_VISUALS: dict[Verdict, VerdictVisual] = {
     Verdict.HEALTHY: VerdictVisual(
+        # The DEFAULT healthy headline is schedule-NEUTRAL (0032 T1 #1c): "up to date" is honest
+        # with no schedule fact in hand; the stronger "Your roster is syncing" claim is derived
+        # only by `home_status` when a LIVE read-back confirms the nightly schedule.
         color=tokens.color_status_healthy,
         icon="CHECK_CIRCLE_ROUNDED",
-        headline="Your roster is syncing",
+        headline="Your roster is up to date",
         tone="Healthy",
     ),
     Verdict.WARNING: VerdictVisual(

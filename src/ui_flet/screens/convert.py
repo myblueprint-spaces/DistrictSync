@@ -47,6 +47,15 @@ deliver-by-rebuild's hardcoded ``anomaly_ack=True`` bypass is gone with the rebu
 The confirm dialog names the server + local folder once and carries the honest
 freshness fact ("Files last built …", from the newest on-disk CSV's mtime).
 
+**Cold-state + interaction sweep (0035 W3b):** pre-setup, the screen leads with the
+routed "Finish setup first" card (pure ``show_setup_first_card``/``setup_first_copy``;
+``on_navigate`` injected by the shell, defensive without it); the unset-output caption is
+mode-aware (wizard vs Settings); an amber ``district_mismatch_note`` flags a per-run pick
+that differs from the saved district; and every busy/idle disabled flag paints the pure
+``interaction_state`` table (inputs lock while a job runs — no dead clicks, no
+double-start, no mid-run edits). The ``on_error`` cards render the fixed
+``convert_error_copy``/``deliver_error_copy`` pairs, each ending with a concrete next step.
+
 **Write-in-flight close guard (IA-5b, C6):** a module-level flag
 (``_WRITE_IN_FLIGHT``) is set immediately before ``save_all`` and cleared in a
 ``finally``; ``is_write_in_flight()`` exposes it for ``shell._on_leave``. It is
@@ -59,6 +68,7 @@ from __future__ import annotations
 
 import contextlib
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import flet as ft
@@ -70,6 +80,7 @@ from src.etl.loader import DataLoader
 from src.etl.pipeline import (
     build_run_record,
     compute_anomalies,
+    configured_entity_order,
     extract_required_files,
     run_transform,
 )
@@ -80,15 +91,26 @@ from src.ui_flet import components, tokens
 from src.ui_flet.convert_output import (
     DeliverReadiness,
     can_run_convert,
+    district_mismatch_note,
     freshness_fact,
+    interaction_state,
+    missing_files_copy,
     newest_output_csv_mtime_iso,
     open_folder,
     output_csvs_present,
     output_dir_is_set,
     resolved_output_caption,
+    setup_first_copy,
+    show_setup_first_card,
     standalone_deliver_state,
 )
-from src.ui_flet.convert_result import ConvertResult, ConvertStatus, summarize
+from src.ui_flet.convert_result import (
+    ConvertResult,
+    ConvertStatus,
+    convert_error_copy,
+    deliver_error_copy,
+    summarize,
+)
 from src.ui_flet.filepicker import validate_input_dir
 from src.ui_flet.home_status import ENTITY_LABELS
 from src.ui_flet.humanize import friendly_district_name
@@ -135,9 +157,10 @@ def convert_job(
 
     Off the UI thread (``JobRunner`` runs it via ``page.run_thread``):
     ``load_config → load_from_bytes → run_transform → compute_anomalies`` and — only
-    when clear or acknowledged — ``save_all`` + the quality report, then (only when
-    ``sftp_requested``) an SFTP delivery. When a >20% anomaly fires without
-    ``anomaly_ack`` it returns ``NEEDS_ANOMALY_ACK`` **without writing**.
+    when clear or acknowledged — ``save_all`` + stale-output archival + the quality
+    report, then (only when ``sftp_requested``) an SFTP delivery. When an anomaly
+    (a >20% drop, or a configured entity that vanished against its previous CSV)
+    fires without ``anomaly_ack`` it returns ``NEEDS_ANOMALY_ACK`` **without writing**.
 
     ETL-level failures (a missing field-map column → ``save_all``'s ``ValueError``,
     ``load_config``'s errors) propagate as exceptions → the runner's ``on_error``
@@ -183,8 +206,10 @@ def convert_job(
     if not outputs:
         return ConvertResult(status=ConvertStatus.NO_OUTPUT)
 
-    # Anomaly gate BEFORE writing: a >20% drop, un-acknowledged, withholds the write.
-    anomalies = compute_anomalies(outputs, output_dir)
+    # Anomaly gate BEFORE writing: a >20% drop — or an entity this run was configured
+    # to produce that vanished (present→absent / N→0, judged against the
+    # enabled-entities-derived set) — un-acknowledged, withholds the write.
+    anomalies = compute_anomalies(outputs, output_dir, configured_entity_order(mappings, global_config))
     if anomalies and not anomaly_ack:
         return ConvertResult(
             status=ConvertStatus.NEEDS_ANOMALY_ACK,
@@ -198,12 +223,20 @@ def convert_job(
     # backup-and-restore atomicity is the real net; the flag is reassurance for
     # `shell._on_leave`. A `save_all` failure PROPAGATES (fail-loud), and the flag
     # is cleared in the `finally` either way.
+    loader = DataLoader(str(output_dir))
     global _WRITE_IN_FLIGHT
     _WRITE_IN_FLIGHT = True
     try:
-        DataLoader(str(output_dir)).save_all(outputs, field_orders)
+        loader.save_all(outputs, field_orders)
     finally:
         _WRITE_IN_FLIGHT = False
+
+    # Archive (non-destructive) entity CSVs left in the output dir that this run
+    # did NOT produce — mirrors run_pipeline: a stale CSV must never ship in an
+    # SFTP zip (the delivery leg below, or a later deliver-from-disk, globs the
+    # top-level *.csv set). Moving them into archive_<ts>/ (a SUBfolder) excludes
+    # them without deleting anything; best-effort — never fails a committed build.
+    loader.archive_stale_outputs(set(outputs))
 
     quality_text = DataQualityReport().analyze(outputs).to_text()
     entity_counts = {name: len(df) for name, df in outputs.items()}
@@ -368,8 +401,17 @@ def _record_manual_run(result: ConvertResult, *, sis_type: str, elapsed: float, 
 # --------------------------------------------------------------------------- #
 # The view.                                                                     #
 # --------------------------------------------------------------------------- #
-def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view glue
-    """Build the Convert surface, bound to ``page`` (via ``partial`` in the shell)."""
+def build_convert(
+    page: ft.Page,
+    on_navigate: Callable[[str], None] | None = None,
+) -> ft.Control:  # pragma: no cover - Flet view glue
+    """Build the Convert surface, bound to ``page`` (via ``partial`` in the shell).
+
+    ``on_navigate`` (Home's exact injection pattern — the shell passes ``select_by_id``)
+    powers the pre-setup "Finish setup first" card's routed "Open Setup" action (0035
+    W3b). Optional + defensive: an un-wired mount still renders the card's copy (which
+    stands alone), just without the routing button.
+    """
     cfg = AppConfig.load()
     configs = available_configs()
     # D9: NO silent fallback — prefill only from a valid SAVED district; otherwise leave the
@@ -382,6 +424,10 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
     # + post-run "Open folder" row all read this one value — never a hidden input-dir fallback.
     output_dir_value = cfg.output_dir
     output_set = output_dir_is_set(output_dir_value)
+    # 0035 W3b: the mode axis for the cold state — before setup completes, the unset-output
+    # caption routes to the Setup WIZARD (there is no Settings scroll yet), and the screen
+    # may lead with the routed "Finish setup first" card (pure decision below).
+    setup_done = cfg.has_completed_setup()
 
     runner = JobRunner()
     selected: dict[str, str | None] = {"district": default_district}
@@ -397,10 +443,21 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
         width=340,
     )
 
+    # The amber saved-vs-picked heads-up (0035 W3b): visible ONLY when the per-run pick
+    # differs from the saved district (pure `district_mismatch_note` decides + words it).
+    # Amber text on the white card is the same painted pair the unset-output caption uses.
+    district_note = ft.Text("", size=13, color=tokens.color_status_warning, visible=False)
+
+    def _refresh_district_note() -> None:
+        note = district_mismatch_note(selected["district"], cfg.sis_type)
+        district_note.value = note or ""
+        district_note.visible = note is not None
+
     # Read-only pre-run visibility: where files will be written (or the routed blocked
-    # message when no output folder is set). Warning-toned when unset so the blocked state reads.
+    # message when no output folder is set — wizard-aware before setup completes).
+    # Warning-toned when unset so the blocked state reads.
     output_caption = ft.Text(
-        resolved_output_caption(output_dir_value),
+        resolved_output_caption(output_dir_value, setup_completed=setup_done),
         size=13,
         color=tokens.color_muted if output_set else tokens.color_status_warning,
     )
@@ -426,13 +483,28 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
         icon=ft.Icons.PLAY_ARROW_ROUNDED,
     )
 
-    def _refresh_convert_gate() -> None:
-        gates_ok = can_run_convert(
-            district_chosen=bool(selected["district"]),
-            output_dir_set=output_set,
-            input_valid=validate_input_dir(input_field.value).ok,
+    def _apply_interaction(*, job_running: bool) -> None:
+        """Paint the pure ``interaction_state`` table (0035 W3b) onto the controls.
+
+        The single place the busy/idle disabled flags land: the Convert button mirrors the
+        ``JobRunner`` single-flight guard (no dead click can start a second job), and the
+        district + input-folder controls lock while a job runs (the job snapshotted them
+        at start — mid-run edits would desynchronize the form from the work in flight).
+        """
+        state = interaction_state(
+            gates_ok=can_run_convert(
+                district_chosen=bool(selected["district"]),
+                output_dir_set=output_set,
+                input_valid=validate_input_dir(input_field.value).ok,
+            ),
+            job_running=job_running,
         )
-        convert_btn.disabled = not (gates_ok and runner.state.can_start)
+        convert_btn.disabled = state.convert_disabled
+        district_dropdown.disabled = state.inputs_disabled
+        input_field.disabled = state.inputs_disabled
+
+    def _refresh_convert_gate() -> None:
+        _apply_interaction(job_running=runner.state.is_running)
         page.update()
 
     def _on_input_change(_path: str, _result: object) -> None:
@@ -451,6 +523,7 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
 
     def _on_district_change(_e: ft.ControlEvent) -> None:
         selected["district"] = district_dropdown.value or default_district
+        _refresh_district_note()  # the amber differs-from-saved heads-up follows the pick
         _refresh_files()
         _refresh_convert_gate()  # D9: district is part of the run-gate now — re-check on pick
 
@@ -460,10 +533,10 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
     # Run + result rendering (all UI mutation on the loop, never the worker).
     # ------------------------------------------------------------------ #
     def _set_running(running: bool, *, caption: str = "Converting… this can take a moment for large extracts.") -> None:
-        if running:
-            convert_btn.disabled = True
-        else:
-            _refresh_convert_gate()  # single-source: re-derive district + output + input + can_start
+        # `running or runner.state.is_running`: callers flag the transition BEFORE the
+        # runner flips to RUNNING (start) and read the settled state after (done/error) —
+        # either signal means "a job is in flight", and the pure table paints the rest.
+        _apply_interaction(job_running=running or runner.state.is_running)
         convert_spinner.visible = running
         convert_caption.visible = running
         convert_caption.value = caption if running else ""
@@ -486,14 +559,10 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
 
         def _on_error(_exc: BaseException) -> None:
             # Privacy: the raw exception (may carry a path / column) is NEVER surfaced —
-            # a fixed category message only (the raw error belongs to the log).
+            # fixed category copy only (the raw error belongs to the log). The copy ends
+            # with a concrete next step (0035 W3b — no dead-end failures).
             _set_running(False)
-            result_slot.controls = [
-                components.ErrorCard(
-                    "The conversion couldn't finish",
-                    "Something went wrong while building your roster. Your existing files were not changed.",
-                )
-            ]
+            result_slot.controls = [components.ErrorCard(*convert_error_copy())]
             page.update()
 
         started = runner.run(
@@ -528,14 +597,10 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
             page.update()
 
         def _on_error(_exc: BaseException) -> None:
-            # Privacy: the raw exception is NEVER surfaced — fixed category copy only.
+            # Privacy: the raw exception is NEVER surfaced — fixed category copy only,
+            # ending with a concrete next step (0035 W3b — no dead-end failures).
             _set_running(False)
-            result_slot.controls = [
-                components.ErrorCard(
-                    "The delivery couldn't start",
-                    "Something went wrong before the upload began. Your files were not changed.",
-                )
-            ]
+            result_slot.controls = [components.ErrorCard(*deliver_error_copy())]
             page.update()
 
         started = runner.run(page, lambda: deliver_job(sis), on_done=_on_done, on_error=_on_error)
@@ -768,6 +833,7 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
             return [_delivery_not_ready_card()]
         return []
 
+    _refresh_district_note()
     _refresh_files()
     _refresh_convert_gate()
     deliver_slot.controls = _standalone_deliver_controls()
@@ -786,6 +852,7 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
             spacing=20,
             controls=[
                 district_dropdown,
+                district_note,
                 input_field,
                 files_slot,
                 output_caption,
@@ -798,7 +865,18 @@ def build_convert(page: ft.Page) -> ft.Control:  # pragma: no cover - Flet view 
         ),
     )
 
-    return ft.Column(spacing=22, controls=[header, form, deliver_slot, result_slot])
+    # Pre-setup cold state (0035 W3b): when the run essentials are missing AND setup never
+    # completed, lead with the calm routed card — the fix lives in Setup, not in a disabled
+    # button. The form stays rendered beneath (a partially-set-up install remains usable).
+    top: list[ft.Control] = [header]
+    if show_setup_first_card(
+        setup_completed=setup_done,
+        output_dir_set=output_set,
+        district_saved=default_district is not None,
+    ):
+        top.append(_setup_first_card(on_navigate))
+
+    return ft.Column(spacing=22, controls=[*top, form, deliver_slot, result_slot])
 
 
 # --------------------------------------------------------------------------- #
@@ -835,6 +913,34 @@ def _sftp_credential_present(cfg: AppConfig) -> bool:  # pragma: no cover - Flet
         return bool(uploader.get_stored_password())
     except Exception:  # noqa: BLE001 - any construction/keyring failure → treat as no credential
         return False
+
+
+def _setup_first_card(on_navigate: Callable[[str], None] | None) -> ft.Control:  # pragma: no cover - Flet view glue
+    """The calm pre-setup "Finish setup first" card — routed, never a dead end (0035 W3b).
+
+    Copy is the pure ``setup_first_copy`` pair; the "Open Setup" action renders only when
+    the shell injected ``on_navigate`` (Home's pattern) — without it the body still tells
+    the admin where to go. Secondary tier: "Convert now" keeps the screen's one filled
+    primary even while gated.
+    """
+    title, body = setup_first_copy()
+    rows: list[ft.Control] = [
+        ft.Text(title, size=15, weight=ft.FontWeight.W_700, color=tokens.color_text),
+        ft.Text(body, size=13, color=tokens.color_muted),
+    ]
+    if on_navigate is not None:
+        rows.append(
+            ft.Row(
+                controls=[
+                    components.secondary_button(
+                        "Open Setup",
+                        lambda _e: on_navigate("setup"),
+                        icon=ft.Icons.ARROW_FORWARD_ROUNDED,
+                    )
+                ]
+            )
+        )
+    return components.card(content=ft.Column(spacing=12, controls=rows))
 
 
 def _delivery_not_ready_card() -> ft.Control:  # pragma: no cover - Flet view glue
@@ -911,9 +1017,13 @@ def _build_file_chips(config_name: str | None, input_dir: str) -> list[ft.Contro
 
     missing = [f for f in expected if f not in present]
     if missing:
+        # Softened copy (0035 W3b): a missing source file is legitimate (per-entity
+        # skip-on-empty), so the heading observes calmly and the muted reassurance line
+        # states the honest consequence — pure `missing_files_copy` owns the words.
+        heading, reassurance = missing_files_copy()
         controls.append(
             ft.Text(
-                "Expected files not found in this folder:",
+                heading,
                 size=13,
                 weight=ft.FontWeight.W_700,
                 color=tokens.color_status_warning,
@@ -922,6 +1032,7 @@ def _build_file_chips(config_name: str | None, input_dir: str) -> list[ft.Contro
         controls.append(
             ft.Row(spacing=10, wrap=True, controls=[components.FileChip(name, present=False) for name in missing])
         )
+        controls.append(ft.Text(reassurance, size=13, color=tokens.color_muted))
     return controls
 
 

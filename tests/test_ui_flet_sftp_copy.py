@@ -16,7 +16,13 @@ from __future__ import annotations
 import pytest
 
 from src.config.app_config import AppConfig
-from src.ui_flet.sftp_copy import sftp_form_differs_from_saved, sftp_test_copy
+from src.ui_flet.sftp_copy import (
+    PORT_ERROR_DETAIL,
+    PORT_ERROR_HEADLINE,
+    parse_port,
+    sftp_form_differs_from_saved,
+    sftp_test_copy,
+)
 
 _HOST = "sftp.ca.spacesedu.com"
 _USER = "district_x"
@@ -45,10 +51,22 @@ class TestSftpTestCopy:
     @pytest.mark.parametrize("unsaved_edits", [False, True])
     def test_always_names_host_and_user(self, provenance, unsaved_edits):
         headline, detail = self._copy(provenance=provenance, unsaved_edits=unsaved_edits)
-        assert headline == "SFTP connection succeeded"
+        # 0032 T1 #6 vocabulary: plain language — the delivery route, not the protocol.
+        # Still test-scoped honest: a CONNECTION happened; no delivery is claimed.
+        assert headline == "Connected to SpacesEDU"
         # Every success names WHAT it checked: which host, as which user.
         assert _HOST in detail
         assert _USER in detail
+
+    @pytest.mark.parametrize("provenance", ["stored", "typed"])
+    @pytest.mark.parametrize("unsaved_edits", [False, True])
+    def test_success_copy_has_no_sftp_jargon(self, provenance, unsaved_edits):
+        # 0032 T1 #6: "SFTP" never appears in the admin-facing success copy. (The lowercase
+        # "sftp." inside the HOST value is the technical hostname, not jargon copy — the
+        # "SFTP host" FIELD label in screens/setup.py is the one sanctioned exception.)
+        headline, detail = self._copy(provenance=provenance, unsaved_edits=unsaved_edits)
+        assert "SFTP" not in headline
+        assert "SFTP" not in detail
 
     @pytest.mark.parametrize("provenance", ["stored", "typed"])
     @pytest.mark.parametrize("unsaved_edits", [False, True])
@@ -179,3 +197,38 @@ class TestSftpFormDiffersFromSaved:
         # Defensive: a non-numeric port can never equal the saved int → treat as a diff
         # (softer copy), never raise.
         assert self._differs(self._saved_cfg(), port="not-a-port") is True
+
+
+class TestParsePort:
+    """The total form-port parse — the view's pre-parse seam for the fixed port error."""
+
+    def test_numeric_string_parses(self):
+        assert parse_port("2222") == 2222
+
+    def test_whitespace_is_stripped(self):
+        assert parse_port("  22  ") == 22
+
+    def test_blank_falls_back_to_default(self):
+        assert parse_port("") == 22
+        assert parse_port("   ") == 22
+
+    def test_none_falls_back_to_default(self):
+        assert parse_port(None) == 22  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("typo", ["abc", "22a", "2.2", "twenty-two"])
+    def test_unparseable_returns_none_never_raises(self, typo):
+        assert parse_port(typo) is None
+
+
+class TestPortErrorCopy:
+    """The fixed port-typo copy both view sites (Test + Save) render — byte-pinned so the
+    port error can never regress into the host-allowlist message again."""
+
+    def test_headline_and_detail_are_byte_pinned(self):
+        assert PORT_ERROR_HEADLINE == "That port isn't a number"
+        assert PORT_ERROR_DETAIL == "The port must be a number — SpacesEDU delivery usually uses 22."
+
+    def test_port_copy_never_mentions_the_host_allowlist(self):
+        # The misclassification this fix kills: a port typo must never read as a host problem.
+        for text in (PORT_ERROR_HEADLINE, PORT_ERROR_DETAIL):
+            assert "host" not in text.lower()
