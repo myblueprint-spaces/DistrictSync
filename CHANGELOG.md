@@ -64,6 +64,17 @@ Per-release download links and auto-generated commit notes live on the
   error card offers "Open log folder". Plainer language throughout: "Schedule
   nightly sync" / "Remove nightly sync". (W3c)
 
+### Changed
+
+- **Internal refactor wave (behavior-preserving; district output byte-identical
+  by snapshot proof).** Field mappings apply through a typed Strategy with
+  unknown `transform:` names rejected at config load with an actionable error;
+  `BaseTransformer` slimmed by composition into focused helper modules; the
+  blended-class detector is a plain service with a single-pass teacher index;
+  duplicated grade-split/date-format/ID-normalization idioms collapsed to
+  single sources; a config missing standard rostering entities now warns at
+  load. (W4b2 + W4c)
+
 ### Fixed
 
 - **The Class "Name" mapping config now actually drives class naming.** The
