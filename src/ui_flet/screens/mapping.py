@@ -52,12 +52,12 @@ Owns no lifecycle. **Never-crash floor:** the whole body is wrapped in ``try/exc
 from __future__ import annotations
 
 import contextlib
-import sys
 from collections.abc import Callable
 
 import flet as ft
 
 from src.config.app_config import AppConfig
+from src.scheduler import get_scheduler
 from src.ui_flet import components, tokens
 from src.ui_flet.mapping_catalog import (
     ConfigSummary,
@@ -237,9 +237,10 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
         hint_registered: bool,
         paint: Callable[[ScheduleState | None], None],
     ) -> None:
-        # Windows-only (like the shell's badge probe): elsewhere the hedged initial paint IS
-        # the honest final state — a live schedule is never asserted from the hint alone.
-        if sys.platform != "win32":
+        # Read-back-capable schedulers only (like the shell's badge probe): elsewhere the hedged
+        # initial paint IS the honest final state — a live schedule is never asserted from the
+        # hint alone. Gated on the scheduler capability (W4a T2.3), not ``sys.platform``.
+        if not get_scheduler().supports_read_schedule:
             return
 
         def _work() -> None:  # runs OFF the UI thread

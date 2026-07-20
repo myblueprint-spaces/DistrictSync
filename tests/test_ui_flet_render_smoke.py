@@ -110,8 +110,8 @@ class TestScreensRender:
         values = [getattr(c, "value", None) for c in _iter_controls(tree)]
         assert "Settings" in values, "Settings mode must render the 'Settings' title"
         # 2026-07-15 user decision: folders/district FIRST (what/where), then schedule (when), then delivery.
-        order = [v for v in values if v in ("Daily schedule", "SFTP delivery (SpacesEDU)", "Folders & district")]
-        assert order == ["Folders & district", "Daily schedule", "SFTP delivery (SpacesEDU)"]
+        order = [v for v in values if v in ("Daily schedule", "Delivery to SpacesEDU", "Folders & district")]
+        assert order == ["Folders & district", "Daily schedule", "Delivery to SpacesEDU"]
 
     def test_home(self, stub_page, app_cfg, monkeypatch):
         _assert_renders(
@@ -419,10 +419,11 @@ def test_mapping_apply_live_probe_upgrades_to_assertive_notice(monkeypatch):
     LIVE and the win32 gate pinned, so the marshalled refine runs deterministically on any OS:
     the banner must now say the schedule STILL USES the old district (no more "may").
     """
-    import src.ui_flet.screens.mapping as mapping_mod
     from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 
-    monkeypatch.setattr(mapping_mod.sys, "platform", "win32")
+    # The probe gate now dispatches via get_scheduler() (W4a T2.3), which reads the GLOBAL
+    # sys.platform at call time — patch it directly (mapping no longer imports sys).
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
         "src.ui_flet.schedule_probe.probe_schedule",
         lambda *a, **k: ScheduleStatus(state=ScheduleState.LIVE, headline="", detail=""),
@@ -445,10 +446,11 @@ def test_mapping_apply_live_probe_upgrades_to_assertive_notice(monkeypatch):
 
 def test_mapping_stale_probe_never_resurrects_a_cleared_banner(monkeypatch):
     """A fresh pick clears the confirmation; a probe still in flight must NOT repaint it."""
-    import src.ui_flet.screens.mapping as mapping_mod
     from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 
-    monkeypatch.setattr(mapping_mod.sys, "platform", "win32")
+    # The probe gate now dispatches via get_scheduler() (W4a T2.3), which reads the GLOBAL
+    # sys.platform at call time — patch it directly (mapping no longer imports sys).
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
         "src.ui_flet.schedule_probe.probe_schedule",
         lambda *a, **k: ScheduleStatus(state=ScheduleState.LIVE, headline="", detail=""),
@@ -852,7 +854,7 @@ def test_wizard_natural_order_bakes_sftp_into_registered_task(tmp_path, monkeypa
     tree = build_setup(_driving_page(captured))  # folders + district done → Delivery (step 3, F1 order)
 
     _fill_sftp(tree)
-    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # cfg.sftp_enabled = True
+    _button_by_content(tree, "Save delivery settings").on_click(None)  # cfg.sftp_enabled = True
     assert cfg.sftp_enabled is True
 
     _button_by_content(tree, "Continue").on_click(None)  # delivery addressed → Schedule (step 4)
@@ -887,7 +889,7 @@ def test_settings_enabling_sftp_reregisters_task_with_sftp(monkeypatch, tmp_path
     tree = build_setup(_driving_page(captured))  # Settings mode (completed config)
 
     _fill_sftp(tree)
-    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # enable SFTP → reconcile re-register
+    _button_by_content(tree, "Save delivery settings").on_click(None)  # enable SFTP → reconcile re-register
 
     assert cfg.sftp_enabled is True
     assert recorded.get("sftp") is True, "enabling SFTP on a scheduled install must re-register with --sftp"
@@ -1175,7 +1177,7 @@ def test_reconcile_without_the_unattended_fact_never_shows_the_dialog(tmp_path, 
 
 
 def test_sftp_save_reconcile_is_also_guarded_against_the_silent_downgrade(tmp_path, monkeypatch):
-    """S3-a: the SECOND reconcile route (Save SFTP credentials → on_saved) converges on the same
+    """S3-a: the SECOND reconcile route (Save delivery settings → on_saved) converges on the same
     guarded trigger — enabling delivery on an unattended install interrupts too, never downgrades."""
     from src.sftp.uploader import SFTPUploader
 
@@ -1188,7 +1190,7 @@ def test_sftp_save_reconcile_is_also_guarded_against_the_silent_downgrade(tmp_pa
     page = _driving_page(captured)
     tree = build_setup(page)
     _fill_sftp(tree)
-    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # flips sftp_enabled → changed
+    _button_by_content(tree, "Save delivery settings").on_click(None)  # flips sftp_enabled → changed
 
     assert cfg.sftp_enabled is True
     assert recorded["called"] == 0, "the SFTP-save reconcile must not silently downgrade either"
@@ -1294,7 +1296,7 @@ def test_sftp_save_with_malformed_run_time_paints_the_blocked_suffix(tmp_path, m
     tree = build_setup(page)
     _textfield_by_label(tree, "Daily run time (24-hour, HH:MM)").value = "99:99"
     _fill_sftp(tree)
-    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # flips sftp_enabled → changed
+    _button_by_content(tree, "Save delivery settings").on_click(None)  # flips sftp_enabled → changed
 
     assert cfg.sftp_enabled is True  # the credential save itself persisted (Saved stays truthful)
     assert recorded["called"] == 0
@@ -1343,7 +1345,7 @@ def test_wizard_backtrack_delivery_change_downgrades_the_finish_copy(tmp_path, m
 
     _button_by_content(tree, "Back").on_click(None)  # backtrack → Delivery
     _fill_sftp(tree)
-    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # delivery enabled AFTER the bake
+    _button_by_content(tree, "Save delivery settings").on_click(None)  # delivery enabled AFTER the bake
     assert cfg.sftp_enabled is True
     _button_by_content(tree, "Continue").on_click(None)  # → Schedule (already LIVE)
     _drain(captured)
@@ -1378,7 +1380,7 @@ def test_wizard_finish_without_a_delivery_change_keeps_the_confident_claim(tmp_p
     tree = build_setup(_driving_page(captured))  # → Delivery (step 3, F1 order)
 
     _fill_sftp(tree)
-    _button_by_content(tree, "Save SFTP credentials").on_click(None)  # sftp_enabled BEFORE the bake
+    _button_by_content(tree, "Save delivery settings").on_click(None)  # sftp_enabled BEFORE the bake
     _button_by_content(tree, "Continue").on_click(None)  # delivery addressed → Schedule
     _drain(captured)
     _button_by_content(tree, "Schedule nightly sync").on_click(None)  # bakes the task WITH --sftp

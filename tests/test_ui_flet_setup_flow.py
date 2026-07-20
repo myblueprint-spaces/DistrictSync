@@ -28,6 +28,7 @@ from src.ui_flet.setup_flow import (
     derive_flow,
     downgrade_interrupt,
     finish_copy,
+    finish_needs_attention,
     finish_summary_rows,
     folders_save_note,
     is_skippable,
@@ -411,7 +412,28 @@ class TestFinishCopy:
         )
         assert "try to deliver" not in detail  # the nightly-delivery promise is withdrawn
 
-    def test_delivery_desync_only_affects_the_persisted_delivery_branch(self):
+    def test_save_then_test_desync_downgrades_the_tested_ok_claim_too(self):
+        # W4a nit: on the Save-then-Test path the post-save Test flips the session's delivery fact
+        # from STORED_CRED_PRESENT to TESTED_OK — the desync facts are unchanged (the credential IS
+        # saved; the live task still lacks --sftp), so the copy must downgrade identically instead
+        # of keeping the confident "You're all set" under an amber band.
+        headline, detail = finish_copy(
+            schedule_live=True,
+            delivery=DeliveryFact.TESTED_OK,
+            district="New Westminster",
+            schedule_time_display="3:00 AM",
+            host="sftp.ca.spacesedu.com",
+            username="district_x",
+            delivery_desync=True,
+        )
+        assert headline == "You're set up — delivery needs one more save"
+        assert "the nightly schedule hasn't picked up the delivery change yet" in detail
+        assert "try to deliver" not in detail
+        # The tested-but-unsaved "click Save on the delivery step" prompt would be WRONG advice
+        # here (the credential is saved — the fix is the one Save in Settings).
+        assert "click Save on the delivery step" not in detail
+
+    def test_delivery_desync_only_affects_the_configured_delivery_branches(self):
         # A deferred delivery claims nothing about delivering, so the desync flag changes nothing.
         base = dict(
             schedule_live=True,
@@ -434,6 +456,43 @@ class TestFinishCopy:
         )
         assert headline == "You're all set"
         assert "try to deliver it to SpacesEDU" in detail
+
+
+# --------------------------------------------------------------------------- #
+# finish_needs_attention — the single source of the finish banner's amber tone  #
+# --------------------------------------------------------------------------- #
+class TestFinishNeedsAttention:
+    """W4a nit: tone (verdict) and words (headline) must derive from the SAME predicate."""
+
+    def test_configured_delivery_with_desync_needs_attention(self):
+        assert finish_needs_attention(delivery=DeliveryFact.STORED_CRED_PRESENT, delivery_desync=True) is True
+        assert finish_needs_attention(delivery=DeliveryFact.TESTED_OK, delivery_desync=True) is True
+
+    def test_unconfigured_delivery_never_needs_attention_even_with_desync(self):
+        # The unconfigured branches keep the confident copy, so the tone must stay calm too.
+        for fact in (DeliveryFact.SKIPPED, DeliveryFact.NONE, DeliveryFact.TESTED_FAILED):
+            assert finish_needs_attention(delivery=fact, delivery_desync=True) is False
+
+    def test_no_desync_never_needs_attention(self):
+        for fact in DeliveryFact:
+            assert finish_needs_attention(delivery=fact, delivery_desync=False) is False
+
+    def test_tone_always_agrees_with_the_headline(self):
+        # The agreement property itself: amber tone ⇔ the desync headline, for EVERY delivery fact
+        # (schedule_live=True — a desync is only derivable for a live task by construction).
+        for fact in DeliveryFact:
+            for desync in (False, True):
+                headline, _ = finish_copy(
+                    schedule_live=True,
+                    delivery=fact,
+                    district="New Westminster",
+                    schedule_time_display="3:00 AM",
+                    host="sftp.ca.spacesedu.com",
+                    username="district_x",
+                    delivery_desync=desync,
+                )
+                downgraded = headline == "You're set up — delivery needs one more save"
+                assert finish_needs_attention(delivery=fact, delivery_desync=desync) is downgraded
 
 
 # --------------------------------------------------------------------------- #
@@ -884,7 +943,7 @@ class TestReconcileSaveNote:
         assert "updating" not in suffix.lower()
 
     def test_sftp_suffix_none_is_empty(self):
-        # No live task to update → the base "SFTP credentials stored" note stands alone.
+        # No live task to update → the base "Delivery settings saved" note stands alone.
         assert sftp_reconcile_suffix(ReconcileOutcome.NONE) == ""
 
     def test_folders_note_blocked_is_honest_and_names_the_fix(self):
