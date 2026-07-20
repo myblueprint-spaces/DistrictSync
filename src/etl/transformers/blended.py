@@ -161,7 +161,8 @@ class BlendedClassDetector(BaseTransformer):
 
         name_config = field_map.get("Name", {})
         if isinstance(name_config, dict):
-            teacher_col = name_config.get("teacher_last_name", "teacher name").lower()
+            # Spaced YAML authoring key (see ClassTransformer._assign_class_names).
+            teacher_col = name_config.get("teacher last name", "teacher name").lower()
             if teacher_col in session_group.columns:
                 teacher_name = session_group[teacher_col].iloc[0]
                 if pd.notna(teacher_name) and str(teacher_name).strip():

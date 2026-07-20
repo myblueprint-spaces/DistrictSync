@@ -209,6 +209,14 @@ class EntityConfig(BaseModel):
     # Optional config-driven row filters applied at transform entry (before
     # apply_field_map). Empty = keep every row (default, back-compatible).
     row_filters: list[RowFilter] = Field(default_factory=list)
+    # Optional overrides for AUXILIARY source columns an entity reads but never
+    # emits (no output-key counterpart in field_map — e.g. StudentCourses'
+    # full-course-code / section / DL-start-date inputs). Keys are the
+    # transformer's documented logical role names; values are the district's
+    # source column names. Empty = the transformer's MyEd BC defaults apply
+    # (default, back-compatible). Output-keyed source columns are configured
+    # through field_map entries instead (string or {column: ...}).
+    source_columns: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -415,6 +423,8 @@ class MappingConfig(BaseModel):
                 entry["headers"] = dict(entity_cfg.headers)
             if entity_cfg.row_filters:
                 entry["row_filters"] = [rf.model_dump() for rf in entity_cfg.row_filters]
+            if entity_cfg.source_columns:
+                entry["source_columns"] = dict(entity_cfg.source_columns)
             mappings_raw[entity_name] = entry
 
         global_raw: dict[str, Any] = {

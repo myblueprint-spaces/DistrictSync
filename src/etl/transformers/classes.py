@@ -309,14 +309,19 @@ class ClassTransformer(BaseTransformer):
         if not isinstance(name_config, dict):
             return
 
+        # The Name config uses the SPACED YAML authoring keys ("primary teacher
+        # flag", ...) — the same shape the mapping files declare and
+        # MappingConfig.to_raw_dict emits. (Regression pin: underscore keys here
+        # made the config dead and the hardcoded defaults always applied.)
+        teacher_flag = name_config.get("primary teacher flag", "").lower()
+        teacher_last = name_config.get("teacher last name", "last name").lower()
+        course_title = name_config.get("course title", "title").lower()
+        section = name_config.get("section letter", "section letter").lower()
+
         def get_name(row):
             blended_id = row["Class ID"]
             if blended_id in context.blended_class_metadata:
                 return context.blended_class_metadata[blended_id]["Name"]
-            teacher_flag = name_config.get("primary_teacher_flag", "").lower()
-            teacher_last = name_config.get("teacher_last_name", "last name").lower()
-            course_title = name_config.get("course_title", "title").lower()
-            section = name_config.get("section_letter", "section letter").lower()
             return self.generate_class_name(row, teacher_flag, teacher_last, course_title, section, context)
 
         output["Name"] = merged.apply(get_name, axis=1)

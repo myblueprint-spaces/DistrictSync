@@ -759,6 +759,70 @@ mappings:
         assert rf[0].column == "Parent Auth / Guardian"
 
 
+class TestEntitySourceColumns:
+    """EntityConfig.source_columns — auxiliary source-column overrides for
+    reads with no output-key counterpart (e.g. StudentCourses' section /
+    full-course-code / DL-start-date inputs)."""
+
+    def test_default_empty(self):
+        cfg = EntityConfig(source_files={"course_info": "C.txt"}, field_map={"Course Code": {"value": ""}})
+        assert cfg.source_columns == {}
+
+    def test_roundtrip_via_to_raw_dict(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            mappings={
+                "StudentCourses": EntityConfig(
+                    source_files={"course_info": "C.txt"},
+                    field_map={"Course Code": {"value": ""}},
+                    source_columns={"section": "Sec", "dl_start_date": "Begin Date"},
+                ),
+            },
+        )
+        raw = cfg.to_raw_dict()
+        assert raw["mappings"]["StudentCourses"]["source_columns"] == {
+            "section": "Sec",
+            "dl_start_date": "Begin Date",
+        }
+
+    def test_absent_key_when_unset(self):
+        """No source_columns → the key is omitted (back-compatible raw dict)."""
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            mappings={
+                "StudentCourses": EntityConfig(
+                    source_files={"course_info": "C.txt"},
+                    field_map={"Course Code": {"value": ""}},
+                ),
+            },
+        )
+        assert "source_columns" not in cfg.to_raw_dict()["mappings"]["StudentCourses"]
+
+    def test_yaml_source_columns_parse_and_validate(self, tmp_path):
+        yaml_text = """
+version: "1.9"
+sis: test
+mappings:
+  StudentCourses:
+    source_files:
+      course_info: C.txt
+    field_map:
+      "Course Code":
+        value: ""
+    source_columns:
+      full_course_code: "Full Crs Code"
+      section: "Sec"
+"""
+        (tmp_path / "test_mapping.yaml").write_text(yaml_text)
+        cfg = load_config("test", config_dir=tmp_path)
+        assert cfg.mappings["StudentCourses"].source_columns == {
+            "full_course_code": "Full Crs Code",
+            "section": "Sec",
+        }
+
+
 class TestCrossEnrollmentConfig:
     def test_defaults(self):
         cc = CrossEnrollmentConfig()
