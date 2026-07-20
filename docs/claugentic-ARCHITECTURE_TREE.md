@@ -22,7 +22,7 @@ _Last generated from `main` @ c669404._
 
 ### src/etl/transformers/
 
-- `src/etl/transformers/base.py` — `BaseTransformer` ABC: CEDS grade mapping, `ALLOWED_TRANSFORMS` allowlist, `apply_field_map()` (row-resilient, fail-loud), `assign_class_ids()`, excluded-course + `apply_row_filters()`, active-student predicate, `filter_to_active()` (zero-orphan), `generate_student_email` (opt-in `sanitize`), date helpers (`friendly_date_format_to_strftime`/`format_date`/`derive_date_part` empty-on-unparseable).
+- `src/etl/transformers/base.py` — `BaseTransformer` ABC: CEDS grade mapping, `ALLOWED_TRANSFORMS` (defensive reference; canonical set lives in config.models), `apply_field_map()` (thin typed dispatch over `ConfiguredField.apply` — row-resilient, fail-loud), `assign_class_ids()`, excluded-course + `apply_row_filters()`, `filter_to_active()` (zero-orphan), `generate_student_email` (opt-in `sanitize`), date helpers (empty-on-unparseable).
 - `src/etl/transformers/context.py` — `TransformContext` dataclass: mutable shared state for one pipeline run (school year, academic dates, raw data frames, `active_student_ids` roster published by Students, homeroom/blended maps, and `data_errors` — the per-run fail-loud field-transform ledger surfaced by the pipeline) passed between entity transformers.
 - `src/etl/transformers/registry.py` — `TRANSFORMER_REGISTRY` dict and `get_transformer()`: maps entity names to singleton transformer instances; falls back to `DefaultTransformer` (field-map-only) for any unregistered entity.
 - `src/etl/transformers/students.py` — `StudentTransformer`: filters to active students (Active + PreReg default; `active_values` configurable); opt-in `cross_enrollment` collapse (dedupe duplicate `User ID` rows to the home-school row); publishes the active roster to `context.active_student_ids` (zero-orphan); generates emails (opt-in `sanitize` + `derived_dates` date-part injection, fail-loud on missing column); normalises DOB to ISO.
@@ -46,7 +46,7 @@ _Last generated from `main` @ c669404._
 
 ## src/config/
 
-- `src/config/models.py` — Pydantic v2 YAML models: `MappingConfig`, `GlobalConfig` (opt-in `CrossEnrollmentConfig`), `EntityConfig` (`RowFilter`), and field-mapping variants (transform, fixed, academic year, append year, email format [opt-in `sanitize`/`derived_dates` via `EmailDerivedDate`], name config, id-role pair, enroll-status, bare `str`/`null`); `classify_field()`; `to_raw_dict()`/`get_raw_field_map()` (round-trip omits defaults).
+- `src/config/models.py` — Pydantic v2 YAML models + typed field Strategy: `MappingConfig`/`GlobalConfig`/`EntityConfig` (fail-fast `ALLOWED_TRANSFORMS` gate at load; single source), `ConfiguredField` variants with `.apply()`; `classify_field()`/`ensure_field_mapping()` (idempotent normalization); `to_raw_dict()`/`get_raw_field_map()` (deletion deferred — ROADMAP).
 - `src/config/loader.py` — `load_config(sis_type)`: discovers YAML from user-overrides dir then bundled dir; resolves `_base` inheritance via recursive deep-merge with cycle detection; validates via Pydantic; exposes `available_configs()` for the UI district picker.
 - `src/config/app_config.py` — `AppConfig`: persists non-sensitive settings (paths, SIS type, schedule, SFTP host/port/user, `setup_completed`) to `config.json` via `paths.user_data_dir()`; SFTP password keyring-only. `has_completed_setup()` (D4a) = SINGLE-source durable finish-line (explicit flag OR `is_complete() and schedule_registered`), baked on `load()` so no deployed install regresses into onboarding.
 

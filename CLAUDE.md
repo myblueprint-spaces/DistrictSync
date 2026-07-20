@@ -176,7 +176,7 @@ An entity may declare `row_filters` (list of `{column, include: [...]}`) to keep
 
 - SFTP connections restricted to 3 known hosts via `validators.ALLOWED_SFTP_HOSTS`
 - Scheduler inputs (sis_type, task_name, paths, run_time) validated before subprocess/crontab calls
-- Transform dispatch uses `ALLOWED_TRANSFORMS` allowlist (prevents arbitrary method invocation via YAML)
+- Transform dispatch uses the `ALLOWED_TRANSFORMS` allowlist (prevents arbitrary method invocation via YAML) — enforced FAIL-FAST at config load since W4b2 (single source: `src/config/models.py`; `base.py` keeps a defensive subclass-overridable runtime reference)
 - Config file permissions set to 0o700/0o600 on Unix
 - `bandit` security scan in CI
 
