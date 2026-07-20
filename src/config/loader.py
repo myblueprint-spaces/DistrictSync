@@ -84,12 +84,20 @@ def _find_mapping_file(sis_type: str, search_dirs: list[Path]) -> Optional[Path]
 def _parse_version(version: object, path: Path) -> tuple[int, int]:
     """Parse a config ``version`` value into ``(major, minor)`` integers.
 
-    Accepts the forms the bundled configs use — quoted strings (``'1.0'``),
-    bare YAML floats (``1.9``), a bare major (``1``), and an optional patch
-    component (``1.9.2``, ignored). Anything else fails loudly: a config
-    whose version cannot even be read must not drive a conversion.
+    The version MUST be a quoted YAML string (``'1.9'``; an optional patch
+    component ``'1.9.2'`` is ignored). A bare YAML float is REJECTED fail-loud:
+    PyYAML collapses ``version: 1.10`` to the float ``1.1``, silently reading
+    minor 10 as minor 1 and skipping the newer-minor warning — the information
+    is unrecoverable once parsed, so the string form is required at the source.
     """
-    match = re.fullmatch(r"(\d+)(?:\.(\d+))?(?:\.\d+)?", str(version).strip())
+    if not isinstance(version, str):
+        raise ValueError(
+            f"Mapping config '{path}' declares its version as a bare YAML scalar "
+            f"({version!r}) — quote it as a string (e.g. version: "
+            f"'{SUPPORTED_CONFIG_MAJOR}.{SUPPORTED_CONFIG_MINOR}'). Bare floats lose "
+            f"trailing zeros (1.10 reads as 1.1), so the version gate cannot trust them."
+        )
+    match = re.fullmatch(r"(\d+)(?:\.(\d+))?(?:\.\d+)?", version.strip())
     if match is None:
         raise ValueError(
             f"Mapping config '{path}' declares an unreadable version {version!r} — "

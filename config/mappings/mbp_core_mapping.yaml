@@ -5,7 +5,7 @@
 # default — districts that want Staff can add it back by overriding
 # `enabled_entities` in a child config.
 _base: myedbc
-version: 1.0
+version: '1.0'
 sis: MyEducationBC
 district_name: myBlueprint+ (minimal)
 

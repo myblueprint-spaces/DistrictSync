@@ -1,7 +1,7 @@
 # SD51 - Inherits from standard MyEducation BC mapping
 # Differences: source file names, custom email format, fixed academic dates
 _base: myedbc
-version: 1.9
+version: '1.9'
 sis: MyEducationBC
 district_name: SD51 - Boundary School District
 

@@ -23,6 +23,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import os
 
 # subprocess is required to invoke the system `crontab` command.
 import subprocess  # nosec B404
@@ -37,11 +38,16 @@ CRON_SENTINEL = "# DistrictSync managed entry"
 
 def _run(args: list[str], stdin: str | None = None) -> tuple[int, str]:
     # Inputs are validated by src/utils/validators.py before reaching here.
+    # LC_ALL=C pins crontab's messages to English so the "no crontab" empty-vs-error
+    # classification in _read_crontab_lines is locale-independent (fresh env copy —
+    # os.environ is never mutated).
+    env = {**os.environ, "LC_ALL": "C"}
     result = subprocess.run(  # nosec B603
         args,
         input=stdin,
         capture_output=True,
         text=True,
+        env=env,
     )
     return result.returncode, (result.stdout + result.stderr).strip()
 

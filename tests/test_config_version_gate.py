@@ -75,7 +75,7 @@ def _version_records(caplog: pytest.LogCaptureFixture, level: int) -> list[loggi
 
 
 class TestInRangeSilent:
-    @pytest.mark.parametrize("version", ["1.0", f"{SUPPORTED_CONFIG_MAJOR}.{SUPPORTED_CONFIG_MINOR}", 1.0, "1"])
+    @pytest.mark.parametrize("version", ["1.0", f"{SUPPORTED_CONFIG_MAJOR}.{SUPPORTED_CONFIG_MINOR}", "1"])
     def test_in_range_version_loads_silently(self, user_mappings, caplog, version):
         _write_user_config(user_mappings, "vgate_inrange", version)
         with caplog.at_level(logging.DEBUG, logger=LOADER_LOGGER):
@@ -140,6 +140,28 @@ class TestUnreadableVersionRejected:
         _write_user_config(user_mappings, "vgate_garbage", version)
         with pytest.raises(ValueError, match="unreadable version"):
             load_config("vgate_garbage")
+
+
+class TestBareScalarVersionRejected:
+    """PyYAML collapses a bare-float ``version: 1.10`` to the float 1.1 — minor 10
+    silently reads as minor 1 and the newer-minor WARNING never fires. The gate
+    therefore requires the STRING form; a bare scalar fails loud at the source."""
+
+    @pytest.mark.parametrize("version", [1.0, 1.9, 1.1, 1])
+    def test_bare_scalar_version_rejected_with_quoting_remedy(self, user_mappings, version):
+        _write_user_config(user_mappings, "vgate_barefloat", version)
+        with pytest.raises(ValueError, match="bare YAML scalar") as excinfo:
+            load_config("vgate_barefloat")
+        assert "quote it as a string" in str(excinfo.value)
+
+    def test_quoted_minor_ten_fires_the_newer_minor_warning(self, user_mappings, caplog):
+        # The exact value the float form would silently swallow: '1.10' > supported 1.9.
+        _write_user_config(user_mappings, "vgate_minorten", "1.10")
+        with caplog.at_level(logging.DEBUG, logger=LOADER_LOGGER):
+            load_config("vgate_minorten")
+        warnings = _version_records(caplog, logging.WARNING)
+        assert len(warnings) == 1
+        assert "1.10" in warnings[0].getMessage()
 
 
 class TestInheritedVersion:

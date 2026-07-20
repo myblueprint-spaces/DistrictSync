@@ -2,7 +2,7 @@
 # Differences: source file names, column casing, custom email, fixed dates,
 #              different Name config for classes, swapped legal/usual name fields
 _base: myedbc
-version: 1.9
+version: '1.9'
 sis: MyEducationBC
 district_name: SD74 - Gold Trail School District
 
