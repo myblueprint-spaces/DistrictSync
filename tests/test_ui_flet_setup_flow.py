@@ -835,7 +835,7 @@ class TestDowngradeInterrupt:
         assert interrupt.cancel_label == "Cancel"
         assert interrupt.keep_next_headline == "Enter your Windows password to update the schedule"
         assert interrupt.keep_next_detail == (
-            "Type your Windows account password below, then choose Register schedule — your new "
+            "Type your Windows account password below, then choose Schedule nightly sync — your new "
             "settings will apply and the sync will keep running when you're signed out."
         )
         assert interrupt.cancelled_headline == "Schedule not updated"

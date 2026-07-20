@@ -647,7 +647,7 @@ def run_table(rows: list[RunRow]) -> ft.Control:
         ft.DataColumn(label=_head("Source")),
     ]
     columns += [ft.DataColumn(label=_head(label), numeric=True) for _key, label in count_columns]
-    columns.append(ft.DataColumn(label=_head("SFTP")))
+    columns.append(ft.DataColumn(label=_head("Delivery")))
     columns.append(ft.DataColumn(label=_head("Warnings"), numeric=True))
     columns.append(ft.DataColumn(label=_head("Duration"), numeric=True))
 

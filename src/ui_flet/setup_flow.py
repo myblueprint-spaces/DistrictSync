@@ -388,7 +388,7 @@ _DOWNGRADE_SIGNED_IN_ONLY_LABEL = "Continue — the sync will only run while sig
 _DOWNGRADE_CANCEL_LABEL = "Cancel"
 _DOWNGRADE_KEEP_NEXT_HEADLINE = "Enter your Windows password to update the schedule"
 _DOWNGRADE_KEEP_NEXT_DETAIL = (
-    "Type your Windows account password below, then choose Register schedule — your new "
+    "Type your Windows account password below, then choose Schedule nightly sync — your new "
     "settings will apply and the sync will keep running when you're signed out."
 )
 _DOWNGRADE_CANCELLED_HEADLINE = "Schedule not updated"

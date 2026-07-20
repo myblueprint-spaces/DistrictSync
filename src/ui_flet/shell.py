@@ -305,7 +305,7 @@ def main(page: ft.Page) -> None:
         on_refresh=lambda: select_by_id("home"),
     )
     # Swap the `convert` placeholder for the real manual-convert surface (IA-5a).
-    screens["convert"] = functools.partial(build_convert, page)
+    screens["convert"] = functools.partial(build_convert, page, on_navigate=lambda dest: select_by_id(dest))
     # Swap the `run_history` placeholder for the real read-only Run History surface (IA-6).
     screens["run_history"] = lambda: build_run_history(
         page,

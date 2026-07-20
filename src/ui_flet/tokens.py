@@ -206,6 +206,7 @@ UI_CONTRAST_PAIRS: tuple[tuple[str, str], ...] = (
     (color_on_status_warning, color_status_warning),  # white on the amber warning fill (5.02)
     (color_on_action, color_status_failed),  # white on the failed verdict fill
     (color_status_healthy, color_surface),  # healthy text on a white card
+    (color_status_warning, color_surface),  # amber caption/heading text on a white card (5.02)
     (color_status_failed, color_surface),  # failed text on a white card
     # --- Direction B additions (toned status bands, navy rail, content wash) --- #
     (color_on_healthy_tint, color_status_healthy_tint),  # deep green text on the healthy tint (8.01)
