@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
+from src.etl.transformers.ids import normalize_id_series
+
 
 @dataclass
 class EntityReport:
@@ -48,7 +50,7 @@ class DataQualityReport:
         """Flag columns where values are missing or empty."""
         for col in df.columns:
             null_count = df[col].isna().sum()
-            empty_count = (df[col].astype(str).str.strip() == "").sum()
+            empty_count = (normalize_id_series(df[col]) == "").sum()
             total_missing = int(null_count + empty_count)
             if total_missing > 0:
                 report.missing_fields[col] = total_missing

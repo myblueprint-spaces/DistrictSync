@@ -37,7 +37,7 @@ class TestExtractRequiredFiles:
         entity2 = MagicMock()
         entity2.source_files = {"primary": "StaffInfo.txt"}
         config.mappings = {"Students": entity1, "Staff": entity2}
-        config.global_config.enabled_entities = []
+        config.active_entities.return_value = {"Students", "Staff"}
         config.global_config.school_year_sources = {"primary": "StudentSchedule.txt"}
 
         files = extract_required_files(config)
@@ -50,16 +50,18 @@ class TestExtractRequiredFiles:
         entity2 = MagicMock()
         entity2.source_files = {"primary": "Same.txt"}
         config.mappings = {"A": entity1, "B": entity2}
-        config.global_config.enabled_entities = []
+        config.active_entities.return_value = {"A", "B"}
         config.global_config.school_year_sources = {"primary": "Same.txt"}
 
         files = extract_required_files(config)
         assert len(files) == 1
 
-    def test_filters_by_enabled_entities(self):
-        """Disabled entities' source files must not appear — and a
-        school_year_source not used by any enabled entity is dropped
-        (determine_school_year falls back to the calendar-date heuristic)."""
+    def test_filters_by_active_entities(self):
+        """Inactive entities' source files must not appear — and a
+        school_year_source not used by any active entity is dropped
+        (determine_school_year falls back to the calendar-date heuristic).
+        The enabled-selection rule itself is covered on
+        ``MappingConfig.active_entities`` (test_config.py)."""
         config = MagicMock()
         students = MagicMock()
         students.source_files = {"primary": "StudentDemo.txt"}
@@ -68,7 +70,7 @@ class TestExtractRequiredFiles:
         classes = MagicMock()
         classes.source_files = {"primary": "StudentSchedule.txt", "info": "ClassInfo.txt"}
         config.mappings = {"Students": students, "Staff": staff, "Classes": classes}
-        config.global_config.enabled_entities = ["Students"]
+        config.active_entities.return_value = {"Students"}
         config.global_config.school_year_sources = {"primary": "StudentSchedule.txt"}
 
         files = extract_required_files(config)

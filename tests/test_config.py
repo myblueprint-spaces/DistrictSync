@@ -21,6 +21,7 @@ from src.config.models import (
     MappingConfig,
     RowFilter,
     classify_field,
+    filter_enabled_entities,
 )
 
 
@@ -689,6 +690,53 @@ class TestEnabledEntities:
             "Enrollments",
             "StudentAttendance",
         ]
+
+
+class TestActiveEntities:
+    """`MappingConfig.active_entities()` — the single enabled-entities accessor."""
+
+    def _cfg(self, entity_names, enabled):
+        mappings = {
+            name: {"source_files": {"primary": f"{name}.txt"}, "field_map": {"User ID": "id"}} for name in entity_names
+        }
+        return MappingConfig(
+            version="1.0",
+            sis="test",
+            global_config={"enabled_entities": enabled},
+            mappings=mappings,
+        )
+
+    def test_empty_enabled_means_all_defined(self):
+        cfg = self._cfg(["Students", "Staff"], [])
+        assert cfg.active_entities() == {"Students", "Staff"}
+
+    def test_enabled_subset_selects(self):
+        cfg = self._cfg(["Students", "Staff", "Family"], ["Students"])
+        assert cfg.active_entities() == {"Students"}
+
+    def test_enabled_but_undefined_never_reported(self):
+        """An enabled name with no mapping (e.g. StudentAttendance under `_base`
+        inheritance quirks) is intersected away — never a phantom entity."""
+        cfg = self._cfg(["Students"], ["Students", "StudentAttendance"])
+        assert cfg.active_entities() == {"Students"}
+
+    def test_real_config_matches_enabled_list(self):
+        cfg = load_config("sd51myedbc")
+        assert cfg.active_entities() == set(cfg.global_config.enabled_entities)
+
+
+class TestFilterEnabledEntities:
+    """The order-preserving inclusion kernel behind active_entities/configured_entity_order."""
+
+    def test_none_keeps_all(self):
+        assert filter_enabled_entities(["A", "B"], None) == ["A", "B"]
+
+    def test_empty_keeps_all(self):
+        """The `entity_order`-style gotcha: [] means no filter, not 'nothing'."""
+        assert filter_enabled_entities(["A", "B"], []) == ["A", "B"]
+
+    def test_filters_preserving_order(self):
+        assert filter_enabled_entities(["C", "A", "B"], ["B", "C"]) == ["C", "B"]
 
 
 # -----------------------------------------------------------------------

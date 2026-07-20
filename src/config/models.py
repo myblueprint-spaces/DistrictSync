@@ -7,6 +7,7 @@ rather than cryptic KeyErrors deep in the pipeline.
 
 import logging
 import re
+from collections.abc import Iterable
 from typing import Any, Literal, Optional, Protocol, Union, cast
 
 import pandas as pd
@@ -554,6 +555,22 @@ class GlobalConfig(BaseModel):
         return self
 
 
+def filter_enabled_entities(names: Iterable[str], enabled: Optional[Iterable[str]]) -> list[str]:
+    """Apply the ``enabled_entities`` inclusion contract to an ordered entity list.
+
+    THE single spelling of the selection rule (SSOT): an empty/None ``enabled``
+    means ALL names pass (back-compat — mirror of the ``entity_order`` gotcha:
+    both default to ``[]``, never ``None``, at the model layer); otherwise only
+    names in the enabled set pass, preserving input order. Used by
+    :meth:`MappingConfig.active_entities` (model-shaped callers) and the raw-dict
+    pipeline boundary (``src.etl.pipeline.configured_entity_order``).
+    """
+    if not enabled:
+        return list(names)
+    enabled_set = set(enabled)
+    return [name for name in names if name in enabled_set]
+
+
 class MappingConfig(BaseModel):
     """Root config model — validated representation of the YAML mapping file."""
 
@@ -600,12 +617,7 @@ class MappingConfig(BaseModel):
         configs that forget to set them fail loudly so they don't silently
         get BC defaults.
         """
-        enabled = (
-            set(self.global_config.enabled_entities)
-            if self.global_config.enabled_entities
-            else set(self.mappings.keys())
-        )
-        if "Classes" not in enabled or "Classes" not in self.mappings:
+        if "Classes" not in self.active_entities():
             return self
         gc = self.global_config
         missing = [name for name in ("academic_start_month_day", "academic_end_month_day") if getattr(gc, name) is None]
@@ -622,6 +634,19 @@ class MappingConfig(BaseModel):
 
     def get_entity(self, name: str) -> Optional[EntityConfig]:
         return self.mappings.get(name)
+
+    def active_entities(self) -> set[str]:
+        """Entity names this config will actually produce (→ which CSVs are emitted).
+
+        THE single accessor for the ``enabled_entities`` selection: empty
+        ``enabled_entities`` = ALL defined mappings (back-compat), otherwise the
+        enabled subset — always intersected with the DEFINED ``mappings`` so an
+        enabled-but-undefined name (possible under ``_base`` inheritance or a
+        partner-only entity like ``StudentAttendance``) never reports as
+        produced (the pipeline gates on ``entity in mappings`` too). Ordering is
+        a separate concern — see ``src.etl.pipeline.configured_entity_order``.
+        """
+        return set(filter_enabled_entities(self.mappings, self.global_config.enabled_entities))
 
     def to_raw_dict(self) -> dict[str, Any]:
         """Return the full raw dict for backward compatibility with the pipeline.

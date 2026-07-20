@@ -25,6 +25,7 @@ import pandas as pd
 
 from src.config.app_config import AppConfig
 from src.config.loader import load_config
+from src.config.models import filter_enabled_entities
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader
 from src.etl.transformer import DataTransformer
@@ -85,12 +86,11 @@ def extract_required_files(config) -> list[str]:
     by an enabled entity — when they aren't, ``determine_school_year``
     falls back to the calendar-date heuristic in BaseTransformer.
     """
-    enabled_attr = getattr(config.global_config, "enabled_entities", None)
-    enabled = set(enabled_attr) if isinstance(enabled_attr, list) and enabled_attr else None
+    active = config.active_entities()
 
     files: set[str] = set()
     for entity_name, entity_cfg in config.mappings.items():
-        if enabled is not None and entity_name not in enabled:
+        if entity_name not in active:
             continue
         files.update(entity_cfg.source_files.values())
     return list(files)
@@ -111,12 +111,10 @@ def configured_entity_order(mappings: dict, global_config: dict) -> list[str]:
     entity_order = global_config.get("entity_order") or list(mappings.keys())
     # `enabled_entities` (when non-empty) filters which mappings actually run.
     # This lets the base config define more entity templates than it
-    # activates by default — districts opt in by listing them.
-    enabled = global_config.get("enabled_entities") or []
-    if enabled:
-        enabled_set = set(enabled)
-        entity_order = [e for e in entity_order if e in enabled_set]
-    return entity_order
+    # activates by default — districts opt in by listing them. The selection
+    # rule itself is single-sourced in `filter_enabled_entities` (the same
+    # kernel behind `MappingConfig.active_entities`).
+    return filter_enabled_entities(entity_order, global_config.get("enabled_entities"))
 
 
 class TransformOutputs(NamedTuple):

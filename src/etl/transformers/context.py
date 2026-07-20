@@ -1,13 +1,35 @@
 """Shared state passed between entity transformers during a pipeline run.
 
-Classes populates homeroom_classes_df and blended_* maps that Enrollments reads.
-This context object is the clean way to share that cross-entity state.
+Classes publishes a single frozen :class:`ClassArtifacts` bundle (homeroom
+lookup + blended maps) that Enrollments consumes. This context object is the
+clean way to share that cross-entity state.
 """
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
+
+
+@dataclass(frozen=True)
+class ClassArtifacts:
+    """The Classes → Enrollments handoff, published as ONE frozen bundle.
+
+    ``ClassTransformer`` is the only writer: it publishes exactly the
+    cross-entity facts ``EnrollmentTransformer`` consumes (homeroom lookup for
+    homeroom enrollments, normalized ClassInformation for co-teacher rows,
+    and the blended-class maps for blended/subject teacher rows), in one
+    assignment to ``TransformContext.class_artifacts`` — making the previously
+    implicit temporal coupling an explicit, assertable contract. Frozen =
+    no rebinding after publish; the frames/dicts inside are NOT deep-copied,
+    so consumers must treat them as read-only.
+    """
+
+    homeroom_classes_df: pd.DataFrame = field(default_factory=pd.DataFrame)
+    class_info_df: pd.DataFrame = field(default_factory=pd.DataFrame)
+    blended_class_map: dict[str, str] = field(default_factory=dict)
+    blended_class_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
+    blended_teacher_map: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -41,12 +63,36 @@ class TransformContext:
     #   {"entity": str, "field": str, "failed_rows": int, "sample": str}
     data_errors: list[dict[str, Any]] = field(default_factory=list)
 
-    # Cross-entity state: populated by ClassTransformer, consumed by EnrollmentTransformer
-    homeroom_classes_df: pd.DataFrame = field(default_factory=pd.DataFrame)
-    class_info_df: pd.DataFrame = field(default_factory=pd.DataFrame)
-    blended_class_map: dict[str, str] = field(default_factory=dict)
-    blended_class_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
-    blended_teacher_map: dict[str, list[str]] = field(default_factory=dict)
+    # Cross-entity state: published ONCE by ClassTransformer as a frozen
+    # bundle, asserted + consumed by EnrollmentTransformer. None until Classes
+    # runs — the read-only properties below give safe empty defaults for the
+    # shared helpers (e.g. assign_class_ids) that predate the bundle.
+    class_artifacts: Optional[ClassArtifacts] = None
+
+    @property
+    def homeroom_classes_df(self) -> pd.DataFrame:
+        """Homeroom lookup from :attr:`class_artifacts` (empty until Classes runs)."""
+        return self.class_artifacts.homeroom_classes_df if self.class_artifacts else pd.DataFrame()
+
+    @property
+    def class_info_df(self) -> pd.DataFrame:
+        """Normalized ClassInformation from :attr:`class_artifacts` (empty until Classes runs)."""
+        return self.class_artifacts.class_info_df if self.class_artifacts else pd.DataFrame()
+
+    @property
+    def blended_class_map(self) -> dict[str, str]:
+        """Master Timetable ID → blended Class ID (empty until Classes runs)."""
+        return self.class_artifacts.blended_class_map if self.class_artifacts else {}
+
+    @property
+    def blended_class_metadata(self) -> dict[str, dict[str, Any]]:
+        """Blended Class ID → Name/Grade/School metadata (empty until Classes runs)."""
+        return self.class_artifacts.blended_class_metadata if self.class_artifacts else {}
+
+    @property
+    def blended_teacher_map(self) -> dict[str, list[str]]:
+        """Blended Class ID → teacher ids (empty until Classes runs)."""
+        return self.class_artifacts.blended_teacher_map if self.class_artifacts else {}
 
     def set_school_year(self, year: int, start_month_day: str, end_month_day: str) -> None:
         """Set school_year (MyEd BC end-year convention) and compute academic bounds.

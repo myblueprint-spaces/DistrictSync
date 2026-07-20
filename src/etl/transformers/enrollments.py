@@ -1,13 +1,22 @@
-"""Enrollments entity transformer — homeroom, subject, and blended teacher enrollments."""
+"""Enrollments entity transformer — homeroom, subject, and blended teacher enrollments.
+
+Consumes the :class:`~src.etl.transformers.context.ClassArtifacts` bundle that
+ClassTransformer publishes (homeroom lookup, normalized ClassInformation,
+blended maps) and FAILS LOUD when it is absent — the explicit ordering
+assertion for the Classes → Enrollments handoff. Each enrollment source
+(homeroom / subject+blended / ClassInformation co-teacher) is built by a
+function returning a DataFrame (or None); ``transform`` concatenates them in
+the fixed legacy order so ``Enrollments.csv`` row order is byte-identical.
+"""
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
 
 from src.etl.column_names import MASTER_TIMETABLE_ID, SCHOOL_NUMBER
 from src.etl.transformers.base import BaseTransformer
-from src.etl.transformers.context import TransformContext
+from src.etl.transformers.context import ClassArtifacts, TransformContext
 from src.etl.transformers.grades import split_by_homeroom_grades
 from src.etl.transformers.ids import normalize_id_series
 
@@ -26,17 +35,33 @@ class EnrollmentTransformer(BaseTransformer):
             return pd.DataFrame()
         schedule_df = self.normalize_columns(schedule_df)
 
+        # Ordering assertion for the Classes → Enrollments handoff: there is
+        # schedule data to enroll, so the class artifacts MUST already exist.
+        artifacts = context.class_artifacts
+        if artifacts is None:
+            raise ValueError(
+                "[Enrollments] No class artifacts on the shared context: ClassTransformer "
+                "must run before EnrollmentTransformer (it publishes the homeroom classes "
+                "and blended-class maps that homeroom/subject/co-teacher enrollments "
+                "consume). Fix the mapping config so 'Classes' is enabled and precedes "
+                "'Enrollments' in entity_order/enabled_entities."
+            )
+
         user_id_config = field_map.get("User ID", {})
         student_id_col = user_id_config.get("student_id_col", "student number").lower()
         staff_id_col = user_id_config.get("staff_id_col", "teacher id").lower()
 
         student_demo_df = self._load_student_demo(normalized_sources, staff_id_col, context)
 
-        final: list[pd.DataFrame] = []
-
-        self._homeroom_enrollments(final, student_demo_df, homeroom_grades, staff_id_col, context)
-        self._subject_enrollments(final, schedule_df, homeroom_grades, student_id_col, staff_id_col, field_map, context)
-        self._classinfo_coteacher_enrollments(final, staff_id_col, context)
+        # Fixed legacy source order — concat order IS the CSV row order.
+        sources = [
+            self._homeroom_enrollments(student_demo_df, homeroom_grades, staff_id_col, artifacts, context),
+            self._subject_enrollments(
+                schedule_df, homeroom_grades, student_id_col, staff_id_col, field_map, artifacts, context
+            ),
+            self._classinfo_coteacher_enrollments(staff_id_col, artifacts, context),
+        ]
+        final = [frame for frame in sources if frame is not None]
 
         if final:
             result = pd.concat(final, ignore_index=True).drop_duplicates(subset=["Class ID", "User ID", "Role"])
@@ -67,14 +92,15 @@ class EnrollmentTransformer(BaseTransformer):
     # -------------------------------------------------------------------
     def _homeroom_enrollments(
         self,
-        final: list[pd.DataFrame],
         student_demo_df: pd.DataFrame,
         homeroom_grades: list,
         staff_id_col: str,
+        artifacts: ClassArtifacts,
         context: TransformContext,
-    ) -> None:
-        if student_demo_df.empty or context.homeroom_classes_df.empty:
-            return
+    ) -> Optional[pd.DataFrame]:
+        """Student + teacher homeroom rows (in that order), or None."""
+        if student_demo_df.empty or artifacts.homeroom_classes_df.empty:
+            return None
 
         # Work on a copy to avoid mutating the shared raw_data DataFrame
         student_demo_df = student_demo_df.copy()
@@ -88,17 +114,18 @@ class EnrollmentTransformer(BaseTransformer):
 
         homeroom_students = split_by_homeroom_grades(student_demo_df, grade_col, homeroom_grades, keep="homeroom")
         if homeroom_students.empty:
-            return
+            return None
 
+        parts: list[pd.DataFrame] = []
         try:
-            hr_classes = context.homeroom_classes_df.copy()
+            hr_classes = artifacts.homeroom_classes_df.copy()
             if staff_id_col in hr_classes.columns:
                 hr_classes[staff_id_col] = normalize_id_series(hr_classes[staff_id_col])
 
             merged = homeroom_students.merge(hr_classes, on=[SCHOOL_NUMBER, homeroom_col], how="left")
             valid = merged[merged["Class ID"].notna()]
             if valid.empty:
-                return
+                return None
 
             # Student homeroom enrollments — filtered to the active roster so no
             # row references a student absent from Students.csv (zero-orphan
@@ -108,7 +135,7 @@ class EnrollmentTransformer(BaseTransformer):
             student_enroll = active_students[["Class ID", demo_student_col, SCHOOL_NUMBER]].copy()
             student_enroll.rename(columns={demo_student_col: "User ID"}, inplace=True)  # type: ignore[call-overload]
             student_enroll["Role"] = "student"
-            final.append(student_enroll)  # type: ignore[arg-type]
+            parts.append(student_enroll)  # type: ignore[arg-type]
             logger.info(f"[Enrollments] Created {len(student_enroll)} student homeroom enrollments")
 
             # Teacher homeroom enrollments (unfiltered `valid` — students-only filter)
@@ -120,25 +147,31 @@ class EnrollmentTransformer(BaseTransformer):
                 teacher_enroll.rename(columns={teacher_id_y_col: "User ID"}, inplace=True)
                 teacher_enroll["Role"] = "teacher"
                 teacher_enroll = self.clean_invalid_ids(teacher_enroll, "User ID")
-                final.append(teacher_enroll)
+                parts.append(teacher_enroll)
                 logger.info(f"[Enrollments] Created {len(teacher_enroll)} teacher homeroom enrollments")
 
         except (KeyError, pd.errors.MergeError) as e:
+            # Whatever was built before the error still ships (legacy behavior).
             logger.error(f"[Enrollments] Error merging homeroom data: {e}")
+
+        if not parts:
+            return None
+        return pd.concat(parts, ignore_index=True)
 
     # -------------------------------------------------------------------
     # Subject enrollments
     # -------------------------------------------------------------------
     def _subject_enrollments(
         self,
-        final: list[pd.DataFrame],
         schedule_df: pd.DataFrame,
         homeroom_grades: list,
         student_id_col: str,
         staff_id_col: str,
         field_map: dict,
+        artifacts: ClassArtifacts,
         context: TransformContext,
-    ) -> None:
+    ) -> Optional[pd.DataFrame]:
+        """Student subject + blended teacher + non-blended teacher rows (in that order), or None."""
         # Work on a copy to avoid mutating the shared raw_data DataFrame
         schedule_df = schedule_df.copy()
 
@@ -148,13 +181,15 @@ class EnrollmentTransformer(BaseTransformer):
         excluded_codes = context.global_config.get("excluded_course_codes", [])
         schedule_df = self.filter_excluded_course_codes(schedule_df, excluded_codes)
         if schedule_df.empty:
-            return
+            return None
 
         non_homeroom = split_by_homeroom_grades(schedule_df, "grade", homeroom_grades, keep="subject")
         if non_homeroom.empty:
-            return
+            return None
 
         non_homeroom = self._assign_class_ids(non_homeroom, field_map, context)  # type: ignore[assignment]
+
+        parts: list[pd.DataFrame] = []
 
         # Student subject enrollments — filtered to the active roster (schedule
         # `Student ID`, same pupil-number value space as the roster). Teacher
@@ -165,30 +200,36 @@ class EnrollmentTransformer(BaseTransformer):
             student_enroll = active_students[["Class ID", student_id_col, SCHOOL_NUMBER]].copy()
             student_enroll.rename(columns={student_id_col: "User ID"}, inplace=True)  # type: ignore[call-overload]
             student_enroll["Role"] = "student"
-            final.append(student_enroll)  # type: ignore[arg-type]
+            parts.append(student_enroll)  # type: ignore[arg-type]
             logger.info(f"[Enrollments] Created {len(student_enroll)} student subject enrollments")
 
-        # Blended teacher enrollments (context-derived; unaffected by the filter)
-        self._blended_teacher_enrollments(final, context)
+        # Blended teacher enrollments (artifact-derived; unaffected by the filter)
+        blended_enroll = self._blended_teacher_enrollments(artifacts)
+        if blended_enroll is not None:
+            parts.append(blended_enroll)
 
         # Non-blended teacher enrollments (unfiltered `non_homeroom` — students-only filter)
-        non_blended = non_homeroom[~non_homeroom["Class ID"].isin(context.blended_teacher_map.keys())]
+        non_blended = non_homeroom[~non_homeroom["Class ID"].isin(artifacts.blended_teacher_map.keys())]
         if staff_id_col in non_blended.columns and "Class ID" in non_blended.columns:
             teacher_enroll = non_blended[["Class ID", staff_id_col, SCHOOL_NUMBER]].copy()
             teacher_enroll.rename(columns={staff_id_col: "User ID"}, inplace=True)
             teacher_enroll["Role"] = "teacher"
             teacher_enroll = self.clean_invalid_ids(teacher_enroll, "User ID")
-            final.append(teacher_enroll)
+            parts.append(teacher_enroll)
             logger.info(f"[Enrollments] Created {len(teacher_enroll)} teacher subject enrollments")
+
+        if not parts:
+            return None
+        return pd.concat(parts, ignore_index=True)
 
     def _assign_class_ids(self, df: pd.DataFrame, field_map: dict, context: TransformContext) -> pd.DataFrame:
         return self.assign_class_ids(df, field_map, context)
 
     @staticmethod
-    def _blended_teacher_enrollments(final: list[pd.DataFrame], context: TransformContext) -> None:
+    def _blended_teacher_enrollments(artifacts: ClassArtifacts) -> Optional[pd.DataFrame]:
         rows = []
-        for blended_id, teacher_list in context.blended_teacher_map.items():
-            school_id = context.blended_class_metadata.get(blended_id, {}).get("School ID", "")
+        for blended_id, teacher_list in artifacts.blended_teacher_map.items():
+            school_id = artifacts.blended_class_metadata.get(blended_id, {}).get("School ID", "")
             for teacher_id in teacher_list:
                 rows.append(
                     {
@@ -198,51 +239,52 @@ class EnrollmentTransformer(BaseTransformer):
                         SCHOOL_NUMBER: school_id,
                     }
                 )
-        if rows:
-            blended_df = pd.DataFrame(rows).drop_duplicates()
-            final.append(blended_df)
-            logger.info(f"[Enrollments] Created {len(blended_df)} blended class teacher enrollments")
+        if not rows:
+            return None
+        blended_df = pd.DataFrame(rows).drop_duplicates()
+        logger.info(f"[Enrollments] Created {len(blended_df)} blended class teacher enrollments")
+        return blended_df
 
     # -------------------------------------------------------------------
     # ClassInformation co-teacher enrollments
     # -------------------------------------------------------------------
     def _classinfo_coteacher_enrollments(
         self,
-        final: list[pd.DataFrame],
         staff_id_col: str,
+        artifacts: ClassArtifacts,
         context: TransformContext,
-    ) -> None:
-        """Emit teacher enrollments for ClassInformation rows with Primary Teacher=Y.
+    ) -> Optional[pd.DataFrame]:
+        """Teacher enrollments for ClassInformation rows with Primary Teacher=Y, or None.
 
         Captures teachers (e.g. MADST modular-program teachers) who are not
         derived from student_schedule. Matches by (school_number, section
-        letter) against homeroom_classes_df, and by Master Timetable ID
-        against blended_class_map for subject classes. Rows that don't
+        letter) against the homeroom lookup, and by Master Timetable ID
+        against the blended class map for subject classes. Rows that don't
         resolve to any known class are skipped. The outer
         drop_duplicates(subset=["Class ID","User ID","Role"]) in transform()
         deduplicates against any teacher rows already produced by the
         student_schedule path.
         """
-        class_info_df = context.class_info_df
+        class_info_df = artifacts.class_info_df
         if class_info_df.empty:
-            return
+            return None
 
         # Columns are already normalized by ClassTransformer._run_blended_detection,
-        # but take a copy so we don't mutate the cached frame.
+        # but take a copy so we don't mutate the published artifact frame.
         class_info_df = class_info_df.copy()
 
         primary_col = "primary teacher"
         section_col = "section letter"
         if primary_col not in class_info_df.columns or SCHOOL_NUMBER not in class_info_df.columns:
-            return
+            return None
         if staff_id_col not in class_info_df.columns:
-            return
+            return None
 
         primary_rows: pd.DataFrame = class_info_df[
             normalize_id_series(class_info_df[primary_col]).str.upper() == "Y"
         ].copy()  # type: ignore[assignment]
         if primary_rows.empty:
-            return
+            return None
 
         primary_rows[staff_id_col] = normalize_id_series(primary_rows[staff_id_col])
         primary_rows[SCHOOL_NUMBER] = normalize_id_series(primary_rows[SCHOOL_NUMBER])
@@ -252,7 +294,7 @@ class EnrollmentTransformer(BaseTransformer):
         rows: list[dict[str, Any]] = []
 
         # Path 1: section-letter → homeroom class id
-        hr_df = context.homeroom_classes_df
+        hr_df = artifacts.homeroom_classes_df
         if not hr_df.empty and section_col in primary_rows.columns:
             students_field_map = context.get_students_config().get("field_map", {})
             homeroom_col = students_field_map.get("Homeroom", "homeroom").lower()
@@ -279,11 +321,11 @@ class EnrollmentTransformer(BaseTransformer):
                     )
 
         # Path 2: Master Timetable ID → blended class id
-        if MASTER_TIMETABLE_ID in primary_rows.columns and context.blended_class_map:
+        if MASTER_TIMETABLE_ID in primary_rows.columns and artifacts.blended_class_map:
             primary_rows[MASTER_TIMETABLE_ID] = normalize_id_series(primary_rows[MASTER_TIMETABLE_ID])
             for _, row in primary_rows.iterrows():
                 mt_id = row[MASTER_TIMETABLE_ID]
-                blended_id = context.blended_class_map.get(mt_id)
+                blended_id = artifacts.blended_class_map.get(mt_id)
                 if blended_id:
                     rows.append(
                         {
@@ -295,13 +337,13 @@ class EnrollmentTransformer(BaseTransformer):
                     )
 
         if not rows:
-            return
+            return None
 
         coteacher_df = pd.DataFrame(rows)
         coteacher_df = self.clean_invalid_ids(coteacher_df, "User ID")
         coteacher_df = coteacher_df.drop_duplicates(subset=["Class ID", "User ID", "Role"])
         if coteacher_df.empty:
-            return
+            return None
 
-        final.append(coteacher_df)
         logger.info(f"[Enrollments] Created {len(coteacher_df)} ClassInformation co-teacher enrollments")
+        return coteacher_df

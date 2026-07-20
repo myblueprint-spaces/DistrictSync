@@ -4,15 +4,16 @@ Identifies when a teacher teaches multiple course sections at the same time slot
 with 2+ grade levels, and consolidates them into a single blended class.
 
 ``BlendedClassDetector`` is a plain SERVICE class, not a transformer: it never
-participates in the entity registry and produces no output frame — it only
-populates ``context.blended_*`` state for Classes/Enrollments to consume. (It
+participates in the entity registry and produces no output frame — it RETURNS
+the blended maps (:class:`BlendedDetection`) for ``ClassTransformer`` to
+publish via ``ClassArtifacts``, never mutating shared context itself. (It
 previously subclassed ``BaseTransformer`` solely to reach shared helpers, with
 a ``transform`` that raised ``NotImplementedError`` — an LSP violation; the
 helpers it needs are now imported from the focused helper modules.)
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 import pandas as pd
 
@@ -33,28 +34,48 @@ from src.utils.helpers import normalize_columns
 logger = logging.getLogger(__name__)
 
 
-class BlendedClassDetector:
-    """Detects blended classes and populates context with blended mappings."""
+class BlendedDetection(NamedTuple):
+    """Blended-class maps produced by :meth:`BlendedClassDetector.detect`.
 
-    def detect(self, class_info_df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> None:
-        """Run blended class detection and populate context.blended_* state.
+    ``ClassTransformer`` publishes these (via ``ClassArtifacts``) for its own
+    subject/missing-blended steps and for ``EnrollmentTransformer``.
+    """
+
+    class_map: dict[str, str]
+    metadata: dict[str, dict[str, Any]]
+    teacher_map: dict[str, list[str]]
+
+    @staticmethod
+    def empty() -> "BlendedDetection":
+        """A fresh no-blends result (new dicts each call — never a shared mutable)."""
+        return BlendedDetection({}, {}, {})
+
+
+class BlendedClassDetector:
+    """Detects blended classes and returns the blended mappings."""
+
+    def detect(
+        self, class_info_df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext
+    ) -> BlendedDetection:
+        """Run blended class detection and return the resulting maps.
 
         Named steps (each fail-safe with its own log message, preserving the
-        original early-exit behavior): load the schedule/course reference
-        frames, resolve the working frame (ClassInformation or the deduplicated
-        schedule fallback), drop teacherless sections, build session keys, then
-        register every valid blend on the context.
+        original early-exit behavior — an early exit returns an EMPTY result):
+        load the schedule/course reference frames, resolve the working frame
+        (ClassInformation or the deduplicated schedule fallback), drop
+        teacherless sections, build session keys, then collect every valid
+        blend into the returned :class:`BlendedDetection`.
         """
         if class_info_df.empty:
             logger.info("No class info data available for blended class detection")
-            return
+            return BlendedDetection.empty()
 
         field_map = mapping.get("field_map", {})
         teacher_id_col = context.get_teacher_id_col()
 
         loaded = self._load_reference_frames(mapping, context)
         if loaded is None:
-            return
+            return BlendedDetection.empty()
         schedule_df, course_df = loaded
 
         mtid_to_grade = self._build_grade_map(schedule_df)
@@ -62,14 +83,14 @@ class BlendedClassDetector:
 
         working = self._resolve_working_frame(class_info_df, schedule_df, teacher_id_col)
         if working is None:
-            return
+            return BlendedDetection.empty()
 
         working = self._drop_teacherless_sections(working, teacher_id_col)
         if working is None:
-            return
+            return BlendedDetection.empty()
 
         working = self._add_session_key(working, teacher_id_col)
-        self._register_blends(working, field_map, teacher_id_col, mtid_to_grade, course_title_map, context)
+        return self._register_blends(working, field_map, teacher_id_col, mtid_to_grade, course_title_map, context)
 
     # ------------------------------------------------------------------
     # detect() steps
@@ -168,9 +189,10 @@ class BlendedClassDetector:
         mtid_to_grade: dict[str, str],
         course_title_map: dict[str, str],
         context: TransformContext,
-    ) -> None:
-        """Validate each multi-section session and record it on the context."""
+    ) -> BlendedDetection:
+        """Validate each multi-section session and collect it into the returned maps."""
         teacher_positions = self._teacher_positions(working, teacher_id_col)
+        result = BlendedDetection.empty()
 
         count = 0
         for session_key, group in working.groupby("session_key"):
@@ -184,14 +206,14 @@ class BlendedClassDetector:
             all_mt_ids = sorted(set(group[MASTER_TIMETABLE_ID].tolist()))
 
             for mt_id in all_mt_ids:
-                context.blended_class_map[mt_id] = blended_id
+                result.class_map[mt_id] = blended_id
 
-            context.blended_teacher_map[blended_id] = self._collect_teachers(teacher_positions, all_mt_ids)
+            result.teacher_map[blended_id] = self._collect_teachers(teacher_positions, all_mt_ids)
 
             grade_str = self.get_grade_range(group, mtid_to_grade)
             class_name = self.create_name(group, field_map, grade_str, course_title_map, context)
 
-            context.blended_class_metadata[blended_id] = {
+            result.metadata[blended_id] = {
                 "Name": class_name,
                 "Grade": grade_str,
                 "School ID": group[SCHOOL_NUMBER].iloc[0] if SCHOOL_NUMBER in group.columns else "",
@@ -200,6 +222,7 @@ class BlendedClassDetector:
             count += 1
 
         logger.info(f"[Blended Classes] Detection completed: {count} blended classes identified")
+        return result
 
     @staticmethod
     def _teacher_positions(working: pd.DataFrame, teacher_id_col: str) -> dict[Any, list[tuple[int, Any]]]:
