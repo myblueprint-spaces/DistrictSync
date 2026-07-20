@@ -26,8 +26,10 @@ Usage::
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
+from datetime import date
 from pathlib import Path
 from typing import TypeVar
 
@@ -61,6 +63,40 @@ LISTING_DENIED_NOTE = (
     "Connected and signed in. This account can't list the remote folder — "
     "that's normal for upload-only delivery accounts."
 )
+
+
+# ---------------------------------------------------------------------------
+# Zip naming (lives here — the uploader is its only production consumer)
+# ---------------------------------------------------------------------------
+
+
+def district_slug(sis_type: str) -> str:
+    """Short user-facing identifier for a district, derived from its sis_type.
+
+    - sd40myedbc  -> sd40
+    - sd74myedbc  -> sd74
+    - myedbc      -> myedbc   (base config, keep as-is)
+    - myBlueprint+ -> myBlueprint  (sanitized for filenames)
+    """
+    stem = sis_type
+    if stem != "myedbc" and stem.endswith("myedbc"):
+        stem = stem[: -len("myedbc")]
+    # Sanitize for filesystem + zip filename use
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_") or "district"
+
+
+def build_zip_name(sis_type: str | None = None, for_date: date | None = None) -> str:
+    """Build the canonical output zip filename.
+
+    Pattern: ``districtsync_<district>_<YYYY-MM-DD>.zip`` when sis_type is known,
+    falling back to ``districtsync_<YYYY-MM-DD>.zip`` for legacy callers that
+    don't pass a district (preserves backwards compatibility with existing
+    SFTP uploads that use only the date).
+    """
+    when = (for_date or date.today()).isoformat()
+    if sis_type:
+        return f"districtsync_{district_slug(sis_type)}_{when}.zip"
+    return f"districtsync_{when}.zip"
 
 
 # ---------------------------------------------------------------------------
@@ -404,8 +440,6 @@ class SFTPUploader:
         """
         import tempfile
         import zipfile
-
-        from src.utils.helpers import build_zip_name
 
         if zip_name is None:
             zip_name = build_zip_name(sis_type)

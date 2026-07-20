@@ -1,12 +1,55 @@
 """Integration tests for the Enrollments entity transformation.
 
 Tests homeroom enrollments, subject enrollments, blended teacher enrollments,
-and deduplication.
+deduplication, and the Classes → Enrollments artifact-handoff ordering assertion.
 """
 
 import pandas as pd
+import pytest
 
 from src.etl.transformer import DataTransformer
+from src.etl.transformers.context import ClassArtifacts
+
+
+class TestClassArtifactsHandoff:
+    """The explicit Classes → Enrollments ordering contract (ClassArtifacts)."""
+
+    def setup_method(self):
+        self.transformer = DataTransformer()
+        self.transformer.set_school_year(2025, "08-25", "07-25")
+
+    def test_enrollments_without_classes_fails_loud(
+        self, student_schedule_df, enrollments_mapping, global_config, raw_data
+    ):
+        """Running Enrollments before Classes must raise an actionable error,
+        not silently emit a partial CSV (the old temporal-coupling failure mode)."""
+        with pytest.raises(ValueError, match="ClassTransformer must run before"):
+            self.transformer.transform(student_schedule_df, enrollments_mapping, "Enrollments", raw_data, global_config)
+
+    def test_empty_schedule_short_circuits_before_assertion(self, enrollments_mapping, global_config):
+        """No schedule data → empty result (legacy early return), even with no artifacts."""
+        empty = pd.DataFrame()
+        result = self.transformer.transform(empty, enrollments_mapping, "Enrollments", {}, global_config)
+        assert result.empty
+
+    def test_classes_publishes_one_artifact_bundle(self, student_schedule_df, classes_mapping, global_config, raw_data):
+        """Classes publishes ClassArtifacts once; the context read-properties reflect it."""
+        ctx = self.transformer._context
+        assert ctx.class_artifacts is None
+        self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
+        assert isinstance(ctx.class_artifacts, ClassArtifacts)
+        # The read-properties are views over the published bundle.
+        assert ctx.homeroom_classes_df is ctx.class_artifacts.homeroom_classes_df
+        assert ctx.blended_class_map is ctx.class_artifacts.blended_class_map
+
+    def test_unpublished_context_reads_safe_empty_defaults(self):
+        """Before Classes runs, the compat properties give empty (never raise)."""
+        ctx = DataTransformer()._context
+        assert ctx.homeroom_classes_df.empty
+        assert ctx.class_info_df.empty
+        assert ctx.blended_class_map == {}
+        assert ctx.blended_class_metadata == {}
+        assert ctx.blended_teacher_map == {}
 
 
 class TestEnrollmentsTransform:

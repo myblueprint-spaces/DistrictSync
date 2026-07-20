@@ -15,8 +15,8 @@ from src.etl.column_names import (
     TEACHER_NAME,
 )
 from src.etl.transformers.base import BaseTransformer
-from src.etl.transformers.blended import BlendedClassDetector
-from src.etl.transformers.context import TransformContext
+from src.etl.transformers.blended import BlendedClassDetector, BlendedDetection
+from src.etl.transformers.context import ClassArtifacts, TransformContext
 from src.etl.transformers.grades import split_by_homeroom_grades
 from src.etl.transformers.ids import normalize_id_series
 
@@ -36,10 +36,24 @@ class ClassTransformer(BaseTransformer):
 
         final_classes: list[pd.DataFrame] = []
 
-        self._run_blended_detection(normalized_sources, mapping, context, teacher_id_col)
-        self._create_homeroom_classes(
+        class_info_df, blended = self._run_blended_detection(normalized_sources, mapping, context, teacher_id_col)
+        homeroom_classes_df = self._create_homeroom_classes(
             final_classes, normalized_sources, field_map, homeroom_grades, teacher_id_col, context
         )
+
+        # Publish the Classes → Enrollments handoff ONCE, as a frozen bundle
+        # (Classes is the sole writer; Enrollments asserts its presence).
+        # Published before the subject/missing-blended steps because they read
+        # the blended maps back through the context properties (assign_class_ids
+        # / _assign_class_names / _emit_missing_blended_classes).
+        context.class_artifacts = ClassArtifacts(
+            homeroom_classes_df=homeroom_classes_df,
+            class_info_df=class_info_df,
+            blended_class_map=blended.class_map,
+            blended_class_metadata=blended.metadata,
+            blended_teacher_map=blended.teacher_map,
+        )
+
         self._create_subject_classes(
             final_classes, normalized_sources, field_map, homeroom_grades, teacher_id_col, context
         )
@@ -57,11 +71,18 @@ class ClassTransformer(BaseTransformer):
     # -------------------------------------------------------------------
     def _run_blended_detection(
         self, normalized_sources: dict, mapping: dict, context: TransformContext, teacher_id_col: str
-    ) -> None:
+    ) -> tuple[pd.DataFrame, BlendedDetection]:
+        """Normalize ClassInformation and run blended detection.
+
+        Returns the normalized/filtered class_info frame (empty when the source
+        is absent — EnrollmentTransformer consumes it for co-teacher rows) plus
+        the detected blended maps; ``transform`` publishes both via
+        ``ClassArtifacts``.
+        """
         class_info_df = self.get_source_file(context, normalized_sources, "class_info")
         if class_info_df.empty:
             logger.info("[Classes] No class info data found for blended class detection")
-            return
+            return pd.DataFrame(), BlendedDetection.empty()
 
         class_info_df = self.normalize_columns(class_info_df)
         if teacher_id_col in class_info_df.columns:
@@ -72,12 +93,8 @@ class ClassTransformer(BaseTransformer):
         excluded_codes = context.global_config.get("excluded_course_codes", [])
         class_info_df = self.filter_excluded_course_codes(class_info_df, excluded_codes)
 
-        # Cache normalized class_info on the context so EnrollmentTransformer
-        # can produce co-teacher enrollments without re-reading global_config.
-        context.class_info_df = class_info_df
-
         logger.info(f"[Classes] Class info data loaded: {len(class_info_df)} records")
-        self._blended_detector.detect(class_info_df, mapping, context)
+        return class_info_df, self._blended_detector.detect(class_info_df, mapping, context)
 
     # -------------------------------------------------------------------
     # Homeroom classes
@@ -90,10 +107,16 @@ class ClassTransformer(BaseTransformer):
         homeroom_grades: list,
         teacher_id_col: str,
         context: TransformContext,
-    ) -> None:
+    ) -> pd.DataFrame:
+        """Append the homeroom Classes rows and return the homeroom lookup.
+
+        The returned frame (school/homeroom/Class ID + teacher id when present;
+        EMPTY when no homerooms) is what ``transform`` publishes in
+        ``ClassArtifacts.homeroom_classes_df`` for EnrollmentTransformer.
+        """
         student_demo_df = self.get_source_file(context, normalized_sources, "student_demographic")
         if student_demo_df.empty:
-            return
+            return pd.DataFrame()
 
         student_demo_df = self.normalize_columns(student_demo_df)
         if teacher_id_col in student_demo_df.columns:
@@ -107,13 +130,13 @@ class ClassTransformer(BaseTransformer):
             student_demo_df, context.get_demo_student_col(), context, caller="Classes"
         )
         if student_demo_df.empty:
-            return
+            return pd.DataFrame()
 
         grade_col = self.resolve_column(students_field_map, "Grade", "grade")
         homeroom_students = split_by_homeroom_grades(student_demo_df, grade_col, homeroom_grades, keep="homeroom")
 
         if homeroom_students.empty:
-            return
+            return pd.DataFrame()
 
         homeroom_col = students_field_map.get("Homeroom", "homeroom").lower()
         dedup_cols = [SCHOOL_NUMBER, homeroom_col]
@@ -122,7 +145,7 @@ class ClassTransformer(BaseTransformer):
         unique_homerooms = homeroom_students.drop_duplicates(subset=dedup_cols)
 
         if unique_homerooms.empty or homeroom_col not in unique_homerooms.columns:
-            return
+            return pd.DataFrame()
 
         hc = unique_homerooms.copy()
         # Build the homeroom Class ID row-wise ("{school}_{homeroom}_{year}"). A
@@ -148,17 +171,18 @@ class ClassTransformer(BaseTransformer):
         hc["Start Date"] = self.resolve_date(field_map, "Start Date", context)
         hc["End Date"] = self.resolve_date(field_map, "End Date", context)
 
-        # Store for Enrollments
+        # The lookup Enrollments consumes (published via ClassArtifacts)
         hr_cols = [SCHOOL_NUMBER, homeroom_col, "Class ID"]
         if teacher_id_col in hc.columns:
             hr_cols.append(teacher_id_col)
-        context.homeroom_classes_df = hc[hr_cols].copy()
+        homeroom_lookup = hc[hr_cols].copy()
 
         homeroom_output = pd.DataFrame()
         for tgt_field in field_map:
             homeroom_output[tgt_field] = hc[tgt_field] if tgt_field in hc.columns else pd.NA
         final_classes.append(homeroom_output)
         logger.info(f"[Classes] Created {len(hc)} homeroom classes")
+        return homeroom_lookup
 
     @staticmethod
     def _homeroom_name(row, homeroom_col: str, teacher_name_col: str, year: int) -> str:
