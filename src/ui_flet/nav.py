@@ -76,7 +76,17 @@ def needs_setup(app_config: AppConfig) -> bool:
     completed install stays out of onboarding even when its schedule is later found MISSING
     (schedule live-ness is exclusively ``schedule_status``, read back from the OS). The
     onboarding gate + launch selection both key off this single predicate.
+
+    W2-B adds the second, symmetrical guard: an install whose ``config.json`` EXISTS but
+    could not be READ (``settings_unreadable()``) is provably NOT a fresh install — the
+    file's existence is a checked fact — so onboarding, which asserts "you are a new
+    user", is suppressed. Note what this deliberately does NOT do: it does not fake
+    ``has_completed_setup()`` True. We stop asserting a state we know to be false without
+    asserting the opposite state we cannot verify — Home then reports from the run store,
+    which is a separate, intact artifact.
     """
+    if app_config.settings_unreadable():
+        return False
     return not app_config.has_completed_setup()
 
 
