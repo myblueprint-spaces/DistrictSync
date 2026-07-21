@@ -141,22 +141,20 @@ class TestNoUsableInput:
         assert payload["status"] == "failed"
 
     def test_main_wiring_exits_1(self, tmp_path: Path, gde_output: Path) -> None:
-        """Reproduce main.py's __main__ except-block: a run_pipeline exception
-        that is NOT a SystemExit is caught and converted to sys.exit(1)."""
-        import sys
+        """The REAL entry point turns this failure into exit 1.
+
+        Previously this test raised its own ``sys.exit(1)`` inside a hand-copied
+        version of main.py's except-block and asserted the code it had just chosen —
+        it would have stayed green if main.py had exited 0. It now drives
+        ``src.main.cli``, so the entry point's exception handling is what is under
+        test. (Fuller exit-code coverage: ``tests/test_cli_entry.py``.)
+        """
+        from src.main import cli
 
         empty_input = tmp_path / "input"
         empty_input.mkdir()
 
-        with pytest.raises(SystemExit) as exc:
-            try:
-                run_pipeline("myedbc", str(empty_input), str(gde_output))
-            except SystemExit:
-                raise
-            except Exception:
-                # Mirrors src/main.py lines 272-277.
-                sys.exit(1)
-        assert exc.value.code == 1
+        assert cli(["--sis", "myedbc", "--input", str(empty_input), "--output", str(gde_output)]) == 1
 
     def test_no_output_files_written(self, tmp_path: Path, gde_output: Path) -> None:
         empty_input = tmp_path / "input"

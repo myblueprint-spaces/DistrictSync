@@ -51,7 +51,10 @@ dev = [
 ]
 
 [project.scripts]
-districtsync = "src.main:main"
+# The console script must name the CLI entry point (cli), not the legacy 3-arg
+# pipeline helper (main) — setuptools generates `sys.exit(<target>())` and calls
+# it with no arguments. Pinned by tests/test_cli_entry.py.
+districtsync = "src.main:cli"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

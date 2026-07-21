@@ -2,13 +2,18 @@
 
 Verifies that:
 - A requested SFTP upload that fails causes run_pipeline to return
-  sftp_attempted=True, sftp_ok=False, and main.py to exit with code 3.
+  sftp_attempted=True, sftp_ok=False, and the CLI entry point to exit 3.
 - The 5 output CSV files are NOT rolled back when the upload fails
   (the ETL conversion succeeded; only delivery failed).
 - A successful upload exits 0.
 - Runs without --sftp exit 0 and never touch the uploader.
 - --dry-run --sftp exits 0 and never touches the uploader.
 - An ERROR-level log line is emitted on SFTP failure.
+
+Every exit-code assertion here drives the real ``src.main.cli`` entry point.
+Assertions that used to re-state main.py's guard inline (``not (attempted and
+not ok)``) were tautologies and have been replaced; the full exit-code contract
+lives in ``tests/test_cli_entry.py``.
 """
 
 from __future__ import annotations
@@ -176,21 +181,12 @@ class TestPipelineResultType:
 
 
 class TestSftpFailureExitCode:
-    """When SFTP is requested and fails the process must exit 3."""
+    """The PipelineResult flags an exit-3 decision is made from.
 
-    def _run_main_module(
-        self,
-        gde_input: Path,
-        gde_output: Path,
-        extra_args: list[str] | None = None,
-    ) -> pytest.ExceptionInfo:
-        """Run main.__main__ block via run_pipeline + the exit-code wiring.
-
-        We call run_pipeline directly with sftp=True after patching
-        _sftp_upload to fail, then reproduce the exact exit-code decision
-        from main.py so we don't need subprocess-level tests.
-        """
-        raise NotImplementedError  # unused — see test bodies below
+    The exit code ITSELF is asserted against the real entry point in
+    ``tests/test_cli_entry.py::TestExitCodeThree`` — this class covers the
+    pipeline-side inputs to that decision (flags, CSV survival, log lines).
+    """
 
     def test_sftp_fail_exits_3_and_csvs_exist(self, gde_input: Path, gde_output: Path) -> None:
         """Failed upload → exit 3; all 5 CSVs are written and present on disk."""
@@ -213,9 +209,17 @@ class TestSftpFailureExitCode:
         present = _csv_files_present(gde_output)
         assert set(present) == set(_EXPECTED_ENTITIES), f"Expected all 5 CSVs; found: {present}"
 
-    def test_sftp_fail_produces_exit_3_via_main_logic(self, gde_input: Path, gde_output: Path) -> None:
-        """Replicate main.py's exit decision: sftp_attempted and not sftp_ok → sys.exit(3)."""
-        import sys
+    def test_sftp_fail_produces_exit_3_via_the_real_entry_point(self, gde_input: Path, gde_output: Path) -> None:
+        """An uploader that raises mid-transfer reaches the process as exit 3.
+
+        Replaces a tautology: the old version reproduced main.py's condition inline,
+        raised its own ``sys.exit(3)`` and asserted it exited 3 — it could not have
+        failed even if main.py exited 0. This drives ``src.main.cli`` end-to-end
+        from a REAL uploader fault (``OSError`` out of ``upload_csvs``), so the
+        whole chain — uploader → ``_sftp_upload`` → ``PipelineResult`` → the entry
+        point's exit-code branch — is what is under test.
+        """
+        from src.main import cli
 
         mock_cfg = _make_mock_app_config()
         with (
@@ -226,13 +230,9 @@ class TestSftpFailureExitCode:
             mock_uploader.upload_csvs.side_effect = OSError("Upload failed")
             mock_uploader_cls.return_value = mock_uploader
 
-            result = run_pipeline("myedbc", str(gde_input), str(gde_output), sftp=True)
+            code = cli(["--sis", "myedbc", "--input", str(gde_input), "--output", str(gde_output), "--sftp"])
 
-        # Reproduce the exact condition from main.py
-        if result.sftp_attempted and not result.sftp_ok:
-            with pytest.raises(SystemExit) as exc:
-                sys.exit(3)
-            assert exc.value.code == 3
+        assert code == 3
 
     def test_sftp_fail_logs_error(self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture) -> None:
         """An ERROR-level log line must be emitted when the upload fails."""
@@ -322,8 +322,13 @@ class TestSftpSuccessExitCode:
         assert result.sftp_attempted is True
         assert result.sftp_ok is True
 
-    def test_sftp_success_no_sys_exit_3(self, gde_input: Path, gde_output: Path) -> None:
-        """When sftp_ok is True, main.py must NOT call sys.exit(3)."""
+    def test_sftp_success_returns_exit_0(self, gde_input: Path, gde_output: Path) -> None:
+        """A successful upload exits 0 — asserted against the REAL entry point
+        rather than by re-stating main.py's guard inline (the old form asserted
+        ``not (attempted and not ok)``, which is main.py's condition copied, not
+        main.py's behaviour observed)."""
+        from src.main import cli
+
         mock_cfg = _make_mock_app_config()
         with (
             patch("src.etl.pipeline.AppConfig.load", return_value=mock_cfg),
@@ -333,10 +338,9 @@ class TestSftpSuccessExitCode:
             mock_uploader.upload_csvs.return_value = ["Students.csv"]
             mock_uploader_cls.return_value = mock_uploader
 
-            result = run_pipeline("myedbc", str(gde_input), str(gde_output), sftp=True)
+            code = cli(["--sis", "myedbc", "--input", str(gde_input), "--output", str(gde_output), "--sftp"])
 
-        # Replicate main.py's guard: should NOT trigger
-        assert not (result.sftp_attempted and not result.sftp_ok)
+        assert code == 0
 
 
 # ---------------------------------------------------------------------------
@@ -354,10 +358,12 @@ class TestNoSftpFlag:
         assert result.sftp_attempted is False
         assert result.sftp_ok is False
 
-    def test_no_sftp_no_exit_3(self, gde_input: Path, gde_output: Path) -> None:
-        result = run_pipeline("myedbc", str(gde_input), str(gde_output))
-        # main.py guard: sftp_attempted is False → exit 3 branch not taken
-        assert not (result.sftp_attempted and not result.sftp_ok)
+    def test_no_sftp_returns_exit_0(self, gde_input: Path, gde_output: Path) -> None:
+        """A run without --sftp can never reach the exit-3 branch — observed at the
+        real entry point, not inferred from a copy of its guard."""
+        from src.main import cli
+
+        assert cli(["--sis", "myedbc", "--input", str(gde_input), "--output", str(gde_output)]) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -381,8 +387,12 @@ class TestSftpEmptyOutputDirExit3:
             uploader.upload_csvs(tmp_path)
 
     def test_sftp_upload_seam_empty_dir_returns_false(self, tmp_path: Path) -> None:
-        """The pipeline seam catches the fail-loud raise → returns False → sftp_ok=False →
-        main.py exits 3 (the honest 'built but not delivered' verdict)."""
+        """The pipeline seam catches the fail-loud raise and reports False.
+
+        That False is what becomes ``sftp_ok=False`` → exit 3 ("built but not
+        delivered"); the exit code itself is asserted end-to-end in
+        ``tests/test_cli_entry.py::TestExitCodeThree``.
+        """
         from src.etl.pipeline import _sftp_upload
 
         mock_cfg = _make_mock_app_config()
@@ -390,8 +400,6 @@ class TestSftpEmptyOutputDirExit3:
             ok = _sftp_upload(str(tmp_path))
 
         assert ok is False
-        # Replicate main.py's guard input: attempted + not ok → exit 3.
-        assert not ok  # sftp_ok=False → run_pipeline exposes sftp_attempted=True, sftp_ok=False
 
 
 class TestDryRunWithSftp:
@@ -404,8 +412,21 @@ class TestDryRunWithSftp:
         assert result.sftp_attempted is False
         assert result.sftp_ok is False
 
-    def test_dry_run_sftp_exit_code_is_not_3(self, gde_input: Path, gde_output: Path) -> None:
+    def test_dry_run_sftp_returns_exit_0(self, gde_input: Path, gde_output: Path) -> None:
+        """--dry-run --sftp exits 0 — observed at the real entry point."""
+        from src.main import cli
+
         with patch("src.etl.pipeline.SFTPUploader"):
-            result = run_pipeline("myedbc", str(gde_input), str(gde_output), dry_run=True, sftp=True)
-        # main.py's exit-3 guard must NOT fire for dry runs
-        assert not (result.sftp_attempted and not result.sftp_ok)
+            code = cli(
+                [
+                    "--sis",
+                    "myedbc",
+                    "--input",
+                    str(gde_input),
+                    "--output",
+                    str(gde_output),
+                    "--dry-run",
+                    "--sftp",
+                ]
+            )
+        assert code == 0

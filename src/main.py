@@ -8,13 +8,19 @@ build it runs as ``__main__`` rather than as ``src.main``. Callers
 that need ``extract_required_files`` or ``run_pipeline`` should import
 them from ``src.etl.pipeline`` — this module re-exports them for
 backward compatibility only.
+
+``cli(argv) -> int`` is THE entry point: the ``__main__`` block, the
+``[project.scripts]`` console script, and the test suite all go through
+it. It RETURNS the process exit code rather than calling ``sys.exit``,
+so the documented contract (0/1/2/3) is directly assertable — see
+``tests/test_cli_entry.py``.
 """
 
 import argparse
 import logging
 import os
 import sys
-from typing import Callable
+from typing import IO, Callable
 
 from src.config.app_config import AppConfig
 from src.etl.pipeline import (
@@ -41,6 +47,7 @@ __all__ = [
     "_emit_run_log",
     "_print_diff",
     "_sftp_upload",
+    "cli",
     "extract_required_files",
     "main",
     "run_pipeline",
@@ -72,8 +79,108 @@ def _configure_cli_logging() -> logging.Logger:
 
 
 def main(sis_type: str, input_path: str, output_path: str) -> None:
-    """Legacy entry point — calls run_pipeline with defaults."""
+    """Legacy 3-argument pipeline helper — NOT the command-line entry point.
+
+    Kept for in-repo callers that want a one-line "run the pipeline with
+    defaults" (see ``tests/test_contract.py``). The CLI entry point — the one
+    the console script and the frozen exe run — is :func:`cli`.
+    """
     run_pipeline(sis_type, input_path, output_path)
+
+
+# ----------------------------------------------------------------------
+# Console attach — make CLI output visible from a GUI-subsystem exe
+# ----------------------------------------------------------------------
+
+# (sys attribute, console device, open mode) for each std stream. CONOUT$ and
+# CONIN$ are the console's own devices; opening them after AttachConsole binds
+# the process to the terminal that launched it.
+_CONSOLE_STREAMS: tuple[tuple[str, str, str], ...] = (
+    ("stdout", "CONOUT$", "w"),
+    ("stderr", "CONOUT$", "w"),
+    ("stdin", "CONIN$", "r"),
+)
+
+_ATTACH_PARENT_PROCESS = -1  # DWORD 0xFFFFFFFF — "the console of my parent process"
+
+
+def _win32_attach_parent_console() -> bool:
+    """Call ``AttachConsole(ATTACH_PARENT_PROCESS)``. The ONLY Windows syscall here.
+
+    Isolated as a seam so the surrounding policy (below) is testable on POSIX CI.
+    ``AttachConsole`` *borrows* an EXISTING console; it never allocates one — we
+    deliberately do not call ``AllocConsole``, because that would pop a black box
+    on the double-click path the GUI-subsystem packaging exists to avoid.
+    """
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]  # win32-only, guarded by caller
+    return bool(kernel32.AttachConsole(_ATTACH_PARENT_PROCESS))
+
+
+def _open_console_stream(device: str, mode: str) -> IO[str]:
+    """Open a console device as a line-buffered text stream. Injected seam (see above)."""
+    # SIM115: deliberately un-closed — this becomes a process-lifetime std stream.
+    return open(device, mode, buffering=1, encoding="utf-8", errors="replace")  # noqa: SIM115
+
+
+def _attach_parent_console() -> bool:
+    """Bind this process to the console it was launched from, if there is one (Windows).
+
+    The released Windows exe is packed GUI-subsystem (``Subsystem == 2``, gated by
+    ``scripts/ci_flet_pack_smoke.py``) so a double-click never flashes a console.
+    The cost is that Python starts with ``sys.stdout``/``stderr``/``stdin`` set to
+    ``None``: every ``print`` in a CLI run silently no-ops and ``input()`` raises —
+    so a partner running the exe in a terminal, exactly as the partner docs say to,
+    saw nothing at all.
+
+    Policy, in order:
+
+    1. **POSIX → no-op.** Nothing to fix; CI runs Ubuntu.
+    2. **All streams already usable → no-op.** A source run, or a redirected
+       ``DistrictSync.exe --sis ... > out.txt``, already has real streams. We do
+       not attach and we do not rebind — rebinding would silently break the
+       redirect the operator asked for.
+    3. **No parent console → no-op.** A scheduled task, a service, or a
+       double-click from Explorer has no console to borrow; ``AttachConsole``
+       fails and the streams stay ``None`` (quiet, exactly as today).
+    4. **Otherwise** rebind ONLY the dead (``None``) streams, per stream — so a
+       partially-redirected invocation keeps its redirect.
+
+    The ``sys.__stdout__``/``__stderr__``/``__stdin__`` originals are rebound too:
+    ``getpass`` compares ``sys.stdin is sys.__stdin__`` to decide whether it may use
+    the no-echo console reader, and falling back would echo an SFTP password in
+    plaintext.
+
+    Returns True only if a console was attached AND at least one stream was rebound.
+    Never raises: "there is no console" is a normal environment state, not a
+    configuration error, and the caller records the outcome to ``etl_tool.log``.
+    """
+    if sys.platform != "win32":
+        return False
+    if all(getattr(sys, name, None) is not None for name, _device, _mode in _CONSOLE_STREAMS):
+        return False
+
+    try:
+        if not _win32_attach_parent_console():
+            return False
+    except (AttributeError, OSError):
+        # No kernel32 (non-Windows host masquerading, hardened runtime): treat as
+        # "no console" — the CLI stays quiet rather than dying before it starts.
+        return False
+
+    rebound = False
+    for name, device, mode in _CONSOLE_STREAMS:
+        if getattr(sys, name, None) is not None:
+            continue
+        try:
+            stream = _open_console_stream(device, mode)
+        except OSError:
+            continue
+        setattr(sys, name, stream)
+        setattr(sys, f"__{name}__", stream)
+        rebound = True
+    return rebound
 
 
 # ----------------------------------------------------------------------
@@ -211,12 +318,55 @@ def _default_ui_launcher() -> Callable[[], None]:
     return _launch_ui
 
 
-if __name__ == "__main__":
+def _exit_code_from(exc: SystemExit) -> int:
+    """Translate a ``SystemExit`` into the exit code CPython would give the process.
+
+    ``cli`` returns an int so the exit-code contract is assertable, but argparse
+    (usage errors, ``--version``, ``--help``), ``_read_sftp_password``'s empty-stdin
+    guard, and ``run_pipeline``'s early bad-input/bad-config exits all signal via
+    ``SystemExit``. Translating here — rather than letting them escape — means the
+    caller does exactly one thing (``sys.exit(cli())``) and there is nothing left
+    for a test to re-implement.
+    """
+    code = exc.code
+    if code is None:
+        return 0
+    if isinstance(code, int):
+        return code
+    # CPython prints a non-int SystemExit payload to stderr and exits 1.
+    print(code, file=sys.stderr)
+    return 1
+
+
+def cli(argv: list[str] | None = None) -> int:
+    """Run the DistrictSync command line and RETURN the process exit code.
+
+    ``argv`` is the argument list WITHOUT the program name (defaults to
+    ``sys.argv[1:]``). An empty list is the no-argument case → launch the desktop
+    UI. This is the single entry point: the ``__main__`` block below, the
+    ``districtsync`` console script (``pyproject.toml`` ``[project.scripts]``),
+    and the frozen exe all call it.
+
+    Exit codes (the contract — see the inventory at the exit-3 branch below):
+    ``0`` success · ``1`` ETL/validation error · ``2`` argument misuse ·
+    ``3`` SFTP delivery failed with ETL output present.
+    """
+    try:
+        return _cli(argv)
+    except SystemExit as exc:
+        return _exit_code_from(exc)
+
+
+def _cli(argv: list[str] | None) -> int:
+    args_list = sys.argv[1:] if argv is None else list(argv)
+
     # No arguments → launch the UI (e.g. double-clicked from Explorer).
     # The launcher configures its own logging sink (launcher.boot_logging).
-    if len(sys.argv) == 1:
+    # NOTE: the console attach below is deliberately AFTER this branch — the
+    # double-click path must never touch a console.
+    if not args_list:
         _default_ui_launcher()()
-        sys.exit(0)
+        return 0
 
     # Relocate a legacy ~/.districtsync profile to the platform data dir BEFORE
     # configuring the log sink, so the log opens in the post-migration location.
@@ -224,9 +374,21 @@ if __name__ == "__main__":
     # raises), so this is a cheap exists()-check no-op on every already-migrated run.
     migrate_legacy_data_dir()
 
+    # Borrow the launching terminal's console (Windows GUI-subsystem exe) BEFORE
+    # logging is configured, so logging.conf's WARNING+ consoleHandler binds to a
+    # live sys.stdout instead of None. No-op on POSIX and wherever there is no
+    # parent console. See _attach_parent_console.
+    console_attached = _attach_parent_console()
+
     # CLI entry path: configure the shared file-log sink now (deferred from import
     # time so importing src.main in tests never touches the real user profile).
     logger = _configure_cli_logging()
+    logger.debug(
+        "parent-console attach: %s",
+        "attached (CLI output visible in the launching terminal)"
+        if console_attached
+        else "not attached (POSIX, no parent console, or streams already usable)",
+    )
 
     # Best-effort sweep of any orphaned elevation-handshake files (D5) — never fatal.
     from src.scheduler.elevation import sweep_orphans
@@ -282,19 +444,19 @@ if __name__ == "__main__":
     sftp_group.add_argument("--sftp-remote", help="Remote upload path (headless --sftp-configure)")
     sftp_group.add_argument("--sftp-password-stdin", action="store_true", help="Read the SFTP password from stdin")
 
-    args = parser.parse_args()
+    args = parser.parse_args(args_list)
 
     # Route to SFTP subcommands (mutually exclusive with the ETL pipeline)
     sftp_actions = [args.sftp_configure, args.sftp_test, args.sftp_show]
     if sum(sftp_actions) > 1:
         print("Error: choose only one of --sftp-configure, --sftp-test, --sftp-show.")
-        sys.exit(2)
+        return 2
     if args.sftp_configure:
-        sys.exit(_sftp_configure(args))
+        return _sftp_configure(args)
     if args.sftp_test:
-        sys.exit(_sftp_test(args))
+        return _sftp_test(args)
     if args.sftp_show:
-        sys.exit(_sftp_show(args))
+        return _sftp_show(args)
 
     # ETL pipeline — require --sis and --input
     if not args.sis or not args.input:
@@ -304,7 +466,7 @@ if __name__ == "__main__":
         sis = validate_sis_type(args.sis.lower())
     except ValueError as e:
         print(f"Error: {e}")
-        sys.exit(1)
+        return 1
 
     try:
         result = run_pipeline(
@@ -318,21 +480,25 @@ if __name__ == "__main__":
             source=args.source,
         )
     except SystemExit:
+        # run_pipeline's own early exits (bad input dir / bad config) already
+        # recorded a failed run; let cli() translate the code verbatim.
         raise
     except Exception as e:
         print(f"\nError: {e}")
         print("Check etl_tool.log for details. Contact support@myBlueprint.ca for help.")
-        sys.exit(3)
+        return 1
 
     # Exit code 3: SFTP was requested and attempted but delivery failed.
     # The ETL output (CSV files) is already written and intact — only the
     # upload to SpacesEDU failed.  Non-zero exit lets Task Scheduler flag
     # the run as failed so operators are not left with a false green.
     #
-    # Exit code inventory:
+    # Exit code inventory (asserted end-to-end in tests/test_cli_entry.py):
     #   0 — success (ETL complete; SFTP succeeded or not requested)
-    #   1 — ETL / argument / validation error (run did not complete)
-    #   2 — stdin empty / mutual-exclusion flag error
+    #   1 — ETL / validation error (run did not complete)
+    #   2 — argument misuse: an argparse usage error (missing/unknown flags),
+    #       more than one SFTP subcommand, or --sftp-password-stdin with an
+    #       empty stdin
     #   3 — SFTP delivery failure (ETL succeeded; upload did not)
     if result.sftp_attempted and not result.sftp_ok:
         # _sftp_upload already logged at ERROR level with the host; re-emit
@@ -342,4 +508,10 @@ if __name__ == "__main__":
             "Run exiting with code 3: SFTP upload was attempted but failed. "
             "Output CSVs are present on disk. Check logs for details."
         )
-        sys.exit(3)
+        return 3
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(cli())

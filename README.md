@@ -112,7 +112,9 @@ python -m src.main
 
 ## Logging
 
-Debug logs written to `etl_tool.log`. Console shows WARNING+ only. Each run also emits a structured `__DISTRICTSYNC_RUN__` JSON entry for support diagnostics — the Run History screen reads the durable run store, not this log.
+Debug logs written to `etl_tool.log`. Each run also emits a structured `__DISTRICTSYNC_RUN__` JSON entry for support diagnostics — the Run History screen reads the durable run store, not this log.
+
+**Console output (Windows):** the released `.exe` is a windowed app, so double-clicking it never flashes a black console. When you run it from Command Prompt or PowerShell **with** command-line arguments it attaches to that terminal and prints there (WARNING+ log lines, plus `--dry-run` / `--quality` / `--diff` output). Because it is windowed, your shell does **not** wait for it — the prompt returns immediately and output arrives after it; use `start /wait DistrictSync-windows.exe …` if you want the prompt to wait. Where there is no terminal to attach to — a scheduled task, a service, or a double-click — **nothing is printed**, and `etl_tool.log` plus the process exit code are the only signals. On Linux and macOS output goes to the terminal as usual.
 
 ## Support
 

@@ -163,18 +163,18 @@ def _last_run_log(caplog: pytest.LogCaptureFixture) -> dict:
     return json.loads(lines[-1].split("__DISTRICTSYNC_RUN__ ")[1])
 
 
-def _exit_code_via_main_wiring(*args, **kwargs) -> int:
-    """Reproduce src/main.py's except-block: a non-SystemExit from run_pipeline → exit 1."""
-    import sys
+def _exit_code_via_main_wiring(sis: str, input_path: str, output_path: str, *extra: str) -> int:
+    """Drive the REAL CLI entry point and return the exit code it produced.
 
-    with pytest.raises(SystemExit) as exc:
-        try:
-            run_pipeline(*args, **kwargs)
-        except SystemExit:
-            raise
-        except Exception:
-            sys.exit(1)
-    return int(exc.value.code)  # type: ignore[arg-type]
+    This used to re-implement ``src/main.py``'s except-block and assert the
+    ``sys.exit(1)`` it had just raised itself — a tautology that would have stayed
+    green if the entry point exited 0. Since the CLI became importable
+    (``src.main.cli``) it is driven directly, so a regression in the entry point's
+    error handling turns these red. Full contract: ``tests/test_cli_entry.py``.
+    """
+    from src.main import cli
+
+    return cli(["--sis", sis, "--input", input_path, "--output", output_path, *extra])
 
 
 # --------------------------------------------------------------------------- #

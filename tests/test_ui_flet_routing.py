@@ -9,8 +9,8 @@ launcher module, and (separately) that the CLI branch still parses its flags.
 
 from __future__ import annotations
 
-import argparse
-
+import src.main as main_mod
+from src.etl.pipeline import PipelineResult
 from src.main import _default_ui_launcher
 
 
@@ -33,17 +33,28 @@ class TestDefaultUiLauncher:
 
 
 class TestCliBranchUnaffected:
-    """The flip left the CLI arg surface intact — sanity-parse the ETL flags."""
+    """The flip left the CLI arg surface intact — proven on the REAL parser.
 
-    def _build_parser(self) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--sis")
-        parser.add_argument("--input")
-        parser.add_argument("--output", default="data/output")
-        return parser
+    This used to build a throwaway ``argparse.ArgumentParser`` in the test and
+    assert that argparse parsed it: a test of the standard library, not of
+    DistrictSync. Since ``src.main.cli`` became importable the actual parser is
+    driven instead, so a flag renamed or dropped in ``main.py`` turns this red.
+    """
 
-    def test_cli_still_parses_sis_and_input(self):
-        parser = self._build_parser()
-        args = parser.parse_args(["--sis", "myedbc", "--input", "data/input"])
-        assert args.sis == "myedbc"
-        assert args.input == "data/input"
+    def test_cli_passes_the_parsed_flags_through_to_the_pipeline(self, tmp_path, monkeypatch):
+        from src.main import cli
+
+        seen: dict[str, object] = {}
+
+        def _spy(sis_type, input_path, output_path, **kwargs):
+            seen.update({"sis": sis_type, "input": input_path, "output": output_path, **kwargs})
+            return PipelineResult(entity_counts={}, sftp_attempted=False, sftp_ok=False, anomalies=[])
+
+        monkeypatch.setattr(main_mod, "run_pipeline", _spy)
+
+        assert cli(["--sis", "myedbc", "--input", str(tmp_path), "--output", str(tmp_path / "out"), "--quality"]) == 0
+        assert seen["sis"] == "myedbc"
+        assert seen["input"] == str(tmp_path)
+        assert seen["output"] == str(tmp_path / "out")
+        assert seen["quality"] is True
+        assert seen["dry_run"] is False
