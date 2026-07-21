@@ -472,6 +472,30 @@ class TestReconcileOutputDir:
         assert (stale_bak / "Students.csv").read_text(encoding="utf-8") == "pre-crash originals"
 
 
+class TestEntityFilenameRule:
+    """``csv_filename`` / ``output_filenames`` — the ONE entity→filename spelling.
+
+    Shared by the write path, the stale-output detector and the SFTP delivery manifest.
+    A second copy of ``f"{entity}.csv"`` would let the DELIVERED set drift from the
+    WRITTEN set (the bug the manifest closes), so the rule is pinned here.
+    """
+
+    def test_csv_filename(self):
+        assert DataLoader.csv_filename("Students") == "Students.csv"
+        assert DataLoader.csv_filename("StudentAttendance") == "StudentAttendance.csv"
+
+    def test_output_filenames_maps_a_whole_run(self):
+        assert DataLoader.output_filenames(["Students", "Staff"]) == {"Students.csv", "Staff.csv"}
+        assert DataLoader.output_filenames([]) == set()
+
+    def test_written_file_matches_the_rule(self, tmp_path):
+        """The write path uses the same rule — so a manifest built from it always matches."""
+        loader = DataLoader(str(tmp_path))
+        loader.save_all({"Students": pd.DataFrame({"User ID": ["1"]})}, {"Students": ["User ID"]})
+        written = {p.name for p in tmp_path.glob("*.csv")}
+        assert written == DataLoader.output_filenames(["Students"])
+
+
 class TestDetectStaleOutputs:
     """Item 3 (Plan 0008): pure, non-destructive stale-output detection.
 

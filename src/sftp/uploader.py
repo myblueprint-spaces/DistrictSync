@@ -21,7 +21,11 @@ Usage::
     uploader.store_password("secret")          # called once from setup wizard
     ok, msg = uploader.test_connection()
     if ok:
-        uploaded = uploader.upload_csvs(Path("data/output"))
+        # Only the files THIS run produced ship — never the folder's *.csv glob.
+        # ``manifest`` is required; build it from the entities the run wrote:
+        #     from src.etl.loader import DataLoader
+        #     manifest = DataLoader.output_filenames(outputs)   # e.g. {"Students.csv", ...}
+        uploaded = uploader.upload_csvs(Path("data/output"), manifest=manifest)
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import date
 from pathlib import Path
 from typing import TypeVar
@@ -457,10 +461,21 @@ class SFTPUploader:
         output_dir: Path,
         zip_name: str | None = None,
         sis_type: str | None = None,
+        *,
+        manifest: Collection[str],
     ) -> list[str]:
-        """Zip the rostering CSVs in *output_dir* and upload via SFTP.
+        """Zip the *manifested* rostering CSVs in *output_dir* and upload via SFTP.
 
-        ``StudentAttendance.csv``, when present, is SpacesEDU's attendance feed
+        **The manifest is the authoritative payload — not the folder listing.**
+        Callers name exactly the CSV filenames this delivery vouches for (built from
+        the entity→filename rule in ``DataLoader.output_filenames``), and only those
+        files ship. The folder is merely *where* they live: a spreadsheet export, a
+        ``students_backup.csv``, or any other ``*.csv`` an admin drops into the output
+        folder is left on disk and never egresses to SpacesEDU. ``manifest`` is
+        REQUIRED (keyword-only) precisely so a future caller cannot silently fall back
+        to "whatever is in the folder" — the defect this closes.
+
+        ``StudentAttendance.csv``, when manifested, is SpacesEDU's attendance feed
         and must arrive as a **standalone file outside the rostering zip** (their
         nightly check looks for it by name, and it must not pollute the advanced
         -CSV bundle). It is therefore excluded from the zip and uploaded with its
@@ -477,15 +492,20 @@ class SFTPUploader:
                 ``districtsync_2026-04-10.zip`` when no ``sis_type`` is provided.
             sis_type: District SIS identifier used to derive the default
                 ``zip_name``. Ignored when ``zip_name`` is provided explicitly.
+            manifest: The exact CSV filenames authorized for this delivery
+                (e.g. ``DataLoader.output_filenames(outputs)``). Files in
+                *output_dir* outside this set are NOT uploaded.
 
         Returns:
             List of CSV filenames delivered — the zipped rostering CSVs plus any
             standalone ``StudentAttendance.csv``. Always non-empty on return (an empty
-            *output_dir* raises rather than returning ``[]``).
+            manifest / missing files raise rather than returning ``[]``).
 
         Raises:
-            RuntimeError: If *output_dir* contains no CSV files (fail-loud — a silent
-                ``[]`` let callers report a false "delivered"), or if the connection /
+            RuntimeError: If *manifest* is empty, if none of the manifested files are
+                present in *output_dir* (fail-loud — a silent ``[]`` let callers report
+                a false "delivered"), if a manifested file is missing (a partial
+                delivery reported as success would be dishonest), or if the connection /
                 upload could not be established.
         """
         import tempfile
@@ -494,13 +514,29 @@ class SFTPUploader:
         if zip_name is None:
             zip_name = build_zip_name(sis_type)
 
-        csv_files = sorted(output_dir.glob("*.csv"))
+        requested = set(manifest)
+        if not requested:
+            # Nothing was vouched for — refuse rather than invent a payload.
+            logger.error("SFTP delivery aborted: no output files were nominated for delivery")
+            raise RuntimeError("No output files were nominated for delivery")
+
+        # Only manifested files ship. Top-level glob only (an `archive_<ts>/` subfolder
+        # is already invisible here); the manifest then narrows it to this run's roster.
+        csv_files = sorted(p for p in output_dir.glob("*.csv") if p.is_file() and p.name in requested)
         if not csv_files:
             # Fail loud: a silent `[]` return let callers mark the delivery "ok" (a false
             # "delivered"). Raise so run_pipeline exits 3 / Convert shows BUILT_NOT_DELIVERED.
             # Only the directory NAME (never the full path) is in the message — no PII leak.
             logger.error(f"No CSV files found to upload in {output_dir.name}")
             raise RuntimeError(f"No CSV files found to upload in {output_dir.name}")
+
+        missing = sorted(requested - {p.name for p in csv_files})
+        if missing:
+            # A vouched-for file vanished between the atomic commit and delivery —
+            # shipping the rest as "delivered" would be a partial roster reported as
+            # whole. Entity CSV names only (no paths, no PII).
+            logger.error(f"SFTP delivery aborted: manifested file(s) missing from {output_dir.name}: {missing}")
+            raise RuntimeError(f"Cannot deliver — file(s) this run produced are missing from disk: {missing}")
 
         # SpacesEDU's attendance feed ships standalone, outside the rostering zip.
         attendance_files = [f for f in csv_files if f.name == "StudentAttendance.csv"]

@@ -72,7 +72,7 @@ class TestSFTPRealUpload:
             patch.object(uploader, "_get_password", return_value="pass"),
             sftpserver.serve_content({"upload": {}}),
         ):
-            uploaded = uploader.upload_csvs(tmp_path)
+            uploaded = uploader.upload_csvs(tmp_path, manifest={"Students.csv", "Staff.csv"})
 
         assert sorted(uploaded) == ["Staff.csv", "Students.csv"]
 
@@ -103,9 +103,45 @@ class TestSFTPRealUpload:
                 return client, sftp
 
             with patch.object(uploader, "_connect", side_effect=patched_connect):
-                uploader.upload_csvs(tmp_path, zip_name="test.zip")
+                uploader.upload_csvs(
+                    tmp_path, zip_name="test.zip", manifest={"Students.csv", "Staff.csv", "Family.csv"}
+                )
 
         assert sorted(captured_zip_names) == ["Family.csv", "Staff.csv", "Students.csv"]
+
+    def test_foreign_csv_never_reaches_the_server(self, sftpserver, tmp_path, pinned_local_server):
+        """Over the REAL transport: an admin's stray CSV in the output folder is not delivered.
+
+        The zip that actually lands on the server carries only the manifested roster —
+        the folder listing is not the payload.
+        """
+        (tmp_path / "Students.csv").write_text("User ID\nS1\n", encoding="utf-8")
+        (tmp_path / "old_roster.csv").write_text("User ID\nEX1\n", encoding="utf-8")
+
+        captured_zip_names: list[str] = []
+
+        def _capture_put(local_path: str, remote_path: str) -> None:
+            with zipfile.ZipFile(local_path) as zf:
+                captured_zip_names.extend(zf.namelist())
+
+        uploader = _make_uploader(sftpserver.port)
+        with (
+            patch("src.utils.validators.ALLOWED_SFTP_HOSTS", _PATCHED_HOSTS),
+            patch.object(uploader, "_get_password", return_value="pass"),
+            sftpserver.serve_content({"upload": {}}),
+        ):
+            original_connect = uploader._connect
+
+            def patched_connect():
+                client, sftp = original_connect()
+                sftp.put = _capture_put  # type: ignore[method-assign]
+                return client, sftp
+
+            with patch.object(uploader, "_connect", side_effect=patched_connect):
+                uploaded = uploader.upload_csvs(tmp_path, zip_name="test.zip", manifest={"Students.csv"})
+
+        assert captured_zip_names == ["Students.csv"]
+        assert uploaded == ["Students.csv"]
 
     def test_upload_empty_dir_raises_before_connecting(self, sftpserver, tmp_path):
         """If no CSV files exist, upload_csvs fails loud (no silent [] → false 'delivered')
@@ -117,7 +153,7 @@ class TestSFTPRealUpload:
             sftpserver.serve_content({"upload": {}}),
             pytest.raises(RuntimeError, match="No CSV files found to upload"),
         ):
-            uploader.upload_csvs(tmp_path)
+            uploader.upload_csvs(tmp_path, manifest={"Students.csv"})
 
     def test_upload_zip_name_includes_today(self, sftpserver, tmp_path, pinned_local_server):
         """Default ZIP name must match districtsync_YYYY-MM-DD.zip."""
@@ -144,7 +180,7 @@ class TestSFTPRealUpload:
                 return client, sftp
 
             with patch.object(uploader, "_connect", side_effect=patched_connect):
-                uploader.upload_csvs(tmp_path)
+                uploader.upload_csvs(tmp_path, manifest={"Students.csv"})
 
         assert len(remote_paths) == 1
         expected = f"/upload/districtsync_{date.today().isoformat()}.zip"

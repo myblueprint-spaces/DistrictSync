@@ -26,6 +26,7 @@ from src.ui_flet import convert_output
 from src.ui_flet.convert_output import (
     DeliverReadiness,
     can_run_convert,
+    deliverable_manifest,
     district_mismatch_note,
     freshness_fact,
     interaction_state,
@@ -362,3 +363,52 @@ class TestInteractionState:
         state = interaction_state(gates_ok=False, job_running=False)
         assert state.convert_disabled is True
         assert state.inputs_disabled is False
+
+
+class TestDeliverableManifest:
+    """Deliver-from-disk's authoritative set: the ACTIVE CONFIG's entity CSVs on disk.
+
+    A delivery-only run has no ``outputs`` to vouch for, so the config's enabled entities
+    stand in — never the folder's ``*.csv`` glob (that is the bug this closes).
+    """
+
+    _ENTITIES = ["Students", "Staff", "Family", "Classes", "Enrollments"]
+
+    def _folder(self, tmp_path: Path, names: list[str]) -> Path:
+        for name in names:
+            (tmp_path / name).write_text("col\nv\n", encoding="utf-8")
+        return tmp_path
+
+    def test_foreign_csvs_are_excluded(self, tmp_path: Path) -> None:
+        folder = self._folder(
+            tmp_path,
+            [f"{e}.csv" for e in self._ENTITIES] + ["old_roster.csv", "students_backup.csv", "notes.csv"],
+        )
+        manifest = deliverable_manifest(self._ENTITIES, str(folder))
+        assert manifest == {f"{e}.csv" for e in self._ENTITIES}
+
+    def test_multi_run_folder_keeps_every_config_owned_csv(self, tmp_path: Path) -> None:
+        """Back-compat: CSVs left by earlier runs of the SAME config all still deliver."""
+        folder = self._folder(tmp_path, [f"{e}.csv" for e in self._ENTITIES])
+        assert deliverable_manifest(self._ENTITIES, str(folder)) == {f"{e}.csv" for e in self._ENTITIES}
+
+    def test_config_owned_entity_with_no_file_is_simply_absent(self, tmp_path: Path) -> None:
+        """The folder legitimately holds only what past runs wrote — not a hard failure."""
+        folder = self._folder(tmp_path, ["Students.csv", "Staff.csv"])
+        assert deliverable_manifest(self._ENTITIES, str(folder)) == {"Students.csv", "Staff.csv"}
+
+    def test_csv_owned_by_another_config_is_not_delivered(self, tmp_path: Path) -> None:
+        """A CourseInfo.csv left by an mbp_all run is not this district's to ship."""
+        folder = self._folder(tmp_path, ["Students.csv", "CourseInfo.csv", "StudentCourses.csv"])
+        assert deliverable_manifest(self._ENTITIES, str(folder)) == {"Students.csv"}
+
+    def test_blank_or_missing_folder_is_empty(self, tmp_path: Path) -> None:
+        assert deliverable_manifest(self._ENTITIES, "") == set()
+        assert deliverable_manifest(self._ENTITIES, str(tmp_path / "nope")) == set()
+
+    def test_uses_the_loaders_entity_filename_rule(self, tmp_path: Path) -> None:
+        """One spelling of entity→filename: the manifest and the write path agree."""
+        from src.etl.loader import DataLoader
+
+        folder = self._folder(tmp_path, ["Students.csv"])
+        assert deliverable_manifest(["Students"], str(folder)) == {DataLoader.csv_filename("Students")}

@@ -91,6 +91,7 @@ from src.ui_flet import components, tokens
 from src.ui_flet.convert_output import (
     DeliverReadiness,
     can_run_convert,
+    deliverable_manifest,
     district_mismatch_note,
     freshness_fact,
     interaction_state,
@@ -256,7 +257,13 @@ def convert_job(
                 port=cfg.sftp_port,
                 username=cfg.sftp_username,
                 remote_path=cfg.sftp_remote_path,
-            ).upload_csvs(output_dir, sis_type=config_name)
+            ).upload_csvs(
+                output_dir,
+                sis_type=config_name,
+                # THIS build's committed CSVs — never the folder's *.csv glob (a stray
+                # admin backup/spreadsheet in the output folder must not reach SpacesEDU).
+                manifest=DataLoader.output_filenames(outputs),
+            )
         except Exception:  # noqa: BLE001 - exit-3: a failed delivery is a RESULT, not on_error
             built_not_delivered = ConvertResult(
                 status=ConvertStatus.BUILT_NOT_DELIVERED,
@@ -297,18 +304,29 @@ def deliver_job(sis_type: str) -> ConvertResult:
     """Deliver the ALREADY-COMMITTED output CSVs from disk — never a re-transform (0034 Slice 2).
 
     Off the UI thread (the same ``JobRunner`` seam as ``convert_job``). Uploads the
-    top-level ``*.csv`` set the last committed build left in the resolved output folder
-    (``save_all``'s atomic commit means that set is never torn); the input folder is
+    ACTIVE CONFIG's entity CSVs that the last committed build left in the resolved output
+    folder (``save_all``'s atomic commit means that set is never torn); the input folder is
     NEVER read, so a between-build-and-deliver input change cannot alter what ships, and
     the anomaly write-gate is untouched (it guards WRITES; a delivery writes nothing).
 
+    **The authoritative set, with no ``outputs`` to vouch for.** A delivery-only run never
+    transformed anything, so "what this run produced" doesn't exist. The honest substitute
+    is *what the active district config would produce* — ``configured_entity_order``
+    (enabled-entities-derived, never raw ``mappings.keys()``) intersected with the folder,
+    via :func:`deliverable_manifest`. A stray ``*.csv`` an admin dropped in the output
+    folder is therefore NOT delivered, and a CSV owned by a DIFFERENT config (e.g. a
+    ``CourseInfo.csv`` left by an ``mbp_all`` run before the district was switched) is not
+    delivered under this config either — matching ``archive_stale_outputs``' semantics.
+
     Outcomes fold into the result shapes ``summarize`` already maps: success →
     ``DELIVERED_FROM_DISK``; a failed upload (including a raced-away empty folder —
-    ``upload_csvs`` fails loud on no CSVs) → ``BUILT_NOT_DELIVERED`` (the exit-3 shape, a
-    CATEGORY only — never the raw exception / host / path). An unset output folder is a
-    gate/programming error → fail loud to ``on_error``. Both outcomes are recorded to the
-    run store as a ``delivery_only`` record (``source="manual"``) carrying NO build entity
-    counts — a delivery ships an earlier build, it isn't one.
+    ``upload_csvs`` fails loud on nothing to send) → ``BUILT_NOT_DELIVERED`` (the exit-3
+    shape, a CATEGORY only — never the raw exception / host / path). An unset output folder,
+    an unset district (no config ⇒ no authoritative set — never fall back to "ship the
+    folder"), or an unloadable config is a gate/programming error → fail loud to
+    ``on_error``. Both outcomes are recorded to the run store as a ``delivery_only`` record
+    (``source="manual"``) carrying NO build entity counts — a delivery ships an earlier
+    build, it isn't one.
     """
     t0 = time.monotonic()
     cfg = AppConfig.load()
@@ -316,13 +334,25 @@ def deliver_job(sis_type: str) -> ConvertResult:
     if not output_dir_value:
         raise ValueError("No output folder is configured — set one in Settings before delivering.")
 
+    district = (sis_type or "").strip()
+    if not district:
+        raise ValueError("No district is selected — choose your district in Settings before delivering.")
+
+    # Resolved BEFORE the delivery try-block: a config problem is a fail-loud setup fault,
+    # not a delivery failure, and must not be mislabelled "we couldn't send your files".
+    raw = load_config(district).to_raw_dict()
+    manifest = deliverable_manifest(
+        configured_entity_order(raw.get("mappings", {}), raw.get("global_config", {})),
+        output_dir_value,
+    )
+
     try:
         SFTPUploader(
             host=cfg.sftp_host,
             port=cfg.sftp_port,
             username=cfg.sftp_username,
             remote_path=cfg.sftp_remote_path,
-        ).upload_csvs(Path(output_dir_value), sis_type=sis_type or None)
+        ).upload_csvs(Path(output_dir_value), sis_type=district, manifest=manifest)
     except Exception:  # noqa: BLE001 - exit-3 shape: a failed delivery is a RESULT, not on_error
         failed = ConvertResult(status=ConvertStatus.BUILT_NOT_DELIVERED, sftp_attempted=True, sftp_ok=False)
         _record_manual_run(failed, sis_type=sis_type, elapsed=time.monotonic() - t0, delivery_only=True)

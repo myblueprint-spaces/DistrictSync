@@ -35,11 +35,13 @@ import logging
 import os
 import subprocess  # nosec B404 - launching the OS file browser; no shell, list-form args
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
+from src.etl.loader import DataLoader
 from src.ui_flet.humanize import friendly_district_name, friendly_timestamp
 
 logger = logging.getLogger(__name__)
@@ -223,6 +225,27 @@ def _top_level_csvs(output_dir: str | None) -> list[Path]:
 def output_csvs_present(output_dir: str | None) -> bool:
     """Whether the output folder holds at least one committed top-level CSV to deliver."""
     return bool(_top_level_csvs(output_dir))
+
+
+def deliverable_manifest(entity_names: Iterable[str], output_dir: str | None) -> set[str]:
+    """The deliver-from-disk delivery manifest: the ACTIVE CONFIG's entity CSVs on disk.
+
+    Deliver-from-disk has no ``outputs`` to vouch for (it ships an EARLIER build), so the
+    authoritative set is *the entities the active config would produce* — resolved by the
+    caller via ``configured_entity_order`` (enabled-entities-derived, never raw
+    ``mappings.keys()``) — intersected with what is actually committed in the folder.
+    Two consequences, both deliberate:
+
+    * a foreign ``*.csv`` (a backup, a spreadsheet export) is NOT in the config's entity
+      set, so it never egresses — the same guarantee the run-and-deliver path gets;
+    * a config-owned entity with no CSV yet is simply absent from the manifest rather
+      than a hard failure — the folder legitimately holds only what past runs wrote.
+
+    The entity→filename spelling comes from ``DataLoader.output_filenames`` (one rule,
+    shared with the write path and the stale-output detector).
+    """
+    candidates = DataLoader.output_filenames(entity_names)
+    return {p.name for p in _top_level_csvs(output_dir) if p.name in candidates}
 
 
 def newest_output_csv_mtime_iso(output_dir: str | None) -> str:

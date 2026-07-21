@@ -14,7 +14,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -757,10 +757,13 @@ def run_pipeline(
                     f"archive_<ts>/ (excluded from SFTP): {archived}"
                 )
 
-            # SFTP upload (only on a successful, non-dry-run write)
+            # SFTP upload (only on a successful, non-dry-run write). The payload is
+            # THIS run's committed entity CSVs — derived from `outputs` through the
+            # loader's single entity→filename rule, never the output folder's *.csv
+            # glob (a stray admin file in that folder must not egress to SpacesEDU).
             if sftp:
                 sftp_attempted = True
-                sftp_ok = _sftp_upload(output_path, sis_type)
+                sftp_ok = _sftp_upload(output_path, sis_type, manifest=DataLoader.output_filenames(outputs))
 
         # Dry-run summary
         if dry_run:
@@ -833,8 +836,14 @@ def run_pipeline(
         raise
 
 
-def _sftp_upload(output_path: str, sis_type: str | None = None) -> bool:
-    """Upload generated CSV files via SFTP. Returns True on success.
+def _sftp_upload(output_path: str, sis_type: str | None = None, *, manifest: Collection[str]) -> bool:
+    """Upload THIS run's generated CSV files via SFTP. Returns True on success.
+
+    ``manifest`` is the authoritative payload — the filenames this run wrote
+    (``DataLoader.output_filenames(outputs)``), threaded through so delivery ships the
+    roster the run vouched for rather than whatever ``*.csv`` happens to sit in the
+    output folder. It is keyword-only and REQUIRED: an admin's stray backup/spreadsheet
+    CSV must never egress to SpacesEDU.
 
     Never raises — exceptions are caught and logged at ERROR level so the
     caller (``run_pipeline``) can propagate ``sftp_ok=False`` to ``main.py``
@@ -857,7 +866,7 @@ def _sftp_upload(output_path: str, sis_type: str | None = None) -> bool:
             username=cfg.sftp_username,
             remote_path=cfg.sftp_remote_path,
         )
-        uploaded = uploader.upload_csvs(Path(output_path), sis_type=sis_type)
+        uploaded = uploader.upload_csvs(Path(output_path), sis_type=sis_type, manifest=manifest)
         if uploaded:
             logger.info(f"SFTP upload complete: {len(uploaded)} file(s) — {uploaded}")
             return True
