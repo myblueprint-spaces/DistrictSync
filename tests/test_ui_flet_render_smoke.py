@@ -34,7 +34,13 @@ from src.ui_flet.screens.mapping import build_mapping
 from src.ui_flet.screens.onboarding import build_onboarding
 from src.ui_flet.screens.run_history import build_run_history
 from src.ui_flet.screens.setup import build_setup
-from src.ui_flet.setup_flow import DowngradeInterrupt, ReconcileOutcome, TaskArgs, task_args_to_persisted
+from src.ui_flet.setup_flow import (
+    DowngradeInterrupt,
+    ReconcileOutcome,
+    TaskArgs,
+    downgrade_interrupt,
+    task_args_to_persisted,
+)
 
 
 @pytest.fixture
@@ -877,6 +883,19 @@ def test_settings_enabling_sftp_reregisters_task_with_sftp(monkeypatch, tmp_path
         schedule_registered=True,
         sftp_enabled=False,
         schedule_time="03:00",
+        # The durable record of that registration — a task baked WITHOUT --sftp, logged-on-only.
+        # W3-C: "a registered schedule" now means a PROVEN one; a bare schedule_registered=True
+        # with no record is the separate unproven state (its own tests below), which asks about
+        # the logon type before re-registering instead of proceeding straight to the register.
+        schedule_task_args=task_args_to_persisted(
+            TaskArgs.of(
+                input_dir=str(in_dir),
+                output_dir=str(tmp_path / "out"),
+                sis_type="myedbc",
+                sftp_enabled=False,
+                run_time="03:00",
+            )
+        ),
     )
     monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
     monkeypatch.setattr(AppConfig, "save", lambda self: None)
@@ -1042,18 +1061,78 @@ def test_no_edit_save_after_mapping_switch_reregisters_from_the_persisted_args(t
     assert triggered["count"] == 1, "a no-edit Save must re-register the task with the new district"
 
 
-def test_no_edit_save_without_a_persisted_record_falls_back_to_the_mount_snapshot(tmp_path, stub_page, monkeypatch):
-    """S3-d back-compat: an install that registered before the record existed keeps the old
-    (mount-snapshot) reconcile — a no-edit Save does not re-register (documented limitation
-    until its next successful register writes the record)."""
+def test_no_edit_save_without_a_persisted_record_reregisters_rather_than_silently_doing_nothing(
+    tmp_path, stub_page, monkeypatch
+):
+    """W3-C acceptance (replaces the S3-d 'falls back to the mount snapshot' limitation): on an
+    install whose task was registered before the durable record existed, the app cannot know what
+    the live task carries — so a Save must ACT (re-register), never read as 'up to date'.
+
+    This is exactly the Mapping-switch remedy path: Mapping persists the new district, Setup
+    remounts and reads it, so any baseline derived from the current config equals the pending
+    args and the old fallback silently skipped the re-register the Mapping notice promised."""
+    import src.ui_flet.screens.setup as setup_mod
+
     cfg = _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)
-    cfg.schedule_task_args = None  # pre-record install
+    cfg.schedule_task_args = None  # pre-record install (registered before v3.7.0)
     triggered = _spy_trigger(monkeypatch)
+    monkeypatch.setattr(setup_mod, "_kick_probe_thread", lambda _page, _work: None)
 
     tree = build_setup(stub_page)
     _button_by_content(tree, "Save folders & district").on_click(None)
 
-    assert triggered["count"] == 0
+    assert triggered["count"] == 1, "an unproven schedule record must re-register, not silently no-op"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the unattended logon type exists only on Windows")
+def test_unproven_record_save_asks_before_it_could_downgrade_an_unattended_task(tmp_path, monkeypatch):
+    """W3-C safety: forcing the re-register must not introduce a NEW silent failure. A pre-record
+    install's ``schedule_unattended`` defaults to False even when the live task really does run
+    signed-out, so the re-register pauses on the explicit choice with copy that says we can't tell
+    — no register (and therefore no UAC prompt) fires until the admin chooses."""
+    cfg = _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)
+    cfg.schedule_task_args = None  # pre-record install: the logon type is unproven too
+    recorded = _record_register(monkeypatch)
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_setup(page)
+    _button_by_content(tree, "Save folders & district").on_click(None)
+
+    assert recorded["called"] == 0, "no blank-password register may fire on an unproven logon type"
+    dialog = page.show_dialog.call_args[0][0]
+    assert isinstance(dialog, ft.AlertDialog)
+    unknown = downgrade_interrupt(registered_unattended=None, password_supplied=False)
+    assert dialog.title.value == unknown.headline
+    assert dialog.content.value == unknown.detail
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the unattended logon type exists only on Windows")
+def test_resolving_the_unproven_record_once_stops_the_reprompting(tmp_path, monkeypatch):
+    """W3-C UAC-cost bound: the unproven state is self-limiting. Choosing "signed in only" writes
+    the durable record on success, so the NEXT no-edit Save is precisely change-gated again —
+    exactly one prompt per install, never one per Save."""
+    cfg = _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)
+    cfg.schedule_task_args = None
+    recorded = _record_register(monkeypatch)
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_setup(page)
+    captured.clear()
+    _button_by_content(tree, "Save folders & district").on_click(None)
+    dialog = page.show_dialog.call_args[0][0]
+    _dialog_action(dialog, DowngradeInterrupt().signed_in_only_label).on_click(None)
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))  # the register worker's marshalled _apply_result
+
+    assert recorded["called"] == 1
+    assert cfg.schedule_task_args is not None  # the record now exists — the state is proven
+    assert cfg.schedule_task_args["sis_type"] == "mbp_core"
+
+    _button_by_content(tree, "Save folders & district").on_click(None)  # a second no-edit Save
+    assert recorded["called"] == 1, "a proven, unchanged record must not re-register again"
+    assert page.show_dialog.call_count == 1, "and must not re-prompt"
 
 
 def test_save_reregister_of_an_unattended_task_without_a_password_interrupts(tmp_path, monkeypatch):

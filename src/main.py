@@ -322,7 +322,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\nError: {e}")
         print("Check etl_tool.log for details. Contact support@myBlueprint.ca for help.")
-        sys.exit(1)
+        sys.exit(3)
 
     # Exit code 3: SFTP was requested and attempted but delivery failed.
     # The ETL output (CSV files) is already written and intact — only the

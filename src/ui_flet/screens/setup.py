@@ -23,11 +23,15 @@ them to controls.
   (input/output/district/SFTP flag/run time — ``setup_flow.task_args_changed``) changes and
   a schedule is live, the folders Save re-registers the task through the SAME register flow
   (incl. elevation) so tonight's run uses the new settings. The rail label stays "Setup".
-  Save trustworthiness (0034 S3): the reconcile compares against the durable
-  **last-REGISTERED args** (``cfg.schedule_task_args``, written on every confirmed register —
-  so a Mapping district switch + no-edit Save re-registers), a blank-password re-register of
-  an unattended task (``cfg.schedule_unattended``) pauses on an **explicit downgrade choice**
-  (never silent), and a valid run-time edit persists as config even with **no task registered**.
+  Save trustworthiness (0034 S3 + W3-C): the reconcile compares ONLY against the durable
+  **last-REGISTERED record** (``setup_flow.registered_schedule`` over ``cfg.schedule_task_args``
+  + ``cfg.schedule_unattended``, both written on every confirmed register) — never a mount-time
+  config snapshot, which stops being a baseline the moment another surface persists a change
+  before Setup remounts (a Mapping district switch). **No record ⇒ UNKNOWN, and unknown acts**:
+  the Save re-registers rather than reporting a task it never checked as up to date, and the
+  blank-password **explicit downgrade choice** fires for an unknown logon type as well as a
+  known-unattended one (never silent). A valid run-time edit still persists as config with **no
+  task registered**.
 
 The register/unregister flow (Slice 5/6) and the SFTP test/save flow (Slice 7) are **reused
 verbatim** in both modes — the wizard's Schedule/Delivery steps embed the SAME section
@@ -80,6 +84,8 @@ from src.ui_flet.setup_flow import (
     FinishSummaryRow,
     FlowInputs,
     ReconcileOutcome,
+    RegisteredSchedule,
+    ScheduleReconcile,
     SetupStep,
     TaskArgs,
     auto_selected_district,
@@ -93,11 +99,12 @@ from src.ui_flet.setup_flow import (
     is_skippable,
     next_step,
     prev_step,
+    registered_schedule,
     run_time_save_decision,
     schedule_delivery_desync,
+    schedule_reconcile,
     sftp_reconcile_suffix,
     step_number,
-    task_args_changed,
     task_args_from_persisted,
     task_args_to_persisted,
 )
@@ -612,6 +619,21 @@ def _mount_wizard(
 # --------------------------------------------------------------------------- #
 # Settings mode (D8): the flat scroll + one reconciling Save.                  #
 # --------------------------------------------------------------------------- #
+def _registered_schedule(cfg: AppConfig) -> RegisteredSchedule:  # pragma: no cover - AppConfig→pure adapter
+    """The durable "what the live task actually carries" record (the ONE resolution point).
+
+    A thin adapter over the pure ``setup_flow.registered_schedule``: it only supplies the two
+    persisted fields plus the running platform's unattended-logon capability. Both reconcile
+    consumers (the task-args comparison and the logon-downgrade guard) read the record from HERE,
+    so neither can re-derive a baseline from the *current* config (the W3-C silent no-op).
+    """
+    return registered_schedule(
+        raw_task_args=cfg.schedule_task_args,
+        unattended_flag=cfg.schedule_unattended,
+        supports_unattended=get_scheduler().supports_unattended_password,
+    )
+
+
 def _mount_settings(  # pragma: no cover - Flet view glue
     page: ft.Page,
     cfg: AppConfig,
@@ -621,48 +643,12 @@ def _mount_settings(  # pragma: no cover - Flet view glue
     on_schedule_changed: Callable[[], None] | None = None,
 ) -> None:
     """Render the completed-install Settings scroll into ``root`` (folders + schedule + SFTP)."""
-    # The ONE task-args snapshot + reconcile the folders Save AND the SFTP Save both drive (D8/F1):
-    # any change to a task-baked field (folders/district/SFTP flag/run time) on a registered
-    # schedule re-registers through the SAME flow, so the nightly action can never go stale — and
-    # enabling SFTP in Settings finally adds --sftp to an already-registered task (the F1 gap).
-    saved = {
-        "args": TaskArgs.of(
-            input_dir=cfg.input_dir,
-            output_dir=cfg.output_dir,
-            sis_type=cfg.sis_type,
-            sftp_enabled=cfg.sftp_enabled,
-            run_time=cfg.schedule_time,
-        )
-    }
-
-    def _snapshot_args() -> TaskArgs:
-        return TaskArgs.of(
-            input_dir=cfg.input_dir,
-            output_dir=cfg.output_dir,
-            sis_type=cfg.sis_type,
-            sftp_enabled=cfg.sftp_enabled,
-            run_time=cfg.schedule_time,
-        )
-
-    def _on_registered() -> None:
-        # N1: after ANY successful register (reconcile OR the schedule section's own Register),
-        # refresh the snapshot so a later Save doesn't redundantly re-register. cfg.schedule_time
-        # was just set to the registered field value, so the snapshot now matches reality.
-        saved["args"] = _snapshot_args()
-
-    # Build the schedule section FIRST so both Saves can drive its register flow on a task-arg change.
-    schedule_card, sched_handle = _build_schedule_section(
-        page, cfg, on_registered=_on_registered, on_schedule_changed=on_schedule_changed
-    )
-
-    def _baseline_args() -> TaskArgs:
-        # 0034 S3-d: compare against what was ACTUALLY registered (the durable record written at
-        # every confirmed register) — a Mapping district switch or an app restart must not reset
-        # the comparison baseline to the current config, or a no-edit Save silently skips the
-        # re-register the Mapping notice promised. Installs that registered before the record
-        # existed fall back to the mount snapshot (the pre-record behaviour).
-        persisted = task_args_from_persisted(cfg.schedule_task_args)
-        return persisted if persisted is not None else saved["args"]
+    # The ONE reconcile the folders Save AND the SFTP Save both drive (D8/F1): any change to a
+    # task-baked field (folders/district/SFTP flag/run time) on a registered schedule re-registers
+    # through the SAME flow, so the nightly action can never go stale — and enabling SFTP in
+    # Settings finally adds --sftp to an already-registered task (the F1 gap).
+    # Build the schedule section FIRST so both Saves can drive its register flow.
+    schedule_card, sched_handle = _build_schedule_section(page, cfg, on_schedule_changed=on_schedule_changed)
 
     def _reconcile() -> ReconcileOutcome:
         pending = TaskArgs.of(
@@ -672,14 +658,23 @@ def _mount_settings(  # pragma: no cover - Flet view glue
             sftp_enabled=cfg.sftp_enabled,
             run_time=sched_handle.run_time_value(),
         )
-        if cfg.schedule_registered and task_args_changed(_baseline_args(), pending):
-            # May pause on the explicit downgrade choice first (S3-a); on a confirmed success
-            # → _on_registered refreshes the snapshot (and the durable record is re-written).
-            # Returns DISPATCHED (register started) vs INTERRUPTED (dialog shown, nothing
-            # registered) so the Save sites paint an honest note — never "updating…" for an
-            # interrupt that registered nothing (the S3 correctness fix).
+        # W3-C: the baseline is the durable last-REGISTERED record and NOTHING else. A mount-time
+        # config snapshot is not a record of what the task carries — after another surface mutated
+        # config (a Mapping district switch persists the new district *before* Setup remounts and
+        # reads it) the snapshot already equals ``pending``, so the reconcile read "unchanged" and
+        # silently skipped the very re-register the Mapping notice told the admin to do.
+        action = schedule_reconcile(
+            schedule_registered=cfg.schedule_registered,
+            record=_registered_schedule(cfg),
+            pending=pending,
+        )
+        if action is ScheduleReconcile.REREGISTER:
+            # May pause on the explicit downgrade choice first (S3-a). Returns DISPATCHED
+            # (register started) vs INTERRUPTED (dialog shown, nothing registered) so the Save
+            # sites paint an honest note — never "updating…" for an interrupt that registered
+            # nothing (the S3 correctness fix).
             return sched_handle.trigger_register()
-        if not cfg.schedule_registered:
+        if action is ScheduleReconcile.NO_TASK:
             # S3-b: with no task to re-register, a run-time edit is still CONFIG — persist a
             # valid one (invalid → the schedule section's inline error, nothing persisted).
             sched_handle.persist_run_time()
@@ -819,15 +814,15 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     cfg: AppConfig,
     *,
     on_status: Callable[[ScheduleStatus], None] | None = None,
-    on_registered: Callable[[], None] | None = None,
     on_schedule_changed: Callable[[], None] | None = None,
 ) -> tuple[ft.Control, _ScheduleHandle]:
     """The scheduler section — run time + (where supported) run-as password → register (Slice 5/6).
 
     Returns the card AND a ``_ScheduleHandle`` so Settings mode can drive re-registration on a
     task-arg change. ``on_status`` (when given) is called with each schedule read-back so the
-    wizard can track live-ness for its resume + finish copy. ``on_registered`` (when given) fires
-    after a CONFIRMED successful register so Settings can refresh its task-args snapshot (N1).
+    wizard can track live-ness for its resume + finish copy. (There is no post-register snapshot
+    callback: a confirmed register writes ``cfg.schedule_task_args``, which IS the reconcile
+    baseline, so the next Save is change-gated off reality rather than a refreshed guess.)
     ``on_schedule_changed`` (when given — the shell's badge re-probe, 0032 T1 #8) fires after a
     CONFIRMED register OR unregister success; advisory and exception-suppressed, so it can never
     break the result paint. The register/unregister flow is UNCHANGED from Slice 5/6 (off-thread,
@@ -1017,8 +1012,6 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             cfg.schedule_unattended = bool(password)
             cfg.schedule_task_args = task_args_to_persisted(registered_args)
             cfg.save()
-            if on_registered is not None:
-                on_registered()  # N1: refresh Settings' task-args snapshot after a confirmed register
             if on_schedule_changed is not None:
                 # 0032 T1 #8: a confirmed register invalidates the boot-time rail badge —
                 # let the shell re-probe. Advisory: never let it break the result paint.
@@ -1244,10 +1237,14 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         ``_register`` early-returned without dispatching (its gate refused — e.g. a malformed run
         time, whose inline error it just painted). The seam that lets both Save sites paint an
         honest note (S3 correctness fix): "updating…" is claimed ONLY for a real dispatch.
+
+        The logon-type fact comes from the DURABLE record (W3-C), so an install with no record
+        interrupts with its own can't-tell copy rather than trusting the ``False`` default and
+        silently replacing a signed-out-capable task with a logged-on-only one.
         """
         password = password_field.value if password_field is not None else None
         interrupt = downgrade_interrupt(
-            registered_unattended=cfg.schedule_unattended,
+            registered_unattended=_registered_schedule(cfg).unattended,
             password_supplied=bool(password),
         )
         if interrupt is None:

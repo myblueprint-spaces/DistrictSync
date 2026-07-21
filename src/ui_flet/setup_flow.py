@@ -292,12 +292,12 @@ def task_args_to_persisted(args: TaskArgs) -> dict[str, object]:
 def task_args_from_persisted(raw: object) -> TaskArgs | None:
     """Rebuild the last-REGISTERED ``TaskArgs`` from its persisted form (total; 0034 S3-d).
 
-    ``None`` means "no usable record" — the caller falls back to its mount snapshot (the
-    pre-record reconcile baseline). DEFENSIVE rather than fail-loud by design: the record
-    lives in the user-profile ``config.json`` (hand-editable, and absent on installs that
-    registered before the field existed), so a missing/garbled record must degrade to the
-    old behaviour, never crash Settings. Values are normalized through ``TaskArgs.of`` so a
-    persisted record and a live snapshot compare on equal footing.
+    ``None`` means **"no usable record" — the honest UNKNOWN**, not a licence to substitute a
+    guess (W3-C). DEFENSIVE rather than fail-loud by design: the record lives in the user-profile
+    ``config.json`` (hand-editable, and absent on installs that registered before the field
+    existed in v3.7.0), so a missing/garbled record must degrade, never crash Settings. Values are
+    normalized through ``TaskArgs.of`` so a persisted record and a live snapshot compare on equal
+    footing.
     """
     if not isinstance(raw, dict):
         return None
@@ -314,6 +314,92 @@ def task_args_from_persisted(raw: object) -> TaskArgs | None:
         sftp_enabled=raw["sftp_enabled"],
         run_time=raw["run_time"],
     )
+
+
+# --------------------------------------------------------------------------- #
+# The durable registered-schedule record + the reconcile decision (W3-C).       #
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class RegisteredSchedule:
+    """What the app durably KNOWS about the live scheduled task — ``None`` means "we can't tell".
+
+    The two facets are written together by every confirmed register and cleared together by every
+    confirmed unregister, so the record is **atomic**: either both facts are evidenced or neither
+    is. That is why an absent ``args`` also makes ``unattended`` unknown — the ``False`` default of
+    ``AppConfig.schedule_unattended`` is a dataclass default, not an observation.
+
+    Attributes:
+        args: the task-baked args the live task actually carries, or ``None`` when there is no
+            usable record (an install that registered before the record shipped in v3.7.0, or a
+            hand-edited ``config.json``).
+        unattended: whether the live task runs while signed out, or ``None`` when unknown. Always
+            ``False`` where the platform has no stored-password logon at all (cron): there is no
+            logon type an unproven re-register could downgrade, so "unknown" would buy nothing.
+    """
+
+    args: TaskArgs | None
+    unattended: bool | None
+
+
+def registered_schedule(
+    *,
+    raw_task_args: object,
+    unattended_flag: bool,
+    supports_unattended: bool = True,
+) -> RegisteredSchedule:
+    """Resolve the durable registered-schedule record from its persisted parts (pure, TOTAL).
+
+    The SINGLE place ``AppConfig.schedule_task_args`` + ``schedule_unattended`` are turned into
+    reconcile facts, so no caller can re-derive "what the task carries" from the *current* config
+    (the unsound baseline W3-C removes: a surface that mutated config before Settings mounted —
+    a Mapping district switch — makes any current-config baseline equal the pending args, so the
+    reconcile reads "unchanged" and silently skips the re-register it just promised).
+
+    ``supports_unattended`` gates only the INFERENCE, never a recorded fact: a persisted
+    ``unattended_flag`` is evidence and is honored on any platform (a ``config.json`` can travel),
+    while the *absence* of evidence is treated as unknown only where an unattended logon type
+    exists to lose.
+    """
+    args = task_args_from_persisted(raw_task_args)
+    if args is None:
+        return RegisteredSchedule(args=None, unattended=None if supports_unattended else False)
+    return RegisteredSchedule(args=args, unattended=bool(unattended_flag))
+
+
+class ScheduleReconcile(Enum):
+    """What a Settings Save must do with the live nightly task (the pure decision; W3-C).
+
+    ``NO_TASK`` — nothing is registered, so there is nothing to reconcile (a run-time edit is
+    still persisted as config — see ``run_time_save_decision``). ``UP_TO_DATE`` — the durable
+    record PROVES the live task already carries the pending args. ``REREGISTER`` — the record
+    differs, **or there is no record at all**: an unproven task can never be reported up to date,
+    because the app would be asserting a state it never checked.
+    """
+
+    NO_TASK = "no_task"
+    UP_TO_DATE = "up_to_date"
+    REREGISTER = "reregister"
+
+
+def schedule_reconcile(
+    *,
+    schedule_registered: bool,
+    record: RegisteredSchedule,
+    pending: TaskArgs,
+) -> ScheduleReconcile:
+    """Decide whether a Settings Save must re-register the live task (pure, TOTAL; W3-C).
+
+    The baseline comes ONLY from the durable record. An unproven record resolves to
+    ``REREGISTER`` — the safe action, because a stale task silently converts the wrong district
+    every night while the UI reports the fix as applied. The cost is bounded: a confirmed
+    re-register writes the record, so the very next Save is precisely change-gated again (at most
+    one extra prompt per install, never one per Save).
+    """
+    if not schedule_registered:
+        return ScheduleReconcile.NO_TASK
+    if record.args is None:
+        return ScheduleReconcile.REREGISTER
+    return ScheduleReconcile.REREGISTER if task_args_changed(record.args, pending) else ScheduleReconcile.UP_TO_DATE
 
 
 def schedule_delivery_desync(
@@ -390,6 +476,17 @@ _DOWNGRADE_DETAIL = (
     "Your nightly schedule currently runs whether or not anyone is signed in. "
     "Updating it without your Windows password would change it to run only while you're signed in."
 )
+# The UNKNOWN-logon-type variant (W3-C): on an install whose task was registered before the
+# durable record shipped, ``schedule_unattended`` is a dataclass default, not an observation — so
+# the copy must NOT reuse the assertive "your schedule currently runs whether or not anyone is
+# signed in" (the trust bar: never assert a state you didn't check). Same three choices, honest
+# premise. Only the premise differs; the consequence of continuing is identical.
+_DOWNGRADE_UNKNOWN_HEADLINE = "Should the nightly sync keep running when you're signed out?"
+_DOWNGRADE_UNKNOWN_DETAIL = (
+    "We can't tell whether your nightly schedule runs while you're signed out — DistrictSync has "
+    "no record of how it was set up. Updating it without your Windows password would set it to "
+    "run only while you're signed in."
+)
 _DOWNGRADE_KEEP_LABEL = "Keep running when signed out — re-enter the Windows password"
 _DOWNGRADE_SIGNED_IN_ONLY_LABEL = "Continue — the sync will only run while signed in"
 _DOWNGRADE_CANCEL_LABEL = "Cancel"
@@ -409,9 +506,12 @@ _DOWNGRADE_CANCELLED_DETAIL = (
 class DowngradeInterrupt:
     """The explicit-choice dialog a reconcile re-register must show before a logon downgrade.
 
-    Produced by ``downgrade_interrupt`` when re-registering would silently turn an unattended
-    task (registered WITH a Windows password — runs while signed out) into a logged-on-only
-    one. The view renders exactly this copy: two equal-weight choices (neither is a default
+    Produced by ``downgrade_interrupt`` when re-registering would (or MIGHT — the unknown-record
+    variant, W3-C) silently turn an unattended task (registered WITH a Windows password — runs
+    while signed out) into a logged-on-only one. ``headline``/``detail`` carry the known-unattended
+    premise by default and are overridden with the honest can't-tell premise for an unproven
+    record; every choice label is shared, so the view is variant-agnostic (it renders whatever
+    copy it is handed). The view renders exactly this copy: two equal-weight choices (neither is a default
     that downgrades silently) plus Cancel (no change — the task is untouched).
     ``keep_next_*`` is the guidance painted after choosing to stay unattended — the password
     is collected ONLY through the existing schedule-section field flow (I1/I3: handler-local,
@@ -429,21 +529,29 @@ class DowngradeInterrupt:
     cancelled_detail: str = _DOWNGRADE_CANCELLED_DETAIL
 
 
-def downgrade_interrupt(*, registered_unattended: bool, password_supplied: bool) -> DowngradeInterrupt | None:
+def downgrade_interrupt(*, registered_unattended: bool | None, password_supplied: bool) -> DowngradeInterrupt | None:
     """Whether a reconcile-triggered re-register must pause for the explicit downgrade choice.
 
     ``None`` → proceed (re-registering cannot downgrade the logon type: the task was never
     unattended, or a password is supplied so it stays unattended). A ``DowngradeInterrupt`` →
     the view MUST show the choice dialog before registering — a task registered to run while
-    signed out (``registered_unattended``, the durable AppConfig fact) would otherwise be
-    silently replaced by a logged-on-only one when the Settings password field is blank.
+    signed out would otherwise be silently replaced by a logged-on-only one when the Settings
+    password field is blank.
+
+    ``registered_unattended`` is the durable ``RegisteredSchedule.unattended`` fact, and
+    ``None`` means **unknown** (W3-C — an install with no record of how its task was set up).
+    Unknown interrupts too, with its own honest copy: the same silent-downgrade hazard applies
+    (on a district server nobody is signed in, so a downgrade stops the nightly sync entirely),
+    and guessing "not unattended" would be exactly the unchecked assertion the trust bar forbids.
 
     Applies ONLY to the reconcile path (Settings Save): a blank-password Register via the
     button is a legitimate explicit user choice (the wizard offers it) and never interrupts.
     """
-    if registered_unattended and not password_supplied:
-        return DowngradeInterrupt()
-    return None
+    if password_supplied:
+        return None
+    if registered_unattended is None:
+        return DowngradeInterrupt(headline=_DOWNGRADE_UNKNOWN_HEADLINE, detail=_DOWNGRADE_UNKNOWN_DETAIL)
+    return DowngradeInterrupt() if registered_unattended else None
 
 
 # --------------------------------------------------------------------------- #
