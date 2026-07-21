@@ -10,9 +10,23 @@ guess; no output folder → no quiet write into the *input* folder.
 **Deliver-from-disk (0034 Slice 2):** the standalone "Deliver the files in your output
 folder" action gates through :func:`standalone_deliver_state` (hidden with nothing to
 deliver / no delivery setup; a calm route-to-Setup state when only the credential is
-missing) and carries the honest vintage line from :func:`freshness_fact` over
-:func:`newest_output_csv_mtime_iso` — the admin always knows how old the files that
-would ship are.
+missing) and carries the honest vintage line from :func:`freshness_fact` — the admin
+always knows how old the files that would ship are.
+
+**ONE narrowed derivation, three readers (FIX-4).** The readiness gate, the freshness
+line and the delivery payload MUST describe the same files, or the surface promises a
+delivery it cannot perform. :func:`deliverable_files` is that single derivation: the
+active district's configured entity CSVs (:func:`configured_output_entities`)
+intersected with what is committed on disk, plus that subset's newest mtime. The gate
+reads ``present``, the vintage line reads ``newest_mtime_iso``, and ``deliver_job``
+ships ``filenames`` — so an output folder holding only ANOTHER config's CSVs (or a
+parked spreadsheet) hides the action instead of rendering a READY card whose only
+possible outcome is a failed-delivery record for a delivery that was never possible.
+Totality is split deliberately: :func:`configured_output_entities` is STRICT (the
+payload path must fail loud on a config fault, never mislabel it a delivery failure)
+while :func:`deliverable_files` is TOTAL (a broken partner config degrades the view to
+"nothing to deliver", never a crashed screen — ``mapping_catalog.summarize_config``'s
+pattern).
 
 **Run identity + the anomaly-ack binding (FIX-2):** :class:`RunIdentity` / :func:`run_identity`
 / :func:`ack_authorizes` name WHICH run an action refers to, so the "I've reviewed this —
@@ -47,7 +61,9 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
+from src.config.loader import load_config
 from src.etl.loader import DataLoader
+from src.etl.pipeline import configured_entity_order
 from src.ui_flet.humanize import friendly_district_name, friendly_timestamp
 
 logger = logging.getLogger(__name__)
@@ -238,8 +254,8 @@ def ack_authorizes(ack: RunIdentity | None, current: RunIdentity) -> bool:
 class DeliverReadiness(Enum):
     """The standalone deliver-from-disk affordance's gated state (0034 Slice 2).
 
-    - ``HIDDEN`` — nothing to offer: delivery isn't set up, or there are no committed
-      output CSVs to send (an action with nothing to act on hides, mirroring the
+    - ``HIDDEN`` — nothing to offer: delivery isn't set up, or nothing in the output
+      folder is DELIVERABLE (an action with nothing to act on hides, mirroring the
       post-run deliver card's show-only-when-deliverable pattern).
     - ``NEEDS_CREDENTIAL`` — delivery is set up and files exist, but no password is
       stored/readable for this account → the calm route-to-Setup card (the existing
@@ -258,12 +274,17 @@ def standalone_deliver_state(
     credential_present: bool,
     csvs_present: bool,
 ) -> DeliverReadiness:
-    """The standalone deliver gate: SFTP configured AND files on disk AND a readable credential.
+    """The standalone deliver gate: SFTP configured AND deliverable files AND a readable credential.
 
     Single-sources the decision the Convert screen renders (pure — the view supplies the
     three facts). Ordering matters for honesty: with no delivery setup or nothing to
     deliver the affordance HIDES entirely; only a missing credential earns the explanatory
     not-ready state (it is one Setup visit away from working).
+
+    ``csvs_present`` MUST be ``DeliverableFiles.present`` — the district-narrowed fact, never
+    a bare "the folder has some ``*.csv``" (FIX-4). The gate decides whether to OFFER the
+    action, so it has to be keyed on the SAME set the action would ship; a wider fact renders
+    a card whose click can only fail.
     """
     if not sftp_configured or not csvs_present:
         return DeliverReadiness.HIDDEN
@@ -275,9 +296,12 @@ def standalone_deliver_state(
 def _top_level_csvs(output_dir: str | None) -> list[Path]:
     """The committed top-level ``*.csv`` files in the output folder (TOTAL — never raises).
 
-    Top-level only (non-recursive), mirroring ``SFTPUploader.upload_csvs``'s glob exactly —
-    so this predicate can never claim files that wouldn't ship (``archive_<ts>/`` /
-    ``.bak_<ts>/`` contents are invisible to both). A blank/unreadable folder → ``[]``.
+    Top-level only (non-recursive), matching the directory SCOPE ``SFTPUploader.upload_csvs``
+    globs, so ``archive_<ts>/`` / ``.bak_<ts>/`` contents are invisible to both. This is the
+    raw candidate set ONLY — it is deliberately NOT a "what would ship" answer: the uploader
+    additionally narrows its glob by the delivery manifest, so every caller must pass this
+    through :func:`_deliverable_paths` before claiming anything about delivery (FIX-4 — the
+    unnarrowed read was exactly the dead-end gate). A blank/unreadable folder → ``[]``.
     """
     target = (output_dir or "").strip()
     if not target:
@@ -288,9 +312,109 @@ def _top_level_csvs(output_dir: str | None) -> list[Path]:
         return []
 
 
-def output_csvs_present(output_dir: str | None) -> bool:
-    """Whether the output folder holds at least one committed top-level CSV to deliver."""
-    return bool(_top_level_csvs(output_dir))
+def _deliverable_paths(entity_names: Iterable[str], output_dir: str | None) -> list[Path]:
+    """The on-disk paths of the config's entity CSVs — the narrowing every deliver fact shares.
+
+    The entity→filename spelling comes from ``DataLoader.output_filenames`` (one rule, shared
+    with the write path and the stale-output detector), so a manifest can never drift from
+    what was written.
+    """
+    candidates = DataLoader.output_filenames(entity_names)
+    return [p for p in _top_level_csvs(output_dir) if p.name in candidates]
+
+
+def _newest_mtime_iso(paths: Iterable[Path]) -> str:
+    """The newest mtime across ``paths`` as an ISO string (``""`` when none/unstattable).
+
+    TOTAL: an unstattable file is skipped rather than raising, so a folder being written
+    underneath the read degrades to a calm "recently" downstream instead of a crash.
+    """
+    newest = 0.0
+    for path in paths:
+        try:
+            newest = max(newest, path.stat().st_mtime)
+        except OSError:
+            continue
+    if newest <= 0:
+        return ""
+    return datetime.fromtimestamp(newest).isoformat(timespec="seconds")
+
+
+def configured_output_entities(sis_type: str, *, config_dir: Path | None = None) -> list[str]:
+    """The entities the district config is CONFIGURED to produce — STRICT (raises on a fault).
+
+    The single district→entity-names step behind every deliver-from-disk fact: the delivery
+    payload (``deliver_job``) and the view's readiness/freshness gate call THIS, so the offer
+    and the action can never disagree about which files are in play.
+
+    Derived by ``configured_entity_order`` (``entity_order`` filtered by ``enabled_entities``)
+    — never raw ``mappings.keys()``: ``_base`` inheritance leaves inherited-but-disabled
+    entities in the mapping, and treating those as deliverable is how a different config's
+    CSV sharing the output dir would get shipped (CLAUDE.md, "Output Targeting").
+
+    Raises whatever ``load_config`` raises (``FileNotFoundError`` / ``ValueError``) — a config
+    fault on the payload path is a setup fault and must fail LOUD, never be folded into "we
+    couldn't send your files". The view's TOTAL wrapper is :func:`deliverable_files`.
+    ``config_dir`` is ``load_config``'s test seam, threaded through.
+    """
+    raw = load_config(sis_type, config_dir).to_raw_dict()
+    return configured_entity_order(raw.get("mappings", {}), raw.get("global_config", {}))
+
+
+@dataclass(frozen=True)
+class DeliverableFiles:
+    """What deliver-from-disk would ACTUALLY ship from the output folder, and how fresh it is.
+
+    ``filenames`` is the active config's entity CSVs present on disk (the delivery manifest);
+    ``newest_mtime_iso`` is the newest mtime **of exactly those files** — never a foreign
+    CSV's, so the vintage line can't quote a file that would never ship. ``present`` is the
+    readiness fact ``standalone_deliver_state`` consumes: empty ⇒ the action HIDES, because
+    ``upload_csvs`` refuses an empty manifest and a retry would re-derive the same emptiness
+    (an unsatisfiable loop, mislabelled as an upload failure, that also persisted a FAILED
+    delivery record — FIX-4).
+    """
+
+    filenames: frozenset[str]
+    newest_mtime_iso: str
+
+    @property
+    def present(self) -> bool:
+        """Whether anything would actually be delivered (the readiness gate's fact)."""
+        return bool(self.filenames)
+
+
+def deliverable_files(
+    sis_type: str | None,
+    output_dir: str | None,
+    *,
+    config_dir: Path | None = None,
+) -> DeliverableFiles:
+    """The deliverable set + its vintage for one district/folder — TOTAL (never raises).
+
+    The view-side entry point: it runs in a RENDER path, where a partner's broken config must
+    degrade calmly rather than crash the Convert screen (``mapping_catalog.summarize_config``'s
+    established pattern). A blank district, an unloadable config, or an unreadable folder all
+    collapse to the EMPTY set — which hides the deliver action, the honest outcome in every
+    one of those cases (there is nothing this install could successfully send).
+
+    Degrading here does not soften the payload path: ``deliver_job`` still resolves the same
+    set through the STRICT :func:`configured_output_entities` and fails loud on a config fault.
+    """
+    district = (sis_type or "").strip()
+    if not district:
+        return DeliverableFiles(filenames=frozenset(), newest_mtime_iso="")
+    try:
+        entities = configured_output_entities(district, config_dir=config_dir)
+    except Exception as exc:  # noqa: BLE001 - total: a render path degrades, it never crashes
+        # Logged (never swallowed silently) but never surfaced: the admin-facing consequence
+        # is simply "no deliver action", and Mapping is where a broken config is reported.
+        logger.warning("Could not resolve the deliverable set for district '%s': %s", district, exc)
+        return DeliverableFiles(filenames=frozenset(), newest_mtime_iso="")
+    paths = _deliverable_paths(entities, output_dir)
+    return DeliverableFiles(
+        filenames=frozenset(p.name for p in paths),
+        newest_mtime_iso=_newest_mtime_iso(paths),
+    )
 
 
 def deliverable_manifest(entity_names: Iterable[str], output_dir: str | None) -> set[str]:
@@ -310,27 +434,7 @@ def deliverable_manifest(entity_names: Iterable[str], output_dir: str | None) ->
     The entity→filename spelling comes from ``DataLoader.output_filenames`` (one rule,
     shared with the write path and the stale-output detector).
     """
-    candidates = DataLoader.output_filenames(entity_names)
-    return {p.name for p in _top_level_csvs(output_dir) if p.name in candidates}
-
-
-def newest_output_csv_mtime_iso(output_dir: str | None) -> str:
-    """The newest top-level output CSV's mtime as an ISO string (``""`` when none/unreadable).
-
-    The honest "when were these files last built" fact for deliver-from-disk — derived
-    from what is actually on disk, never from a run record (the on-disk set is whatever
-    the LAST committed build wrote, which may predate any record). TOTAL: a missing/
-    unreadable folder or an unstattable file degrades to ``""`` (→ "recently" downstream).
-    """
-    newest = 0.0
-    for path in _top_level_csvs(output_dir):
-        try:
-            newest = max(newest, path.stat().st_mtime)
-        except OSError:
-            continue
-    if newest <= 0:
-        return ""
-    return datetime.fromtimestamp(newest).isoformat(timespec="seconds")
+    return {p.name for p in _deliverable_paths(entity_names, output_dir)}
 
 
 def freshness_fact(mtime_iso: str, *, now: datetime | None = None) -> str:
@@ -338,7 +442,8 @@ def freshness_fact(mtime_iso: str, *, now: datetime | None = None) -> str:
 
     "Files last built 2 hours ago." — built on ``humanize.friendly_timestamp`` (TOTAL:
     an empty/unparseable ``mtime_iso`` reads "recently", never a raw string or a crash).
-    ``now`` is the test seam, threaded straight through.
+    Fed by ``DeliverableFiles.newest_mtime_iso``, so the vintage always describes the files
+    that would actually ship (FIX-4). ``now`` is the test seam, threaded straight through.
     """
     return f"Files last built {friendly_timestamp(mtime_iso, now=now)}."
 

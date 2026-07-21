@@ -108,18 +108,19 @@ from src.quality.report import DataQualityReport
 from src.sftp.uploader import SFTPUploader
 from src.ui_flet import components, tokens
 from src.ui_flet.convert_output import (
+    DeliverableFiles,
     DeliverReadiness,
     RunIdentity,
     ack_authorizes,
     can_run_convert,
+    configured_output_entities,
+    deliverable_files,
     deliverable_manifest,
     district_mismatch_note,
     freshness_fact,
     interaction_state,
     missing_files_copy,
-    newest_output_csv_mtime_iso,
     open_folder,
-    output_csvs_present,
     output_dir_is_set,
     resolved_output_caption,
     run_identity,
@@ -405,11 +406,9 @@ def deliver_job(sis_type: str) -> ConvertResult:
 
     # Resolved BEFORE the delivery try-block: a config problem is a fail-loud setup fault,
     # not a delivery failure, and must not be mislabelled "we couldn't send your files".
-    raw = load_config(district).to_raw_dict()
-    manifest = deliverable_manifest(
-        configured_entity_order(raw.get("mappings", {}), raw.get("global_config", {})),
-        output_dir_value,
-    )
+    # `configured_output_entities` is the SAME district→entity step the screen's readiness
+    # gate reads (FIX-4), so what was offered and what ships can never disagree.
+    manifest = deliverable_manifest(configured_output_entities(district), output_dir_value)
 
     try:
         SFTPUploader(
@@ -547,6 +546,20 @@ def build_convert(
     # handler need it: the inputs freeze while it is set, and the re-run is launched from it.
     pending_ack: dict[str, RunIdentity | None] = {"identity": None}
 
+    def _deliver_district(app_cfg: AppConfig | None = None) -> str:
+        """The district a deliver-from-disk action would use — ONE resolution, two readers.
+
+        FIX-4: the readiness GATE and ``_start_deliver`` must key off the same district, or
+        the screen offers a delivery derived from a config the action won't use. Both call
+        THIS, so the expression can't drift. The per-run pick wins (a standalone delivery may
+        have no pick — then the saved district), read from the PERSISTED config rather than
+        the build-time snapshot so a Settings/Mapping change made in another surface during
+        this visit is honoured, exactly as ``_start_deliver`` always did.
+
+        ``app_cfg`` lets a caller that already loaded the config reuse it (one JSON read).
+        """
+        return (selected["district"] or (app_cfg or AppConfig.load()).sis_type or "").strip()
+
     # ------------------------------------------------------------------ #
     # District select — a "Choose your district" placeholder until chosen (D9).
     # ------------------------------------------------------------------ #
@@ -642,6 +655,10 @@ def build_convert(
         selected["district"] = district_dropdown.value or default_district
         _refresh_district_note()  # the amber differs-from-saved heads-up follows the pick
         _refresh_files()
+        # FIX-4: the deliver card's readiness is DISTRICT-derived (which CSVs on disk this
+        # config would actually ship), so a pick change must re-gate it — otherwise the card
+        # built for the previous district lingers and offers a delivery this one can't make.
+        _refresh_deliver_slot()
         _refresh_convert_gate()  # D9: district is part of the run-gate now — re-check on pick
 
     district_dropdown.on_select = _on_district_change  # Dropdown value-change is on_select (0.85.3)
@@ -714,7 +731,7 @@ def build_convert(
         have no dropdown pick). Honest progress + a terminal verdict banner; a pre-upload
         failure (unset output folder) routes to the calm ``on_error`` card.
         """
-        sis = selected["district"] or AppConfig.load().sis_type or ""
+        sis = _deliver_district()  # the SAME resolution the readiness gate used (FIX-4)
         runner.state.reset()
         _set_running(True, caption="Delivering… sending your files to SpacesEDU.")
         deliver_slot.controls = []
@@ -751,6 +768,9 @@ def build_convert(
         """
         cfg = AppConfig.load()
         local_folder = (cfg.output_dir or "").strip()
+        # The vintage of what WOULD SHIP — the narrowed set, not the folder's newest *.csv
+        # (a parked spreadsheet must never be quoted as the roster's build time — FIX-4).
+        vintage = freshness_fact(deliverable_files(_deliver_district(cfg), local_folder).newest_mtime_iso)
 
         def _on_deliver(_e: ft.ControlEvent) -> None:
             page.pop_dialog()
@@ -769,11 +789,7 @@ def build_convert(
                     controls=[
                         ft.Text(f"Server: {cfg.sftp_host}", size=13, color=tokens.color_text),
                         ft.Text(f"Folder: {local_folder}", size=13, color=tokens.color_text),
-                        ft.Text(
-                            freshness_fact(newest_output_csv_mtime_iso(local_folder)),
-                            size=13,
-                            color=tokens.color_muted,
-                        ),
+                        ft.Text(vintage, size=13, color=tokens.color_muted),
                     ],
                 ),
                 actions=[
@@ -910,7 +926,7 @@ def build_convert(
             ),
         )
 
-    def _standalone_deliver_card() -> ft.Control:
+    def _standalone_deliver_card(files: DeliverableFiles) -> ft.Control:
         """The pre-run "Deliver the files in your output folder" card (0034 Slice 2).
 
         The deliver-what's-on-disk affordance — also the post-navigation retry path after
@@ -918,8 +934,12 @@ def build_convert(
         survive navigation; this one re-derives from disk every visit). Carries the honest
         freshness fact so the admin always knows the vintage of what would ship. Secondary
         tier — "Convert now" stays the screen's one filled primary.
+
+        ``files`` is the SAME set the gate approved (FIX-4) — passed in rather than
+        re-derived, so the card can't describe a different vintage than the one that
+        earned it the READY state.
         """
-        fact = freshness_fact(newest_output_csv_mtime_iso(output_dir_value))
+        fact = freshness_fact(files.newest_mtime_iso)
         return components.card(
             content=ft.Column(
                 spacing=12,
@@ -952,29 +972,48 @@ def build_convert(
     def _standalone_deliver_controls() -> list[ft.Control]:
         """Render the pure ``standalone_deliver_state`` gate: hidden / not-ready / the card.
 
+        The readiness fact is ``deliverable_files(...).present`` — the district-narrowed set
+        ``deliver_job`` would actually ship, for the district ``_start_deliver`` will actually
+        use (FIX-4). Offering the action off a bare folder glob rendered a READY card whose
+        click could only fail, mislabelled as an upload failure and recorded as one.
+
         The keyring probe (``_sftp_credential_present``) runs only when delivery is
-        configured AND files exist — never a pointless credential read on an
-        unconfigured install. Disk facts are cheap build-time reads; the SFTP
-        CONNECT stays strictly on the ``JobRunner`` worker.
+        configured AND something is deliverable — never a pointless credential read on an
+        unconfigured install. The config load + disk facts are cheap render-path reads and
+        TOTAL (a broken partner config degrades to "nothing to deliver", never a crashed
+        screen); the SFTP CONNECT stays strictly on the ``JobRunner`` worker.
         """
         sftp_cfg = AppConfig.load()
         configured = sftp_cfg.sftp_is_configured()
-        csvs_present = output_csvs_present(output_dir_value)
+        files = deliverable_files(_deliver_district(sftp_cfg), output_dir_value)
         state = standalone_deliver_state(
             sftp_configured=configured,
-            credential_present=configured and csvs_present and _sftp_credential_present(sftp_cfg),
-            csvs_present=csvs_present,
+            credential_present=configured and files.present and _sftp_credential_present(sftp_cfg),
+            csvs_present=files.present,
         )
         if state is DeliverReadiness.READY:
-            return [_standalone_deliver_card()]
+            return [_standalone_deliver_card(files)]
         if state is DeliverReadiness.NEEDS_CREDENTIAL:
             return [_delivery_not_ready_card()]
         return []
 
+    def _refresh_deliver_slot() -> None:
+        """Re-derive the standalone deliver card for the CURRENT district pick (FIX-4).
+
+        Suppressed once a run flow owns the deliver affordance (``result_slot`` non-empty):
+        the post-run result card carries its own deliver/retry action, and re-populating the
+        standalone slot underneath it would put two deliver buttons on screen. A district
+        change can't reach here mid-run or mid-acknowledgement anyway — ``interaction_state``
+        disables the dropdown in both — so this only guards the settled post-result view.
+        """
+        if result_slot.controls:
+            return
+        deliver_slot.controls = _standalone_deliver_controls()
+
     _refresh_district_note()
     _refresh_files()
     _refresh_convert_gate()
-    deliver_slot.controls = _standalone_deliver_controls()
+    _refresh_deliver_slot()
 
     # Direction B page header (0033 Slice 2): the gradient hero demotes to a slim header; the
     # saved district identity rides in the header's right slot as a ``district_chip`` (the

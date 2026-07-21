@@ -6,9 +6,9 @@ Covers the path-bearing trust logic that keeps the silent fallbacks out (D9/D10)
 - ``resolved_output_caption`` derivation (set → names the folder; unset → routed message);
 - ``open_folder`` per-OS dispatch (Windows/macOS/Linux) + blank-path and failure handling —
   all mocked, so no real file browser opens under test;
-- the deliver-from-disk facts + gate (0034 Slice 2): ``output_csvs_present`` /
-  ``newest_output_csv_mtime_iso`` (top-level-only, mirroring the SFTP glob) /
-  ``freshness_fact`` / the ``standalone_deliver_state`` table;
+- the deliver-from-disk facts + gate (0034 Slice 2, narrowed by FIX-4): ``deliverable_files``
+  (the ONE district-narrowed derivation the readiness gate, the freshness line and the
+  delivery payload all read) / ``freshness_fact`` / the ``standalone_deliver_state`` table;
 - the run-identity binding for the anomaly acknowledgement (FIX-2): ``run_identity`` /
   ``ack_authorizes`` (fail-closed, OS-appropriate folder comparison) + the
   ``interaction_state(awaiting_ack=...)`` freeze that keeps the reviewed run reviewable.
@@ -32,14 +32,14 @@ from src.ui_flet.convert_output import (
     RunIdentity,
     ack_authorizes,
     can_run_convert,
+    configured_output_entities,
+    deliverable_files,
     deliverable_manifest,
     district_mismatch_note,
     freshness_fact,
     interaction_state,
     missing_files_copy,
-    newest_output_csv_mtime_iso,
     open_folder,
-    output_csvs_present,
     output_dir_is_set,
     resolved_output_caption,
     run_identity,
@@ -139,61 +139,191 @@ class TestOpenFolder:
         assert open_folder("/out") is False  # calm degradation, not a crash
 
 
-class TestOutputCsvsPresent:
-    """The deliver gate's files-on-disk fact — top-level only, mirroring the SFTP glob."""
+# The bundled district configs — passed explicitly so these tests can never be perturbed
+# by a developer's `~/.districtsync/mappings/` override (load_config's first search dir).
+_MAPPINGS_DIR = Path(__file__).resolve().parents[1] / "config" / "mappings"
+
+
+def _seed(folder: Path, *names: str) -> Path:
+    for name in names:
+        (folder / name).write_text("id\n1\n", encoding="utf-8")
+    return folder
+
+
+class TestConfiguredOutputEntities:
+    """The district → entity-name step — the ONE derivation the gate and the payload share."""
+
+    def test_rostering_district_names_the_five_rostering_entities(self) -> None:
+        entities = configured_output_entities("sd74myedbc", config_dir=_MAPPINGS_DIR)
+        assert set(entities) == {"Students", "Staff", "Family", "Classes", "Enrollments"}
+
+    def test_myblueprint_tier_names_only_its_two_entities(self) -> None:
+        # `_base: myedbc` leaves the rostering entities in `mappings`, so a raw `mappings.keys()`
+        # read would over-claim here — `enabled_entities` is the inclusion rule (CLAUDE.md).
+        assert set(configured_output_entities("mbponly", config_dir=_MAPPINGS_DIR)) == {
+            "CourseInfo",
+            "StudentCourses",
+        }
+
+    def test_unloadable_district_raises_for_the_payload_path(self) -> None:
+        # STRICT by design: `deliver_job` must fail LOUD on a config fault rather than
+        # mislabel it "we couldn't send your files". Only the view gate degrades.
+        with pytest.raises(Exception):  # noqa: B017 - FileNotFoundError today; any load fault must surface
+            configured_output_entities("not_a_real_district", config_dir=_MAPPINGS_DIR)
+
+
+class TestDeliverableFiles:
+    """FIX-4: readiness + freshness derive from the SAME narrowed set the payload ships.
+
+    The pre-FIX-4 gate was a bare ``glob("*.csv")`` with zero config awareness, so an output
+    folder holding another config's CSVs rendered a READY card whose click could only ever
+    fail (``upload_csvs`` refuses an empty manifest) — an unsatisfiable loop that also
+    persisted a FAILED delivery record for a delivery that was never possible.
+    """
+
+    def _files(self, sis_type: str, folder: Path):
+        return deliverable_files(sis_type, str(folder), config_dir=_MAPPINGS_DIR)
+
+    # -- the reproduction ---------------------------------------------------- #
+    def test_another_configs_csvs_are_not_deliverable(self, tmp_path: Path) -> None:
+        # An earlier mbponly run's output, district since switched to sd74myedbc.
+        _seed(tmp_path, "CourseInfo.csv", "StudentCourses.csv")
+        files = self._files("sd74myedbc", tmp_path)
+        assert files.filenames == frozenset()
+        assert files.present is False
+
+    def test_rostering_csvs_are_not_deliverable_under_a_myblueprint_tier(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "Students.csv", "Classes.csv")
+        assert self._files("mbponly", tmp_path).present is False
+
+    def test_a_lone_foreign_csv_is_not_deliverable(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "report.csv")
+        assert self._files("sd74myedbc", tmp_path).present is False
+
+    # -- the regression guard ------------------------------------------------ #
+    def test_the_active_configs_csvs_are_deliverable(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "Students.csv", "Classes.csv")
+        files = self._files("sd74myedbc", tmp_path)
+        assert files.filenames == frozenset({"Students.csv", "Classes.csv"})
+        assert files.present is True
+
+    def test_only_the_config_owned_subset_of_a_mixed_folder_is_deliverable(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "Students.csv", "CourseInfo.csv", "report.csv")
+        assert self._files("sd74myedbc", tmp_path).filenames == frozenset({"Students.csv"})
+
+    # -- totality (a broken partner config must not crash the render path) ---- #
+    def test_unloadable_district_degrades_to_empty(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "Students.csv")
+        files = self._files("not_a_real_district", tmp_path)
+        assert files.filenames == frozenset()
+        assert files.newest_mtime_iso == ""
 
     @pytest.mark.parametrize("value", ["", "   ", None])
-    def test_blank_dir_is_absent(self, value: str | None) -> None:
-        assert output_csvs_present(value) is False
+    def test_blank_district_degrades_to_empty(self, value: str | None) -> None:
+        assert deliverable_files(value, "/out", config_dir=_MAPPINGS_DIR).present is False
 
-    def test_missing_dir_is_absent(self, tmp_path: Path) -> None:
-        assert output_csvs_present(str(tmp_path / "nope")) is False
+    @pytest.mark.parametrize("value", ["", "   ", None])
+    def test_blank_output_dir_is_empty(self, value: str | None) -> None:
+        assert deliverable_files("sd74myedbc", value, config_dir=_MAPPINGS_DIR).present is False
 
-    def test_empty_dir_is_absent(self, tmp_path: Path) -> None:
-        assert output_csvs_present(str(tmp_path)) is False
+    def test_missing_output_dir_is_empty(self, tmp_path: Path) -> None:
+        assert self._files("sd74myedbc", tmp_path / "nope").present is False
+
+    def test_empty_output_dir_is_empty(self, tmp_path: Path) -> None:
+        assert self._files("sd74myedbc", tmp_path).present is False
 
     def test_non_csv_files_do_not_count(self, tmp_path: Path) -> None:
-        (tmp_path / "notes.txt").write_text("x")
-        assert output_csvs_present(str(tmp_path)) is False
-
-    def test_top_level_csv_counts(self, tmp_path: Path) -> None:
-        (tmp_path / "Students.csv").write_text("id\n1\n")
-        assert output_csvs_present(str(tmp_path)) is True
+        (tmp_path / "Students.txt").write_text("x")
+        assert self._files("sd74myedbc", tmp_path).present is False
 
     def test_nested_csv_does_not_count(self, tmp_path: Path) -> None:
         # archive_<ts>/ contents never ship (the SFTP glob is top-level) — the fact must agree.
         nested = tmp_path / "archive_20260701"
         nested.mkdir()
-        (nested / "Students.csv").write_text("id\n1\n")
-        assert output_csvs_present(str(tmp_path)) is False
+        _seed(nested, "Students.csv")
+        assert self._files("sd74myedbc", tmp_path).present is False
 
-
-class TestNewestOutputCsvMtimeIso:
-    def test_no_csvs_is_empty(self, tmp_path: Path) -> None:
-        assert newest_output_csv_mtime_iso(str(tmp_path)) == ""
-
-    @pytest.mark.parametrize("value", ["", None])
-    def test_blank_dir_is_empty(self, value: str | None) -> None:
-        assert newest_output_csv_mtime_iso(value) == ""
-
-    def test_newest_of_several_wins(self, tmp_path: Path) -> None:
-        old = tmp_path / "Staff.csv"
-        new = tmp_path / "Students.csv"
-        old.write_text("id\n1\n")
-        new.write_text("id\n1\n")
+    # -- the freshness line -------------------------------------------------- #
+    def test_freshness_is_the_newest_deliverable_csv(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "Staff.csv", "Students.csv")
         old_ts = datetime(2026, 7, 1, 3, 0, 0).timestamp()
         new_ts = datetime(2026, 7, 14, 3, 0, 0).timestamp()
-        os.utime(old, (old_ts, old_ts))
-        os.utime(new, (new_ts, new_ts))
-        assert newest_output_csv_mtime_iso(str(tmp_path)) == datetime.fromtimestamp(new_ts).isoformat(
+        os.utime(tmp_path / "Staff.csv", (old_ts, old_ts))
+        os.utime(tmp_path / "Students.csv", (new_ts, new_ts))
+        assert self._files("sd74myedbc", tmp_path).newest_mtime_iso == datetime.fromtimestamp(new_ts).isoformat(
             timespec="seconds"
         )
 
-    def test_nested_csv_is_invisible(self, tmp_path: Path) -> None:
-        nested = tmp_path / "archive_20260701"
-        nested.mkdir()
-        (nested / "Students.csv").write_text("id\n1\n")
-        assert newest_output_csv_mtime_iso(str(tmp_path)) == ""
+    def test_freshness_never_quotes_a_file_outside_the_manifest(self, tmp_path: Path) -> None:
+        # The honesty bar: a foreign CSV dropped in yesterday must not be reported as the
+        # vintage of the files that would actually ship.
+        _seed(tmp_path, "Students.csv", "report.csv", "CourseInfo.csv")
+        deliverable_ts = datetime(2026, 7, 1, 3, 0, 0).timestamp()
+        foreign_ts = datetime(2026, 7, 20, 3, 0, 0).timestamp()
+        os.utime(tmp_path / "Students.csv", (deliverable_ts, deliverable_ts))
+        os.utime(tmp_path / "report.csv", (foreign_ts, foreign_ts))
+        os.utime(tmp_path / "CourseInfo.csv", (foreign_ts, foreign_ts))
+        assert self._files("sd74myedbc", tmp_path).newest_mtime_iso == datetime.fromtimestamp(deliverable_ts).isoformat(
+            timespec="seconds"
+        )
+
+    def test_no_deliverable_csvs_has_no_vintage(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "report.csv")
+        assert self._files("sd74myedbc", tmp_path).newest_mtime_iso == ""
+
+    def test_unreadable_folder_degrades_to_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # TOTAL: an OS-level folder read failure hides the action, never crashes the render.
+        def _boom(self: Path, _pattern: str):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(convert_output.Path, "glob", _boom)
+        assert self._files("sd74myedbc", tmp_path).present is False
+
+    def test_unstattable_deliverable_file_still_has_no_vintage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A file that vanishes between the glob and the stat (a run committing underneath the
+        # read) degrades the vintage to "recently" downstream — the file itself still counts
+        # as deliverable, so the action is not withdrawn over a transient stat failure.
+        class _Unstattable:
+            name = "Students.csv"
+
+            def stat(self):
+                raise OSError("vanished mid-read")
+
+        monkeypatch.setattr(convert_output, "_top_level_csvs", lambda _dir: [_Unstattable()])
+        files = self._files("sd74myedbc", tmp_path)
+        assert files.filenames == frozenset({"Students.csv"})
+        assert files.newest_mtime_iso == ""
+        assert freshness_fact(files.newest_mtime_iso) == "Files last built recently."
+
+
+class TestReadinessFromTheNarrowedSet:
+    """The acceptance shape: the gate the screen paints, fed by the narrowed set.
+
+    The screen composes exactly these two pure calls, so the dead-end can only return if
+    someone re-widens the fact — which these pin.
+    """
+
+    def _readiness(self, sis_type: str, folder: Path) -> DeliverReadiness:
+        files = deliverable_files(sis_type, str(folder), config_dir=_MAPPINGS_DIR)
+        return standalone_deliver_state(
+            sftp_configured=True,
+            credential_present=True,
+            csvs_present=files.present,
+        )
+
+    def test_rostering_csvs_under_a_myblueprint_tier_are_hidden(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "Students.csv", "Classes.csv")
+        assert self._readiness("mbponly", tmp_path) is DeliverReadiness.HIDDEN
+
+    def test_a_lone_foreign_csv_is_hidden(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "report.csv")
+        assert self._readiness("mbponly", tmp_path) is DeliverReadiness.HIDDEN
+
+    def test_the_active_configs_csvs_are_ready(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "CourseInfo.csv", "StudentCourses.csv")
+        assert self._readiness("mbponly", tmp_path) is DeliverReadiness.READY
 
 
 class TestFreshnessFact:

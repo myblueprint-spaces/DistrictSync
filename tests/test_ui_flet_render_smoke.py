@@ -154,16 +154,30 @@ class TestScreensRender:
         assert _has_text_containing(tree, str(out_dir))
         assert _find(tree, ft.Dropdown)[0].value == "myedbc"
 
-    def _delivery_ready_config(self, tmp_path, monkeypatch, *, with_csv: bool = True) -> AppConfig:
-        """A configured install with delivery set up (+ optionally a committed CSV on disk)."""
+    def _delivery_ready_config(
+        self,
+        tmp_path,
+        monkeypatch,
+        *,
+        with_csv: bool = True,
+        sis_type: str = "myedbc",
+        csv_names: tuple[str, ...] = ("Students.csv",),
+    ) -> AppConfig:
+        """A configured install with delivery set up (+ optionally committed CSVs on disk).
+
+        ``sis_type`` / ``csv_names`` default to the original (myedbc + ``Students.csv``) so the
+        pre-existing deliver-render tests are unchanged; FIX-4 passes them to seed an output
+        folder whose CSVs are NOT the active district's (the deliver dead-end reproduction).
+        """
         out_dir = tmp_path / "out"
         out_dir.mkdir(exist_ok=True)
         if with_csv:
-            (out_dir / "Students.csv").write_text("id\n1\n")
+            for name in csv_names:
+                (out_dir / name).write_text("id\n1\n")
         cfg = AppConfig(
             input_dir=str(tmp_path),
             output_dir=str(out_dir),
-            sis_type="myedbc",
+            sis_type=sis_type,
             sftp_enabled=True,
             sftp_host="sftp.ca.spacesedu.com",
             sftp_username="district_x",
@@ -201,6 +215,88 @@ class TestScreensRender:
         monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
         tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
         assert not _has_text_containing(tree, "Deliver the files in your output folder")
+
+    def test_convert_standalone_deliver_hidden_when_csvs_belong_to_another_config(
+        self, tmp_path, stub_page, monkeypatch
+    ):
+        # FIX-4 (the dead-end reproduction): the output folder holds only an EARLIER mbponly run's
+        # CSVs while the district has since been switched to sd74myedbc. `deliverable_manifest`
+        # (what `deliver_job` would actually ship) is empty, so offering the card would be a
+        # guaranteed-to-fail click that persists a FAILED delivery record. It must HIDE.
+        import src.ui_flet.screens.convert as convert_mod
+
+        self._delivery_ready_config(
+            tmp_path,
+            monkeypatch,
+            sis_type="sd74myedbc",
+            csv_names=("CourseInfo.csv", "StudentCourses.csv"),
+        )
+        monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert not _has_text_containing(tree, "Deliver the files in your output folder")
+        assert not _has_text_containing(tree, "Delivery isn't ready on this account")
+
+    def test_convert_standalone_deliver_hidden_for_a_lone_foreign_csv(self, tmp_path, stub_page, monkeypatch):
+        # Same shape, simplest case: an admin-parked spreadsheet export. It is not an entity CSV
+        # of any config, so nothing would ship — no affordance.
+        import src.ui_flet.screens.convert as convert_mod
+
+        self._delivery_ready_config(tmp_path, monkeypatch, csv_names=("report.csv",))
+        monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert not _has_text_containing(tree, "Deliver the files in your output folder")
+
+    def test_convert_standalone_deliver_hidden_when_config_is_unloadable(self, tmp_path, stub_page, monkeypatch):
+        # A partner's broken config must not crash the screen (mapping_catalog.summarize_config's
+        # degraded-not-crashing pattern) — and must not offer a delivery whose set can't be derived.
+        import src.ui_flet.screens.convert as convert_mod
+
+        self._delivery_ready_config(tmp_path, monkeypatch, sis_type="not_a_real_district")
+        monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert not _has_text_containing(tree, "Deliver the files in your output folder")
+
+    def test_convert_standalone_deliver_still_renders_for_the_active_configs_csvs(
+        self, tmp_path, stub_page, monkeypatch
+    ):
+        # Regression guard for the narrowed gate: the active district's OWN entity CSVs still
+        # produce the READY card (the fix must not hide a legitimate delivery).
+        import src.ui_flet.screens.convert as convert_mod
+
+        self._delivery_ready_config(
+            tmp_path,
+            monkeypatch,
+            sis_type="mbponly",
+            csv_names=("CourseInfo.csv", "StudentCourses.csv"),
+        )
+        monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert _has_text_containing(tree, "Deliver the files in your output folder")
+        assert _has_text_containing(tree, "Files last built")
+
+    def test_convert_standalone_deliver_re_gates_on_a_district_change(self, tmp_path, stub_page, monkeypatch):
+        # FIX-4, the other half of "the gate uses the district _start_deliver will use": the
+        # deliver slot is built once per visit, so a MID-VISIT dropdown change must re-gate it.
+        # Without the re-render the card built for mbponly would linger and offer sd74myedbc a
+        # delivery it cannot make (the manifest for the new district is empty).
+        import src.ui_flet.screens.convert as convert_mod
+
+        self._delivery_ready_config(
+            tmp_path,
+            monkeypatch,
+            sis_type="mbponly",
+            csv_names=("CourseInfo.csv", "StudentCourses.csv"),
+        )
+        monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert _has_text_containing(tree, "Deliver the files in your output folder")
+
+        dropdown = _find(tree, ft.Dropdown)[0]
+        dropdown.value = "sd74myedbc"
+        dropdown.on_select(MagicMock())
+        assert not _has_text_containing(tree, "Deliver the files in your output folder"), (
+            "the deliver card must re-gate against the newly picked district"
+        )
 
     def test_convert_standalone_deliver_not_ready_without_credential(self, tmp_path, stub_page, monkeypatch):
         # Configured + files on disk but no stored password → the calm route-to-Setup card.
