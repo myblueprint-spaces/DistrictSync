@@ -2045,3 +2045,223 @@ def test_failed_register_does_not_fire_the_badge_refresh(tmp_path, monkeypatch):
     coro, args = captured[-1]
     asyncio.run(coro(*args))
     assert fired == []
+
+
+# --------------------------------------------------------------------------- #
+# FIX-5 — the RESULT-SLOT deliver card is bound to the run it describes.        #
+#                                                                               #
+# The standalone (pre-run) deliver card learned the district-narrowed gate and  #
+# the re-gate-on-change lesson in FIX-4; the POST-RUN result card is a second   #
+# route to the same `deliver_job` and had neither. It is also the DEFAULT       #
+# post-run state (a successful convert with SFTP configured always renders it), #
+# sitting beside a LIVE district dropdown. These tests pin the two failures     #
+# that combination allowed:                                                     #
+#   1. an unsatisfiable retry (a district with nothing on disk to deliver), and #
+#   2. WRONG-DISTRICT EGRESS — sd74's roster shipped as districtsync_sd40_*.zip #
+#      because sd74myedbc and sd40myedbc write byte-identical filenames.        #
+# --------------------------------------------------------------------------- #
+_ROSTERING_CSVS = ("Students.csv", "Staff.csv", "Family.csv", "Classes.csv", "Enrollments.csv")
+_DELIVER_LABELS = ("Deliver to SpacesEDU", "Try delivering again")
+
+
+def _dialog_controls(dialog):
+    """Depth-first walk of an ``ft.AlertDialog`` — title + content + ACTIONS.
+
+    ``_iter_controls`` follows ``.controls``/``.content`` only, so the dialog's action
+    buttons (its ``actions`` list) are invisible to it. The confirm dialog's "Deliver"
+    button lives exactly there, so the deliver assertions need this walk.
+    """
+    for slot in (getattr(dialog, "title", None), getattr(dialog, "content", None)):
+        if isinstance(slot, ft.Control):
+            yield from _iter_controls(slot)
+    for action in getattr(dialog, "actions", None) or []:
+        if isinstance(action, ft.Control):
+            yield from _iter_controls(action)
+
+
+def _dialog_has_text_containing(dialog, substring) -> bool:
+    return any(substring in (getattr(c, "value", None) or "") for c in _dialog_controls(dialog))
+
+
+def _dialog_button(dialog, content):
+    return next((c for c in _dialog_controls(dialog) if getattr(c, "content", None) == content), None)
+
+
+def _deliver_ready_cfg(tmp_path, monkeypatch, *, sis_type, csv_names):
+    """A configured install with SFTP delivery set up and ``csv_names`` committed on disk."""
+    out_dir = tmp_path / "out"
+    out_dir.mkdir(exist_ok=True)
+    for name in csv_names:
+        (out_dir / name).write_text("id\n1\n")
+    in_dir = tmp_path / "in"
+    in_dir.mkdir(exist_ok=True)
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type=sis_type,
+        sftp_enabled=True,
+        sftp_host="sftp.ca.spacesedu.com",
+        sftp_username="district_x",
+        sftp_remote_path="/upload",
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    return cfg
+
+
+def _built_result():
+    from src.ui_flet.convert_result import ConvertResult, ConvertStatus
+
+    return ConvertResult(status=ConvertStatus.DELIVERED, entity_counts={"Students": 12})
+
+
+def _convert_with_result(tmp_path, monkeypatch, *, sis_type, csv_names, result):
+    """Mount Convert for ``sis_type`` and drive ``result`` through the REAL run flow.
+
+    Returns ``(tree, page, result_slot)``. ``convert_job`` is stubbed (no ETL) but every
+    other step is the production path: the button's ``_start_convert`` → ``JobRunner`` →
+    the marshalled ``on_done`` → ``_render_result(result, identity)``.
+    """
+    import src.ui_flet.screens.convert as convert_mod
+
+    _deliver_ready_cfg(tmp_path, monkeypatch, sis_type=sis_type, csv_names=csv_names)
+    monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+    monkeypatch.setattr(convert_mod, "convert_job", lambda *_a, **_kw: result)
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_convert(page)
+    _button_by_content(tree, "Convert now").on_click(None)
+    assert len(captured) == 1, "the convert must marshal exactly one on_done"
+    coro, args = captured[0]
+    asyncio.run(coro(*args))
+    captured.clear()
+    return tree, page, tree.controls[-1]
+
+
+def _deliver_buttons(node):
+    """Every deliver-action button reachable in ``node`` (either card's label)."""
+    return [c for c in _iter_controls(node) if getattr(c, "content", None) in _DELIVER_LABELS]
+
+
+def test_result_deliver_card_re_gates_on_a_district_change(tmp_path, monkeypatch):
+    """FIX-5(a): the post-run deliver card must re-gate when the district dropdown moves.
+
+    sd74myedbc run → the deliver card renders. Switching the dropdown to ``mbponly``
+    (disjoint filenames — nothing on disk it could ever ship) must leave NO deliver
+    affordance in the result slot: clicking it could only produce an empty manifest, a
+    ``RuntimeError`` inside ``deliver_job``, a persisted FAILED delivery record and copy
+    telling the admin to try again, forever.
+    """
+    tree, _page, result_slot = _convert_with_result(
+        tmp_path,
+        monkeypatch,
+        sis_type="sd74myedbc",
+        csv_names=_ROSTERING_CSVS,
+        result=_built_result(),
+    )
+    assert _deliver_buttons(result_slot), "a successful sd74 run with SFTP configured offers the deliver card"
+
+    dropdown = _find(tree, ft.Dropdown)[0]
+    dropdown.value = "mbponly"
+    dropdown.on_select(MagicMock())
+
+    assert not _deliver_buttons(result_slot), (
+        "the result card's deliver action must re-gate against the newly picked district"
+    )
+    assert not _deliver_buttons(tree), "no deliver affordance may survive anywhere on the screen"
+
+
+def test_confirm_refuses_a_district_with_nothing_to_deliver(tmp_path, monkeypatch):
+    """FIX-5(b): the deliver CHOKE POINT refuses a district whose manifest would be empty.
+
+    Every deliver action funnels through ``_confirm_and_deliver``. With ``mbponly`` picked
+    and only rostering CSVs on disk, a stale click must never reach ``deliver_job``, must
+    never assert a vintage ("Files last built …") for files that don't exist, and must
+    never persist a ``delivery_only`` run record.
+    """
+    import src.ui_flet.screens.convert as convert_mod
+
+    _deliver_ready_cfg(tmp_path, monkeypatch, sis_type="sd74myedbc", csv_names=_ROSTERING_CSVS)
+    monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+
+    delivered: list = []
+    monkeypatch.setattr(convert_mod, "deliver_job", lambda sis: delivered.append(sis))
+    records: list = []
+    monkeypatch.setattr(convert_mod, "write_run_record", lambda record, **kw: records.append(record))
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_convert(page)
+    # The standalone card is the pre-run route; hold its button across the district change
+    # (a real click can race the re-render — the choke point is the durable guarantee).
+    deliver_btn = _button_by_content(tree, "Deliver to SpacesEDU")
+
+    dropdown = _find(tree, ft.Dropdown)[0]
+    dropdown.value = "mbponly"
+    dropdown.on_select(MagicMock())
+
+    deliver_btn.on_click(None)
+
+    dialogs = [call.args[0] for call in page.show_dialog.call_args_list]
+    assert dialogs, "the refusal must be shown, not silently swallowed"
+    assert not any(_dialog_has_text_containing(d, "Files last built") for d in dialogs), (
+        "a vintage must never be asserted for files that do not exist"
+    )
+    assert not any(_dialog_button(d, "Deliver") for d in dialogs), (
+        "the confirm dialog's Deliver action must not be offered when nothing can ship"
+    )
+    assert delivered == [], "deliver_job must never be reached with an empty manifest"
+    assert records == [], "no delivery_only run record may be written for a refused delivery"
+
+
+def test_a_switched_district_can_never_ship_another_districts_roster(tmp_path, monkeypatch):
+    """FIX-5(c) — THE one that must not survive: wrong-district PII egress.
+
+    ``sd74myedbc`` and ``sd40myedbc`` produce byte-identical entity filenames, so a
+    result-card deliver that re-resolved the district at CLICK time built a NON-empty
+    manifest and SUCCEEDED — shipping Gold Trail's real student roster to SpacesEDU as
+    ``districtsync_sd40_<date>.zip``, under New Westminster's identity.
+
+    The deliver action must stay bound to the run that built the files, so even a click
+    that races the re-render can only ever ship as ``sd74myedbc``.
+    """
+    import src.ui_flet.screens.convert as convert_mod
+    from src.sftp.uploader import build_zip_name
+    from src.ui_flet.convert_result import ConvertResult, ConvertStatus
+
+    tree, page, result_slot = _convert_with_result(
+        tmp_path,
+        monkeypatch,
+        sis_type="sd74myedbc",
+        csv_names=_ROSTERING_CSVS,
+        result=_built_result(),
+    )
+    deliver_btn = _deliver_buttons(result_slot)[0]
+
+    shipped: list[str] = []
+
+    def _spy_deliver(sis: str) -> ConvertResult:
+        shipped.append(sis)
+        return ConvertResult(status=ConvertStatus.DELIVERED_FROM_DISK, sftp_attempted=True, sftp_ok=True)
+
+    monkeypatch.setattr(convert_mod, "deliver_job", _spy_deliver)
+
+    # The admin switches to a DIFFERENT rostering district — same filenames, so the
+    # manifest is non-empty and the delivery would succeed under the wrong identity.
+    dropdown = _find(tree, ft.Dropdown)[0]
+    dropdown.value = "sd40myedbc"
+    dropdown.on_select(MagicMock())
+
+    # The affordance is gone (FIX-5(a)) — but a raced click on the held control must be
+    # safe too: this is the BINDING, not the gating, under test.
+    deliver_btn.on_click(None)
+    confirm = page.show_dialog.call_args_list[-1].args[0]
+    deliver_action = _dialog_button(confirm, "Deliver")
+    if deliver_action is not None:
+        deliver_action.on_click(None)
+
+    assert "sd40myedbc" not in shipped, "sd74's roster must NEVER ship under sd40's identity"
+    for sis in shipped:
+        assert sis == "sd74myedbc"
+        assert "sd74" in build_zip_name(sis)
+        assert "sd40" not in build_zip_name(sis)

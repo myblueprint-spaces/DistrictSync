@@ -64,6 +64,19 @@ deliver-by-rebuild's hardcoded ``anomaly_ack=True`` bypass is gone with the rebu
 The confirm dialog names the server + local folder once and carries the honest
 freshness fact ("Files last built …", from the newest on-disk CSV's mtime).
 
+**One district per deliver, chosen once (FIX-5):** the district that names the zip
+reaching SpacesEDU is resolved by the ACTION and threaded down through
+``_confirm_and_deliver`` → ``_start_deliver`` → ``deliver_job`` — never re-read from the
+live dropdown mid-flow. The post-run result card binds to its run's ``RunIdentity`` (the
+files it built are the only ones it may send, under the only name they may carry); the
+standalone card, which has no prior run, binds the current pick at click. That distinction
+is load-bearing: rostering configs write byte-identical filenames, so a click-time re-read
+after a dropdown change did not fail — it SUCCEEDED, shipping ``sd74myedbc``'s roster as
+``districtsync_sd40_<date>.zip``. ``_refresh_deliver_slot`` now re-gates the result card
+too (``convert_output.result_deliver_state``), and ``_confirm_and_deliver`` refuses an
+empty ``deliverable_files`` before the confirm dialog can quote a vintage for files that
+do not exist — one choke point every present and future deliver route inherits.
+
 **Cold-state + interaction sweep (0035 W3b):** pre-setup, the screen leads with the
 routed "Finish setup first" card (pure ``show_setup_first_card``/``setup_first_copy``;
 ``on_navigate`` injected by the shell, defensive without it); the unset-output caption is
@@ -110,6 +123,7 @@ from src.ui_flet import components, tokens
 from src.ui_flet.convert_output import (
     DeliverableFiles,
     DeliverReadiness,
+    ResultDeliverReadiness,
     RunIdentity,
     ack_authorizes,
     can_run_convert,
@@ -120,9 +134,12 @@ from src.ui_flet.convert_output import (
     freshness_fact,
     interaction_state,
     missing_files_copy,
+    nothing_to_deliver_copy,
     open_folder,
     output_dir_is_set,
     resolved_output_caption,
+    result_deliver_state,
+    result_district_changed_copy,
     run_identity,
     setup_first_copy,
     show_setup_first_card,
@@ -545,6 +562,12 @@ def build_convert(
     # Held here (not in the card closure) because BOTH the interaction table and the ack
     # handler need it: the inputs freeze while it is set, and the re-run is launched from it.
     pending_ack: dict[str, RunIdentity | None] = {"identity": None}
+    # The (result, identity) currently painted in `result_slot`, or None when the slot holds
+    # something else (an error card, the anomaly question, nothing) — FIX-5. The result card
+    # carries a deliver action whose readiness is DISTRICT-derived, so a mid-visit dropdown
+    # change has to be able to re-render it; keeping the pair here is what makes that
+    # possible without the screen re-deriving a result it no longer has.
+    rendered: dict[str, tuple[ConvertResult, RunIdentity] | None] = {"value": None}
 
     def _deliver_district(app_cfg: AppConfig | None = None) -> str:
         """The district a deliver-from-disk action would use — ONE resolution, two readers.
@@ -692,6 +715,7 @@ def build_convert(
         # card's build-time freshness fact can never go stale on screen).
         deliver_slot.controls = []
         result_slot.controls = []
+        rendered["value"] = None
         page.update()
 
         def _on_done(result: ConvertResult) -> None:
@@ -705,6 +729,7 @@ def build_convert(
             # with a concrete next step (0035 W3b — no dead-end failures).
             _set_running(False)
             result_slot.controls = [components.ErrorCard(*convert_error_copy())]
+            rendered["value"] = None
             page.update()
 
         started = runner.run(
@@ -722,25 +747,29 @@ def build_convert(
             _set_running(True)
             page.update()
 
-    def _start_deliver() -> None:
-        """Run ``deliver_job`` through the shared runner — the ONE deliver code path.
+    def _start_deliver(district: str) -> None:
+        """Run ``deliver_job`` for ONE explicitly-named district — the ONE deliver code path.
 
         Deliver-from-disk (0034 Slice 2): the post-build card, the BUILT_NOT_DELIVERED
-        retry, and the standalone card all land here. The zip is named from the per-run
-        district when one is chosen, else the saved district (a standalone delivery may
-        have no dropdown pick). Honest progress + a terminal verdict banner; a pre-upload
-        failure (unset output folder) routes to the calm ``on_error`` card.
+        retry, and the standalone card all land here. ``district`` is resolved ONCE by the
+        caller and passed down (FIX-5) rather than re-read from the live dropdown here —
+        the district names the ZIP that reaches SpacesEDU, so re-resolving it at this depth
+        is how a mid-flight pick change could ship one district's roster under another's
+        identity. Honest progress + a terminal verdict banner; a pre-upload failure (unset
+        output folder) routes to the calm ``on_error`` card.
         """
-        sis = _deliver_district()  # the SAME resolution the readiness gate used (FIX-4)
         runner.state.reset()
         _set_running(True, caption="Delivering… sending your files to SpacesEDU.")
         deliver_slot.controls = []
         result_slot.controls = []
+        rendered["value"] = None
         page.update()
 
         def _on_done(result: ConvertResult) -> None:
+            # The delivery's own district — NOT the live dropdown: a BUILT_NOT_DELIVERED
+            # result renders a RETRY, and that retry must inherit this delivery's binding.
             _set_running(False)
-            _render_result(result, run_identity(selected["district"], input_field.value))
+            _render_result(result, run_identity(district, input_field.value))
             page.update()
 
         def _on_error(_exc: BaseException) -> None:
@@ -748,15 +777,16 @@ def build_convert(
             # ending with a concrete next step (0035 W3b — no dead-end failures).
             _set_running(False)
             result_slot.controls = [components.ErrorCard(*deliver_error_copy())]
+            rendered["value"] = None
             page.update()
 
-        started = runner.run(page, lambda: deliver_job(sis), on_done=_on_done, on_error=_on_error)
+        started = runner.run(page, lambda: deliver_job(district), on_done=_on_done, on_error=_on_error)
         if not started:  # already running — the single-flight guard held (C4)
             _set_running(True, caption="Delivering… sending your files to SpacesEDU.")
             page.update()
 
-    def _confirm_and_deliver() -> None:
-        """Deliver pre-flight confirm: labelled Server / Folder facts + the freshness fact.
+    def _confirm_and_deliver(district: str) -> None:
+        """The deliver CHOKE POINT: every deliver action passes through here (FIX-5).
 
         A SEPARATE explicit action — never an auto-run side effect. Names the SFTP host
         ONCE and the resolved local output folder (config values, never a secret), plus
@@ -765,16 +795,30 @@ def build_convert(
         files from disk, NEVER a re-transform (the old rebuild path, with its hardcoded
         ``anomaly_ack=True`` bypass, is gone). The exit-3 result renders the FAILED
         "built but not delivered" verdict from booleans (never ``on_error``).
+
+        **The last gate, and the freshness line's precondition.** ``district`` is resolved
+        by the CALLER (the run's identity for the result card; the live pick for the
+        standalone card) and this function re-derives ``deliverable_files`` for it. An
+        EMPTY set never reaches the confirm dialog: the vintage line would otherwise assert
+        "Files last built …" for files that do not exist, and ``upload_csvs`` would refuse
+        the empty manifest with a ``RuntimeError`` mislabelled as an upload failure and
+        persisted as a FAILED delivery record the admin could never clear. Both cards
+        already gate on the same fact — this is defence in depth against the render→click
+        race AND the guarantee any FUTURE deliver entry point inherits for free.
         """
         cfg = AppConfig.load()
         local_folder = (cfg.output_dir or "").strip()
-        # The vintage of what WOULD SHIP — the narrowed set, not the folder's newest *.csv
+        # The set that WOULD SHIP — the narrowed set, not the folder's newest *.csv
         # (a parked spreadsheet must never be quoted as the roster's build time — FIX-4).
-        vintage = freshness_fact(deliverable_files(_deliver_district(cfg), local_folder).newest_mtime_iso)
+        files = deliverable_files(district, local_folder)
+        if not files.present:
+            _show_nothing_to_deliver(district)
+            return
+        vintage = freshness_fact(files.newest_mtime_iso)
 
         def _on_deliver(_e: ft.ControlEvent) -> None:
             page.pop_dialog()
-            _start_deliver()
+            _start_deliver(district)
 
         def _on_cancel(_e: ft.ControlEvent) -> None:
             page.pop_dialog()
@@ -803,10 +847,46 @@ def build_convert(
             )
         )
 
+    def _show_nothing_to_deliver(district: str) -> None:
+        """The choke point's refusal dialog — a plain reason and a Close, never a Deliver.
+
+        Deliberately a DIALOG (not an inline card): the admin just clicked a button and is
+        owed an immediate answer in the place they were looking. It states what could not
+        be sent and why in the admin's own words (``nothing_to_deliver_copy``), and offers
+        no delivery action at all — there is nothing to deliver, so offering one would be
+        the dead end this whole fix removes.
+        """
+        title, body = nothing_to_deliver_copy(district)
+
+        def _on_close(_e: ft.ControlEvent) -> None:
+            page.pop_dialog()
+
+        page.show_dialog(
+            ft.AlertDialog(
+                modal=True,
+                title=ft.Text(title),
+                content=ft.Column(
+                    tight=True,
+                    spacing=8,
+                    controls=[ft.Text(body, size=13, color=tokens.color_text)],
+                ),
+                actions=[components.text_button("Close", _on_close)],
+            )
+        )
+
     def _render_result(result: ConvertResult, identity: RunIdentity) -> None:
+        """Paint one run's result — every affordance bound to the run it describes (FIX-5).
+
+        ``identity`` is the run this card is ABOUT, and it is the only district the card's
+        deliver action will ever use. Re-rendering with the same pair is also how a
+        mid-visit district change re-gates the card (``_refresh_deliver_slot``), so the
+        pair is remembered in ``rendered`` for exactly as long as it is on screen.
+        """
+        rendered["value"] = None
         if result.status is ConvertStatus.NEEDS_ANOMALY_ACK:
             # The card is a question about THIS run — remember which one, and freeze the
-            # inputs while it waits so the answer can't drift onto another (FIX-2).
+            # inputs while it waits so the answer can't drift onto another (FIX-2). The
+            # frozen dropdown is also why this branch needs no re-gate: the pick cannot move.
             pending_ack["identity"] = identity
             result_slot.controls = [_anomaly_ack_card(result, identity)]
             _apply_interaction(job_running=False)
@@ -830,25 +910,53 @@ def build_convert(
         # exactly this retry, so the failure screen must offer it (no forced rebuild).
         # A DELIVERED / DELIVERED_WITH_DATA_ERRORS run (sftp_attempted=True) is already
         # delivered, so it is NOT offered again.
+        #
+        # FIX-5: the offer is gated by the pure `result_deliver_state`, keyed on THIS RUN's
+        # district — the files it built, and the only identity they may ever ship under.
+        # `deliverable_files` narrows to what `deliver_job` would actually send (never a
+        # bare folder glob), and the pick comparison catches the drift the old status-only
+        # gate could not see.
         sftp_cfg = AppConfig.load()
-        if sftp_cfg.sftp_is_configured():
-            deliverable_local = (
-                result.status in (ConvertStatus.DELIVERED, ConvertStatus.BUILT_WITH_DATA_ERRORS)
-                and not result.sftp_attempted
-            )
-            retry_delivery = result.status is ConvertStatus.BUILT_NOT_DELIVERED
-            if deliverable_local or retry_delivery:
-                # Deliver-gate (0031): SFTP is configured, but delivery ALSO needs a stored
-                # password for THIS Windows account. Present → the deliver/retry card; absent
-                # or unreadable → a calm "route to Setup" card instead (no transient password
-                # entry in Convert — Setup is the single credential home).
-                if _sftp_credential_present(sftp_cfg):
-                    controls.append(_deliver_action(retry=retry_delivery))
-                else:
-                    controls.append(_delivery_not_ready_card())
+        retry_delivery = result.status is ConvertStatus.BUILT_NOT_DELIVERED
+        offerable = retry_delivery or (
+            result.status in (ConvertStatus.DELIVERED, ConvertStatus.BUILT_WITH_DATA_ERRORS)
+            and not result.sftp_attempted
+        )
+        configured = sftp_cfg.sftp_is_configured()
+        # Only derived when it can matter — a config load + a directory read are cheap, but
+        # an unoffered card should cost neither.
+        files_present = offerable and configured and deliverable_files(identity.district, output_dir_value).present
+        state = result_deliver_state(
+            offerable=offerable,
+            sftp_configured=configured,
+            files_present=files_present,
+            district_matches_pick=identity.district == _deliver_district(sftp_cfg),
+            # Deliver-gate (0031): SFTP is configured, but delivery ALSO needs a stored
+            # password for THIS Windows account. Present → the deliver/retry card; absent
+            # or unreadable → a calm "route to Setup" card instead (no transient password
+            # entry in Convert — Setup is the single credential home). Probed only when the
+            # earlier, cheaper facts already say the card is on offer (kwargs evaluate
+            # eagerly, so the guard lives here, not in the gate's branch order).
+            credential_present=files_present and _sftp_credential_present(sftp_cfg),
+        )
+        if state is ResultDeliverReadiness.READY:
+            controls.append(_deliver_action(identity.district, retry=retry_delivery))
+        elif state is ResultDeliverReadiness.DISTRICT_CHANGED:
+            controls.append(_district_changed_card(identity.district))
+        elif state is ResultDeliverReadiness.NEEDS_CREDENTIAL:
+            controls.append(_delivery_not_ready_card())
         result_slot.controls = controls
+        rendered["value"] = (result, identity)
 
-    def _deliver_action(*, retry: bool = False) -> ft.Control:
+    def _deliver_action(district: str, *, retry: bool = False) -> ft.Control:
+        """The result card's deliver / retry action, BOUND to ``district`` (FIX-5).
+
+        The district is captured in the closure at RENDER time — not re-read from the
+        dropdown on click — so this button can only ever deliver the run it belongs to.
+        Rostering districts share entity filenames (``sd74myedbc`` and ``sd40myedbc`` write
+        the same five CSVs), so a click-time re-read did not fail loudly: it succeeded, and
+        shipped one district's students under the other's zip name.
+        """
         heading = "Try delivering again" if retry else "Deliver to SpacesEDU"
         body = (
             "The upload didn't go through. Your files are saved — send them to SpacesEDU again."
@@ -865,11 +973,31 @@ def build_convert(
                         controls=[
                             components.secondary_button(
                                 heading,
-                                lambda _e: _confirm_and_deliver(),
+                                lambda _e: _confirm_and_deliver(district),
                                 icon=ft.Icons.CLOUD_UPLOAD_ROUNDED,
                             )
                         ]
                     ),
+                ],
+            ),
+        )
+
+    def _district_changed_card(run_district: str) -> ft.Control:
+        """Replaces the deliver action once the pick has moved off the run's district (FIX-5).
+
+        NOT a silent disappearance (that is the dead end the trust bar forbids) and NOT a
+        live button under a dropdown naming someone else (that is an assertion nobody
+        checked). A plain statement of what happened plus both ways forward — switch the
+        district back, or convert for the one now picked — each a control already on screen,
+        so the card needs no action of its own.
+        """
+        title, body = result_district_changed_copy(run_district)
+        return components.card(
+            content=ft.Column(
+                spacing=12,
+                controls=[
+                    ft.Text(title, size=15, weight=ft.FontWeight.W_700, color=tokens.color_text),
+                    ft.Text(body, size=13, color=tokens.color_muted),
                 ],
             ),
         )
@@ -885,12 +1013,14 @@ def build_convert(
             # token only when it matches the run it is executing.
             runner.state.reset()
             result_slot.controls = []
+            rendered["value"] = None
             page.update()
             _start_convert(anomaly_ack=identity)
 
         def _on_cancel(_e: ft.ControlEvent) -> None:
             runner.state.reset()
             pending_ack["identity"] = None  # question withdrawn — the inputs are editable again
+            rendered["value"] = None
             result_slot.controls = [
                 ft.Text(
                     "No files were written. Review your input, then convert again when you're ready.",
@@ -960,7 +1090,13 @@ def build_convert(
                         controls=[
                             components.secondary_button(
                                 "Deliver to SpacesEDU",
-                                lambda _e: _confirm_and_deliver(),
+                                # Unlike the result card (bound to the run that BUILT the
+                                # files), this card means "send what's in the folder as the
+                                # district currently picked" — there is no prior run to bind
+                                # to, so the pick is resolved at click. `_refresh_deliver_slot`
+                                # re-gates it on every change and `_confirm_and_deliver` is the
+                                # choke point behind a click that races that re-render.
+                                lambda _e: _confirm_and_deliver(_deliver_district()),
                                 icon=ft.Icons.CLOUD_UPLOAD_ROUNDED,
                             )
                         ]
@@ -998,15 +1134,27 @@ def build_convert(
         return []
 
     def _refresh_deliver_slot() -> None:
-        """Re-derive the standalone deliver card for the CURRENT district pick (FIX-4).
+        """Re-gate WHICHEVER deliver affordance is on screen for the current pick (FIX-4/FIX-5).
 
-        Suppressed once a run flow owns the deliver affordance (``result_slot`` non-empty):
-        the post-run result card carries its own deliver/retry action, and re-populating the
-        standalone slot underneath it would put two deliver buttons on screen. A district
-        change can't reach here mid-run or mid-acknowledgement anyway — ``interaction_state``
-        disables the dropdown in both — so this only guards the settled post-result view.
+        Exactly one deliver affordance exists at a time, and this is the single place a
+        district change re-derives it:
+
+        * a run flow owns the slot (``result_slot`` non-empty) → re-render THAT result with
+          its own unchanged identity. The standalone slot stays suppressed (two deliver
+          buttons on screen would be worse than none), and the result card re-gates itself:
+          same district ⇒ same card, moved-on ⇒ the "you changed district" explanation.
+          Skipping this (FIX-4 returned here) left the post-run card — the DEFAULT post-run
+          state — as the one deliver route no pick change could touch.
+        * otherwise → the standalone pre-run card, re-derived from disk for the new pick.
+
+        A run in flight or a pending acknowledgement can't reach here at all
+        (``interaction_state`` disables the dropdown in both), so this only ever repaints a
+        settled view.
         """
         if result_slot.controls:
+            pending = rendered["value"]
+            if pending is not None:
+                _render_result(*pending)
             return
         deliver_slot.controls = _standalone_deliver_controls()
 

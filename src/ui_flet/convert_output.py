@@ -28,6 +28,17 @@ while :func:`deliverable_files` is TOTAL (a broken partner config degrades the v
 "nothing to deliver", never a crashed screen — ``mapping_catalog.summarize_config``'s
 pattern).
 
+**The same rule at the POST-RUN card, plus a binding (FIX-5).** The result-slot deliver
+card is a second route to the same ``deliver_job`` and had neither lesson: it gated on
+run status alone and could not re-gate, while the click re-resolved the district from the
+live dropdown. Because ``sd74myedbc`` and ``sd40myedbc`` produce byte-identical entity
+filenames, a pick change between render and click shipped one district's real roster
+under the other's zip identity. :func:`result_deliver_state` is that card's gate — keyed
+on the RUN's district, with a ``DISTRICT_CHANGED`` state (worded by
+:func:`result_district_changed_copy`) for the drift — and :func:`nothing_to_deliver_copy`
+is the choke-point refusal every deliver action passes through, so a future third entry
+point inherits the guarantee instead of re-earning it.
+
 **Run identity + the anomaly-ack binding (FIX-2):** :class:`RunIdentity` / :func:`run_identity`
 / :func:`ack_authorizes` name WHICH run an action refers to, so the "I've reviewed this —
 convert anyway" acknowledgement is a capability scoped to the run it reviewed rather than a
@@ -291,6 +302,109 @@ def standalone_deliver_state(
     if not credential_present:
         return DeliverReadiness.NEEDS_CREDENTIAL
     return DeliverReadiness.READY
+
+
+class ResultDeliverReadiness(Enum):
+    """The POST-RUN result card's deliver-action state (FIX-5).
+
+    The result card is the SECOND route to ``deliver_job`` and the DEFAULT post-run view:
+    after any successful conversion with delivery configured it renders beside a LIVE
+    district dropdown. It therefore needs the same district-narrowed readiness fact the
+    standalone card got in FIX-4, plus one state the standalone card cannot have — the
+    card describes a run that has ALREADY happened, so the picked district can drift away
+    from the district that built the files.
+
+    - ``HIDDEN`` — the result isn't deliverable, delivery isn't set up, or the run's own
+      files are no longer on disk. Nothing to offer, so nothing is shown.
+    - ``DISTRICT_CHANGED`` — the dropdown has moved off the district that built these
+      files. The action is withdrawn and REPLACED by :func:`result_district_changed_copy`
+      (never silently vanished — the trust bar forbids dead ends), because a deliver
+      button under a dropdown naming a different district asserts a delivery identity
+      nobody checked.
+    - ``NEEDS_CREDENTIAL`` — the existing calm route-to-Setup card.
+    - ``READY`` — the deliver / retry action shows.
+    """
+
+    HIDDEN = "hidden"
+    DISTRICT_CHANGED = "district_changed"
+    NEEDS_CREDENTIAL = "needs_credential"
+    READY = "ready"
+
+
+def result_deliver_state(
+    *,
+    offerable: bool,
+    sftp_configured: bool,
+    files_present: bool,
+    district_matches_pick: bool,
+    credential_present: bool,
+) -> ResultDeliverReadiness:
+    """The post-run deliver gate — the result card's counterpart to :func:`standalone_deliver_state`.
+
+    ``offerable`` is the RESULT-status fact (an undelivered successful build, or a
+    ``BUILT_NOT_DELIVERED`` retry); ``files_present`` MUST be ``DeliverableFiles.present``
+    resolved for the district that BUILT the files, never for the live dropdown pick —
+    the whole point of the binding is that the action describes one specific run.
+
+    Ordering is the honesty order. Nothing to deliver hides outright (an action with no
+    possible outcome). A district drift is reported next, because it is the ONE state
+    whose explanation the admin needs and the one whose silence was the security defect:
+    ``sd74myedbc`` and ``sd40myedbc`` write byte-identical filenames, so a card left live
+    across a pick change would ship one district's roster under the other's identity.
+    The credential probe comes last so it is never run for a card that isn't being offered.
+    """
+    if not offerable or not sftp_configured or not files_present:
+        return ResultDeliverReadiness.HIDDEN
+    if not district_matches_pick:
+        return ResultDeliverReadiness.DISTRICT_CHANGED
+    if not credential_present:
+        return ResultDeliverReadiness.NEEDS_CREDENTIAL
+    return ResultDeliverReadiness.READY
+
+
+def _district_label(sis_type: str | None, *, config_dir: Path | None = None) -> str:
+    """The admin-facing district name, with a neutral stand-in when none resolves. TOTAL.
+
+    ``friendly_district_name`` returns ``""`` for a blank id (and the raw id for a broken
+    config), so this keeps the copy grammatical in the degenerate case instead of rendering
+    a sentence with a hole in it.
+    """
+    return friendly_district_name((sis_type or "").strip(), config_dir=config_dir) or "this district"
+
+
+def result_district_changed_copy(run_district: str, *, config_dir: Path | None = None) -> tuple[str, str]:
+    """The (title, body) shown where the result card's deliver action was, after a pick change.
+
+    Withdrawing the action silently would be a dead end ("the button was there a second
+    ago"), and leaving it live under a dropdown naming another district would assert a
+    delivery identity nobody checked — the trust bar forbids both. So the card says what
+    happened and names BOTH ways forward (switch back, or convert for the new pick), each
+    one control already on screen. The district is humanized, never a raw config id.
+    """
+    label = _district_label(run_district, config_dir=config_dir)
+    return (
+        "Delivery paused — you changed district",
+        f"These files were built for {label}, so DistrictSync won't send them under another district's "
+        f"name. Switch the district back to {label} to deliver them, or convert again for the district "
+        "you've picked.",
+    )
+
+
+def nothing_to_deliver_copy(sis_type: str, *, config_dir: Path | None = None) -> tuple[str, str]:
+    """The (title, body) the deliver CHOKE POINT shows instead of the confirm dialog.
+
+    Fires when :func:`deliverable_files` is empty for the district a deliver action
+    resolved to — the defence-in-depth net behind both cards' gates (and behind any FUTURE
+    third entry point). Without it the confirm dialog would assert "Files last built …"
+    for files that do not exist and then hand ``upload_csvs`` an empty manifest, whose
+    ``RuntimeError`` was mislabelled an upload failure and persisted as one.
+    """
+    label = _district_label(sis_type, config_dir=config_dir)
+    return (
+        "Nothing to deliver yet",
+        f"Your output folder doesn't hold any roster files {label} would send. Convert for {label} "
+        "first, then deliver.",
+    )
 
 
 def _top_level_csvs(output_dir: str | None) -> list[Path]:

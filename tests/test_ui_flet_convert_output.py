@@ -29,6 +29,7 @@ import pytest
 from src.ui_flet import convert_output
 from src.ui_flet.convert_output import (
     DeliverReadiness,
+    ResultDeliverReadiness,
     RunIdentity,
     ack_authorizes,
     can_run_convert,
@@ -39,9 +40,12 @@ from src.ui_flet.convert_output import (
     freshness_fact,
     interaction_state,
     missing_files_copy,
+    nothing_to_deliver_copy,
     open_folder,
     output_dir_is_set,
     resolved_output_caption,
+    result_deliver_state,
+    result_district_changed_copy,
     run_identity,
     setup_first_copy,
     show_setup_first_card,
@@ -629,3 +633,101 @@ class TestRunIdentityAndAckAuthorization:
     def test_the_district_id_is_never_case_folded(self) -> None:
         # Config ids are exact — a near-miss district must not be treated as reviewed.
         assert ack_authorizes(self._A, run_identity("MYEDBC", "/gde/nightly")) is False
+
+
+class TestResultDeliverState:
+    """The POST-RUN deliver gate (FIX-5) — the result card's counterpart to the standalone one.
+
+    Every case is keyed on the RUN's district: the card describes one specific conversion,
+    and the files it built are the only ones it may send, under the only name they may carry.
+    """
+
+    _READY = {
+        "offerable": True,
+        "sftp_configured": True,
+        "files_present": True,
+        "district_matches_pick": True,
+        "credential_present": True,
+    }
+
+    def _state(self, **over) -> ResultDeliverReadiness:
+        return result_deliver_state(**{**self._READY, **over})
+
+    def test_everything_satisfied_offers_the_action(self) -> None:
+        assert self._state() is ResultDeliverReadiness.READY
+
+    def test_a_result_that_cannot_be_delivered_hides(self) -> None:
+        # An already-delivered run (or one that wrote nothing) has no delivery to offer.
+        assert self._state(offerable=False) is ResultDeliverReadiness.HIDDEN
+
+    def test_no_delivery_setup_hides(self) -> None:
+        assert self._state(sftp_configured=False) is ResultDeliverReadiness.HIDDEN
+
+    def test_nothing_on_disk_hides(self) -> None:
+        # `upload_csvs` refuses an empty manifest, so offering the click would guarantee a
+        # failed-delivery record for a delivery that was never possible.
+        assert self._state(files_present=False) is ResultDeliverReadiness.HIDDEN
+
+    def test_a_moved_pick_withdraws_the_action_and_explains(self) -> None:
+        # THE security case: sd74myedbc and sd40myedbc write identical filenames, so a card
+        # left live across a pick change delivered successfully — under the wrong identity.
+        assert self._state(district_matches_pick=False) is ResultDeliverReadiness.DISTRICT_CHANGED
+
+    def test_a_moved_pick_outranks_a_missing_credential(self) -> None:
+        # The district drift is the fact the admin needs; routing them to Setup for a
+        # credential would answer a question they didn't ask.
+        assert (
+            self._state(district_matches_pick=False, credential_present=False)
+            is ResultDeliverReadiness.DISTRICT_CHANGED
+        )
+
+    def test_nothing_to_deliver_outranks_a_moved_pick(self) -> None:
+        # With nothing to send there is no delivery to pause — hide rather than explain a
+        # restriction on an action that doesn't exist.
+        assert self._state(files_present=False, district_matches_pick=False) is ResultDeliverReadiness.HIDDEN
+
+    def test_a_missing_credential_routes_to_setup(self) -> None:
+        assert self._state(credential_present=False) is ResultDeliverReadiness.NEEDS_CREDENTIAL
+
+
+class TestResultDistrictChangedCopy:
+    """The copy that REPLACES the withdrawn deliver action — never a dead end, never a lie."""
+
+    def test_it_names_the_run_s_district_and_both_ways_forward(self, tmp_path: Path) -> None:
+        # config_dir is an empty dir → friendly_district_name falls back to the raw id
+        # (TOTAL, hermetic — no dependency on the repo's real mapping files).
+        title, body = result_district_changed_copy("sd74myedbc", config_dir=tmp_path)
+        assert title == "Delivery paused — you changed district"
+        assert "sd74myedbc" in body
+        assert "Switch the district back" in body  # way back
+        assert "convert again" in body  # way onward
+
+    def test_it_never_promises_a_cross_district_delivery(self, tmp_path: Path) -> None:
+        _title, body = result_district_changed_copy("sd74myedbc", config_dir=tmp_path)
+        assert "won't send them under another district's name" in body
+
+    def test_a_blank_district_still_reads_as_a_sentence(self, tmp_path: Path) -> None:
+        # TOTAL: the degenerate case must not render a hole in the copy.
+        _title, body = result_district_changed_copy("", config_dir=tmp_path)
+        assert "this district" in body
+        assert "  " not in body
+
+
+class TestNothingToDeliverCopy:
+    """The choke point's refusal — states the honest reason and the concrete next step."""
+
+    def test_it_names_the_district_and_the_next_step(self, tmp_path: Path) -> None:
+        title, body = nothing_to_deliver_copy("mbponly", config_dir=tmp_path)
+        assert title == "Nothing to deliver yet"
+        assert "mbponly" in body
+        assert "Convert for mbponly first" in body
+
+    def test_it_never_asserts_a_vintage(self, tmp_path: Path) -> None:
+        # The whole point: no "Files last built …" claim about files that don't exist.
+        _title, body = nothing_to_deliver_copy("mbponly", config_dir=tmp_path)
+        assert "last built" not in body
+
+    def test_a_blank_district_still_reads_as_a_sentence(self, tmp_path: Path) -> None:
+        _title, body = nothing_to_deliver_copy("", config_dir=tmp_path)
+        assert "this district" in body
+        assert "  " not in body
