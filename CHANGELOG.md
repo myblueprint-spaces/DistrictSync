@@ -9,6 +9,90 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+The partner self-serve wrap-up. A thorough standards audit (11 lenses across
+the whole codebase, every finding independently re-checked before it was
+acted on) plus a refreshed product spec drove this batch. Nothing here changes
+the CSVs a district produces — the SD74 golden and the 7-district output
+contract pass untouched throughout.
+
+### Security
+
+- **Host-key pinning is now fail-closed, closing two bypasses.** The SFTP
+  client no longer loads the machine's ordinary `~/.ssh/known_hosts` before
+  applying the bundled pins — paramiko consults that store *first*, so a single
+  user-writable line naming a SpacesEDU host silently defeated the pin added in
+  3.7.0. And a missing or corrupt `config/known_hosts` no longer degrades to
+  warn-and-accept: it refuses the connection. Either failure previously turned
+  pinning off for all three hosts at once, invisibly, in a 2 a.m. run nobody
+  watches. A password is never offered to an unverified server — the refusal
+  happens during key exchange, before authentication.
+- **A possible man-in-the-middle now reads as one.** A host-identity failure
+  used to fall through to the generic "check the host, username, password and
+  remote path, then try again" — inviting an admin to retype credentials at a
+  possibly-impostor server. It now has two terminal categories of its own
+  (identity *changed* vs identity *unverifiable*, which are different faults
+  with different fixes), neither of which invites a retry, and neither of which
+  leaks a host path, key blob or fingerprint.
+- **Windows system binaries are invoked by absolute System32 path.** Schedule
+  registration passes the district account's password to a PowerShell child via
+  the environment; resolving `powershell`/`schtasks`/`icacls` by bare name let
+  `CreateProcess` probe the calling executable's directory and the working
+  directory first, so a planted binary in a group-writable install folder could
+  have received that password. The elevation path already pinned the absolute
+  path for exactly this reason — the rest of the scheduler now uses the same
+  shared helper.
+
+### Privacy
+
+- **Raw student values can no longer reach the diagnostic log.** A failing
+  field transform logged the offending source cell verbatim, and the
+  unparseable-withdraw-date path logged up to ten raw values from whichever
+  column the district config points at — one config edit away from a date of
+  birth or a name, in the file a district would attach to a support ticket.
+  Failures are now described by shape (type, length, character classes) instead
+  of content, through a single reusable seam, with a test that scans for any
+  future site trying to log a raw value again. Exception *messages* are treated
+  as tainted too — a date parser echoes its input verbatim.
+
+### Reliability
+
+- **A run that produces nothing no longer reports success.** The write and
+  deliver step was gated on there being outputs, so a night that produced zero
+  files skipped saving, archiving and uploading, then logged "completed
+  successfully" and stored a success record with every count at zero — while
+  Task Scheduler showed green. The mirror case on the way in (no usable input)
+  was already fail-loud; the unattended path now matches it.
+- **A missing student export no longer ships orphan enrolments.** If the
+  student file was empty but the timetable was fine, the roster was never
+  published, the enrolment filter deliberately no-opped, the previous
+  `Students.csv` was archived out of the upload, and SpacesEDU received classes
+  and enrolments referencing students it had never heard of — the exact case
+  the zero-orphan invariant exists to prevent.
+- **Settings survive a crash.** `config.json` was rewritten in place with no
+  temp file and no fsync, so a crash mid-write — or a read racing the truncate
+  window — lost the district, both folders, the setup flag and every delivery
+  setting, after which the nightly task kept running but stopped delivering.
+  Writes now stage and atomically swap. A settings file that exists but cannot
+  be read is now distinguishable from one that is genuinely absent, so a
+  configured admin is never told they are a new user.
+
+### Documentation
+
+- Reconciled six places where the docs described behavior the code does not
+  have: the claim that three districts pin fixed academic dates (none do — the
+  pins were removed in June), the first-run wizard's step order (District leads,
+  then Folders), and the README's statement that log entries power Run History
+  (it reads a durable run store). The README's screen list was also missing
+  Home, the product's primary surface.
+
+### Testing
+
+- Pinned the derived academic Start/End dates end-to-end. The SD74 golden runs
+  against a *frozen* config that still pins literal dates — deliberately, so the
+  golden stays time-independent — which meant the auto-derived path every live
+  district actually takes was asserted nowhere. Covered at two altitudes, with
+  expected values read from the config rather than hardcoded.
+
 ## [3.7.0] - 2026-07-20
 
 The pre-partner completion release: every open backlog item landed ahead of
