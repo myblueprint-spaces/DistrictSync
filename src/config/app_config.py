@@ -244,10 +244,24 @@ class AppConfig:
           :meth:`_carries_chosen_settings`) is REFUSED — nothing is written, the file on
           disk is left byte-intact, and a transient read failure therefore self-heals on
           the next load instead of being cemented into blanks;
-        * an UNREADABLE-provenance instance that DOES carry admin choices (the Setup
-          wizard's repair) writes, but only after :func:`_preserve_unreadable_predecessor`
-          copies the bytes it is about to replace aside — bytes this config never read,
-          whether or not they happen to parse at this moment.
+        * an UNREADABLE-provenance instance that DOES carry admin choices writes, but only
+          after :func:`_preserve_unreadable_predecessor` copies the bytes it is about to
+          replace aside — bytes this config never read, whether or not they happen to
+          parse at this moment.
+
+        Be precise about what that second branch does, because it is broader than the
+        wizard: **ONE** non-default field unlocks a write of the **whole** in-hand
+        document, and the payload is never merged onto a re-read of disk. The wizard is
+        the case it was designed for (the admin re-enters every field as they walk the
+        steps, so the document really is a full repair) — but any single-section save
+        reaching it under UNREADABLE provenance replaces the settings it never read with
+        invented defaults. `screens/mapping.py`'s Apply is exactly that shape: it sets
+        only ``sis_type``. The displaced bytes survive as ``config.corrupt-*.json``, so
+        this costs recovery effort rather than data, and it is strictly better than the
+        pre-fix behaviour (which clobbered with no copy at all) — but it is a residual,
+        not a solved problem. Tracked in ``docs/claugentic-ROADMAP.md``; the candidate
+        fixes (merge onto a re-read here, or a ``settings_unreadable()`` guard on the
+        non-wizard surfaces) need a product call on the copy, not a mechanical patch.
 
         A SUCCESSFUL save re-tags the instance :attr:`ConfigLoadState.LOADED`, because it
         now holds exactly what is on disk — it just put it there. Without that transition
@@ -295,7 +309,12 @@ class AppConfig:
         Window geometry is excluded by the ``window_*`` prefix contract: it is ambient
         window state, not a setting the admin chose, so a geometry-only mutation leaves
         the settings wholly invented. This is exactly what separates the shell's advisory
-        exit-time geometry save (refused) from the Setup wizard's repair save (allowed).
+        exit-time geometry save (refused) from a save carrying an admin choice (allowed).
+
+        Note the asymmetry this predicate deliberately does NOT resolve: it answers "is
+        this payload entirely invented?", not "is this payload a complete repair?". One
+        chosen field is enough to unlock the write — see :meth:`save` for what that costs
+        a single-section caller.
 
         Only consulted when ``load_state`` is UNREADABLE — a LOADED config whose settings
         genuinely still are the defaults (a launched-but-never-configured install) READ
