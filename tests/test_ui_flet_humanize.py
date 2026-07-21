@@ -283,3 +283,70 @@ class TestFriendlySftpReason:
         assert raw not in result
         assert "secret-host" not in result
         assert "/root/roster" not in result
+
+
+class TestFriendlySftpReasonHostKey:
+    """W1-A: a host-key / server-identity failure gets its OWN category, ahead of the
+    generic fallback — which used to invite an admin to retype credentials at a possibly
+    impostor server (the raw reject message matches none of the other rules' words)."""
+
+    MISMATCH_REASON = (
+        "The server didn't match SpacesEDU's known identity, so nothing was sent. "
+        "Contact SpacesEDU support — don't retry or re-enter your password."
+    )
+    UNVERIFIED_REASON = (
+        "DistrictSync couldn't verify the server's identity, so nothing was sent. "
+        "Contact SpacesEDU support — don't retry or re-enter your password."
+    )
+
+    def test_the_real_uploader_mismatch_message_maps_to_the_identity_category(self) -> None:
+        """The cross-module pin: the EXACT string ``test_connection`` returns for a pinned-key
+        mismatch (not a hand-written approximation) must hit the identity rule."""
+        from src.sftp.uploader import _host_key_mismatch_message
+
+        raw = _host_key_mismatch_message("sftp.ca.spacesedu.com")
+        assert friendly_sftp_reason(raw) == self.MISMATCH_REASON
+
+    def test_the_real_uploader_unpinned_message_maps_to_the_unverified_category(self) -> None:
+        from src.sftp.uploader import _host_key_unpinned_message
+
+        raw = _host_key_unpinned_message("sftp.ca.spacesedu.com")
+        assert friendly_sftp_reason(raw) == self.UNVERIFIED_REASON
+
+    def test_the_real_uploader_port_message_maps_to_the_unverified_category(self) -> None:
+        from src.sftp.uploader import _host_key_port_unpinned_message
+
+        raw = _host_key_port_unpinned_message("[sftp.ca.spacesedu.com]:2222", "sftp.ca.spacesedu.com")
+        assert friendly_sftp_reason(raw) == self.UNVERIFIED_REASON
+
+    def test_raw_paramiko_bad_host_key_text_maps_to_the_identity_category(self) -> None:
+        """paramiko's own ``BadHostKeyException`` text carries the host AND both key blobs —
+        it must never reach an admin card, and it is an identity failure, not a generic one."""
+        raw = (
+            "Host key for server 'sftp.ca.spacesedu.com' does not match: got "
+            "'AAAAC3NzaC1lZDI1NTE5AAAAIPxBtjBnb69WmfeFndeQQtzHLMu', expected "
+            "'AAAAC3NzaC1lZDI1NTE5AAAAII+Z9Hmt2exPFjiWplMl4AyFcKf0litdDwfbwVWLwz9K'"
+        )
+        result = friendly_sftp_reason(raw)
+        assert result == self.MISMATCH_REASON
+        assert "AAAAC3Nza" not in result
+
+    @pytest.mark.parametrize("reason_attr", ["MISMATCH_REASON", "UNVERIFIED_REASON"])
+    def test_identity_copy_never_invites_a_retry_or_a_credential_re_entry(self, reason_attr: str) -> None:
+        reason = getattr(self, reason_attr)
+        assert "try again" not in reason.lower()
+        assert "check the host" not in reason.lower()
+        assert "don't retry or re-enter your password" in reason
+
+    def test_identity_copy_leaks_no_host_path_or_fingerprint(self) -> None:
+        from src.sftp.uploader import _host_key_mismatch_message, _host_key_unpinned_message
+
+        for raw in (
+            _host_key_mismatch_message("sftp.ca.spacesedu.com"),
+            _host_key_unpinned_message("sftp.ca.spacesedu.com"),
+        ):
+            result = friendly_sftp_reason(raw)
+            assert "spacesedu.com" not in result
+            assert "known_hosts" not in result
+            assert "ssh-keyscan" not in result
+            assert raw not in result

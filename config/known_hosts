@@ -1,10 +1,11 @@
 # DistrictSync pinned SSH host keys (standard OpenSSH known_hosts format).
 #
-# When this file contains an entry for an SFTP server, DistrictSync verifies the
-# server's identity against it on every connection and REFUSES to deliver if the
-# offered key does not match (protection against man-in-the-middle attacks).
-# Servers with NO entry here are still accepted, with a warning in the log —
-# pinning only ever tightens security, it never blocks delivery before keys exist.
+# DistrictSync verifies the server's identity against this file on every connection and
+# REFUSES to deliver if the offered key does not match (protection against
+# man-in-the-middle attacks). Verification is FAIL-CLOSED: a server with NO entry here
+# is also refused, because an unverifiable identity is exactly what pinning exists to
+# stop — so this file must stay present and readable for delivery to work. It ships
+# populated for every allowed SpacesEDU host, so no setup step is needed.
 #
 # Keys below were scanned 2026-07-20. To ROTATE them, run this from any machine that can reach
 # the servers on port 22, then paste the output lines below (one per line):
