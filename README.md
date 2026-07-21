@@ -8,7 +8,7 @@ Distributed as single-file executables for district servers. Runs daily via Wind
 
 | Platform | File | Notes |
 |----------|------|-------|
-| **Windows** | [DistrictSync-windows.exe](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-windows.exe) | Double-click to open Setup Wizard, or use in Task Scheduler |
+| **Windows** | [DistrictSync-windows.exe](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-windows.exe) | Double-click to open the app (a fresh install starts the Setup wizard), or use in Task Scheduler |
 | **Linux** | [DistrictSync-linux](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-linux) | `chmod +x` before first run |
 | **macOS** | [DistrictSync-macos](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos) | Allow in System Settings > Privacy & Security |
 
@@ -90,9 +90,10 @@ python -m src.main
 ```
 
 **Screens:**
-- **Setup** — Configure paths, schedule, and SFTP upload
+- **Home** — The sync-health verdict: one plain answer to "is my roster syncing?", with per-entity counts and the last run time
 - **Convert** — Pick GDE files and run a conversion on demand
-- **Run History** — View the log of automated daily runs
+- **Run History** — A read-only record of past runs (nightly, manual, and command-line)
+- **Setup** — First run walks a 5-step wizard (district → folders → delivery → schedule); afterwards the same screen becomes Settings
 - **Mapping** — Review and switch the active district data configuration
 - **Help** — Links to the Help Centre and support contact
 
@@ -104,13 +105,14 @@ python -m src.main
 - **Anomaly detection** — Warns if any entity drops by >20% compared to the previous run
 - **Atomic writes** — Output files are staged and committed as a set (all-or-nothing)
 - **Config inheritance** — District configs inherit from a base and override only differences
-- **Structured run logging** — JSON log entries power the Run History page
+- **Durable run history** — Every run (nightly, manual, or CLI) is recorded to a local run store that powers the Run History page
+- **Pinned server identity** — SFTP delivery verifies the SpacesEDU server's host key against keys bundled with the app, so a swapped server is refused rather than trusted
 - **SFTP host allowlist** — Uploads restricted to SpacesEDU servers only
 - **Quality reports** — Checks for missing fields, duplicates, and orphaned enrollments
 
 ## Logging
 
-Debug logs written to `etl_tool.log`. Console shows WARNING+ only. Structured `__DISTRICTSYNC_RUN__` JSON entries are written after each run for the Run History page.
+Debug logs written to `etl_tool.log`. Console shows WARNING+ only. Each run also emits a structured `__DISTRICTSYNC_RUN__` JSON entry for support diagnostics — the Run History screen reads the durable run store, not this log.
 
 ## Support
 

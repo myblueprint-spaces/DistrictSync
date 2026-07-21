@@ -147,7 +147,7 @@ All field mappings are in YAML files under `config/mappings/`. The `--sis` CLI a
 - Direct column mappings (string value)
 - Transform functions (dict with `transform` key, e.g., `grade_to_ceds`, `map_role`). Only `ALLOWED_TRANSFORMS` in `base.py` are permitted.
 - Fixed values (dict with `value` key)
-- Academic year dates (dict with `use_academic_year` key). Override with `use_academic_year: false` + `value: "YYYY-MM-DD"` for districts where auto-detection picks the wrong year (SD40, SD51, SD74 use this).
+- Academic year dates (dict with `use_academic_year` key). **Every live config auto-derives** (`use_academic_year: true`); the `use_academic_year: false` + `value: "YYYY-MM-DD"` escape hatch is supported but currently **unused** — the pins were removed district-wide by `506d63d` (2026-06-04) once end-year school-year semantics were fixed. The frozen SD74 snapshot config (`tests/snapshots/config/`) still pins dates **deliberately**, to keep the golden time-independent — do not "sync" it to the live config.
 - ID year-appending (dict with `append_year_to_id` key)
 - Email format templates (dict with `format` key, e.g., `{student number}@sd40.bc.ca`). Opt-in (default off → other districts byte-identical): `sanitize: true` reduces each substituted value to `[a-z0-9]`; `derived_dates: {pseudo: {column, date_format}}` injects a date part (e.g. `yy`) derived from a source date column into the template (reuses base date machinery; empty on blank/unparseable; fail-loud on a missing column). SD60 uses both to generate `{legal first}{legal surname}{admission yy}@learn60.ca`.
 - Name config (dict with `primary teacher flag`, `teacher last name`, `course title`, `section letter`)
