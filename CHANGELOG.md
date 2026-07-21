@@ -68,13 +68,31 @@ contract pass untouched throughout.
   `Students.csv` was archived out of the upload, and SpacesEDU received classes
   and enrolments referencing students it had never heard of — the exact case
   the zero-orphan invariant exists to prevent.
-- **Settings survive a crash.** `config.json` was rewritten in place with no
-  temp file and no fsync, so a crash mid-write — or a read racing the truncate
-  window — lost the district, both folders, the setup flag and every delivery
-  setting, after which the nightly task kept running but stopped delivering.
-  Writes now stage and atomically swap. A settings file that exists but cannot
-  be read is now distinguishable from one that is genuinely absent, so a
-  configured admin is never told they are a new user.
+- **Settings survive a crash — and survive a failed read.** `config.json` was
+  rewritten in place with no temp file and no fsync, so a crash mid-write — or a
+  read racing the truncate window — lost the district, both folders, the setup
+  flag and every delivery setting, after which the nightly task kept running but
+  stopped delivering. Writes now stage and atomically swap. A settings file that
+  exists but cannot be read is distinguishable from one that is genuinely
+  absent, so a configured admin is never told they are a new user; and a save
+  can no longer overwrite settings it failed to read — after a transient read
+  blip the file is left byte-intact and self-heals on the next load, rather than
+  being replaced with defaults by the window-geometry save on app exit.
+- **The manual "Convert now" path enforces the same delivery gate as the nightly
+  run.** The roster-integrity refusal was wired into the scheduled and
+  command-line paths but not the desktop one — so the path an admin uses
+  precisely *when the nightly run looked wrong* still shipped enrolments for
+  students that were never delivered, and recorded the night as a success. It
+  now refuses before writing anything, leaving the last good output untouched.
+- **"I've reviewed this — convert anyway" now applies only to the run it
+  reviewed.** The acknowledgement carried no run identity, and the district
+  picker stayed live while the warning was on screen, so an admin could review
+  one district's shrink warning and have the approval apply to a different one.
+- **Only the files a run vouched for are delivered.** The upload zipped whatever
+  `.csv` files happened to sit in the output folder, so a spreadsheet export or
+  a backup CSV an admin parked there was uploaded to SpacesEDU. Delivery is now
+  driven by an explicit manifest of what the run actually produced. Nothing is
+  deleted — foreign files simply stay on disk.
 
 ### Documentation
 
