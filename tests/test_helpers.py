@@ -4,6 +4,7 @@ The zip-naming helpers (``district_slug`` / ``build_zip_name``) live with their
 SFTP consumer now — see ``tests/test_sftp_uploader.py``.
 """
 
+import ntpath
 import re
 import types
 from datetime import datetime
@@ -21,6 +22,7 @@ from src.utils.helpers import (
     ensure_directory,
     normalize_columns,
     subprocess_no_window_flags,
+    system_binary,
 )
 
 
@@ -210,3 +212,57 @@ class TestNoRawValueInDataErrorSamples:
                 if ("first_sample" in stripped or "sample=" in stripped) and "!r" in stripped:
                     offenders.append(f"{path.name}:{lineno}: {stripped}")
         assert offenders == [], "data-error samples must use describe_value_for_log(), not !r:\n" + "\n".join(offenders)
+
+
+class TestSystemBinary:
+    """The single-source PATH-hijack guard: every in-box Windows binary by ABSOLUTE path.
+
+    Absent ``SafeProcessSearchMode``, ``CreateProcess`` probes the calling executable's
+    directory and the CURRENT directory *before* ``System32``. A bare ``"powershell"`` /
+    ``"schtasks"`` / ``"icacls"`` argv[0] therefore lets a binary planted in a
+    group-writable district install folder impersonate the real one — and the scheduler's
+    PowerShell child is handed the Windows account password in ``DSYNC_TASK_PW``.
+
+    The path is built with ``ntpath`` so the value is a well-formed Windows path (and a
+    stable, assertable string) on Windows dev hosts *and* Linux CI alike.
+    """
+
+    def test_powershell_is_the_absolute_system32_v1_0_path(self, monkeypatch):
+        monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+        assert system_binary("powershell.exe") == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+
+    def test_schtasks_and_icacls_sit_directly_under_system32(self, monkeypatch):
+        monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+        assert system_binary("schtasks.exe") == r"C:\Windows\System32\schtasks.exe"
+        assert system_binary("icacls.exe") == r"C:\Windows\System32\icacls.exe"
+
+    def test_honors_systemroot_for_a_relocated_windows_install(self, monkeypatch):
+        monkeypatch.setenv("SYSTEMROOT", r"D:\WinNT")
+        assert system_binary("schtasks.exe") == r"D:\WinNT\System32\schtasks.exe"
+
+    def test_missing_systemroot_falls_back_to_c_windows(self, monkeypatch):
+        monkeypatch.delenv("SYSTEMROOT", raising=False)
+        assert system_binary("schtasks.exe") == r"C:\Windows\System32\schtasks.exe"
+
+    def test_empty_systemroot_falls_back_to_c_windows(self, monkeypatch):
+        monkeypatch.setenv("SYSTEMROOT", "")
+        assert system_binary("icacls.exe") == r"C:\Windows\System32\icacls.exe"
+
+    def test_relative_systemroot_falls_back_rather_than_resolving_from_cwd(self, monkeypatch):
+        # A relative %SystemRoot% would reintroduce EXACTLY the current-directory
+        # resolution this helper exists to remove — fall back to the absolute default.
+        monkeypatch.setenv("SYSTEMROOT", ".")
+        assert system_binary("powershell.exe") == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+
+    def test_every_allowlisted_binary_resolves_absolute_and_never_bare(self, monkeypatch):
+        monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+        for name in helpers._SYSTEM32_BINARIES:
+            resolved = system_binary(name)
+            assert ntpath.isabs(resolved), resolved
+            assert resolved != name
+            assert resolved.lower().startswith(r"c:\windows\system32")
+
+    def test_unknown_binary_fails_loud(self):
+        # Fail loudly — never silently degrade to a bare (hijackable) name.
+        with pytest.raises(ValueError, match="net.exe"):
+            system_binary("net.exe")

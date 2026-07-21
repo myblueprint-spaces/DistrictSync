@@ -1,15 +1,18 @@
 """Small cross-cutting utilities shared across layers.
 
-Deliberately tiny: subprocess window suppression (Windows exe polish),
-directory creation, the shared column-name normalization, and the log-safety
-seam (:func:`describe_value_for_log` / :func:`describe_exception_for_log`).
+Deliberately tiny: the two Windows subprocess-invocation single-sources (window
+suppression + absolute system-binary resolution), directory creation, the shared
+column-name normalization, and the log-safety seam
+(:func:`describe_value_for_log` / :func:`describe_exception_for_log`).
 SFTP zip-naming lives with its consumer in ``src.sftp.uploader``; ID/join-key
 normalization in ``src.etl.transformers.ids``.
 """
 
 from __future__ import annotations
 
+import ntpath
 import numbers
+import os
 import subprocess  # nosec B404
 import sys
 from datetime import date, time, timedelta
@@ -17,6 +20,20 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+# Every in-box Windows binary this app shells out to, mapped to its path RELATIVE to
+# ``%SystemRoot%\System32``. An ALLOWLIST rather than a free-form path joiner: an
+# unrecognized name is a programming error and fails loud (see :func:`system_binary`)
+# instead of silently degrading to a bare — and therefore hijackable — argv[0].
+_SYSTEM32_BINARIES: dict[str, tuple[str, ...]] = {
+    "powershell.exe": ("WindowsPowerShell", "v1.0", "powershell.exe"),
+    "schtasks.exe": ("schtasks.exe",),
+    "icacls.exe": ("icacls.exe",),
+}
+
+# Fallback when %SystemRoot% is absent or not absolute. Only a Windows path is ever
+# meaningful here — these binaries exist nowhere else.
+_DEFAULT_SYSTEM_ROOT = r"C:\Windows"
 
 
 def subprocess_no_window_flags() -> int:
@@ -34,6 +51,52 @@ def subprocess_no_window_flags() -> int:
     if sys.platform == "win32":
         return getattr(subprocess, "CREATE_NO_WINDOW", 0)
     return 0
+
+
+def system_binary(name: str) -> str:
+    """The ABSOLUTE ``%SystemRoot%\\System32`` path of an in-box Windows binary.
+
+    SINGLE SOURCE: every Windows-facing ``subprocess.run`` / ``ShellExecuteEx`` in this
+    repo must resolve its executable through this helper — **never** a bare
+    ``"powershell"`` / ``"schtasks"`` / ``"icacls"``. Absent ``SafeProcessSearchMode``,
+    ``CreateProcess`` resolves a bare image name through a search order that probes the
+    **calling executable's directory and the current directory BEFORE System32**, so a
+    binary planted in a group-writable district install folder (or in whatever directory
+    the task scheduler happened to start us in) impersonates the real one. That matters
+    acutely here: the scheduler hands its PowerShell child the district Windows account
+    password in ``DSYNC_TASK_PW`` (``scheduler.windows._build_env``) and hands ``icacls``
+    the path of the DPAPI-sealed credential file. An absolute argv[0] removes the image
+    search entirely, so the process that receives those inputs is the real in-box binary.
+
+    ``%SystemRoot%`` is honored so a relocated / non-``C:`` Windows install still
+    resolves; a missing, empty, or **non-absolute** value falls back to ``C:\\Windows``
+    (a relative root would reintroduce exactly the current-directory resolution this
+    helper exists to remove). Paths are built with ``ntpath`` so the result is a
+    well-formed Windows path — and a stable, assertable value — on any host.
+
+    Args:
+        name: an allowlisted binary name (``powershell.exe`` / ``schtasks.exe`` /
+            ``icacls.exe``).
+
+    Returns:
+        The absolute path to invoke, e.g.
+        ``C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe``.
+
+    Raises:
+        ValueError: ``name`` is not allowlisted — fail loud rather than fall back to a
+            bare name and silently restore the hijack surface.
+    """
+    relative = _SYSTEM32_BINARIES.get(name)
+    if relative is None:
+        raise ValueError(
+            f"Unknown Windows system binary '{name}'. Add it to "
+            "helpers._SYSTEM32_BINARIES with its System32-relative path — never invoke "
+            "a system binary by bare name (CreateProcess search-order hijack)."
+        )
+    system_root = os.environ.get("SYSTEMROOT") or _DEFAULT_SYSTEM_ROOT
+    if not ntpath.isabs(system_root):
+        system_root = _DEFAULT_SYSTEM_ROOT
+    return ntpath.join(system_root, "System32", *relative)
 
 
 def ensure_directory(path: Path) -> Path:

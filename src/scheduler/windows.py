@@ -122,7 +122,7 @@ from pathlib import Path
 
 from src.scheduler import elevation
 from src.scheduler.elevation import ElevationOutcome, ElevationResult
-from src.utils.helpers import subprocess_no_window_flags
+from src.utils.helpers import subprocess_no_window_flags, system_binary
 from src.utils.validators import (
     validate_run_as_user,
     validate_run_time,
@@ -582,11 +582,13 @@ def register_task(
         # Inputs validated above; the encoded script is a fixed string referencing
         # only $env:DSYNC_* (no untrusted-value interpolation); passed as a list
         # with shell=False so nothing is re-parsed; the password reaches the child
-        # only via env, never argv. powershell.exe is a trusted Windows binary
-        # resolved from PATH (B607). Safe by construction.
-        result = subprocess.run(  # nosec B603,B607
+        # only via env, never argv. powershell.exe is resolved to its ABSOLUTE
+        # System32 path (system_binary) — never a bare name, whose CreateProcess
+        # search order probes the calling exe's dir + the CWD before System32 and
+        # would hand DSYNC_TASK_PW to a planted binary. Safe by construction.
+        result = subprocess.run(  # nosec B603
             [
-                "powershell",
+                system_binary("powershell.exe"),
                 "-NoProfile",
                 "-NonInteractive",
                 "-ExecutionPolicy",
@@ -643,9 +645,11 @@ def delete_task(task_name: str) -> tuple[bool, str]:
         (success, message)
     """
     task_name = validate_task_name(task_name)
-    # task_name is validated; schtasks.exe is a trusted Windows binary.
-    result = subprocess.run(  # nosec B603,B607
-        ["schtasks", "/Delete", "/F", "/TN", task_name],
+    # task_name is validated; schtasks.exe is resolved to its ABSOLUTE System32 path
+    # (system_binary) so CreateProcess cannot substitute a binary planted in the calling
+    # exe's directory or the current directory — both probed before System32.
+    result = subprocess.run(  # nosec B603
+        [system_binary("schtasks.exe"), "/Delete", "/F", "/TN", task_name],
         capture_output=True,
         text=True,
         creationflags=subprocess_no_window_flags(),  # no console flash in the windowed exe
@@ -1034,10 +1038,12 @@ def read_schedule(task_name: str) -> ScheduleReadback:
 
     try:
         # Inputs validated; fixed encoded script; list args + shell=False; read-only
-        # cmdlets. powershell.exe is a trusted Windows binary resolved from PATH (B607).
-        result = subprocess.run(  # nosec B603,B607
+        # cmdlets. powershell.exe is resolved to its ABSOLUTE System32 path
+        # (system_binary) — this probe fires on every nav click, so a bare name would
+        # give a planted binary repeated execution under the interactive user.
+        result = subprocess.run(  # nosec B603
             [
-                "powershell",
+                system_binary("powershell.exe"),
                 "-NoProfile",
                 "-NonInteractive",
                 "-ExecutionPolicy",
