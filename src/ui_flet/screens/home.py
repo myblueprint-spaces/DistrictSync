@@ -208,7 +208,9 @@ def _dashboard(
             controls.append(components.section_label("Latest roster"))
             controls.append(_metric_tiles_row(status.metrics))
         # The clean-schedule row-card surfaces the LIVE read-back only — an attention state is
-        # already the dominant WARNING band + fix button above, so the two never both show.
+        # already named above (as the dominant WARNING band + fix button, or — when the latest
+        # record is FAILED and outranks it, W3-B — as the secondary clause on the FAILED band),
+        # so a reassuring schedule card never shows alongside a schedule fault.
         if (
             schedule_status is not None
             and schedule_status.state is ScheduleState.LIVE

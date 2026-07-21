@@ -223,6 +223,205 @@ class TestScheduleAttention:
         assert status.verdict is Verdict.HEALTHY
 
 
+class TestFailureBeatsScheduleAttention:
+    """W3-B: **a failed sync is never masked by a schedule warning** (the module's own documented
+    precedence — "failures above warnings"). The schedule-attention rule used to return BEFORE the
+    two FAILED rules, so a failed run under an expected-MISSING / fired-but-no-record schedule
+    rendered as an amber *schedule* warning and the failure went unmentioned — and, because
+    ``screens/home.py`` paints the record-derived verdict first and re-derives when the async probe
+    lands, the admin watched a red "sync failed" band downgrade itself to amber a second later.
+
+    The restored rule: the two FAILED reasons outrank schedule attention; attention still outranks
+    every WARNING-tier reason, the empty state and HEALTHY. Because the failure's fix CTA can only
+    point one way, the *confirmed-gone* schedule is surfaced as a bounded secondary CLAUSE on the
+    failure's detail (never a second CTA, never a new verdict tier).
+    """
+
+    _FAILED_ETL_DETAIL = "The sync that ran 5 hours ago hit a problem and didn't finish."
+    _FAILED_DELIVERY_DETAIL = "The data was built but the upload failed."
+    _SCHEDULE_GONE_CLAUSE = (
+        "Your nightly schedule is also no longer registered with Windows — "
+        "re-register it in Settings so the sync can run again."
+    )
+
+    @staticmethod
+    def _expected_missing() -> ScheduleStatus:
+        """The Event-141 shape: the config expected a schedule, the OS definitively has none."""
+        return derive_schedule_status(ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None)
+
+    @staticmethod
+    def _contradiction() -> ScheduleStatus:
+        """The LIVE fired-but-no-record shape: the task fired newer than the newest record."""
+        return derive_schedule_status(
+            ScheduleReadback(found=True, last_run="2026-07-04T04:00:00"),
+            hint_registered=True,
+            latest_record_ts=_RECENT,
+        )
+
+    @staticmethod
+    def _failed_etl() -> dict:
+        return _record(status="failed")
+
+    @staticmethod
+    def _failed_delivery() -> dict:
+        return _record(sftp_attempted=True, sftp_ok=False)
+
+    # -- the masking defect itself ------------------------------------------------------- #
+
+    def test_failed_etl_is_not_masked_by_an_expected_missing_schedule(self) -> None:
+        status = derive_home_status(
+            [self._failed_etl()], _CONFIGURED, now=_NOW, schedule_status=self._expected_missing()
+        )
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Last sync failed"
+        # The fix stays on the DOMINANT fault — the failure is investigated in Run History.
+        assert status.fix is not None and status.fix.dest_id == "run_history"
+
+    def test_failed_etl_is_not_masked_by_a_fired_but_no_record_contradiction(self) -> None:
+        status = derive_home_status([self._failed_etl()], _CONFIGURED, now=_NOW, schedule_status=self._contradiction())
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Last sync failed"
+
+    def test_failed_delivery_is_not_masked_by_an_expected_missing_schedule(self) -> None:
+        status = derive_home_status(
+            [self._failed_delivery()], _CONFIGURED, now=_NOW, schedule_status=self._expected_missing()
+        )
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Your roster didn't reach SpacesEDU"
+        assert status.fix is not None and status.fix.dest_id == "setup"
+
+    def test_failed_delivery_is_not_masked_by_a_contradiction(self) -> None:
+        status = derive_home_status(
+            [self._failed_delivery()], _CONFIGURED, now=_NOW, schedule_status=self._contradiction()
+        )
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Your roster didn't reach SpacesEDU"
+
+    # -- the secondary fact: surfaced, but only when it is NOT already the failure's story - #
+
+    def test_confirmed_gone_schedule_is_named_as_a_secondary_clause_on_a_failed_etl(self) -> None:
+        # Both faults are real; only one CTA can exist. The failure keeps the band + button, and the
+        # schedule fact rides along as a bounded clause so the admin doesn't fix the run and walk
+        # away believing tonight's sync will resume (it positively won't — the task is gone).
+        status = derive_home_status(
+            [self._failed_etl()], _CONFIGURED, now=_NOW, schedule_status=self._expected_missing()
+        )
+        assert status.detail == f"{self._FAILED_ETL_DETAIL} {self._SCHEDULE_GONE_CLAUSE}"
+
+    def test_confirmed_gone_schedule_is_named_as_a_secondary_clause_on_a_failed_delivery(self) -> None:
+        status = derive_home_status(
+            [self._failed_delivery()], _CONFIGURED, now=_NOW, schedule_status=self._expected_missing()
+        )
+        assert status.detail == f"{self._FAILED_DELIVERY_DETAIL} {self._SCHEDULE_GONE_CLAUSE}"
+
+    def test_a_contradiction_adds_no_clause_because_the_failure_already_tells_that_story(self) -> None:
+        # The LIVE contradiction's own copy is "your last scheduled run reported a problem" — the
+        # SAME category the FAILED band already names, with less precision, and the schedule itself
+        # is still registered. Restating it would duplicate, not inform (category-only faults).
+        status = derive_home_status([self._failed_etl()], _CONFIGURED, now=_NOW, schedule_status=self._contradiction())
+        assert status.detail == self._FAILED_ETL_DETAIL
+
+    @pytest.mark.parametrize(
+        "schedule",
+        [
+            None,  # not probed yet (the first paint)
+            _live_schedule(),  # a clean LIVE schedule
+            derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None),
+            derive_schedule_status(
+                ScheduleReadback(found=None, error="denied"), hint_registered=True, latest_record_ts=None
+            ),
+        ],
+        ids=["unprobed", "live", "unexpected-missing", "unknown"],
+    )
+    def test_no_clause_when_the_schedule_is_not_confirmed_gone(self, schedule: ScheduleStatus | None) -> None:
+        # D4 honesty, inverted: an UNKNOWN/unprobed read-back must never be spoken of as a fault,
+        # and an unexpected MISSING (a manual-only district) is not a broken promise.
+        status = derive_home_status([self._failed_etl()], _CONFIGURED, now=_NOW, schedule_status=schedule)
+        assert status.detail == self._FAILED_ETL_DETAIL
+
+    def test_secondary_clause_is_fixed_copy_and_leaks_no_record_free_text(self) -> None:
+        # Privacy (LIVE/top): the clause is authored copy, not a field lifted off the record — a
+        # poisoned free-text `error` cannot ride into it.
+        secret = r"C:\Users\x\secret\roster.csv"
+        status = derive_home_status(
+            [_record(status="failed", error=f"FileNotFoundError: {secret}")],
+            _CONFIGURED,
+            now=_NOW,
+            schedule_status=self._expected_missing(),
+        )
+        assert secret not in status.detail
+        assert "secret" not in status.detail
+        assert status.detail == f"{self._FAILED_ETL_DETAIL} {self._SCHEDULE_GONE_CLAUSE}"
+
+    # -- attention keeps outranking everything BELOW the failures ------------------------- #
+
+    @pytest.mark.parametrize(
+        "override",
+        [
+            {"anomalies": ["ANOMALY: x"]},
+            {"data_errors": {"total": 3}},
+            {"timestamp": _OLD},
+            {},  # a clean, recent, HEALTHY latest
+        ],
+        ids=["anomaly", "data-warnings", "stale", "healthy"],
+    )
+    def test_schedule_attention_still_outranks_every_non_failed_latest(self, override: dict) -> None:
+        # The demotion is surgical: attention now loses ONLY to the FAILED tier. A nightly that
+        # won't run again still dominates an amber record fault and a green one.
+        status = derive_home_status(
+            [_record(**override)], _CONFIGURED, now=_NOW, schedule_status=self._expected_missing()
+        )
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == "Your schedule isn't registered anymore"
+        assert status.fix is not None and status.fix.dest_id == "setup"
+
+    def test_schedule_attention_still_wins_over_an_empty_store(self) -> None:
+        # No record exists → nothing to mask; the schedule fault remains the whole story.
+        status = derive_home_status([], _CONFIGURED, now=_NOW, schedule_status=self._expected_missing())
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == "Your schedule isn't registered anymore"
+
+    # -- the no-flip pin (the observable symptom in screens/home.py) --------------------- #
+
+    @pytest.mark.parametrize("shape", ["failed_etl", "failed_delivery"])
+    @pytest.mark.parametrize("flavor", ["expected_missing", "contradiction"])
+    def test_verdict_never_downgrades_when_the_async_schedule_probe_lands(self, shape: str, flavor: str) -> None:
+        # ``screens/home.py`` paints ``_render(None)`` from the store, then re-renders in place when
+        # the off-thread probe returns. A trust instrument must not downgrade its own alarm, so the
+        # two paints must agree on verdict AND headline; only the detail may GROW (the secondary
+        # clause). This is the pin for the flip the admin actually watched.
+        record = self._failed_etl() if shape == "failed_etl" else self._failed_delivery()
+        schedule = self._expected_missing() if flavor == "expected_missing" else self._contradiction()
+
+        first_paint = derive_home_status([record], _CONFIGURED, now=_NOW, schedule_status=None)
+        second_paint = derive_home_status([record], _CONFIGURED, now=_NOW, schedule_status=schedule)
+
+        assert second_paint.verdict is first_paint.verdict
+        assert second_paint.headline == first_paint.headline
+        assert second_paint.detail.startswith(first_paint.detail)
+        assert second_paint.fix == first_paint.fix
+
+    @pytest.mark.parametrize("flavor", ["expected_missing", "contradiction"])
+    def test_probe_never_lowers_the_severity_of_any_latest_record(self, flavor: str) -> None:
+        # The general invariant behind the pin above: across every fault shape, learning the
+        # schedule may ESCALATE the verdict (a clean record under a dead schedule) but must never
+        # de-escalate it. ``Verdict`` is declared in escalating-attention order.
+        severity = list(Verdict)
+        schedule = self._expected_missing() if flavor == "expected_missing" else self._contradiction()
+        for override in (
+            {"status": "failed"},
+            {"sftp_attempted": True, "sftp_ok": False},
+            {"anomalies": ["ANOMALY: x"]},
+            {"data_errors": {"total": 2}},
+            {"timestamp": _OLD},
+            {},
+        ):
+            record = _record(**override)
+            first = derive_home_status([record], _CONFIGURED, now=_NOW, schedule_status=None)
+            second = derive_home_status([record], _CONFIGURED, now=_NOW, schedule_status=schedule)
+            assert severity.index(second.verdict) >= severity.index(first.verdict), override
+
+
 class TestMissedRun:
     """The owner rule (2026-07-15): a CONFIRMED-LIVE schedule + no run record in the last 26h +
     an established store → the missed-run WARNING. Every guard failing → stay silent (a false

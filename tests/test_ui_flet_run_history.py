@@ -22,10 +22,12 @@ from datetime import datetime, timedelta
 import pytest
 
 from src.config.app_config import AppConfig
+from src.scheduler.windows import ScheduleReadback
 from src.ui_flet.home_status import (
     STALE_AFTER_HOURS,
     LatestReason,
     classify_latest_reason,
+    derive_home_status,
     verdict_for_reason,
 )
 from src.ui_flet.run_history import (
@@ -36,7 +38,7 @@ from src.ui_flet.run_history import (
     to_run_row,
     to_run_rows,
 )
-from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus, derive_schedule_status
 from src.ui_flet.verdict import Verdict
 
 
@@ -570,3 +572,43 @@ class TestBannerRowAgreement:
             assert banner.verdict in (Verdict.HEALTHY, Verdict.WARNING)
         else:
             assert banner.verdict is row.status_verdict
+
+
+# --------------------------------------------------------------------------- #
+# Home ↔ Run History AGREEMENT — the same question over the same record        #
+# --------------------------------------------------------------------------- #
+class TestHomeHistoryAgreementOnFailures:
+    """W3-B: Home and this banner answer the SAME "is my sync OK?" question over the SAME latest
+    record, so they must never disagree (``docs/claugentic-PRODUCT.md`` → Run History).
+
+    They used to: Home's schedule-attention rule returned above its two FAILED rules, so a failed
+    latest under an expected-MISSING / fired-but-no-record schedule read amber-and-schedule on Home
+    while Run History read red-and-failed. Run History has no schedule-attention rule at all, so the
+    disagreement was purely Home's precedence — this pins that the two verdicts now match on every
+    failure shape × every attention flavor.
+    """
+
+    _EXPECTED_MISSING = derive_schedule_status(
+        ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None
+    )
+    _CONTRADICTION = derive_schedule_status(
+        ScheduleReadback(found=True, last_run="2026-07-04T04:00:00"),
+        hint_registered=True,
+        latest_record_ts=_RECENT,
+    )
+
+    @pytest.mark.parametrize(
+        "record",
+        [_record(status="failed"), _record(sftp_attempted=True, sftp_ok=False)],
+        ids=["failed-etl", "failed-delivery"],
+    )
+    @pytest.mark.parametrize(
+        "schedule",
+        [None, _EXPECTED_MISSING, _CONTRADICTION],
+        ids=["unprobed", "expected-missing", "contradiction"],
+    )
+    def test_failed_latest_reads_failed_on_both_surfaces(self, record: dict, schedule: ScheduleStatus | None) -> None:
+        home = derive_home_status([record], _CONFIGURED, now=_NOW, schedule_status=schedule)
+        banner = derive_history_banner([record], _CONFIGURED, now=_NOW, schedule_status=schedule)
+        assert home.verdict is Verdict.FAILED
+        assert banner.verdict is home.verdict
