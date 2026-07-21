@@ -29,6 +29,12 @@ resets a working install to first-run, so both directions are hardened:
   call in a session agrees; the unreadable bytes are preserved as
   ``config.corrupt-<ts>.json`` by ``save()``, at the only moment they would otherwise
   be destroyed.
+* **The write CONSULTS the read.** ``load_state`` is not decoration — it is an input to
+  :meth:`AppConfig.save`. A config loaded :attr:`ConfigLoadState.UNREADABLE` holds
+  DEFAULTS THIS MODULE INVENTED, never values it read, so writing it verbatim replaces
+  settings we failed to read with settings nobody chose. ``save()`` therefore refuses
+  the write that carries no admin choice at all, and quarantines the predecessor on the
+  write that does — both decided from ``load_state``, never re-derived from the disk.
 """
 
 from __future__ import annotations
@@ -42,8 +48,10 @@ import tempfile
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from enum import Enum
+from functools import cache
 from pathlib import Path
-from typing import Any
+from types import UnionType
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from src.utils import paths
 
@@ -60,6 +68,32 @@ _QUARANTINE_NAME_FMT = "config.corrupt-%Y%m%d-%H%M%S.json"
 # accepted from it — one frozenset drives BOTH the save payload and the load allowlist,
 # so persisted-vs-transient can never drift between the two.
 _TRANSIENT_FIELDS = frozenset({"load_state"})
+
+# Ambient window state, NOT a setting the admin chose. The ``window_*`` naming is the
+# contract (see the geometry block on :class:`AppConfig`) so a future window field joins
+# the set automatically rather than being forgotten in a hand-maintained list. Used by
+# :meth:`AppConfig._carries_chosen_settings` to tell an admin's settings write apart from
+# the shell's advisory geometry write.
+_GEOMETRY_FIELD_PREFIX = "window_"
+
+
+class SettingsOverwriteRefused(RuntimeError):
+    """A save was refused because it would replace settings we FAILED TO READ.
+
+    Raised by :meth:`AppConfig.save` for exactly one shape: an instance whose
+    ``load_state`` is :attr:`ConfigLoadState.UNREADABLE` and whose settings are still the
+    untouched defaults ``load()`` invented — a payload that provably contains nothing the
+    admin chose. Writing it would atomically and durably swap the admin's district,
+    folders and delivery settings for blanks.
+
+    Raising (rather than returning quietly) follows the contract this module already
+    holds for a failed promote: *a settings write that did not happen must never look
+    like one that did.* The only reachable caller of a settings-free save is the shell's
+    advisory window-geometry save on app exit, which is deliberately failure-tolerant
+    (``except Exception`` → DEBUG log → keep closing), so the refusal can neither block
+    nor crash the close — and ``save()`` logs at WARNING before raising so the event
+    reaches the support log regardless of what the caller does with the exception.
+    """
 
 
 def config_file_path() -> Path:
@@ -201,34 +235,92 @@ class AppConfig:
         """Persist config to disk atomically and durably (creates parent dir if needed).
 
         A reader can only ever observe the complete previous document or the complete
-        new one — see :func:`_atomic_write_text`. An unreadable predecessor is copied
-        aside first (:func:`_preserve_unreadable_predecessor`) so a torn file's
-        salvageable values are never silently destroyed by the very save that fixes it.
+        new one — see :func:`_atomic_write_text`.
 
-        Raises the underlying ``OSError`` if the payload cannot be written (disk full,
-        permission denied) — a settings write that did not happen must never look like
-        one that did.
+        **The write consults the read.** ``load_state`` decides both guards, so neither
+        re-derives anything from the disk:
+
+        * an UNREADABLE-provenance instance that carries **no admin choice at all** (see
+          :meth:`_carries_chosen_settings`) is REFUSED — nothing is written, the file on
+          disk is left byte-intact, and a transient read failure therefore self-heals on
+          the next load instead of being cemented into blanks;
+        * an UNREADABLE-provenance instance that DOES carry admin choices (the Setup
+          wizard's repair) writes, but only after :func:`_preserve_unreadable_predecessor`
+          copies the bytes it is about to replace aside — bytes this config never read,
+          whether or not they happen to parse at this moment.
+
+        A SUCCESSFUL save re-tags the instance :attr:`ConfigLoadState.LOADED`, because it
+        now holds exactly what is on disk — it just put it there. Without that transition
+        a long-lived config (the Setup wizard keeps ONE instance across every step of the
+        repair) would stay UNREADABLE forever and quarantine its own freshly-written good
+        bytes on every subsequent save, littering ``config.corrupt-*.json`` copies.
+
+        Raises :class:`SettingsOverwriteRefused` for the first case, or the underlying
+        ``OSError`` if the payload cannot be written (disk full, permission denied) — a
+        settings write that did not happen must never look like one that did (the
+        provenance is likewise NOT advanced on a failed write).
         """
         config_file = config_file_path()
+        load_was_unreadable = self.settings_unreadable()
+        if load_was_unreadable and not self._carries_chosen_settings():
+            logger.warning(
+                "Refusing to overwrite the settings file %s: it could not be read this session, and this "
+                "save carries no settings you chose (window position only). Your saved settings are left "
+                "untouched on disk.",
+                config_file,
+            )
+            raise SettingsOverwriteRefused(
+                f"{config_file} could not be read this session; refusing to replace it with defaults"
+            )
         config_dir = config_file.parent
         config_dir.mkdir(parents=True, exist_ok=True)
         _restrict_directory(config_dir)
-        _preserve_unreadable_predecessor(config_file)
+        _preserve_unreadable_predecessor(config_file, load_was_unreadable=load_was_unreadable)
         _atomic_write_text(config_file, json.dumps(self._persisted_dict(), indent=2))
+        self.load_state = ConfigLoadState.LOADED
         logger.info(f"App config saved to {config_file}")
 
     def _persisted_dict(self) -> dict[str, Any]:
         """The settings payload written to disk — every field except the transient ones."""
         return {k: v for k, v in asdict(self).items() if k not in _TRANSIENT_FIELDS}
 
+    def _carries_chosen_settings(self) -> bool:
+        """True when ANY settings field differs from the constructor default.
+
+        Provenance, not shape. Every settings field in a payload is either (a) something
+        a caller explicitly supplied or (b) a default this module invented. On an
+        UNREADABLE load every field is (b) — so if none has since moved off its default,
+        the document is 100% invention and writing it is pure destruction.
+
+        Window geometry is excluded by the ``window_*`` prefix contract: it is ambient
+        window state, not a setting the admin chose, so a geometry-only mutation leaves
+        the settings wholly invented. This is exactly what separates the shell's advisory
+        exit-time geometry save (refused) from the Setup wizard's repair save (allowed).
+
+        Only consulted when ``load_state`` is UNREADABLE — a LOADED config whose settings
+        genuinely still are the defaults (a launched-but-never-configured install) READ
+        those values, invents nothing, and saves normally.
+        """
+        defaults = AppConfig()
+        return any(
+            getattr(self, f.name) != getattr(defaults, f.name)
+            for f in fields(AppConfig)
+            if f.name not in _TRANSIENT_FIELDS and not f.name.startswith(_GEOMETRY_FIELD_PREFIX)
+        )
+
     def settings_unreadable(self) -> bool:
         """True when a ``config.json`` EXISTS on disk but could not be read as settings.
 
-        The honesty seam onboarding gates consume (``nav.needs_setup``): the file's
-        existence is a CHECKED fact, so "this is a brand-new install" is known to be
-        false and must not be asserted. Deliberately does NOT fake the opposite —
-        :meth:`has_completed_setup` stays a fact about what was actually read (False
-        here), because "we could not confirm" is the honest answer, not "you're set up".
+        The honesty seam with TWO consumers, one per direction:
+
+        * ``nav.needs_setup`` (read side) — the file's existence is a CHECKED fact, so
+          "this is a brand-new install" is known to be false and must not be asserted;
+        * :meth:`save` (write side) — the values in hand are defaults this module
+          invented, so they may not silently replace the ones on disk.
+
+        Deliberately does NOT fake the opposite — :meth:`has_completed_setup` stays a
+        fact about what was actually read (False here), because "we could not confirm"
+        is the honest answer, not "you're set up".
         """
         return self.load_state is ConfigLoadState.UNREADABLE
 
@@ -265,19 +357,70 @@ class AppConfig:
 # --------------------------------------------------------------------------- #
 # Parsing — ONE definition of "readable as settings".                          #
 # --------------------------------------------------------------------------- #
+@cache
+def _settings_field_types() -> dict[str, Any]:
+    """The declared runtime type of every PERSISTED field, resolved once.
+
+    Derived from the dataclass annotations, so the type check below has exactly one
+    source of truth — adding a field to :class:`AppConfig` validates it automatically,
+    with no parallel table to forget.
+    """
+    return {name: hint for name, hint in get_type_hints(AppConfig).items() if name not in _TRANSIENT_FIELDS}
+
+
+def _value_fits(value: object, annotation: Any) -> bool:
+    """Whether a JSON value is usable as ``annotation`` (total — unknown forms pass).
+
+    Deliberately permissive at the edges and strict where it matters:
+
+    * a JSON int satisfies ``float`` (``800`` is a fine window width) but ``bool`` never
+      satisfies ``int`` — Python makes ``bool`` an ``int`` subclass, so ``"sftp_port": true``
+      would otherwise sail through and reach ``paramiko`` as a port number;
+    * an annotation this function does not recognise returns ``True`` — a type check is a
+      safety net, and a net that rejects what it does not understand would turn a future
+      annotation style into a false "your settings are corrupt".
+    """
+    origin = get_origin(annotation)
+    if origin is UnionType or origin is Union:
+        return any(_value_fits(value, arg) for arg in get_args(annotation))
+    if annotation is type(None):
+        return value is None
+    if origin is not None:  # a parameterised generic: dict[str, object], list[...] …
+        return isinstance(value, origin)
+    if annotation is bool:
+        return isinstance(value, bool)
+    if annotation is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    if annotation is float:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if isinstance(annotation, type):
+        return isinstance(value, annotation)
+    return True
+
+
 def _config_from_bytes(raw: bytes) -> AppConfig | None:
     """Parse ``config.json`` bytes into an :class:`AppConfig`, or ``None`` if unreadable.
 
     ``None`` means the bytes are not a settings document: undecodable, not JSON, not a
-    JSON *object*, or a known key holding a type that makes the config unusable (a
-    hand-edited ``"sis_type": {}`` would otherwise blow up inside ``is_complete()``).
+    JSON *object*, or a **known key holding a value of the wrong declared type**.
+
+    That last check is real, not advisory (it was documented before it was implemented —
+    fixed here). ``config.json`` is hand-editable, untrusted input, and a wrong-typed
+    value is not merely inert: it is carried through the session and then PERSISTED BACK
+    verbatim by the next save, cementing the corruption instead of quarantining it. So a
+    ``"sis_type": {}`` — falsy, hence invisible to ``is_complete()`` — or a
+    ``"sftp_port": "22"`` makes the whole document UNREADABLE, which routes it into the
+    honest fallback: defaults for the session, onboarding suppressed, bytes preserved as
+    ``config.corrupt-*.json`` by the repairing save. Validate at boundaries; the settings
+    file is one.
 
     THE single definition of "corrupt" — :meth:`AppConfig.load` reports
     :attr:`ConfigLoadState.UNREADABLE` on ``None`` and
     :func:`_preserve_unreadable_predecessor` quarantines on ``None``, so the read path
     and the preserve path can never disagree about which files are salvage-worthy.
-    Unknown/extra keys are IGNORED, not rejected — forward-compatibility with configs
-    written by a newer build is a deliberate, tested behaviour.
+    Unknown/extra keys are IGNORED, not rejected (and therefore not type-checked) —
+    forward-compatibility with configs written by a newer build is a deliberate, tested
+    behaviour.
     """
     try:
         data = json.loads(raw.decode("utf-8"))
@@ -286,8 +429,17 @@ def _config_from_bytes(raw: bytes) -> AppConfig | None:
     if not isinstance(data, dict):
         return None
 
-    known = {f.name for f in fields(AppConfig)} - _TRANSIENT_FIELDS
-    filtered = {k: v for k, v in data.items() if k in known}
+    field_types = _settings_field_types()
+    filtered: dict[str, Any] = {}
+    for key, value in data.items():
+        if key not in field_types:
+            continue  # unknown/extra key — forward-compat, ignored not rejected
+        if not _value_fits(value, field_types[key]):
+            # Key + found type ONLY: config.json holds district folder paths and the
+            # delivery username, and a diagnostic is not a place for either.
+            logger.debug("Settings key %r holds a %s, which is not its declared type", key, type(value).__name__)
+            return None
+        filtered[key] = value
     try:
         cfg = AppConfig(**filtered)
         # Back-compat inference (D4a): bake the durable finish-line fact through the
@@ -296,6 +448,10 @@ def _config_from_bytes(raw: bytes) -> AppConfig | None:
         # first-run onboarding after this update. An explicitly-persisted True is kept.
         cfg.setup_completed = cfg.has_completed_setup()
     except (TypeError, ValueError) as exc:
+        # The floor BEHIND the type check, not a duplicate of it: ``_value_fits`` is
+        # deliberately permissive at its edges (an annotation form it does not recognise
+        # passes), so a future exotic field could still admit a value that blows up here.
+        # Not dead code — the last thing between a bad document and a crashed load().
         logger.debug("Settings document rejected: %s", exc)
         return None
     cfg.load_state = ConfigLoadState.LOADED
@@ -389,7 +545,7 @@ def _fsync_directory(directory: Path) -> None:
         os.close(dir_fd)
 
 
-def _preserve_unreadable_predecessor(config_file: Path) -> None:
+def _preserve_unreadable_predecessor(config_file: Path, *, load_was_unreadable: bool) -> None:
     """Copy an UNREADABLE ``config.json`` aside before :meth:`AppConfig.save` overwrites it.
 
     Quarantine lives here rather than in ``load()`` on purpose (see
@@ -398,6 +554,18 @@ def _preserve_unreadable_predecessor(config_file: Path) -> None:
     truncated JSON document is usually a readable PREFIX, so preserving it lets an admin
     (or support) recover their folders / district / SFTP settings by eye instead of
     reconstructing them from memory.
+
+    ``load_was_unreadable`` is the saving config's OWN ``load_state``, and it is
+    AUTHORITATIVE: when it is ``True`` the bytes are preserved without being re-parsed,
+    because they are bytes this config never read — whether they happen to parse *now* is
+    irrelevant, and re-deriving that verdict from the disk was the bug. A read failure
+    that had cleared by save time (a transient sharing violation, an AV lock, a
+    permissions blip) read back as "readable, nothing to preserve", and the admin's
+    district / folders / delivery settings were replaced with no recoverable copy.
+
+    The parse survives only for the ``False`` branch, as defence in depth for a config
+    with no load provenance at all (a directly-constructed :class:`AppConfig` saving over
+    a file it never saw): it can only ADD a quarantine, never skip one.
 
     Best-effort and never fatal: the save that FIXES the broken settings must not be
     blocked by a failure to archive the broken ones (logged at WARNING).
@@ -410,8 +578,8 @@ def _preserve_unreadable_predecessor(config_file: Path) -> None:
         logger.warning("Could not inspect the existing settings file %s before replacing it (%s)", config_file, exc)
         return
 
-    if _config_from_bytes(raw) is not None:
-        return  # readable — the normal path, nothing to preserve
+    if not load_was_unreadable and _config_from_bytes(raw) is not None:
+        return  # we read it fine and it still parses — the normal path, nothing to preserve
 
     quarantine = config_file.with_name(datetime.now().strftime(_QUARANTINE_NAME_FMT))
     try:
