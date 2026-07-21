@@ -251,11 +251,13 @@ class AppConfig:
 
         Be precise about what that second branch does, because it is broader than the
         wizard: **ONE** non-default field unlocks a write of the **whole** in-hand
-        document, and the payload is never merged onto a re-read of disk. The wizard is
-        the case it was designed for (the admin re-enters every field as they walk the
-        steps, so the document really is a full repair) — but any single-section save
-        reaching it under UNREADABLE provenance replaces the settings it never read with
-        invented defaults. `screens/mapping.py`'s Apply is exactly that shape: it sets
+        document, and the payload is never merged onto a re-read of disk. **Not even the
+        wizard is a guaranteed full repair:** its Delivery and Schedule steps are
+        deliberately skippable, and its District step is itself a single-section save of
+        only ``sis_type`` — which under UNREADABLE provenance writes the invented document
+        and then re-tags the instance LOADED, so the later steps never re-trigger the
+        guard. Any single-section save reaching this branch replaces the settings it never
+        read with invented defaults. `screens/mapping.py`'s Apply is exactly that shape: it sets
         only ``sis_type``. The displaced bytes survive as ``config.corrupt-*.json``, so
         this costs recovery effort rather than data, and it is strictly better than the
         pre-fix behaviour (which clobbered with no copy at all) — but it is a residual,
