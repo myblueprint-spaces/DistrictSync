@@ -91,6 +91,16 @@ contract pass untouched throughout.
   reviewed.** The acknowledgement carried no run identity, and the district
   picker stayed live while the warning was on screen, so an admin could review
   one district's shrink warning and have the approval apply to a different one.
+- **A conversion's files can only ever be delivered under the district that built
+  them.** The Deliver action re-read the district picker at the moment you
+  clicked it, so changing district after a run — which the screen actively
+  invites when it notices a mismatch — could send one district's student roster
+  to SpacesEDU labelled as another's. Because most districts produce identically
+  named files, that delivery would simply *succeed* under the wrong name.
+  Changing district now withdraws the action and names which district built the
+  files. Delivery is also no longer offered at all when the chosen district has
+  nothing in the output folder to send, instead of failing with a "try again"
+  message that could never succeed.
 - **Only the files a run vouched for are delivered.** The upload zipped whatever
   `.csv` files happened to sit in the output folder, so a spreadsheet export or
   a backup CSV an admin parked there was uploaded to SpacesEDU. Delivery is now
