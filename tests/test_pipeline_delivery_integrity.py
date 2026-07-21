@@ -1,4 +1,4 @@
-"""Delivery-integrity gate in ``run_pipeline`` — two silent-success paths made loud.
+"""The delivery-integrity gate on BOTH write-and-deliver paths — silent success made loud.
 
 Reproduce-first (``bug`` discipline) for the two Tier-1 findings in the UNATTENDED
 nightly path. Both let a broken night report success: Task Scheduler shows green,
@@ -23,9 +23,18 @@ The gate refuses BEFORE the write, so the output directory keeps its last-good
 (self-consistent) state and nothing is delivered. Both faults exit **1** via the
 existing "``run_pipeline`` raises → ``main`` exits 1" wiring — no new exit code.
 
+**FIX-2 — the second write-and-deliver path.** The gate first landed wired into
+``run_pipeline`` only, so the desktop "Convert now" flow (``ui_flet.screens.convert.
+convert_job``) still committed, archived the previous ``Students.csv`` out of the SFTP
+glob, delivered, and recorded ``status="success"`` on exactly the payload the CLI refused
+— a false green on the screen an admin opens *because* the nightly run looked wrong. The
+Convert classes below drive the SAME pure gate through that path: same placement (before
+``save_all``), same bounded categories, and ahead of the anomaly gate so an
+acknowledgement can never buy delivery of an anchor-less roster.
+
 **What must NOT regress:** per-entity skip-on-empty stays legitimate (CLAUDE.md →
 Exit codes). A partial run — a NON-anchor entity empty/vanished, a district config
-that does not enable ``Students`` at all — stays exit 0 with a warning.
+that does not enable ``Students`` at all — stays exit 0 with a warning, on BOTH paths.
 """
 
 from __future__ import annotations
@@ -37,9 +46,14 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from src.config.app_config import AppConfig
 from src.etl import pipeline
 from src.etl.pipeline import RunErrorCategory, run_pipeline
 from src.history.store import read_run_records
+from src.ui_flet.convert_output import run_identity
+from src.ui_flet.convert_result import ConvertStatus
+from src.ui_flet.screens import convert as convert_screen
+from src.ui_flet.screens.convert import convert_job
 
 # --------------------------------------------------------------------------- #
 # Input builders — minimal myedbc rostering frames (no real student data).      #
@@ -118,6 +132,15 @@ def _family() -> pd.DataFrame:
             "Last Name": ["Smith"],
             "Email Address": ["john@mail.com"],
         }
+    )
+
+
+def _write_attendance_only_input(d: Path) -> None:
+    """The headerless ``sd51attendance`` source — a tier config with NO roster anchor."""
+    (d / "StudentPeriodAbsences.txt").write_text(
+        "100,P1,Last,First,10,A1,Teacher,2024-09-18,MAT10,A,,,MT001,A,T001,SCC,FL\n"
+        "100,P2,Last,First,11,A1,Teacher,19-Sep-2024,ENG11,L,,,MT002,B,T002,SCC,FL",
+        encoding="utf-8",
     )
 
 
@@ -442,12 +465,181 @@ class TestLegitimatePartialRunsStayGreen:
         fire on a config whose configured entity set has no roster anchor."""
         d = tmp_path / "input"
         d.mkdir()
-        (d / "StudentPeriodAbsences.txt").write_text(
-            "100,P1,Last,First,10,A1,Teacher,2024-09-18,MAT10,A,,,MT001,A,T001,SCC,FL\n"
-            "100,P2,Last,First,11,A1,Teacher,19-Sep-2024,ENG11,L,,,MT002,B,T002,SCC,FL",
-            encoding="utf-8",
-        )
+        _write_attendance_only_input(d)
 
         result = run_pipeline("sd51attendance", str(d), str(gde_output))
 
         assert result.entity_counts.get("StudentAttendance", 0) > 0
+
+
+# --------------------------------------------------------------------------- #
+# FIX-2 — the SAME gate on the desktop "Convert now" path (``convert_job``)     #
+# --------------------------------------------------------------------------- #
+class TestConvertPathRefusesAnOrphanRoster:
+    """The manual Convert path must refuse exactly what the CLI refuses.
+
+    Reproduce-first: ``check_delivery_integrity`` landed wired into ``run_pipeline``
+    only. ``convert_job`` — the desktop "Convert now" flow — went straight from
+    ``run_transform`` to its ``if not outputs`` / anomaly checks, neither of which
+    fires when Classes/Enrollments/Family build and ``Students`` does not. It then
+    committed, archived the previous ``Students.csv`` out of the SFTP glob, delivered,
+    and wrote a ``status="success"`` run record — a FALSE GREEN on the very screen an
+    admin opens *because* the nightly run looked wrong.
+
+    Same placement as the CLI (before ``save_all``), same bounded categories, and —
+    critically — the refusal sits BEFORE the anomaly gate, so an "I've reviewed this"
+    acknowledgement can never buy delivery of an anchor-less payload.
+    """
+
+    @staticmethod
+    def _configure(input_dir: Path, output_dir: Path, sis: str = "myedbc") -> None:
+        AppConfig(input_dir=str(input_dir), output_dir=str(output_dir), sis_type=sis).save()
+
+    @staticmethod
+    def _anchorless_input(tmp_path: Path) -> Path:
+        """A healthy timetable with NO student export — the orphan-payload shape."""
+        d = tmp_path / "anchorless"
+        d.mkdir()
+        _schedule().to_csv(d / "StudentSchedule.txt", index=False)
+        _staff().to_csv(d / "StaffInformationEnhanced.txt", index=False)
+        _course_info().to_csv(d / "CourseInformation.txt", index=False)
+        _family().to_csv(d / "EmergencyContactInformation.txt", index=False)
+        return d
+
+    @staticmethod
+    def _success_records() -> list[dict]:
+        return [r for r in (read_run_records() or []) if r.get("status") == "success"]
+
+    def test_fresh_output_dir_with_no_anomaly_at_all_is_still_refused(self, tmp_path: Path, gde_output: Path) -> None:
+        """The exact reproduction: a FIRST run into a clean folder raises no anomaly,
+        so the anomaly write-gate never fires — only the integrity gate stands between
+        a zero-student payload and SpacesEDU."""
+        anchorless = self._anchorless_input(tmp_path)
+        self._configure(anchorless, gde_output)
+
+        result = convert_job("myedbc", str(anchorless))
+
+        # Nothing committed — the refusal precedes save_all/archive/upload.
+        assert list(gde_output.glob("*.csv")) == []
+        assert _archive_dirs(gde_output) == []
+        # The ledger must not claim a healthy night.
+        assert self._success_records() == []
+        # And the admin is told which fault it was, by category.
+        assert result.status is ConvertStatus.INCOMPLETE_ROSTER
+        assert result.entity_counts.get("Enrollments", 0) > 0  # honest: what WAS built is reported
+        assert result.entity_counts.get(_ANCHOR, 0) == 0
+
+    def test_previous_good_output_survives_byte_identical(self, gde_input: Path, gde_output: Path) -> None:
+        """The recoverability argument for refusing BEFORE the write: the last-good,
+        self-consistent output set is left untouched — ``Students.csv`` is NOT moved
+        into ``archive_<ts>/`` where a delivery could never pick it up again."""
+        self._configure(gde_input, gde_output)
+        first = convert_job("myedbc", str(gde_input))
+        assert first.entity_counts.get(_ANCHOR, 0) > 0
+        good = _snapshot(gde_output)
+
+        (gde_input / "StudentDemographicInformation.txt").unlink()
+        result = convert_job("myedbc", str(gde_input))
+
+        assert _snapshot(gde_output) == good
+        assert (gde_output / f"{_ANCHOR}.csv").exists()
+        assert _archive_dirs(gde_output) == []
+        assert result.status is ConvertStatus.INCOMPLETE_ROSTER
+
+    def test_an_anomaly_acknowledgement_cannot_buy_delivery(self, gde_input: Path, gde_output: Path) -> None:
+        """The integrity gate outranks the anomaly ack: 'I've reviewed the smaller
+        files' is consent about SIZE, never consent to ship enrolments for students
+        that will not be delivered."""
+        self._configure(gde_input, gde_output)
+        convert_job("myedbc", str(gde_input))
+        good = _snapshot(gde_output)
+        (gde_input / "StudentDemographicInformation.txt").unlink()
+
+        result = convert_job("myedbc", str(gde_input), anomaly_ack=run_identity("myedbc", str(gde_input)))
+
+        assert _snapshot(gde_output) == good
+        assert _archive_dirs(gde_output) == []
+        assert result.status is ConvertStatus.INCOMPLETE_ROSTER
+
+    def test_sftp_is_never_attempted(self, tmp_path: Path, gde_output: Path, monkeypatch) -> None:
+        """A payload the gate cannot vouch for must not reach the network."""
+        anchorless = self._anchorless_input(tmp_path)
+        self._configure(anchorless, gde_output)
+        monkeypatch.setattr(
+            convert_screen,
+            "SFTPUploader",
+            lambda **_kw: pytest.fail("SFTPUploader must not be constructed for a refused payload"),
+        )
+
+        result = convert_job("myedbc", str(anchorless), sftp_requested=True)
+
+        assert result.status is ConvertStatus.INCOMPLETE_ROSTER
+        assert result.sftp_attempted is False
+
+    def test_run_record_says_failed_with_the_incomplete_roster_category(self, tmp_path: Path, gde_output: Path) -> None:
+        """Run History + Home read the store — a refusal must read as a failure there,
+        carrying the BOUNDED category only (the privacy split is unchanged)."""
+        anchorless = self._anchorless_input(tmp_path)
+        self._configure(anchorless, gde_output)
+
+        convert_job("myedbc", str(anchorless))
+
+        records = read_run_records()
+        assert records is not None and records
+        assert records[0]["status"] == "failed"
+        assert records[0]["error_category"] == RunErrorCategory.INCOMPLETE_ROSTER.value
+        assert records[0]["source"] == "manual"
+        assert records[0][_ANCHOR] == 0
+        assert records[0]["Enrollments"] > 0
+        assert not records[0].get("error")  # no free-text error in the store
+
+    def test_no_output_at_all_keeps_its_own_category(self, tmp_path: Path, gde_output: Path) -> None:
+        """The gate's other leg still maps to the existing NO_OUTPUT status/copy —
+        one gate, two bounded faults, no re-implementation on either path."""
+        d = tmp_path / "zero"
+        d.mkdir()
+        _demographic(status="Inactive").to_csv(d / "StudentDemographicInformation.txt", index=False)
+        self._configure(d, gde_output)
+
+        result = convert_job("myedbc", str(d))
+
+        assert result.status is ConvertStatus.NO_OUTPUT
+        assert list(gde_output.glob("*.csv")) == []
+
+
+class TestConvertPathTierConfigsAreNeverFalsePositives:
+    """A tier config that produces no ``Students`` BY DESIGN must convert normally.
+
+    The gate keys off the CONFIGURED entity set (``configured_entity_order``, derived
+    from ``enabled_entities``) — never the registry or ``mappings.keys()`` — so
+    ``mbponly`` / ``sd51attendance`` never see it fire.
+    """
+
+    @staticmethod
+    def _configure(input_dir: Path, output_dir: Path, sis: str) -> None:
+        AppConfig(input_dir=str(input_dir), output_dir=str(output_dir), sis_type=sis).save()
+
+    def test_mbponly_converts_without_a_roster_anchor(self, gde_output: Path) -> None:
+        mbp_input = Path(__file__).parent / "snapshots" / "mbp_input"
+        self._configure(mbp_input, gde_output, "mbponly")
+
+        result = convert_job("mbponly", str(mbp_input))
+
+        assert result.status is not ConvertStatus.INCOMPLETE_ROSTER
+        assert result.entity_counts.get("CourseInfo", 0) > 0
+        assert result.entity_counts.get("StudentCourses", 0) > 0
+        assert (gde_output / "CourseInfo.csv").exists()
+        assert (gde_output / "StudentCourses.csv").exists()
+        assert not (gde_output / f"{_ANCHOR}.csv").exists()
+
+    def test_sd51attendance_converts_without_a_roster_anchor(self, tmp_path: Path, gde_output: Path) -> None:
+        d = tmp_path / "attendance"
+        d.mkdir()
+        _write_attendance_only_input(d)
+        self._configure(d, gde_output, "sd51attendance")
+
+        result = convert_job("sd51attendance", str(d))
+
+        assert result.status is not ConvertStatus.INCOMPLETE_ROSTER
+        assert result.entity_counts.get("StudentAttendance", 0) > 0
+        assert (gde_output / "StudentAttendance.csv").exists()

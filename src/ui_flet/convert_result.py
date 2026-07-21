@@ -30,6 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from src.etl.pipeline import RunErrorCategory
 from src.ui_flet.humanize import AnomalyVariant, friendly_anomaly_detail, pluralize
 from src.ui_flet.verdict import Verdict
 
@@ -45,6 +46,7 @@ class ConvertStatus(str, Enum):
     NEEDS_ANOMALY_ACK = "needs_anomaly_ack"  # >20% drop — write withheld pending acknowledgment
     NO_INPUT = "no_input"  # nothing could be read from the picked folder
     NO_OUTPUT = "no_output"  # transform produced no entities
+    INCOMPLETE_ROSTER = "incomplete_roster"  # other entities built, the roster anchor did not — refused
 
 
 @dataclass(frozen=True)
@@ -157,7 +159,44 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
             "The conversion ran but produced no roster files. Check that the right district is selected.",
         )
 
+    if status is ConvertStatus.INCOMPLETE_ROSTER:
+        # The way-OUT delivery gate refused (see ``etl.pipeline.check_delivery_integrity``).
+        # Category-only, like every other branch: the copy names WHAT was wrong (no students)
+        # and WHY it stopped — never a path, a column, a district id or a student value.
+        return (
+            Verdict.FAILED,
+            "Your student list came through empty",
+            "The other roster files were built, but with no students they would point at people "
+            "SpacesEDU has never seen — so nothing was saved and nothing was sent. Your last saved "
+            "files are untouched. Check this district's student export, then convert again.",
+        )
+
     raise ValueError(f"Unmapped ConvertStatus: {status!r}")  # pragma: no cover - totality guard
+
+
+# The way-OUT delivery gate's bounded faults → the Convert status that words each one.
+# The GATE itself is single-sourced in ``etl.pipeline.check_delivery_integrity`` (the CLI and
+# the desktop path both call it); this table is only the UI's presentation of its verdict, so
+# the categories are imported from the pipeline's taxonomy rather than respelled here.
+_INTEGRITY_FAULT_STATUSES: dict[str, ConvertStatus] = {
+    RunErrorCategory.NO_OUTPUT.value: ConvertStatus.NO_OUTPUT,
+    RunErrorCategory.INCOMPLETE_ROSTER.value: ConvertStatus.INCOMPLETE_ROSTER,
+}
+
+
+def status_for_integrity_fault(category: str) -> ConvertStatus:
+    """Map a :class:`~src.etl.pipeline.DeliveryIntegrityError`'s bounded category to a status.
+
+    FAILS LOUD on an unmapped category rather than defaulting: a new gate fault silently
+    presented as "no output was produced" would be a lie about why delivery was refused, and
+    the raise lands on the Convert screen's calm ``on_error`` card with nothing written
+    either way. The category is a closed-set enum value — never free text, never PII — so it
+    is safe in the exception message the diagnostic log receives.
+    """
+    try:
+        return _INTEGRITY_FAULT_STATUSES[category]
+    except KeyError:
+        raise ValueError(f"No Convert status is mapped for delivery-integrity category {category!r}") from None
 
 
 def convert_error_copy() -> tuple[str, str]:

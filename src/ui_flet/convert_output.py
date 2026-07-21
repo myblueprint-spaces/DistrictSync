@@ -14,6 +14,12 @@ missing) and carries the honest vintage line from :func:`freshness_fact` over
 :func:`newest_output_csv_mtime_iso` — the admin always knows how old the files that
 would ship are.
 
+**Run identity + the anomaly-ack binding (FIX-2):** :class:`RunIdentity` / :func:`run_identity`
+/ :func:`ack_authorizes` name WHICH run an action refers to, so the "I've reviewed this —
+convert anyway" acknowledgement is a capability scoped to the run it reviewed rather than a
+bare boolean any later run could spend. Paired with ``interaction_state``'s ``awaiting_ack``
+axis (the view half), this keeps the last write-gate honest.
+
 **Convert cold-state + interaction sweep (0035 W3b):** the pre-setup routing decision
 (:func:`show_setup_first_card` + :func:`setup_first_copy`), the mode-aware unset-output
 caption (``resolved_output_caption``'s ``setup_completed`` axis), the saved-vs-picked
@@ -141,32 +147,92 @@ def missing_files_copy() -> tuple[str, str]:
 
 @dataclass(frozen=True)
 class ConvertInteraction:
-    """The disabled-flags the Convert surface paints for one (gates, running) state.
+    """The disabled-flags the Convert surface paints for one (gates, running, ack) state.
 
     - ``convert_disabled`` — the Convert button: blocked while a job runs (single-flight,
       matching ``JobRunner``'s guard so the VIEW never offers a dead click) or while any
-      input gate is unmet.
-    - ``inputs_disabled`` — the district dropdown + input-folder picker: locked ONLY while
-      a job runs (the job snapshotted its inputs at start; editing mid-run would show a
-      form that no longer matches the work in flight).
+      input gate is unmet. Deliberately NOT blocked while an acknowledgement is pending:
+      starting over is a legitimate escape hatch, and ``_start_convert`` clears the card.
+    - ``inputs_disabled`` — the district dropdown + input-folder picker: locked while a job
+      runs (the job snapshotted its inputs at start; editing mid-run would show a form that
+      no longer matches the work in flight) AND while an anomaly acknowledgement is pending
+      (the card asks about ONE specific run — see :func:`ack_authorizes`).
     """
 
     convert_disabled: bool
     inputs_disabled: bool
 
 
-def interaction_state(*, gates_ok: bool, job_running: bool) -> ConvertInteraction:
+def interaction_state(*, gates_ok: bool, job_running: bool, awaiting_ack: bool = False) -> ConvertInteraction:
     """The Convert interaction table (0035 W3b) — pure, the view just paints it.
 
     Single-sources the busy/idle disabled decisions so the button state can never drift
     from the ``JobRunner`` guard: a running job disables everything (no dead clicks, no
     double-start, no mid-run input edits); idle re-derives the button from the input gates
     (``can_run_convert``) and re-enables the inputs.
+
+    ``awaiting_ack`` (FIX-2) freezes the inputs while the "some files look much smaller than
+    usual" card is on screen. The card asks the admin to approve ONE identified run; leaving
+    the district dropdown and the folder picker live while it waits let the approval land on
+    a run nobody reviewed. This is the VIEW half of that binding — the enforcing half is
+    :func:`ack_authorizes` at the write-gate, so a future view edit cannot reopen the hole.
     """
     return ConvertInteraction(
         convert_disabled=job_running or not gates_ok,
-        inputs_disabled=job_running,
+        inputs_disabled=job_running or awaiting_ack,
     )
+
+
+@dataclass(frozen=True)
+class RunIdentity:
+    """WHICH run a Convert action refers to: the (district, input folder) pair.
+
+    The output folder is deliberately NOT part of the identity — it is not a per-run
+    control (it lives in Settings, is captured once at screen build, and the run-gate
+    already refuses an unset one), so including it would invalidate acknowledgements for
+    a change the admin cannot make from this screen.
+
+    Fields hold the values AS GIVEN (stripped only), so the identity doubles as a faithful
+    record of what was reviewed and can be handed straight back as the re-run's arguments;
+    the case/separator normalisation lives in the comparison, never in the stored value.
+    """
+
+    district: str
+    input_dir: str
+
+
+def run_identity(district: str | None, input_dir: str | None) -> RunIdentity:
+    """The identity of a Convert run — TOTAL (``None``/blank collapse to ``""``)."""
+    return RunIdentity(district=(district or "").strip(), input_dir=(input_dir or "").strip())
+
+
+def _comparable(identity: RunIdentity) -> tuple[str, str]:
+    """The normalised comparison key: exact district id + an OS-appropriate folder key.
+
+    ``normpath`` collapses ``.``/``..``/duplicate + trailing separators and ``normcase``
+    applies the platform's own case rule (a no-op on POSIX, case-folding + separator
+    flattening on Windows) — so ``C:\\GDE\\`` and ``c:/gde`` are the same folder on Windows
+    and two different folders on Linux, which is exactly what each filesystem means.
+    The district is a config id — compared exactly, never case-folded.
+    """
+    return (identity.district, os.path.normcase(os.path.normpath(identity.input_dir)))
+
+
+def ack_authorizes(ack: RunIdentity | None, current: RunIdentity) -> bool:
+    """Whether a pending anomaly acknowledgement authorizes THIS run's write (FIX-2).
+
+    The acknowledgement is a capability scoped to the run it reviewed: "I looked at the
+    numbers for district D out of folder F and they're fine." It authorizes a write only
+    when the run about to happen IS that run.
+
+    FAIL-CLOSED by construction — ``None`` never authorizes, and neither does an
+    unidentifiable ack (a blank district or blank folder), so a half-built token can never
+    be mistaken for consent. The anomaly gate is the last safety net between a truncated
+    export and a collapsed roster reaching SpacesEDU; the safe default is "review it again".
+    """
+    if ack is None or not ack.district or not ack.input_dir:
+        return False
+    return _comparable(ack) == _comparable(current)
 
 
 class DeliverReadiness(Enum):

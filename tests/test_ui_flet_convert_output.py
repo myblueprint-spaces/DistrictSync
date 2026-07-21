@@ -8,7 +8,10 @@ Covers the path-bearing trust logic that keeps the silent fallbacks out (D9/D10)
   all mocked, so no real file browser opens under test;
 - the deliver-from-disk facts + gate (0034 Slice 2): ``output_csvs_present`` /
   ``newest_output_csv_mtime_iso`` (top-level-only, mirroring the SFTP glob) /
-  ``freshness_fact`` / the ``standalone_deliver_state`` table.
+  ``freshness_fact`` / the ``standalone_deliver_state`` table;
+- the run-identity binding for the anomaly acknowledgement (FIX-2): ``run_identity`` /
+  ``ack_authorizes`` (fail-closed, OS-appropriate folder comparison) + the
+  ``interaction_state(awaiting_ack=...)`` freeze that keeps the reviewed run reviewable.
 
 The path lives HERE, never in ``ConvertResult`` — ``test_ui_flet_convert_result`` pins the
 result model stays path-free; this module is its deliberate counterpart.
@@ -17,6 +20,7 @@ result model stays path-free; this module is its deliberate counterpart.
 from __future__ import annotations
 
 import os
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -25,6 +29,8 @@ import pytest
 from src.ui_flet import convert_output
 from src.ui_flet.convert_output import (
     DeliverReadiness,
+    RunIdentity,
+    ack_authorizes,
     can_run_convert,
     deliverable_manifest,
     district_mismatch_note,
@@ -36,6 +42,7 @@ from src.ui_flet.convert_output import (
     output_csvs_present,
     output_dir_is_set,
     resolved_output_caption,
+    run_identity,
     setup_first_copy,
     show_setup_first_card,
     standalone_deliver_state,
@@ -412,3 +419,83 @@ class TestDeliverableManifest:
 
         folder = self._folder(tmp_path, ["Students.csv"])
         assert deliverable_manifest(["Students"], str(folder)) == {DataLoader.csv_filename("Students")}
+
+    def test_awaiting_ack_freezes_the_inputs(self) -> None:
+        # FIX-2: while "some files look much smaller than usual" is on screen the card is
+        # asking about ONE run — the district dropdown and the input picker must not be
+        # editable underneath it (that is how an approval landed on an unreviewed run).
+        state = interaction_state(gates_ok=True, job_running=False, awaiting_ack=True)
+        assert state.inputs_disabled is True
+
+    def test_awaiting_ack_leaves_convert_available_as_the_escape_hatch(self) -> None:
+        # Starting over is legitimate — ``_start_convert`` clears the card and supersedes
+        # the pending question, so the button must NOT be a dead end next to it.
+        state = interaction_state(gates_ok=True, job_running=False, awaiting_ack=True)
+        assert state.convert_disabled is False
+
+    def test_awaiting_ack_defaults_to_false(self) -> None:
+        # Every pre-existing caller keeps its exact behaviour (the axis is opt-in).
+        assert interaction_state(gates_ok=True, job_running=False) == interaction_state(
+            gates_ok=True, job_running=False, awaiting_ack=False
+        )
+
+
+class TestRunIdentityAndAckAuthorization:
+    """FIX-2 — the anomaly acknowledgement is a capability scoped to ONE run.
+
+    The defect this pins: the ack card snapshotted ``(district, input_dir)`` and never used
+    them, while ``_set_running(False)`` re-enabled both controls underneath the card. An
+    admin could review district A / folder A, repoint either input, click "I've reviewed
+    this — convert anyway", and the write-gate opened for a run nobody had looked at.
+    """
+
+    _A = RunIdentity(district="myedbc", input_dir="/gde/nightly")
+
+    def test_run_identity_strips_and_totalizes(self) -> None:
+        assert run_identity("  myedbc ", "  /gde/nightly  ") == self._A
+        assert run_identity(None, None) == RunIdentity(district="", input_dir="")
+
+    def test_the_reviewed_run_is_authorized(self) -> None:
+        assert ack_authorizes(self._A, run_identity("myedbc", "/gde/nightly")) is True
+
+    def test_a_different_input_folder_is_refused(self) -> None:
+        assert ack_authorizes(self._A, run_identity("myedbc", "/gde/other")) is False
+
+    def test_a_different_district_is_refused(self) -> None:
+        assert ack_authorizes(self._A, run_identity("sd48myedbc", "/gde/nightly")) is False
+
+    def test_no_ack_authorizes_nothing(self) -> None:
+        assert ack_authorizes(None, run_identity("myedbc", "/gde/nightly")) is False
+
+    @pytest.mark.parametrize(
+        "ack",
+        [
+            RunIdentity(district="", input_dir="/gde/nightly"),
+            RunIdentity(district="myedbc", input_dir=""),
+            RunIdentity(district="", input_dir=""),
+        ],
+    )
+    def test_an_unidentifiable_ack_is_fail_closed(self, ack: RunIdentity) -> None:
+        # A half-built token is never consent — and two blank identities must not
+        # "match" each other into an authorization.
+        assert ack_authorizes(ack, run_identity(ack.district, ack.input_dir)) is False
+
+    def test_cosmetic_path_differences_still_authorize_the_same_folder(self) -> None:
+        # A trailing separator / a redundant '.' segment is the SAME folder on every OS —
+        # refusing it would nag the admin for a difference they cannot see.
+        assert ack_authorizes(self._A, run_identity("myedbc", "/gde/nightly/")) is True
+        assert ack_authorizes(self._A, run_identity("myedbc", "/gde/./nightly")) is True
+
+    @pytest.mark.skipif(not sys.platform.startswith("win"), reason="case-insensitive paths are a Windows rule")
+    def test_windows_treats_case_and_separators_as_the_same_folder(self) -> None:
+        ack = RunIdentity(district="myedbc", input_dir=r"C:\GDE\Nightly")
+        assert ack_authorizes(ack, run_identity("myedbc", "c:/gde/nightly")) is True
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="case-sensitive paths are a POSIX rule")
+    def test_posix_treats_a_case_difference_as_a_different_folder(self) -> None:
+        ack = RunIdentity(district="myedbc", input_dir="/GDE/Nightly")
+        assert ack_authorizes(ack, run_identity("myedbc", "/gde/nightly")) is False
+
+    def test_the_district_id_is_never_case_folded(self) -> None:
+        # Config ids are exact — a near-miss district must not be treated as reviewed.
+        assert ack_authorizes(self._A, run_identity("MYEDBC", "/gde/nightly")) is False

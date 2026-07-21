@@ -20,12 +20,29 @@ handlers the loop owns; a double-click can't launch two conversions (the state
 machine's single-flight ``start()``); a failure surfaces as a calm FAILED banner
 with the button re-enabled.
 
+**The delivery-integrity gate (FIX-2):** ``convert_job`` calls the SAME
+``etl.pipeline.check_delivery_integrity`` the CLI does — never a second implementation —
+BEFORE ``save_all``/``archive_stale_outputs``/``upload_csvs`` and before the anomaly gate.
+An output set the gate cannot vouch for (nothing produced; or the roster anchor missing
+while dependent entities were built) is refused with a terminal status, the previous
+output set untouched, and a ``status="failed"`` run record carrying the gate's bounded
+category — so the manual path can no longer report a green night that delivered enrolments
+for zero students. Tier configs with no anchor by design (``mbponly``/``mbp_core``/
+``sd51attendance``) are judged by their CONFIGURED entity set and never fire it.
+
 **The anomaly-ack write-gate:** ``convert_job`` computes anomalies AFTER transform
-and, when a >20% drop fires without an ``anomaly_ack``, returns
+and, when a >20% drop fires without an authorizing ``anomaly_ack``, returns
 ``NEEDS_ANOMALY_ACK`` **WITHOUT writing**. The view then shows a plain-language
-WARNING + an explicit "I've reviewed this — convert anyway" CTA (which re-invokes
-with ``anomaly_ack=True``) and a Cancel (which writes nothing). A silent 20% roster
-drop is structurally impossible.
+WARNING + an explicit "I've reviewed this — convert anyway" CTA and a Cancel (which
+writes nothing). A silent 20% roster drop is structurally impossible.
+
+**The ack is run-scoped, not a bare yes (FIX-2):** ``anomaly_ack`` is a
+``convert_output.RunIdentity`` TOKEN naming the ``(district, input folder)`` that was
+reviewed, and ``ack_authorizes`` honours it only for that run — so an approval given for
+one folder can never be spent on another. Two layers, one counted: the view freezes those
+inputs while the card is up (``interaction_state(awaiting_ack=True)``) and replays the
+reviewed identity on click; ``convert_job`` re-checks the token at the gate itself, so a
+future view edit cannot reopen the hole.
 
 **SFTP delivery (IA-5b):** ``convert_job`` gains an ``sftp_requested`` leg — after a
 successful build, an explicit pre-flight-confirmed delivery. The ``upload_csvs`` call
@@ -78,7 +95,9 @@ from src.config.loader import available_configs, load_config
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader
 from src.etl.pipeline import (
+    RunErrorCategory,
     build_run_record,
+    check_delivery_integrity,
     compute_anomalies,
     configured_entity_order,
     extract_required_files,
@@ -90,6 +109,8 @@ from src.sftp.uploader import SFTPUploader
 from src.ui_flet import components, tokens
 from src.ui_flet.convert_output import (
     DeliverReadiness,
+    RunIdentity,
+    ack_authorizes,
     can_run_convert,
     deliverable_manifest,
     district_mismatch_note,
@@ -101,6 +122,7 @@ from src.ui_flet.convert_output import (
     output_csvs_present,
     output_dir_is_set,
     resolved_output_caption,
+    run_identity,
     setup_first_copy,
     show_setup_first_card,
     standalone_deliver_state,
@@ -110,6 +132,7 @@ from src.ui_flet.convert_result import (
     ConvertStatus,
     convert_error_copy,
     deliver_error_copy,
+    status_for_integrity_fault,
     summarize,
 )
 from src.ui_flet.filepicker import validate_input_dir
@@ -151,17 +174,34 @@ def convert_job(
     config_name: str,
     input_dir: str,
     *,
-    anomaly_ack: bool = False,
+    anomaly_ack: RunIdentity | None = None,
     sftp_requested: bool = False,
 ) -> ConvertResult:
     """Run the parity-locked convert adapter and return a PII-free ``ConvertResult``.
 
     Off the UI thread (``JobRunner`` runs it via ``page.run_thread``):
-    ``load_config → load_from_bytes → run_transform → compute_anomalies`` and — only
-    when clear or acknowledged — ``save_all`` + stale-output archival + the quality
-    report, then (only when ``sftp_requested``) an SFTP delivery. When an anomaly
-    (a >20% drop, or a configured entity that vanished against its previous CSV)
-    fires without ``anomaly_ack`` it returns ``NEEDS_ANOMALY_ACK`` **without writing**.
+    ``load_config → load_from_bytes → run_transform → check_delivery_integrity →
+    compute_anomalies`` and — only when clear or acknowledged — ``save_all`` +
+    stale-output archival + the quality report, then (only when ``sftp_requested``)
+    an SFTP delivery.
+
+    **Two pre-write gates, in the CLI's order.**
+
+    1. :func:`~src.etl.pipeline.check_delivery_integrity` — the SAME way-OUT gate
+       ``run_pipeline`` calls, not a second implementation. It refuses an output set that
+       cannot be vouched for (nothing produced at all, or the roster anchor missing while
+       dependent entities were built) and returns the matching terminal status
+       (:func:`status_for_integrity_fault`). It sits FIRST, so an anomaly acknowledgement
+       can never buy delivery of an anchor-less payload: "I've reviewed the smaller files"
+       is consent about SIZE, never consent to ship enrolments for students that will not
+       be delivered. Refusing here — before ``save_all`` and before
+       ``archive_stale_outputs`` — leaves the previous, self-consistent output set intact;
+       the admin fixes the export and re-runs, with nothing to un-archive.
+    2. The anomaly write-gate. ``anomaly_ack`` is a :class:`RunIdentity` TOKEN, not a
+       boolean: it authorizes the write only when it names the run actually executing
+       (:func:`ack_authorizes`), so an approval given for one district/folder can never be
+       spent on another. A pending anomaly without a matching token returns
+       ``NEEDS_ANOMALY_ACK`` **without writing**.
 
     ETL-level failures (a missing field-map column → ``save_all``'s ``ValueError``,
     ``load_config``'s errors) propagate as exceptions → the runner's ``on_error``
@@ -172,7 +212,10 @@ def convert_job(
     never discards the written files. NO DataFrame is returned (privacy).
 
     A committed run (built + optionally delivered) is recorded to the run-history store
-    tagged ``source="manual"`` via :func:`_record_manual_run` — best-effort, never fatal.
+    tagged ``source="manual"`` via :func:`_record_manual_run` — best-effort, never fatal;
+    so is a delivery-integrity REFUSAL, as ``status="failed"`` carrying the gate's bounded
+    ``error_category`` (never ``success`` — Home and Run History must not paint a night
+    green that delivered nothing, and this is the CLI's behaviour on the same fault).
     """
     t0 = time.monotonic()
     config = load_config(config_name)
@@ -204,14 +247,36 @@ def convert_job(
         return ConvertResult(status=ConvertStatus.NO_INPUT)
 
     outputs, field_orders, data_errors = run_transform(raw_data, mappings, global_config)
-    if not outputs:
-        return ConvertResult(status=ConvertStatus.NO_OUTPUT)
 
-    # Anomaly gate BEFORE writing: a >20% drop — or an entity this run was configured
-    # to produce that vanished (present→absent / N→0, judged against the
-    # enabled-entities-derived set) — un-acknowledged, withholds the write.
-    anomalies = compute_anomalies(outputs, output_dir, configured_entity_order(mappings, global_config))
-    if anomalies and not anomaly_ack:
+    # What this run was CONFIGURED to produce (enabled-entities-derived, NEVER raw
+    # `mappings.keys()`). Computed once and shared by both pre-write gates, exactly as
+    # `run_pipeline` does — so a tier config with no roster anchor (mbponly, mbp_core,
+    # sd51attendance) is judged by ITS configured set and never false-positives.
+    expected_entities = configured_entity_order(mappings, global_config)
+
+    # Gate 1 — delivery integrity, BEFORE the write and before the anomaly gate. The same
+    # pure check the CLI raises on; here its bounded category becomes a terminal status.
+    integrity_fault = check_delivery_integrity(outputs, expected_entities)
+    if integrity_fault is not None:
+        refused = ConvertResult(
+            status=status_for_integrity_fault(integrity_fault.category),
+            entity_counts={name: len(df) for name, df in outputs.items()},
+            data_errors_total=_data_errors_total(data_errors),
+        )
+        _record_manual_run(
+            refused,
+            sis_type=config_name,
+            elapsed=time.monotonic() - t0,
+            status="failed",
+            error_category=integrity_fault.category,
+        )
+        return refused
+
+    # Gate 2 — anomalies: a >20% drop, or an entity this run was configured to produce
+    # that vanished (present→absent / N→0). Withholds the write unless the pending
+    # acknowledgement was given for THIS run (district + input folder).
+    anomalies = compute_anomalies(outputs, output_dir, expected_entities)
+    if anomalies and not ack_authorizes(anomaly_ack, run_identity(config_name, input_dir)):
         return ConvertResult(
             status=ConvertStatus.NEEDS_ANOMALY_ACK,
             entity_counts={name: len(df) for name, df in outputs.items()},
@@ -388,28 +453,44 @@ def _data_errors_total(data_errors: list[dict]) -> int:
     return sum(int(e.get("failed_rows", 0)) for e in (data_errors or []))
 
 
-def _record_manual_run(result: ConvertResult, *, sis_type: str, elapsed: float, delivery_only: bool = False) -> None:
+def _record_manual_run(
+    result: ConvertResult,
+    *,
+    sis_type: str,
+    elapsed: float,
+    delivery_only: bool = False,
+    status: str = "success",
+    error_category: str = RunErrorCategory.NONE.value,
+) -> None:
     """Write a manual Convert run to the run-history store (source="manual"), best-effort.
 
     Manual runs used to never appear in Run History (``convert_job`` bypasses
     ``run_pipeline``/``_emit_run_log`` by design). This writes the SAME flat record shape
     through the SAME ``build_run_record`` + ``write_run_record`` seam the pipeline uses, so a
     manual run finally shows up tagged ``manual``. A committed Convert always BUILT
-    successfully → ``status="success"``; a failed SFTP delivery is the separate ``sftp_*``
-    axis (the exit-3 shape). Strictly non-fatal — never changes the returned ``ConvertResult``.
+    successfully → the default ``status="success"``; a failed SFTP delivery is the separate
+    ``sftp_*`` axis (the exit-3 shape). Strictly non-fatal — never changes the returned
+    ``ConvertResult``.
+
+    ``status`` / ``error_category`` (FIX-2) are the truthful-refusal axis: a delivery-integrity
+    refusal passes ``"failed"`` plus the gate's BOUNDED :class:`RunErrorCategory` value, so
+    Home's "did the roster sync?" verdict and the Run History row read the refusal as the
+    failure it is instead of a green night. The privacy split is unchanged — the category is
+    a closed-set enum value; the free-text detail never reaches the store.
 
     ``delivery_only`` (0034 Slice 2) marks a ``deliver_job`` attempt: the record's flat count
     keys stay zeros (a delivery ships an earlier build — its counts belong to that build's
     record, never repeated here) and the rider lets ``home_status``/``run_history`` render it
     as a delivery, not a 0-row build.
 
-    Deliberate asymmetry with ``run_pipeline``: only COMMITTED manual runs are recorded —
-    ``NO_INPUT``/``NO_OUTPUT``/``NEEDS_ANOMALY_ACK`` and mid-build failures write nothing,
-    because the admin is watching the Convert surface where those outcomes are already
-    shown; the nightly ledger tracks runs that produced (or delivered) output.
+    Deliberate asymmetry with ``run_pipeline``: ``NO_INPUT`` and ``NEEDS_ANOMALY_ACK`` write
+    nothing — the first is "you picked the wrong folder" and the second is a question, not an
+    outcome, and the admin is watching the surface where both are already shown. What IS
+    recorded is every run that either produced output or was REFUSED by the delivery gate:
+    those look like a normal night from the outside, so the ledger has to carry them.
     """
     record = build_run_record(
-        status="success",
+        status=status,
         elapsed=elapsed,
         entity_counts=result.entity_counts,
         sftp_attempted=result.sftp_attempted,
@@ -418,7 +499,7 @@ def _record_manual_run(result: ConvertResult, *, sis_type: str, elapsed: float, 
         data_errors={"total": result.data_errors_total} if result.data_errors_total else {},
         source="manual",
         sis_type=sis_type,
-        error_category="none",
+        error_category=error_category,
     )
     if delivery_only:
         record["delivery_only"] = True  # rides free in the store's JSON blob (additive, no schema change)
@@ -461,6 +542,10 @@ def build_convert(
 
     runner = JobRunner()
     selected: dict[str, str | None] = {"district": default_district}
+    # The run the on-screen anomaly card is asking about, or None when no card is up (FIX-2).
+    # Held here (not in the card closure) because BOTH the interaction table and the ack
+    # handler need it: the inputs freeze while it is set, and the re-run is launched from it.
+    pending_ack: dict[str, RunIdentity | None] = {"identity": None}
 
     # ------------------------------------------------------------------ #
     # District select — a "Choose your district" placeholder until chosen (D9).
@@ -519,7 +604,8 @@ def build_convert(
         The single place the busy/idle disabled flags land: the Convert button mirrors the
         ``JobRunner`` single-flight guard (no dead click can start a second job), and the
         district + input-folder controls lock while a job runs (the job snapshotted them
-        at start — mid-run edits would desynchronize the form from the work in flight).
+        at start — mid-run edits would desynchronize the form from the work in flight) or
+        while an anomaly acknowledgement is pending (FIX-2 — the card asks about ONE run).
         """
         state = interaction_state(
             gates_ok=can_run_convert(
@@ -528,6 +614,7 @@ def build_convert(
                 input_valid=validate_input_dir(input_field.value).ok,
             ),
             job_running=job_running,
+            awaiting_ack=pending_ack["identity"] is not None,
         )
         convert_btn.disabled = state.convert_disabled
         district_dropdown.disabled = state.inputs_disabled
@@ -571,9 +658,17 @@ def build_convert(
         convert_caption.visible = running
         convert_caption.value = caption if running else ""
 
-    def _start_convert(*, anomaly_ack: bool = False, sftp_requested: bool = False) -> None:
-        district = selected["district"]
-        input_dir = input_field.value
+    def _start_convert(*, anomaly_ack: RunIdentity | None = None, sftp_requested: bool = False) -> None:
+        """Launch a conversion for ONE identified run (FIX-2).
+
+        The run's identity is resolved ONCE, here: an acknowledged re-run replays the exact
+        ``(district, input folder)`` the admin reviewed, so the work in flight can never be
+        a different run than the card described. A fresh run reads the live controls. Either
+        way the identity is what the job receives AND what the result is rendered against —
+        the old "snapshot it, then re-read the widgets anyway" split is gone.
+        """
+        identity = anomaly_ack or run_identity(selected["district"], input_field.value)
+        pending_ack["identity"] = None  # a new job supersedes any card on screen
         _set_running(True)
         # The pre-run standalone deliver card retires once a job starts — from here the
         # result flow owns every deliver affordance (one affordance at a time, and the
@@ -584,7 +679,7 @@ def build_convert(
 
         def _on_done(result: ConvertResult) -> None:
             _set_running(False)
-            _render_result(result, district, input_dir)
+            _render_result(result, identity)
             page.update()
 
         def _on_error(_exc: BaseException) -> None:
@@ -597,7 +692,12 @@ def build_convert(
 
         started = runner.run(
             page,
-            lambda: convert_job(district, input_dir, anomaly_ack=anomaly_ack, sftp_requested=sftp_requested),
+            lambda: convert_job(
+                identity.district,
+                identity.input_dir,
+                anomaly_ack=anomaly_ack,
+                sftp_requested=sftp_requested,
+            ),
             on_done=_on_done,
             on_error=_on_error,
         )
@@ -623,7 +723,7 @@ def build_convert(
 
         def _on_done(result: ConvertResult) -> None:
             _set_running(False)
-            _render_result(result, selected["district"], input_field.value)
+            _render_result(result, run_identity(selected["district"], input_field.value))
             page.update()
 
         def _on_error(_exc: BaseException) -> None:
@@ -687,9 +787,13 @@ def build_convert(
             )
         )
 
-    def _render_result(result: ConvertResult, district: str, input_dir: str) -> None:
+    def _render_result(result: ConvertResult, identity: RunIdentity) -> None:
         if result.status is ConvertStatus.NEEDS_ANOMALY_ACK:
-            result_slot.controls = [_anomaly_ack_card(result, district, input_dir)]
+            # The card is a question about THIS run — remember which one, and freeze the
+            # inputs while it waits so the answer can't drift onto another (FIX-2).
+            pending_ack["identity"] = identity
+            result_slot.controls = [_anomaly_ack_card(result, identity)]
+            _apply_interaction(job_running=False)
             return
         verdict, headline, detail = summarize(result)
         controls: list[ft.Control] = [
@@ -754,19 +858,23 @@ def build_convert(
             ),
         )
 
-    def _anomaly_ack_card(result: ConvertResult, district: str, input_dir: str) -> ft.Control:
+    def _anomaly_ack_card(result: ConvertResult, identity: RunIdentity) -> ft.Control:
         verdict, headline, detail = summarize(result)
         anomaly_lines = [ft.Text(f"• {line}", size=13, color=tokens.color_text) for line in result.anomalies]
 
         def _on_ack(_e: ft.ControlEvent) -> None:
-            # A fresh run with the ack set — re-transforms (one path, no PII frames held).
+            # A fresh run carrying the acknowledgement TOKEN for the run that was reviewed
+            # (FIX-2) — re-transforms (one path, no PII frames held). `_start_convert` replays
+            # that identity rather than re-reading the controls, and `convert_job` honours the
+            # token only when it matches the run it is executing.
             runner.state.reset()
             result_slot.controls = []
             page.update()
-            _start_convert(anomaly_ack=True)
+            _start_convert(anomaly_ack=identity)
 
         def _on_cancel(_e: ft.ControlEvent) -> None:
             runner.state.reset()
+            pending_ack["identity"] = None  # question withdrawn — the inputs are editable again
             result_slot.controls = [
                 ft.Text(
                     "No files were written. Review your input, then convert again when you're ready.",
