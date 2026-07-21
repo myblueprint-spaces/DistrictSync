@@ -74,10 +74,13 @@ contract pass untouched throughout.
   flag and every delivery setting, after which the nightly task kept running but
   stopped delivering. Writes now stage and atomically swap. A settings file that
   exists but cannot be read is distinguishable from one that is genuinely
-  absent, so a configured admin is never told they are a new user; and a save
-  can no longer overwrite settings it failed to read — after a transient read
-  blip the file is left byte-intact and self-heals on the next load, rather than
-  being replaced with defaults by the window-geometry save on app exit.
+  absent, so a configured admin is never told they are a new user. And a save
+  that carries no setting you chose — the window-geometry save on app exit — can
+  no longer overwrite settings it failed to read: the file is left byte-intact
+  and self-heals on the next load. A save that *does* carry a setting you chose
+  still replaces the file, but now copies the bytes it is replacing aside as
+  `config.corrupt-<timestamp>.json` first, so nothing is lost without a recovery
+  path. (Narrowing that second case further is tracked as a known residual.)
 - **The manual "Convert now" path enforces the same delivery gate as the nightly
   run.** The roster-integrity refusal was wired into the scheduled and
   command-line paths but not the desktop one — so the path an admin uses
