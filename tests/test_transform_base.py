@@ -667,13 +667,15 @@ class TestApplyFieldMapFailLoud:
         assert pd.isna(out["Out"].iloc[1])
         assert out["Out"].iloc[2] == "ok:C"
 
-        # Exactly one (entity, field) failure recorded, with the bad sample.
+        # Exactly one (entity, field) failure recorded, with a NON-IDENTIFYING
+        # descriptor of the bad cell (never the cell itself — see
+        # TestPerRowSampleNeverLeaksTheCell).
         assert len(ctx.data_errors) == 1
         rec = ctx.data_errors[0]
         assert rec["entity"] == "Students"
         assert rec["field"] == "Out"
         assert rec["failed_rows"] == 1
-        assert "BAD" in rec["sample"]
+        assert rec["sample"] == "str(3 chars, letters) → ValueError"
 
     def test_unknown_transform_blanks_column_and_records_no_raise(self):
         t = self._ConcreteTransformer()
@@ -736,6 +738,82 @@ class TestApplyFieldMapFailLoud:
 
         assert list(out["Out"]) == ["ok:A", "ok:B", "ok:C"]
         assert ctx.data_errors == []
+
+
+class TestPerRowSampleNeverLeaksTheCell:
+    """The fail-loud diagnostic must NOT reproduce the offending source cell.
+
+    ``ALLOWED_TRANSFORMS`` carries ``normalize_iso_date`` / ``truncate_name``,
+    which a district field_map may legitimately attach to a Date of Birth or a
+    legal-name column — so the failing cell is student PII. The log file is the
+    artifact partners are told to email support (docs/partner/troubleshooting.md),
+    so both the ERROR line and ``context.data_errors[].sample`` carry a shape
+    descriptor only.
+    """
+
+    class _DobTransformer(BaseTransformer):
+        """A transform that raises the way ``datetime.strptime`` does — with the
+        offending value echoed INSIDE the exception message."""
+
+        ALLOWED_TRANSFORMS = frozenset(BaseTransformer.ALLOWED_TRANSFORMS | {"parse_dob"})
+
+        def transform(self, df, mapping, context):  # pragma: no cover — unused
+            return df
+
+        @staticmethod
+        def parse_dob(value):
+            raise ValueError(f"time data {value!r} does not match format '%Y-%m-%d'")
+
+    def test_neither_the_log_nor_the_ledger_carries_the_dob(self, caplog):
+        t = self._DobTransformer()
+        ctx = TransformContext()
+        working = pd.DataFrame({"date of birth": ["23/04/2011", "17/11/2009"]})
+
+        with caplog.at_level(logging.ERROR, logger="src.etl.transformers.base"):
+            t.apply_field_map(
+                working,
+                pd.DataFrame(index=working.index),
+                {"Birth Date": {"column": "date of birth", "transform": "parse_dob"}},
+                "Students",
+                ctx,
+            )
+
+        sample = ctx.data_errors[0]["sample"]
+        logged = " ".join(r.message for r in caplog.records)
+        for dob in ("23/04/2011", "17/11/2009"):
+            assert dob not in sample
+            assert dob not in logged
+        # Still diagnosable: which entity/field, how many rows, what shape, what error.
+        assert ctx.data_errors[0]["failed_rows"] == 2
+        assert "str(10 chars, digits+slashes)" in sample
+        assert "ValueError" in sample
+        assert "Students.Birth Date" in logged
+        assert "2 row(s) failed" in logged
+
+
+class TestWithdrawDateWarningNeverLeaksTheDate:
+    """The unparseable-withdraw-date warning aggregates up to 10 raw cells; a
+    district that mis-maps ``withdraw_date_column`` onto a name/ID column would
+    dump 10 student values into the support log. Shapes only."""
+
+    def test_warning_reports_shapes_not_values(self, caplog):
+        df = pd.DataFrame(
+            {
+                "withdraw date": ["Nguyen-Ferrari", "23.04.2011", ""],
+                "student number": ["S1", "S2", "S3"],
+            }
+        )
+        with caplog.at_level(logging.WARNING, logger="src.etl.transformers.base"):
+            labels = _status(df)
+
+        logged = " ".join(r.message for r in caplog.records)
+        assert "Nguyen-Ferrari" not in logged
+        assert "23.04.2011" not in logged
+        assert "Could not parse 2 withdraw date(s)" in logged
+        assert "str(14 chars, letters+dashes)" in logged
+        assert "str(10 chars, digits+dots)" in logged
+        # Behavior unchanged: unparseable → Inactive, blank → Active.
+        assert list(labels) == ["Inactive", "Inactive", "Active"]
 
 
 class TestActiveStatusPathLogging:

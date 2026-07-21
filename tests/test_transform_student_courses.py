@@ -983,8 +983,12 @@ class TestNonNumericMarkDataError:
         assert errors[0]["entity"] == "StudentCourses"
         assert errors[0]["field"] == "Final Mark"
         assert errors[0]["failed_rows"] == 2
-        assert "'A'" in errors[0]["sample"]
+        # A final mark is an education record — the diagnostic carries its SHAPE,
+        # never the mark itself (same log-safety seam as the base transformer).
+        assert "'A'" not in errors[0]["sample"]
+        assert errors[0]["sample"].startswith("str(1 char, letters)")
         assert any("non-numeric Final Mark" in r.message for r in caplog.records)
+        assert not any("'A'" in r.message for r in caplog.records)
 
 
 class TestConfigDrivenSourceColumns:

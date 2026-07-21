@@ -31,6 +31,7 @@ import pandas as pd
 from src.etl.column_names import SCHOOL_NUMBER
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
+from src.utils.helpers import describe_value_for_log as _describe_value
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +232,9 @@ class StudentCoursesTransformer(BaseTransformer):
             if mark_str and self._parse_mark_numeric(mark_str) is None:
                 non_numeric_marks += 1
                 if not first_sample:
-                    first_sample = f"{mark_str!r}: non-numeric mark scored as not-passing"
+                    # A final mark is an education record — same log-safety seam
+                    # as the base transformer: shape, never the mark itself.
+                    first_sample = f"{_describe_value(mark_str)}: non-numeric mark scored as not-passing"
             start_date = self._parse_date(raw_start)
             is_in_progress = not raw_completion
 
