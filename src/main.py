@@ -422,6 +422,15 @@ def _cli(argv: list[str] | None) -> int:
     parser.add_argument("--quality", action="store_true", help="Generate a data quality report")
     parser.add_argument("--sftp", action="store_true", help="Upload output CSVs via SFTP after a successful run")
     parser.add_argument(
+        "--acknowledge-shrink",
+        action="store_true",
+        help="Deliver anyway when the student roster is much smaller than the previous run. "
+        "By default an unattended run REFUSES to deliver a roster that shrank past the anomaly "
+        "threshold (a broken export would deactivate the missing students in SpacesEDU) and exits "
+        "non-zero, leaving the last-good output untouched. Set this for THIS run only to accept a "
+        "genuine drop (e.g. a year-end collapse); it is never saved.",
+    )
+    parser.add_argument(
         "--source",
         choices=["manual", "scheduled", "cli"],
         default=None,
@@ -478,6 +487,7 @@ def _cli(argv: list[str] | None) -> int:
             quality=args.quality,
             sftp=args.sftp,
             source=args.source,
+            acknowledge_shrink=args.acknowledge_shrink,
         )
     except SystemExit:
         # run_pipeline's own early exits (bad input dir / bad config) already

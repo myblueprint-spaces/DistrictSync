@@ -78,6 +78,7 @@ class RunErrorCategory(str, Enum):
     NO_INPUT = "no_input"  # no usable input (input folder missing, or every required file missing/empty)
     NO_OUTPUT = "no_output"  # input loaded, but every entity was empty/skipped — nothing to write or deliver
     INCOMPLETE_ROSTER = "incomplete_roster"  # the roster anchor produced nothing while dependent entities did
+    ROSTER_SHRINK = "roster_shrink"  # the roster anchor is present but dropped past the anomaly threshold vs last run
     CONFIG = "config"  # a config/validation problem surfaced as the failure
     DATA = "data"  # a build/write problem (missing field-map column, transform, loader)
     UNKNOWN = "unknown"  # an unclassified failure
@@ -332,6 +333,79 @@ def _previous_row_count(prev_path: Path) -> int | None:
 def _unreadable_baseline_msg(entity: str) -> str:
     """The anomaly-check degradation warning for an unreadable previous CSV."""
     return f"{entity}: the previous output file could not be read, so the drop check was skipped for this entity"
+
+
+def check_roster_shrink(
+    outputs: dict[str, pd.DataFrame],
+    output_dir: Path,
+) -> DeliveryIntegrityError | None:
+    """Pure pre-write gate: did the roster anchor shrink past the safe threshold?
+
+    Returns the ready-to-raise :class:`DeliveryIntegrityError` (``ROSTER_SHRINK``) when
+    the :data:`ROSTER_ANCHOR_ENTITY` (``Students``) is present with rows but dropped more
+    than :data:`ANOMALY_THRESHOLD` versus the previous ``Students.csv`` on disk, else
+    ``None``. Same shape as :func:`check_delivery_integrity` — the caller decides where to
+    raise — so it rides the SAME refuse-before-write / exit-1 / bounded-category wiring.
+
+    This closes the gap :func:`check_delivery_integrity` leaves open. That gate catches the
+    TOTAL failure (the anchor produced nothing while dependents did → ``INCOMPLETE_ROSTER``,
+    or nothing at all → ``NO_OUTPUT``). Here the anchor IS present — just far smaller — which
+    a broken MyEd export produces when it silently drops a *subset* of a district's students.
+    Delivering that partial roster would mass-deactivate the missing students in SpacesEDU;
+    a blocked delivery is recoverable, a wrong mass-deactivation is a support incident (owner
+    decision 2026-07-21). The unattended (CLI / scheduled / cron) caller refuses on this.
+
+    Deliberately scoped to the roster ANCHOR only. A >20% drop in ``Family`` or ``Staff``
+    stays an anomaly WARNING (see :func:`compute_anomalies`) — only the student roster drives
+    mass deactivation, so only it gates delivery. The threshold and the previous-row-count
+    read are REUSED from the anomaly machinery (``ANOMALY_THRESHOLD`` / :func:`_previous_row_count`),
+    never a second bar or a second reader.
+
+    Not a shrink (returns ``None``):
+
+    * the anchor is absent from ``outputs`` — a tier config that produces no ``Students``
+      (``mbponly`` / ``sd51attendance``), or the anchor vanished entirely (that is
+      :func:`check_delivery_integrity`'s ``INCOMPLETE_ROSTER`` / ``NO_OUTPUT`` case);
+    * there is no previous ``Students.csv`` (first run), or it is empty (0 data rows) — a
+      missing baseline is not a drop;
+    * the previous ``Students.csv`` is UNREADABLE — a corrupt baseline cannot prove a shrink,
+      so we deliver rather than block on a comparison we cannot make. The separate anomaly
+      check still surfaces that as a loud degradation warning; it just never refuses delivery.
+
+    Args:
+        outputs: the entities this run actually produced (``run_transform``'s frames).
+        output_dir: the run's output directory — the previous ``Students.csv`` is read from here.
+
+    Returns:
+        The fault to raise (``ROSTER_SHRINK``), or ``None`` when delivery is safe.
+    """
+    anchor = ROSTER_ANCHOR_ENTITY
+    df = outputs.get(anchor)
+    if df is None:
+        return None  # no anchor produced → not this gate's concern (see check_delivery_integrity)
+
+    prev_path = output_dir / f"{anchor}.csv"
+    if not prev_path.exists():
+        return None  # first run — a missing baseline is never a shrink
+
+    prev_count = _previous_row_count(prev_path)
+    if prev_count is None:
+        return None  # unreadable baseline — cannot compare, so deliver (anomaly check warns loudly)
+
+    # The SAME strict `<` bar the anomaly drop leg uses (mirrors compute_anomalies).
+    if prev_count > 0 and len(df) < prev_count * (1 - ANOMALY_THRESHOLD):
+        pct = ((prev_count - len(df)) / prev_count) * 100
+        return DeliveryIntegrityError(
+            f"{anchor} dropped from {prev_count} to {len(df)} rows ({pct:.0f}% decrease) — more than the "
+            f"{ANOMALY_THRESHOLD:.0%} safe threshold. A partial roster this much smaller usually means a "
+            f"broken student export; delivering it would deactivate the missing students in SpacesEDU. Nothing "
+            f"was written and nothing was delivered — the previous output is untouched. Check this district's "
+            f"student export, then re-run. A genuine drop (a year-end collapse) can be delivered by re-running "
+            f"with --acknowledge-shrink once.",
+            RunErrorCategory.ROSTER_SHRINK.value,
+        )
+
+    return None
 
 
 def compute_anomalies(
@@ -597,6 +671,7 @@ def run_pipeline(
     quality: bool = False,
     sftp: bool = False,
     source: str | None = None,
+    acknowledge_shrink: bool = False,
 ) -> PipelineResult:
     """Core ETL pipeline with optional dry-run, diff, quality, and SFTP modes.
 
@@ -610,13 +685,23 @@ def run_pipeline(
     best-effort and strictly non-fatal — it never changes the result, the CSVs,
     or the exit-code contract (0/1/2/3).
 
-    Two boundaries fail LOUD rather than let an unattended run report success —
-    both raise, so ``main`` exits **1** (no new exit code): no usable required
-    input on the way IN, and :func:`check_delivery_integrity` on the way OUT
-    (nothing produced, or the roster anchor missing while dependents were built).
-    The out-gate refuses BEFORE any write, so the previous output set is left
-    untouched. Neither affects the exit-3 contract: a delivery failure AFTER a
-    successful write still leaves the CSVs in place (output is never rolled back).
+    Three boundaries fail LOUD rather than let an unattended run report success —
+    all raise, so ``main`` exits **1** (no new exit code): no usable required
+    input on the way IN, and on the way OUT both :func:`check_delivery_integrity`
+    (nothing produced, or the roster anchor missing while dependents were built)
+    and :func:`check_roster_shrink` (the anchor present but dropped past
+    :data:`ANOMALY_THRESHOLD` versus the previous ``Students.csv`` — a partial
+    roster shrink; owner decision 2026-07-21). Each out-gate refuses BEFORE any
+    write, so the previous output set is left untouched. Neither affects the
+    exit-3 contract: a delivery failure AFTER a successful write still leaves the
+    CSVs in place (output is never rolled back).
+
+    ``acknowledge_shrink`` is the per-invocation escape hatch for the shrink gate
+    ONLY (the CLI ``--acknowledge-shrink`` flag): a genuine drop — a year-end
+    collapse a district accepts — is delivered by re-running with it set once. It
+    downgrades a would-be shrink refusal to a WARNING for THIS run only and is
+    NEVER persisted; the re-seeded smaller roster then becomes the new baseline so
+    the next unattended run compares new-vs-new and does not fire.
     """
     t0 = time.monotonic()
     resolved_source = _resolve_source(source)
@@ -729,6 +814,22 @@ def run_pipeline(
         integrity_fault = check_delivery_integrity(outputs, expected_entities)
         if integrity_fault is not None:
             raise integrity_fault
+
+        # Fail-safe on a PARTIAL roster shrink — the anchor present but sharply
+        # smaller than last run (a broken student export deactivating a subset in
+        # SpacesEDU; owner decision 2026-07-21). Same placement as the integrity
+        # gate: BEFORE any write (the previous Students.csv is neither overwritten
+        # nor archived out of the SFTP glob) and BEFORE the `if not dry_run`, so a
+        # dry-run surfaces the would-be refusal instead of previewing a delivery it
+        # would never make live. `--acknowledge-shrink` (threaded as
+        # `acknowledge_shrink`) downgrades it to a warning for THIS run only — the
+        # per-run escape hatch for a genuine (e.g. year-end) collapse.
+        shrink_fault = check_roster_shrink(outputs, Path(output_path))
+        if shrink_fault is not None:
+            if acknowledge_shrink:
+                logger.warning(f"Roster shrink acknowledged (--acknowledge-shrink) — delivering anyway. {shrink_fault}")
+            else:
+                raise shrink_fault
 
         # Check for anomalies before writing — including entities this run was
         # configured to produce that produced nothing while a previous non-empty CSV
