@@ -22,10 +22,12 @@ from datetime import datetime, timedelta
 import pytest
 
 from src.config.app_config import AppConfig
+from src.scheduler.windows import ScheduleReadback
 from src.ui_flet.home_status import (
     STALE_AFTER_HOURS,
     LatestReason,
     classify_latest_reason,
+    derive_home_status,
     verdict_for_reason,
 )
 from src.ui_flet.run_history import (
@@ -36,7 +38,7 @@ from src.ui_flet.run_history import (
     to_run_row,
     to_run_rows,
 )
-from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus, derive_schedule_status
 from src.ui_flet.verdict import Verdict
 
 
@@ -276,6 +278,80 @@ class TestBannerStalenessReuse:
         # An OLD failed run is FAILED (fault axis), not the stale WARNING.
         banner = _banner(_record(status="failed", timestamp=_OLD))
         assert banner.verdict is Verdict.FAILED
+
+
+def _windowed(**over: object) -> AppConfig:
+    """A configured install WITH the seasonal window enabled (Aug 11 -> Jul 6, wrap-around)."""
+    base: dict = dict(
+        input_dir="/in",
+        output_dir="/out",
+        sis_type="myedbc",
+        schedule_registered=True,
+        sync_window_enabled=True,
+        sync_window_start="08-11",
+        sync_window_end="07-06",
+    )
+    base.update(over)
+    return AppConfig(**base)
+
+
+# A "now" comfortably OUTSIDE the Aug 11 -> Jul 6 window (mid-July summer break) -> the season is paused.
+_SUMMER = datetime(2026, 7, 20, 8, 0, 0)
+_PAUSED_HEADLINE = "Paused for the summer"
+
+
+class TestSeasonalPauseBanner:
+    """FIX 1: during a summer pause the newest store record is the last in-season run (weeks old by
+    construction), so the stale rule would false-fire an amber "No recent sync" banner while Home
+    shows a calm HEALTHY "Paused for the summer". The banner must consult the window and return the
+    SAME paused verdict/headline/detail Home does — two surfaces can never disagree about one state.
+    """
+
+    def test_paused_outranks_stale_and_matches_home(self) -> None:
+        # An in-season clean record ~40h old (past STALE_AFTER_HOURS=36) + a window-enabled cfg + a
+        # now inside the pause. Base (window-unaware) -> WARNING "No recent sync"; the fix -> the
+        # HEALTHY paused banner, asserted EQUAL to Home's verdict + headline + detail for the same inputs.
+        old = (_SUMMER - timedelta(hours=40)).isoformat(timespec="seconds")
+        cfg = _windowed()
+        banner = derive_history_banner([_record(timestamp=old)], cfg, now=_SUMMER)
+        home = derive_home_status([_record(timestamp=old)], cfg, now=_SUMMER)
+        assert banner.verdict is Verdict.HEALTHY
+        assert banner.headline == _PAUSED_HEADLINE
+        assert "No recent sync" not in banner.headline
+        # No drift: identical verdict + headline + detail as Home for the same inputs.
+        assert banner.verdict is home.verdict
+        assert banner.headline == home.headline
+        assert banner.detail == home.detail
+
+    def test_failed_latest_still_surfaces_in_a_pause(self) -> None:
+        # A REAL failure is never hidden by summer — FAILED still outranks the pause (mirrors Home).
+        banner = derive_history_banner([_record(status="failed")], _windowed(), now=_SUMMER)
+        assert banner.verdict is Verdict.FAILED
+
+    def test_empty_store_paused_matches_home(self) -> None:
+        # The empty-store paused case must not drift either (Home shows paused; the banner must too).
+        cfg = _windowed(setup_completed=True)
+        banner = derive_history_banner([], cfg, now=_SUMMER, store_created_at=_RECENT)
+        home = derive_home_status([], cfg, now=_SUMMER, store_created_at=_RECENT)
+        assert banner.verdict is Verdict.HEALTHY
+        assert banner.headline == _PAUSED_HEADLINE
+        assert banner.headline == home.headline
+
+    def test_confirmed_missing_schedule_is_not_masked_by_pause(self) -> None:
+        # Mirrors Home's FIX 2 gate so the two surfaces stay identical: a confirmed-gone task
+        # suppresses the pause (it won't resume in the fall) — the banner must NOT read "Paused".
+        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        old = (_SUMMER - timedelta(hours=40)).isoformat(timespec="seconds")
+        cfg = _windowed(setup_completed=True, schedule_registered=False)
+        banner = derive_history_banner([_record(timestamp=old)], cfg, now=_SUMMER, schedule_status=missing)
+        assert banner.headline != _PAUSED_HEADLINE
+
+    def test_disabled_window_banner_unchanged(self) -> None:
+        # Opt-in default: a disabled window -> the stale banner fires exactly as before (byte-identical).
+        old = (_SUMMER - timedelta(hours=40)).isoformat(timespec="seconds")
+        banner = derive_history_banner([_record(timestamp=old)], _windowed(sync_window_enabled=False), now=_SUMMER)
+        assert banner.verdict is Verdict.WARNING
+        assert banner.headline == "No recent sync"
 
 
 # --------------------------------------------------------------------------- #
@@ -570,3 +646,43 @@ class TestBannerRowAgreement:
             assert banner.verdict in (Verdict.HEALTHY, Verdict.WARNING)
         else:
             assert banner.verdict is row.status_verdict
+
+
+# --------------------------------------------------------------------------- #
+# Home ↔ Run History AGREEMENT — the same question over the same record        #
+# --------------------------------------------------------------------------- #
+class TestHomeHistoryAgreementOnFailures:
+    """W3-B: Home and this banner answer the SAME "is my sync OK?" question over the SAME latest
+    record, so they must never disagree (``docs/claugentic-PRODUCT.md`` → Run History).
+
+    They used to: Home's schedule-attention rule returned above its two FAILED rules, so a failed
+    latest under an expected-MISSING / fired-but-no-record schedule read amber-and-schedule on Home
+    while Run History read red-and-failed. Run History has no schedule-attention rule at all, so the
+    disagreement was purely Home's precedence — this pins that the two verdicts now match on every
+    failure shape × every attention flavor.
+    """
+
+    _EXPECTED_MISSING = derive_schedule_status(
+        ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None
+    )
+    _CONTRADICTION = derive_schedule_status(
+        ScheduleReadback(found=True, last_run="2026-07-04T04:00:00"),
+        hint_registered=True,
+        latest_record_ts=_RECENT,
+    )
+
+    @pytest.mark.parametrize(
+        "record",
+        [_record(status="failed"), _record(sftp_attempted=True, sftp_ok=False)],
+        ids=["failed-etl", "failed-delivery"],
+    )
+    @pytest.mark.parametrize(
+        "schedule",
+        [None, _EXPECTED_MISSING, _CONTRADICTION],
+        ids=["unprobed", "expected-missing", "contradiction"],
+    )
+    def test_failed_latest_reads_failed_on_both_surfaces(self, record: dict, schedule: ScheduleStatus | None) -> None:
+        home = derive_home_status([record], _CONFIGURED, now=_NOW, schedule_status=schedule)
+        banner = derive_history_banner([record], _CONFIGURED, now=_NOW, schedule_status=schedule)
+        assert home.verdict is Verdict.FAILED
+        assert banner.verdict is home.verdict

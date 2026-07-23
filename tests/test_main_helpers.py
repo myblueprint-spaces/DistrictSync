@@ -437,13 +437,13 @@ class TestSftpUpload:
         mock_app_config_cls.load.return_value = mock_cfg
 
         with patch("src.config.app_config.AppConfig.load", return_value=mock_cfg):
-            result = _sftp_upload(str(tmp_path))
+            result = _sftp_upload(str(tmp_path), manifest={"Students.csv"})
             assert result is False
 
     def test_sftp_missing_dependency(self):
         # If paramiko/keyring not installed, should return False gracefully
         with patch.dict("sys.modules", {"src.sftp.uploader": None, "src.sftp": None}):
-            result = _sftp_upload("/output")
+            result = _sftp_upload("/output", manifest={"Students.csv"})
             assert result is False
 
 

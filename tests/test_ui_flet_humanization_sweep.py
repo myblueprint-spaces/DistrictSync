@@ -28,10 +28,12 @@ from pathlib import Path
 import pytest
 
 from src.config.app_config import AppConfig
+from src.scheduler.windows import ScheduleReadback
 from src.ui_flet.convert_result import ConvertResult, ConvertStatus, summarize
 from src.ui_flet.home_status import derive_home_status
 from src.ui_flet.mapping_catalog import list_configs, summarize_config
 from src.ui_flet.run_history import derive_history_banner, to_run_row, to_run_rows
+from src.ui_flet.schedule_status import ScheduleStatus, derive_schedule_status
 
 # --------------------------------------------------------------------------- #
 # The planted sentinels — any of these appearing in emitted copy is a LEAK.    #
@@ -117,6 +119,25 @@ _BRANCH_OVERRIDES: tuple[dict, ...] = (
 )
 
 
+# The four schedule read-back states Home derives against (W3-B) — the attention flavors compose
+# their copy into a FAILED detail, so the sweep must cover them too. Derived from the real
+# ``derive_schedule_status`` (never hand-built) so the swept copy is the copy that ships.
+_SCHEDULE_STATES: dict[str, ScheduleStatus | None] = {
+    "unprobed": None,
+    "live": derive_schedule_status(
+        ScheduleReadback(found=True, next_run="2099-01-05T03:00:00"), hint_registered=True, latest_record_ts=None
+    ),
+    "expected-missing": derive_schedule_status(
+        ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None
+    ),
+    "contradiction": derive_schedule_status(
+        ScheduleReadback(found=True, last_run="2099-01-03T03:04:05"),
+        hint_registered=True,
+        latest_record_ts=_RAW_ISO,
+    ),
+}
+
+
 class TestHomeStatusSweep:
     def test_none_records_degradation_is_clean(self) -> None:
         _sweep_dataclass(derive_home_status(None, _CFG), where="derive_home_status(None)")
@@ -129,6 +150,16 @@ class TestHomeStatusSweep:
         record = _poisoned_record(**override)
         status = derive_home_status([record], _CFG)
         _sweep_dataclass(status, where=f"derive_home_status({override})")
+
+    @pytest.mark.parametrize("override", _BRANCH_OVERRIDES)
+    @pytest.mark.parametrize("schedule", list(_SCHEDULE_STATES), ids=[k for k in _SCHEDULE_STATES])
+    def test_every_branch_under_every_schedule_state_is_clean(self, override: dict, schedule: str) -> None:
+        # W3-B: a FAILED latest under a confirmed-gone schedule now emits a COMBINED detail (the
+        # failure sentence + the secondary schedule clause). Sweep every record branch × every
+        # schedule read-back state so the composed copy can never become a leak vector.
+        record = _poisoned_record(**override)
+        status = derive_home_status([record], _CFG, schedule_status=_SCHEDULE_STATES[schedule])
+        _sweep_dataclass(status, where=f"derive_home_status({override}, schedule={schedule})")
 
 
 class TestHistoryBannerSweep:

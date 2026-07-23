@@ -13,6 +13,7 @@ are hermetic — no home dependency, no real-config coupling for the fixture bra
 
 from __future__ import annotations
 
+from datetime import date as _date
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -21,11 +22,30 @@ import pytest
 from src.ui_flet.humanize import (
     AnomalyVariant,
     friendly_anomaly_detail,
+    friendly_date_short,
     friendly_district_name,
     friendly_sftp_reason,
     friendly_timestamp,
     pluralize,
 )
+
+
+class TestFriendlyDateShort:
+    """The seasonal-resume date copy (B): plain "Aug 11", PII-free, no year, un-padded day."""
+
+    def test_abbreviated_month_and_unpadded_day(self) -> None:
+        assert friendly_date_short(_date(2026, 8, 11)) == "Aug 11"
+
+    def test_single_digit_day_has_no_leading_zero(self) -> None:
+        assert friendly_date_short(_date(2026, 7, 6)) == "Jul 6"
+
+    def test_no_year_is_rendered(self) -> None:
+        # The seasonal window recurs every year — a year would misinform, so it is never shown.
+        assert "2026" not in friendly_date_short(_date(2026, 1, 1))
+
+    def test_leap_day_is_total(self) -> None:
+        assert friendly_date_short(_date(2028, 2, 29)) == "Feb 29"
+
 
 # The real bundled configs — used only for the "known district" and "unknown id"
 # cases (their district_name is asserted structurally, not by hardcoded string).
@@ -283,3 +303,70 @@ class TestFriendlySftpReason:
         assert raw not in result
         assert "secret-host" not in result
         assert "/root/roster" not in result
+
+
+class TestFriendlySftpReasonHostKey:
+    """W1-A: a host-key / server-identity failure gets its OWN category, ahead of the
+    generic fallback — which used to invite an admin to retype credentials at a possibly
+    impostor server (the raw reject message matches none of the other rules' words)."""
+
+    MISMATCH_REASON = (
+        "The server didn't match SpacesEDU's known identity, so nothing was sent. "
+        "Contact SpacesEDU support — don't retry or re-enter your password."
+    )
+    UNVERIFIED_REASON = (
+        "DistrictSync couldn't verify the server's identity, so nothing was sent. "
+        "Contact SpacesEDU support — don't retry or re-enter your password."
+    )
+
+    def test_the_real_uploader_mismatch_message_maps_to_the_identity_category(self) -> None:
+        """The cross-module pin: the EXACT string ``test_connection`` returns for a pinned-key
+        mismatch (not a hand-written approximation) must hit the identity rule."""
+        from src.sftp.uploader import _host_key_mismatch_message
+
+        raw = _host_key_mismatch_message("sftp.ca.spacesedu.com")
+        assert friendly_sftp_reason(raw) == self.MISMATCH_REASON
+
+    def test_the_real_uploader_unpinned_message_maps_to_the_unverified_category(self) -> None:
+        from src.sftp.uploader import _host_key_unpinned_message
+
+        raw = _host_key_unpinned_message("sftp.ca.spacesedu.com")
+        assert friendly_sftp_reason(raw) == self.UNVERIFIED_REASON
+
+    def test_the_real_uploader_port_message_maps_to_the_unverified_category(self) -> None:
+        from src.sftp.uploader import _host_key_port_unpinned_message
+
+        raw = _host_key_port_unpinned_message("[sftp.ca.spacesedu.com]:2222", "sftp.ca.spacesedu.com")
+        assert friendly_sftp_reason(raw) == self.UNVERIFIED_REASON
+
+    def test_raw_paramiko_bad_host_key_text_maps_to_the_identity_category(self) -> None:
+        """paramiko's own ``BadHostKeyException`` text carries the host AND both key blobs —
+        it must never reach an admin card, and it is an identity failure, not a generic one."""
+        raw = (
+            "Host key for server 'sftp.ca.spacesedu.com' does not match: got "
+            "'AAAAC3NzaC1lZDI1NTE5AAAAIPxBtjBnb69WmfeFndeQQtzHLMu', expected "
+            "'AAAAC3NzaC1lZDI1NTE5AAAAII+Z9Hmt2exPFjiWplMl4AyFcKf0litdDwfbwVWLwz9K'"
+        )
+        result = friendly_sftp_reason(raw)
+        assert result == self.MISMATCH_REASON
+        assert "AAAAC3Nza" not in result
+
+    @pytest.mark.parametrize("reason_attr", ["MISMATCH_REASON", "UNVERIFIED_REASON"])
+    def test_identity_copy_never_invites_a_retry_or_a_credential_re_entry(self, reason_attr: str) -> None:
+        reason = getattr(self, reason_attr)
+        assert "try again" not in reason.lower()
+        assert "check the host" not in reason.lower()
+        assert "don't retry or re-enter your password" in reason
+
+    def test_identity_copy_leaks_no_host_path_or_fingerprint(self) -> None:
+        from src.sftp.uploader import _host_key_mismatch_message, _host_key_unpinned_message
+
+        for raw in (
+            _host_key_mismatch_message("sftp.ca.spacesedu.com"),
+            _host_key_unpinned_message("sftp.ca.spacesedu.com"),
+        ):
+            result = friendly_sftp_reason(raw)
+            assert "spacesedu.com" not in result
+            assert "known_hosts" not in result
+            assert "ssh-keyscan" not in result
+            assert raw not in result

@@ -20,11 +20,14 @@ from src.ui_flet.setup_flow import (
     FinishSummaryRow,
     FlowInputs,
     ReconcileOutcome,
+    RegisteredSchedule,
     RunTimeSaveDecision,
+    ScheduleReconcile,
     SetupStep,
     TaskArgs,
     auto_selected_district,
     can_advance,
+    default_window_bounds,
     derive_flow,
     downgrade_interrupt,
     finish_copy,
@@ -34,14 +37,17 @@ from src.ui_flet.setup_flow import (
     is_skippable,
     next_step,
     prev_step,
+    registered_schedule,
     run_time_save_decision,
     schedule_delivery_desync,
+    schedule_reconcile,
     sftp_reconcile_suffix,
     step_number,
     task_args_changed,
     task_args_from_persisted,
     task_args_to_persisted,
 )
+from src.ui_flet.setup_gates import window_settings_valid, window_valid_from_config
 
 # --------------------------------------------------------------------------- #
 # Fixtures / helpers                                                            #
@@ -253,6 +259,114 @@ class TestAdvanceGate:
             delivery=DeliveryFact.SKIPPED,
         )
         assert can_advance(SetupStep.FINISH, ready) is True
+
+
+class TestWindowAdvanceGate:
+    """B: the Schedule step is skippable BUT window-gated — an enabled+invalid seasonal window
+    closes Continue (the "Enter can't bypass a disabled button" guarantee, extended to the
+    window). Delivery stays unconditionally advanceable; the window never affects it."""
+
+    def test_schedule_blocks_when_window_invalid(self):
+        assert can_advance(SetupStep.SCHEDULE, _inputs(window_valid=False)) is False
+
+    def test_schedule_advances_when_window_valid(self):
+        assert can_advance(SetupStep.SCHEDULE, _inputs(window_valid=True)) is True
+
+    def test_delivery_is_never_affected_by_the_window(self):
+        assert can_advance(SetupStep.DELIVERY, _inputs(window_valid=False)) is True
+
+    def test_window_valid_defaults_true(self):
+        # Opt-in: with no window touched the gate is open (the default FlowInputs value).
+        assert _inputs().window_valid is True
+        assert can_advance(SetupStep.SCHEDULE, _inputs()) is True
+
+    def test_window_does_not_affect_resume_or_finish(self):
+        # An invalid window is transient (never persisted) — it must not change resume/satisfaction.
+        ready = _inputs(folders_valid=True, district_chosen=True, schedule_skipped=True, delivery=DeliveryFact.SKIPPED)
+        assert derive_flow(ready).can_finish is True
+        assert derive_flow(_inputs(window_valid=False)).resume_step is derive_flow(_inputs()).resume_step
+
+
+class TestWindowRegateStrandRecovery:
+    """FIX 3: enable the window -> drive an INVALID end (``window_valid`` goes False, nothing
+    persisted) -> Back -> Forward. Because the Schedule section rebuilds from cfg (the last VALID
+    bounds) but the live on-change handler never re-fires on a rebuild, ``window_valid`` used to
+    stay stale-False and strand BOTH the Continue and the "Set up later" gate with no on-screen
+    cause. ``window_valid_from_config`` re-derives the flag on every (re)build so the gate matches
+    the freshly-rebuilt valid UI. Modelled here with the SAME COUNTED helpers the view calls."""
+
+    def test_stale_false_strands_then_regate_recovers(self):
+        # 1. The live handler saw the invalid end -> window_valid False strands the Schedule step
+        #    (RED against base: nothing re-derives it on the rebuild).
+        stranded = window_settings_valid(True, "08-11", "13-99")
+        assert stranded is False
+        assert (
+            can_advance(SetupStep.SCHEDULE, _inputs(folders_valid=True, district_chosen=True, window_valid=stranded))
+            is False
+        )
+        # 2. Back->Forward rebuilds from cfg (the last VALID bounds; the invalid end never persisted).
+        #    The fix re-derives the gate from the persisted config on rebuild:
+        regated = window_valid_from_config(
+            enabled=True, start_md="08-11", end_md="07-06", prefill_start="08-11", prefill_end="07-06"
+        )
+        assert regated is True
+        # The strand recovers — Continue (and "Set up later") is enabled again.
+        assert (
+            can_advance(SetupStep.SCHEDULE, _inputs(folders_valid=True, district_chosen=True, window_valid=regated))
+            is True
+        )
+
+
+class TestDefaultWindowBounds:
+    """B pre-fill: (start, end) derived from the district academic calendar — pure + TOTAL."""
+
+    def test_canonical_base_calendar_reproduces_the_owner_example(self):
+        # The base myedbc academic start is 08-25 → start 08-11 (−14d), end 07-06 (start −36d):
+        # EXACTLY the owner's canonical Aug 11 → Jul 6 window.
+        assert default_window_bounds("08-25", "07-25") == ("08-11", "07-06")
+
+    def test_start_is_academic_start_minus_two_weeks(self):
+        assert default_window_bounds("09-08")[0] == "08-25"  # Sep 8 − 14d = Aug 25
+
+    def test_end_ignores_academic_end_data_boundary(self):
+        # academic_end ("07-25") is the DATA-year boundary, NOT school-end — it must NOT be the
+        # season end (that would overlap the start). The end derives from the start instead.
+        _, end = default_window_bounds("08-25", "07-25")
+        assert end != "07-25"
+        assert end == "07-06"
+
+    def test_end_gives_a_summer_gap_before_the_start(self):
+        start, end = default_window_bounds("08-25")
+        # end is ~5 weeks before start (the summer pause) — a wrap-around window, start > end.
+        assert start > end
+
+    @pytest.mark.parametrize("bad", [None, "", "   ", "13-40", "not-a-date", "0825", "02-29"])
+    def test_unusable_start_falls_back_to_plain_defaults(self, bad):
+        # None/blank/malformed/leap-day (a school year never starts Feb 29) → the plain fallback.
+        assert default_window_bounds(bad) == ("08-11", "07-06")
+
+    def test_academic_end_is_optional(self):
+        assert default_window_bounds("08-25") == ("08-11", "07-06")
+
+
+class TestWindowIsNotATaskArg:
+    """B: the seasonal window is NOT baked into the scheduled task — changing it must NEVER
+    re-register. ``TaskArgs`` therefore has no window field, so a window-only change is invisible
+    to ``task_args_changed`` (the reconcile predicate the Settings Save drives)."""
+
+    def test_task_args_has_no_window_field(self):
+        from dataclasses import fields
+
+        names = {f.name for f in fields(TaskArgs)}
+        assert not any(n.startswith("sync_window") or n.startswith("window") for n in names)
+
+    def test_window_only_change_is_not_a_task_arg_change(self):
+        # Two AppConfigs differing ONLY in the seasonal window produce IDENTICAL TaskArgs, so the
+        # reconcile sees "unchanged" → no re-register (the non-negotiable: window is not a task arg).
+        common = dict(input_dir="/in", output_dir="/out", sis_type="myedbc", sftp_enabled=False, run_time="03:00")
+        before = TaskArgs.of(**common)
+        after = TaskArgs.of(**common)  # window differs in the config, but never reaches TaskArgs
+        assert task_args_changed(before, after) is False
 
 
 # --------------------------------------------------------------------------- #
@@ -821,8 +935,8 @@ class TestTaskArgsPersistedRoundTrip:
         ],
     )
     def test_unusable_record_returns_none_never_raises(self, raw):
-        # Defensive-total by design: a hand-edited/absent record degrades to the mount-snapshot
-        # fallback (None) instead of crashing Settings.
+        # Defensive-total by design: a hand-edited/absent record reads as "no record" (None) —
+        # the honest UNKNOWN the reconcile acts on (W3-C) — instead of crashing Settings.
         assert task_args_from_persisted(raw) is None
 
     def test_extra_keys_are_ignored(self):
@@ -835,6 +949,137 @@ class TestTaskArgsPersistedRoundTrip:
         raw = task_args_to_persisted(self._args())
         raw["output_dir"] = "  /out  "
         assert task_args_from_persisted(raw) == self._args()
+
+
+# --------------------------------------------------------------------------- #
+# The durable registered-schedule record + the reconcile decision (W3-C).        #
+# The record is the ONLY reconcile baseline — an absent one is UNKNOWN, never    #
+# silently "up to date" (the mount-snapshot fallback's silent no-op).            #
+# --------------------------------------------------------------------------- #
+def _task_args(**over) -> TaskArgs:
+    base = {
+        "input_dir": "/in",
+        "output_dir": "/out",
+        "sis_type": "myedbc",
+        "sftp_enabled": False,
+        "run_time": "03:00",
+    }
+    base.update(over)
+    return TaskArgs.of(**base)
+
+
+class TestRegisteredSchedule:
+    def test_a_usable_record_carries_both_facts(self):
+        record = registered_schedule(
+            raw_task_args=task_args_to_persisted(_task_args()),
+            unattended_flag=True,
+            supports_unattended=True,
+        )
+        assert record == RegisteredSchedule(args=_task_args(), unattended=True)
+
+    @pytest.mark.parametrize("raw", [None, "not a dict", {}, {"input_dir": "/in"}])
+    def test_an_absent_or_garbled_record_is_unknown_on_BOTH_facts(self, raw):
+        # The record is ATOMIC (both facets are written by the same confirmed register and
+        # cleared by the same unregister): no args record ⇒ the unattended flag is equally
+        # un-evidenced, so it must read unknown rather than its False default.
+        record = registered_schedule(raw_task_args=raw, unattended_flag=False, supports_unattended=True)
+        assert record.args is None
+        assert record.unattended is None
+
+    def test_an_unknown_record_is_not_unattended_where_the_platform_has_no_logon_type(self):
+        # cron has no logon type — there is nothing an unproven re-register could downgrade, so
+        # "unknown" would only produce a nonsense Windows-password prompt.
+        record = registered_schedule(raw_task_args=None, unattended_flag=False, supports_unattended=False)
+        assert record.unattended is False
+
+    def test_a_RECORDED_unattended_fact_is_honored_regardless_of_platform_capability(self):
+        # A durable recorded fact is evidence — it is never overridden by the running platform's
+        # capability (a config can travel; only the INFERENCE is capability-gated).
+        record = registered_schedule(
+            raw_task_args=task_args_to_persisted(_task_args()),
+            unattended_flag=True,
+            supports_unattended=False,
+        )
+        assert record.unattended is True
+
+
+class TestScheduleReconcile:
+    def test_no_registered_task_needs_no_reconcile(self):
+        record = registered_schedule(raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False)
+        assert (
+            schedule_reconcile(schedule_registered=False, record=record, pending=_task_args(sis_type="sd48myedbc"))
+            is ScheduleReconcile.NO_TASK
+        )
+
+    def test_a_matching_record_is_up_to_date(self):
+        record = registered_schedule(raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False)
+        assert (
+            schedule_reconcile(schedule_registered=True, record=record, pending=_task_args())
+            is ScheduleReconcile.UP_TO_DATE
+        )
+
+    def test_a_cosmetic_whitespace_difference_is_still_up_to_date(self):
+        record = registered_schedule(raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False)
+        assert (
+            schedule_reconcile(schedule_registered=True, record=record, pending=_task_args(output_dir="  /out  "))
+            is ScheduleReconcile.UP_TO_DATE
+        )
+
+    def test_a_changed_record_reregisters(self):
+        record = registered_schedule(raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False)
+        assert (
+            schedule_reconcile(schedule_registered=True, record=record, pending=_task_args(sis_type="sd48myedbc"))
+            is ScheduleReconcile.REREGISTER
+        )
+
+    def test_an_ABSENT_record_reregisters_even_when_pending_matches_the_current_config(self):
+        # THE W3-C regression: after a Mapping district switch the config on disk ALREADY carries
+        # the new district, so any baseline derived from the current config equals `pending` and
+        # the reconcile silently does nothing — while the live task still bakes the OLD district.
+        # With no durable record the app cannot know what the task carries, so it must act.
+        record = registered_schedule(raw_task_args=None, unattended_flag=False)
+        assert (
+            schedule_reconcile(schedule_registered=True, record=record, pending=_task_args(sis_type="sd48myedbc"))
+            is ScheduleReconcile.REREGISTER
+        )
+
+    def test_an_absent_record_with_no_task_registered_is_still_NO_TASK(self):
+        record = registered_schedule(raw_task_args=None, unattended_flag=False)
+        assert (
+            schedule_reconcile(schedule_registered=False, record=record, pending=_task_args())
+            is ScheduleReconcile.NO_TASK
+        )
+
+
+class TestDowngradeInterruptOnAnUnknownRecord:
+    def test_an_unknown_logon_type_without_a_password_interrupts(self):
+        # Never silently replace a possibly-unattended task with a logged-on-only one: on a
+        # district server nobody is signed in, so that would stop the nightly sync entirely.
+        assert downgrade_interrupt(registered_unattended=None, password_supplied=False) is not None
+
+    def test_an_unknown_logon_type_with_a_password_supplied_proceeds(self):
+        # A supplied password keeps the task unattended either way — nothing can be downgraded.
+        assert downgrade_interrupt(registered_unattended=None, password_supplied=True) is None
+
+    def test_the_unknown_copy_never_asserts_a_state_it_did_not_check(self):
+        interrupt = downgrade_interrupt(registered_unattended=None, password_supplied=False)
+        known = DowngradeInterrupt()
+        assert interrupt is not None
+        assert interrupt.headline != known.headline
+        assert interrupt.detail != known.detail
+        # The KNOWN-unattended copy asserts the current state; the unknown variant must not.
+        assert "currently runs" in known.detail
+        assert "currently runs" not in interrupt.detail
+        assert "can't tell" in interrupt.detail
+
+    def test_the_unknown_variant_offers_the_same_three_choices(self):
+        # The view renders the labels straight off the interrupt — the choices must not diverge.
+        interrupt = downgrade_interrupt(registered_unattended=None, password_supplied=False)
+        known = DowngradeInterrupt()
+        assert interrupt is not None
+        assert interrupt.keep_unattended_label == known.keep_unattended_label
+        assert interrupt.signed_in_only_label == known.signed_in_only_label
+        assert interrupt.cancel_label == known.cancel_label
 
 
 # --------------------------------------------------------------------------- #

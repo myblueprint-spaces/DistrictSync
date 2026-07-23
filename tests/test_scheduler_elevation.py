@@ -29,6 +29,7 @@ import pytest
 from src.scheduler import elevation, windows
 from src.scheduler.elevation import ElevationOutcome, ElevationResult
 from src.scheduler.windows import ScheduleReadback
+from src.utils import helpers
 
 WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="DPAPI is a Windows-only API")
 
@@ -131,13 +132,25 @@ class TestRequestResultProtocol:
 
 
 class TestElevationHelpers:
-    def test_system_powershell_path_is_absolute_system32(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_powershell_resolves_through_the_shared_system_binary_seam(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Elevation resolves powershell.exe through the ONE shared helper, not a private copy.
+
+        ``src/utils/helpers.system_binary`` is the single source for every absolute
+        System32 invocation (``windows.py`` uses the same seam); a second local copy is
+        exactly how one call site drifts back to a hijackable bare name.
+        """
+        monkeypatch.setattr(elevation.sys, "platform", "win32")
         monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
-        path = elevation._system_powershell_path()
-        assert "System32" in path
-        assert "WindowsPowerShell" in path
-        assert path.endswith("powershell.exe")
-        assert path != "powershell"
+        captured: dict[str, str] = {}
+
+        def _fake(file: str, params: str) -> tuple[int, int]:
+            captured["file"] = file
+            return (0, 1223)
+
+        monkeypatch.setattr(elevation, "_shell_execute_runas", _fake)
+        elevation.run_elevated_powershell("QUJD", timeout_s=1)
+        assert captured["file"] == helpers.system_binary("powershell.exe")
+        assert captured["file"] == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
     def test_current_user_prefers_domain_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("USERDOMAIN", "CORP")
@@ -166,8 +179,36 @@ class TestElevationHelpers:
 
         monkeypatch.setattr(elevation.subprocess, "run", _fake_run)
         elevation._set_owner_only_dacl(tmp_path / "dsync_elev_x.req")
-        assert captured["argv"][0] == "icacls"  # type: ignore[index]
+        assert captured["argv"][0].endswith("icacls.exe")  # type: ignore[union-attr]
         assert captured["kwargs"]["creationflags"] == subprocess_no_window_flags()  # type: ignore[index]
+
+    def test_owner_only_dacl_invokes_absolute_system32_icacls(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """argv[0] is the ABSOLUTE System32 icacls.exe — never a bare ``icacls``.
+
+        This call locks the DACL on the DPAPI-sealed request file that carries the
+        district account password; a bare name would let a binary planted in the calling
+        exe's directory or the CWD (both probed before System32 absent
+        ``SafeProcessSearchMode``) run *with that file's path as an argument*.
+        """
+        monkeypatch.setattr(elevation.sys, "platform", "win32")
+        monkeypatch.setattr(elevation, "_current_user", lambda: "CORP\\jane")
+        monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+        captured: dict[str, object] = {}
+
+        def _fake_run(argv, **kwargs):  # type: ignore[no-untyped-def]
+            captured["argv"] = argv
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(elevation.subprocess, "run", _fake_run)
+        elevation._set_owner_only_dacl(tmp_path / "dsync_elev_x.req")
+
+        argv = captured["argv"]
+        assert argv[0] == r"C:\Windows\System32\icacls.exe"  # type: ignore[index]
+        assert argv[0] != "icacls"  # type: ignore[index]
+        # The remaining owner-only DACL arguments are unchanged.
+        assert argv[2:] == ["/inheritance:r", "/grant:r", "CORP\\jane:F"]  # type: ignore[index]
 
 
 class TestSweepOrphans:

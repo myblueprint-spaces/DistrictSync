@@ -209,6 +209,21 @@ A successful dry run prints a summary like:
   Enrollments: 12,456 rows
 ```
 
+!!! note "Reading the output on Windows"
+    The Windows `.exe` is a **windowed** application, so double-clicking it never
+    flashes a console window. When you run it from Command Prompt or PowerShell
+    *with* arguments, it attaches to that window and prints there — but because it
+    is windowed, the shell does **not** wait for it: your prompt comes back
+    straight away and the output appears afterwards. To make the prompt wait:
+
+    ```cmd
+    start /wait C:\DistrictSync\DistrictSync-windows.exe --sis myedbc --input C:\DistrictSync\input --output C:\DistrictSync\output --dry-run
+    echo Exit code: %ERRORLEVEL%
+    ```
+
+    If you see no output at all, check `etl_tool.log` (Step 5 below) — and see
+    [Exit codes](troubleshooting.md#exit-codes) for what the run reported.
+
 ### Verify Task Scheduler (Windows)
 
 1. Open **Task Scheduler** (search in Start menu)

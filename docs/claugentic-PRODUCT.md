@@ -27,8 +27,8 @@ three. (They are the same person, not three user types — but the job, the mood
 different each time, so the surfaces are reviewed against all three.)
 
 - **The Installer (first run, ~once).** Job: *"Get this configured and prove tonight's sync will
-  actually reach SpacesEDU, then walk away."* Wants a linear, verifiable path — folders → district →
-  schedule → delivery → a checked "you're done, here's what happens tonight" — and cares about
+  actually reach SpacesEDU, then walk away."* Wants a linear, verifiable path — district → folders →
+  delivery → schedule → a checked "you're done, here's what happens tonight" — and cares about
   certainty, not features.
 - **The Watcher (steady state, ~95% of the product's life).** Job: *"Tell me in one glance that last
   night's roster reached SpacesEDU — and if not, what to do."* Glances in occasionally, or after an
@@ -147,8 +147,8 @@ States:
 
 ### Setup — a first-run wizard that graduates into Settings
 
-**First run is a five-step wizard** (D8, as of Slice 8): **Folders → District → Delivery → Schedule →
-an honest checked finish line**. A "Step N of 5" indicator + Back move through it; Enter/Continue
+**First run is a five-step wizard** (D8, as of Slice 8; order revised 2026-07-15 — District leads):
+**District → Folders → Delivery → Schedule → an honest checked finish line**. A "Step N of 5" indicator + Back move through it; Enter/Continue
 advances only when the step's own gate is satisfied (the same predicate the disabled button
 enforces); focus moves to the new step's first field. **Schedule and Delivery are skippable** ("Set
 up later") so the first success isn't gated on having a Windows password and a live SFTP credential
@@ -219,9 +219,11 @@ state each step owes the user.
 
 ### Journey 1 — First-run setup (the Installer)
 
-A single guided path that ends in a checked promise: **folders → district → schedule → delivery → a
+A single guided path that ends in a checked promise: **district → folders → delivery → schedule → a
 verified "you're set up" summary**. Schedule and Delivery are skippable ("set up later") so the first
-success isn't gated on having a Windows password and live SFTP credentials in hand.
+success isn't gated on having a Windows password and live SFTP credentials in hand. (Delivery
+precedes Schedule so the nightly task's `--sftp` flag is baked from a committed delivery choice at
+registration time.)
 
 - **Empty / start** — one front door (Home's onboarding hero → the wizard), never three competing
   entrances.

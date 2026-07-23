@@ -24,6 +24,7 @@ import pytest
 from src.config.app_config import AppConfig
 from src.etl.pipeline import run_pipeline
 from src.history.store import read_run_records
+from src.ui_flet.convert_output import run_identity
 from src.ui_flet.convert_result import ConvertStatus
 from src.ui_flet.screens.convert import convert_job
 from tests.test_pipeline_run_store import _write_myedbc_input
@@ -103,7 +104,15 @@ class TestConvertJobVanishGate:
         # Explicit acknowledgement: the write proceeds (a legit-empty source stays a
         # warning, never a failure) and the stale Family.csv is archived out of the
         # ship set — moved aside, never deleted.
-        acked = convert_job("myedbc", str(gde_input), anomaly_ack=True)
+        #
+        # DELIBERATELY STRENGTHENED (FIX-2): this line used to read ``anomaly_ack=True``.
+        # A bare boolean is exactly the permissive contract the ack-identity defect rested
+        # on — any later run could spend it. The ack is now a ``RunIdentity`` token that
+        # authorizes only the run it names; passing the identity of THIS run keeps the
+        # original assertion (an acknowledged vanish writes + archives) intact while
+        # closing the "which run did I approve?" hole. See
+        # ``test_ack_from_one_run_never_authorizes_a_different_run`` for the inverse.
+        acked = convert_job("myedbc", str(gde_input), anomaly_ack=run_identity("myedbc", str(gde_input)))
         assert acked.status is not ConvertStatus.NEEDS_ANOMALY_ACK
         assert acked.entity_counts  # a committed build
         assert not (gde_output / "Family.csv").exists()
@@ -112,6 +121,68 @@ class TestConvertJobVanishGate:
         assert (archives[0] / "Family.csv").read_bytes() == family_before
         # The SFTP ship set (top-level *.csv) no longer contains the stale file.
         assert "Family.csv" not in {p.name for p in gde_output.glob("*.csv")}
+
+    def test_ack_from_one_run_never_authorizes_a_different_run(
+        self, gde_input: Path, gde_output: Path, tmp_path: Path
+    ) -> None:
+        """FIX-2: the acknowledgement is bound to the RUN IDENTITY it reviewed.
+
+        Reproduce-first. The ack card used to take a snapshotted ``(district, input_dir)``
+        and never use it: ``_on_ack`` called ``_start_convert(anomaly_ack=True)``, which
+        re-read the district dropdown and the input picker FRESH — and those controls were
+        re-enabled by ``_set_running(False)`` while the card was still on screen. So the
+        admin could review folder A's "some files look much smaller than usual", repoint
+        the picker at folder B, click "I've reviewed this — convert anyway", and B's write
+        proceeded on A's review. The anomaly gate is the last safety net between a
+        truncated export and a collapsed roster reaching SpacesEDU; an ack that can approve
+        a run nobody looked at is not a gate.
+
+        The write-gate now takes a ``RunIdentity`` token, not a bool, and honours it only
+        when it matches the run actually executing — so an unreviewed run is refused at the
+        gate itself, not merely hidden by the view.
+        """
+        self._configure(gde_input, gde_output)
+        convert_job("myedbc", str(gde_input))  # baseline in the shared output folder
+
+        # A SECOND input folder the admin could repoint the picker at mid-review.
+        other_input = tmp_path / "input_b"
+        other_input.mkdir()
+        _write_myedbc_input(other_input)
+        (other_input / "EmergencyContactInformation.txt").unlink()  # B is anomalous too — never reviewed
+
+        # Folder A raises the ack card.
+        (gde_input / "EmergencyContactInformation.txt").unlink()
+        gated = convert_job("myedbc", str(gde_input))
+        assert gated.status is ConvertStatus.NEEDS_ANOMALY_ACK
+        reviewed = run_identity("myedbc", str(gde_input))
+        family_before = (gde_output / "Family.csv").read_bytes()
+
+        # The admin repoints to B, then clicks the ack: A's approval, B's run.
+        acked_wrong_run = convert_job("myedbc", str(other_input), anomaly_ack=reviewed)
+
+        assert acked_wrong_run.status is ConvertStatus.NEEDS_ANOMALY_ACK  # B was never reviewed
+        assert (gde_output / "Family.csv").read_bytes() == family_before  # nothing written under A's ack
+        assert _archive_dirs(gde_output) == []
+
+        # The SAME token does authorize the run it actually reviewed.
+        acked_right_run = convert_job("myedbc", str(gde_input), anomaly_ack=reviewed)
+        assert acked_right_run.status is not ConvertStatus.NEEDS_ANOMALY_ACK
+        assert acked_right_run.entity_counts
+
+    def test_ack_for_a_different_district_never_authorizes_this_run(self, gde_input: Path, gde_output: Path) -> None:
+        """The district axis of the same binding — the dropdown was equally editable."""
+        self._configure(gde_input, gde_output)
+        convert_job("myedbc", str(gde_input))
+        (gde_input / "EmergencyContactInformation.txt").unlink()
+        assert convert_job("myedbc", str(gde_input)).status is ConvertStatus.NEEDS_ANOMALY_ACK
+        family_before = (gde_output / "Family.csv").read_bytes()
+
+        # Reviewed under sd48myedbc, clicked while the dropdown reads myedbc.
+        stale = run_identity("sd48myedbc", str(gde_input))
+        result = convert_job("myedbc", str(gde_input), anomaly_ack=stale)
+
+        assert result.status is ConvertStatus.NEEDS_ANOMALY_ACK
+        assert (gde_output / "Family.csv").read_bytes() == family_before
 
     def test_manual_convert_archives_stale_cross_config_csv_without_false_anomaly(
         self, gde_input: Path, gde_output: Path

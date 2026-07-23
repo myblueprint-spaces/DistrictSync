@@ -42,6 +42,8 @@ from src.etl.transformers import ids as _ids
 from src.etl.transformers import naming as _naming
 from src.etl.transformers import sources as _sources
 from src.etl.transformers.context import TransformContext
+from src.utils.helpers import describe_exception_for_log as _describe_exception
+from src.utils.helpers import describe_value_for_log as _describe_value
 from src.utils.helpers import normalize_columns as _normalize_columns
 
 logger = logging.getLogger(__name__)
@@ -221,9 +223,13 @@ class BaseTransformer(ABC):
                 if bad and used
             ]
             if unparseable:
+                # Shapes, not values: a mis-mapped withdraw_date_column would
+                # otherwise dump ten students' cells into the support log. The
+                # distinct shapes are what actually diagnose the format mismatch.
+                shapes = sorted({_describe_value(v) for v in unparseable[:10]})
                 logger.warning(
                     f"[Students] Could not parse {len(unparseable)} withdraw date(s); "
-                    f"treated as Inactive. Sample formats: {set(unparseable[:10])}"
+                    f"treated as Inactive. Sample value shapes: {shapes}"
                 )
 
         return labels
@@ -671,7 +677,13 @@ class BaseTransformer(ABC):
                 out.append(pd.NA)
                 failures += 1
                 if not first_sample:
-                    first_sample = f"{value!r}: {ex}"
+                    # The failing cell is student PII (a district field_map may
+                    # attach normalize_iso_date to a DOB, truncate_name to a
+                    # legal name) and this log ships to support — so BOTH the
+                    # value and the exception message (stdlib parsers echo their
+                    # input) go through the log-safety seam. Shape + error type
+                    # only; never the content.
+                    first_sample = f"{_describe_value(value)} → {_describe_exception(ex)}"
         if failures:
             logger.error(
                 f"Error transforming {entity}.{tgt_field}: {failures} row(s) failed "

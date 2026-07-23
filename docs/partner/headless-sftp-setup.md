@@ -18,6 +18,20 @@ Credential Manager, macOS Keychain, or Linux Secret Service (GNOME
 Keyring / KWallet / libsecret). **The password is never written to disk
 in plaintext.**
 
+!!! note "On Windows, run these from a terminal — not by double-clicking"
+    The Windows `.exe` is a windowed application (double-clicking opens the
+    desktop app, not a console). When you launch it from Command Prompt or
+    PowerShell **with** arguments it attaches to that window, so the prompts and
+    confirmations below appear there as shown. Launched with no terminal attached
+    — a scheduled task, a service, or a double-click — it prints nothing and
+    cannot prompt; use the flag-driven or stdin forms (Options 2 and 3) in that
+    case, or configure SFTP from the desktop app's Setup screen.
+
+    Because the app is windowed, your shell returns to the prompt immediately.
+    That is cosmetic for the non-interactive forms; for the interactive prompt in
+    Option 1, run it as `start /wait DistrictSync --sftp-configure` so the shell
+    stays with the session.
+
 ---
 
 ## Option 1 — Interactive prompt

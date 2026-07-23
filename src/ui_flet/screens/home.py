@@ -49,7 +49,7 @@ from src.config.app_config import AppConfig
 from src.history.store import read_run_records, store_meta
 from src.scheduler import get_scheduler
 from src.ui_flet import components, nav, tokens
-from src.ui_flet.home_status import ENTITY_LABELS, FixAction, HomeMetrics, derive_home_status
+from src.ui_flet.home_status import ENTITY_LABELS, FixAction, HomeMetrics, derive_home_status, sync_window_paused
 from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.screens.onboarding import build_onboarding
@@ -208,11 +208,19 @@ def _dashboard(
             controls.append(components.section_label("Latest roster"))
             controls.append(_metric_tiles_row(status.metrics))
         # The clean-schedule row-card surfaces the LIVE read-back only — an attention state is
-        # already the dominant WARNING band + fix button above, so the two never both show.
+        # already named above (as the dominant WARNING band + fix button, or — when the latest
+        # record is FAILED and outranks it, W3-B — as the secondary clause on the FAILED band),
+        # so a reassuring schedule card never shows alongside a schedule fault.
+        #
+        # FIX 4: it is ALSO suppressed during a seasonal pause. The verdict band above already reads
+        # "Paused for the summer"; a LIVE "next run at 3:00 AM — Confirmed" card beneath it would make
+        # Home contradict itself on the flagship surface. ``sync_window_paused`` is the SAME pure fact
+        # the banner derives (single source), read with ``now=None`` to match the record-based paint.
         if (
             schedule_status is not None
             and schedule_status.state is ScheduleState.LIVE
             and not schedule_status.attention
+            and not sync_window_paused(app_config, now=None)
         ):
             controls.append(_schedule_card(schedule_status, on_navigate))
         container.controls = controls

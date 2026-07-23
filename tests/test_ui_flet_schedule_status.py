@@ -219,6 +219,41 @@ class TestBadgeModel:
         assert needs_setup_badge(None) is False
 
 
+class TestBadgeIsWindowAware:
+    """During an enabled seasonal pause the fired-but-no-record contradiction is by design and
+    must NOT badge (matching Home's calm 'Paused' state) — but a genuinely MISSING task still
+    must, because a gone schedule won't resume in the fall. The two attention sources are
+    mutually exclusive, so ``paused`` suppresses exactly the contradiction case."""
+
+    def _contradiction(self) -> object:
+        # LIVE, fired more recently than the newest recorded run → attention via contradiction.
+        return _derive(
+            ScheduleReadback(found=True, last_run="2026-07-08T03:00:00"),
+            latest_record_ts="2026-07-07T03:00:00",
+        )
+
+    def test_contradiction_still_badges_when_not_paused(self) -> None:
+        # Baseline: outside a pause the contradiction badges exactly as before.
+        assert needs_setup_badge(self._contradiction(), paused=False) is True
+
+    def test_contradiction_is_suppressed_during_a_pause(self) -> None:
+        status = self._contradiction()
+        assert status.contradiction is True  # precondition — this IS the summer-spurious source
+        assert needs_setup_badge(status, paused=True) is False
+
+    def test_missing_still_badges_during_a_pause(self) -> None:
+        # A gone task is a real problem even in summer — the pause must not hide it.
+        missing = _derive(ScheduleReadback(found=False), hint_registered=True)
+        assert missing.contradiction is False
+        assert needs_setup_badge(missing, paused=True) is True
+
+    def test_paused_default_is_false_so_existing_callers_are_unchanged(self) -> None:
+        assert needs_setup_badge(self._contradiction()) is True
+
+    def test_none_status_is_false_even_when_paused(self) -> None:
+        assert needs_setup_badge(None, paused=True) is False
+
+
 class TestTransientLocation:
     def test_downloads_is_transient(self) -> None:
         assert is_transient_location(r"C:\Users\jane\Downloads\DistrictSync.exe") is True

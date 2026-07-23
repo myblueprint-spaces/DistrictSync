@@ -22,6 +22,10 @@ Rule order (first-match-wins; failures above warnings above healthy — a failed
 never masked by a later "healthy") mirrors ``03_Run_History._status_cell``'s proven
 precedence (status → sftp → data_errors), extended with anomaly + staleness + empty, and
 tied to the CLI exit-code contract (1 = ETL fail, 3 = SFTP fail with output present).
+**That ordering binds the schedule-attention rule too (W3-B):** a broken nightly schedule is
+a WARNING-tier fault, so it outranks every other warning, the empty state and healthy — but
+it NEVER outranks a FAILED latest record. When both are true the failure keeps the band and
+the single fix CTA, and the schedule fault rides along as a bounded secondary clause.
 
 The pipeline emits entity counts as **FLAT top-level keys** on the record
 (``record["Students"]``, ``record["Staff"]``, …) — verified against
@@ -36,7 +40,14 @@ from datetime import datetime
 from enum import Enum
 
 from src.config.app_config import AppConfig
-from src.ui_flet.humanize import AnomalyVariant, friendly_anomaly_detail, friendly_timestamp, pluralize
+from src.etl.sync_window import in_sync_window, next_resume_date
+from src.ui_flet.humanize import (
+    AnomalyVariant,
+    friendly_anomaly_detail,
+    friendly_date_short,
+    friendly_timestamp,
+    pluralize,
+)
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.verdict import Verdict
 
@@ -92,6 +103,24 @@ _OPEN_SETUP_LABEL = "Fix the nightly schedule"
 # section (host/credentials), not in the read-only run ledger — and the label says where it
 # goes (the rail label graduates to Settings; "Open Settings" matches Mapping's existing route).
 _OPEN_SETTINGS_LABEL = "Open Settings"
+
+# The SECONDARY schedule clause appended to a FAILED detail when the nightly schedule is
+# CONFIRMED gone (W3-B). Two real faults, one possible CTA: the failure keeps the band + button
+# (it is the dominant fault and the one the admin came to fix), and this fixed, category-only
+# sentence stops the Firefighter from fixing the run and walking away believing tonight's sync
+# resumes — it positively will not, because we definitively read the task back as absent.
+# Authored copy, never a field lifted off the record → the PII-free-by-construction bar holds.
+_SCHEDULE_GONE_NOTE = (
+    "Your nightly schedule is also no longer registered with Windows — "
+    "re-register it in Settings so the sync can run again."
+)
+
+# The seasonal-pause headline (B): while an ENABLED window is OUTSIDE its active season, no
+# nightly sync arrives BY DESIGN, so the missed-run / stale / fired-but-no-record warnings would
+# all FALSE-FIRE every summer night. The pause is a healthy, intentional state — not amber/red —
+# so its verdict is HEALTHY (an amber "attention" tone would train the admin to ignore amber). The
+# resume date is a PURE fact (``next_resume_date``), rendered PII-free via ``friendly_date_short``.
+_PAUSED_HEADLINE = "Paused for the summer"
 
 
 @dataclass(frozen=True)
@@ -313,9 +342,11 @@ def derive_home_status(
 
     ``schedule_status`` (D4) is the injected tri-state schedule read-back (the view fetches it
     off-thread). When it reports ``attention`` (a schedule the config expected but the OS no
-    longer has, or one that fired without completing) it becomes the DOMINANT trust fault,
-    routed to Setup — never back into onboarding. A ``None`` (not yet probed / non-applicable)
-    or UNKNOWN schedule is silently ignored — Home NEVER asserts an unconfirmed schedule.
+    longer has, or one that fired without completing) it is the dominant WARNING-tier trust
+    fault, routed to Setup — never back into onboarding — but it is still bound by the module's
+    failures-above-warnings precedence and so NEVER masks a FAILED latest record (W3-B). A
+    ``None`` (not yet probed / non-applicable) or UNKNOWN schedule is silently ignored — Home
+    NEVER asserts an unconfirmed schedule.
     """
     # Rule: status unavailable (the never-crash floor) — the reader couldn't read the store.
     if records is None:
@@ -328,10 +359,41 @@ def derive_home_status(
         )
 
     # Rule: schedule needs attention (D4) — the read-back contradicts the config (task gone
-    # while expected, or fired-but-no-record). The dominant trust fault: even a clean last run
-    # can't reassure if the nightly won't run again. Routed to Setup, NEVER to onboarding.
+    # while expected, or fired-but-no-record). The dominant WARNING-tier trust fault: even a clean
+    # last run can't reassure if the nightly won't run again. Routed to Setup, NEVER to onboarding.
+    #
+    # W3-B: it is a WARNING, so the module's own "failures above warnings" precedence binds it —
+    # it must NOT return above the FAILED_ETL / FAILED_DELIVERY rules below. A failed scheduled run
+    # is exactly the state that also trips ``attention``, so the early return was silently
+    # downgrading red to amber and dropping the failure from the copy entirely (and, because
+    # ``screens/home.py`` paints the record verdict first and re-derives when the async probe
+    # lands, the admin watched the alarm downgrade itself). The failure wins the band + the single
+    # fix CTA; the schedule fault is surfaced as a secondary clause on the FAILED details below.
+    # The seasonal-pause fact (B): an ENABLED window with today OUTSIDE its active season. Computed
+    # once, consulted at the empty-state slot AND after the FAILED reasons below — it must beat the
+    # missed-run / stale / anomaly / data-warning rules (whose "we expected a sync"/"no recent sync"
+    # copy would FALSE-FIRE every summer night), but NEVER a FAILED latest (a real failure is not a
+    # summer no-op) nor a genuinely-MISSING schedule (a gone task makes "resumes <date>" a lie).
+    #
+    # W3-B FIX: that MISSING carve-out was only ever half-wired — it fired via ``_schedule_attention``,
+    # which is None unless ``attention`` is True, and a MISSING task the config NO LONGER expects
+    # (expected=False — e.g. "Remove nightly sync" left the window enabled) has attention=False. So a
+    # confirmed-gone schedule fell straight through to the paused headline: green "resumes <date>"
+    # over a task that will never resume. The pause is now gated on a NOT-confirmed-MISSING read-back
+    # (mirrors the stated intent ``schedule_status is None or state is not MISSING``), so the honest
+    # "add a nightly schedule" copy surfaces even when the schedule-attention rule stays silent.
+    paused = sync_window_paused(app_config, now=now) and not _schedule_confirmed_missing(schedule_status)
+
     schedule_attention = _schedule_attention(schedule_status)
-    if schedule_attention is not None:
+    # Surface schedule attention UNLESS the latest record is a failure (it owns the band, W3-B) OR
+    # we are in a seasonal pause AND this is the LIVE fired-but-no-record contradiction — a by-design
+    # false alarm in summer (the paused nightly fires but writes no record). A definitively-MISSING
+    # task (``state is MISSING``) still surfaces: "resumes <date>" would be untrue if it is gone.
+    if (
+        schedule_attention is not None
+        and not _latest_is_failure(records)
+        and not (paused and schedule_status is not None and schedule_status.state is ScheduleState.LIVE)
+    ):
         return schedule_attention
 
     # The missed-run fact (owner rule, 2026-07-15): a CONFIRMED-LIVE schedule, an established
@@ -353,6 +415,10 @@ def derive_home_status(
     # therefore conditioned ("If you used an earlier version…"), never a flat claim of hidden
     # history. The next-run reassurance derives from the LIVE read-back, never the raw config flag.
     if not records:
+        # Rule: seasonal pause (empty store) — outside an enabled window no run is expected, so an
+        # empty store is calm, not a missed run. Beats the missed-run/fresh-start empty sub-states.
+        if paused:
+            return _paused_status(app_config, now=now)
         # Rule: missed run (empty store) — a LIVE schedule over an ESTABLISHED store with no
         # runs at all is not a calm fresh start: the nightly we promised never arrived.
         if missed_run:
@@ -408,9 +474,10 @@ def derive_home_status(
         return HomeStatus(
             verdict=verdict_for_reason(reason),
             headline="Last sync failed",
-            detail=(
+            detail=_with_schedule_note(
                 f"The sync that ran {friendly_timestamp(str(latest.get('timestamp', '')), now=now)} "
-                "hit a problem and didn't finish."
+                "hit a problem and didn't finish.",
+                schedule_status,
             ),
             fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
             metrics=None,
@@ -424,14 +491,22 @@ def derive_home_status(
         return HomeStatus(
             verdict=verdict_for_reason(reason),
             headline="Your roster didn't reach SpacesEDU",
-            detail=(
+            detail=_with_schedule_note(
                 "The upload of your saved files failed."
                 if is_delivery_only(latest)
-                else "The data was built but the upload failed."
+                else "The data was built but the upload failed.",
+                schedule_status,
             ),
             fix=FixAction(_OPEN_SETTINGS_LABEL, _SETUP_FIX),
             metrics=None,
         )
+
+    # Rule: seasonal pause — outside an enabled window, no nightly sync is expected. Slotted BELOW
+    # the two FAILED reasons (a real failure still surfaces in summer) and ABOVE missed-run / stale /
+    # anomaly / data-warnings / healthy — those describe an expected nightly cadence that is moot
+    # while the season is intentionally paused. The pause is HEALTHY-toned; nothing is wrong.
+    if paused:
+        return _paused_status(app_config, now=now)
 
     # Rule: missed run — the newest record is older than the window while the schedule is LIVE.
     # Slotted below the two FAILED reasons (a red verdict is never downgraded to this amber) and
@@ -500,13 +575,51 @@ def derive_home_status(
     )
 
 
+def _latest_is_failure(records: list[dict]) -> bool:
+    """Whether the newest record's fault axis is FAILED-tier — the schedule-warning guard (W3-B).
+
+    Derived from the SINGLE-SOURCE ``classify_latest_reason`` → ``verdict_for_reason`` pair rather
+    than a hand-listed pair of reasons, so a future FAILED-tier reason automatically outranks the
+    schedule warning without editing this guard (one place decides what "a failure" means).
+    Pure + TOTAL: an empty list has no latest to fail, and ``classify_latest_reason`` never raises.
+    """
+    return bool(records) and verdict_for_reason(classify_latest_reason(records[0])) is Verdict.FAILED
+
+
+def _with_schedule_note(detail: str, schedule_status: ScheduleStatus | None) -> str:
+    """Append the secondary schedule clause to a FAILED detail when the nightly is CONFIRMED gone.
+
+    Fires ONLY on an expected-but-MISSING read-back — the one schedule fact the failure banner
+    cannot convey ("even once you fix this run, nothing is registered to run again"). The LIVE
+    fired-but-no-record contradiction is deliberately EXCLUDED: its own copy ("your last scheduled
+    run reported a problem") is the SAME category the FAILED band already names, with less
+    precision, and that schedule is still registered — restating it would duplicate, not inform
+    (category-only faults). Either way the Setup rail badge keeps carrying the attention signal
+    independently (``schedule_status.needs_setup_badge``), so nothing is lost.
+    """
+    if _schedule_confirmed_gone(schedule_status):
+        return f"{detail} {_SCHEDULE_GONE_NOTE}"
+    return detail
+
+
+def _schedule_confirmed_gone(schedule_status: ScheduleStatus | None) -> bool:
+    """Whether the read-back DEFINITIVELY confirms an EXPECTED nightly schedule is absent.
+
+    ``attention`` narrows an unexpected MISSING out (a manual-only district was never promised a
+    nightly); ``state is MISSING`` narrows the LIVE contradiction flavor out. ``None``/UNKNOWN can
+    never satisfy either — the D4 honesty invariant (we don't speak of a schedule we can't see).
+    """
+    return schedule_status is not None and schedule_status.attention and schedule_status.state is ScheduleState.MISSING
+
+
 def _schedule_attention(schedule_status: ScheduleStatus | None) -> HomeStatus | None:
     """The schedule-attention verdict when the read-back needs a Setup fix, else ``None`` (D4).
 
     Renders ``schedule_status``'s single-source copy (category-only, PII-free) as a WARNING
     routed to Setup. Only fires on the ``attention`` signal (expected-MISSING or a fired-but-
     no-record contradiction); a clean LIVE, an unexpected MISSING, and every UNKNOWN return
-    ``None`` — Home never nags and never asserts an unconfirmed schedule.
+    ``None`` — Home never nags and never asserts an unconfirmed schedule. The CALLER additionally
+    withholds it when the latest record is FAILED-tier (W3-B) — this builder stays single-purpose.
     """
     if schedule_status is None or not schedule_status.attention:
         return None
@@ -560,6 +673,72 @@ def _missed_run_status() -> HomeStatus:
         fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
         metrics=None,
     )
+
+
+def sync_window_paused(app_config: AppConfig, *, now: datetime | None) -> bool:
+    """Whether an ENABLED seasonal window is currently OUTSIDE its active season (pure + TOTAL).
+
+    Reuses the ENGINE predicate ``sync_window.in_sync_window`` (single source — the nightly gate
+    and Home read the SAME window logic, so a night the engine pauses is exactly a night Home
+    calls paused). ``today`` is derived from the injected ``now`` seam (``date.today()`` is never
+    called in pure code), mirroring the rest of this module. Fail-safe: disabled, unset, or a
+    MALFORMED window (which should be gated at save) all return ``False`` — behaving as year-round
+    rather than ever suppressing a real warning behind a broken window.
+    """
+    if not app_config.sync_window_enabled:
+        return False
+    start = (app_config.sync_window_start or "").strip()
+    end = (app_config.sync_window_end or "").strip()
+    if not start or not end:
+        return False
+    today = (now if now is not None else datetime.now()).date()
+    try:
+        return not in_sync_window(today, start, end)
+    except ValueError:
+        # A malformed boundary (gated at save, but be TOTAL) → behave as year-round; never crash,
+        # never hide a real fault behind a broken window.
+        return False
+
+
+def _paused_status(app_config: AppConfig, *, now: datetime | None) -> HomeStatus:
+    """The calm HEALTHY-toned seasonal-pause state — "Paused for the summer — resumes <date>".
+
+    A pause is intentional and healthy (the admin configured a school-year window), so the verdict
+    is HEALTHY, not a WARNING — an amber tone here would erode the meaning of amber. The resume
+    date is the pure ``next_resume_date`` fact rendered PII-free (``friendly_date_short`` → "Aug
+    11", never a raw ISO / ``"MM-DD"``); if it can't be derived the copy degrades to a timeless
+    phrasing rather than asserting a date it doesn't have.
+    """
+    resume = _friendly_resume(app_config, now=now)
+    if resume:
+        detail = (
+            f"DistrictSync pauses the nightly sync over the summer break and resumes on {resume}. "
+            "Nothing is wrong — this is your seasonal schedule."
+        )
+    else:
+        detail = (
+            "DistrictSync pauses the nightly sync outside your active season. "
+            "Nothing is wrong — this is your seasonal schedule."
+        )
+    return HomeStatus(
+        verdict=Verdict.HEALTHY,
+        headline=_PAUSED_HEADLINE,
+        detail=detail,
+        fix=None,
+        metrics=None,
+    )
+
+
+def _friendly_resume(app_config: AppConfig, *, now: datetime | None) -> str:
+    """The plain "Aug 11" date the window re-opens, or ``""`` when it can't be derived (TOTAL)."""
+    start = (app_config.sync_window_start or "").strip()
+    if not start:
+        return ""
+    today = (now if now is not None else datetime.now()).date()
+    try:
+        return friendly_date_short(next_resume_date(today, start))
+    except ValueError:
+        return ""
 
 
 def _schedule_confirmed_live(schedule_status: ScheduleStatus | None) -> bool:

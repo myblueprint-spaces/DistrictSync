@@ -1,5 +1,5 @@
 # SD51 - Inherits from standard MyEducation BC mapping
-# Differences: source file names, custom email format, fixed academic dates
+# Differences: source file names, custom email format
 _base: myedbc
 version: '1.9'
 sis: MyEducationBC

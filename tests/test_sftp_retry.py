@@ -52,7 +52,7 @@ class TestTransientRetry:
             ) as mock_connect,
             patch("src.sftp.uploader.time.sleep") as mock_sleep,
         ):
-            uploaded = uploader.upload_csvs(output_dir)
+            uploaded = uploader.upload_csvs(output_dir, manifest={"Students.csv"})
         assert uploaded == ["Students.csv"]
         assert mock_connect.call_count == 2
         mock_sleep.assert_called_once_with(2.0)
@@ -69,7 +69,7 @@ class TestTransientRetry:
             patch("src.sftp.uploader.time.sleep") as mock_sleep,
             caplog.at_level("WARNING", logger="src.sftp.uploader"),
         ):
-            uploaded = uploader.upload_csvs(output_dir)
+            uploaded = uploader.upload_csvs(output_dir, manifest={"Students.csv"})
         assert uploaded == ["Students.csv"]
         assert mock_connect.call_count == 3
         assert [call.args[0] for call in mock_sleep.call_args_list] == [2.0, 4.0]
@@ -90,7 +90,7 @@ class TestTransientRetry:
             patch.object(uploader, "_connect", side_effect=[(client1, sftp1), (client2, sftp2)]) as mock_connect,
             patch("src.sftp.uploader.time.sleep"),
         ):
-            uploaded = uploader.upload_csvs(output_dir)
+            uploaded = uploader.upload_csvs(output_dir, manifest={"Students.csv"})
         assert uploaded == ["Students.csv"]
         assert mock_connect.call_count == 2
         assert sftp2.put.call_count == 1
@@ -109,7 +109,7 @@ class TestTransientRetry:
             patch("src.sftp.uploader.time.sleep") as mock_sleep,
             pytest.raises(paramiko.SSHException, match="still unreachable"),
         ):
-            uploader.upload_csvs(output_dir)
+            uploader.upload_csvs(output_dir, manifest={"Students.csv"})
         assert mock_connect.call_count == SFTP_RETRY_ATTEMPTS
         assert mock_sleep.call_count == SFTP_RETRY_ATTEMPTS - 1
 
@@ -127,7 +127,7 @@ class TestNeverRetried:
             patch("src.sftp.uploader.time.sleep") as mock_sleep,
             pytest.raises(paramiko.AuthenticationException),
         ):
-            uploader.upload_csvs(output_dir)
+            uploader.upload_csvs(output_dir, manifest={"Students.csv"})
         assert mock_connect.call_count == 1
         mock_sleep.assert_not_called()
 
@@ -143,7 +143,7 @@ class TestNeverRetried:
             patch("src.sftp.uploader.time.sleep") as mock_sleep,
             pytest.raises(HostKeyVerificationError),
         ):
-            uploader.upload_csvs(output_dir)
+            uploader.upload_csvs(output_dir, manifest={"Students.csv"})
         assert mock_connect.call_count == 1
         mock_sleep.assert_not_called()
 
@@ -160,7 +160,7 @@ class TestNeverRetried:
             patch("src.sftp.uploader.time.sleep") as mock_sleep,
             pytest.raises(paramiko.BadHostKeyException),
         ):
-            uploader.upload_csvs(output_dir)
+            uploader.upload_csvs(output_dir, manifest={"Students.csv"})
         assert mock_connect.call_count == 1
         mock_sleep.assert_not_called()
 
@@ -176,7 +176,7 @@ class TestNeverRetried:
             patch("src.sftp.uploader.time.sleep") as mock_sleep,
             pytest.raises(RuntimeError, match="No SFTP password found"),
         ):
-            uploader.upload_csvs(output_dir)
+            uploader.upload_csvs(output_dir, manifest={"Students.csv"})
         assert mock_connect.call_count == 1
         mock_sleep.assert_not_called()
 

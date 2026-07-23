@@ -31,10 +31,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from datetime import date, timedelta
 from enum import Enum
 
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
-from src.utils.validators import validate_run_time
+from src.utils.validators import validate_month_day, validate_run_time
 
 
 class SetupStep(Enum):
@@ -117,6 +118,12 @@ class FlowInputs:
             wizard never trusts the config flag for live-ness.
         schedule_skipped: the admin chose "set up a schedule later".
         delivery: the injected ``DeliveryFact`` for the Delivery step.
+        window_valid: the seasonal-window fields are safe to advance past (the view computes it
+            via ``setup_gates.window_settings_valid``). ``True`` by default (the window is opt-in,
+            and disabled / valid → always ``True``); an ENABLED-but-invalid window closes the
+            Schedule step's Continue gate — the "Enter can't bypass a disabled button" guarantee,
+            extended to the window. It does NOT affect resume/satisfaction (an invalid window is
+            transient — never persisted, since the section only saves a valid one).
     """
 
     folders_valid: bool
@@ -124,6 +131,7 @@ class FlowInputs:
     schedule: ScheduleStatus | None = None
     schedule_skipped: bool = False
     delivery: DeliveryFact = DeliveryFact.NONE
+    window_valid: bool = True
 
 
 @dataclass(frozen=True)
@@ -188,14 +196,20 @@ def can_advance(step: SetupStep, inputs: FlowInputs) -> bool:
     """Whether the given step's Next/Enter gate is satisfied (pure — the Enter-advance gate).
 
     FOLDERS / DISTRICT advance only when their own value is valid (Enter can never bypass the
-    gate a disabled Next button enforces — same guarantee as ``setup_gates``). SCHEDULE /
-    DELIVERY are skippable, so advancing is always allowed. FINISH advances (confirms) only
-    when the finish line is reachable (``derive_flow(...).can_finish``).
+    gate a disabled Next button enforces — same guarantee as ``setup_gates``). SCHEDULE is
+    skippable BUT additionally gated on ``window_valid`` — an enabled-but-invalid seasonal window
+    blocks Continue (the window lives on the Schedule step). DELIVERY is skippable, so advancing is
+    always allowed. FINISH advances (confirms) only when the finish line is reachable
+    (``derive_flow(...).can_finish``).
     """
     if step is SetupStep.FOLDERS:
         return inputs.folders_valid
     if step is SetupStep.DISTRICT:
         return inputs.district_chosen
+    if step is SetupStep.SCHEDULE:
+        # Skippable, but a visibly-enabled invalid window can't be advanced past (the window is
+        # not a task arg — this only blocks Continue, never the register flow).
+        return inputs.window_valid
     if step in _SKIPPABLE_STEPS:
         return True
     return derive_flow(inputs).can_finish
@@ -231,6 +245,65 @@ def auto_selected_district(available: Sequence[str]) -> str:
     shows and the admin picks explicitly — no silent alphabetical default.
     """
     return available[0] if len(available) == 1 else ""
+
+
+# --------------------------------------------------------------------------- #
+# Seasonal-window pre-fill defaults (B) — derived from the district calendar.  #
+# --------------------------------------------------------------------------- #
+# "~2 weeks before school starts" — the season opens early enough that the first nightly syncs
+# land before day one. Applied to ``global_config.academic_start_month_day``.
+_WINDOW_START_LEAD_DAYS = 14
+# The summer gap: the season END sits ~5 weeks BEFORE it re-opens, giving a real summer pause. Keyed
+# off the derived START (not ``academic_end_month_day`` — that is the DATA-year boundary "07-25",
+# NOT school-end, and using it naively would overlap the start). Calendar-relative, so ANY district
+# calendar yields a sensible gap. For the base 08-25 academic start this reproduces the owner's
+# canonical example EXACTLY: start 08-11, end 07-06 (08-11 − 36d = 07-06).
+_WINDOW_SUMMER_GAP_DAYS = 36
+# Plain fallbacks when no district is chosen yet / the config is unreadable / has no academic dates.
+_WINDOW_FALLBACK_START = "08-11"
+_WINDOW_FALLBACK_END = "07-06"
+# A NON-leap probe year so the MM-DD arithmetic is deterministic and never emits 02-29 (a 02-29
+# input clamps out via the try/except below — a school year does not start on Feb 29).
+_WINDOW_PROBE_YEAR = 2001
+
+
+def default_window_bounds(academic_start_md: str | None, academic_end_md: str | None = None) -> tuple[str, str]:
+    """Pre-fill ``(sync_window_start, sync_window_end)`` from a district's academic calendar (pure).
+
+    ``sync_window_start`` = ``academic_start_month_day`` − 14 days ("~2 weeks before school
+    starts"). ``sync_window_end`` = that start − 36 days (a ~5-week summer pause just before the
+    season re-opens). ``academic_end_md`` is accepted (the view reads it alongside the start) but
+    DELIBERATELY UNUSED for the end: it is the academic-DATA-year boundary ("07-25"), not
+    school-end, so using it as the season end would overlap the start. The vendor tunes both per
+    district — do not overclaim the pre-fill's precision.
+
+    TOTAL: a ``None`` / blank / malformed / leap-day (02-29) start → the plain
+    (``"08-11"``, ``"07-06"``) fallback, never a raise.
+    """
+    start_md = _shift_month_day(academic_start_md, -_WINDOW_START_LEAD_DAYS)
+    if start_md is None:
+        return (_WINDOW_FALLBACK_START, _WINDOW_FALLBACK_END)
+    end_md = _shift_month_day(start_md, -_WINDOW_SUMMER_GAP_DAYS)
+    if end_md is None:
+        return (_WINDOW_FALLBACK_START, _WINDOW_FALLBACK_END)
+    return (start_md, end_md)
+
+
+def _shift_month_day(md: str | None, days: int) -> str | None:
+    """Shift a validated ``"MM-DD"`` by ``days`` in the non-leap probe year → ``"MM-DD"`` / ``None``.
+
+    Reuses ``validate_month_day`` (rejects garbage, accepts 02-29). ``None`` when the input is
+    unusable or lands on a date the non-leap probe year can't build (02-29) — the caller degrades
+    to the plain fallback rather than crash.
+    """
+    if not isinstance(md, str) or not md.strip():
+        return None
+    try:
+        normalized = validate_month_day(md)
+        shifted = date(_WINDOW_PROBE_YEAR, int(normalized[:2]), int(normalized[3:])) + timedelta(days=days)
+    except (ValueError, TypeError):
+        return None
+    return f"{shifted.month:02d}-{shifted.day:02d}"
 
 
 # --------------------------------------------------------------------------- #
@@ -292,12 +365,12 @@ def task_args_to_persisted(args: TaskArgs) -> dict[str, object]:
 def task_args_from_persisted(raw: object) -> TaskArgs | None:
     """Rebuild the last-REGISTERED ``TaskArgs`` from its persisted form (total; 0034 S3-d).
 
-    ``None`` means "no usable record" — the caller falls back to its mount snapshot (the
-    pre-record reconcile baseline). DEFENSIVE rather than fail-loud by design: the record
-    lives in the user-profile ``config.json`` (hand-editable, and absent on installs that
-    registered before the field existed), so a missing/garbled record must degrade to the
-    old behaviour, never crash Settings. Values are normalized through ``TaskArgs.of`` so a
-    persisted record and a live snapshot compare on equal footing.
+    ``None`` means **"no usable record" — the honest UNKNOWN**, not a licence to substitute a
+    guess (W3-C). DEFENSIVE rather than fail-loud by design: the record lives in the user-profile
+    ``config.json`` (hand-editable, and absent on installs that registered before the field
+    existed in v3.7.0), so a missing/garbled record must degrade, never crash Settings. Values are
+    normalized through ``TaskArgs.of`` so a persisted record and a live snapshot compare on equal
+    footing.
     """
     if not isinstance(raw, dict):
         return None
@@ -314,6 +387,92 @@ def task_args_from_persisted(raw: object) -> TaskArgs | None:
         sftp_enabled=raw["sftp_enabled"],
         run_time=raw["run_time"],
     )
+
+
+# --------------------------------------------------------------------------- #
+# The durable registered-schedule record + the reconcile decision (W3-C).       #
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class RegisteredSchedule:
+    """What the app durably KNOWS about the live scheduled task — ``None`` means "we can't tell".
+
+    The two facets are written together by every confirmed register and cleared together by every
+    confirmed unregister, so the record is **atomic**: either both facts are evidenced or neither
+    is. That is why an absent ``args`` also makes ``unattended`` unknown — the ``False`` default of
+    ``AppConfig.schedule_unattended`` is a dataclass default, not an observation.
+
+    Attributes:
+        args: the task-baked args the live task actually carries, or ``None`` when there is no
+            usable record (an install that registered before the record shipped in v3.7.0, or a
+            hand-edited ``config.json``).
+        unattended: whether the live task runs while signed out, or ``None`` when unknown. Always
+            ``False`` where the platform has no stored-password logon at all (cron): there is no
+            logon type an unproven re-register could downgrade, so "unknown" would buy nothing.
+    """
+
+    args: TaskArgs | None
+    unattended: bool | None
+
+
+def registered_schedule(
+    *,
+    raw_task_args: object,
+    unattended_flag: bool,
+    supports_unattended: bool = True,
+) -> RegisteredSchedule:
+    """Resolve the durable registered-schedule record from its persisted parts (pure, TOTAL).
+
+    The SINGLE place ``AppConfig.schedule_task_args`` + ``schedule_unattended`` are turned into
+    reconcile facts, so no caller can re-derive "what the task carries" from the *current* config
+    (the unsound baseline W3-C removes: a surface that mutated config before Settings mounted —
+    a Mapping district switch — makes any current-config baseline equal the pending args, so the
+    reconcile reads "unchanged" and silently skips the re-register it just promised).
+
+    ``supports_unattended`` gates only the INFERENCE, never a recorded fact: a persisted
+    ``unattended_flag`` is evidence and is honored on any platform (a ``config.json`` can travel),
+    while the *absence* of evidence is treated as unknown only where an unattended logon type
+    exists to lose.
+    """
+    args = task_args_from_persisted(raw_task_args)
+    if args is None:
+        return RegisteredSchedule(args=None, unattended=None if supports_unattended else False)
+    return RegisteredSchedule(args=args, unattended=bool(unattended_flag))
+
+
+class ScheduleReconcile(Enum):
+    """What a Settings Save must do with the live nightly task (the pure decision; W3-C).
+
+    ``NO_TASK`` — nothing is registered, so there is nothing to reconcile (a run-time edit is
+    still persisted as config — see ``run_time_save_decision``). ``UP_TO_DATE`` — the durable
+    record PROVES the live task already carries the pending args. ``REREGISTER`` — the record
+    differs, **or there is no record at all**: an unproven task can never be reported up to date,
+    because the app would be asserting a state it never checked.
+    """
+
+    NO_TASK = "no_task"
+    UP_TO_DATE = "up_to_date"
+    REREGISTER = "reregister"
+
+
+def schedule_reconcile(
+    *,
+    schedule_registered: bool,
+    record: RegisteredSchedule,
+    pending: TaskArgs,
+) -> ScheduleReconcile:
+    """Decide whether a Settings Save must re-register the live task (pure, TOTAL; W3-C).
+
+    The baseline comes ONLY from the durable record. An unproven record resolves to
+    ``REREGISTER`` — the safe action, because a stale task silently converts the wrong district
+    every night while the UI reports the fix as applied. The cost is bounded: a confirmed
+    re-register writes the record, so the very next Save is precisely change-gated again (at most
+    one extra prompt per install, never one per Save).
+    """
+    if not schedule_registered:
+        return ScheduleReconcile.NO_TASK
+    if record.args is None:
+        return ScheduleReconcile.REREGISTER
+    return ScheduleReconcile.REREGISTER if task_args_changed(record.args, pending) else ScheduleReconcile.UP_TO_DATE
 
 
 def schedule_delivery_desync(
@@ -390,6 +549,17 @@ _DOWNGRADE_DETAIL = (
     "Your nightly schedule currently runs whether or not anyone is signed in. "
     "Updating it without your Windows password would change it to run only while you're signed in."
 )
+# The UNKNOWN-logon-type variant (W3-C): on an install whose task was registered before the
+# durable record shipped, ``schedule_unattended`` is a dataclass default, not an observation — so
+# the copy must NOT reuse the assertive "your schedule currently runs whether or not anyone is
+# signed in" (the trust bar: never assert a state you didn't check). Same three choices, honest
+# premise. Only the premise differs; the consequence of continuing is identical.
+_DOWNGRADE_UNKNOWN_HEADLINE = "Should the nightly sync keep running when you're signed out?"
+_DOWNGRADE_UNKNOWN_DETAIL = (
+    "We can't tell whether your nightly schedule runs while you're signed out — DistrictSync has "
+    "no record of how it was set up. Updating it without your Windows password would set it to "
+    "run only while you're signed in."
+)
 _DOWNGRADE_KEEP_LABEL = "Keep running when signed out — re-enter the Windows password"
 _DOWNGRADE_SIGNED_IN_ONLY_LABEL = "Continue — the sync will only run while signed in"
 _DOWNGRADE_CANCEL_LABEL = "Cancel"
@@ -409,9 +579,12 @@ _DOWNGRADE_CANCELLED_DETAIL = (
 class DowngradeInterrupt:
     """The explicit-choice dialog a reconcile re-register must show before a logon downgrade.
 
-    Produced by ``downgrade_interrupt`` when re-registering would silently turn an unattended
-    task (registered WITH a Windows password — runs while signed out) into a logged-on-only
-    one. The view renders exactly this copy: two equal-weight choices (neither is a default
+    Produced by ``downgrade_interrupt`` when re-registering would (or MIGHT — the unknown-record
+    variant, W3-C) silently turn an unattended task (registered WITH a Windows password — runs
+    while signed out) into a logged-on-only one. ``headline``/``detail`` carry the known-unattended
+    premise by default and are overridden with the honest can't-tell premise for an unproven
+    record; every choice label is shared, so the view is variant-agnostic (it renders whatever
+    copy it is handed). The view renders exactly this copy: two equal-weight choices (neither is a default
     that downgrades silently) plus Cancel (no change — the task is untouched).
     ``keep_next_*`` is the guidance painted after choosing to stay unattended — the password
     is collected ONLY through the existing schedule-section field flow (I1/I3: handler-local,
@@ -429,21 +602,29 @@ class DowngradeInterrupt:
     cancelled_detail: str = _DOWNGRADE_CANCELLED_DETAIL
 
 
-def downgrade_interrupt(*, registered_unattended: bool, password_supplied: bool) -> DowngradeInterrupt | None:
+def downgrade_interrupt(*, registered_unattended: bool | None, password_supplied: bool) -> DowngradeInterrupt | None:
     """Whether a reconcile-triggered re-register must pause for the explicit downgrade choice.
 
     ``None`` → proceed (re-registering cannot downgrade the logon type: the task was never
     unattended, or a password is supplied so it stays unattended). A ``DowngradeInterrupt`` →
     the view MUST show the choice dialog before registering — a task registered to run while
-    signed out (``registered_unattended``, the durable AppConfig fact) would otherwise be
-    silently replaced by a logged-on-only one when the Settings password field is blank.
+    signed out would otherwise be silently replaced by a logged-on-only one when the Settings
+    password field is blank.
+
+    ``registered_unattended`` is the durable ``RegisteredSchedule.unattended`` fact, and
+    ``None`` means **unknown** (W3-C — an install with no record of how its task was set up).
+    Unknown interrupts too, with its own honest copy: the same silent-downgrade hazard applies
+    (on a district server nobody is signed in, so a downgrade stops the nightly sync entirely),
+    and guessing "not unattended" would be exactly the unchecked assertion the trust bar forbids.
 
     Applies ONLY to the reconcile path (Settings Save): a blank-password Register via the
     button is a legitimate explicit user choice (the wizard offers it) and never interrupts.
     """
-    if registered_unattended and not password_supplied:
-        return DowngradeInterrupt()
-    return None
+    if password_supplied:
+        return None
+    if registered_unattended is None:
+        return DowngradeInterrupt(headline=_DOWNGRADE_UNKNOWN_HEADLINE, detail=_DOWNGRADE_UNKNOWN_DETAIL)
+    return DowngradeInterrupt() if registered_unattended else None
 
 
 # --------------------------------------------------------------------------- #

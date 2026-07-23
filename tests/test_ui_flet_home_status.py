@@ -223,6 +223,205 @@ class TestScheduleAttention:
         assert status.verdict is Verdict.HEALTHY
 
 
+class TestFailureBeatsScheduleAttention:
+    """W3-B: **a failed sync is never masked by a schedule warning** (the module's own documented
+    precedence — "failures above warnings"). The schedule-attention rule used to return BEFORE the
+    two FAILED rules, so a failed run under an expected-MISSING / fired-but-no-record schedule
+    rendered as an amber *schedule* warning and the failure went unmentioned — and, because
+    ``screens/home.py`` paints the record-derived verdict first and re-derives when the async probe
+    lands, the admin watched a red "sync failed" band downgrade itself to amber a second later.
+
+    The restored rule: the two FAILED reasons outrank schedule attention; attention still outranks
+    every WARNING-tier reason, the empty state and HEALTHY. Because the failure's fix CTA can only
+    point one way, the *confirmed-gone* schedule is surfaced as a bounded secondary CLAUSE on the
+    failure's detail (never a second CTA, never a new verdict tier).
+    """
+
+    _FAILED_ETL_DETAIL = "The sync that ran 5 hours ago hit a problem and didn't finish."
+    _FAILED_DELIVERY_DETAIL = "The data was built but the upload failed."
+    _SCHEDULE_GONE_CLAUSE = (
+        "Your nightly schedule is also no longer registered with Windows — "
+        "re-register it in Settings so the sync can run again."
+    )
+
+    @staticmethod
+    def _expected_missing() -> ScheduleStatus:
+        """The Event-141 shape: the config expected a schedule, the OS definitively has none."""
+        return derive_schedule_status(ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None)
+
+    @staticmethod
+    def _contradiction() -> ScheduleStatus:
+        """The LIVE fired-but-no-record shape: the task fired newer than the newest record."""
+        return derive_schedule_status(
+            ScheduleReadback(found=True, last_run="2026-07-04T04:00:00"),
+            hint_registered=True,
+            latest_record_ts=_RECENT,
+        )
+
+    @staticmethod
+    def _failed_etl() -> dict:
+        return _record(status="failed")
+
+    @staticmethod
+    def _failed_delivery() -> dict:
+        return _record(sftp_attempted=True, sftp_ok=False)
+
+    # -- the masking defect itself ------------------------------------------------------- #
+
+    def test_failed_etl_is_not_masked_by_an_expected_missing_schedule(self) -> None:
+        status = derive_home_status(
+            [self._failed_etl()], _CONFIGURED, now=_NOW, schedule_status=self._expected_missing()
+        )
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Last sync failed"
+        # The fix stays on the DOMINANT fault — the failure is investigated in Run History.
+        assert status.fix is not None and status.fix.dest_id == "run_history"
+
+    def test_failed_etl_is_not_masked_by_a_fired_but_no_record_contradiction(self) -> None:
+        status = derive_home_status([self._failed_etl()], _CONFIGURED, now=_NOW, schedule_status=self._contradiction())
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Last sync failed"
+
+    def test_failed_delivery_is_not_masked_by_an_expected_missing_schedule(self) -> None:
+        status = derive_home_status(
+            [self._failed_delivery()], _CONFIGURED, now=_NOW, schedule_status=self._expected_missing()
+        )
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Your roster didn't reach SpacesEDU"
+        assert status.fix is not None and status.fix.dest_id == "setup"
+
+    def test_failed_delivery_is_not_masked_by_a_contradiction(self) -> None:
+        status = derive_home_status(
+            [self._failed_delivery()], _CONFIGURED, now=_NOW, schedule_status=self._contradiction()
+        )
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Your roster didn't reach SpacesEDU"
+
+    # -- the secondary fact: surfaced, but only when it is NOT already the failure's story - #
+
+    def test_confirmed_gone_schedule_is_named_as_a_secondary_clause_on_a_failed_etl(self) -> None:
+        # Both faults are real; only one CTA can exist. The failure keeps the band + button, and the
+        # schedule fact rides along as a bounded clause so the admin doesn't fix the run and walk
+        # away believing tonight's sync will resume (it positively won't — the task is gone).
+        status = derive_home_status(
+            [self._failed_etl()], _CONFIGURED, now=_NOW, schedule_status=self._expected_missing()
+        )
+        assert status.detail == f"{self._FAILED_ETL_DETAIL} {self._SCHEDULE_GONE_CLAUSE}"
+
+    def test_confirmed_gone_schedule_is_named_as_a_secondary_clause_on_a_failed_delivery(self) -> None:
+        status = derive_home_status(
+            [self._failed_delivery()], _CONFIGURED, now=_NOW, schedule_status=self._expected_missing()
+        )
+        assert status.detail == f"{self._FAILED_DELIVERY_DETAIL} {self._SCHEDULE_GONE_CLAUSE}"
+
+    def test_a_contradiction_adds_no_clause_because_the_failure_already_tells_that_story(self) -> None:
+        # The LIVE contradiction's own copy is "your last scheduled run reported a problem" — the
+        # SAME category the FAILED band already names, with less precision, and the schedule itself
+        # is still registered. Restating it would duplicate, not inform (category-only faults).
+        status = derive_home_status([self._failed_etl()], _CONFIGURED, now=_NOW, schedule_status=self._contradiction())
+        assert status.detail == self._FAILED_ETL_DETAIL
+
+    @pytest.mark.parametrize(
+        "schedule",
+        [
+            None,  # not probed yet (the first paint)
+            _live_schedule(),  # a clean LIVE schedule
+            derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None),
+            derive_schedule_status(
+                ScheduleReadback(found=None, error="denied"), hint_registered=True, latest_record_ts=None
+            ),
+        ],
+        ids=["unprobed", "live", "unexpected-missing", "unknown"],
+    )
+    def test_no_clause_when_the_schedule_is_not_confirmed_gone(self, schedule: ScheduleStatus | None) -> None:
+        # D4 honesty, inverted: an UNKNOWN/unprobed read-back must never be spoken of as a fault,
+        # and an unexpected MISSING (a manual-only district) is not a broken promise.
+        status = derive_home_status([self._failed_etl()], _CONFIGURED, now=_NOW, schedule_status=schedule)
+        assert status.detail == self._FAILED_ETL_DETAIL
+
+    def test_secondary_clause_is_fixed_copy_and_leaks_no_record_free_text(self) -> None:
+        # Privacy (LIVE/top): the clause is authored copy, not a field lifted off the record — a
+        # poisoned free-text `error` cannot ride into it.
+        secret = r"C:\Users\x\secret\roster.csv"
+        status = derive_home_status(
+            [_record(status="failed", error=f"FileNotFoundError: {secret}")],
+            _CONFIGURED,
+            now=_NOW,
+            schedule_status=self._expected_missing(),
+        )
+        assert secret not in status.detail
+        assert "secret" not in status.detail
+        assert status.detail == f"{self._FAILED_ETL_DETAIL} {self._SCHEDULE_GONE_CLAUSE}"
+
+    # -- attention keeps outranking everything BELOW the failures ------------------------- #
+
+    @pytest.mark.parametrize(
+        "override",
+        [
+            {"anomalies": ["ANOMALY: x"]},
+            {"data_errors": {"total": 3}},
+            {"timestamp": _OLD},
+            {},  # a clean, recent, HEALTHY latest
+        ],
+        ids=["anomaly", "data-warnings", "stale", "healthy"],
+    )
+    def test_schedule_attention_still_outranks_every_non_failed_latest(self, override: dict) -> None:
+        # The demotion is surgical: attention now loses ONLY to the FAILED tier. A nightly that
+        # won't run again still dominates an amber record fault and a green one.
+        status = derive_home_status(
+            [_record(**override)], _CONFIGURED, now=_NOW, schedule_status=self._expected_missing()
+        )
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == "Your schedule isn't registered anymore"
+        assert status.fix is not None and status.fix.dest_id == "setup"
+
+    def test_schedule_attention_still_wins_over_an_empty_store(self) -> None:
+        # No record exists → nothing to mask; the schedule fault remains the whole story.
+        status = derive_home_status([], _CONFIGURED, now=_NOW, schedule_status=self._expected_missing())
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == "Your schedule isn't registered anymore"
+
+    # -- the no-flip pin (the observable symptom in screens/home.py) --------------------- #
+
+    @pytest.mark.parametrize("shape", ["failed_etl", "failed_delivery"])
+    @pytest.mark.parametrize("flavor", ["expected_missing", "contradiction"])
+    def test_verdict_never_downgrades_when_the_async_schedule_probe_lands(self, shape: str, flavor: str) -> None:
+        # ``screens/home.py`` paints ``_render(None)`` from the store, then re-renders in place when
+        # the off-thread probe returns. A trust instrument must not downgrade its own alarm, so the
+        # two paints must agree on verdict AND headline; only the detail may GROW (the secondary
+        # clause). This is the pin for the flip the admin actually watched.
+        record = self._failed_etl() if shape == "failed_etl" else self._failed_delivery()
+        schedule = self._expected_missing() if flavor == "expected_missing" else self._contradiction()
+
+        first_paint = derive_home_status([record], _CONFIGURED, now=_NOW, schedule_status=None)
+        second_paint = derive_home_status([record], _CONFIGURED, now=_NOW, schedule_status=schedule)
+
+        assert second_paint.verdict is first_paint.verdict
+        assert second_paint.headline == first_paint.headline
+        assert second_paint.detail.startswith(first_paint.detail)
+        assert second_paint.fix == first_paint.fix
+
+    @pytest.mark.parametrize("flavor", ["expected_missing", "contradiction"])
+    def test_probe_never_lowers_the_severity_of_any_latest_record(self, flavor: str) -> None:
+        # The general invariant behind the pin above: across every fault shape, learning the
+        # schedule may ESCALATE the verdict (a clean record under a dead schedule) but must never
+        # de-escalate it. ``Verdict`` is declared in escalating-attention order.
+        severity = list(Verdict)
+        schedule = self._expected_missing() if flavor == "expected_missing" else self._contradiction()
+        for override in (
+            {"status": "failed"},
+            {"sftp_attempted": True, "sftp_ok": False},
+            {"anomalies": ["ANOMALY: x"]},
+            {"data_errors": {"total": 2}},
+            {"timestamp": _OLD},
+            {},
+        ):
+            record = _record(**override)
+            first = derive_home_status([record], _CONFIGURED, now=_NOW, schedule_status=None)
+            second = derive_home_status([record], _CONFIGURED, now=_NOW, schedule_status=schedule)
+            assert severity.index(second.verdict) >= severity.index(first.verdict), override
+
+
 class TestMissedRun:
     """The owner rule (2026-07-15): a CONFIRMED-LIVE schedule + no run record in the last 26h +
     an established store → the missed-run WARNING. Every guard failing → stay silent (a false
@@ -362,6 +561,190 @@ class TestMissedRun:
         )
         assert "26" not in status.detail  # the window is copy-free plain language ("the last day")
         assert self._ESTABLISHED not in status.detail  # never the raw ISO
+
+
+def _windowed(**over: object) -> AppConfig:
+    """A configured install WITH the seasonal window enabled (Aug 11 -> Jul 6, wrap-around)."""
+    base: dict = dict(
+        input_dir="/in",
+        output_dir="/out",
+        sis_type="myedbc",
+        schedule_registered=True,
+        sync_window_enabled=True,
+        sync_window_start="08-11",
+        sync_window_end="07-06",
+    )
+    base.update(over)
+    return AppConfig(**base)
+
+
+# A "now" comfortably OUTSIDE the Aug 11 -> Jul 6 window (mid-July summer break) and one INSIDE it.
+_SUMMER = datetime(2026, 7, 20, 8, 0, 0)  # 07-20: > Jul 6 and < Aug 11 -> paused
+_SUMMER_ESTABLISHED = (_SUMMER - timedelta(hours=MISSED_RUN_AFTER_HOURS + 48)).isoformat(timespec="seconds")
+_PAUSED_HEADLINE = "Paused for the summer"
+_MISSED_HEADLINE = "We expected a nightly sync that didn't arrive"
+
+
+class TestSeasonalPause:
+    """B: while an ENABLED seasonal window is OUTSIDE its active season, no nightly sync arrives by
+    design — the missed-run and stale warnings must be SUPPRESSED and a calm HEALTHY-toned
+    "Paused for the summer — resumes <date>" state shown instead. A genuinely FAILED latest record
+    still surfaces (a real failure isn't hidden by summer); missed-run + stale never fire in a pause.
+    """
+
+    def test_reproduce_missed_run_is_suppressed_and_paused_shows(self) -> None:
+        # Reproduce-first (RED on the pre-slice base, which ignores the window): a LIVE schedule +
+        # an established store + no records is a textbook missed-run — but we are OUTSIDE an enabled
+        # window, so the expected nightly is a summer no-op. Home must show the calm paused state.
+        status = derive_home_status(
+            [],
+            _windowed(),
+            now=_SUMMER,
+            store_created_at=_SUMMER_ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.verdict is Verdict.HEALTHY  # an intentional pause is healthy, never amber/red
+        assert status.headline == _PAUSED_HEADLINE
+        assert _MISSED_HEADLINE not in status.headline
+        assert "Aug 11" in status.detail  # friendly resume date, PII-free (no raw ISO)
+        assert _SUMMER_ESTABLISHED not in status.detail
+        assert status.fix is None
+
+    def test_missed_run_with_a_record_is_also_suppressed_in_a_pause(self) -> None:
+        # The record-present missed-run path (newest record past the window) is suppressed too.
+        old = (_SUMMER - timedelta(hours=MISSED_RUN_AFTER_HOURS + 1)).isoformat(timespec="seconds")
+        status = derive_home_status(
+            [_record(timestamp=old)],
+            _windowed(),
+            now=_SUMMER,
+            store_created_at=_SUMMER_ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.verdict is Verdict.HEALTHY
+        assert status.headline == _PAUSED_HEADLINE
+
+    def test_stale_clean_success_is_suppressed_in_a_pause(self) -> None:
+        # A clean-but-old success in summer is expected (nothing runs) — no "No recent sync" warning.
+        old = (_SUMMER - timedelta(hours=STALE_AFTER_HOURS + 5)).isoformat(timespec="seconds")
+        status = derive_home_status([_record(timestamp=old)], _windowed(), now=_SUMMER)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.headline == _PAUSED_HEADLINE
+        assert "No recent sync" not in status.headline
+
+    def test_failed_latest_still_surfaces_in_a_pause(self) -> None:
+        # Non-negotiable: a REAL failure is never hidden by summer — FAILED outranks the pause.
+        status = derive_home_status([_record(status="failed")], _windowed(), now=_SUMMER)
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Last sync failed"
+
+    def test_failed_delivery_latest_still_surfaces_in_a_pause(self) -> None:
+        status = derive_home_status([_record(sftp_attempted=True, sftp_ok=False)], _windowed(), now=_SUMMER)
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Your roster didn't reach SpacesEDU"
+
+    def test_expected_missing_schedule_still_surfaces_in_a_pause(self) -> None:
+        # A genuinely gone task makes "resumes <date>" a lie — the MISSING attention still surfaces
+        # (only the by-design LIVE fired-but-no-record contradiction is suppressed during a pause).
+        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None)
+        status = derive_home_status([_record()], _windowed(), now=_SUMMER, schedule_status=missing)
+        assert status.verdict is Verdict.WARNING
+        assert status.fix is not None and status.fix.dest_id == "setup"
+
+    def test_confirmed_missing_schedule_outranks_pause_empty_store(self) -> None:
+        # FIX 2: the hint_registered=False twin of the test above. window enabled -> registered ->
+        # "Remove nightly sync" (schedule_registered=False, window left ON) -> summer. The MISSING
+        # read-back is now expected=False -> attention=False, so the schedule-attention rule never
+        # fires and the empty-store paused branch used to mask a schedule that is CONFIRMED gone
+        # (it will never resume, so "resumes <date>" is a lie). The honest "add a nightly schedule"
+        # WARNING must surface instead of the green paused headline.
+        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        status = derive_home_status(
+            [],
+            _windowed(setup_completed=True, schedule_registered=False),
+            now=_SUMMER,
+            store_created_at=_SUMMER_ESTABLISHED,
+            schedule_status=missing,
+        )
+        assert status.verdict is Verdict.WARNING
+        assert status.headline != _PAUSED_HEADLINE
+        assert "add a nightly schedule" in status.detail
+
+    def test_confirmed_missing_schedule_outranks_pause_populated_store(self) -> None:
+        # The populated twin ("Remove nightly sync" leaves past runs in the store). A confirmed-gone
+        # schedule must not read as a calm summer pause -> the normal record rules apply (here: an
+        # old newest record -> the honest "No recent sync" WARNING), never the HEALTHY pause.
+        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        old = (_SUMMER - timedelta(hours=STALE_AFTER_HOURS + 5)).isoformat(timespec="seconds")
+        status = derive_home_status(
+            [_record(timestamp=old)],
+            _windowed(setup_completed=True, schedule_registered=False),
+            now=_SUMMER,
+            schedule_status=missing,
+        )
+        assert status.verdict is Verdict.WARNING
+        assert status.headline != _PAUSED_HEADLINE
+
+    def test_live_fired_but_no_record_contradiction_is_suppressed_in_a_pause(self) -> None:
+        # The paused nightly fires (LastRunTime advances) but writes NO record by design — the
+        # resulting fired-but-no-record contradiction is a false alarm in summer and is suppressed.
+        contradiction = derive_schedule_status(
+            ScheduleReadback(found=True, last_run="2026-07-19T04:00:00"),
+            hint_registered=True,
+            latest_record_ts=_RECENT,
+        )
+        status = derive_home_status([_record()], _windowed(), now=_SUMMER, schedule_status=contradiction)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.headline == _PAUSED_HEADLINE
+
+    def test_boundary_last_active_day_is_not_paused(self) -> None:
+        # Jul 6 is the INCLUSIVE last active day -> normal behavior (not paused).
+        on_boundary = datetime(2026, 7, 6, 8, 0, 0)
+        status = derive_home_status(
+            [_record(timestamp=(on_boundary - timedelta(hours=5)).isoformat())], _windowed(), now=on_boundary
+        )
+        assert status.headline != _PAUSED_HEADLINE
+
+    def test_boundary_first_paused_day(self) -> None:
+        # Jul 7 is the first day OUTSIDE the window -> paused.
+        first_paused = datetime(2026, 7, 7, 8, 0, 0)
+        status = derive_home_status([_record(timestamp=_OLD)], _windowed(), now=first_paused)
+        assert status.headline == _PAUSED_HEADLINE
+
+    def test_inside_window_missed_run_still_fires(self) -> None:
+        # Window ENABLED but today INSIDE it (mid-June) -> normal cadence rules, missed-run fires.
+        june = datetime(2026, 6, 15, 8, 0, 0)
+        established = (june - timedelta(hours=MISSED_RUN_AFTER_HOURS + 48)).isoformat(timespec="seconds")
+        status = derive_home_status(
+            [], _windowed(), now=june, store_created_at=established, schedule_status=_live_schedule()
+        )
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == _MISSED_HEADLINE
+
+    def test_disabled_window_is_year_round_unchanged(self) -> None:
+        # The opt-in default: disabled window -> byte-identical to today (no paused state ever).
+        cfg = _windowed(sync_window_enabled=False)
+        status = derive_home_status(
+            [], cfg, now=_SUMMER, store_created_at=_SUMMER_ESTABLISHED, schedule_status=_live_schedule()
+        )
+        assert status.headline == _MISSED_HEADLINE  # the missed-run warning fires as before
+
+    def test_blank_bounds_never_pause(self) -> None:
+        # Enabled but with unset bounds (never configured) -> treated as year-round, never paused.
+        cfg = _windowed(sync_window_start="", sync_window_end="")
+        status = derive_home_status([_record(timestamp=_OLD)], cfg, now=_SUMMER)
+        assert status.headline != _PAUSED_HEADLINE
+
+    def test_malformed_bounds_never_pause(self) -> None:
+        # A malformed window (should be gated at save, but be TOTAL) -> year-round, never crash.
+        cfg = _windowed(sync_window_start="13-40", sync_window_end="xx-yy")
+        status = derive_home_status([_record(timestamp=_OLD)], cfg, now=_SUMMER)
+        assert isinstance(status, HomeStatus)
+        assert status.headline != _PAUSED_HEADLINE
+
+    def test_paused_detail_is_plain_language_and_pii_free(self) -> None:
+        status = derive_home_status([], _windowed(), now=_SUMMER, store_created_at=_SUMMER_ESTABLISHED)
+        assert "08-11" not in status.detail  # never the raw MM-DD / ISO
+        assert "Nothing is wrong" in status.detail
 
 
 class TestFailedRules:

@@ -14,7 +14,7 @@ reaches an admin card). Kept minimal by design (YAGNI) — total functions, not 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 
@@ -71,11 +71,33 @@ def friendly_anomaly_detail(count: int, *, variant: AnomalyVariant) -> str:
 
 
 # Bounded, category-mapped SFTP-failure reasons — the substrings we match on (case-insensitive)
-# → the fixed, admin-safe reason. Ordered by diagnostic priority: auth first (a rejected
-# credential can also mention the host), then host-resolution, then reachability, then remote
-# path. Every branch returns a FIXED string; the raw ``test_connection`` return NEVER passes
-# through (privacy: a raw paramiko/socket string can carry host/socket/path detail).
+# → the fixed, admin-safe reason. Ordered by diagnostic priority: the two SERVER-IDENTITY
+# categories first (a host-key failure must never be mistaken for a routine connection
+# problem — see below), then auth (a rejected credential can also mention the host), then
+# host-resolution, then reachability, then remote path. Every branch returns a FIXED string;
+# the raw ``test_connection`` return NEVER passes through (privacy: a raw paramiko/socket
+# string can carry host/socket/path detail — paramiko's own BadHostKeyException text carries
+# BOTH key blobs).
+#
+# The two identity categories are deliberately distinct and deliberately terminal — neither
+# invites a retry or a credential re-entry, because both mean DistrictSync could not prove it
+# was talking to SpacesEDU. Retyping a password at an unverified server is the one action the
+# copy must never suggest. (Pre-W1-A these messages matched no rule and fell through to the
+# generic "check the host, username, password … then try again" fallback.)
 _SFTP_REASON_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        # A pinned key we HAVE, that the server did not present — the MITM shape.
+        ("identity has changed", "does not match the pinned key", "host key for server", "bad host key"),
+        "The server didn't match SpacesEDU's known identity, so nothing was sent. "
+        "Contact SpacesEDU support — don't retry or re-enter your password.",
+    ),
+    (
+        # No pin to check against (missing/unreadable known_hosts, or an unpinned port):
+        # honest "couldn't verify", NOT "the identity changed".
+        ("host key verification failed", "no pinned key", "could not be verified"),
+        "DistrictSync couldn't verify the server's identity, so nothing was sent. "
+        "Contact SpacesEDU support — don't retry or re-enter your password.",
+    ),
     (
         ("authentication", "auth", "password"),
         "The username or password wasn't accepted.",
@@ -104,17 +126,33 @@ def friendly_sftp_reason(raw: str) -> str:
 
     ``uploader.test_connection`` returns ``(bool, str)`` where the ``str`` is a raw
     paramiko/socket exception message (a CORE return — IA-9 sanitizes it VIEW-side, never
-    touching the core). This maps that raw string to one of four actionable categories
-    (auth / host-resolution / reachability / remote-path) via a case-insensitive substring
-    match, with a MANDATORY catch-all so an unmapped failure can NEVER fall through to the
-    raw string. The admin learns *why* (the category their next action differs on) without
-    ever seeing a raw machine string.
+    touching the core). This maps that raw string to one of six actionable categories
+    (identity-mismatch / identity-unverified / auth / host-resolution / reachability /
+    remote-path) via a case-insensitive substring match, with a MANDATORY catch-all so an
+    unmapped failure can NEVER fall through to the raw string. The admin learns *why* (the
+    category their next action differs on) without ever seeing a raw machine string.
+
+    The two identity categories are matched FIRST and are the only ones whose next action
+    is "stop": a host-key failure reaching the generic fallback would tell an admin to
+    re-enter credentials at a server whose identity DistrictSync could not verify.
     """
     lowered = (raw or "").lower()
     for needles, reason in _SFTP_REASON_RULES:
         if any(needle in lowered for needle in needles):
             return reason
     return _SFTP_REASON_FALLBACK
+
+
+def friendly_date_short(d: date) -> str:
+    """A plain ``"Aug 11"`` month-day (abbreviated month + un-padded day) — the seasonal-resume copy.
+
+    PII-free by construction (a recurring window boundary carries NO student data), and never a
+    raw ISO / ``"MM-DD"`` string: the Home paused state renders "resumes Aug 11", not "07-06". No
+    year is shown — the seasonal window recurs every year, so a year would misinform. TOTAL over
+    any ``date`` (``strftime('%b')`` is locale-stable ASCII for the English UI; the day is the
+    un-padded integer so "Aug 6" reads naturally, not "Aug 06").
+    """
+    return f"{d.strftime('%b')} {d.day}"
 
 
 def friendly_district_name(sis_type: str, *, config_dir: Path | None = None) -> str:

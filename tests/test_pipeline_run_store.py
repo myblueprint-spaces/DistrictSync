@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Collection
 from pathlib import Path
 
 import pandas as pd
@@ -284,20 +285,36 @@ class TestConvertManual:
 # --------------------------------------------------------------------------- #
 # deliver_job → deliver from disk (0034 Slice 2)                                #
 # --------------------------------------------------------------------------- #
-def _fake_uploader(calls: list[tuple[Path, str | None]], *, fail: bool = False) -> type:
-    """A test double for ``SFTPUploader`` recording ``upload_csvs`` calls (no network)."""
+def _fake_uploader(calls: list[tuple[Path, str | None, set[str]]], *, fail: bool = False) -> type:
+    """A test double for ``SFTPUploader`` recording ``upload_csvs`` calls (no network).
+
+    Records the delivery MANIFEST alongside the folder + district: deliver-from-disk must
+    nominate the files it ships, never let the uploader glob the folder.
+    """
 
     class _Fake:
         def __init__(self, **_kwargs: object) -> None:
             pass
 
-        def upload_csvs(self, output_dir: Path, zip_name: str | None = None, sis_type: str | None = None) -> list:
-            calls.append((output_dir, sis_type))
+        def upload_csvs(
+            self,
+            output_dir: Path,
+            zip_name: str | None = None,
+            sis_type: str | None = None,
+            *,
+            manifest: Collection[str],
+        ) -> list:
+            calls.append((output_dir, sis_type, set(manifest)))
             if fail:
                 raise RuntimeError("connection refused by 203.0.113.9")
             return ["Students.csv"]
 
     return _Fake
+
+
+# The 5 rostering entity CSVs the base ``myedbc`` config produces — the authoritative
+# deliver-from-disk manifest for these fixtures.
+_MYEDBC_CSVS = {"Students.csv", "Staff.csv", "Family.csv", "Classes.csv", "Enrollments.csv"}
 
 
 class TestDeliverFromDisk:
@@ -315,13 +332,15 @@ class TestDeliverFromDisk:
 
         self._configure(gde_input, gde_output)
         convert_screen.convert_job("myedbc", str(gde_input))  # a committed build on disk first
-        calls: list[tuple[Path, str | None]] = []
+        calls: list[tuple[Path, str | None, set[str]]] = []
         monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
 
         result = convert_screen.deliver_job("myedbc")
         assert result.status is ConvertStatus.DELIVERED_FROM_DISK
         assert result.sftp_attempted is True and result.sftp_ok is True
-        assert calls == [(gde_output, "myedbc")]  # shipped from the OUTPUT dir, zip named per district
+        # Shipped from the OUTPUT dir, zip named per district, and the payload NOMINATED:
+        # exactly the active config's entity CSVs found on disk — never the folder's glob.
+        assert calls == [(gde_output, "myedbc", _MYEDBC_CSVS)]
 
         records = read_run_records()
         assert records is not None and len(records) == 2  # the build record + the delivery record
@@ -351,7 +370,7 @@ class TestDeliverFromDisk:
         monkeypatch.setattr(convert_screen, "run_transform", _boom)
         monkeypatch.setattr(convert_screen, "_read_gde_bytes", _boom)
         monkeypatch.setattr(convert_screen.DataExtractor, "load_from_bytes", _boom)
-        calls: list[tuple[Path, str | None]] = []
+        calls: list[tuple[Path, str | None, set[str]]] = []
         monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
 
         result = convert_screen.deliver_job("myedbc")
@@ -368,7 +387,7 @@ class TestDeliverFromDisk:
 
         self._configure(gde_input, gde_output)
         convert_screen.convert_job("myedbc", str(gde_input))
-        calls: list[tuple[Path, str | None]] = []
+        calls: list[tuple[Path, str | None, set[str]]] = []
         monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls, fail=True))
 
         result = convert_screen.deliver_job("myedbc")
@@ -392,6 +411,37 @@ class TestDeliverFromDisk:
             deliver_job("myedbc")
         assert read_run_records() == []
 
+    def test_unset_district_fails_loud_and_records_nothing(self, gde_input: Path, gde_output: Path) -> None:
+        """No district ⇒ no authoritative set. Fail loud rather than fall back to
+        "ship whatever is in the folder" — that fallback IS the defect."""
+        from src.ui_flet.screens.convert import deliver_job
+
+        self._configure(gde_input, gde_output)
+        with pytest.raises(ValueError, match="district"):
+            deliver_job("")
+        assert read_run_records() == []
+
+    def test_foreign_csv_in_the_output_folder_is_not_nominated(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        """The deliver-from-disk defect: an admin's stray CSV must not ship to SpacesEDU."""
+        from src.ui_flet.screens import convert as convert_screen
+
+        self._configure(gde_input, gde_output)
+        convert_screen.convert_job("myedbc", str(gde_input))
+        (gde_output / "old_roster.csv").write_text("id,name\n9,Ex Student\n", encoding="utf-8")
+        (gde_output / "students_backup.csv").write_text("id,name\n8,Backup\n", encoding="utf-8")
+
+        calls: list[tuple[Path, str | None, set[str]]] = []
+        monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
+        convert_screen.deliver_job("myedbc")
+
+        assert calls and calls[0][2] == _MYEDBC_CSVS
+        assert "old_roster.csv" not in calls[0][2]
+        assert "students_backup.csv" not in calls[0][2]
+        # Nothing is deleted — the files simply stay home.
+        assert (gde_output / "old_roster.csv").exists()
+
     def test_delivery_record_drives_home_and_history_sensibly(
         self, gde_input: Path, gde_output: Path, monkeypatch
     ) -> None:
@@ -401,7 +451,7 @@ class TestDeliverFromDisk:
 
         self._configure(gde_input, gde_output)
         convert_screen.convert_job("myedbc", str(gde_input))
-        calls: list[tuple[Path, str | None]] = []
+        calls: list[tuple[Path, str | None, set[str]]] = []
         monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
         convert_screen.deliver_job("myedbc")
 

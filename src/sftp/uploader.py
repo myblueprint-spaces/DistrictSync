@@ -9,8 +9,9 @@ Connections are restricted to the SpacesEDU SFTP host allowlist
 (see ``src.utils.validators.ALLOWED_SFTP_HOSTS``), and the server's
 *identity* is verified against pinned SSH host keys resolved from the
 user app-data ``known_hosts`` override + the bundled ``config/known_hosts``
-(see :class:`PinnedHostKeyPolicy` — a pinned-key mismatch hard-fails, an
-unpinned host is accepted with a warning).
+(see :class:`PinnedHostKeyPolicy` — the pinning is **fail-closed**: a
+mismatching key AND a missing/unloadable pin both hard-fail, and the
+system ``~/.ssh/known_hosts`` is deliberately never consulted).
 
 Usage::
 
@@ -20,7 +21,11 @@ Usage::
     uploader.store_password("secret")          # called once from setup wizard
     ok, msg = uploader.test_connection()
     if ok:
-        uploaded = uploader.upload_csvs(Path("data/output"))
+        # Only the files THIS run produced ship — never the folder's *.csv glob.
+        # ``manifest`` is required; build it from the entities the run wrote:
+        #     from src.etl.loader import DataLoader
+        #     manifest = DataLoader.output_filenames(outputs)   # e.g. {"Students.csv", ...}
+        uploaded = uploader.upload_csvs(Path("data/output"), manifest=manifest)
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import date
 from pathlib import Path
 from typing import TypeVar
@@ -130,10 +135,46 @@ def _host_key_mismatch_message(hostname: str) -> str:
     )
 
 
+def _host_key_unpinned_message(hostname: str) -> str:
+    """Canonical, PII-free reject for a host we hold NO pinned key for (fail-closed).
+
+    Deliberately DISTINCT from :func:`_host_key_mismatch_message`: a missing pin is a
+    broken/incomplete install (the bundled ``config/known_hosts`` asset absent or
+    unreadable), not evidence that the server's identity changed — so the copy must not
+    cry man-in-the-middle, and the remedy is to restore the pins, not to rotate a key.
+    Host name only — never a resolved path, credential, or key blob.
+    """
+    return (
+        f"SFTP host key verification failed for {hostname}: no pinned key is available "
+        "for this server, so its identity could not be verified and delivery was "
+        "aborted. The pinned known_hosts file is missing or unreadable — reinstall "
+        "DistrictSync, or place a known_hosts file pinning this server in the "
+        "DistrictSync app-data folder (config/known_hosts documents the ssh-keyscan "
+        "command)."
+    )
+
+
+def _host_key_port_unpinned_message(hostname: str, bare_host: str) -> str:
+    """Canonical, PII-free reject for a non-22 port whose bracketed name isn't pinned.
+
+    paramiko looks a non-standard port up as ``[host]:port``, which a plain-hostname
+    entry does NOT cover. Saying so exactly is the difference between an owner adding
+    one known_hosts line and an owner believing pinning is broken.
+    """
+    return (
+        f"SFTP host key verification failed for {hostname}: a pinned key exists for "
+        f"{bare_host}, but this connection uses a non-standard port, which the "
+        "plain-hostname pin does NOT cover — so the server's identity could not be "
+        f"verified and delivery was aborted. Add a bracketed '{hostname}' entry to "
+        "known_hosts (scan with ssh-keyscan -p PORT) to pin it."
+    )
+
+
 # Never retried, even where the type would otherwise read as transient:
 #   - AuthenticationException: hammering a wrong password can lock the delivery account.
-#   - BadHostKeyException / HostKeyVerificationError: a changed server identity is the
-#     MITM case — retrying would just re-offer credentials to the impostor.
+#   - BadHostKeyException / HostKeyVerificationError: an unverified server identity
+#     (changed key, or no pin to check it against) — retrying would just re-offer
+#     credentials to a server we could not prove is SpacesEDU.
 _NEVER_RETRY_EXCEPTIONS = (
     paramiko.AuthenticationException,
     paramiko.BadHostKeyException,
@@ -162,9 +203,11 @@ def load_pinned_host_keys() -> paramiko.HostKeys:
     (mirrors the mappings hotfix path). Files merge per-entry: a user file that pins
     only one host leaves the bundled pins for the other hosts in force.
 
-    An unreadable/corrupt file is logged as ERROR and skipped rather than raised:
-    pinning must tighten security without ever bricking nightly delivery, and the
-    other file's pins still apply.
+    An unreadable/corrupt file is logged as ERROR and skipped rather than raised, so a
+    bad user override still leaves the bundled pins in force (per-file resilience — NOT
+    a bypass). It is no longer a security hole: with both files unusable the result is
+    an EMPTY ``HostKeys``, and :class:`PinnedHostKeyPolicy` then refuses the connection
+    (fail-closed) instead of accepting an unverified key.
     """
     pinned = paramiko.HostKeys()
     for path in _known_hosts_paths():
@@ -178,20 +221,32 @@ def load_pinned_host_keys() -> paramiko.HostKeys:
 
 
 class PinnedHostKeyPolicy(paramiko.MissingHostKeyPolicy):
-    """Three-way host-key decision backed by the pinned known_hosts entries.
+    """FAIL-CLOSED host-key decision backed by the pinned known_hosts entries.
 
-    - pinned and MATCHES → accept (return normally).
+    - pinned and MATCHES → accept (return normally). The ONLY accepting branch.
     - pinned but MISMATCH (the host has pinned keys, none matching the offered key,
-      including a key-type we never pinned) → raise :class:`HostKeyVerificationError`.
-    - host has NO pinned key → accept + WARNING pointing at ``config/known_hosts``
-      (the pre-pinning behavior — delivery never breaks before keys exist).
+      including a key-type we never pinned) → :func:`_host_key_mismatch_message`.
+    - host has NO pinned key → :func:`_host_key_unpinned_message` (or the port-specific
+      :func:`_host_key_port_unpinned_message` when only the bare host is pinned).
 
-    paramiko invokes this policy only for hosts absent from the SYSTEM known_hosts
-    (``load_system_host_keys``); a system-entry mismatch raises ``BadHostKeyException``
-    inside paramiko itself, which ``_connect`` re-raises as the same
-    :class:`HostKeyVerificationError`. For a non-22 port paramiko passes hostname as
-    ``[host]:port`` — such a host simply reads as unpinned (warn + accept) unless the
-    known_hosts entry uses that same form.
+    **Why there is no warn-and-accept branch** (W1-A, 2026-07-21): it was a
+    trust-on-first-use bypass of the entire feature — a missing PyInstaller
+    ``--add-data config`` asset or one corrupt byte in ``config/known_hosts`` silently
+    downgraded EVERY connection to "accept whatever key the server offers", which is
+    exactly the state pinning exists to prevent, and it did so invisibly (a log WARNING
+    no scheduled run ever reads). The original "don't break delivery before keys exist"
+    rationale expired when ``config/known_hosts`` shipped populated for all three hosts
+    in ``ALLOWED_SFTP_HOSTS`` (v3.7.0) — there is no longer a legitimate unpinned host.
+    Host-NAME allowlisting stays at the boundary (``validate_sftp_host`` in
+    :meth:`SFTPUploader.__init__`); this policy only ever answers "is this the KEY we
+    pinned?", so the two concerns keep a single source of truth each.
+
+    This policy is the SINGLE host-key decision point: ``_connect`` deliberately loads
+    no host keys into the client (neither system nor pinned), because paramiko consults
+    ``_system_host_keys`` FIRST and only calls a missing-host-key policy for hosts absent
+    from it — so a user-writable ``~/.ssh/known_hosts`` entry would otherwise override
+    the bundled pin. ``_connect`` still maps paramiko's own ``BadHostKeyException`` to
+    :class:`HostKeyVerificationError` as defense in depth.
     """
 
     def __init__(self, pinned: paramiko.HostKeys) -> None:
@@ -203,24 +258,13 @@ class PinnedHostKeyPolicy(paramiko.MissingHostKeyPolicy):
             # apply to them. Say so distinctly, or the owner believes they're pinned.
             bare_host = hostname[1:].split("]")[0] if hostname.startswith("[") else None
             if bare_host and self._pinned.lookup(bare_host) is not None:
-                logger.warning(
-                    f"A pinned SSH host key exists for {bare_host} but this connection uses a "
-                    f"non-standard port ({hostname}), which the plain-hostname pin does NOT cover — "
-                    "accepting the server's key for this session UNVERIFIED. Add a bracketed "
-                    f"'{hostname}' entry to known_hosts (scan with ssh-keyscan -p PORT) to pin it."
-                )
-                return
-            logger.warning(
-                f"No pinned SSH host key for {hostname} — accepting the server's key for "
-                "this session. To protect against server-identity spoofing, add this "
-                "server's public key to the bundled config/known_hosts (or a known_hosts "
-                "file in the DistrictSync app-data folder); config/known_hosts documents "
-                "the ssh-keyscan command."
-            )
+                message = _host_key_port_unpinned_message(hostname, bare_host)
+            else:
+                message = _host_key_unpinned_message(hostname)
+        elif self._pinned.check(hostname, key):
             return
-        if self._pinned.check(hostname, key):
-            return
-        message = _host_key_mismatch_message(hostname)
+        else:
+            message = _host_key_mismatch_message(hostname)
         logger.error(message)
         raise HostKeyVerificationError(message)
 
@@ -280,9 +324,9 @@ class SFTPUploader:
         The server's identity is verified against the pinned known_hosts entries via
         :class:`PinnedHostKeyPolicy` (the host NAME is already restricted to
         ``ALLOWED_SFTP_HOSTS`` via ``validate_sftp_host()`` in ``__init__``; pinning
-        checks the host's *key*). A pinned-key mismatch — whether from the pinned
-        files (policy) or the system known_hosts (paramiko's ``BadHostKeyException``)
-        — raises :class:`HostKeyVerificationError` and is never retried.
+        checks the host's *key*). Verification is FAIL-CLOSED: a mismatching key, a
+        missing/unloadable pin, and paramiko's own ``BadHostKeyException`` all raise
+        :class:`HostKeyVerificationError`, which is never retried.
 
         Args:
             password_override: A transient password to authenticate with instead of
@@ -297,8 +341,9 @@ class SFTPUploader:
 
         Raises:
             RuntimeError: If paramiko is missing or credentials are unavailable.
-            HostKeyVerificationError: If the server's host key does not match a
-                pinned entry (possible MITM — fail loud, never proceed).
+            HostKeyVerificationError: If the server's host key does not match a pinned
+                entry (possible MITM), or if no pinned key is available to check it
+                against (fail loud, never proceed on an unverified identity).
         """
         password = password_override or self._get_password()
         if not password:
@@ -306,7 +351,13 @@ class SFTPUploader:
 
         client = paramiko.SSHClient()
         try:
-            client.load_system_host_keys()
+            # NO load_system_host_keys() / load_host_keys() — deliberate. paramiko's
+            # connect() consults the client's loaded host keys FIRST and invokes the
+            # missing-host-key policy ONLY for a host absent from them, so any entry in
+            # the user-writable ~/.ssh/known_hosts for an allowlisted host would silently
+            # take precedence over the bundled pin (a full pinning bypass). Leaving the
+            # client's key stores empty makes PinnedHostKeyPolicy the single decision
+            # point for every connection.
             client.set_missing_host_key_policy(PinnedHostKeyPolicy(load_pinned_host_keys()))
             client.connect(
                 self.host,
@@ -317,8 +368,11 @@ class SFTPUploader:
             )
             sftp = client.open_sftp()
         except paramiko.BadHostKeyException as exc:
-            # A mismatch against the SYSTEM known_hosts is raised by paramiko itself
-            # before the policy runs — same MITM case, same canonical message.
+            # Defense in depth: paramiko raises this itself (before the policy runs) for
+            # a host present in the client's own key stores. We deliberately load none,
+            # so this should be unreachable — but if a future change (or a paramiko
+            # default) ever populates them, the MITM case must still fail with the same
+            # canonical message rather than a raw exception carrying both key blobs.
             client.close()
             raise HostKeyVerificationError(_host_key_mismatch_message(self.host)) from exc
         except Exception:
@@ -407,10 +461,21 @@ class SFTPUploader:
         output_dir: Path,
         zip_name: str | None = None,
         sis_type: str | None = None,
+        *,
+        manifest: Collection[str],
     ) -> list[str]:
-        """Zip the rostering CSVs in *output_dir* and upload via SFTP.
+        """Zip the *manifested* rostering CSVs in *output_dir* and upload via SFTP.
 
-        ``StudentAttendance.csv``, when present, is SpacesEDU's attendance feed
+        **The manifest is the authoritative payload — not the folder listing.**
+        Callers name exactly the CSV filenames this delivery vouches for (built from
+        the entity→filename rule in ``DataLoader.output_filenames``), and only those
+        files ship. The folder is merely *where* they live: a spreadsheet export, a
+        ``students_backup.csv``, or any other ``*.csv`` an admin drops into the output
+        folder is left on disk and never egresses to SpacesEDU. ``manifest`` is
+        REQUIRED (keyword-only) precisely so a future caller cannot silently fall back
+        to "whatever is in the folder" — the defect this closes.
+
+        ``StudentAttendance.csv``, when manifested, is SpacesEDU's attendance feed
         and must arrive as a **standalone file outside the rostering zip** (their
         nightly check looks for it by name, and it must not pollute the advanced
         -CSV bundle). It is therefore excluded from the zip and uploaded with its
@@ -427,15 +492,20 @@ class SFTPUploader:
                 ``districtsync_2026-04-10.zip`` when no ``sis_type`` is provided.
             sis_type: District SIS identifier used to derive the default
                 ``zip_name``. Ignored when ``zip_name`` is provided explicitly.
+            manifest: The exact CSV filenames authorized for this delivery
+                (e.g. ``DataLoader.output_filenames(outputs)``). Files in
+                *output_dir* outside this set are NOT uploaded.
 
         Returns:
             List of CSV filenames delivered — the zipped rostering CSVs plus any
             standalone ``StudentAttendance.csv``. Always non-empty on return (an empty
-            *output_dir* raises rather than returning ``[]``).
+            manifest / missing files raise rather than returning ``[]``).
 
         Raises:
-            RuntimeError: If *output_dir* contains no CSV files (fail-loud — a silent
-                ``[]`` let callers report a false "delivered"), or if the connection /
+            RuntimeError: If *manifest* is empty, if none of the manifested files are
+                present in *output_dir* (fail-loud — a silent ``[]`` let callers report
+                a false "delivered"), if a manifested file is missing (a partial
+                delivery reported as success would be dishonest), or if the connection /
                 upload could not be established.
         """
         import tempfile
@@ -444,13 +514,29 @@ class SFTPUploader:
         if zip_name is None:
             zip_name = build_zip_name(sis_type)
 
-        csv_files = sorted(output_dir.glob("*.csv"))
+        requested = set(manifest)
+        if not requested:
+            # Nothing was vouched for — refuse rather than invent a payload.
+            logger.error("SFTP delivery aborted: no output files were nominated for delivery")
+            raise RuntimeError("No output files were nominated for delivery")
+
+        # Only manifested files ship. Top-level glob only (an `archive_<ts>/` subfolder
+        # is already invisible here); the manifest then narrows it to this run's roster.
+        csv_files = sorted(p for p in output_dir.glob("*.csv") if p.is_file() and p.name in requested)
         if not csv_files:
             # Fail loud: a silent `[]` return let callers mark the delivery "ok" (a false
             # "delivered"). Raise so run_pipeline exits 3 / Convert shows BUILT_NOT_DELIVERED.
             # Only the directory NAME (never the full path) is in the message — no PII leak.
             logger.error(f"No CSV files found to upload in {output_dir.name}")
             raise RuntimeError(f"No CSV files found to upload in {output_dir.name}")
+
+        missing = sorted(requested - {p.name for p in csv_files})
+        if missing:
+            # A vouched-for file vanished between the atomic commit and delivery —
+            # shipping the rest as "delivered" would be a partial roster reported as
+            # whole. Entity CSV names only (no paths, no PII).
+            logger.error(f"SFTP delivery aborted: manifested file(s) missing from {output_dir.name}: {missing}")
+            raise RuntimeError(f"Cannot deliver — file(s) this run produced are missing from disk: {missing}")
 
         # SpacesEDU's attendance feed ships standalone, outside the rostering zip.
         attendance_files = [f for f in csv_files if f.name == "StudentAttendance.csv"]

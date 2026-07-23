@@ -100,6 +100,41 @@ class TestRegisterTaskRunAs:
         assert env["DSYNC_USER"] == "CORP\\jane"
 
     @patch("src.scheduler.windows.subprocess.run")
+    def test_password_bearing_child_is_the_absolute_system32_powershell(self, mock_run, monkeypatch):
+        """The process that RECEIVES the password in its env is pinned by absolute path.
+
+        This is the whole point of the run-as hardening: ``_build_env`` hands the child
+        ``DSYNC_TASK_PW``. Resolving argv[0] by bare name would let ``CreateProcess``'s
+        search order (calling-exe dir and CWD before ``System32``, absent
+        ``SafeProcessSearchMode``) substitute a planted ``powershell.exe`` — which would
+        then be handed the district Windows account password. Keeping the password off
+        argv is worth nothing if the *binary* can be swapped.
+        """
+        from src.scheduler.windows import register_task
+
+        monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
+        secret = "s3cr3t!"
+
+        register_task(
+            task_name="DistrictSync_Daily",
+            exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
+            sis_type="myedbc",
+            input_dir=Path("C:/input"),
+            output_dir=Path("C:/output"),
+            run_time="03:00",
+            run_as_user="CORP\\jane",
+            run_as_password=secret,
+        )
+
+        argv = _argv(mock_run)
+        assert argv[0] == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        assert argv[0] != "powershell"
+        # ... and the password is still env-only, never on argv (the pre-existing guarantee).
+        assert _child_env(mock_run)["DSYNC_TASK_PW"] == secret
+        assert secret not in " ".join(argv)
+
+    @patch("src.scheduler.windows.subprocess.run")
     def test_password_path_is_explicit_password_principal_highest(self, mock_run):
         """Password + run_highest=True → explicit -LogonType Password, RunLevel Highest."""
         from src.scheduler.windows import register_task

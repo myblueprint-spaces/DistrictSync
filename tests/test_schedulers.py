@@ -13,6 +13,7 @@ parse-fixture tests live in ``TestReadSchedule`` below.
 """
 
 import base64
+import ntpath
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -20,6 +21,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.utils.helpers import subprocess_no_window_flags
+
+# The absolute System32 paths argv[0] must carry once ``SYSTEMROOT`` is pinned to
+# ``C:\Windows`` — spelled out as literals (not via ``helpers.system_binary``) so these
+# assertions independently pin the expected value rather than restate the implementation.
+_ABS_POWERSHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+_ABS_SCHTASKS = r"C:\Windows\System32\schtasks.exe"
 
 
 def _argv(mock_run) -> list[str]:
@@ -312,8 +319,11 @@ class TestWindowsRegisterTask:
         # via stdin — observed live on this dev box (Win11, PS 5.1), a multi-line
         # try/catch read line-by-line from stdin silently no-ops; -EncodedCommand
         # parses the script as one unit so the fail-loud try/catch works).
-        assert argv[:6] == [
-            "powershell",
+        # argv[0] is the ABSOLUTE System32 powershell.exe (never a bare name — see
+        # test_register_invokes_absolute_system32_powershell for the security rationale).
+        assert ntpath.isabs(argv[0])
+        assert argv[0].lower().endswith(r"\system32\windowspowershell\v1.0\powershell.exe")
+        assert argv[1:6] == [
             "-NoProfile",
             "-NonInteractive",
             "-ExecutionPolicy",
@@ -327,6 +337,35 @@ class TestWindowsRegisterTask:
         assert "schtasks" not in argv
         assert "/XML" not in argv
         assert "/TR" not in argv
+
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_register_invokes_absolute_system32_powershell(self, mock_run, monkeypatch):
+        """argv[0] is the ABSOLUTE System32 powershell.exe — never a bare ``powershell``.
+
+        A bare name is resolved by ``CreateProcess``'s search order, which — absent
+        ``SafeProcessSearchMode`` — probes the calling executable's directory and the
+        CURRENT directory BEFORE ``System32``. This child is handed the district Windows
+        account password via ``DSYNC_TASK_PW`` in its environment (``_build_env``), so a
+        planted ``powershell.exe`` in a group-writable install folder would receive the
+        credential. An absolute argv[0] removes the image search entirely.
+        """
+        from src.scheduler.windows import register_task
+
+        monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
+
+        register_task(
+            task_name="DistrictSync_Daily",
+            exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
+            sis_type="myedbc",
+            input_dir=Path("C:/input"),
+            output_dir=Path("C:/output"),
+            run_time="03:00",
+        )
+
+        argv = _argv(mock_run)
+        assert argv[0] == _ABS_POWERSHELL
+        assert argv[0] != "powershell"
 
     @patch("src.scheduler.windows.subprocess.run")
     def test_register_failure_passes_stderr_through(self, mock_run):
@@ -619,6 +658,28 @@ class TestWindowsDeleteTask:
         assert _creationflags(mock_run) == subprocess_no_window_flags()
 
     @patch("src.scheduler.windows.subprocess.run")
+    def test_delete_invokes_absolute_system32_schtasks(self, mock_run, monkeypatch):
+        """argv[0] is the ABSOLUTE System32 schtasks.exe — never a bare ``schtasks``.
+
+        Same CreateProcess search-order hazard as the PowerShell sites: a bare name
+        probes the calling exe's directory and the CWD before System32, so a planted
+        ``schtasks.exe`` would run with the user's rights on a *delete-my-schedule* click.
+        """
+        from src.scheduler.windows import delete_task
+
+        monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+        mock_run.return_value = MagicMock(returncode=0, stdout="SUCCESS", stderr="")
+
+        delete_task("DistrictSync_Daily")
+
+        argv = _argv(mock_run)
+        assert argv[0] == _ABS_SCHTASKS
+        assert argv[0] != "schtasks"
+        assert ntpath.isabs(argv[0])
+        # The rest of the command form is unchanged.
+        assert argv[1:] == ["/Delete", "/F", "/TN", "DistrictSync_Daily"]
+
+    @patch("src.scheduler.windows.subprocess.run")
     def test_delete_failure(self, mock_run):
         from src.scheduler.windows import delete_task
 
@@ -672,6 +733,25 @@ class TestReadSchedule:
         assert mock_run.call_args[1]["timeout"] == 10
         # THE nav-click flasher: the read-back must pass the no-console flag (windowed exe).
         assert _creationflags(mock_run) == subprocess_no_window_flags()
+
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    @patch("src.scheduler.windows.subprocess.run")
+    def test_read_schedule_invokes_absolute_system32_powershell(self, mock_run, monkeypatch):
+        """The read-back probe pins argv[0] to the absolute System32 powershell.exe too.
+
+        This one fires on every nav click, so a bare name would hand a planted binary
+        repeated, unattended execution under the interactive user.
+        """
+        from src.scheduler.windows import read_schedule
+
+        monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_ABSENT", stderr="")
+
+        read_schedule("DistrictSync_Daily")
+
+        argv = _argv(mock_run)
+        assert argv[0] == _ABS_POWERSHELL
+        assert argv[0] != "powershell"
 
     @patch("src.scheduler.windows.sys.platform", "win32")
     @patch("src.scheduler.windows.subprocess.run")

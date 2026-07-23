@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import flet as ft
@@ -34,7 +35,13 @@ from src.ui_flet.screens.mapping import build_mapping
 from src.ui_flet.screens.onboarding import build_onboarding
 from src.ui_flet.screens.run_history import build_run_history
 from src.ui_flet.screens.setup import build_setup
-from src.ui_flet.setup_flow import DowngradeInterrupt, ReconcileOutcome, TaskArgs, task_args_to_persisted
+from src.ui_flet.setup_flow import (
+    DowngradeInterrupt,
+    ReconcileOutcome,
+    TaskArgs,
+    downgrade_interrupt,
+    task_args_to_persisted,
+)
 
 
 @pytest.fixture
@@ -148,16 +155,30 @@ class TestScreensRender:
         assert _has_text_containing(tree, str(out_dir))
         assert _find(tree, ft.Dropdown)[0].value == "myedbc"
 
-    def _delivery_ready_config(self, tmp_path, monkeypatch, *, with_csv: bool = True) -> AppConfig:
-        """A configured install with delivery set up (+ optionally a committed CSV on disk)."""
+    def _delivery_ready_config(
+        self,
+        tmp_path,
+        monkeypatch,
+        *,
+        with_csv: bool = True,
+        sis_type: str = "myedbc",
+        csv_names: tuple[str, ...] = ("Students.csv",),
+    ) -> AppConfig:
+        """A configured install with delivery set up (+ optionally committed CSVs on disk).
+
+        ``sis_type`` / ``csv_names`` default to the original (myedbc + ``Students.csv``) so the
+        pre-existing deliver-render tests are unchanged; FIX-4 passes them to seed an output
+        folder whose CSVs are NOT the active district's (the deliver dead-end reproduction).
+        """
         out_dir = tmp_path / "out"
         out_dir.mkdir(exist_ok=True)
         if with_csv:
-            (out_dir / "Students.csv").write_text("id\n1\n")
+            for name in csv_names:
+                (out_dir / name).write_text("id\n1\n")
         cfg = AppConfig(
             input_dir=str(tmp_path),
             output_dir=str(out_dir),
-            sis_type="myedbc",
+            sis_type=sis_type,
             sftp_enabled=True,
             sftp_host="sftp.ca.spacesedu.com",
             sftp_username="district_x",
@@ -195,6 +216,88 @@ class TestScreensRender:
         monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
         tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
         assert not _has_text_containing(tree, "Deliver the files in your output folder")
+
+    def test_convert_standalone_deliver_hidden_when_csvs_belong_to_another_config(
+        self, tmp_path, stub_page, monkeypatch
+    ):
+        # FIX-4 (the dead-end reproduction): the output folder holds only an EARLIER mbponly run's
+        # CSVs while the district has since been switched to sd74myedbc. `deliverable_manifest`
+        # (what `deliver_job` would actually ship) is empty, so offering the card would be a
+        # guaranteed-to-fail click that persists a FAILED delivery record. It must HIDE.
+        import src.ui_flet.screens.convert as convert_mod
+
+        self._delivery_ready_config(
+            tmp_path,
+            monkeypatch,
+            sis_type="sd74myedbc",
+            csv_names=("CourseInfo.csv", "StudentCourses.csv"),
+        )
+        monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert not _has_text_containing(tree, "Deliver the files in your output folder")
+        assert not _has_text_containing(tree, "Delivery isn't ready on this account")
+
+    def test_convert_standalone_deliver_hidden_for_a_lone_foreign_csv(self, tmp_path, stub_page, monkeypatch):
+        # Same shape, simplest case: an admin-parked spreadsheet export. It is not an entity CSV
+        # of any config, so nothing would ship — no affordance.
+        import src.ui_flet.screens.convert as convert_mod
+
+        self._delivery_ready_config(tmp_path, monkeypatch, csv_names=("report.csv",))
+        monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert not _has_text_containing(tree, "Deliver the files in your output folder")
+
+    def test_convert_standalone_deliver_hidden_when_config_is_unloadable(self, tmp_path, stub_page, monkeypatch):
+        # A partner's broken config must not crash the screen (mapping_catalog.summarize_config's
+        # degraded-not-crashing pattern) — and must not offer a delivery whose set can't be derived.
+        import src.ui_flet.screens.convert as convert_mod
+
+        self._delivery_ready_config(tmp_path, monkeypatch, sis_type="not_a_real_district")
+        monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert not _has_text_containing(tree, "Deliver the files in your output folder")
+
+    def test_convert_standalone_deliver_still_renders_for_the_active_configs_csvs(
+        self, tmp_path, stub_page, monkeypatch
+    ):
+        # Regression guard for the narrowed gate: the active district's OWN entity CSVs still
+        # produce the READY card (the fix must not hide a legitimate delivery).
+        import src.ui_flet.screens.convert as convert_mod
+
+        self._delivery_ready_config(
+            tmp_path,
+            monkeypatch,
+            sis_type="mbponly",
+            csv_names=("CourseInfo.csv", "StudentCourses.csv"),
+        )
+        monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert _has_text_containing(tree, "Deliver the files in your output folder")
+        assert _has_text_containing(tree, "Files last built")
+
+    def test_convert_standalone_deliver_re_gates_on_a_district_change(self, tmp_path, stub_page, monkeypatch):
+        # FIX-4, the other half of "the gate uses the district _start_deliver will use": the
+        # deliver slot is built once per visit, so a MID-VISIT dropdown change must re-gate it.
+        # Without the re-render the card built for mbponly would linger and offer sd74myedbc a
+        # delivery it cannot make (the manifest for the new district is empty).
+        import src.ui_flet.screens.convert as convert_mod
+
+        self._delivery_ready_config(
+            tmp_path,
+            monkeypatch,
+            sis_type="mbponly",
+            csv_names=("CourseInfo.csv", "StudentCourses.csv"),
+        )
+        monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+        tree = _assert_renders(lambda: build_convert(stub_page), monkeypatch)
+        assert _has_text_containing(tree, "Deliver the files in your output folder")
+
+        dropdown = _find(tree, ft.Dropdown)[0]
+        dropdown.value = "sd74myedbc"
+        dropdown.on_select(MagicMock())
+        assert not _has_text_containing(tree, "Deliver the files in your output folder"), (
+            "the deliver card must re-gate against the newly picked district"
+        )
 
     def test_convert_standalone_deliver_not_ready_without_credential(self, tmp_path, stub_page, monkeypatch):
         # Configured + files on disk but no stored password → the calm route-to-Setup card.
@@ -302,8 +405,12 @@ def _has_text(tree, exact) -> bool:
 
 
 def _has_text_containing(tree, substring) -> bool:
-    """Whether any control's ``value`` contains ``substring``."""
-    return any(substring in (getattr(c, "value", None) or "") for c in _iter_controls(tree))
+    """Whether any control's STRING ``value`` contains ``substring``.
+
+    Non-string values (e.g. an ``ft.Switch``'s bool ``value``) are skipped — they can never
+    contain a substring, and ``substring in True`` would raise.
+    """
+    return any(substring in v for c in _iter_controls(tree) if isinstance(v := getattr(c, "value", None), str))
 
 
 def _pick_event(value):
@@ -359,6 +466,102 @@ def test_mapping_post_apply_rerenders_and_allows_revert(stub_page, monkeypatch):
     # THE fix: re-selecting the previous mapping is applyable — a switch can be reverted in place.
     dropdown.on_select(_pick_event(original))
     assert apply_btn.disabled is False
+
+
+# --- Run History probes the schedule EVEN with records present (window-pause wiring) ------------ #
+# The pure derive_history_banner has a confirmed-missing guard on the pause; the adversarial pass
+# found the SCREEN only fed it a real read-back in the empty-records path, so with a table present a
+# REMOVED schedule false-greened as "Paused" while Home warned. These drive the real probe wiring
+# through build_run_history — the exact gap the pure-function tests cannot see.
+
+
+def _summer_paused_windowed_cfg() -> AppConfig:
+    """A configured install with the seasonal window enabled (Aug 11 -> Jul 6) — records present."""
+    return AppConfig(
+        input_dir="/in",
+        output_dir="/out",
+        sis_type="myedbc",
+        schedule_registered=True,
+        setup_completed=True,
+        sync_window_enabled=True,
+        sync_window_start="08-11",
+        sync_window_end="07-06",
+    )
+
+
+def _old_in_season_record() -> dict:
+    # A clean delivered-success run from before the summer break — old enough to trip `is_stale`.
+    return {
+        "timestamp": "2026-07-04T03:00:00",
+        "status": "success",
+        "duration_s": 3.2,
+        "Students": 100,
+        "Staff": 12,
+        "Family": 80,
+        "Classes": 40,
+        "Enrollments": 300,
+        "CourseInfo": 0,
+        "StudentCourses": 0,
+        "StudentAttendance": 0,
+        "sftp_attempted": True,
+        "sftp_ok": True,
+        "error": "",
+        "anomalies": [],
+        "data_errors": {},
+    }
+
+
+class _FrozenSummerNow(datetime):
+    """datetime with now() pinned to a mid-July summer day; fromisoformat/arithmetic still inherited,
+    so `home_status.datetime.now()` (used by sync_window_paused AND is_stale when the screen passes
+    now=None) is deterministic without breaking record-timestamp parsing."""
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: ANN001, ANN206 - test seam
+        return datetime(2026, 7, 20, 8, 0, 0)
+
+
+def _drive_run_history_probe(monkeypatch, probe_status):
+    """Build Run History with records present + an enabled window in summer, feed `probe_status`
+    through the REAL off-thread probe, run the marshalled refine, and return the rendered surface."""
+    from src.ui_flet.screens.run_history import build_run_history
+
+    monkeypatch.setattr(sys, "platform", "win32")  # supports_read_schedule -> the probe fires
+    monkeypatch.setattr("src.ui_flet.home_status.datetime", _FrozenSummerNow)
+    monkeypatch.setattr("src.ui_flet.screens.run_history.read_run_records", lambda *a, **k: [_old_in_season_record()])
+    monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: probe_status)
+
+    captured: list = []
+    page = _driving_page(captured)
+    surface = build_run_history(page, app_config=_summer_paused_windowed_cfg())
+    assert len(captured) == 1, "with records present, the schedule probe must still fire (the fix)"
+    coro_fn, _args = captured[0]
+    asyncio.run(coro_fn())  # run the marshalled re-render with the real read-back
+    return surface
+
+
+def test_run_history_records_present_confirmed_missing_is_not_false_paused(monkeypatch):
+    """A REMOVED schedule (MISSING read-back) with records present must NOT read as green 'Paused'
+    over the summer — the false-green FIX 1's guard exists to kill, on the common records path."""
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    missing = ScheduleStatus(state=ScheduleState.MISSING, headline="", detail="", expected=True)
+    surface = _drive_run_history_probe(monkeypatch, missing)
+    assert not _has_text_containing(surface, "Paused for the summer"), (
+        "a confirmed-gone schedule must not false-green as Paused once the probe is wired in"
+    )
+
+
+def test_run_history_records_present_live_schedule_still_pauses(monkeypatch):
+    """The positive twin: a LIVE schedule in summer with records present DOES show the calm
+    'Paused for the summer' — the fix must not over-suppress the common, correct case."""
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    live = ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="3:00 AM")
+    surface = _drive_run_history_probe(monkeypatch, live)
+    assert _has_text_containing(surface, "Paused for the summer"), (
+        "a LIVE schedule outside its season is a genuine pause — Run History must show it"
+    )
 
 
 def _mapping_apply(surface, target="mbp_core"):
@@ -473,6 +676,11 @@ def test_mapping_stale_probe_never_resurrects_a_cleared_banner(monkeypatch):
 def _textfield_by_label(tree, label):
     """The first ``ft.TextField`` whose label EXACTLY equals ``label`` (or None)."""
     return next((f for f in _find(tree, ft.TextField) if (f.label or "") == label), None)
+
+
+def _switch_by_label(tree, label):
+    """The first ``ft.Switch`` whose label EXACTLY equals ``label`` (or None)."""
+    return next((s for s in _find(tree, ft.Switch) if (getattr(s, "label", "") or "") == label), None)
 
 
 # The five always-present Setup text fields Enter must submit (the Windows-password
@@ -721,7 +929,9 @@ class TestWizardStepsRender:
 
         live = ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="3:00 AM")
 
-        def _stub_schedule(page, config, *, on_status=None, on_registered=None, on_schedule_changed=None):
+        def _stub_schedule(
+            page, config, *, on_status=None, on_registered=None, on_schedule_changed=None, on_window_valid=None
+        ):
             if on_status is not None:
                 on_status(live)  # deliver a LIVE read-back the moment the Schedule step builds
             return ft.Text("schedule"), setup_mod._ScheduleHandle(
@@ -877,6 +1087,19 @@ def test_settings_enabling_sftp_reregisters_task_with_sftp(monkeypatch, tmp_path
         schedule_registered=True,
         sftp_enabled=False,
         schedule_time="03:00",
+        # The durable record of that registration — a task baked WITHOUT --sftp, logged-on-only.
+        # W3-C: "a registered schedule" now means a PROVEN one; a bare schedule_registered=True
+        # with no record is the separate unproven state (its own tests below), which asks about
+        # the logon type before re-registering instead of proceeding straight to the register.
+        schedule_task_args=task_args_to_persisted(
+            TaskArgs.of(
+                input_dir=str(in_dir),
+                output_dir=str(tmp_path / "out"),
+                sis_type="myedbc",
+                sftp_enabled=False,
+                run_time="03:00",
+            )
+        ),
     )
     monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
     monkeypatch.setattr(AppConfig, "save", lambda self: None)
@@ -1023,6 +1246,172 @@ def test_settings_save_with_invalid_run_time_edit_persists_nothing_and_paints_th
     assert _has_text(tree, "That run time isn't valid")  # the register flow's exact inline error
 
 
+# --------------------------------------------------------------------------- #
+# Seasonal window (B) — render + the "not a task arg" no-re-register guarantee.  #
+# --------------------------------------------------------------------------- #
+def test_settings_renders_seasonal_window_fields(stub_page, monkeypatch):
+    """B: the shared schedule section renders the opt-in seasonal-window controls (toggle + two
+    MM-DD fields + heading) on the pinned flet, without falling to ErrorCard."""
+    tree = _settings_tree(stub_page, monkeypatch)
+    assert _switch_by_label(tree, "Only sync during the school year") is not None
+    assert _textfield_by_label(tree, "Season starts (MM-DD)") is not None
+    assert _textfield_by_label(tree, "Season ends (MM-DD)") is not None
+    assert _has_text(tree, "Seasonal pause")
+
+
+def test_window_fields_prefill_from_the_district_calendar(stub_page, monkeypatch):
+    """B: an unset window pre-fills from the district's academic calendar (myedbc 08-25 →
+    start 08-11 / end 07-06), so the admin starts from a sensible window, never blanks."""
+    tree = _settings_tree(stub_page, monkeypatch)  # sis_type=myedbc, no window saved
+    assert _textfield_by_label(tree, "Season starts (MM-DD)").value == "08-11"
+    assert _textfield_by_label(tree, "Season ends (MM-DD)").value == "07-06"
+
+
+def test_window_only_settings_change_does_not_reregister(tmp_path, stub_page, monkeypatch):
+    """B (non-negotiable): flipping the seasonal window on a REGISTERED-schedule install persists
+    the window to config but NEVER re-registers the task (the window is not a task arg)."""
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type="myedbc",
+        setup_completed=True,
+        schedule_registered=True,
+        schedule_time="03:00",
+        schedule_task_args=task_args_to_persisted(
+            TaskArgs.of(
+                input_dir=str(in_dir), output_dir=str(out_dir), sis_type="myedbc", sftp_enabled=False, run_time="03:00"
+            )
+        ),
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    recorded = _record_register(monkeypatch)
+
+    tree = build_setup(stub_page)
+    toggle = _switch_by_label(tree, "Only sync during the school year")
+    toggle.value = True
+    toggle.on_change(None)  # the user flips the seasonal window ON
+
+    assert recorded["called"] == 0, "a window-only change must NEVER re-register the nightly task"
+    assert cfg.sync_window_enabled is True  # config-only side effect
+    on_disk = json.loads(config_file_path().read_text(encoding="utf-8"))
+    assert on_disk["sync_window_enabled"] is True
+    assert on_disk["sync_window_start"] == "08-11"  # the prefilled bound persisted on enable
+    assert on_disk["schedule_task_args"]["sis_type"] == "myedbc"  # the task record is untouched
+
+
+def test_invalid_window_edit_shows_inline_error_and_persists_nothing(tmp_path, stub_page, monkeypatch):
+    """B: enabling the window with a bad MM-DD paints the inline error and saves nothing (the
+    gate refuses a bad window — mirrors the run-time inline-error contract)."""
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    cfg = AppConfig(input_dir=str(in_dir), output_dir=str(out_dir), sis_type="myedbc", setup_completed=True)
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+
+    tree = build_setup(stub_page)
+    toggle = _switch_by_label(tree, "Only sync during the school year")
+    start = _textfield_by_label(tree, "Season starts (MM-DD)")
+    toggle.value = True
+    start.value = "13-40"  # not a real month-day
+    start.on_change(None)
+
+    assert cfg.sync_window_enabled is False  # nothing persisted — the gate refused the bad window
+    assert _has_text_containing(tree, "Enter each date as MM-DD")
+
+
+def _footer_forward(tree):
+    """The wizard footer's forward (primary) button — the last control of the last root row.
+
+    The wizard renders ``root.controls = [step_header, body, step_footer]`` and the footer Row ends
+    with the forward button (``Continue`` / ``Set up later`` / ``Finish setup``), so this locates it
+    regardless of its current label (which flips with the step's addressed state)."""
+    return tree.controls[-1].controls[-1]
+
+
+def test_wizard_window_regate_recovers_stranded_schedule_step(tmp_path, stub_page, monkeypatch):
+    """FIX 3: enable the seasonal window, drive an INVALID end (the forward gate closes, nothing
+    persisted), Back -> Forward. The rebuilt Schedule step must re-derive its window gate from the
+    persisted (last VALID) config so the forward button is enabled again — the primary onboarding
+    path is no longer stranded with no on-screen cause. Base (no rebuild re-derive) leaves it stuck.
+    """
+    _benign_probe(monkeypatch)
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+
+    tree = build_setup(stub_page)  # folders + district done -> Delivery (step 3, F1 order)
+    _footer_forward(tree).on_click(None)  # defer delivery -> Schedule (step 4)
+    assert _has_text(tree, "Step 4 of 5")
+
+    # Enable the window (valid pre-fill persists) -> the forward gate opens.
+    switch = _switch_by_label(tree, "Only sync during the school year")
+    assert switch is not None
+    switch.value = True
+    switch.on_change(None)
+    assert _footer_forward(tree).disabled is False
+
+    # Drive an INVALID end -> the gate closes, nothing persists (cfg keeps the last valid bounds).
+    end_field = _textfield_by_label(tree, "Season ends (MM-DD)")
+    assert end_field is not None
+    end_field.value = "13-99"
+    end_field.on_change(None)
+    assert _footer_forward(tree).disabled is True
+
+    # Back -> Delivery, then Forward -> Schedule rebuilds from the persisted (last VALID) config.
+    _button_by_content(tree, "Back").on_click(None)
+    _footer_forward(tree).on_click(None)
+    assert _has_text(tree, "Step 4 of 5")
+
+    # THE fix: the rebuilt Schedule step re-derives its window gate -> the forward gate is open again.
+    assert _footer_forward(tree).disabled is False
+
+
+def test_home_suppresses_live_schedule_card_while_paused(monkeypatch):
+    """FIX 4: Home must not contradict itself. The LIVE "Nightly sync scheduled — Confirmed"
+    reassurance card is gated only on the schedule state, so it could render directly beneath the
+    "Paused for the summer" banner — telling the admin both "Paused" and "next run 3:00 AM
+    Confirmed". During a pause the LIVE reassurance card must be suppressed."""
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    # Force the seasonal pause deterministically (date-independent): the DERIVATION source (banner
+    # -> "Paused for the summer") AND the home-screen card gate the FIX adds. raising=False lets the
+    # RED run on the base, where the screen doesn't yet consult the pause fact for the card.
+    monkeypatch.setattr("src.ui_flet.home_status.sync_window_paused", lambda *a, **k: True)
+    monkeypatch.setattr("src.ui_flet.screens.home.sync_window_paused", lambda *a, **k: True, raising=False)
+    monkeypatch.setattr("src.ui_flet.screens.home.read_run_records", lambda: [])
+    monkeypatch.setattr("src.ui_flet.screens.home.store_meta", lambda: None)
+
+    # A LIVE read-back — the exact input that renders the reassurance card.
+    live = ScheduleStatus(
+        state=ScheduleState.LIVE,
+        headline="Nightly sync is scheduled",
+        detail="Next run at 3:00 AM",
+        next_run_display="3:00 AM",
+    )
+    monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: live)
+    monkeypatch.setattr(sys, "platform", "win32")  # supports_read_schedule -> the probe fires
+
+    cfg = AppConfig(
+        input_dir="/in",
+        output_dir="/out",
+        sis_type="myedbc",
+        setup_completed=True,
+        sync_window_enabled=True,
+        sync_window_start="08-11",
+        sync_window_end="07-06",
+    )
+
+    captured: list = []
+    surface = build_home(_driving_page(captured), app_config=cfg, on_navigate=lambda _d: None)
+    for coro_fn, _args in captured:  # deliver the async LIVE read-back
+        asyncio.run(coro_fn())
+
+    assert _has_text_containing(surface, "Paused for the summer"), "the banner names the pause"
+    assert not _has_text(surface, "Nightly sync scheduled"), "the LIVE reassurance card is suppressed while paused"
+
+
 def test_no_edit_save_after_mapping_switch_reregisters_from_the_persisted_args(tmp_path, stub_page, monkeypatch):
     """S3-d acceptance: after a Mapping district switch (config saved elsewhere), a Settings Save
     with NO field edits must still re-register — the reconcile compares against the durable
@@ -1042,18 +1431,78 @@ def test_no_edit_save_after_mapping_switch_reregisters_from_the_persisted_args(t
     assert triggered["count"] == 1, "a no-edit Save must re-register the task with the new district"
 
 
-def test_no_edit_save_without_a_persisted_record_falls_back_to_the_mount_snapshot(tmp_path, stub_page, monkeypatch):
-    """S3-d back-compat: an install that registered before the record existed keeps the old
-    (mount-snapshot) reconcile — a no-edit Save does not re-register (documented limitation
-    until its next successful register writes the record)."""
+def test_no_edit_save_without_a_persisted_record_reregisters_rather_than_silently_doing_nothing(
+    tmp_path, stub_page, monkeypatch
+):
+    """W3-C acceptance (replaces the S3-d 'falls back to the mount snapshot' limitation): on an
+    install whose task was registered before the durable record existed, the app cannot know what
+    the live task carries — so a Save must ACT (re-register), never read as 'up to date'.
+
+    This is exactly the Mapping-switch remedy path: Mapping persists the new district, Setup
+    remounts and reads it, so any baseline derived from the current config equals the pending
+    args and the old fallback silently skipped the re-register the Mapping notice promised."""
+    import src.ui_flet.screens.setup as setup_mod
+
     cfg = _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)
-    cfg.schedule_task_args = None  # pre-record install
+    cfg.schedule_task_args = None  # pre-record install (registered before v3.7.0)
     triggered = _spy_trigger(monkeypatch)
+    monkeypatch.setattr(setup_mod, "_kick_probe_thread", lambda _page, _work: None)
 
     tree = build_setup(stub_page)
     _button_by_content(tree, "Save folders & district").on_click(None)
 
-    assert triggered["count"] == 0
+    assert triggered["count"] == 1, "an unproven schedule record must re-register, not silently no-op"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the unattended logon type exists only on Windows")
+def test_unproven_record_save_asks_before_it_could_downgrade_an_unattended_task(tmp_path, monkeypatch):
+    """W3-C safety: forcing the re-register must not introduce a NEW silent failure. A pre-record
+    install's ``schedule_unattended`` defaults to False even when the live task really does run
+    signed-out, so the re-register pauses on the explicit choice with copy that says we can't tell
+    — no register (and therefore no UAC prompt) fires until the admin chooses."""
+    cfg = _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)
+    cfg.schedule_task_args = None  # pre-record install: the logon type is unproven too
+    recorded = _record_register(monkeypatch)
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_setup(page)
+    _button_by_content(tree, "Save folders & district").on_click(None)
+
+    assert recorded["called"] == 0, "no blank-password register may fire on an unproven logon type"
+    dialog = page.show_dialog.call_args[0][0]
+    assert isinstance(dialog, ft.AlertDialog)
+    unknown = downgrade_interrupt(registered_unattended=None, password_supplied=False)
+    assert dialog.title.value == unknown.headline
+    assert dialog.content.value == unknown.detail
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the unattended logon type exists only on Windows")
+def test_resolving_the_unproven_record_once_stops_the_reprompting(tmp_path, monkeypatch):
+    """W3-C UAC-cost bound: the unproven state is self-limiting. Choosing "signed in only" writes
+    the durable record on success, so the NEXT no-edit Save is precisely change-gated again —
+    exactly one prompt per install, never one per Save."""
+    cfg = _registered_settings_cfg(tmp_path, monkeypatch, unattended=False)
+    cfg.schedule_task_args = None
+    recorded = _record_register(monkeypatch)
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_setup(page)
+    captured.clear()
+    _button_by_content(tree, "Save folders & district").on_click(None)
+    dialog = page.show_dialog.call_args[0][0]
+    _dialog_action(dialog, DowngradeInterrupt().signed_in_only_label).on_click(None)
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))  # the register worker's marshalled _apply_result
+
+    assert recorded["called"] == 1
+    assert cfg.schedule_task_args is not None  # the record now exists — the state is proven
+    assert cfg.schedule_task_args["sis_type"] == "mbp_core"
+
+    _button_by_content(tree, "Save folders & district").on_click(None)  # a second no-edit Save
+    assert recorded["called"] == 1, "a proven, unchanged record must not re-register again"
+    assert page.show_dialog.call_count == 1, "and must not re-prompt"
 
 
 def test_save_reregister_of_an_unattended_task_without_a_password_interrupts(tmp_path, monkeypatch):
@@ -1870,3 +2319,223 @@ def test_failed_register_does_not_fire_the_badge_refresh(tmp_path, monkeypatch):
     coro, args = captured[-1]
     asyncio.run(coro(*args))
     assert fired == []
+
+
+# --------------------------------------------------------------------------- #
+# FIX-5 — the RESULT-SLOT deliver card is bound to the run it describes.        #
+#                                                                               #
+# The standalone (pre-run) deliver card learned the district-narrowed gate and  #
+# the re-gate-on-change lesson in FIX-4; the POST-RUN result card is a second   #
+# route to the same `deliver_job` and had neither. It is also the DEFAULT       #
+# post-run state (a successful convert with SFTP configured always renders it), #
+# sitting beside a LIVE district dropdown. These tests pin the two failures     #
+# that combination allowed:                                                     #
+#   1. an unsatisfiable retry (a district with nothing on disk to deliver), and #
+#   2. WRONG-DISTRICT EGRESS — sd74's roster shipped as districtsync_sd40_*.zip #
+#      because sd74myedbc and sd40myedbc write byte-identical filenames.        #
+# --------------------------------------------------------------------------- #
+_ROSTERING_CSVS = ("Students.csv", "Staff.csv", "Family.csv", "Classes.csv", "Enrollments.csv")
+_DELIVER_LABELS = ("Deliver to SpacesEDU", "Try delivering again")
+
+
+def _dialog_controls(dialog):
+    """Depth-first walk of an ``ft.AlertDialog`` — title + content + ACTIONS.
+
+    ``_iter_controls`` follows ``.controls``/``.content`` only, so the dialog's action
+    buttons (its ``actions`` list) are invisible to it. The confirm dialog's "Deliver"
+    button lives exactly there, so the deliver assertions need this walk.
+    """
+    for slot in (getattr(dialog, "title", None), getattr(dialog, "content", None)):
+        if isinstance(slot, ft.Control):
+            yield from _iter_controls(slot)
+    for action in getattr(dialog, "actions", None) or []:
+        if isinstance(action, ft.Control):
+            yield from _iter_controls(action)
+
+
+def _dialog_has_text_containing(dialog, substring) -> bool:
+    return any(substring in (getattr(c, "value", None) or "") for c in _dialog_controls(dialog))
+
+
+def _dialog_button(dialog, content):
+    return next((c for c in _dialog_controls(dialog) if getattr(c, "content", None) == content), None)
+
+
+def _deliver_ready_cfg(tmp_path, monkeypatch, *, sis_type, csv_names):
+    """A configured install with SFTP delivery set up and ``csv_names`` committed on disk."""
+    out_dir = tmp_path / "out"
+    out_dir.mkdir(exist_ok=True)
+    for name in csv_names:
+        (out_dir / name).write_text("id\n1\n")
+    in_dir = tmp_path / "in"
+    in_dir.mkdir(exist_ok=True)
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type=sis_type,
+        sftp_enabled=True,
+        sftp_host="sftp.ca.spacesedu.com",
+        sftp_username="district_x",
+        sftp_remote_path="/upload",
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    return cfg
+
+
+def _built_result():
+    from src.ui_flet.convert_result import ConvertResult, ConvertStatus
+
+    return ConvertResult(status=ConvertStatus.DELIVERED, entity_counts={"Students": 12})
+
+
+def _convert_with_result(tmp_path, monkeypatch, *, sis_type, csv_names, result):
+    """Mount Convert for ``sis_type`` and drive ``result`` through the REAL run flow.
+
+    Returns ``(tree, page, result_slot)``. ``convert_job`` is stubbed (no ETL) but every
+    other step is the production path: the button's ``_start_convert`` → ``JobRunner`` →
+    the marshalled ``on_done`` → ``_render_result(result, identity)``.
+    """
+    import src.ui_flet.screens.convert as convert_mod
+
+    _deliver_ready_cfg(tmp_path, monkeypatch, sis_type=sis_type, csv_names=csv_names)
+    monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+    monkeypatch.setattr(convert_mod, "convert_job", lambda *_a, **_kw: result)
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_convert(page)
+    _button_by_content(tree, "Convert now").on_click(None)
+    assert len(captured) == 1, "the convert must marshal exactly one on_done"
+    coro, args = captured[0]
+    asyncio.run(coro(*args))
+    captured.clear()
+    return tree, page, tree.controls[-1]
+
+
+def _deliver_buttons(node):
+    """Every deliver-action button reachable in ``node`` (either card's label)."""
+    return [c for c in _iter_controls(node) if getattr(c, "content", None) in _DELIVER_LABELS]
+
+
+def test_result_deliver_card_re_gates_on_a_district_change(tmp_path, monkeypatch):
+    """FIX-5(a): the post-run deliver card must re-gate when the district dropdown moves.
+
+    sd74myedbc run → the deliver card renders. Switching the dropdown to ``mbponly``
+    (disjoint filenames — nothing on disk it could ever ship) must leave NO deliver
+    affordance in the result slot: clicking it could only produce an empty manifest, a
+    ``RuntimeError`` inside ``deliver_job``, a persisted FAILED delivery record and copy
+    telling the admin to try again, forever.
+    """
+    tree, _page, result_slot = _convert_with_result(
+        tmp_path,
+        monkeypatch,
+        sis_type="sd74myedbc",
+        csv_names=_ROSTERING_CSVS,
+        result=_built_result(),
+    )
+    assert _deliver_buttons(result_slot), "a successful sd74 run with SFTP configured offers the deliver card"
+
+    dropdown = _find(tree, ft.Dropdown)[0]
+    dropdown.value = "mbponly"
+    dropdown.on_select(MagicMock())
+
+    assert not _deliver_buttons(result_slot), (
+        "the result card's deliver action must re-gate against the newly picked district"
+    )
+    assert not _deliver_buttons(tree), "no deliver affordance may survive anywhere on the screen"
+
+
+def test_confirm_refuses_a_district_with_nothing_to_deliver(tmp_path, monkeypatch):
+    """FIX-5(b): the deliver CHOKE POINT refuses a district whose manifest would be empty.
+
+    Every deliver action funnels through ``_confirm_and_deliver``. With ``mbponly`` picked
+    and only rostering CSVs on disk, a stale click must never reach ``deliver_job``, must
+    never assert a vintage ("Files last built …") for files that don't exist, and must
+    never persist a ``delivery_only`` run record.
+    """
+    import src.ui_flet.screens.convert as convert_mod
+
+    _deliver_ready_cfg(tmp_path, monkeypatch, sis_type="sd74myedbc", csv_names=_ROSTERING_CSVS)
+    monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+
+    delivered: list = []
+    monkeypatch.setattr(convert_mod, "deliver_job", lambda sis: delivered.append(sis))
+    records: list = []
+    monkeypatch.setattr(convert_mod, "write_run_record", lambda record, **kw: records.append(record))
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_convert(page)
+    # The standalone card is the pre-run route; hold its button across the district change
+    # (a real click can race the re-render — the choke point is the durable guarantee).
+    deliver_btn = _button_by_content(tree, "Deliver to SpacesEDU")
+
+    dropdown = _find(tree, ft.Dropdown)[0]
+    dropdown.value = "mbponly"
+    dropdown.on_select(MagicMock())
+
+    deliver_btn.on_click(None)
+
+    dialogs = [call.args[0] for call in page.show_dialog.call_args_list]
+    assert dialogs, "the refusal must be shown, not silently swallowed"
+    assert not any(_dialog_has_text_containing(d, "Files last built") for d in dialogs), (
+        "a vintage must never be asserted for files that do not exist"
+    )
+    assert not any(_dialog_button(d, "Deliver") for d in dialogs), (
+        "the confirm dialog's Deliver action must not be offered when nothing can ship"
+    )
+    assert delivered == [], "deliver_job must never be reached with an empty manifest"
+    assert records == [], "no delivery_only run record may be written for a refused delivery"
+
+
+def test_a_switched_district_can_never_ship_another_districts_roster(tmp_path, monkeypatch):
+    """FIX-5(c) — THE one that must not survive: wrong-district PII egress.
+
+    ``sd74myedbc`` and ``sd40myedbc`` produce byte-identical entity filenames, so a
+    result-card deliver that re-resolved the district at CLICK time built a NON-empty
+    manifest and SUCCEEDED — shipping Gold Trail's real student roster to SpacesEDU as
+    ``districtsync_sd40_<date>.zip``, under New Westminster's identity.
+
+    The deliver action must stay bound to the run that built the files, so even a click
+    that races the re-render can only ever ship as ``sd74myedbc``.
+    """
+    import src.ui_flet.screens.convert as convert_mod
+    from src.sftp.uploader import build_zip_name
+    from src.ui_flet.convert_result import ConvertResult, ConvertStatus
+
+    tree, page, result_slot = _convert_with_result(
+        tmp_path,
+        monkeypatch,
+        sis_type="sd74myedbc",
+        csv_names=_ROSTERING_CSVS,
+        result=_built_result(),
+    )
+    deliver_btn = _deliver_buttons(result_slot)[0]
+
+    shipped: list[str] = []
+
+    def _spy_deliver(sis: str) -> ConvertResult:
+        shipped.append(sis)
+        return ConvertResult(status=ConvertStatus.DELIVERED_FROM_DISK, sftp_attempted=True, sftp_ok=True)
+
+    monkeypatch.setattr(convert_mod, "deliver_job", _spy_deliver)
+
+    # The admin switches to a DIFFERENT rostering district — same filenames, so the
+    # manifest is non-empty and the delivery would succeed under the wrong identity.
+    dropdown = _find(tree, ft.Dropdown)[0]
+    dropdown.value = "sd40myedbc"
+    dropdown.on_select(MagicMock())
+
+    # The affordance is gone (FIX-5(a)) — but a raced click on the held control must be
+    # safe too: this is the BINDING, not the gating, under test.
+    deliver_btn.on_click(None)
+    confirm = page.show_dialog.call_args_list[-1].args[0]
+    deliver_action = _dialog_button(confirm, "Deliver")
+    if deliver_action is not None:
+        deliver_action.on_click(None)
+
+    assert "sd40myedbc" not in shipped, "sd74's roster must NEVER ship under sd40's identity"
+    for sis in shipped:
+        assert sis == "sd74myedbc"
+        assert "sd74" in build_zip_name(sis)
+        assert "sd40" not in build_zip_name(sis)

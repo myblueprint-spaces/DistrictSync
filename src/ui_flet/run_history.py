@@ -44,6 +44,7 @@ from src.ui_flet.home_status import (
     LatestReason,
     _as_int,
     _data_errors_total,
+    _paused_status,
     _schedule_confirmed_live,
     _schedule_confirmed_missing,
     _schedule_is_live,
@@ -51,6 +52,7 @@ from src.ui_flet.home_status import (
     is_delivery_only,
     is_stale,
     sftp_delivered,
+    sync_window_paused,
     verdict_for_reason,
 )
 from src.ui_flet.humanize import (
@@ -172,6 +174,16 @@ def derive_history_banner(
             detail="We couldn't read the run history right now — your nightly sync may still be running normally.",
         )
 
+    # FIX 1: the seasonal-pause fact, gated to Home's EXACT precedence so the two surfaces can never
+    # disagree about one state — an ENABLED window outside its season, UNLESS a confirmed-MISSING
+    # read-back outranks it (mirrors ``home_status``: a gone task won't resume, so "resumes <date>"
+    # would be a lie). During a summer pause the newest store record is the last in-season run (weeks
+    # old by construction), so the ``is_stale`` rule below would false-fire an amber "No recent sync"
+    # while Home shows the calm HEALTHY "Paused for the summer". Consulted at the empty-state slot AND
+    # after the two FAILED reasons (a real failure still surfaces in summer), ABOVE the anomaly /
+    # data-warning / stale rules whose "we expected a sync" copy is moot while the season is paused.
+    paused = sync_window_paused(app_config, now=now) and not _schedule_confirmed_missing(schedule_status)
+
     # Rule: no runs yet (empty but readable). The store is fresh for EVERY install after this
     # update (no backfill), so an established install is told the history starts fresh rather
     # than the false "No sync has run yet"; a genuine first run keeps the calm waiting copy.
@@ -181,6 +193,11 @@ def derive_history_banner(
     # conditioned ("If you used an earlier version…"), never a flat claim of hidden history. The
     # schedule reassurance derives from the LIVE read-back (``schedule_status``), never the flag.
     if not records:
+        # Rule: seasonal pause (empty store) — outside an enabled window no run is expected, so an
+        # empty store is calm, not a missed run. Beats the fresh-start / first-run empty sub-states
+        # (mirrors Home's empty-store paused branch — the two surfaces stay identical).
+        if paused:
+            return _paused_banner(app_config, now=now)
         if app_config.has_completed_setup() or store_created_at:
             fresh = (
                 "New nightly syncs will appear here from now on. "
@@ -226,6 +243,13 @@ def derive_history_banner(
             ),
         )
 
+    # Rule: seasonal pause — outside an enabled window no nightly sync is expected. Slotted BELOW the
+    # two FAILED reasons (a real failure still surfaces in summer) and ABOVE anomaly / data-warnings /
+    # stale, whose cadence-based copy is moot while the season is intentionally paused. Delegates to
+    # Home's ``_paused_status`` so the banner is byte-identical to Home's for the same inputs.
+    if paused:
+        return _paused_banner(app_config, now=now)
+
     if reason is LatestReason.ANOMALY:
         anomalies = latest.get("anomalies") or []
         return HistoryBanner(
@@ -265,6 +289,18 @@ def derive_history_banner(
             else f"Your last sync completed {when} — files were written to your output folder."
         ),
     )
+
+
+def _paused_banner(app_config: AppConfig, *, now: datetime | None) -> HistoryBanner:
+    """Mirror Home's seasonal-pause state as a Run-History banner — identical copy (single source).
+
+    Delegates to ``home_status._paused_status`` so the two surfaces can NEVER drift about a pause
+    (FIX 1): same HEALTHY verdict, same "Paused for the summer — resumes <date>" headline + detail.
+    Run History is read-only (no fix CTA), and the paused state has none anyway, so only the three
+    banner fields are carried over.
+    """
+    paused = _paused_status(app_config, now=now)
+    return HistoryBanner(verdict=paused.verdict, headline=paused.headline, detail=paused.detail)
 
 
 def _sftp_delivery(record: dict) -> SftpDelivery:

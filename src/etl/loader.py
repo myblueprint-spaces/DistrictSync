@@ -3,6 +3,7 @@ import os
 import shutil
 import time
 import uuid
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -266,6 +267,33 @@ class DataLoader:
         return df.loc[:, field_order]
 
     # ------------------------------------------------------------------
+    # Naming policy (single source of truth for entity → filename)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def csv_filename(entity_name: str) -> str:
+        """Return the output CSV filename for ``entity_name`` — the ONE spelling
+        of the entity→filename rule.
+
+        Every consumer of "what file does this entity live in?" routes through
+        here: the write path (``_write_csv``), the stale-output detector
+        (:meth:`detect_stale_outputs`) and the SFTP delivery manifest built by
+        the pipeline / Convert callers (``SFTPUploader.upload_csvs(manifest=…)``).
+        A second copy of ``f"{entity}.csv"`` anywhere would let the delivered set
+        drift from the written set — the exact class of bug the manifest closes.
+        """
+        return f"{entity_name}.csv"
+
+    @classmethod
+    def output_filenames(cls, entity_names: Iterable[str]) -> set[str]:
+        """The set of output CSV filenames for ``entity_names`` (via :meth:`csv_filename`).
+
+        The delivery-manifest builder: ``DataLoader.output_filenames(outputs)`` turns
+        the entities a run produced into exactly the files it vouches for.
+        """
+        return {cls.csv_filename(name) for name in entity_names}
+
+    # ------------------------------------------------------------------
     # Encoding policy (single source of truth for the BOM rule)
     # ------------------------------------------------------------------
 
@@ -307,11 +335,11 @@ class DataLoader:
         """
         from src.etl.transformers.registry import TRANSFORMER_REGISTRY
 
-        known_entities = set(TRANSFORMER_REGISTRY)
+        known_files = self.output_filenames(TRANSFORMER_REGISTRY)
+        emitted_files = self.output_filenames(emitted)
         stale: list[str] = []
         for csv_path in self.output_path.glob("*.csv"):
-            stem = csv_path.stem
-            if stem in known_entities and stem not in emitted:
+            if csv_path.name in known_files and csv_path.name not in emitted_files:
                 stale.append(csv_path.name)
         return sorted(stale)
 
@@ -385,7 +413,7 @@ class DataLoader:
     ) -> None:
         try:
             ordered = self.select_ordered(df, field_order, entity_name)
-            output_file = directory / f"{entity_name}.csv"
+            output_file = directory / self.csv_filename(entity_name)
             encoding = self.csv_encoding(entity_name)
             ordered.to_csv(output_file, index=False, encoding=encoding)
             label = "Staged" if staging else "Saved"

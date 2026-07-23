@@ -14,7 +14,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -53,6 +53,19 @@ _RECORD_ENTITY_KEYS: tuple[str, ...] = (
 
 _SOURCE_ENV_VAR = "DSYNC_SOURCE"  # scheduled/cron/Docker set this; the registered task passes --source
 
+ROSTER_ANCHOR_ENTITY = "Students"
+"""The entity every other delivered file's student references resolve against.
+
+``Students.csv`` is the referential ROOT of a SpacesEDU delivery: the zero-orphan
+invariant (CLAUDE.md → Key Data Flow → Enrollments) is defined as "no emitted row
+references a ``User ID`` absent from ``Students.csv``", and ``Family`` /
+``StudentCourses`` carry the same dependency (see ``quality/report.py``'s orphan
+checks). That makes it the ONE entity whose absence invalidates the whole payload —
+every other entity may legitimately be empty on a given night (per-entity
+skip-on-empty). Named here rather than inlined so the special case is explicit and
+single-sourced.
+"""
+
 
 class RunErrorCategory(str, Enum):
     """The bounded, PII-free failure taxonomy stamped on every run record (mirrors the
@@ -63,6 +76,8 @@ class RunErrorCategory(str, Enum):
 
     NONE = "none"  # a completed run (delivery/anomaly/data-warning axes live in their own fields)
     NO_INPUT = "no_input"  # no usable input (input folder missing, or every required file missing/empty)
+    NO_OUTPUT = "no_output"  # input loaded, but every entity was empty/skipped — nothing to write or deliver
+    INCOMPLETE_ROSTER = "incomplete_roster"  # the roster anchor produced nothing while dependent entities did
     CONFIG = "config"  # a config/validation problem surfaced as the failure
     DATA = "data"  # a build/write problem (missing field-map column, transform, loader)
     UNKNOWN = "unknown"  # an unclassified failure
@@ -210,6 +225,94 @@ def run_transform(
     # The shared per-run TransformContext accumulates fail-loud field-transform
     # errors across every entity; surface them on the same axis as the outputs.
     return TransformOutputs(outputs, field_orders, transformer.data_errors)
+
+
+class DeliveryIntegrityError(RuntimeError):
+    """The produced output set cannot be vouched for — refuse to write or deliver it.
+
+    Subclasses ``RuntimeError`` so it rides the EXISTING "``run_pipeline`` raises →
+    ``main`` prints + ``sys.exit(1)``" wiring: no new exit code is invented (the
+    contract's ``1`` already means "ETL error, the run did not complete"). Exit ``3``
+    would be wrong — it promises "output is present on disk, only delivery failed",
+    and here nothing is written at all.
+
+    Carries a BOUNDED :class:`RunErrorCategory` value so the run store records the
+    real fault without the free-text message (the privacy split — see
+    :func:`build_run_record`). Classified by TYPE, never by interpolating text.
+    """
+
+    def __init__(self, message: str, category: str) -> None:
+        super().__init__(message)
+        self.category = category
+
+
+def check_delivery_integrity(
+    outputs: dict[str, pd.DataFrame],
+    configured_entities: Iterable[str],
+) -> DeliveryIntegrityError | None:
+    """Pure pre-write gate: is this output set safe to commit and deliver?
+
+    Returns the ready-to-raise :class:`DeliveryIntegrityError` describing the fault,
+    or ``None`` when the set is sound. Returning the error (rather than raising, or
+    returning a parallel fault record) keeps ONE type pairing the bounded category
+    with its message, and lets the caller decide where to raise.
+
+    Two faults — both of which previously let a broken unattended night report
+    success (Task Scheduler green, a ``status="success"`` store record, Home saying
+    the roster synced):
+
+    * **No output at all** — every entity was empty or skipped, so the write /
+      archive / upload block was skipped wholesale and the run still logged "ETL
+      process completed successfully". This is the way-OUT mirror of the way-IN
+      no-usable-input guard, which has failed loud since Plan 0008.
+    * **Roster anchor missing while other entities were produced** — the
+      :data:`ROSTER_ANCHOR_ENTITY` (``Students``) is in the set this run was
+      CONFIGURED to produce yet produced nothing, while other entities did. Those
+      entities reference students that will not be delivered: ``Students`` is
+      skipped → ``context.active_student_ids`` is never published →
+      ``BaseTransformer.filter_to_active`` correctly no-ops (it must never
+      filter-to-empty) → the previous ``Students.csv`` is archived out of the SFTP
+      glob → SpacesEDU receives enrolments for students it has never heard of.
+      Exactly the orphan class the zero-orphan invariant exists to prevent, caught
+      at the delivery boundary rather than inside a transformer.
+
+    What this deliberately does NOT gate (per CLAUDE.md's exit-code contract,
+    "a *partial* run with some empty sources stays exit 0 by design"):
+
+    * a NON-anchor entity that is empty or vanished (a missing Family export stays
+      an ``ANOMALY`` warning plus a stale-CSV archive, never a failure);
+    * a config whose configured entity set has no anchor at all (``mbponly``,
+      ``sd51attendance``) — nothing there references an undelivered roster.
+
+    Args:
+        outputs: the entities this run actually produced (``run_transform``'s frames).
+        configured_entities: the enabled-entities-derived list this run was configured
+            to produce (:func:`configured_entity_order`) — NEVER raw ``mappings.keys()``,
+            which ``_base`` inheritance pollutes with inherited-but-disabled entities.
+
+    Returns:
+        The fault to raise, or ``None`` when the output set is safe to deliver.
+    """
+    if not outputs:
+        return DeliveryIntegrityError(
+            "The run produced no output files at all — every entity was empty or skipped. "
+            "Nothing was written and nothing was delivered. Check that the input folder "
+            "holds this district's extract files and that the correct district is selected.",
+            RunErrorCategory.NO_OUTPUT.value,
+        )
+
+    anchor = ROSTER_ANCHOR_ENTITY
+    if anchor in set(configured_entities) and anchor not in outputs:
+        produced = ", ".join(sorted(outputs))
+        return DeliveryIntegrityError(
+            f"{anchor} produced no rows, but this run built other entities ({produced}). "
+            f"Delivering them would reference students absent from {anchor}.csv, so nothing "
+            f"was written and nothing was delivered — the previous output is untouched. "
+            f"Check this district's student export for this run.",
+            RunErrorCategory.INCOMPLETE_ROSTER.value,
+        )
+
+    return None
 
 
 def _previous_row_count(prev_path: Path) -> int | None:
@@ -453,6 +556,10 @@ def _classify_error_category(exc: BaseException) -> str:
     Classified by exception type/marker, not text interpolation — the store never sees the
     free-text error. ``SystemExit`` never reaches here (it is re-raised before the failure sink).
     """
+    if isinstance(exc, DeliveryIntegrityError):
+        # Must precede the RuntimeError branch below — DeliveryIntegrityError IS a
+        # RuntimeError, and it already carries its own bounded category.
+        return exc.category
     if isinstance(exc, RuntimeError) and "No usable required input" in str(exc):
         return RunErrorCategory.NO_INPUT.value
     if isinstance(exc, FileNotFoundError):
@@ -502,6 +609,14 @@ def run_pipeline(
     (explicit arg → ``DSYNC_SOURCE`` env → ``"cli"``). The store write is
     best-effort and strictly non-fatal — it never changes the result, the CSVs,
     or the exit-code contract (0/1/2/3).
+
+    Two boundaries fail LOUD rather than let an unattended run report success —
+    both raise, so ``main`` exits **1** (no new exit code): no usable required
+    input on the way IN, and :func:`check_delivery_integrity` on the way OUT
+    (nothing produced, or the roster anchor missing while dependents were built).
+    The out-gate refuses BEFORE any write, so the previous output set is left
+    untouched. Neither affects the exit-3 contract: a delivery failure AFTER a
+    successful write still leaves the CSVs in place (output is never rolled back).
     """
     t0 = time.monotonic()
     resolved_source = _resolve_source(source)
@@ -599,16 +714,34 @@ def run_pipeline(
                 f"{len(data_errors_summary['by_field'])} field(s): {data_errors_summary['by_field']}"
             )
 
-        # Check for anomalies before writing — including entities this run was
-        # configured to produce (enabled-entities-derived, NEVER mappings.keys())
-        # that produced nothing while a previous non-empty CSV sits on disk
-        # (present→absent / N→0). A partial run with some empty sources stays
-        # exit 0 by design — these are warnings, not failures.
-        if not dry_run:
-            anomalies = _check_anomalies(outputs, Path(output_path), configured_entity_order(mappings, global_config))
+        # What this run was CONFIGURED to produce (enabled-entities-derived, NEVER raw
+        # `mappings.keys()`). Computed once and shared by the two pre-write checks below.
+        expected_entities = configured_entity_order(mappings, global_config)
 
-        # Write all outputs transactionally (all-or-nothing commit)
-        if not dry_run and outputs:
+        # Fail loud on an output set we cannot vouch for — BEFORE any write, archive
+        # or upload. Two cases that previously reported success on a broken night:
+        # nothing produced at all, and the roster anchor missing while dependent
+        # entities were built (see `check_delivery_integrity`). Refusing here (rather
+        # than after `save_all`) leaves the output dir in its last-good, self-consistent
+        # state: the previous `Students.csv` is neither overwritten nor archived out of
+        # the SFTP glob. Applies to dry-run too — a preview that previews nothing is
+        # just as misleading as a live run that delivers nothing.
+        integrity_fault = check_delivery_integrity(outputs, expected_entities)
+        if integrity_fault is not None:
+            raise integrity_fault
+
+        # Check for anomalies before writing — including entities this run was
+        # configured to produce that produced nothing while a previous non-empty CSV
+        # sits on disk (present→absent / N→0). A partial run with some empty sources
+        # stays exit 0 by design — these are warnings, not failures.
+        if not dry_run:
+            anomalies = _check_anomalies(outputs, Path(output_path), expected_entities)
+
+        # Write all outputs transactionally (all-or-nothing commit).
+        # `outputs` is guaranteed non-empty here — the integrity gate above raises on
+        # an empty set, so the old `and outputs` short-circuit (which silently skipped
+        # save + archive + upload and still reported success) is gone by construction.
+        if not dry_run:
             loader.save_all(outputs, field_orders)
 
             # Archive (non-destructive) entity CSVs left in the output dir that
@@ -624,10 +757,13 @@ def run_pipeline(
                     f"archive_<ts>/ (excluded from SFTP): {archived}"
                 )
 
-            # SFTP upload (only on a successful, non-dry-run write)
+            # SFTP upload (only on a successful, non-dry-run write). The payload is
+            # THIS run's committed entity CSVs — derived from `outputs` through the
+            # loader's single entity→filename rule, never the output folder's *.csv
+            # glob (a stray admin file in that folder must not egress to SpacesEDU).
             if sftp:
                 sftp_attempted = True
-                sftp_ok = _sftp_upload(output_path, sis_type)
+                sftp_ok = _sftp_upload(output_path, sis_type, manifest=DataLoader.output_filenames(outputs))
 
         # Dry-run summary
         if dry_run:
@@ -700,8 +836,14 @@ def run_pipeline(
         raise
 
 
-def _sftp_upload(output_path: str, sis_type: str | None = None) -> bool:
-    """Upload generated CSV files via SFTP. Returns True on success.
+def _sftp_upload(output_path: str, sis_type: str | None = None, *, manifest: Collection[str]) -> bool:
+    """Upload THIS run's generated CSV files via SFTP. Returns True on success.
+
+    ``manifest`` is the authoritative payload — the filenames this run wrote
+    (``DataLoader.output_filenames(outputs)``), threaded through so delivery ships the
+    roster the run vouched for rather than whatever ``*.csv`` happens to sit in the
+    output folder. It is keyword-only and REQUIRED: an admin's stray backup/spreadsheet
+    CSV must never egress to SpacesEDU.
 
     Never raises — exceptions are caught and logged at ERROR level so the
     caller (``run_pipeline``) can propagate ``sftp_ok=False`` to ``main.py``
@@ -724,7 +866,7 @@ def _sftp_upload(output_path: str, sis_type: str | None = None) -> bool:
             username=cfg.sftp_username,
             remote_path=cfg.sftp_remote_path,
         )
-        uploaded = uploader.upload_csvs(Path(output_path), sis_type=sis_type)
+        uploaded = uploader.upload_csvs(Path(output_path), sis_type=sis_type, manifest=manifest)
         if uploaded:
             logger.info(f"SFTP upload complete: {len(uploaded)} file(s) — {uploaded}")
             return True

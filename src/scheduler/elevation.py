@@ -29,8 +29,10 @@ ever running as administrator.
 
   - **Launch + wait.** :func:`run_elevated_powershell` uses ``ShellExecuteExW`` with
     ``lpVerb="runas"`` on the **absolute System32 WindowsPowerShell v1.0
-    powershell.exe path** (elevation raises the stakes of a PATH hijack — never a
-    bare ``"powershell"``), ``SEE_MASK_NOCLOSEPROCESS`` + ``SW_HIDE``, then a
+    powershell.exe path** — resolved through the shared
+    :func:`src.utils.helpers.system_binary` seam (elevation raises the stakes of a
+    CreateProcess search-order hijack — never a bare ``"powershell"``; ``icacls``
+    below is pinned the same way), ``SEE_MASK_NOCLOSEPROCESS`` + ``SW_HIDE``, then a
     **bounded** ``WaitForSingleObject`` (never ``INFINITE``; on timeout the child is
     terminated) and ``GetExitCodeProcess``; the handle is always closed. Outcomes:
     ``LAUNCH_FAILED`` / ``DECLINED`` (``ERROR_CANCELLED`` 1223) / ``TIMEOUT`` /
@@ -62,7 +64,7 @@ from enum import Enum
 from pathlib import Path
 
 from src.utils import paths
-from src.utils.helpers import subprocess_no_window_flags
+from src.utils.helpers import subprocess_no_window_flags, system_binary
 
 logger = logging.getLogger(__name__)
 
@@ -212,8 +214,11 @@ def _set_owner_only_dacl(path: Path) -> None:  # pragma: no cover - Windows-only
         return
     owner = _current_user()
     try:
-        result = subprocess.run(  # nosec B603,B607 - trusted System32 binary, our own file, shell=False
-            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{owner}:F"],
+        # icacls.exe by ABSOLUTE System32 path (system_binary) — a bare name would let
+        # CreateProcess's search order (calling-exe dir + CWD before System32) substitute
+        # a planted binary and hand it the path of the DPAPI-sealed credential file.
+        result = subprocess.run(  # nosec B603 - absolute System32 binary, our own file, shell=False
+            [system_binary("icacls.exe"), str(path), "/inheritance:r", "/grant:r", f"{owner}:F"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -302,17 +307,6 @@ def sweep_orphans(max_age_s: float = 3600.0) -> int:
 # --------------------------------------------------------------------------- #
 # Elevated launch — ShellExecuteExW("runas") on the absolute System32 path.    #
 # --------------------------------------------------------------------------- #
-
-
-def _system_powershell_path() -> str:
-    """The ABSOLUTE System32 WindowsPowerShell v1.0 powershell.exe path.
-
-    Never a bare ``"powershell"``: elevation raises the stakes of a PATH hijack, so
-    the elevated child is pinned to the in-box Windows PowerShell by full path.
-    """
-    # os.environ is case-insensitive on Windows, so the canonical SYSTEMROOT key resolves.
-    system_root = os.environ.get("SYSTEMROOT") or r"C:\Windows"
-    return str(Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
 
 
 class _ShellExecuteInfoW(ctypes.Structure):
@@ -405,7 +399,11 @@ def run_elevated_powershell(encoded_command: str, *, timeout_s: float) -> Elevat
     if sys.platform != "win32":
         return ElevationOutcome(ElevationResult.LAUNCH_FAILED, error="Elevation is only available on Windows.")
 
-    powershell = _system_powershell_path()
+    # Never a bare ``"powershell"``: elevation raises the stakes of a search-order hijack,
+    # so the elevated child is pinned to the in-box Windows PowerShell by absolute path
+    # via the shared ``helpers.system_binary`` seam (the same one ``scheduler.windows``
+    # uses — one source, so no call site can drift back to a bare name).
+    powershell = system_binary("powershell.exe")
     params = f"-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded_command}"
 
     handle, err = _shell_execute_runas(powershell, params)

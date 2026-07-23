@@ -271,6 +271,41 @@ class TestWindowGeometryFields:
         assert cfg.window_maximized is False
 
 
+class TestSyncWindowFields:
+    """Seasonal sync window: the additive, opt-in ``sync_window_*`` admin choices."""
+
+    def test_defaults_are_off_and_blank(self):
+        cfg = AppConfig()
+        assert cfg.sync_window_enabled is False
+        assert cfg.sync_window_start == ""
+        assert cfg.sync_window_end == ""
+
+    def test_survives_save_roundtrip(self, config_dir):
+        AppConfig(
+            sync_window_enabled=True,
+            sync_window_start="08-11",
+            sync_window_end="07-06",
+        ).save()
+        loaded = AppConfig.load()
+        assert loaded.sync_window_enabled is True
+        assert loaded.sync_window_start == "08-11"
+        assert loaded.sync_window_end == "07-06"
+
+    def test_old_config_file_without_the_fields_loads_defaults(self, config_dir):
+        # Back-compat: a pre-window config.json has none of the keys → additive defaults,
+        # so an existing install keeps running year-round unchanged.
+        cfg_dir, cfg_file = config_dir
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg_file.write_text(
+            json.dumps({"input_dir": "/in", "output_dir": "/out", "sis_type": "myedbc"}),
+            encoding="utf-8",
+        )
+        cfg = AppConfig.load()
+        assert cfg.sync_window_enabled is False
+        assert cfg.sync_window_start == ""
+        assert cfg.sync_window_end == ""
+
+
 class TestSftpIsConfigured:
     def test_not_configured_when_disabled(self):
         cfg = AppConfig(sftp_enabled=False)

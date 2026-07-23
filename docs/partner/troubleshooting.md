@@ -72,6 +72,47 @@
 
 ---
 
+## I ran the .exe from a terminal and saw nothing
+
+On Windows the released `.exe` is a **windowed** application, so double-clicking
+it never flashes a black console box. The trade-off is that it only prints when
+there is a terminal to print to:
+
+| How you launched it | Do you see output? |
+|---|---|
+| Command Prompt / PowerShell, **with** `--sis`/`--input`/… | **Yes** — it attaches to that window |
+| Double-click | No (it opens the app window instead) |
+| Task Scheduler / a service | No — nothing is attached to it |
+| Output redirected (`… > out.txt`) | Yes — the redirect is honoured |
+
+Because the app is windowed, your shell does **not** wait for it: the prompt
+returns immediately and the output appears after it. Use `start /wait` if you
+want the prompt to wait for the run to finish.
+
+When nothing is printed, the run still leaves two signals: the diagnostic log
+(`etl_tool.log` in your DistrictSync data folder) and the **exit code** below.
+On Linux and macOS output goes to the terminal as usual.
+
+---
+
+## Exit codes
+
+Every run ends with one of four codes. Task Scheduler shows it as **Last Run
+Result**; in Command Prompt read it with `echo %ERRORLEVEL%`, in PowerShell with
+`$LASTEXITCODE`.
+
+| Code | Meaning | What to do |
+|------|---------|-----------|
+| **0** | Success — the conversion completed (and any requested SFTP delivery succeeded). | Nothing. |
+| **1** | The run did **not** complete: bad input folder, unreadable district config, no usable input files, or a run that produced no output / lost its student roster. **Nothing was written** — your previous output folder is untouched. | Check `etl_tool.log` for the `Pipeline failed:` line, and confirm the GDE export actually landed in the input folder. |
+| **2** | The command line itself was wrong — a missing/unknown flag, more than one `--sftp-…` subcommand, or `--sftp-password-stdin` with nothing piped in. | Fix the command; nothing was run. |
+| **3** | The conversion **succeeded and the CSVs were written**, but the SFTP delivery to SpacesEDU failed. | See the *Last Run Result* notes above — the files are intact in your output folder. |
+
+A code **1** and a code **3** mean very different things: `1` means no files were
+produced, `3` means the files exist locally but SpacesEDU did not receive them.
+
+---
+
 ## Encoding errors in log
 
 ```

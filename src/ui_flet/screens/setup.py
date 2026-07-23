@@ -23,11 +23,15 @@ them to controls.
   (input/output/district/SFTP flag/run time — ``setup_flow.task_args_changed``) changes and
   a schedule is live, the folders Save re-registers the task through the SAME register flow
   (incl. elevation) so tonight's run uses the new settings. The rail label stays "Setup".
-  Save trustworthiness (0034 S3): the reconcile compares against the durable
-  **last-REGISTERED args** (``cfg.schedule_task_args``, written on every confirmed register —
-  so a Mapping district switch + no-edit Save re-registers), a blank-password re-register of
-  an unattended task (``cfg.schedule_unattended``) pauses on an **explicit downgrade choice**
-  (never silent), and a valid run-time edit persists as config even with **no task registered**.
+  Save trustworthiness (0034 S3 + W3-C): the reconcile compares ONLY against the durable
+  **last-REGISTERED record** (``setup_flow.registered_schedule`` over ``cfg.schedule_task_args``
+  + ``cfg.schedule_unattended``, both written on every confirmed register) — never a mount-time
+  config snapshot, which stops being a baseline the moment another surface persists a change
+  before Setup remounts (a Mapping district switch). **No record ⇒ UNKNOWN, and unknown acts**:
+  the Save re-registers rather than reporting a task it never checked as up to date, and the
+  blank-password **explicit downgrade choice** fires for an unknown logon type as well as a
+  known-unattended one (never silent). A valid run-time edit still persists as config with **no
+  task registered**.
 
 The register/unregister flow (Slice 5/6) and the SFTP test/save flow (Slice 7) are **reused
 verbatim** in both modes — the wizard's Schedule/Delivery steps embed the SAME section
@@ -80,10 +84,13 @@ from src.ui_flet.setup_flow import (
     FinishSummaryRow,
     FlowInputs,
     ReconcileOutcome,
+    RegisteredSchedule,
+    ScheduleReconcile,
     SetupStep,
     TaskArgs,
     auto_selected_district,
     can_advance,
+    default_window_bounds,
     derive_flow,
     downgrade_interrupt,
     finish_copy,
@@ -93,15 +100,21 @@ from src.ui_flet.setup_flow import (
     is_skippable,
     next_step,
     prev_step,
+    registered_schedule,
     run_time_save_decision,
     schedule_delivery_desync,
+    schedule_reconcile,
     sftp_reconcile_suffix,
     step_number,
-    task_args_changed,
     task_args_from_persisted,
     task_args_to_persisted,
 )
-from src.ui_flet.setup_gates import can_register_schedule, can_save_sftp
+from src.ui_flet.setup_gates import (
+    can_register_schedule,
+    can_save_sftp,
+    window_settings_valid,
+    window_valid_from_config,
+)
 from src.ui_flet.sftp_copy import (
     PORT_ERROR_DETAIL,
     PORT_ERROR_HEADLINE,
@@ -110,7 +123,7 @@ from src.ui_flet.sftp_copy import (
     sftp_test_copy,
 )
 from src.ui_flet.verdict import Verdict
-from src.utils.validators import ALLOWED_SFTP_HOSTS, validate_run_time
+from src.utils.validators import ALLOWED_SFTP_HOSTS, validate_month_day, validate_run_time
 
 # Surfaced after a successful registration when the running exe lives in a transient dir
 # (Downloads/Temp): pinning a scheduled task there risks the "task fires, exe is gone,
@@ -144,6 +157,10 @@ def _kick_probe_thread(page: ft.Page, work: Callable[[], None]) -> None:  # prag
 # persist, 0034 S3-b — single source so the two paths can never drift).
 _RUN_TIME_ERROR_HEADLINE = "That run time isn't valid"
 _RUN_TIME_ERROR_DETAIL = "Enter the time as HH:MM in 24-hour form, e.g. 03:00."
+
+# The inline seasonal-window error (B): shown when the window is ON but a bound isn't a real
+# month-day. Plain-language, no jargon — mirrors the run-time error's shape.
+_WINDOW_ERROR = "Enter each date as MM-DD (month then day), e.g. 08-11."
 
 # Plain-language titles for the five wizard steps (the "Step N of 5 · <title>" indicator).
 _STEP_TITLES: dict[SetupStep, str] = {
@@ -231,6 +248,23 @@ def _finish_summary_card(rows: list[FinishSummaryRow]) -> ft.Control:  # pragma:
 def _district_options() -> list[ft.dropdown.Option]:
     """SIS/district dropdown options — id keyed, ``district_name`` shown (RC2)."""
     return [ft.dropdown.Option(key=sis_id, text=friendly_district_name(sis_id)) for sis_id in available_configs()]
+
+
+def _district_window_defaults(cfg: AppConfig) -> tuple[str, str]:  # pragma: no cover - Flet view glue (I/O)
+    """Pre-fill the seasonal-window bounds from the chosen district's academic calendar (B).
+
+    Loads the district config (the same ``load_config`` path ``mapping_catalog`` uses) and feeds
+    ``global_config.academic_start_month_day`` / ``academic_end_month_day`` to the COUNTED pure
+    ``default_window_bounds``. TOTAL: no district chosen yet, or an unreadable/dateless config →
+    the plain fallback (``default_window_bounds(None, None)``), never a crash.
+    """
+    try:
+        from src.config.loader import load_config
+
+        gc = load_config(cfg.sis_type).global_config
+        return default_window_bounds(gc.academic_start_month_day, gc.academic_end_month_day)
+    except Exception:  # noqa: BLE001 - total: any load failure falls back to the plain default bounds
+        return default_window_bounds(None, None)
 
 
 def _folders_valid(input_dir: str, output_dir: str) -> bool:
@@ -324,6 +358,7 @@ def _mount_wizard(
         "sis": cfg.sis_type or auto_selected_district(available),  # D9: auto-select iff one config
         "schedule_skipped": False,
         "schedule_status": None,  # latest ScheduleStatus from the section's read-back
+        "window_valid": True,  # the seasonal-window gate (B): enabled+invalid closes Continue
         "delivery": DeliveryFact.STORED_CRED_PRESENT if _stored_delivery_present(cfg) else DeliveryFact.NONE,
         "delivery_host": cfg.sftp_host,
         "delivery_user": cfg.sftp_username,
@@ -337,6 +372,7 @@ def _mount_wizard(
             schedule=ws["schedule_status"],  # type: ignore[arg-type]
             schedule_skipped=bool(ws["schedule_skipped"]),
             delivery=ws["delivery"],  # type: ignore[arg-type]
+            window_valid=bool(ws["window_valid"]),
         )
 
     # Resume: land on the first step real state says is unsatisfied (no stored cursor).
@@ -366,7 +402,9 @@ def _mount_wizard(
         if step in (SetupStep.FOLDERS, SetupStep.DISTRICT):
             btn.disabled = not can_advance(step, _inputs())  # type: ignore[union-attr]
         elif is_skippable(step):
-            btn.disabled = False
+            # SCHEDULE is skippable but window-gated (an enabled+invalid window closes Continue);
+            # DELIVERY stays always-advanceable. ``can_advance`` single-sources both.
+            btn.disabled = not can_advance(step, _inputs())  # type: ignore[union-attr]
             btn.content = "Continue" if _step_addressed(step) else "Set up later"  # type: ignore[union-attr]
         page.update()
 
@@ -485,9 +523,20 @@ def _mount_wizard(
             ],
         )
 
+    def _on_window_valid(valid: bool) -> None:
+        # The seasonal-window gate (B): an enabled+invalid window closes the Schedule step's
+        # Continue button (re-gated in place via the footer), the same guarantee as the folders/
+        # district value gates. Does not touch the register flow — the window is not a task arg.
+        ws["window_valid"] = valid
+        _refresh_footer()
+
     def _schedule_body() -> ft.Control:
         card, _handle = _build_schedule_section(
-            page, cfg, on_status=_on_sched_status, on_schedule_changed=on_schedule_changed
+            page,
+            cfg,
+            on_status=_on_sched_status,
+            on_schedule_changed=on_schedule_changed,
+            on_window_valid=_on_window_valid,
         )
         return card
 
@@ -591,10 +640,12 @@ def _mount_wizard(
                 disabled_bgcolor=tokens.color_border,
                 icon=ft.Icons.ARROW_FORWARD_ROUNDED,
             )
-        else:  # skippable Schedule / Delivery
+        else:  # skippable Schedule / Delivery (Schedule adds the window gate — B)
             forward = components.primary_button(
                 "Continue" if _step_addressed(step) else "Set up later",
                 lambda _e: _forward(),
+                disabled=not can_advance(step, _inputs()),
+                disabled_bgcolor=tokens.color_border,
                 icon=ft.Icons.ARROW_FORWARD_ROUNDED,
             )
         ws["forward_btn"] = forward
@@ -612,6 +663,21 @@ def _mount_wizard(
 # --------------------------------------------------------------------------- #
 # Settings mode (D8): the flat scroll + one reconciling Save.                  #
 # --------------------------------------------------------------------------- #
+def _registered_schedule(cfg: AppConfig) -> RegisteredSchedule:  # pragma: no cover - AppConfig→pure adapter
+    """The durable "what the live task actually carries" record (the ONE resolution point).
+
+    A thin adapter over the pure ``setup_flow.registered_schedule``: it only supplies the two
+    persisted fields plus the running platform's unattended-logon capability. Both reconcile
+    consumers (the task-args comparison and the logon-downgrade guard) read the record from HERE,
+    so neither can re-derive a baseline from the *current* config (the W3-C silent no-op).
+    """
+    return registered_schedule(
+        raw_task_args=cfg.schedule_task_args,
+        unattended_flag=cfg.schedule_unattended,
+        supports_unattended=get_scheduler().supports_unattended_password,
+    )
+
+
 def _mount_settings(  # pragma: no cover - Flet view glue
     page: ft.Page,
     cfg: AppConfig,
@@ -621,48 +687,12 @@ def _mount_settings(  # pragma: no cover - Flet view glue
     on_schedule_changed: Callable[[], None] | None = None,
 ) -> None:
     """Render the completed-install Settings scroll into ``root`` (folders + schedule + SFTP)."""
-    # The ONE task-args snapshot + reconcile the folders Save AND the SFTP Save both drive (D8/F1):
-    # any change to a task-baked field (folders/district/SFTP flag/run time) on a registered
-    # schedule re-registers through the SAME flow, so the nightly action can never go stale — and
-    # enabling SFTP in Settings finally adds --sftp to an already-registered task (the F1 gap).
-    saved = {
-        "args": TaskArgs.of(
-            input_dir=cfg.input_dir,
-            output_dir=cfg.output_dir,
-            sis_type=cfg.sis_type,
-            sftp_enabled=cfg.sftp_enabled,
-            run_time=cfg.schedule_time,
-        )
-    }
-
-    def _snapshot_args() -> TaskArgs:
-        return TaskArgs.of(
-            input_dir=cfg.input_dir,
-            output_dir=cfg.output_dir,
-            sis_type=cfg.sis_type,
-            sftp_enabled=cfg.sftp_enabled,
-            run_time=cfg.schedule_time,
-        )
-
-    def _on_registered() -> None:
-        # N1: after ANY successful register (reconcile OR the schedule section's own Register),
-        # refresh the snapshot so a later Save doesn't redundantly re-register. cfg.schedule_time
-        # was just set to the registered field value, so the snapshot now matches reality.
-        saved["args"] = _snapshot_args()
-
-    # Build the schedule section FIRST so both Saves can drive its register flow on a task-arg change.
-    schedule_card, sched_handle = _build_schedule_section(
-        page, cfg, on_registered=_on_registered, on_schedule_changed=on_schedule_changed
-    )
-
-    def _baseline_args() -> TaskArgs:
-        # 0034 S3-d: compare against what was ACTUALLY registered (the durable record written at
-        # every confirmed register) — a Mapping district switch or an app restart must not reset
-        # the comparison baseline to the current config, or a no-edit Save silently skips the
-        # re-register the Mapping notice promised. Installs that registered before the record
-        # existed fall back to the mount snapshot (the pre-record behaviour).
-        persisted = task_args_from_persisted(cfg.schedule_task_args)
-        return persisted if persisted is not None else saved["args"]
+    # The ONE reconcile the folders Save AND the SFTP Save both drive (D8/F1): any change to a
+    # task-baked field (folders/district/SFTP flag/run time) on a registered schedule re-registers
+    # through the SAME flow, so the nightly action can never go stale — and enabling SFTP in
+    # Settings finally adds --sftp to an already-registered task (the F1 gap).
+    # Build the schedule section FIRST so both Saves can drive its register flow.
+    schedule_card, sched_handle = _build_schedule_section(page, cfg, on_schedule_changed=on_schedule_changed)
 
     def _reconcile() -> ReconcileOutcome:
         pending = TaskArgs.of(
@@ -672,14 +702,23 @@ def _mount_settings(  # pragma: no cover - Flet view glue
             sftp_enabled=cfg.sftp_enabled,
             run_time=sched_handle.run_time_value(),
         )
-        if cfg.schedule_registered and task_args_changed(_baseline_args(), pending):
-            # May pause on the explicit downgrade choice first (S3-a); on a confirmed success
-            # → _on_registered refreshes the snapshot (and the durable record is re-written).
-            # Returns DISPATCHED (register started) vs INTERRUPTED (dialog shown, nothing
-            # registered) so the Save sites paint an honest note — never "updating…" for an
-            # interrupt that registered nothing (the S3 correctness fix).
+        # W3-C: the baseline is the durable last-REGISTERED record and NOTHING else. A mount-time
+        # config snapshot is not a record of what the task carries — after another surface mutated
+        # config (a Mapping district switch persists the new district *before* Setup remounts and
+        # reads it) the snapshot already equals ``pending``, so the reconcile read "unchanged" and
+        # silently skipped the very re-register the Mapping notice told the admin to do.
+        action = schedule_reconcile(
+            schedule_registered=cfg.schedule_registered,
+            record=_registered_schedule(cfg),
+            pending=pending,
+        )
+        if action is ScheduleReconcile.REREGISTER:
+            # May pause on the explicit downgrade choice first (S3-a). Returns DISPATCHED
+            # (register started) vs INTERRUPTED (dialog shown, nothing registered) so the Save
+            # sites paint an honest note — never "updating…" for an interrupt that registered
+            # nothing (the S3 correctness fix).
             return sched_handle.trigger_register()
-        if not cfg.schedule_registered:
+        if action is ScheduleReconcile.NO_TASK:
             # S3-b: with no task to re-register, a run-time edit is still CONFIG — persist a
             # valid one (invalid → the schedule section's inline error, nothing persisted).
             sched_handle.persist_run_time()
@@ -819,15 +858,16 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     cfg: AppConfig,
     *,
     on_status: Callable[[ScheduleStatus], None] | None = None,
-    on_registered: Callable[[], None] | None = None,
     on_schedule_changed: Callable[[], None] | None = None,
+    on_window_valid: Callable[[bool], None] | None = None,
 ) -> tuple[ft.Control, _ScheduleHandle]:
     """The scheduler section — run time + (where supported) run-as password → register (Slice 5/6).
 
     Returns the card AND a ``_ScheduleHandle`` so Settings mode can drive re-registration on a
     task-arg change. ``on_status`` (when given) is called with each schedule read-back so the
-    wizard can track live-ness for its resume + finish copy. ``on_registered`` (when given) fires
-    after a CONFIRMED successful register so Settings can refresh its task-args snapshot (N1).
+    wizard can track live-ness for its resume + finish copy. (There is no post-register snapshot
+    callback: a confirmed register writes ``cfg.schedule_task_args``, which IS the reconcile
+    baseline, so the next Save is change-gated off reality rather than a refreshed guess.)
     ``on_schedule_changed`` (when given — the shell's badge re-probe, 0032 T1 #8) fires after a
     CONFIRMED register OR unregister success; advisory and exception-suppressed, so it can never
     break the result paint. The register/unregister flow is UNCHANGED from Slice 5/6 (off-thread,
@@ -1017,8 +1057,6 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             cfg.schedule_unattended = bool(password)
             cfg.schedule_task_args = task_args_to_persisted(registered_args)
             cfg.save()
-            if on_registered is not None:
-                on_registered()  # N1: refresh Settings' task-args snapshot after a confirmed register
             if on_schedule_changed is not None:
                 # 0032 T1 #8: a confirmed register invalidates the boot-time rail badge —
                 # let the shell re-probe. Advisory: never let it break the result paint.
@@ -1244,10 +1282,14 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         ``_register`` early-returned without dispatching (its gate refused — e.g. a malformed run
         time, whose inline error it just painted). The seam that lets both Save sites paint an
         honest note (S3 correctness fix): "updating…" is claimed ONLY for a real dispatch.
+
+        The logon-type fact comes from the DURABLE record (W3-C), so an install with no record
+        interrupts with its own can't-tell copy rather than trusting the ``False`` default and
+        silently replacing a signed-out-capable task with a logged-on-only one.
         """
         password = password_field.value if password_field is not None else None
         interrupt = downgrade_interrupt(
-            registered_unattended=cfg.schedule_unattended,
+            registered_unattended=_registered_schedule(cfg).unattended,
             password_supplied=bool(password),
         )
         if interrupt is None:
@@ -1280,6 +1322,102 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 
     section_controls.append(ft.Row(spacing=16, controls=[register_btn, unregister_btn]))
     section_controls.append(result_slot)
+
+    # --- Seasonal window (B): opt-in "only sync during the school year" -------------------- #
+    # The window is NOT a task arg (``setup_flow.TaskArgs`` omits it) — the ENGINE reads it from
+    # config each night, so changing it persists to ``cfg`` and NEVER re-registers the task. Fields
+    # pre-fill from the district's academic calendar (COUNTED ``default_window_bounds``); a saved
+    # window shows the saved value. Persistence is on-valid-change: an enabled+invalid window shows
+    # the inline error, persists nothing, and (in the wizard) closes the Continue gate via
+    # ``on_window_valid`` — the same "Enter can't bypass a disabled button" guarantee.
+    prefill_start, prefill_end = _district_window_defaults(cfg)
+    window_toggle = ft.Switch(
+        label="Only sync during the school year",
+        value=bool(cfg.sync_window_enabled),
+        active_color=tokens.color_status_healthy,
+    )
+    window_start_field = ft.TextField(
+        label="Season starts (MM-DD)",
+        value=cfg.sync_window_start or prefill_start,
+        width=190,
+        border_color=tokens.color_border,
+        disabled=not bool(cfg.sync_window_enabled),
+        helper="About two weeks before school starts.",
+    )
+    window_end_field = ft.TextField(
+        label="Season ends (MM-DD)",
+        value=cfg.sync_window_end or prefill_end,
+        width=190,
+        border_color=tokens.color_border,
+        disabled=not bool(cfg.sync_window_enabled),
+        helper="Early summer — the sync pauses until next school year.",
+    )
+    window_error_slot = ft.Column(spacing=0, controls=[])
+
+    def _on_window_change(_e: ft.ControlEvent | None = None) -> None:
+        enabled = bool(window_toggle.value)
+        start = window_start_field.value or ""
+        end = window_end_field.value or ""
+        valid = window_settings_valid(enabled, start, end)
+        window_start_field.disabled = not enabled
+        window_end_field.disabled = not enabled
+        window_error_slot.controls = (
+            [] if valid else [ft.Text(_WINDOW_ERROR, size=13, color=tokens.color_status_failed)]
+        )
+        if valid:
+            # Persist to config ONLY (never a task arg) — the nightly gate reads it at run time.
+            cfg.sync_window_enabled = enabled
+            if enabled:
+                cfg.sync_window_start = validate_month_day(start)
+                cfg.sync_window_end = validate_month_day(end)
+            cfg.save()
+        if on_window_valid is not None:
+            on_window_valid(valid)  # wizard footer gate — Continue blocks while enabled+invalid
+        page.update()
+
+    window_toggle.on_change = _on_window_change
+    for _window_field in (window_start_field, window_end_field):
+        _window_field.on_change = _on_window_change
+        _window_field.on_submit = _on_window_change
+
+    # FIX 3: re-derive the advance gate from the PERSISTED config on every (re)build. ``_on_window_change``
+    # only fires on live user input, so a Back->Forward rebuild (which restores the fields from cfg's
+    # last VALID bounds with an empty error slot) would otherwise leave a stale ``window_valid=False``
+    # stranding the Schedule step's Continue / "Set up later". The wizard passes ``on_window_valid``;
+    # Settings mode passes none (the flat-scroll Save has no advance gate), so the guard is required.
+    if on_window_valid is not None:
+        on_window_valid(
+            window_valid_from_config(
+                enabled=bool(cfg.sync_window_enabled),
+                start_md=cfg.sync_window_start,
+                end_md=cfg.sync_window_end,
+                prefill_start=prefill_start,
+                prefill_end=prefill_end,
+            )
+        )
+
+    section_controls.append(
+        ft.Column(
+            spacing=10,
+            controls=[
+                ft.Divider(height=1, color=tokens.color_border),
+                ft.Text("Seasonal pause", size=16, weight=ft.FontWeight.W_800, color=tokens.color_text),
+                ft.Text(
+                    "Pause the nightly sync over the summer and resume it automatically each school "
+                    "year — set once, no yearly changes needed.",
+                    size=13,
+                    color=tokens.color_muted,
+                ),
+                window_toggle,
+                ft.Row(
+                    spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                    controls=[window_start_field, window_end_field],
+                ),
+                window_error_slot,
+            ],
+        )
+    )
 
     _kick_readout_probe()
 

@@ -9,11 +9,15 @@ are named by CATEGORY only — mirrors ``home_status``'s privacy test).
 
 from __future__ import annotations
 
+import pytest
+
+from src.etl.pipeline import RunErrorCategory
 from src.ui_flet.convert_result import (
     ConvertResult,
     ConvertStatus,
     convert_error_copy,
     deliver_error_copy,
+    status_for_integrity_fault,
     summarize,
 )
 from src.ui_flet.verdict import Verdict
@@ -149,6 +153,66 @@ class TestSummarizeNoInputNoOutput:
         assert verdict is Verdict.FAILED
         assert "No output" in headline
         assert detail
+
+
+class TestSummarizeIncompleteRoster:
+    """FIX-2 — the delivery gate's refusal, in the product's calm category-only voice."""
+
+    def test_incomplete_roster_is_failed_and_names_the_missing_students(self) -> None:
+        result = ConvertResult(
+            status=ConvertStatus.INCOMPLETE_ROSTER,
+            entity_counts={"Classes": 40, "Enrollments": 300, "Family": 80},
+        )
+        verdict, headline, detail = summarize(result)
+        assert verdict is Verdict.FAILED
+        assert headline == "Your student list came through empty"
+        assert "nothing was saved and nothing was sent" in detail
+        assert "Your last saved files are untouched." in detail  # the recoverability promise
+        assert "student export" in detail  # the concrete next step
+
+    def test_it_is_distinct_from_no_output(self) -> None:
+        # Files WERE built here — telling the admin "no output was produced" would send
+        # them looking for the wrong fault.
+        _v, incomplete, _d = summarize(ConvertResult(status=ConvertStatus.INCOMPLETE_ROSTER))
+        _v2, no_output, _d2 = summarize(ConvertResult(status=ConvertStatus.NO_OUTPUT))
+        assert incomplete != no_output
+
+    def test_the_copy_is_plain_language_and_carries_no_identifiers(self) -> None:
+        _verdict, headline, detail = summarize(ConvertResult(status=ConvertStatus.INCOMPLETE_ROSTER))
+        for jargon in ("Students.csv", "roster anchor", "entity", "SFTP", "GDE", "exception", "archive_"):
+            assert jargon not in headline and jargon not in detail
+        assert "{" not in headline + detail  # fixed copy — no interpolation slot at all
+
+
+class TestStatusForIntegrityFault:
+    """The gate's bounded category → the status that words it (single-sourced, total, loud)."""
+
+    def test_every_category_the_gate_can_return_is_mapped(self) -> None:
+        # Derived from the GATE itself, not a hand-written list: a new fault category added
+        # to ``check_delivery_integrity`` without Convert copy turns this red.
+        import pandas as pd
+
+        from src.etl import pipeline
+
+        frame = pd.DataFrame({"User ID": ["S001"]})
+        rostering = ("Students", "Staff", "Family", "Classes", "Enrollments")
+        faults = [
+            pipeline.check_delivery_integrity({}, rostering),
+            pipeline.check_delivery_integrity({"Classes": frame, "Enrollments": frame}, rostering),
+        ]
+        for fault in faults:
+            assert fault is not None
+            assert isinstance(status_for_integrity_fault(fault.category), ConvertStatus)
+
+    def test_no_output_and_incomplete_roster_map_to_their_own_statuses(self) -> None:
+        assert status_for_integrity_fault(RunErrorCategory.NO_OUTPUT.value) is ConvertStatus.NO_OUTPUT
+        assert status_for_integrity_fault(RunErrorCategory.INCOMPLETE_ROSTER.value) is ConvertStatus.INCOMPLETE_ROSTER
+
+    def test_an_unmapped_category_fails_loud(self) -> None:
+        # Never default: silently presenting a new fault as an existing one would lie to
+        # the admin about why delivery was refused.
+        with pytest.raises(ValueError, match="No Convert status is mapped"):
+            status_for_integrity_fault("a_future_fault")
 
 
 class TestSummarizeTotality:

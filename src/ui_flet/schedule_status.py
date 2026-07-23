@@ -209,14 +209,28 @@ def _is_contradiction(readback: ScheduleReadback, latest_record_ts: str | None) 
     return last is not None and newest is not None and last > newest
 
 
-def needs_setup_badge(status: ScheduleStatus | None) -> bool:
+def needs_setup_badge(status: ScheduleStatus | None, *, paused: bool = False) -> bool:
     """Whether the Setup nav destination should show a "needs attention" badge (pure).
 
     Driven by the single ``attention`` signal — an expected-but-missing schedule (the
     Event-141 case) or a fired-but-no-record contradiction, both of which route to Setup.
     A ``None`` status (not yet probed / not applicable) never badges.
+
+    ``paused`` is the seasonal-window fact (an ENABLED window currently outside its season —
+    see ``home_status.sync_window_paused``). During an intentional pause NO run is expected, so
+    the fired-but-no-record **contradiction** is by design, not a fault: badging it would nag
+    the admin all summer and contradict Home, which shows a calm "Paused for the summer" and
+    suppresses the same contradiction. A genuinely **MISSING** task still badges even while
+    paused — a gone schedule won't resume in the fall, so it is a real problem the vendor must
+    fix. The two ``attention`` sources are mutually exclusive (a MISSING status is never a
+    contradiction), so suppressing on ``status.contradiction`` targets exactly the summer-spurious
+    case and never masks a MISSING one.
     """
-    return status is not None and status.attention
+    if status is None:
+        return False
+    if paused and status.contradiction:
+        return False
+    return status.attention
 
 
 @dataclass(frozen=True)
