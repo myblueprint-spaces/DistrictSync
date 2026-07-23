@@ -109,7 +109,12 @@ from src.ui_flet.setup_flow import (
     task_args_from_persisted,
     task_args_to_persisted,
 )
-from src.ui_flet.setup_gates import can_register_schedule, can_save_sftp, window_settings_valid
+from src.ui_flet.setup_gates import (
+    can_register_schedule,
+    can_save_sftp,
+    window_settings_valid,
+    window_valid_from_config,
+)
 from src.ui_flet.sftp_copy import (
     PORT_ERROR_DETAIL,
     PORT_ERROR_HEADLINE,
@@ -1374,6 +1379,22 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     for _window_field in (window_start_field, window_end_field):
         _window_field.on_change = _on_window_change
         _window_field.on_submit = _on_window_change
+
+    # FIX 3: re-derive the advance gate from the PERSISTED config on every (re)build. ``_on_window_change``
+    # only fires on live user input, so a Back->Forward rebuild (which restores the fields from cfg's
+    # last VALID bounds with an empty error slot) would otherwise leave a stale ``window_valid=False``
+    # stranding the Schedule step's Continue / "Set up later". The wizard passes ``on_window_valid``;
+    # Settings mode passes none (the flat-scroll Save has no advance gate), so the guard is required.
+    if on_window_valid is not None:
+        on_window_valid(
+            window_valid_from_config(
+                enabled=bool(cfg.sync_window_enabled),
+                start_md=cfg.sync_window_start,
+                end_md=cfg.sync_window_end,
+                prefill_start=prefill_start,
+                prefill_end=prefill_end,
+            )
+        )
 
     section_controls.append(
         ft.Column(

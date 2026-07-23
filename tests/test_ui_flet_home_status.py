@@ -650,6 +650,40 @@ class TestSeasonalPause:
         assert status.verdict is Verdict.WARNING
         assert status.fix is not None and status.fix.dest_id == "setup"
 
+    def test_confirmed_missing_schedule_outranks_pause_empty_store(self) -> None:
+        # FIX 2: the hint_registered=False twin of the test above. window enabled -> registered ->
+        # "Remove nightly sync" (schedule_registered=False, window left ON) -> summer. The MISSING
+        # read-back is now expected=False -> attention=False, so the schedule-attention rule never
+        # fires and the empty-store paused branch used to mask a schedule that is CONFIRMED gone
+        # (it will never resume, so "resumes <date>" is a lie). The honest "add a nightly schedule"
+        # WARNING must surface instead of the green paused headline.
+        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        status = derive_home_status(
+            [],
+            _windowed(setup_completed=True, schedule_registered=False),
+            now=_SUMMER,
+            store_created_at=_SUMMER_ESTABLISHED,
+            schedule_status=missing,
+        )
+        assert status.verdict is Verdict.WARNING
+        assert status.headline != _PAUSED_HEADLINE
+        assert "add a nightly schedule" in status.detail
+
+    def test_confirmed_missing_schedule_outranks_pause_populated_store(self) -> None:
+        # The populated twin ("Remove nightly sync" leaves past runs in the store). A confirmed-gone
+        # schedule must not read as a calm summer pause -> the normal record rules apply (here: an
+        # old newest record -> the honest "No recent sync" WARNING), never the HEALTHY pause.
+        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        old = (_SUMMER - timedelta(hours=STALE_AFTER_HOURS + 5)).isoformat(timespec="seconds")
+        status = derive_home_status(
+            [_record(timestamp=old)],
+            _windowed(setup_completed=True, schedule_registered=False),
+            now=_SUMMER,
+            schedule_status=missing,
+        )
+        assert status.verdict is Verdict.WARNING
+        assert status.headline != _PAUSED_HEADLINE
+
     def test_live_fired_but_no_record_contradiction_is_suppressed_in_a_pause(self) -> None:
         # The paused nightly fires (LastRunTime advances) but writes NO record by design — the
         # resulting fired-but-no-record contradiction is a false alarm in summer and is suppressed.

@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.ui_flet.setup_gates import can_register_schedule, can_save_sftp, window_settings_valid
+from src.ui_flet.setup_gates import (
+    can_register_schedule,
+    can_save_sftp,
+    window_settings_valid,
+    window_valid_from_config,
+)
 
 
 class TestWindowSettingsValid:
@@ -43,6 +48,61 @@ class TestWindowSettingsValid:
 
     def test_none_bounds_do_not_raise(self) -> None:
         assert window_settings_valid(True, None, None) is False  # type: ignore[arg-type]
+
+
+class TestWindowValidFromConfig:
+    """FIX 3: the Schedule section rebuilds (Back->Forward) from PERSISTED config — the last VALID
+    bounds, since an enabled+invalid edit persists nothing — with an empty error slot, yet the live
+    on-change handler that sets the wizard's ``window_valid`` flag never re-fires on a rebuild.
+    ``window_valid_from_config`` re-derives the advance gate on every (re)build (persisted bounds,
+    or the district pre-fill when unset) so a stale ``False`` can't strand the Schedule step's
+    Continue / "Set up later" (both gate on the flag). It single-sources the pre-fill fallback over
+    the existing ``window_settings_valid`` engine gate."""
+
+    def test_enabled_valid_saved_bounds_regate_true(self) -> None:
+        # cfg holds the last VALID bounds (the invalid end never persisted) -> the gate re-opens.
+        assert (
+            window_valid_from_config(
+                enabled=True, start_md="08-11", end_md="07-06", prefill_start="08-11", prefill_end="07-06"
+            )
+            is True
+        )
+
+    def test_unset_bounds_fall_back_to_prefill(self) -> None:
+        # Enabled but no saved bounds yet -> the district pre-fill (valid) fills the gap, gate open.
+        assert (
+            window_valid_from_config(
+                enabled=True, start_md=None, end_md=None, prefill_start="08-11", prefill_end="07-06"
+            )
+            is True
+        )
+        assert (
+            window_valid_from_config(enabled=True, start_md="", end_md="", prefill_start="08-11", prefill_end="07-06")
+            is True
+        )
+
+    def test_disabled_is_always_valid(self) -> None:
+        assert (
+            window_valid_from_config(
+                enabled=False, start_md="99-99", end_md="nope", prefill_start="08-11", prefill_end="07-06"
+            )
+            is True
+        )
+
+    def test_enabled_invalid_saved_is_false(self) -> None:
+        # Defensive/total: a persisted-but-malformed bound (hand-edited config.json) still closes it.
+        assert (
+            window_valid_from_config(
+                enabled=True, start_md="13-99", end_md="07-06", prefill_start="08-11", prefill_end="07-06"
+            )
+            is False
+        )
+
+    def test_matches_window_settings_valid_over_bound_or_prefill(self) -> None:
+        # Single-sources the fallback: it is exactly window_settings_valid over (bound or prefill).
+        assert window_valid_from_config(
+            enabled=True, start_md=None, end_md="07-06", prefill_start="08-11", prefill_end="07-06"
+        ) is window_settings_valid(True, "08-11", "07-06")
 
 
 class TestCanRegisterSchedule:

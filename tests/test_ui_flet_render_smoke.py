@@ -1221,6 +1221,100 @@ def test_invalid_window_edit_shows_inline_error_and_persists_nothing(tmp_path, s
     assert _has_text_containing(tree, "Enter each date as MM-DD")
 
 
+def _footer_forward(tree):
+    """The wizard footer's forward (primary) button — the last control of the last root row.
+
+    The wizard renders ``root.controls = [step_header, body, step_footer]`` and the footer Row ends
+    with the forward button (``Continue`` / ``Set up later`` / ``Finish setup``), so this locates it
+    regardless of its current label (which flips with the step's addressed state)."""
+    return tree.controls[-1].controls[-1]
+
+
+def test_wizard_window_regate_recovers_stranded_schedule_step(tmp_path, stub_page, monkeypatch):
+    """FIX 3: enable the seasonal window, drive an INVALID end (the forward gate closes, nothing
+    persisted), Back -> Forward. The rebuilt Schedule step must re-derive its window gate from the
+    persisted (last VALID) config so the forward button is enabled again — the primary onboarding
+    path is no longer stranded with no on-screen cause. Base (no rebuild re-derive) leaves it stuck.
+    """
+    _benign_probe(monkeypatch)
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+
+    tree = build_setup(stub_page)  # folders + district done -> Delivery (step 3, F1 order)
+    _footer_forward(tree).on_click(None)  # defer delivery -> Schedule (step 4)
+    assert _has_text(tree, "Step 4 of 5")
+
+    # Enable the window (valid pre-fill persists) -> the forward gate opens.
+    switch = _switch_by_label(tree, "Only sync during the school year")
+    assert switch is not None
+    switch.value = True
+    switch.on_change(None)
+    assert _footer_forward(tree).disabled is False
+
+    # Drive an INVALID end -> the gate closes, nothing persists (cfg keeps the last valid bounds).
+    end_field = _textfield_by_label(tree, "Season ends (MM-DD)")
+    assert end_field is not None
+    end_field.value = "13-99"
+    end_field.on_change(None)
+    assert _footer_forward(tree).disabled is True
+
+    # Back -> Delivery, then Forward -> Schedule rebuilds from the persisted (last VALID) config.
+    _button_by_content(tree, "Back").on_click(None)
+    _footer_forward(tree).on_click(None)
+    assert _has_text(tree, "Step 4 of 5")
+
+    # THE fix: the rebuilt Schedule step re-derives its window gate -> the forward gate is open again.
+    assert _footer_forward(tree).disabled is False
+
+
+def test_home_suppresses_live_schedule_card_while_paused(monkeypatch):
+    """FIX 4: Home must not contradict itself. The LIVE "Nightly sync scheduled — Confirmed"
+    reassurance card is gated only on the schedule state, so it could render directly beneath the
+    "Paused for the summer" banner — telling the admin both "Paused" and "next run 3:00 AM
+    Confirmed". During a pause the LIVE reassurance card must be suppressed."""
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    # Force the seasonal pause deterministically (date-independent): the DERIVATION source (banner
+    # -> "Paused for the summer") AND the home-screen card gate the FIX adds. raising=False lets the
+    # RED run on the base, where the screen doesn't yet consult the pause fact for the card.
+    monkeypatch.setattr("src.ui_flet.home_status.sync_window_paused", lambda *a, **k: True)
+    monkeypatch.setattr("src.ui_flet.screens.home.sync_window_paused", lambda *a, **k: True, raising=False)
+    monkeypatch.setattr("src.ui_flet.screens.home.read_run_records", lambda: [])
+    monkeypatch.setattr("src.ui_flet.screens.home.store_meta", lambda: None)
+
+    # A LIVE read-back — the exact input that renders the reassurance card.
+    live = ScheduleStatus(
+        state=ScheduleState.LIVE,
+        headline="Nightly sync is scheduled",
+        detail="Next run at 3:00 AM",
+        next_run_display="3:00 AM",
+    )
+    monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: live)
+    monkeypatch.setattr(sys, "platform", "win32")  # supports_read_schedule -> the probe fires
+
+    cfg = AppConfig(
+        input_dir="/in",
+        output_dir="/out",
+        sis_type="myedbc",
+        setup_completed=True,
+        sync_window_enabled=True,
+        sync_window_start="08-11",
+        sync_window_end="07-06",
+    )
+
+    captured: list = []
+    surface = build_home(_driving_page(captured), app_config=cfg, on_navigate=lambda _d: None)
+    for coro_fn, _args in captured:  # deliver the async LIVE read-back
+        asyncio.run(coro_fn())
+
+    assert _has_text_containing(surface, "Paused for the summer"), "the banner names the pause"
+    assert not _has_text(surface, "Nightly sync scheduled"), "the LIVE reassurance card is suppressed while paused"
+
+
 def test_no_edit_save_after_mapping_switch_reregisters_from_the_persisted_args(tmp_path, stub_page, monkeypatch):
     """S3-d acceptance: after a Mapping district switch (config saved elsewhere), a Settings Save
     with NO field edits must still re-register — the reconcile compares against the durable

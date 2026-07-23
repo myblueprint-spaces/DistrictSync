@@ -374,7 +374,15 @@ def derive_home_status(
     # missed-run / stale / anomaly / data-warning rules (whose "we expected a sync"/"no recent sync"
     # copy would FALSE-FIRE every summer night), but NEVER a FAILED latest (a real failure is not a
     # summer no-op) nor a genuinely-MISSING schedule (a gone task makes "resumes <date>" a lie).
-    paused = sync_window_paused(app_config, now=now)
+    #
+    # W3-B FIX: that MISSING carve-out was only ever half-wired — it fired via ``_schedule_attention``,
+    # which is None unless ``attention`` is True, and a MISSING task the config NO LONGER expects
+    # (expected=False — e.g. "Remove nightly sync" left the window enabled) has attention=False. So a
+    # confirmed-gone schedule fell straight through to the paused headline: green "resumes <date>"
+    # over a task that will never resume. The pause is now gated on a NOT-confirmed-MISSING read-back
+    # (mirrors the stated intent ``schedule_status is None or state is not MISSING``), so the honest
+    # "add a nightly schedule" copy surfaces even when the schedule-attention rule stays silent.
+    paused = sync_window_paused(app_config, now=now) and not _schedule_confirmed_missing(schedule_status)
 
     schedule_attention = _schedule_attention(schedule_status)
     # Surface schedule attention UNLESS the latest record is a failure (it owns the band, W3-B) OR

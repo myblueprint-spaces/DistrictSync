@@ -47,6 +47,7 @@ from src.ui_flet.setup_flow import (
     task_args_from_persisted,
     task_args_to_persisted,
 )
+from src.ui_flet.setup_gates import window_settings_valid, window_valid_from_config
 
 # --------------------------------------------------------------------------- #
 # Fixtures / helpers                                                            #
@@ -284,6 +285,36 @@ class TestWindowAdvanceGate:
         ready = _inputs(folders_valid=True, district_chosen=True, schedule_skipped=True, delivery=DeliveryFact.SKIPPED)
         assert derive_flow(ready).can_finish is True
         assert derive_flow(_inputs(window_valid=False)).resume_step is derive_flow(_inputs()).resume_step
+
+
+class TestWindowRegateStrandRecovery:
+    """FIX 3: enable the window -> drive an INVALID end (``window_valid`` goes False, nothing
+    persisted) -> Back -> Forward. Because the Schedule section rebuilds from cfg (the last VALID
+    bounds) but the live on-change handler never re-fires on a rebuild, ``window_valid`` used to
+    stay stale-False and strand BOTH the Continue and the "Set up later" gate with no on-screen
+    cause. ``window_valid_from_config`` re-derives the flag on every (re)build so the gate matches
+    the freshly-rebuilt valid UI. Modelled here with the SAME COUNTED helpers the view calls."""
+
+    def test_stale_false_strands_then_regate_recovers(self):
+        # 1. The live handler saw the invalid end -> window_valid False strands the Schedule step
+        #    (RED against base: nothing re-derives it on the rebuild).
+        stranded = window_settings_valid(True, "08-11", "13-99")
+        assert stranded is False
+        assert (
+            can_advance(SetupStep.SCHEDULE, _inputs(folders_valid=True, district_chosen=True, window_valid=stranded))
+            is False
+        )
+        # 2. Back->Forward rebuilds from cfg (the last VALID bounds; the invalid end never persisted).
+        #    The fix re-derives the gate from the persisted config on rebuild:
+        regated = window_valid_from_config(
+            enabled=True, start_md="08-11", end_md="07-06", prefill_start="08-11", prefill_end="07-06"
+        )
+        assert regated is True
+        # The strand recovers — Continue (and "Set up later") is enabled again.
+        assert (
+            can_advance(SetupStep.SCHEDULE, _inputs(folders_valid=True, district_chosen=True, window_valid=regated))
+            is True
+        )
 
 
 class TestDefaultWindowBounds:
