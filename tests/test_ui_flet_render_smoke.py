@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import flet as ft
@@ -465,6 +466,102 @@ def test_mapping_post_apply_rerenders_and_allows_revert(stub_page, monkeypatch):
     # THE fix: re-selecting the previous mapping is applyable — a switch can be reverted in place.
     dropdown.on_select(_pick_event(original))
     assert apply_btn.disabled is False
+
+
+# --- Run History probes the schedule EVEN with records present (window-pause wiring) ------------ #
+# The pure derive_history_banner has a confirmed-missing guard on the pause; the adversarial pass
+# found the SCREEN only fed it a real read-back in the empty-records path, so with a table present a
+# REMOVED schedule false-greened as "Paused" while Home warned. These drive the real probe wiring
+# through build_run_history — the exact gap the pure-function tests cannot see.
+
+
+def _summer_paused_windowed_cfg() -> AppConfig:
+    """A configured install with the seasonal window enabled (Aug 11 -> Jul 6) — records present."""
+    return AppConfig(
+        input_dir="/in",
+        output_dir="/out",
+        sis_type="myedbc",
+        schedule_registered=True,
+        setup_completed=True,
+        sync_window_enabled=True,
+        sync_window_start="08-11",
+        sync_window_end="07-06",
+    )
+
+
+def _old_in_season_record() -> dict:
+    # A clean delivered-success run from before the summer break — old enough to trip `is_stale`.
+    return {
+        "timestamp": "2026-07-04T03:00:00",
+        "status": "success",
+        "duration_s": 3.2,
+        "Students": 100,
+        "Staff": 12,
+        "Family": 80,
+        "Classes": 40,
+        "Enrollments": 300,
+        "CourseInfo": 0,
+        "StudentCourses": 0,
+        "StudentAttendance": 0,
+        "sftp_attempted": True,
+        "sftp_ok": True,
+        "error": "",
+        "anomalies": [],
+        "data_errors": {},
+    }
+
+
+class _FrozenSummerNow(datetime):
+    """datetime with now() pinned to a mid-July summer day; fromisoformat/arithmetic still inherited,
+    so `home_status.datetime.now()` (used by sync_window_paused AND is_stale when the screen passes
+    now=None) is deterministic without breaking record-timestamp parsing."""
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: ANN001, ANN206 - test seam
+        return datetime(2026, 7, 20, 8, 0, 0)
+
+
+def _drive_run_history_probe(monkeypatch, probe_status):
+    """Build Run History with records present + an enabled window in summer, feed `probe_status`
+    through the REAL off-thread probe, run the marshalled refine, and return the rendered surface."""
+    from src.ui_flet.screens.run_history import build_run_history
+
+    monkeypatch.setattr(sys, "platform", "win32")  # supports_read_schedule -> the probe fires
+    monkeypatch.setattr("src.ui_flet.home_status.datetime", _FrozenSummerNow)
+    monkeypatch.setattr("src.ui_flet.screens.run_history.read_run_records", lambda *a, **k: [_old_in_season_record()])
+    monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: probe_status)
+
+    captured: list = []
+    page = _driving_page(captured)
+    surface = build_run_history(page, app_config=_summer_paused_windowed_cfg())
+    assert len(captured) == 1, "with records present, the schedule probe must still fire (the fix)"
+    coro_fn, _args = captured[0]
+    asyncio.run(coro_fn())  # run the marshalled re-render with the real read-back
+    return surface
+
+
+def test_run_history_records_present_confirmed_missing_is_not_false_paused(monkeypatch):
+    """A REMOVED schedule (MISSING read-back) with records present must NOT read as green 'Paused'
+    over the summer — the false-green FIX 1's guard exists to kill, on the common records path."""
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    missing = ScheduleStatus(state=ScheduleState.MISSING, headline="", detail="", expected=True)
+    surface = _drive_run_history_probe(monkeypatch, missing)
+    assert not _has_text_containing(surface, "Paused for the summer"), (
+        "a confirmed-gone schedule must not false-green as Paused once the probe is wired in"
+    )
+
+
+def test_run_history_records_present_live_schedule_still_pauses(monkeypatch):
+    """The positive twin: a LIVE schedule in summer with records present DOES show the calm
+    'Paused for the summer' — the fix must not over-suppress the common, correct case."""
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    live = ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="3:00 AM")
+    surface = _drive_run_history_probe(monkeypatch, live)
+    assert _has_text_containing(surface, "Paused for the summer"), (
+        "a LIVE schedule outside its season is a genuine pause — Run History must show it"
+    )
 
 
 def _mapping_apply(surface, target="mbp_core"):

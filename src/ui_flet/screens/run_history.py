@@ -92,10 +92,16 @@ def _scrollable_table(table: ft.Control) -> ft.Control:
 def _surface(page: ft.Page, app_config: AppConfig, on_refresh: Callable[[], None] | None) -> ft.Control:
     """Read the store, derive the banner + rows, render verdict-first.
 
-    The banner's empty-state next-run line derives from the LIVE schedule read-back (D4),
-    fetched OFF the UI thread (Run History is read-only — no schedule-attention verdict, that
-    is Home's job). The table + banner paint immediately from the store; the empty-state copy
-    re-renders in place once the probe returns.
+    The banner consults the LIVE schedule read-back (D4), fetched OFF the UI thread. Two
+    banner facts depend on it, so the probe runs on EVERY path, not just the empty one:
+    the empty-state next-run line, AND — since the seasonal-window work — the pause guard,
+    which must NOT read as a calm "Paused" when the schedule is confirmed gone (a removed
+    task will not resume in the fall). Home probes unconditionally for the same reason; if
+    Run History skipped the probe when a table was present, the two surfaces would disagree
+    during a summer pause over a removed schedule (Home warns, Run History false-greens).
+    Run History stays read-only — no schedule-attention verdict, that is Home's job. The
+    table + banner paint immediately from the store; the banner re-renders in place once the
+    read-back returns.
     """
     records = read_run_records(limit=LIMIT)
     # Only the empty branch needs the store's birth stamp (fresh-start vs first-run copy).
@@ -123,10 +129,10 @@ def _surface(page: ft.Page, app_config: AppConfig, on_refresh: Callable[[], None
             controls.append(_refresh_button(on_refresh))
         container.controls = controls
 
-    _render(None)  # initial paint; the next-run line refines once the read-back arrives
-    # Only the empty state uses the schedule read-back — skip the probe when there is a table.
-    if not records:
-        _probe_schedule_async(page, app_config, latest_ts, _render)
+    _render(None)  # initial paint from the store alone; the banner refines once the read-back arrives
+    # Probe on EVERY path (like Home): the banner's pause guard needs the confirmed-missing signal
+    # even when a table is present, or a removed schedule would false-green as "Paused" over summer.
+    _probe_schedule_async(page, app_config, latest_ts, _render)
     return container
 
 
