@@ -20,5 +20,5 @@ keyring>=24.0
 # Pinned EXACTLY — Flet 1.0 is a beta API that can shift; flet-web/flet-cli are
 # dev/build-only (requirements-dev.txt) to keep fastapi/uvicorn out of the exe.
 # Keep this version in lockstep with docs/FLET_1.0_CONVENTIONS.md (test_flet_pin gates it).
-flet==0.85.3
+flet==0.86.2
 flet-desktop==0.85.3

@@ -33,7 +33,7 @@ sftp = [
 # Exact-pinned (Flet 1.0 beta); kept in lockstep with
 # requirements.txt + docs/FLET_1.0_CONVENTIONS.md (test_flet_pin gates drift).
 flet-ui = [
-    "flet==0.85.3",
+    "flet==0.86.2",
     "flet-desktop==0.85.3",
     "paramiko>=3.0",
     "keyring>=24.0",
