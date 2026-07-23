@@ -13,6 +13,7 @@ are hermetic — no home dependency, no real-config coupling for the fixture bra
 
 from __future__ import annotations
 
+from datetime import date as _date
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -21,11 +22,30 @@ import pytest
 from src.ui_flet.humanize import (
     AnomalyVariant,
     friendly_anomaly_detail,
+    friendly_date_short,
     friendly_district_name,
     friendly_sftp_reason,
     friendly_timestamp,
     pluralize,
 )
+
+
+class TestFriendlyDateShort:
+    """The seasonal-resume date copy (B): plain "Aug 11", PII-free, no year, un-padded day."""
+
+    def test_abbreviated_month_and_unpadded_day(self) -> None:
+        assert friendly_date_short(_date(2026, 8, 11)) == "Aug 11"
+
+    def test_single_digit_day_has_no_leading_zero(self) -> None:
+        assert friendly_date_short(_date(2026, 7, 6)) == "Jul 6"
+
+    def test_no_year_is_rendered(self) -> None:
+        # The seasonal window recurs every year — a year would misinform, so it is never shown.
+        assert "2026" not in friendly_date_short(_date(2026, 1, 1))
+
+    def test_leap_day_is_total(self) -> None:
+        assert friendly_date_short(_date(2028, 2, 29)) == "Feb 29"
+
 
 # The real bundled configs — used only for the "known district" and "unknown id"
 # cases (their district_name is asserted structurally, not by hardcoded string).

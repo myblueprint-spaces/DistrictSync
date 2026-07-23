@@ -563,6 +563,156 @@ class TestMissedRun:
         assert self._ESTABLISHED not in status.detail  # never the raw ISO
 
 
+def _windowed(**over: object) -> AppConfig:
+    """A configured install WITH the seasonal window enabled (Aug 11 -> Jul 6, wrap-around)."""
+    base: dict = dict(
+        input_dir="/in",
+        output_dir="/out",
+        sis_type="myedbc",
+        schedule_registered=True,
+        sync_window_enabled=True,
+        sync_window_start="08-11",
+        sync_window_end="07-06",
+    )
+    base.update(over)
+    return AppConfig(**base)
+
+
+# A "now" comfortably OUTSIDE the Aug 11 -> Jul 6 window (mid-July summer break) and one INSIDE it.
+_SUMMER = datetime(2026, 7, 20, 8, 0, 0)  # 07-20: > Jul 6 and < Aug 11 -> paused
+_SUMMER_ESTABLISHED = (_SUMMER - timedelta(hours=MISSED_RUN_AFTER_HOURS + 48)).isoformat(timespec="seconds")
+_PAUSED_HEADLINE = "Paused for the summer"
+_MISSED_HEADLINE = "We expected a nightly sync that didn't arrive"
+
+
+class TestSeasonalPause:
+    """B: while an ENABLED seasonal window is OUTSIDE its active season, no nightly sync arrives by
+    design — the missed-run and stale warnings must be SUPPRESSED and a calm HEALTHY-toned
+    "Paused for the summer — resumes <date>" state shown instead. A genuinely FAILED latest record
+    still surfaces (a real failure isn't hidden by summer); missed-run + stale never fire in a pause.
+    """
+
+    def test_reproduce_missed_run_is_suppressed_and_paused_shows(self) -> None:
+        # Reproduce-first (RED on the pre-slice base, which ignores the window): a LIVE schedule +
+        # an established store + no records is a textbook missed-run — but we are OUTSIDE an enabled
+        # window, so the expected nightly is a summer no-op. Home must show the calm paused state.
+        status = derive_home_status(
+            [],
+            _windowed(),
+            now=_SUMMER,
+            store_created_at=_SUMMER_ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.verdict is Verdict.HEALTHY  # an intentional pause is healthy, never amber/red
+        assert status.headline == _PAUSED_HEADLINE
+        assert _MISSED_HEADLINE not in status.headline
+        assert "Aug 11" in status.detail  # friendly resume date, PII-free (no raw ISO)
+        assert _SUMMER_ESTABLISHED not in status.detail
+        assert status.fix is None
+
+    def test_missed_run_with_a_record_is_also_suppressed_in_a_pause(self) -> None:
+        # The record-present missed-run path (newest record past the window) is suppressed too.
+        old = (_SUMMER - timedelta(hours=MISSED_RUN_AFTER_HOURS + 1)).isoformat(timespec="seconds")
+        status = derive_home_status(
+            [_record(timestamp=old)],
+            _windowed(),
+            now=_SUMMER,
+            store_created_at=_SUMMER_ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.verdict is Verdict.HEALTHY
+        assert status.headline == _PAUSED_HEADLINE
+
+    def test_stale_clean_success_is_suppressed_in_a_pause(self) -> None:
+        # A clean-but-old success in summer is expected (nothing runs) — no "No recent sync" warning.
+        old = (_SUMMER - timedelta(hours=STALE_AFTER_HOURS + 5)).isoformat(timespec="seconds")
+        status = derive_home_status([_record(timestamp=old)], _windowed(), now=_SUMMER)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.headline == _PAUSED_HEADLINE
+        assert "No recent sync" not in status.headline
+
+    def test_failed_latest_still_surfaces_in_a_pause(self) -> None:
+        # Non-negotiable: a REAL failure is never hidden by summer — FAILED outranks the pause.
+        status = derive_home_status([_record(status="failed")], _windowed(), now=_SUMMER)
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Last sync failed"
+
+    def test_failed_delivery_latest_still_surfaces_in_a_pause(self) -> None:
+        status = derive_home_status([_record(sftp_attempted=True, sftp_ok=False)], _windowed(), now=_SUMMER)
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Your roster didn't reach SpacesEDU"
+
+    def test_expected_missing_schedule_still_surfaces_in_a_pause(self) -> None:
+        # A genuinely gone task makes "resumes <date>" a lie — the MISSING attention still surfaces
+        # (only the by-design LIVE fired-but-no-record contradiction is suppressed during a pause).
+        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None)
+        status = derive_home_status([_record()], _windowed(), now=_SUMMER, schedule_status=missing)
+        assert status.verdict is Verdict.WARNING
+        assert status.fix is not None and status.fix.dest_id == "setup"
+
+    def test_live_fired_but_no_record_contradiction_is_suppressed_in_a_pause(self) -> None:
+        # The paused nightly fires (LastRunTime advances) but writes NO record by design — the
+        # resulting fired-but-no-record contradiction is a false alarm in summer and is suppressed.
+        contradiction = derive_schedule_status(
+            ScheduleReadback(found=True, last_run="2026-07-19T04:00:00"),
+            hint_registered=True,
+            latest_record_ts=_RECENT,
+        )
+        status = derive_home_status([_record()], _windowed(), now=_SUMMER, schedule_status=contradiction)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.headline == _PAUSED_HEADLINE
+
+    def test_boundary_last_active_day_is_not_paused(self) -> None:
+        # Jul 6 is the INCLUSIVE last active day -> normal behavior (not paused).
+        on_boundary = datetime(2026, 7, 6, 8, 0, 0)
+        status = derive_home_status(
+            [_record(timestamp=(on_boundary - timedelta(hours=5)).isoformat())], _windowed(), now=on_boundary
+        )
+        assert status.headline != _PAUSED_HEADLINE
+
+    def test_boundary_first_paused_day(self) -> None:
+        # Jul 7 is the first day OUTSIDE the window -> paused.
+        first_paused = datetime(2026, 7, 7, 8, 0, 0)
+        status = derive_home_status([_record(timestamp=_OLD)], _windowed(), now=first_paused)
+        assert status.headline == _PAUSED_HEADLINE
+
+    def test_inside_window_missed_run_still_fires(self) -> None:
+        # Window ENABLED but today INSIDE it (mid-June) -> normal cadence rules, missed-run fires.
+        june = datetime(2026, 6, 15, 8, 0, 0)
+        established = (june - timedelta(hours=MISSED_RUN_AFTER_HOURS + 48)).isoformat(timespec="seconds")
+        status = derive_home_status(
+            [], _windowed(), now=june, store_created_at=established, schedule_status=_live_schedule()
+        )
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == _MISSED_HEADLINE
+
+    def test_disabled_window_is_year_round_unchanged(self) -> None:
+        # The opt-in default: disabled window -> byte-identical to today (no paused state ever).
+        cfg = _windowed(sync_window_enabled=False)
+        status = derive_home_status(
+            [], cfg, now=_SUMMER, store_created_at=_SUMMER_ESTABLISHED, schedule_status=_live_schedule()
+        )
+        assert status.headline == _MISSED_HEADLINE  # the missed-run warning fires as before
+
+    def test_blank_bounds_never_pause(self) -> None:
+        # Enabled but with unset bounds (never configured) -> treated as year-round, never paused.
+        cfg = _windowed(sync_window_start="", sync_window_end="")
+        status = derive_home_status([_record(timestamp=_OLD)], cfg, now=_SUMMER)
+        assert status.headline != _PAUSED_HEADLINE
+
+    def test_malformed_bounds_never_pause(self) -> None:
+        # A malformed window (should be gated at save, but be TOTAL) -> year-round, never crash.
+        cfg = _windowed(sync_window_start="13-40", sync_window_end="xx-yy")
+        status = derive_home_status([_record(timestamp=_OLD)], cfg, now=_SUMMER)
+        assert isinstance(status, HomeStatus)
+        assert status.headline != _PAUSED_HEADLINE
+
+    def test_paused_detail_is_plain_language_and_pii_free(self) -> None:
+        status = derive_home_status([], _windowed(), now=_SUMMER, store_created_at=_SUMMER_ESTABLISHED)
+        assert "08-11" not in status.detail  # never the raw MM-DD / ISO
+        assert "Nothing is wrong" in status.detail
+
+
 class TestFailedRules:
     def test_failed_etl_is_failed_verdict(self) -> None:
         status = _derive(_record(status="failed"))

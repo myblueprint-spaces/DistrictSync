@@ -31,10 +31,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from datetime import date, timedelta
 from enum import Enum
 
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
-from src.utils.validators import validate_run_time
+from src.utils.validators import validate_month_day, validate_run_time
 
 
 class SetupStep(Enum):
@@ -117,6 +118,12 @@ class FlowInputs:
             wizard never trusts the config flag for live-ness.
         schedule_skipped: the admin chose "set up a schedule later".
         delivery: the injected ``DeliveryFact`` for the Delivery step.
+        window_valid: the seasonal-window fields are safe to advance past (the view computes it
+            via ``setup_gates.window_settings_valid``). ``True`` by default (the window is opt-in,
+            and disabled / valid → always ``True``); an ENABLED-but-invalid window closes the
+            Schedule step's Continue gate — the "Enter can't bypass a disabled button" guarantee,
+            extended to the window. It does NOT affect resume/satisfaction (an invalid window is
+            transient — never persisted, since the section only saves a valid one).
     """
 
     folders_valid: bool
@@ -124,6 +131,7 @@ class FlowInputs:
     schedule: ScheduleStatus | None = None
     schedule_skipped: bool = False
     delivery: DeliveryFact = DeliveryFact.NONE
+    window_valid: bool = True
 
 
 @dataclass(frozen=True)
@@ -188,14 +196,20 @@ def can_advance(step: SetupStep, inputs: FlowInputs) -> bool:
     """Whether the given step's Next/Enter gate is satisfied (pure — the Enter-advance gate).
 
     FOLDERS / DISTRICT advance only when their own value is valid (Enter can never bypass the
-    gate a disabled Next button enforces — same guarantee as ``setup_gates``). SCHEDULE /
-    DELIVERY are skippable, so advancing is always allowed. FINISH advances (confirms) only
-    when the finish line is reachable (``derive_flow(...).can_finish``).
+    gate a disabled Next button enforces — same guarantee as ``setup_gates``). SCHEDULE is
+    skippable BUT additionally gated on ``window_valid`` — an enabled-but-invalid seasonal window
+    blocks Continue (the window lives on the Schedule step). DELIVERY is skippable, so advancing is
+    always allowed. FINISH advances (confirms) only when the finish line is reachable
+    (``derive_flow(...).can_finish``).
     """
     if step is SetupStep.FOLDERS:
         return inputs.folders_valid
     if step is SetupStep.DISTRICT:
         return inputs.district_chosen
+    if step is SetupStep.SCHEDULE:
+        # Skippable, but a visibly-enabled invalid window can't be advanced past (the window is
+        # not a task arg — this only blocks Continue, never the register flow).
+        return inputs.window_valid
     if step in _SKIPPABLE_STEPS:
         return True
     return derive_flow(inputs).can_finish
@@ -231,6 +245,65 @@ def auto_selected_district(available: Sequence[str]) -> str:
     shows and the admin picks explicitly — no silent alphabetical default.
     """
     return available[0] if len(available) == 1 else ""
+
+
+# --------------------------------------------------------------------------- #
+# Seasonal-window pre-fill defaults (B) — derived from the district calendar.  #
+# --------------------------------------------------------------------------- #
+# "~2 weeks before school starts" — the season opens early enough that the first nightly syncs
+# land before day one. Applied to ``global_config.academic_start_month_day``.
+_WINDOW_START_LEAD_DAYS = 14
+# The summer gap: the season END sits ~5 weeks BEFORE it re-opens, giving a real summer pause. Keyed
+# off the derived START (not ``academic_end_month_day`` — that is the DATA-year boundary "07-25",
+# NOT school-end, and using it naively would overlap the start). Calendar-relative, so ANY district
+# calendar yields a sensible gap. For the base 08-25 academic start this reproduces the owner's
+# canonical example EXACTLY: start 08-11, end 07-06 (08-11 − 36d = 07-06).
+_WINDOW_SUMMER_GAP_DAYS = 36
+# Plain fallbacks when no district is chosen yet / the config is unreadable / has no academic dates.
+_WINDOW_FALLBACK_START = "08-11"
+_WINDOW_FALLBACK_END = "07-06"
+# A NON-leap probe year so the MM-DD arithmetic is deterministic and never emits 02-29 (a 02-29
+# input clamps out via the try/except below — a school year does not start on Feb 29).
+_WINDOW_PROBE_YEAR = 2001
+
+
+def default_window_bounds(academic_start_md: str | None, academic_end_md: str | None = None) -> tuple[str, str]:
+    """Pre-fill ``(sync_window_start, sync_window_end)`` from a district's academic calendar (pure).
+
+    ``sync_window_start`` = ``academic_start_month_day`` − 14 days ("~2 weeks before school
+    starts"). ``sync_window_end`` = that start − 36 days (a ~5-week summer pause just before the
+    season re-opens). ``academic_end_md`` is accepted (the view reads it alongside the start) but
+    DELIBERATELY UNUSED for the end: it is the academic-DATA-year boundary ("07-25"), not
+    school-end, so using it as the season end would overlap the start. The vendor tunes both per
+    district — do not overclaim the pre-fill's precision.
+
+    TOTAL: a ``None`` / blank / malformed / leap-day (02-29) start → the plain
+    (``"08-11"``, ``"07-06"``) fallback, never a raise.
+    """
+    start_md = _shift_month_day(academic_start_md, -_WINDOW_START_LEAD_DAYS)
+    if start_md is None:
+        return (_WINDOW_FALLBACK_START, _WINDOW_FALLBACK_END)
+    end_md = _shift_month_day(start_md, -_WINDOW_SUMMER_GAP_DAYS)
+    if end_md is None:
+        return (_WINDOW_FALLBACK_START, _WINDOW_FALLBACK_END)
+    return (start_md, end_md)
+
+
+def _shift_month_day(md: str | None, days: int) -> str | None:
+    """Shift a validated ``"MM-DD"`` by ``days`` in the non-leap probe year → ``"MM-DD"`` / ``None``.
+
+    Reuses ``validate_month_day`` (rejects garbage, accepts 02-29). ``None`` when the input is
+    unusable or lands on a date the non-leap probe year can't build (02-29) — the caller degrades
+    to the plain fallback rather than crash.
+    """
+    if not isinstance(md, str) or not md.strip():
+        return None
+    try:
+        normalized = validate_month_day(md)
+        shifted = date(_WINDOW_PROBE_YEAR, int(normalized[:2]), int(normalized[3:])) + timedelta(days=days)
+    except (ValueError, TypeError):
+        return None
+    return f"{shifted.month:02d}-{shifted.day:02d}"
 
 
 # --------------------------------------------------------------------------- #

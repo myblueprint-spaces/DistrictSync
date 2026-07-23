@@ -404,8 +404,12 @@ def _has_text(tree, exact) -> bool:
 
 
 def _has_text_containing(tree, substring) -> bool:
-    """Whether any control's ``value`` contains ``substring``."""
-    return any(substring in (getattr(c, "value", None) or "") for c in _iter_controls(tree))
+    """Whether any control's STRING ``value`` contains ``substring``.
+
+    Non-string values (e.g. an ``ft.Switch``'s bool ``value``) are skipped — they can never
+    contain a substring, and ``substring in True`` would raise.
+    """
+    return any(substring in v for c in _iter_controls(tree) if isinstance(v := getattr(c, "value", None), str))
 
 
 def _pick_event(value):
@@ -575,6 +579,11 @@ def test_mapping_stale_probe_never_resurrects_a_cleared_banner(monkeypatch):
 def _textfield_by_label(tree, label):
     """The first ``ft.TextField`` whose label EXACTLY equals ``label`` (or None)."""
     return next((f for f in _find(tree, ft.TextField) if (f.label or "") == label), None)
+
+
+def _switch_by_label(tree, label):
+    """The first ``ft.Switch`` whose label EXACTLY equals ``label`` (or None)."""
+    return next((s for s in _find(tree, ft.Switch) if (getattr(s, "label", "") or "") == label), None)
 
 
 # The five always-present Setup text fields Enter must submit (the Windows-password
@@ -823,7 +832,9 @@ class TestWizardStepsRender:
 
         live = ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="3:00 AM")
 
-        def _stub_schedule(page, config, *, on_status=None, on_registered=None, on_schedule_changed=None):
+        def _stub_schedule(
+            page, config, *, on_status=None, on_registered=None, on_schedule_changed=None, on_window_valid=None
+        ):
             if on_status is not None:
                 on_status(live)  # deliver a LIVE read-back the moment the Schedule step builds
             return ft.Text("schedule"), setup_mod._ScheduleHandle(
@@ -1136,6 +1147,78 @@ def test_settings_save_with_invalid_run_time_edit_persists_nothing_and_paints_th
     assert cfg.schedule_time == "03:00"  # untouched
     assert json.loads(config_file_path().read_text(encoding="utf-8"))["schedule_time"] == "03:00"
     assert _has_text(tree, "That run time isn't valid")  # the register flow's exact inline error
+
+
+# --------------------------------------------------------------------------- #
+# Seasonal window (B) — render + the "not a task arg" no-re-register guarantee.  #
+# --------------------------------------------------------------------------- #
+def test_settings_renders_seasonal_window_fields(stub_page, monkeypatch):
+    """B: the shared schedule section renders the opt-in seasonal-window controls (toggle + two
+    MM-DD fields + heading) on the pinned flet, without falling to ErrorCard."""
+    tree = _settings_tree(stub_page, monkeypatch)
+    assert _switch_by_label(tree, "Only sync during the school year") is not None
+    assert _textfield_by_label(tree, "Season starts (MM-DD)") is not None
+    assert _textfield_by_label(tree, "Season ends (MM-DD)") is not None
+    assert _has_text(tree, "Seasonal pause")
+
+
+def test_window_fields_prefill_from_the_district_calendar(stub_page, monkeypatch):
+    """B: an unset window pre-fills from the district's academic calendar (myedbc 08-25 →
+    start 08-11 / end 07-06), so the admin starts from a sensible window, never blanks."""
+    tree = _settings_tree(stub_page, monkeypatch)  # sis_type=myedbc, no window saved
+    assert _textfield_by_label(tree, "Season starts (MM-DD)").value == "08-11"
+    assert _textfield_by_label(tree, "Season ends (MM-DD)").value == "07-06"
+
+
+def test_window_only_settings_change_does_not_reregister(tmp_path, stub_page, monkeypatch):
+    """B (non-negotiable): flipping the seasonal window on a REGISTERED-schedule install persists
+    the window to config but NEVER re-registers the task (the window is not a task arg)."""
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type="myedbc",
+        setup_completed=True,
+        schedule_registered=True,
+        schedule_time="03:00",
+        schedule_task_args=task_args_to_persisted(
+            TaskArgs.of(
+                input_dir=str(in_dir), output_dir=str(out_dir), sis_type="myedbc", sftp_enabled=False, run_time="03:00"
+            )
+        ),
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    recorded = _record_register(monkeypatch)
+
+    tree = build_setup(stub_page)
+    toggle = _switch_by_label(tree, "Only sync during the school year")
+    toggle.value = True
+    toggle.on_change(None)  # the user flips the seasonal window ON
+
+    assert recorded["called"] == 0, "a window-only change must NEVER re-register the nightly task"
+    assert cfg.sync_window_enabled is True  # config-only side effect
+    on_disk = json.loads(config_file_path().read_text(encoding="utf-8"))
+    assert on_disk["sync_window_enabled"] is True
+    assert on_disk["sync_window_start"] == "08-11"  # the prefilled bound persisted on enable
+    assert on_disk["schedule_task_args"]["sis_type"] == "myedbc"  # the task record is untouched
+
+
+def test_invalid_window_edit_shows_inline_error_and_persists_nothing(tmp_path, stub_page, monkeypatch):
+    """B: enabling the window with a bad MM-DD paints the inline error and saves nothing (the
+    gate refuses a bad window — mirrors the run-time inline-error contract)."""
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    cfg = AppConfig(input_dir=str(in_dir), output_dir=str(out_dir), sis_type="myedbc", setup_completed=True)
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+
+    tree = build_setup(stub_page)
+    toggle = _switch_by_label(tree, "Only sync during the school year")
+    start = _textfield_by_label(tree, "Season starts (MM-DD)")
+    toggle.value = True
+    start.value = "13-40"  # not a real month-day
+    start.on_change(None)
+
+    assert cfg.sync_window_enabled is False  # nothing persisted — the gate refused the bad window
+    assert _has_text_containing(tree, "Enter each date as MM-DD")
 
 
 def test_no_edit_save_after_mapping_switch_reregisters_from_the_persisted_args(tmp_path, stub_page, monkeypatch):

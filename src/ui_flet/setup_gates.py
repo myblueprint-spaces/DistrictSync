@@ -12,6 +12,30 @@ Mirrors the folders save-gate that already lives purely in
 
 from __future__ import annotations
 
+from src.utils.validators import validate_month_day
+
+
+def window_settings_valid(enabled: bool, start_md: str, end_md: str) -> bool:
+    """The seasonal-window save/advance gate — the "Enter can't bypass an invalid window" guarantee.
+
+    Single-sources the gate the wizard's Continue button (via ``setup_flow.FlowInputs.window_valid``
+    → ``can_advance``) AND the section's on-change persistence both read, so an invalid enabled
+    window can neither be advanced past nor saved. Reuses the ENGINE validator ``validate_month_day``
+    (one definition of "is this a real MM-DD boundary?") rather than re-parsing here.
+
+    * **Disabled** → always valid: the window is off (year-round), the fields are ignored.
+    * **Enabled** → both ``start_md`` and ``end_md`` must be real ``"MM-DD"`` calendar days. A blank
+      / malformed either bound closes the gate (``None`` is tolerated as blank — never a raise).
+    """
+    if not enabled:
+        return True
+    try:
+        validate_month_day(start_md or "")
+        validate_month_day(end_md or "")
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
+
 
 def can_register_schedule(config_complete: bool, run_time: str) -> bool:
     """The Register-schedule gate.

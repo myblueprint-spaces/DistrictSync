@@ -90,6 +90,7 @@ from src.ui_flet.setup_flow import (
     TaskArgs,
     auto_selected_district,
     can_advance,
+    default_window_bounds,
     derive_flow,
     downgrade_interrupt,
     finish_copy,
@@ -108,7 +109,7 @@ from src.ui_flet.setup_flow import (
     task_args_from_persisted,
     task_args_to_persisted,
 )
-from src.ui_flet.setup_gates import can_register_schedule, can_save_sftp
+from src.ui_flet.setup_gates import can_register_schedule, can_save_sftp, window_settings_valid
 from src.ui_flet.sftp_copy import (
     PORT_ERROR_DETAIL,
     PORT_ERROR_HEADLINE,
@@ -117,7 +118,7 @@ from src.ui_flet.sftp_copy import (
     sftp_test_copy,
 )
 from src.ui_flet.verdict import Verdict
-from src.utils.validators import ALLOWED_SFTP_HOSTS, validate_run_time
+from src.utils.validators import ALLOWED_SFTP_HOSTS, validate_month_day, validate_run_time
 
 # Surfaced after a successful registration when the running exe lives in a transient dir
 # (Downloads/Temp): pinning a scheduled task there risks the "task fires, exe is gone,
@@ -151,6 +152,10 @@ def _kick_probe_thread(page: ft.Page, work: Callable[[], None]) -> None:  # prag
 # persist, 0034 S3-b — single source so the two paths can never drift).
 _RUN_TIME_ERROR_HEADLINE = "That run time isn't valid"
 _RUN_TIME_ERROR_DETAIL = "Enter the time as HH:MM in 24-hour form, e.g. 03:00."
+
+# The inline seasonal-window error (B): shown when the window is ON but a bound isn't a real
+# month-day. Plain-language, no jargon — mirrors the run-time error's shape.
+_WINDOW_ERROR = "Enter each date as MM-DD (month then day), e.g. 08-11."
 
 # Plain-language titles for the five wizard steps (the "Step N of 5 · <title>" indicator).
 _STEP_TITLES: dict[SetupStep, str] = {
@@ -238,6 +243,23 @@ def _finish_summary_card(rows: list[FinishSummaryRow]) -> ft.Control:  # pragma:
 def _district_options() -> list[ft.dropdown.Option]:
     """SIS/district dropdown options — id keyed, ``district_name`` shown (RC2)."""
     return [ft.dropdown.Option(key=sis_id, text=friendly_district_name(sis_id)) for sis_id in available_configs()]
+
+
+def _district_window_defaults(cfg: AppConfig) -> tuple[str, str]:  # pragma: no cover - Flet view glue (I/O)
+    """Pre-fill the seasonal-window bounds from the chosen district's academic calendar (B).
+
+    Loads the district config (the same ``load_config`` path ``mapping_catalog`` uses) and feeds
+    ``global_config.academic_start_month_day`` / ``academic_end_month_day`` to the COUNTED pure
+    ``default_window_bounds``. TOTAL: no district chosen yet, or an unreadable/dateless config →
+    the plain fallback (``default_window_bounds(None, None)``), never a crash.
+    """
+    try:
+        from src.config.loader import load_config
+
+        gc = load_config(cfg.sis_type).global_config
+        return default_window_bounds(gc.academic_start_month_day, gc.academic_end_month_day)
+    except Exception:  # noqa: BLE001 - total: any load failure falls back to the plain default bounds
+        return default_window_bounds(None, None)
 
 
 def _folders_valid(input_dir: str, output_dir: str) -> bool:
@@ -331,6 +353,7 @@ def _mount_wizard(
         "sis": cfg.sis_type or auto_selected_district(available),  # D9: auto-select iff one config
         "schedule_skipped": False,
         "schedule_status": None,  # latest ScheduleStatus from the section's read-back
+        "window_valid": True,  # the seasonal-window gate (B): enabled+invalid closes Continue
         "delivery": DeliveryFact.STORED_CRED_PRESENT if _stored_delivery_present(cfg) else DeliveryFact.NONE,
         "delivery_host": cfg.sftp_host,
         "delivery_user": cfg.sftp_username,
@@ -344,6 +367,7 @@ def _mount_wizard(
             schedule=ws["schedule_status"],  # type: ignore[arg-type]
             schedule_skipped=bool(ws["schedule_skipped"]),
             delivery=ws["delivery"],  # type: ignore[arg-type]
+            window_valid=bool(ws["window_valid"]),
         )
 
     # Resume: land on the first step real state says is unsatisfied (no stored cursor).
@@ -373,7 +397,9 @@ def _mount_wizard(
         if step in (SetupStep.FOLDERS, SetupStep.DISTRICT):
             btn.disabled = not can_advance(step, _inputs())  # type: ignore[union-attr]
         elif is_skippable(step):
-            btn.disabled = False
+            # SCHEDULE is skippable but window-gated (an enabled+invalid window closes Continue);
+            # DELIVERY stays always-advanceable. ``can_advance`` single-sources both.
+            btn.disabled = not can_advance(step, _inputs())  # type: ignore[union-attr]
             btn.content = "Continue" if _step_addressed(step) else "Set up later"  # type: ignore[union-attr]
         page.update()
 
@@ -492,9 +518,20 @@ def _mount_wizard(
             ],
         )
 
+    def _on_window_valid(valid: bool) -> None:
+        # The seasonal-window gate (B): an enabled+invalid window closes the Schedule step's
+        # Continue button (re-gated in place via the footer), the same guarantee as the folders/
+        # district value gates. Does not touch the register flow — the window is not a task arg.
+        ws["window_valid"] = valid
+        _refresh_footer()
+
     def _schedule_body() -> ft.Control:
         card, _handle = _build_schedule_section(
-            page, cfg, on_status=_on_sched_status, on_schedule_changed=on_schedule_changed
+            page,
+            cfg,
+            on_status=_on_sched_status,
+            on_schedule_changed=on_schedule_changed,
+            on_window_valid=_on_window_valid,
         )
         return card
 
@@ -598,10 +635,12 @@ def _mount_wizard(
                 disabled_bgcolor=tokens.color_border,
                 icon=ft.Icons.ARROW_FORWARD_ROUNDED,
             )
-        else:  # skippable Schedule / Delivery
+        else:  # skippable Schedule / Delivery (Schedule adds the window gate — B)
             forward = components.primary_button(
                 "Continue" if _step_addressed(step) else "Set up later",
                 lambda _e: _forward(),
+                disabled=not can_advance(step, _inputs()),
+                disabled_bgcolor=tokens.color_border,
                 icon=ft.Icons.ARROW_FORWARD_ROUNDED,
             )
         ws["forward_btn"] = forward
@@ -815,6 +854,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     *,
     on_status: Callable[[ScheduleStatus], None] | None = None,
     on_schedule_changed: Callable[[], None] | None = None,
+    on_window_valid: Callable[[bool], None] | None = None,
 ) -> tuple[ft.Control, _ScheduleHandle]:
     """The scheduler section — run time + (where supported) run-as password → register (Slice 5/6).
 
@@ -1277,6 +1317,86 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 
     section_controls.append(ft.Row(spacing=16, controls=[register_btn, unregister_btn]))
     section_controls.append(result_slot)
+
+    # --- Seasonal window (B): opt-in "only sync during the school year" -------------------- #
+    # The window is NOT a task arg (``setup_flow.TaskArgs`` omits it) — the ENGINE reads it from
+    # config each night, so changing it persists to ``cfg`` and NEVER re-registers the task. Fields
+    # pre-fill from the district's academic calendar (COUNTED ``default_window_bounds``); a saved
+    # window shows the saved value. Persistence is on-valid-change: an enabled+invalid window shows
+    # the inline error, persists nothing, and (in the wizard) closes the Continue gate via
+    # ``on_window_valid`` — the same "Enter can't bypass a disabled button" guarantee.
+    prefill_start, prefill_end = _district_window_defaults(cfg)
+    window_toggle = ft.Switch(
+        label="Only sync during the school year",
+        value=bool(cfg.sync_window_enabled),
+        active_color=tokens.color_status_healthy,
+    )
+    window_start_field = ft.TextField(
+        label="Season starts (MM-DD)",
+        value=cfg.sync_window_start or prefill_start,
+        width=190,
+        border_color=tokens.color_border,
+        disabled=not bool(cfg.sync_window_enabled),
+        helper="About two weeks before school starts.",
+    )
+    window_end_field = ft.TextField(
+        label="Season ends (MM-DD)",
+        value=cfg.sync_window_end or prefill_end,
+        width=190,
+        border_color=tokens.color_border,
+        disabled=not bool(cfg.sync_window_enabled),
+        helper="Early summer — the sync pauses until next school year.",
+    )
+    window_error_slot = ft.Column(spacing=0, controls=[])
+
+    def _on_window_change(_e: ft.ControlEvent | None = None) -> None:
+        enabled = bool(window_toggle.value)
+        start = window_start_field.value or ""
+        end = window_end_field.value or ""
+        valid = window_settings_valid(enabled, start, end)
+        window_start_field.disabled = not enabled
+        window_end_field.disabled = not enabled
+        window_error_slot.controls = (
+            [] if valid else [ft.Text(_WINDOW_ERROR, size=13, color=tokens.color_status_failed)]
+        )
+        if valid:
+            # Persist to config ONLY (never a task arg) — the nightly gate reads it at run time.
+            cfg.sync_window_enabled = enabled
+            if enabled:
+                cfg.sync_window_start = validate_month_day(start)
+                cfg.sync_window_end = validate_month_day(end)
+            cfg.save()
+        if on_window_valid is not None:
+            on_window_valid(valid)  # wizard footer gate — Continue blocks while enabled+invalid
+        page.update()
+
+    window_toggle.on_change = _on_window_change
+    for _window_field in (window_start_field, window_end_field):
+        _window_field.on_change = _on_window_change
+        _window_field.on_submit = _on_window_change
+
+    section_controls.append(
+        ft.Column(
+            spacing=10,
+            controls=[
+                ft.Divider(height=1, color=tokens.color_border),
+                ft.Text("Seasonal pause", size=16, weight=ft.FontWeight.W_800, color=tokens.color_text),
+                ft.Text(
+                    "Pause the nightly sync over the summer and resume it automatically each school "
+                    "year — set once, no yearly changes needed.",
+                    size=13,
+                    color=tokens.color_muted,
+                ),
+                window_toggle,
+                ft.Row(
+                    spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                    controls=[window_start_field, window_end_field],
+                ),
+                window_error_slot,
+            ],
+        )
+    )
 
     _kick_readout_probe()
 

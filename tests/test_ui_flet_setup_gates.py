@@ -9,7 +9,40 @@ from __future__ import annotations
 
 import pytest
 
-from src.ui_flet.setup_gates import can_register_schedule, can_save_sftp
+from src.ui_flet.setup_gates import can_register_schedule, can_save_sftp, window_settings_valid
+
+
+class TestWindowSettingsValid:
+    """B: the seasonal-window save/advance gate. Disabled → always valid (year-round, fields
+    ignored); enabled → both bounds must be real ``MM-DD`` calendar days. Single-sources the
+    "Enter can't bypass an invalid window" guarantee (wizard Continue + on-change persistence)."""
+
+    def test_disabled_is_always_valid_even_with_garbage_bounds(self) -> None:
+        assert window_settings_valid(False, "", "") is True
+        assert window_settings_valid(False, "99-99", "not-a-date") is True
+
+    def test_enabled_with_valid_bounds_is_valid(self) -> None:
+        assert window_settings_valid(True, "08-11", "07-06") is True
+
+    def test_enabled_accepts_leap_day_boundary(self) -> None:
+        assert window_settings_valid(True, "02-29", "07-06") is True
+
+    @pytest.mark.parametrize(
+        ("start", "end"),
+        [
+            ("", "07-06"),  # blank start
+            ("08-11", ""),  # blank end
+            ("13-01", "07-06"),  # out-of-range month
+            ("08-11", "02-30"),  # non-existent day
+            ("8-1", "07-06"),  # wrong shape (not zero-padded)
+            ("0811", "07-06"),  # wrong shape (no separator)
+        ],
+    )
+    def test_enabled_with_any_bad_bound_is_invalid(self, start, end) -> None:
+        assert window_settings_valid(True, start, end) is False
+
+    def test_none_bounds_do_not_raise(self) -> None:
+        assert window_settings_valid(True, None, None) is False  # type: ignore[arg-type]
 
 
 class TestCanRegisterSchedule:

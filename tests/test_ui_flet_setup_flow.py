@@ -27,6 +27,7 @@ from src.ui_flet.setup_flow import (
     TaskArgs,
     auto_selected_district,
     can_advance,
+    default_window_bounds,
     derive_flow,
     downgrade_interrupt,
     finish_copy,
@@ -257,6 +258,84 @@ class TestAdvanceGate:
             delivery=DeliveryFact.SKIPPED,
         )
         assert can_advance(SetupStep.FINISH, ready) is True
+
+
+class TestWindowAdvanceGate:
+    """B: the Schedule step is skippable BUT window-gated — an enabled+invalid seasonal window
+    closes Continue (the "Enter can't bypass a disabled button" guarantee, extended to the
+    window). Delivery stays unconditionally advanceable; the window never affects it."""
+
+    def test_schedule_blocks_when_window_invalid(self):
+        assert can_advance(SetupStep.SCHEDULE, _inputs(window_valid=False)) is False
+
+    def test_schedule_advances_when_window_valid(self):
+        assert can_advance(SetupStep.SCHEDULE, _inputs(window_valid=True)) is True
+
+    def test_delivery_is_never_affected_by_the_window(self):
+        assert can_advance(SetupStep.DELIVERY, _inputs(window_valid=False)) is True
+
+    def test_window_valid_defaults_true(self):
+        # Opt-in: with no window touched the gate is open (the default FlowInputs value).
+        assert _inputs().window_valid is True
+        assert can_advance(SetupStep.SCHEDULE, _inputs()) is True
+
+    def test_window_does_not_affect_resume_or_finish(self):
+        # An invalid window is transient (never persisted) — it must not change resume/satisfaction.
+        ready = _inputs(folders_valid=True, district_chosen=True, schedule_skipped=True, delivery=DeliveryFact.SKIPPED)
+        assert derive_flow(ready).can_finish is True
+        assert derive_flow(_inputs(window_valid=False)).resume_step is derive_flow(_inputs()).resume_step
+
+
+class TestDefaultWindowBounds:
+    """B pre-fill: (start, end) derived from the district academic calendar — pure + TOTAL."""
+
+    def test_canonical_base_calendar_reproduces_the_owner_example(self):
+        # The base myedbc academic start is 08-25 → start 08-11 (−14d), end 07-06 (start −36d):
+        # EXACTLY the owner's canonical Aug 11 → Jul 6 window.
+        assert default_window_bounds("08-25", "07-25") == ("08-11", "07-06")
+
+    def test_start_is_academic_start_minus_two_weeks(self):
+        assert default_window_bounds("09-08")[0] == "08-25"  # Sep 8 − 14d = Aug 25
+
+    def test_end_ignores_academic_end_data_boundary(self):
+        # academic_end ("07-25") is the DATA-year boundary, NOT school-end — it must NOT be the
+        # season end (that would overlap the start). The end derives from the start instead.
+        _, end = default_window_bounds("08-25", "07-25")
+        assert end != "07-25"
+        assert end == "07-06"
+
+    def test_end_gives_a_summer_gap_before_the_start(self):
+        start, end = default_window_bounds("08-25")
+        # end is ~5 weeks before start (the summer pause) — a wrap-around window, start > end.
+        assert start > end
+
+    @pytest.mark.parametrize("bad", [None, "", "   ", "13-40", "not-a-date", "0825", "02-29"])
+    def test_unusable_start_falls_back_to_plain_defaults(self, bad):
+        # None/blank/malformed/leap-day (a school year never starts Feb 29) → the plain fallback.
+        assert default_window_bounds(bad) == ("08-11", "07-06")
+
+    def test_academic_end_is_optional(self):
+        assert default_window_bounds("08-25") == ("08-11", "07-06")
+
+
+class TestWindowIsNotATaskArg:
+    """B: the seasonal window is NOT baked into the scheduled task — changing it must NEVER
+    re-register. ``TaskArgs`` therefore has no window field, so a window-only change is invisible
+    to ``task_args_changed`` (the reconcile predicate the Settings Save drives)."""
+
+    def test_task_args_has_no_window_field(self):
+        from dataclasses import fields
+
+        names = {f.name for f in fields(TaskArgs)}
+        assert not any(n.startswith("sync_window") or n.startswith("window") for n in names)
+
+    def test_window_only_change_is_not_a_task_arg_change(self):
+        # Two AppConfigs differing ONLY in the seasonal window produce IDENTICAL TaskArgs, so the
+        # reconcile sees "unchanged" → no re-register (the non-negotiable: window is not a task arg).
+        common = dict(input_dir="/in", output_dir="/out", sis_type="myedbc", sftp_enabled=False, run_time="03:00")
+        before = TaskArgs.of(**common)
+        after = TaskArgs.of(**common)  # window differs in the config, but never reaches TaskArgs
+        assert task_args_changed(before, after) is False
 
 
 # --------------------------------------------------------------------------- #

@@ -14,7 +14,7 @@ reaches an admin card). Kept minimal by design (YAGNI) — total functions, not 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 
@@ -141,6 +141,18 @@ def friendly_sftp_reason(raw: str) -> str:
         if any(needle in lowered for needle in needles):
             return reason
     return _SFTP_REASON_FALLBACK
+
+
+def friendly_date_short(d: date) -> str:
+    """A plain ``"Aug 11"`` month-day (abbreviated month + un-padded day) — the seasonal-resume copy.
+
+    PII-free by construction (a recurring window boundary carries NO student data), and never a
+    raw ISO / ``"MM-DD"`` string: the Home paused state renders "resumes Aug 11", not "07-06". No
+    year is shown — the seasonal window recurs every year, so a year would misinform. TOTAL over
+    any ``date`` (``strftime('%b')`` is locale-stable ASCII for the English UI; the day is the
+    un-padded integer so "Aug 6" reads naturally, not "Aug 06").
+    """
+    return f"{d.strftime('%b')} {d.day}"
 
 
 def friendly_district_name(sis_type: str, *, config_dir: Path | None = None) -> str:

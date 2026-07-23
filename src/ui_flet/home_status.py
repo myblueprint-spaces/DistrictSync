@@ -40,7 +40,14 @@ from datetime import datetime
 from enum import Enum
 
 from src.config.app_config import AppConfig
-from src.ui_flet.humanize import AnomalyVariant, friendly_anomaly_detail, friendly_timestamp, pluralize
+from src.etl.sync_window import in_sync_window, next_resume_date
+from src.ui_flet.humanize import (
+    AnomalyVariant,
+    friendly_anomaly_detail,
+    friendly_date_short,
+    friendly_timestamp,
+    pluralize,
+)
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.verdict import Verdict
 
@@ -107,6 +114,13 @@ _SCHEDULE_GONE_NOTE = (
     "Your nightly schedule is also no longer registered with Windows — "
     "re-register it in Settings so the sync can run again."
 )
+
+# The seasonal-pause headline (B): while an ENABLED window is OUTSIDE its active season, no
+# nightly sync arrives BY DESIGN, so the missed-run / stale / fired-but-no-record warnings would
+# all FALSE-FIRE every summer night. The pause is a healthy, intentional state — not amber/red —
+# so its verdict is HEALTHY (an amber "attention" tone would train the admin to ignore amber). The
+# resume date is a PURE fact (``next_resume_date``), rendered PII-free via ``friendly_date_short``.
+_PAUSED_HEADLINE = "Paused for the summer"
 
 
 @dataclass(frozen=True)
@@ -355,8 +369,23 @@ def derive_home_status(
     # ``screens/home.py`` paints the record verdict first and re-derives when the async probe
     # lands, the admin watched the alarm downgrade itself). The failure wins the band + the single
     # fix CTA; the schedule fault is surfaced as a secondary clause on the FAILED details below.
+    # The seasonal-pause fact (B): an ENABLED window with today OUTSIDE its active season. Computed
+    # once, consulted at the empty-state slot AND after the FAILED reasons below — it must beat the
+    # missed-run / stale / anomaly / data-warning rules (whose "we expected a sync"/"no recent sync"
+    # copy would FALSE-FIRE every summer night), but NEVER a FAILED latest (a real failure is not a
+    # summer no-op) nor a genuinely-MISSING schedule (a gone task makes "resumes <date>" a lie).
+    paused = _sync_window_paused(app_config, now=now)
+
     schedule_attention = _schedule_attention(schedule_status)
-    if schedule_attention is not None and not _latest_is_failure(records):
+    # Surface schedule attention UNLESS the latest record is a failure (it owns the band, W3-B) OR
+    # we are in a seasonal pause AND this is the LIVE fired-but-no-record contradiction — a by-design
+    # false alarm in summer (the paused nightly fires but writes no record). A definitively-MISSING
+    # task (``state is MISSING``) still surfaces: "resumes <date>" would be untrue if it is gone.
+    if (
+        schedule_attention is not None
+        and not _latest_is_failure(records)
+        and not (paused and schedule_status is not None and schedule_status.state is ScheduleState.LIVE)
+    ):
         return schedule_attention
 
     # The missed-run fact (owner rule, 2026-07-15): a CONFIRMED-LIVE schedule, an established
@@ -378,6 +407,10 @@ def derive_home_status(
     # therefore conditioned ("If you used an earlier version…"), never a flat claim of hidden
     # history. The next-run reassurance derives from the LIVE read-back, never the raw config flag.
     if not records:
+        # Rule: seasonal pause (empty store) — outside an enabled window no run is expected, so an
+        # empty store is calm, not a missed run. Beats the missed-run/fresh-start empty sub-states.
+        if paused:
+            return _paused_status(app_config, now=now)
         # Rule: missed run (empty store) — a LIVE schedule over an ESTABLISHED store with no
         # runs at all is not a calm fresh start: the nightly we promised never arrived.
         if missed_run:
@@ -459,6 +492,13 @@ def derive_home_status(
             fix=FixAction(_OPEN_SETTINGS_LABEL, _SETUP_FIX),
             metrics=None,
         )
+
+    # Rule: seasonal pause — outside an enabled window, no nightly sync is expected. Slotted BELOW
+    # the two FAILED reasons (a real failure still surfaces in summer) and ABOVE missed-run / stale /
+    # anomaly / data-warnings / healthy — those describe an expected nightly cadence that is moot
+    # while the season is intentionally paused. The pause is HEALTHY-toned; nothing is wrong.
+    if paused:
+        return _paused_status(app_config, now=now)
 
     # Rule: missed run — the newest record is older than the window while the schedule is LIVE.
     # Slotted below the two FAILED reasons (a red verdict is never downgraded to this amber) and
@@ -625,6 +665,72 @@ def _missed_run_status() -> HomeStatus:
         fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
         metrics=None,
     )
+
+
+def _sync_window_paused(app_config: AppConfig, *, now: datetime | None) -> bool:
+    """Whether an ENABLED seasonal window is currently OUTSIDE its active season (pure + TOTAL).
+
+    Reuses the ENGINE predicate ``sync_window.in_sync_window`` (single source — the nightly gate
+    and Home read the SAME window logic, so a night the engine pauses is exactly a night Home
+    calls paused). ``today`` is derived from the injected ``now`` seam (``date.today()`` is never
+    called in pure code), mirroring the rest of this module. Fail-safe: disabled, unset, or a
+    MALFORMED window (which should be gated at save) all return ``False`` — behaving as year-round
+    rather than ever suppressing a real warning behind a broken window.
+    """
+    if not app_config.sync_window_enabled:
+        return False
+    start = (app_config.sync_window_start or "").strip()
+    end = (app_config.sync_window_end or "").strip()
+    if not start or not end:
+        return False
+    today = (now if now is not None else datetime.now()).date()
+    try:
+        return not in_sync_window(today, start, end)
+    except ValueError:
+        # A malformed boundary (gated at save, but be TOTAL) → behave as year-round; never crash,
+        # never hide a real fault behind a broken window.
+        return False
+
+
+def _paused_status(app_config: AppConfig, *, now: datetime | None) -> HomeStatus:
+    """The calm HEALTHY-toned seasonal-pause state — "Paused for the summer — resumes <date>".
+
+    A pause is intentional and healthy (the admin configured a school-year window), so the verdict
+    is HEALTHY, not a WARNING — an amber tone here would erode the meaning of amber. The resume
+    date is the pure ``next_resume_date`` fact rendered PII-free (``friendly_date_short`` → "Aug
+    11", never a raw ISO / ``"MM-DD"``); if it can't be derived the copy degrades to a timeless
+    phrasing rather than asserting a date it doesn't have.
+    """
+    resume = _friendly_resume(app_config, now=now)
+    if resume:
+        detail = (
+            f"DistrictSync pauses the nightly sync over the summer break and resumes on {resume}. "
+            "Nothing is wrong — this is your seasonal schedule."
+        )
+    else:
+        detail = (
+            "DistrictSync pauses the nightly sync outside your active season. "
+            "Nothing is wrong — this is your seasonal schedule."
+        )
+    return HomeStatus(
+        verdict=Verdict.HEALTHY,
+        headline=_PAUSED_HEADLINE,
+        detail=detail,
+        fix=None,
+        metrics=None,
+    )
+
+
+def _friendly_resume(app_config: AppConfig, *, now: datetime | None) -> str:
+    """The plain "Aug 11" date the window re-opens, or ``""`` when it can't be derived (TOTAL)."""
+    start = (app_config.sync_window_start or "").strip()
+    if not start:
+        return ""
+    today = (now if now is not None else datetime.now()).date()
+    try:
+        return friendly_date_short(next_resume_date(today, start))
+    except ValueError:
+        return ""
 
 
 def _schedule_confirmed_live(schedule_status: ScheduleStatus | None) -> bool:
