@@ -374,7 +374,7 @@ def derive_home_status(
     # missed-run / stale / anomaly / data-warning rules (whose "we expected a sync"/"no recent sync"
     # copy would FALSE-FIRE every summer night), but NEVER a FAILED latest (a real failure is not a
     # summer no-op) nor a genuinely-MISSING schedule (a gone task makes "resumes <date>" a lie).
-    paused = _sync_window_paused(app_config, now=now)
+    paused = sync_window_paused(app_config, now=now)
 
     schedule_attention = _schedule_attention(schedule_status)
     # Surface schedule attention UNLESS the latest record is a failure (it owns the band, W3-B) OR
@@ -667,7 +667,7 @@ def _missed_run_status() -> HomeStatus:
     )
 
 
-def _sync_window_paused(app_config: AppConfig, *, now: datetime | None) -> bool:
+def sync_window_paused(app_config: AppConfig, *, now: datetime | None) -> bool:
     """Whether an ENABLED seasonal window is currently OUTSIDE its active season (pure + TOTAL).
 
     Reuses the ENGINE predicate ``sync_window.in_sync_window`` (single source — the nightly gate

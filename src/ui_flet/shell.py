@@ -383,6 +383,7 @@ def main(page: ft.Page) -> None:
     # elsewhere); a probe failure is swallowed (the badge simply stays clear).
     def _refresh_setup_badge() -> None:  # runs OFF the UI thread
         from src.history.store import read_run_records
+        from src.ui_flet.home_status import sync_window_paused
         from src.ui_flet.schedule_probe import probe_schedule
         from src.ui_flet.schedule_status import needs_setup_badge
 
@@ -394,10 +395,15 @@ def main(page: ft.Page) -> None:
             hint_registered=cfg.schedule_registered,
             latest_record_ts=latest_ts,
         )
+        # Window-aware badge: during an enabled seasonal pause the fired-but-no-record
+        # contradiction is by design (matches Home's calm "Paused" state) — a MISSING task
+        # still badges. `sync_window_paused` is the SAME pure fact Home derives (single source).
+        paused = sync_window_paused(cfg, now=None)
 
         async def _apply() -> None:
             idx = nav.selected_index_for("setup", ordered)
-            rail.destinations[idx].badge = nav_rail.attention_badge() if needs_setup_badge(status) else None
+            show_badge = needs_setup_badge(status, paused=paused)
+            rail.destinations[idx].badge = nav_rail.attention_badge() if show_badge else None
             page.update()
 
         page.run_task(_apply)
