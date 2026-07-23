@@ -61,7 +61,8 @@ The unattended engine — the whole point of the product. Once registered, the d
   3. Output is written with **atomic, all-or-nothing** writes (staged then committed; a mid-run failure rolls back so the output folder is never left torn) and the **zero-orphan invariant** (no enrollment or homeroom class references a student absent from `Students.csv`).
   4. The run is recorded to the durable run store, which powers Home and Run History the next time the admin looks.
 - **States** — not a UI surface; behavior is observed through exit codes and the run record. A delivery failure is a first-class outcome (exit 3, files still on disk), never a silent swallow.
-- **What good feels like** — It just works, and it fails *loud and safe*. SFTP delivery verifies the server's **identity** against pinned host keys bundled in `config/known_hosts` (zero setup — keys ship with the app; a per-district override in the app-data folder wins without a new release). A pinned-key mismatch hard-fails with a clear "server identity changed" message (the man-in-the-middle case) and is never retried; a transient network blip retries up to 3 times with backoff. Upload is restricted to the three known SpacesEDU hosts. Exit codes are a documented contract: **0** success · **1** ETL/validation error · **2** argument misuse · **3** SFTP delivery failed (ETL output still present).
+- **Optional school-year window (opt-in).** The nightly task fires every night year-round, but if a seasonal window is configured (in the wizard/Settings), the app itself checks each night whether today is inside the district's school-year window and, if outside it (summer), does nothing and exits cleanly — no ETL, no delivery, no torn output. Because it's a date check, it recurs every year with nothing to renew, and the scheduled task never changes. Left off by default (year-round). The window governs only this automatic nightly run — a hand-run CLI, a headless cron, and manual Convert always run. A paused night is a healthy state, never a failure.
+- **What good feels like** — It just works, and it fails *loud and safe*. SFTP delivery verifies the server's **identity** against pinned host keys bundled in `config/known_hosts` (zero setup — keys ship with the app; a per-district override in the app-data folder wins without a new release). A pinned-key mismatch hard-fails with a clear "server identity changed" message (the man-in-the-middle case) and is never retried; a transient network blip retries up to 3 times with backoff. Upload is restricted to the three known SpacesEDU hosts. Exit codes are a documented contract: **0** success · **1** ETL/validation error · **2** argument misuse · **3** SFTP delivery failed (ETL output still present). And when a school-year window is on, a partner sets it up **once and never touches it again** — the sync pauses over summer and resumes every fall on its own, giving the SIS time to update; the home screen reads a calm "Paused for the summer — resumes <date>" rather than a false "sync didn't arrive" alarm.
 - **What "registered" does and does not promise** — a live schedule read-back confirms the task **exists and is enabled**; it does not and cannot confirm the task will **successfully log on** tonight. An unattended task runs under the admin's Windows account, so a routine district password rotation can leave a task that reads perfectly LIVE and silently stops running. This is the honest reading of the trust bar, and it is why the missed-run warning below is load-bearing rather than a nicety: **a registered schedule is evidence, an arrived run is proof.**
 
 ### Home health verdict
@@ -261,6 +262,37 @@ The checkable projection of the Features above. All checks are `manual` — Dist
       "a host with no pinned key connects as before, with a log warning pointing at the pinning file"
     ],
     "states": ["error"],
+    "check": "manual"
+  },
+  {
+    "id": "AC-nightly-5",
+    "feature": "Nightly scheduled sync",
+    "flow": [
+      "Enable a school-year window in the wizard/Settings whose season does not include today",
+      "Let the scheduled nightly task fire (or run the app with --source scheduled)",
+      "Inspect the output folder and the exit code"
+    ],
+    "expect": [
+      "the run does no ETL and no delivery, and exits 0 (a paused night is healthy, not a failure)",
+      "the output folder is unchanged (the previous run's files are neither overwritten nor archived)",
+      "with the window disabled, or today inside the window, the run proceeds and delivers exactly as before"
+    ],
+    "states": [],
+    "check": "manual"
+  },
+  {
+    "id": "AC-nightly-6",
+    "feature": "Nightly scheduled sync",
+    "flow": [
+      "With a school-year window enabled and today outside it, open the app",
+      "Read Home and the Setup nav-rail badge"
+    ],
+    "expect": [
+      "Home shows a calm 'Paused for the summer — resumes <date>' state (green, not amber/red)",
+      "the missed-run and stale warnings do NOT fire while paused, and the Setup badge is not lit by the fired-but-no-record contradiction",
+      "a genuinely failed last run, or a schedule the OS confirms is gone, still surfaces despite the pause"
+    ],
+    "states": [],
     "check": "manual"
   },
   {

@@ -15,6 +15,22 @@ acted on) plus a refreshed product spec drove this batch. Nothing here changes
 the CSVs a district produces — the SD74 golden and the 7-district output
 contract pass untouched throughout.
 
+### Added
+
+- **A school-year sync window — set it up once, and the nightly sync runs during
+  the year and pauses over the summer, every year, on its own.** In the setup
+  wizard's schedule step (and later in Settings) you can turn on a seasonal pause
+  and pick the start and end dates — pre-filled from the district's school
+  calendar (about two weeks before the year starts to a week or so after it
+  ends), so the roster is in place for day one and the sync stops churning once
+  school lets out, giving the SIS time to update. It recurs automatically every
+  year with nothing to renew: the nightly task simply checks each night whether
+  it's inside the window. Over the summer the home screen reads a calm "Paused
+  for the summer — resumes Aug 11" (green, nothing wrong), and the "we expected a
+  sync that didn't arrive" reminders correctly stay quiet while it's paused. Left
+  off by default, so an install without a window keeps syncing year-round exactly
+  as before.
+
 ### Security
 
 - **Host-key pinning is now fail-closed, closing two bypasses.** The SFTP
