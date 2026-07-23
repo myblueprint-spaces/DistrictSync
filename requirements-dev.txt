@@ -33,5 +33,5 @@ flet-cli==0.85.3
 # that could drift). pyinstaller is the packer flet-cli drives; pefile reads the
 # PE subsystem (no-console proof); psutil walks the process tree (zero-orphan close).
 pyinstaller>=6,<7
-pefile>=2023.2.7
+pefile>=2024.8.26
 psutil>=5.9
