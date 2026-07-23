@@ -153,6 +153,26 @@ class AppConfig:
     schedule_unattended: bool = False
     schedule_task_args: dict[str, object] | None = None
 
+    # Seasonal sync window (owner decision 2026-07-21) — an OPT-IN recurring
+    # school-year window that governs the app's OWN automatic nightly run only. The
+    # scheduled task stays a plain daily trigger; the ENGINE decides each night
+    # whether to run (inside the window) or pause (outside, over summer) — see
+    # ``src/etl/sync_window.py`` (the pure predicate) and the gate in ``src/main.py``.
+    # Stored as recurring ``"MM-DD"`` boundaries (NOT full dates) because the window
+    # recurs every year with nothing to re-arm. Default OFF, so existing installs and
+    # partners without a window keep running year-round, byte-identical. Additive with
+    # safe defaults so old ``config.json`` files load unchanged (back-compat).
+    #
+    # NAMING CONTRACT (do not break): these are admin CHOICES and MUST be counted by
+    # :meth:`_carries_chosen_settings`, so they deliberately use the ``sync_window_``
+    # prefix (starts with ``sync_``) — NOT the ``window_`` geometry prefix
+    # (``_GEOMETRY_FIELD_PREFIX``) that marks ambient shell geometry as a NON-choice.
+    # Renaming them to ``window_*`` would silently make a window-only save look like
+    # "nothing the admin chose" and get refused under UNREADABLE provenance.
+    sync_window_enabled: bool = False  # opt-in; default off = year-round (byte-identical)
+    sync_window_start: str = ""  # "MM-DD" — first day of the season (e.g. "08-11")
+    sync_window_end: str = ""  # "MM-DD" — last day of the season (e.g. "07-06")
+
     # Onboarding (D4a): the durable "reached the setup finish line at least once" fact,
     # kept DISTINCT from the schedule's live-ness (which is read back from the OS, never
     # trusted from a flag). Set explicitly by the wizard's finish line in Slice 8; until

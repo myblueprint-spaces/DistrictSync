@@ -660,6 +660,52 @@ class TestAnUnreadableLoadNeverSilentlyReplacesTheSettings:
         assert AppConfig.load().sis_type == "myedbc"
 
 
+class TestSyncWindowIsACountedAdminChoice:
+    """The ``sync_window_*`` collision guard: they are admin CHOICES, not window geometry.
+
+    ``_carries_chosen_settings`` EXCLUDES fields whose name starts with the ``window_``
+    geometry prefix (``_GEOMETRY_FIELD_PREFIX``) — ambient shell geometry a save may not
+    stand on. The seasonal-window fields deliberately use the ``sync_window_`` prefix
+    (starts with ``sync_``) so the ``window_`` startswith check does NOT catch them and
+    they count as real choices. Were they ever renamed to ``window_*``, a window-only
+    save under UNREADABLE provenance would be silently REFUSED as "nothing the admin
+    chose" — the exact regression this pins shut.
+    """
+
+    def test_a_sync_window_enabled_only_change_counts_as_a_chosen_setting(self) -> None:
+        cfg = AppConfig(load_state=ConfigLoadState.UNREADABLE)
+        cfg.sync_window_enabled = True
+        assert cfg._carries_chosen_settings() is True
+
+    def test_sync_window_bounds_only_changes_count_as_chosen_settings(self) -> None:
+        for field_name, value in (("sync_window_start", "08-11"), ("sync_window_end", "07-06")):
+            cfg = AppConfig(load_state=ConfigLoadState.UNREADABLE)
+            setattr(cfg, field_name, value)
+            assert cfg._carries_chosen_settings() is True, field_name
+
+    def test_a_sync_window_only_save_over_an_unreadable_config_is_NOT_refused(
+        self, config_dir: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End-to-end: a window-only save under UNREADABLE provenance WRITES (a real
+        choice), unlike a geometry-only save which is refused — and it still quarantines
+        the unread predecessor bytes it displaces."""
+        cfg_dir, cfg_file = config_dir
+        _complete_install().save()
+
+        cfg = _load_through_one_read_blip(cfg_file, monkeypatch)
+        assert cfg.load_state is ConfigLoadState.UNREADABLE
+        cfg.sync_window_enabled = True
+        cfg.sync_window_start = "08-11"
+        cfg.sync_window_end = "07-06"
+        cfg.save()  # must NOT raise SettingsOverwriteRefused
+
+        reloaded = AppConfig.load()
+        assert reloaded.sync_window_enabled is True
+        assert reloaded.sync_window_start == "08-11"
+        assert reloaded.sync_window_end == "07-06"
+        assert len(sorted(cfg_dir.glob("config.corrupt-*.json"))) == 1, "the unread predecessor was not preserved"
+
+
 class TestWrongTypedKeysAreRejectedAtTheBoundary:
     """``config.json`` is untrusted input — a hand-edited wrong type is caught on the way IN.
 

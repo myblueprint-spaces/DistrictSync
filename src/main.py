@@ -20,6 +20,7 @@ import argparse
 import logging
 import os
 import sys
+from datetime import date
 from typing import IO, Callable
 
 from src.config.app_config import AppConfig
@@ -29,10 +30,12 @@ from src.etl.pipeline import (
     _check_anomalies,
     _emit_run_log,
     _print_diff,
+    _resolve_source,
     _sftp_upload,
     extract_required_files,
     run_pipeline,
 )
+from src.etl.sync_window import in_sync_window, next_resume_date
 from src.sftp.uploader import SFTPUploader
 from src.utils.logger import get_logger
 from src.utils.paths import migrate_legacy_data_dir
@@ -338,6 +341,52 @@ def _exit_code_from(exc: SystemExit) -> int:
     return 1
 
 
+def _today() -> date:
+    """Return the real calendar date — the ONE injectable 'now' seam for the sync-window gate.
+
+    The pure window predicate (``src/etl/sync_window.py``) takes ``today`` as a
+    parameter; this seam supplies the real one to the gate below while letting a test
+    inject a fixed date (patch ``src.main._today``), mirroring the school-year
+    helpers' established test seam. ``date.today()`` is never called inside pure code.
+    """
+    return date.today()
+
+
+def _paused_by_sync_window(cfg: AppConfig, today: date, logger: logging.Logger) -> bool:
+    """True when an ENABLED sync window says the automatic nightly run must pause tonight.
+
+    Pure decision over an already-loaded ``cfg`` + an injected ``today`` (the wiring
+    stays thin; the window math lives in ``src/etl/sync_window.py``). Returns False
+    when the window is disabled — the default — so a normal install is byte-identical.
+
+    A MALFORMED window (hand-edited ``config.json``) must NEVER silently stop the
+    nightly sync — a silent data stoppage is the worst outcome. So a bad boundary
+    fails LOUD (error log) and returns False (run normally, ignore the window),
+    rather than pausing forever or crashing the scheduled task red every night.
+    """
+    if not cfg.sync_window_enabled:
+        return False
+    try:
+        inside = in_sync_window(today, cfg.sync_window_start, cfg.sync_window_end)
+    except ValueError as exc:
+        logger.error(
+            "Sync window is enabled but its bounds are invalid (%s); ignoring the window and "
+            "running normally. Fix the window in Setup.",
+            exc,
+        )
+        return False
+    if inside:
+        return False
+    resume = next_resume_date(today, cfg.sync_window_start)
+    logger.info(
+        "Sync paused — outside the active window (%s–%s); resumes %s",
+        cfg.sync_window_start,
+        cfg.sync_window_end,
+        resume.isoformat(),
+    )
+    return True
+
+
 def cli(argv: list[str] | None = None) -> int:
     """Run the DistrictSync command line and RETURN the process exit code.
 
@@ -467,6 +516,20 @@ def _cli(argv: list[str] | None) -> int:
     except ValueError as e:
         print(f"Error: {e}")
         return 1
+
+    # Seasonal sync-window gate (owner decision 2026-07-21). The window governs the
+    # app's OWN automatic nightly run ONLY — the run that IDENTIFIES as scheduled
+    # (resolved via _resolve_source, so governance follows the same source the run
+    # store labels it with). A hand-run CLI, a headless district's own cron, and
+    # manual Convert are explicit human/ops choices about WHEN to run and bypass the
+    # window (no override flag needed). Placed here — before run_pipeline — so a
+    # paused night never enters the pipeline: no ETL, no write, no delivery, and the
+    # previous output dir is left untouched (no torn state). A paused night is a
+    # healthy, intentional state, so it exits 0 (the scheduled task shows success)
+    # and writes NO per-night run record (the paused state is derived by the UI from
+    # the window config + today; the diagnostic log line is the trail).
+    if _resolve_source(args.source) == "scheduled" and _paused_by_sync_window(AppConfig.load(), _today(), logger):
+        return 0
 
     try:
         result = run_pipeline(
