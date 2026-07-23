@@ -26,7 +26,7 @@ bandit>=1.7
 # for headless screenshots; flet-cli provides `flet pack`. Pinned to match the
 # runtime flet/flet-desktop pins in requirements.txt (test_flet_pin gates drift).
 flet-web==0.85.3
-flet-cli==0.85.3
+flet-cli==0.86.2
 
 # Flet exe build + smoke (PLAT-3). Single-source for the flet-pack.yml workflow —
 # it installs these via `-r requirements-dev.txt` only (NO inline `pip install pkg`
