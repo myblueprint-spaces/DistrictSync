@@ -226,7 +226,7 @@ Six surfaces, one per module under `src/ui_flet/screens/`:
 | Screen | File | Description |
 |--------|------|-------------|
 | Home | `screens/home.py` | Config health/status dashboard, navigation |
-| Setup | `screens/setup.py` | First-run 5-step wizard (District → Folders → Delivery → Schedule → finish; Schedule/Delivery skippable) that graduates into a flat Settings page with one reconciling Save |
+| Setup | `screens/setup.py` | First-run 5-step wizard (District → Folders → Delivery → Schedule → finish; Schedule/Delivery skippable) that graduates into a flat Settings page with one reconciling Save. The Schedule step also carries the opt-in **seasonal pause** (MM-DD window, pre-filled from the district calendar) — config only, never re-registers the task; the gate itself lives in `etl/sync_window.py` + `main._cli` |
 | Convert | `screens/convert.py` | Ad-hoc conversion — pick files, convert, view result (resolved-output caption + Open folder), upload via SFTP |
 | Run History | `screens/run_history.py` | Reads run records from the SQLite store (`src/history/store.py`) into tabular history |
 | Mapping | `screens/mapping.py` | Review the active district config and switch between pre-built configs — **not** a full YAML editor |

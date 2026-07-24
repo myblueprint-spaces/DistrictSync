@@ -6,6 +6,16 @@
 
 Once per day at the time configured in the Setup Wizard (default: 3:00 AM). This is controlled by Windows Task Scheduler (Windows) or cron (Linux/macOS).
 
+**Q: Can it stop syncing over the summer and start again in the fall?**
+
+Yes — turn on the **seasonal pause** in the Setup Wizard's Schedule step and pick a start and end date (for example, start ~2 weeks before school begins and end ~1 week after it finishes, giving your SIS time to update). DistrictSync then syncs only during that window and does nothing over the break.
+
+You set it up **once**: the window repeats every year automatically, with nothing to renew and no change to the scheduled task. It's off by default, in which case the sync runs year-round.
+
+**Q: Over the summer, Home says "Paused for the summer" — is something wrong?**
+
+No. That's the seasonal pause working as configured, which is why the message is green rather than a warning. While paused, DistrictSync also stays quiet about missing nightly runs (none are expected) and resumes on its own on your start date. If your nightly schedule is ever genuinely missing, it tells you that instead — a pause never hides a real problem.
+
 **Q: What happens if the GDE files are not present at run time?**
 
 The tool logs a warning for each missing file and skips the affected entity. For example, if the Course Information GDE file is missing, Classes and Enrollments will be skipped. The run is still considered complete; other entities are processed normally.

@@ -95,7 +95,13 @@ the tool to first-run state.
 2. The DistrictSync desktop window opens directly — no browser involved
 3. Go to the **Setup** surface and follow its 5 steps (the Schedule and Delivery steps are optional — skip either and set it up later):
 
-### Wizard Step 1 — File Paths
+### Wizard Step 1 — District Configuration
+
+Select your district from the dropdown. If your district is not listed, contact SpacesEDU support.
+
+No district is pre-selected — you pick yours explicitly, so a district is never chosen for you by accident.
+
+### Wizard Step 2 — File Paths
 
 | Field | Example | Notes |
 |-------|---------|-------|
@@ -103,10 +109,6 @@ the tool to first-run state.
 | CSV Output Directory | `C:\DistrictSync\output` | Where CSVs will be written |
 
 Click **Validate & Continue**.
-
-### Wizard Step 2 — District Configuration
-
-Select your district from the dropdown. If your district is not listed, contact SpacesEDU support.
 
 ### Wizard Step 3 — SFTP Upload (Delivery)
 
@@ -127,6 +129,26 @@ Click **Test Connection** to verify the credentials work.
 Optionally enable a daily automated schedule. If you only need ad-hoc runs via the Convert page, you can leave this disabled.
 
 If enabled, choose the daily run time. We recommend **03:00 AM** (3am) — after the overnight GDE export from MyEdBC has completed.
+
+#### Seasonal pause (optional) — run only during the school year
+
+In the same step you can turn on a **seasonal pause** and pick a start and end date. DistrictSync
+then syncs during the school year and does nothing over the summer break — and it repeats every
+year on its own, with nothing to renew or re-enter.
+
+| Field | Example | Notes |
+|-------|---------|-------|
+| Season starts | `08-11` | Month-day. Usually ~2 weeks before school starts, so rosters are in place for day one |
+| Season ends | `07-06` | Month-day. Usually ~1 week after school ends, giving your SIS time to finish updating |
+
+The dates are pre-filled from your district's school calendar — adjust them if your year differs.
+The window wraps the new year (Aug → Jul), which is expected.
+
+**What you'll see over the break:** the Home screen reads a calm green *"Paused for the summer —
+resumes Aug 11"*. That is normal, not a problem — DistrictSync deliberately does **not** warn about
+missing nightly runs while it's paused. It resumes on its own on your start date.
+
+Leave the seasonal pause **off** if you want the sync to run all year round (the default).
 
 !!! note "Unattended runs need administrator rights — granted via the permission prompt"
     An unattended task runs whether or not you're logged on, which needs administrator rights. DistrictSync requests them with **one Windows permission prompt** as it registers the task — click **Yes**. If you decline, nothing is changed and you can try again. You'll also enter your **Windows account password** so the task can sign in and run while you're logged off.
