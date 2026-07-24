@@ -9,11 +9,16 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
-The partner self-serve wrap-up. A thorough standards audit (11 lenses across
-the whole codebase, every finding independently re-checked before it was
-acted on) plus a refreshed product spec drove this batch. Nothing here changes
-the CSVs a district produces — the SD74 golden and the 7-district output
-contract pass untouched throughout.
+## [3.8.0] - 2026-07-23
+
+The partner self-serve release. A new **school-year sync window** means a
+district can be set up once and left alone — the nightly sync runs during the
+year, pauses over the summer, and picks up again every fall on its own, with
+nothing to renew. Alongside it, a thorough standards audit (11 lenses across the
+whole codebase, every finding independently re-checked before it was acted on)
+plus a refreshed product spec drove a batch of security, privacy and
+trustworthiness fixes. Nothing here changes the CSVs a district produces — the
+SD74 golden and the 7-district output contract pass untouched throughout.
 
 ### Added
 
