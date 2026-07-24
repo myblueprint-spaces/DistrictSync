@@ -41,6 +41,11 @@
 
 ## Task Scheduler does not run the task
 
+**First — is a seasonal pause switched on?**
+- If you enabled the **seasonal pause** (Setup → Schedule), DistrictSync intentionally does nothing outside your school-year window. The task still wakes each night; it checks the date and exits cleanly.
+- Confirm by opening DistrictSync: Home reads a green *"Paused for the summer — resumes &lt;date&gt;"*. That is the pause working, not a fault, and it will resume on its own on that date.
+- If you need a one-off run while paused, use the **Convert** page — manual conversions always run, regardless of the window.
+
 **Task does not run after a reboot / server restart**
 - The Setup Wizard (schedule step) automatically registers the task to **run whether the user is logged on or not** with **Highest Privileges**, using the Windows account password you enter during setup.
 - If the task still doesn't run after a reboot, the Windows password entered at setup was likely incorrect. A wrong password causes Windows to report an error in the wizard — if you dismissed the error, re-run the Setup Wizard to re-register the task with the correct password.

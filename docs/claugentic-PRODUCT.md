@@ -174,6 +174,18 @@ saving re-registers the task through the same register flow so tonight's run use
 The register/unregister and SFTP test/save flows are the same ones the wizard's Schedule/Delivery
 steps use — one register flow, one keyring-write path.
 
+**The seasonal pause (v3.8.0)** lives in the Schedule section of both modes: an opt-in school-year
+window (MM-DD start/end, pre-filled from the district's academic calendar) that lets a partner be
+set up ONCE and left alone — the nightly sync runs during the year, pauses over the summer, and
+resumes every fall on its own. It is deliberately an *app-level* window, not an OS one: the
+scheduled task stays a plain daily trigger and the app decides each night, so there is nothing to
+re-arm annually and no elevation is ever needed. It is config-only — changing it never re-registers
+the task. During a pause Home reads a calm HEALTHY "Paused for the summer — resumes <date>" and the
+missed-run/stale warnings correctly stay silent (no run is expected); Home, the Run History banner
+and the Setup badge all read ONE `sync_window_paused` fact so they cannot disagree. The pause never
+hides a real fault: a FAILED last run, and a schedule the OS confirms is GONE, both outrank it —
+because "resumes <date>" over a deleted task would be a lie.
+
 Saves are **structurally gated** — the Save/Continue button stays disabled until the inputs validate,
 so an invalid path can never reach the config. The schedule + delivery sections behave identically in
 both modes (an off-thread schedule read-back readout, an Unregister affordance, save-after-success, a
