@@ -259,7 +259,7 @@ The checkable projection of the Features above. All checks are `manual` — Dist
     "expect": [
       "delivery hard-fails with a plain 'server identity changed' category message (host name only, no paths or credentials)",
       "the mismatch is never retried",
-      "a host with no pinned key connects as before, with a log warning pointing at the pinning file"
+      "a host with no pinned key (or a missing/unreadable pin file) is refused fail-closed — delivery aborts with a distinct 'identity could not be verified' message pointing at restoring the pinned known_hosts, never accepted with just a warning"
     ],
     "states": ["error"],
     "check": "manual"

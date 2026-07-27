@@ -178,6 +178,7 @@ Use [semantic versioning](https://semver.org/) for the tag itself:
 - [ ] Format check passes: `ruff format --check src/ tests/`
 - [ ] Type check passes: `mypy src/ --exclude 'src/ui_flet'`
 - [ ] Security scan passes: `bandit -r src/`
+- [ ] **MANDATORY: manual QA pass on the built Windows exe** — the six-step [QA checklist](qa-checklist.md) (~10 min; native dialogs, fresh/stale profiles, exit hygiene — what CI can't see)
 - [ ] CHANGELOG or commit messages are meaningful (Actions generates release notes from commit history)
 - [ ] If output CSV schema changed — partner guide and FAQ are updated
 

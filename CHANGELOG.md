@@ -9,6 +9,47 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.8.1] - 2026-07-27
+
+A field-test patch. Owner testing of the packaged Windows exe surfaced a crash
+the whole static gate suite is structurally blind to — the native folder
+dialog — plus the first-mile gaps a brand-new district hits before the window
+even opens. No CSV output changes; the SD74 golden and the district contract
+tests pass untouched.
+
+### Fixed
+
+- **Clicking Browse no longer crashes the app when a previously saved folder
+  is invalid.** A folder path stored with forward slashes (written by older
+  releases) or a folder that no longer exists was handed straight to the
+  Windows folder dialog, which rejects it (`0x80070057` / `0x80070002`) and
+  took the whole session down with "The application encountered an error".
+  Stored paths are now reduced to a provably-valid starting folder first — and
+  when there isn't one, the dialog simply opens at the OS default. Any future
+  dialog failure now degrades to "no folder chosen" instead of a crash.
+- The packaging smoke script's failure diagnostic read the retired
+  `~/.districtsync` log path; it now probes the real per-OS app-data location
+  first.
+
+### Added
+
+- **Every launch now logs a one-line banner naming the running version and the
+  data folder in use** — field forensics found the logs could not tell which
+  exe version produced them.
+- A committed pre-release QA checklist (`docs/developer/qa-checklist.md`) —
+  a ~10-minute hands-on pass over the built exe (fresh profile, both Browse
+  pickers, a fixture conversion, the upgrade-in-place path) — now a mandatory
+  step before tagging. Exactly the scenarios CI cannot reach.
+- The partner installation guide now walks through the Windows SmartScreen
+  warning ("More info → Run anyway"), antivirus quarantine recovery, and sets
+  the ~30-second first-launch expectation.
+
+### Changed
+
+- The product spec's host-key expectation now describes the fail-closed
+  behaviour that actually shipped in 3.8.0 (an unpinned or unverifiable host
+  refuses delivery; it is never accepted with just a warning).
+
 ## [3.8.0] - 2026-07-23
 
 The partner self-serve release. A new **school-year sync window** means a

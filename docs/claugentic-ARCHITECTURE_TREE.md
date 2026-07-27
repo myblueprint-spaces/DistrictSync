@@ -233,5 +233,6 @@ _Last reconciled on `feat/pre-partner-completion` @ b772054 (2026-07-20)._
 - `docs/developer/setup.md` — Developer setup: Python version, clone, `pip install`, running tests, linting, type checking, Flet UI, PyInstaller build.
 - `docs/developer/testing.md` — Testing guide: test categories (unit, e2e, snapshot, property-based, benchmark), coverage requirements, mocking patterns.
 - `docs/developer/release.md` — Release process: version bump, tag push, GitHub Actions automated build (3 platform binaries), GitHub Release creation.
+- `docs/developer/qa-checklist.md` — Pre-release manual QA checklist: six-step ~10-min pass on the built Windows exe (fresh/stale profiles, both native Browse pickers, fixture convert, upgrade migration, exit/long-path hygiene) — what CI is structurally blind to.
 - `docs/developer/adding-district.md` — Step-by-step guide for adding a new district YAML config with `_base` inheritance and non-standard file names/column mappings.
 - `docs/developer/adding-transformer.md` — Guide for adding a custom entity transformer class and registering it in the registry.

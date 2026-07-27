@@ -79,6 +79,20 @@ the tool to first-run state.
     one-time — if anything prevents it, the tool simply keeps using the old
     folder (you are never left half-moved).
 
+### "Windows protected your PC?"
+
+The first time you run the `.exe`, Windows may show a blue **"Windows
+protected your PC"** screen (SmartScreen). This appears because the app is
+not yet code-signed — it does not mean anything is wrong with the file.
+Click **More info**, then **Run anyway**.
+
+If your district's antivirus quarantines the file instead, restore it from
+quarantine and ask your IT team to add it to the antivirus exclusion list.
+
+On the very first launch the window can take up to ~30 seconds to appear
+while Windows unpacks the app — give it a moment rather than double-clicking
+again, which opens a second copy.
+
 ---
 
 ## Step 2 — Run the Setup Wizard (Windows only)
