@@ -29,7 +29,7 @@ def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
     return ft.Padding(left=h, top=v, right=h, bottom=v)
 
 
-class PickerField(ft.Column):  # pragma: no cover - Flet view glue (exercised via DISTRICTSYNC_UI=flet)
+class PickerField(ft.Column):  # pragma: no cover - Flet view glue (coverage-omitted; needs a live Flet window)
     """A labelled folder picker: Browse… → validate → show path + valid/invalid.
 
     Args:

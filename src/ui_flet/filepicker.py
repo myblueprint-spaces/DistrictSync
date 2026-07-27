@@ -120,6 +120,36 @@ def check_writable(path: str) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Dialog-input sanitizing — PURE-ish (read-only stat), COUNTED, TESTED         #
+# The native dialog is the one consumer that CANNOT take an arbitrary stored   #
+# path: it crashes the whole Flet session on a malformed initial folder.       #
+# --------------------------------------------------------------------------- #
+def sanitize_initial_directory(path: str | None) -> str | None:
+    """Reduce a stored path to one the native dialog provably accepts, else ``None``.
+
+    The native Windows dialog CRASHES the Flet session on a bad
+    ``initial_directory``: ``SHCreateItemFromParsingName`` rejects forward-slash
+    paths with ``0x80070057`` (E_INVALIDARG) and nonexistent paths with
+    ``0x80070002``, and the exception escapes the event handler. So:
+    ``Path.resolve()`` first (normalizes ``/`` → ``\\`` on Windows and collapses
+    ``.``/``..``; UNC ``\\\\server\\share`` paths survive ``resolve()`` — district
+    servers use them, see the module docstring), then require an existing
+    DIRECTORY (a missing path or a file → ``None``, so the dialog opens at the
+    OS default — never crashes). Never raises: any ``OSError``/``ValueError``
+    from ``resolve()``/``is_dir()`` also → ``None``.
+    """
+    if not path or not path.strip():
+        return None
+    try:
+        resolved = Path(path).resolve()
+        if not resolved.is_dir():
+            return None
+        return str(resolved)
+    except (OSError, ValueError):
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # Service registration — idempotent, NON-async, UNIT-TESTED (RC5)              #
 # Kept OUTSIDE the `# pragma: no cover` glue: this is the one behavioural       #
 # contract worth pinning without a live window (mock page.services as a list). #
@@ -153,10 +183,17 @@ async def pick_directory(
     "cancelled or no picker" so the surface falls back to manual entry.
     """
     fp = _ensure_picker(page)
-    return await fp.get_directory_path(  # pragma: no cover - async glue; needs a live Flet loop
-        dialog_title=dialog_title,
-        initial_directory=initial_directory,
-    )
+    initial_directory = sanitize_initial_directory(initial_directory)
+    try:
+        return await fp.get_directory_path(  # pragma: no cover - async glue; needs a live Flet loop
+            dialog_title=dialog_title,
+            initial_directory=initial_directory,
+        )
+    except Exception as exc:
+        # Defense-in-depth: a Dart-side dialog failure degrades to the cancel
+        # contract ("no folder chosen"), never a session crash.
+        logger.warning("Native file dialog failed: %s", exc)
+        return None
 
 
 async def pick_files(
@@ -172,12 +209,19 @@ async def pick_files(
     Mapping) to pick sample/extract files.
     """
     fp = _ensure_picker(page)
-    files = await fp.pick_files(  # pragma: no cover - async glue; needs a live Flet loop
-        dialog_title=dialog_title,
-        initial_directory=initial_directory,
-        allowed_extensions=allowed_extensions,
-        allow_multiple=allow_multiple,
-    )
+    initial_directory = sanitize_initial_directory(initial_directory)
+    try:
+        files = await fp.pick_files(  # pragma: no cover - async glue; needs a live Flet loop
+            dialog_title=dialog_title,
+            initial_directory=initial_directory,
+            allowed_extensions=allowed_extensions,
+            allow_multiple=allow_multiple,
+        )
+    except Exception as exc:
+        # Defense-in-depth: a Dart-side dialog failure degrades to the cancel
+        # contract ("no files chosen"), never a session crash.
+        logger.warning("Native file dialog failed: %s", exc)
+        return []
     if not files:  # pragma: no cover - async glue
         return []
     return [f.path for f in files if f.path]  # pragma: no cover - async glue
