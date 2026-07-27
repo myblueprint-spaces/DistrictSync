@@ -37,6 +37,12 @@ different each time, so the surfaces are reviewed against all three.)
   roster dropped, the schedule didn't fire — show me what, and the shortest fix."* Wants honest
   fault-naming and a routed fix path that lands where it says and keeps "you are here" truthful.
 
+Beside that admin sits **the vendor operator** (SpacesEDU/myBlueprint support and the owner). Same
+surfaces, different need: they must be able to see **every** district — to reproduce a partner's
+view, to configure a test machine, to build a new district's mapping. They are a second *reader* of
+the same cockpit, never a second product: anything built for them (an all-districts view, a raw
+config id shown as a support hint) stays plain, visible, and **never gated behind a secret**.
+
 ## The job-to-be-done
 
 > *"When my district's roster needs to reach SpacesEDU, I want the nightly sync to just work — and
@@ -82,6 +88,16 @@ borrowed from stale config.
   first-class calm WARNING output, not an exception.
 - **Decouple reassurance.** Wherever the admin might worry they've broken something, the copy
   reassures them their nightly sync keeps running in the background and their existing files are safe.
+- **Identification, never authentication.** Where DistrictSync asks who someone is, it does so to
+  **shorten a list**, never to grant access. That register is enforced in the words: no "sign in",
+  "log in", "verify", "unlock", "authorized", "account", "credentials"; no password field, no lock
+  glyph, no artificial "checking…" pause. Nothing an admin can reach is ever withheld from them —
+  every district mapping ships inside the exe, and the app says so plainly rather than implying a
+  gate it does not have.
+- **No two selectable options may read identically.** A picker row is a decision, and two rows with
+  the same words are a coin-flip an admin can lose (two SD51 mappings — rostering and attendance —
+  ship the wrong files if confused). Every visible option carries what distinguishes it (the
+  district *and* what it produces); the raw config id is a muted support hint, never the difference.
 - **Clean native close.** The desktop window opens fast and closes cleanly (zero orphaned threads),
   the way a native app should.
 
@@ -329,3 +345,60 @@ slice lands.
 - **A single per-user app-data home, industry-standard per OS.** The store, config, and logs move
   from `~/.districtsync` to the platform-standard user-data directory (Windows LocalAppData, macOS
   Application Support, Linux XDG), with a transparent, idempotent, one-time migration.
+
+## Resolved product direction (brief 0037 — the front door, district identity, slim Home)
+
+Owner-approved input (2026-07-27, `.claude/plans/0037-…`), resolved through Stage-1 discovery. These
+are the durable product truths the batch builds toward — distinct from the "what landed"
+descriptions above, which stay accurate until each slice lands.
+
+**The front door is an identity page, and it is identification — not a gate.** Before the shell,
+a first-run admin is asked for their work email. It resolves locally against per-district salted
+hashes baked into the bundled mapping YAMLs, and the only thing a match does is **scope the district
+lists** (wizard District step · Convert · Mapping) to that district plus the generic default. Four
+rules make that honest and keep it honest:
+
+- **It never withholds anything.** Every mapping ships in the exe; "Show all districts" is a plain,
+  always-available list-scope control worded as a courtesy ("we're only showing yours to keep the
+  list short"), never an unlock. It lives at the foot of each filtered list and in Settings.
+- **It never fails closed.** An unreadable allowlist, a no-match, a typo, an air-gapped machine —
+  every one of them ends with the admin *inside* the app with the full list. A no-match is a
+  first-class path, not an error path: no lockout, no attempt counter, no delay, no red. The
+  allowlist is a release artifact and will always lag reality; a new hire who isn't on it must be
+  greeted exactly as well as one who is.
+- **It never touches the network.** Resolution is a local hash comparison, so the front door works
+  on a locked-down district server. The product therefore has no "connecting…" state to design —
+  and must never fake one.
+- **It never gates work.** Identity scopes lists and prefills the support contact. It never gates a
+  conversion, a delivery, a schedule, or the CLI — a scheduled nightly run of an install that never
+  answered the ask keeps running byte-identically. Nor does it ever silently change the configured
+  district: a mismatch between "who you are" and "what you're set up for" is surfaced as a question,
+  never resolved by the app.
+
+The stored email is the admin's own work address, held locally in the per-user settings file. It is
+**never logged, never written to the run store, and never sent anywhere** — the PII-free-by-
+construction bar extends to it. It is changeable at any time in Settings, and the app re-asks
+nothing once answered: a front door, not a turnstile.
+
+**Home is the single front door, in both states.** While unconfigured, Home *hosts the setup wizard*
+itself (one shared component, one derived-from-real-state flow — the Setup rail item mounts the same
+wizard, so a hop between them resumes in the same place); the launch selection is Home in every
+state. Once complete, Home is **one plain-language verdict line plus a few quick actions** — the
+metric-tile dashboard retires. Nothing is lost by that subtraction because the single verdict
+derivation already encodes every fault category (failed / didn't reach SpacesEDU / anomaly / data
+warnings / missed run / stale / paused / schedule gone) with a routed fix; the tiles were
+reassurance-by-numbers, and the numbers live in Run History and Convert. Home's remaining job is
+unchanged and absolute: answer *"is my roster syncing?"* in one sentence, and *"will it run again?"*
+where a schedule can be confirmed.
+
+**Journey 4 — Upgrade in place (the Watcher who never asked for any of this).** An install that is
+already syncing nightly must land, after an update, on exactly what it had: no wizard, no blocking
+prompt, no changed district, no interrupted nightly run. Anything new we want *from* the admin is a
+small, dismissible ask that sits **below** the verdict they came for, is shown once, and retreats
+permanently into Settings when declined. The non-regression guarantee is the feature.
+
+**Deliberately out of this batch.** The structured mapping creator is the next phase — until it
+lands, "my district isn't listed" routes to a human (a prefilled support path) and never dead-ends.
+An updatable/served allowlist is out (changing a listed address needs a release; acceptable at this
+district count). Failure notifications stay deferred: Run History and the Home verdict remain the
+in-app truth.
