@@ -370,7 +370,7 @@ rules make that honest and keep it honest:
 - **It never touches the network.** Resolution is a local hash comparison, so the front door works
   on a locked-down district server. The product therefore has no "connecting…" state to design —
   and must never fake one.
-- **It never gates work.** Identity scopes lists and prefills the support contact. It never gates a
+- **It never gates work.** Identity scopes lists and is shown, read-only, beside the support path in Help. It never gates a
   conversion, a delivery, a schedule, or the CLI — a scheduled nightly run of an install that never
   answered the ask keeps running byte-identically — the same output files and exit codes. Nor does it ever silently change the configured
   district: a mismatch between "who you are" and "what you're set up for" is surfaced as a question,
