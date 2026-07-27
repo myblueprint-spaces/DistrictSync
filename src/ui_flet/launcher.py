@@ -24,6 +24,7 @@ from pathlib import Path
 
 from src.utils.logger import get_logger
 from src.utils.paths import migrate_legacy_data_dir, user_log_file
+from src.utils.version import startup_banner
 
 _LOG_NAME = "etl_tool.log"
 
@@ -35,8 +36,9 @@ def boot_logging() -> None:
     (and, from Slice 4b, its run records) would go nowhere. Call this once at launch so
     the UI writes to the same ``etl_tool.log`` sink as the CLI and scheduled runs. The
     sink path resolves through ``paths.user_data_dir()`` at call time (single seam).
+    Opens the session with the shared version + data-dir banner (Observability P0).
     """
-    get_logger("src.ui_flet")
+    get_logger("src.ui_flet").info(startup_banner())
 
 
 def resolve_frozen_cwd() -> Path | None:

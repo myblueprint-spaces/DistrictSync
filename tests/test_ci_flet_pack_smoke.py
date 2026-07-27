@@ -1,11 +1,13 @@
 """Unit tests for the PURE helpers of ``scripts/ci_flet_pack_smoke.py``.
 
-These three helpers carry the release gate's correctness, so they are tested in
+These helpers carry the release gate's correctness, so they are tested in
 isolation:
 
   * ``resolve_artifact`` — which packed file the smoke actually launches.
   * ``orphan_pids`` — the baseline-delta that decides "zero-orphan close".
   * ``manifest_has_embed`` — the build-time proof that the client is embedded.
+  * ``etl_log_candidates`` — where the failure diagnostic looks for the boot log
+    (per-OS app-data first, retired legacy ``~/.districtsync`` as fallback).
 
 No process-mock theater: the heavy phases (launch / WM_CLOSE / move-aside) need a
 real exe + a real desktop and are covered by the 3-OS CI smoke, not here. The
@@ -132,6 +134,51 @@ def test_manifest_archive_without_app_dest_is_not_embed() -> None:
 
 def test_manifest_empty_is_not_embed() -> None:
     assert smoke.manifest_has_embed("") is False
+
+
+# --------------------------------------------------------------------------- #
+#  etl_log_candidates (per-OS boot-log resolution, no src import)
+# --------------------------------------------------------------------------- #
+
+
+def test_etl_log_candidates_windows_uses_localappdata(tmp_path: Path) -> None:
+    home = tmp_path / "u"
+    local = tmp_path / "elsewhere" / "Local"
+    cands = smoke.etl_log_candidates(home, "Windows", {"LOCALAPPDATA": str(local)})
+    assert cands[0] == local / "DistrictSync" / "etl_tool.log"
+
+
+def test_etl_log_candidates_windows_without_localappdata_falls_back(tmp_path: Path) -> None:
+    home = tmp_path / "u"
+    cands = smoke.etl_log_candidates(home, "Windows", {})
+    assert cands[0] == home / "AppData" / "Local" / "DistrictSync" / "etl_tool.log"
+
+
+def test_etl_log_candidates_macos(tmp_path: Path) -> None:
+    home = tmp_path / "u"
+    cands = smoke.etl_log_candidates(home, "Darwin", {})
+    assert cands[0] == home / "Library" / "Application Support" / "DistrictSync" / "etl_tool.log"
+
+
+def test_etl_log_candidates_linux_uses_xdg_data_home(tmp_path: Path) -> None:
+    home = tmp_path / "u"
+    xdg = tmp_path / "xdg-data"
+    cands = smoke.etl_log_candidates(home, "Linux", {"XDG_DATA_HOME": str(xdg)})
+    assert cands[0] == xdg / "DistrictSync" / "etl_tool.log"
+
+
+def test_etl_log_candidates_linux_default(tmp_path: Path) -> None:
+    home = tmp_path / "u"
+    cands = smoke.etl_log_candidates(home, "Linux", {})
+    assert cands[0] == home / ".local" / "share" / "DistrictSync" / "etl_tool.log"
+
+
+def test_etl_log_candidates_legacy_dir_is_secondary_on_every_os(tmp_path: Path) -> None:
+    home = tmp_path / "u"
+    for osn in ("Windows", "Darwin", "Linux"):
+        cands = smoke.etl_log_candidates(home, osn, {})
+        assert cands[1] == home / ".districtsync" / "etl_tool.log"
+        assert len(cands) == 2
 
 
 # --------------------------------------------------------------------------- #

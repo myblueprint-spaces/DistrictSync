@@ -27,9 +27,10 @@ The real process model is ``exe -> re-exec'd python host -> separate flet/flet.e
 view`` (PLAT-0), so the tree walk follows descendants of BOTH the launched PID and
 any re-exec'd host child named ``DistrictSync``.
 
-On ANY failure the launcher's boot traceback is in ``~/.districtsync/etl_tool.log``
-(it writes there, not stdout, because the exe is windowed) — so a failure prints
-that file.
+On ANY failure the launcher's boot traceback is in ``etl_tool.log`` under the
+per-OS DistrictSync app-data dir (it writes there, not stdout, because the exe is
+windowed) — so a failure prints that file, probing the retired legacy
+``~/.districtsync`` as a secondary fallback.
 
 Usage::
 
@@ -38,9 +39,10 @@ Usage::
 Exit 0 = all gating phases passed (close gated only with ``--require-close``);
 exit 1 = a gating phase failed.
 
-The PURE helpers (``resolve_artifact``, ``orphan_pids``, ``manifest_has_embed``) are
-import-safe and unit-tested in ``tests/test_ci_flet_pack_smoke.py``. Everything
-that touches a real process / the filesystem lives under ``run_smoke``.
+The PURE helpers (``resolve_artifact``, ``orphan_pids``, ``manifest_has_embed``,
+``etl_log_candidates``) are import-safe and unit-tested in
+``tests/test_ci_flet_pack_smoke.py``. Everything that touches a real process / the
+filesystem lives under ``run_smoke``.
 """
 
 from __future__ import annotations
@@ -53,7 +55,7 @@ import shutil
 import subprocess  # nosec B404 — launches the packed artifact under test, by design
 import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 # --- single-source, env-overridable timeouts (seconds) ---------------------- #
@@ -71,7 +73,6 @@ _OSN = platform.system()  # "Windows" / "Linux" / "Darwin"
 _HOME = Path.home()
 _FLET_HOME = _HOME / ".flet"
 _FLET_BAK = _HOME / ".flet_ci_bak"
-_ETL_LOG = _HOME / ".districtsync" / "etl_tool.log"
 
 # Image names of the Flutter view process across OSes (lowercased).
 _VIEW_NAMES = {"flet", "flet.exe"}
@@ -126,6 +127,30 @@ def manifest_has_embed(manifest_text: str) -> bool:
     has_dest = "flet_desktop/app" in text
     has_archive = any(marker in text for marker in ("flet-windows.zip", "flet-macos.tar.gz", "flet-linux"))
     return has_dest and has_archive
+
+
+def etl_log_candidates(home: Path, osn: str, env: Mapping[str, str]) -> list[Path]:
+    """Candidate ``etl_tool.log`` paths, the per-OS app-data location first.
+
+    Mirrors ``src/utils/paths.user_data_dir()`` WITHOUT importing ``src`` (this
+    script must stay standalone): Windows ``%LOCALAPPDATA%\\DistrictSync``, macOS
+    ``~/Library/Application Support/DistrictSync``, Linux ``$XDG_DATA_HOME``
+    (default ``~/.local/share``) ``/DistrictSync``. The retired legacy
+    ``~/.districtsync`` stays as the secondary fallback (a pre-migration profile
+    on an old runner image). Pure path arithmetic — no filesystem access.
+    """
+    if osn == "Windows":
+        local = env.get("LOCALAPPDATA")
+        data_root = Path(local) if local else home / "AppData" / "Local"
+    elif osn == "Darwin":
+        data_root = home / "Library" / "Application Support"
+    else:
+        xdg = env.get("XDG_DATA_HOME")
+        data_root = Path(xdg) if xdg else home / ".local" / "share"
+    return [
+        data_root / "DistrictSync" / "etl_tool.log",
+        home / ".districtsync" / "etl_tool.log",
+    ]
 
 
 # ===========================================================================
@@ -314,16 +339,22 @@ def _restore_flet(moved: bool) -> None:
 
 
 def _print_etl_log() -> None:
-    """Print the launcher's boot traceback log (where a windowed exe writes failures)."""
-    print(f"--- {_ETL_LOG} (launcher boot log) ---")
-    try:
-        if _ETL_LOG.exists():
-            for line in _ETL_LOG.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]:
-                print(f"   {line}")
-        else:
-            print("   (absent — launcher never reached the early-failure path)")
-    except Exception as exc:  # diagnostics must not mask the real failure
-        print(f"   (could not read log: {exc!r})")
+    """Print the launcher's boot traceback log (where a windowed exe writes failures).
+
+    Probes the per-OS app-data location first, then the retired legacy
+    ``~/.districtsync`` as a secondary fallback; prints the first log found.
+    """
+    for log in etl_log_candidates(_HOME, _OSN, os.environ):
+        print(f"--- {log} (launcher boot log) ---")
+        try:
+            if log.exists():
+                for line in log.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]:
+                    print(f"   {line}")
+                return
+            print("   (absent)")
+        except Exception as exc:  # diagnostics must not mask the real failure
+            print(f"   (could not read log: {exc!r})")
+    print("(no boot log found — launcher never reached the early-failure path)")
 
 
 # ===========================================================================

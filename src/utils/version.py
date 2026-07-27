@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import importlib.metadata
 
+from src.utils import paths
+
 _PACKAGE_NAME = "districtsync"
 _DEV_FALLBACK = "dev"
 
@@ -36,3 +38,15 @@ def app_version() -> str:
         return importlib.metadata.version(_PACKAGE_NAME)
     except importlib.metadata.PackageNotFoundError:
         return _DEV_FALLBACK
+
+
+def startup_banner() -> str:
+    """One-line startup banner: the running build's version + resolved data dir.
+
+    Logged once per entry (CLI ``_cli`` and the Flet launcher's ``boot_logging``)
+    so a log can always be tied to an exe version and a profile location —
+    forensics found zero version banners in field logs. Calls
+    ``paths.user_data_dir()`` through the module reference so the test-isolation
+    seam applies. Deliberately nothing more: no other paths, no PII.
+    """
+    return f"DistrictSync {app_version()} — data dir: {paths.user_data_dir()}"

@@ -40,7 +40,7 @@ from src.sftp.uploader import SFTPUploader
 from src.utils.logger import get_logger
 from src.utils.paths import migrate_legacy_data_dir
 from src.utils.validators import validate_sftp_host, validate_sis_type
-from src.utils.version import app_version
+from src.utils.version import app_version, startup_banner
 
 __all__ = [
     "ANOMALY_THRESHOLD",
@@ -432,6 +432,7 @@ def _cli(argv: list[str] | None) -> int:
     # CLI entry path: configure the shared file-log sink now (deferred from import
     # time so importing src.main in tests never touches the real user profile).
     logger = _configure_cli_logging()
+    logger.info(startup_banner())
     logger.debug(
         "parent-console attach: %s",
         "attached (CLI output visible in the launching terminal)"
