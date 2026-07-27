@@ -89,15 +89,16 @@ borrowed from stale config.
 - **Decouple reassurance.** Wherever the admin might worry they've broken something, the copy
   reassures them their nightly sync keeps running in the background and their existing files are safe.
 - **Identification, never authentication.** Where DistrictSync asks who someone is, it does so to
-  **shorten a list**, never to grant access. That register is enforced in the words: no "sign in",
+  **shorten a list**, never to grant access. That register is held in the words (a reviewed copy rule, not a wired check): no "sign in",
   "log in", "verify", "unlock", "authorized", "account", "credentials"; no password field, no lock
   glyph, no artificial "checking…" pause. Nothing an admin can reach is ever withheld from them —
-  every district mapping ships inside the exe, and the app says so plainly rather than implying a
+  every district mapping ships inside the exe, and the app must say so plainly rather than implying a
   gate it does not have.
 - **No two selectable options may read identically.** A picker row is a decision, and two rows with
   the same words are a coin-flip an admin can lose (two SD51 mappings — rostering and attendance —
-  ship the wrong files if confused). Every visible option carries what distinguishes it (the
-  district *and* what it produces); the raw config id is a muted support hint, never the difference.
+  ship the wrong files if confused). Every visible option must carry what
+  distinguishes it (the district *and* what it produces — the two SD51 rows read identically today;
+  brief 0037 fixes this); the raw config id is a muted support hint, never the difference.
 - **Clean native close.** The desktop window opens fast and closes cleanly (zero orphaned threads),
   the way a native app should.
 
@@ -371,12 +372,12 @@ rules make that honest and keep it honest:
   and must never fake one.
 - **It never gates work.** Identity scopes lists and prefills the support contact. It never gates a
   conversion, a delivery, a schedule, or the CLI — a scheduled nightly run of an install that never
-  answered the ask keeps running byte-identically. Nor does it ever silently change the configured
+  answered the ask keeps running byte-identically — the same output files and exit codes. Nor does it ever silently change the configured
   district: a mismatch between "who you are" and "what you're set up for" is surfaced as a question,
   never resolved by the app.
 
 The stored email is the admin's own work address, held locally in the per-user settings file. It is
-**never logged, never written to the run store, and never sent anywhere** — the PII-free-by-
+**never logged, never written to the run store, and never transmitted by the app** — the PII-free-by-
 construction bar extends to it. It is changeable at any time in Settings, and the app re-asks
 nothing once answered: a front door, not a turnstile.
 
@@ -384,10 +385,11 @@ nothing once answered: a front door, not a turnstile.
 itself (one shared component, one derived-from-real-state flow — the Setup rail item mounts the same
 wizard, so a hop between them resumes in the same place); the launch selection is Home in every
 state. Once complete, Home is **one plain-language verdict line plus a few quick actions** — the
-metric-tile dashboard retires. Nothing is lost by that subtraction because the single verdict
-derivation already encodes every fault category (failed / didn't reach SpacesEDU / anomaly / data
-warnings / missed run / stale / paused / schedule gone) with a routed fix; the tiles were
-reassurance-by-numbers, and the numbers live in Run History and Convert. Home's remaining job is
+metric-tile dashboard retires. The verdict derivation already encodes every fault category (failed /
+didn't reach SpacesEDU / anomaly / data warnings / missed run / stale / paused / schedule gone) with
+a routed fix, and the per-run numbers live in Run History and Convert; the one thing the tiles
+carried that the verdict does not — a roster-size sanity check — is folded into the healthy detail
+line. Home's remaining job is
 unchanged and absolute: answer *"is my roster syncing?"* in one sentence, and *"will it run again?"*
 where a schedule can be confirmed.
 
