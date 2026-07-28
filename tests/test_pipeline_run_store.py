@@ -469,6 +469,67 @@ class TestDeliverFromDisk:
 
 
 # --------------------------------------------------------------------------- #
+# dry run — never enters the ledger (plan 0038, flag 7)                         #
+# --------------------------------------------------------------------------- #
+class TestDryRunWritesNoRecord:
+    """``--dry-run`` writes no files, so it must write no run record either.
+
+    Before this, a support-requested dry run wrote a full ``success`` record: Home
+    said "your roster synced just now" and Run History grew a phantom row for a run
+    that delivered nothing. The diagnostic ``__DISTRICTSYNC_RUN__`` log line stays —
+    ops keeps the trail, the ledger keeps the truth.
+    """
+
+    def test_dry_run_writes_no_store_record(self, gde_input: Path, gde_output: Path) -> None:
+        run_pipeline("myedbc", str(gde_input), str(gde_output), dry_run=True)
+        assert read_run_records() == []
+
+    def test_dry_run_leaves_the_history_db_untouched(self, gde_input: Path, gde_output: Path) -> None:
+        """The acceptance lock: the store FILE is not created (nor touched) by a preview."""
+        from src.utils import paths
+
+        db = paths.user_history_db()
+        assert not db.exists()
+        run_pipeline("myedbc", str(gde_input), str(gde_output), dry_run=True)
+        assert not db.exists(), "a dry run must not create history.db"
+
+    def test_dry_run_still_emits_the_diagnostic_log_line(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            run_pipeline("myedbc", str(gde_input), str(gde_output), dry_run=True)
+        lines = [r.message for r in caplog.records if "__DISTRICTSYNC_RUN__" in r.message]
+        assert lines, "the dry run's diagnostic log line is the ops trail and must survive"
+        payload = json.loads(lines[-1].split("__DISTRICTSYNC_RUN__ ")[1])
+        assert payload["status"] == "success" and payload["source"] == "cli"
+
+    def test_a_real_run_after_a_dry_run_is_the_only_recorded_one(self, gde_input: Path, gde_output: Path) -> None:
+        """The skip is scoped to the preview — the very next real run records normally."""
+        run_pipeline("myedbc", str(gde_input), str(gde_output), dry_run=True)
+        run_pipeline("myedbc", str(gde_input), str(gde_output))
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert records[0]["status"] == "success"
+
+    def test_dry_run_failure_records_nothing_either(self, tmp_path: Path, gde_output: Path) -> None:
+        """A failed PREVIEW is not a failed sync — the gate sits at the store sink, so the
+        failure and early-exit paths inherit it and cannot paint a red verdict for a run
+        that never touched the roster. The log line still carries the failure detail."""
+        empty_input = tmp_path / "empty"
+        empty_input.mkdir()
+        with pytest.raises(RuntimeError, match="No usable required input"):
+            run_pipeline("myedbc", str(empty_input), str(gde_output), dry_run=True)
+        assert read_run_records() == []
+
+    def test_dry_run_early_exit_records_nothing_either(self, tmp_path: Path, gde_output: Path) -> None:
+        missing = tmp_path / "nope"
+        with pytest.raises(SystemExit) as exc_info:
+            run_pipeline("myedbc", str(missing), str(gde_output), dry_run=True)
+        assert exc_info.value.code == 1  # the exit-code contract is untouched
+        assert read_run_records() == []
+
+
+# --------------------------------------------------------------------------- #
 # early-exit recording (0034 Slice 4 — kill the false silence)                  #
 # --------------------------------------------------------------------------- #
 class TestEarlyExitRecording:
