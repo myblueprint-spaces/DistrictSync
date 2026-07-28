@@ -354,8 +354,9 @@ are the durable product truths the batch builds toward — distinct from the "wh
 descriptions above, which stay accurate until each slice lands.
 
 **The front door is an identity page, and it is identification — not a gate.** Before the shell,
-a first-run admin is asked for their work email. It resolves locally against per-district salted
-hashes baked into the bundled mapping YAMLs, and the only thing a match does is **scope the district
+a first-run admin is asked for their work email. It resolves locally — by the email's **domain** —
+against per-district staff-domain lists carried in the bundled mapping YAMLs (public organizational
+facts, in the clear), and the only thing a match does is **scope the district
 lists** (wizard District step · Convert · Mapping) to that district plus the generic default. Four
 rules make that honest and keep it honest:
 
