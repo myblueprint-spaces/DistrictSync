@@ -357,7 +357,9 @@ descriptions above, which stay accurate until each slice lands.
 a first-run admin is asked for their work email. It resolves locally — by the email's **domain** —
 against per-district staff-domain lists carried in the bundled mapping YAMLs (public organizational
 facts, in the clear), and the only thing a match does is **scope the district
-lists** (wizard District step · Convert · Mapping) to that district plus the generic default. Four
+lists** (wizard District step · Convert · Mapping) to that district's own mappings — the generic
+defaults and every other district stay one click away ("Show all districts") and appear in full
+whenever no match is on file. Four
 rules make that honest and keep it honest:
 
 - **It never withholds anything.** Every mapping ships in the exe; "Show all districts" is a plain,
