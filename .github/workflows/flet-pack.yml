@@ -25,10 +25,12 @@ jobs:
       matrix:
         include:
           # Per-OS desktop flavor (RC6): warm-up, cache key, and `flet pack` MUST
-          # provably agree. Windows/macOS default to `full`; Linux to `light`
-          # (PLAT-0b proved light is enough — no media needs `full`).
+          # provably agree. ALL THREE now ship `light` (D-0037-1, 2026-07-28): the
+          # app plays no audio or video, so the `full` client's media stack was
+          # tens of MB of dead weight in every district download. Linux has shipped
+          # `light` since PLAT-0b; this run is the Windows/macOS evidence.
           - os: windows-latest
-            flavor: full
+            flavor: light
             sep: ";"
             require_close: "--require-close"
             # The brand icon runtime surface (`page.window.icon`) + the Explorer exe icon
@@ -42,7 +44,7 @@ jobs:
             require_close: ""
             icon_arg: ""
           - os: macos-latest
-            flavor: full
+            flavor: light
             sep: ":"
             require_close: ""
             icon_arg: ""
@@ -193,15 +195,29 @@ jobs:
           fi
           python scripts/ci_flet_pack_smoke.py --assert-embed "$MANIFEST"
 
+      # Size evidence for the flavor decision — COMPARABLE across OSes: always the
+      # total BYTES of the shipped artifact (recursively summed for the macOS .app,
+      # which is a directory), never `du -sh`'s block-rounded human string. Written
+      # to the step summary so the before/after numbers survive log retention.
       - name: Echo measured artifact size (size budget)
         shell: bash
         run: |
           if [ -f "dist/DistrictSync.exe" ]; then F="dist/DistrictSync.exe";
-          elif [ -d "dist/DistrictSync.app" ]; then F="dist/DistrictSync.app"; \
-            echo "macOS .app bundle size:"; du -sh "$F"; exit 0;
+          elif [ -d "dist/DistrictSync.app" ]; then F="dist/DistrictSync.app";
           else F="dist/DistrictSync"; fi
           ls -la "$F" || true
-          python -c "import os,sys; p=sys.argv[1]; print(f'measured size: {os.path.getsize(p)/1e6:.1f} MB')" "$F" || true
+          # bytes + MB in one shot; a directory (the macOS .app) is summed recursively.
+          SIZES=$(python -c "import os,sys;p=sys.argv[1];j=os.path.join;t=sum(os.path.getsize(j(r,f)) for r,_d,fs in os.walk(p) for f in fs if os.path.isfile(j(r,f))) if os.path.isdir(p) else os.path.getsize(p);print(t, f'{t/1e6:.1f}')" "$F")
+          SIZE=${SIZES%% *}
+          MB=${SIZES##* }
+          echo "measured size: $SIZE bytes (${MB} MB)"
+          {
+            echo "### Packed artifact size"
+            echo ""
+            echo "| runner | desktop flavor | bytes | MB |"
+            echo "|---|---|---|---|"
+            echo "| \`${{ matrix.os }}\` | \`${{ matrix.flavor }}\` | $SIZE | $MB |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # ---------------------------------------------------------------------
       # CLI smokes — the packed artifact's OTHER branch (--sis/--input/--output)

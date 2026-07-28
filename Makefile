@@ -22,17 +22,29 @@ typecheck:
 validate-config:
 	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc','sd40myedbc','sd48myedbc','sd51myedbc','sd54myedbc','sd60myedbc','sd74myedbc','mbp_all','mbp_core','mbponly','sd51attendance']]"
 
+# The embedded Flutter client flavor. `light` on every OS since 2026-07-28 (D-0037-1)
+# — the app plays no audio or video, so the `full` client's media stack is dead
+# weight in every district download. EXPORTED because `flet pack` and the warm-up
+# both read it from the environment; keep it in lockstep with flet-pack.yml's matrix,
+# or a local build will not match the released binary. Override per-invocation:
+#   FLET_DESKTOP_FLAVOR=full make build-win
+FLET_DESKTOP_FLAVOR ?= light
+export FLET_DESKTOP_FLAVOR
+
 # Build the windowed/no-console/offline Flet-default .exe locally (Windows) — THE
 # public release binary. Packs src/main.py: no args → the Flet shell, --sis/--input/
 # --output → the CLI. Mirrors .github/workflows/flet-pack.yml's Windows `flet pack`
-# invocation so a local build matches CI (same target, same hidden-imports, same raw
-# PyInstaller args, same `;` --add-data separator). `flet pack` has no native
-# --paths/--exclude-module, so those go through --pyinstaller-build-args (one token
-# per flag; PyInstaller needs `--paths` and `.` as separate args).
-# Pre-seed the client cache first if offline:
-#   python -c "import flet_desktop; flet_desktop.ensure_client_cached()"
-# Smoke it after:
+# invocation so a local build matches CI (same target, same flavor, same
+# hidden-imports, same raw PyInstaller args, same `;` --add-data separator).
+# `flet pack` has no native --paths/--exclude-module, so those go through
+# --pyinstaller-build-args (one token per flag; PyInstaller needs `--paths` and `.`
+# as separate args).
+# Pre-seed the client cache first if offline (the flavor MUST match the build, or
+# `flet pack` embeds a client you did not warm):
+#   FLET_DESKTOP_FLAVOR=light python -c "import flet_desktop; flet_desktop.ensure_client_cached()"
+# Smoke it after (the window smoke, then the four CLI phases against a throwaway profile):
 #   python scripts/ci_flet_pack_smoke.py dist DistrictSync --require-close
+#   DISTRICTSYNC_DATA_DIR=/tmp/dsync-smoke python scripts/ci_flet_pack_smoke.py dist DistrictSync --cli-smoke
 build-win:
 	flet pack src/main.py --name DistrictSync \
 	  --yes \
