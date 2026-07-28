@@ -41,6 +41,10 @@ _APP_NAME = "DistrictSync"
 # between two locations.
 _LEGACY_DIR_NAME = ".districtsync"
 
+# Documented SUPPORT / TEST override for the whole user-data profile — see
+# ``_override_data_dir`` and ``user_data_dir`` for the contract and the why.
+_DATA_DIR_ENV_VAR = "DISTRICTSYNC_DATA_DIR"
+
 # Breadcrumb dropped in the legacy dir after a successful migration.
 _MOVED_BREADCRUMB = "MOVED.txt"
 
@@ -130,20 +134,58 @@ def _legacy_data_dir() -> Path:
     return Path.home() / _LEGACY_DIR_NAME
 
 
+def _override_data_dir() -> Path | None:
+    """The ``DISTRICTSYNC_DATA_DIR`` override, or ``None`` when it is not in play.
+
+    A support/test seam, NOT a user setting — the app never writes this variable.
+    It exists because a FROZEN exe cannot otherwise be pointed at a throwaway
+    profile: ``platformdirs`` resolves the Windows location through
+    ``SHGetKnownFolderPath`` and **ignores a ``LOCALAPPDATA`` env var** (verified),
+    so redirecting a packed ``DistrictSync.exe`` — for the CI exe smokes, for a
+    non-destructive fresh-profile QA walk, or for a support repro on a district
+    machine — is impossible without an explicit seam.
+
+    Boundary validation (the value is untrusted operator input): an unset, empty,
+    or whitespace-only value means "not in play" (``FOO=`` in a shell must not
+    resolve the profile to the process CWD). ``~`` expands, and the path is made
+    absolute at call time — the frozen launcher chdirs to a temp ``sys._MEIPASS``
+    that is deleted on exit, so a relative value would be actively dangerous.
+    Always pass an absolute path.
+    """
+    raw = os.environ.get(_DATA_DIR_ENV_VAR, "").strip()
+    if not raw:
+        return None
+    return Path(raw).expanduser().resolve()
+
+
 def user_data_dir() -> Path:
     """Persistent per-user data directory (logs, custom mappings, app config, run store).
 
     Resolution is deterministic and never strands a user between two locations:
+      0. ``DISTRICTSYNC_DATA_DIR`` (see :func:`_override_data_dir`) — when set it
+         **wins outright**: the entire profile lives there, with NO legacy fallback
+         and NO migration (``migrate_legacy_data_dir`` is a no-op while it is set,
+         so the resolver and the migration can never disagree about the location),
+         else
       1. the platform-standard dir if it already exists (fresh install here, or a
          completed migration), else
       2. the legacy ``~/.districtsync`` dir if it exists (pre-migration, or a
          migration that safely fell back), else
       3. create + return the platform-standard dir (a brand-new install).
 
+    Step 0 creates the directory for the same reason step 3 does: the override
+    names where the profile *is*, and the log sink opens a file in it immediately.
+    The startup banner (``utils/version.startup_banner``) logs the RESOLVED dir on
+    every entry, so which step won is always diagnosable from the log.
+
     The move from (2) to (1) is an explicit, failure-safe entry-point step
     (``migrate_legacy_data_dir``) — NOT a side effect of this resolver — so a read
     can never half-move data.
     """
+    override = _override_data_dir()
+    if override is not None:
+        override.mkdir(parents=True, exist_ok=True)
+        return override
     new = _platform_data_dir()
     if new.exists():
         return new
@@ -201,7 +243,17 @@ def migrate_legacy_data_dir() -> bool:
     Returns ``True`` iff data was migrated in THIS call; ``False`` when there was
     nothing to migrate OR the migration failed and we safely fell back to the legacy
     location (logged WARNING). Never raises — safe to call unconditionally at entry.
+
+    A set ``DISTRICTSYNC_DATA_DIR`` makes this a **no-op**: this function resolves
+    ``_platform_data_dir()``/``_legacy_data_dir()`` directly (it deliberately does not
+    go through :func:`user_data_dir`), so without the guard an overridden run would
+    migrate the legacy tree into the *platform* dir while reading its profile from the
+    *override* — a split-brain the override exists to prevent.
     """
+    if _override_data_dir() is not None:
+        logger.debug("%s is set — skipping the legacy app-data migration", _DATA_DIR_ENV_VAR)
+        return False
+
     new = _platform_data_dir()
     legacy = _legacy_data_dir()
 

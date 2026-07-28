@@ -24,6 +24,8 @@ python -m src.main --sftp-show                                      # print save
 ```
 Handlers live in `src/main.py` (`_sftp_configure`, `_sftp_test`, `_sftp_show`, `_read_sftp_password`). Host is validated against `validators.ALLOWED_SFTP_HOSTS`. Password is stored in the OS keyring (`KEYRING_SERVICE = "DistrictSync_SFTP"`); non-sensitive settings are written to `config.json` in the per-OS app-data dir (`paths.user_data_dir()` via `platformdirs` — Windows `%LOCALAPPDATA%\DistrictSync`, macOS `~/Library/Application Support/DistrictSync`, Linux `~/.local/share/DistrictSync`; a legacy `~/.districtsync` is auto-migrated once at startup with a `MOVED.txt` breadcrumb).
 
+**`DISTRICTSYNC_DATA_DIR`** (support/test seam) overrides that whole profile location — step 0 of `user_data_dir()`, **wins outright** (no legacy fallback, `migrate_legacy_data_dir()` no-ops while set, blank value = unset). It exists because `platformdirs` ignores a `LOCALAPPDATA` env var on Windows (`SHGetKnownFolderPath`), so a **frozen exe** can't be pointed at a throwaway profile any other way — used by the CI exe smokes and the fresh-profile QA walk. The startup banner logs the resolved dir. **Never run the app/CLI locally without it** (or a monkeypatched seam) — a bare run writes into the real profile's `etl_tool.log` + `history.db`.
+
 ### Tests
 ```bash
 python -m pytest tests/ -v                    # all tests

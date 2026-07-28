@@ -146,6 +146,13 @@ def isolated_user_profile(request: pytest.FixtureRequest, tmp_path: Path, monkey
     """
     data_dir = tmp_path / ".districtsync"
 
+    # Step 0 of the real resolution ladder is the DISTRICTSYNC_DATA_DIR override
+    # (src/utils/paths.py). Clear it for EVERY test — including the
+    # ``real_user_data_dir`` ones that drive the real seam — so a developer or CI
+    # shell that exports it (the exe smokes do) can never redirect a test run's
+    # profile out from under these fixtures.
+    monkeypatch.delenv("DISTRICTSYNC_DATA_DIR", raising=False)
+
     def _fake_user_data_dir() -> Path:
         data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir
