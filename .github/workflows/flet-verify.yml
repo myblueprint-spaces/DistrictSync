@@ -14,6 +14,11 @@ on:
     paths:
       - "src/ui_flet/**"
       - "src/main.py"
+      # The CLI smokes convert real GDE fixtures through a bundled mapping, so a
+      # config or loader change can now break the packed exe on a PR that touches
+      # neither the UI nor main.py — the filter has to see those.
+      - "config/mappings/**"
+      - "src/config/**"
       - "requirements*.txt"
       - "pyproject.toml"
       - ".github/workflows/flet-pack.yml"

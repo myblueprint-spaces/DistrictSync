@@ -38,11 +38,26 @@ jobs:
       - name: Run tests with coverage
         run: python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=80
 
+      # Validate EVERY discoverable mapping config, derived from available_configs()
+      # rather than a hand-kept list — the old inline list validated 7 of the 11
+      # bundled configs (sd60, mbp_all, mbp_core, mbponly, sd51attendance never ran)
+      # while CLAUDE.md claimed all 11. The count is PINNED so a deleted or
+      # unregistered config fails loudly instead of silently shrinking the sweep;
+      # a bare glob without the pin would not. Keep EXPECTED_CONFIGS in lockstep
+      # with the Makefile's `validate-config` list.
       - name: Validate all mapping configs
         run: |
-          python -c "
-          from src.config.loader import load_config
-          for name in ['myedbc', 'sd40myedbc', 'sd48myedbc', 'sd51myedbc', 'sd54myedbc', 'sd60myedbc', 'sd74myedbc']:
+          python - <<'PY'
+          from src.config.loader import available_configs, load_config
+
+          EXPECTED_CONFIGS = 11
+          names = available_configs()
+          for name in names:
               load_config(name)
-              print(f'{name}: OK')
-          "
+              print(f"{name}: OK")
+          if len(names) != EXPECTED_CONFIGS:
+              raise SystemExit(
+                  f"FAIL: expected {EXPECTED_CONFIGS} mapping configs, discovered {len(names)}: {names}"
+              )
+          print(f"validated {len(names)} mapping configs")
+          PY

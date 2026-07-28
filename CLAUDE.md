@@ -248,7 +248,7 @@ Three rules are non-negotiable:
 - Tests use pandas DataFrames directly — no file I/O in unit tests
 - Mock datetime for school year tests: patch `src.etl.transformers.base.datetime`
 - Config tests validate against real YAML files and test Pydantic model behavior
-- CI: ruff check + ruff format + mypy (non-UI) + bandit + pytest (80% coverage gate) + config validation (all 11 configs)
+- CI: ruff check + ruff format + mypy (non-UI) + bandit + pytest (80% coverage gate) + config validation — every config `available_configs()` discovers, with the count **pinned at 11** so a deleted/unregistered config fails loudly (keep the pin in lockstep with the Makefile's `validate-config` list)
 
 <!-- harness:managed:start -->
 ## claugentic-dev-harness
