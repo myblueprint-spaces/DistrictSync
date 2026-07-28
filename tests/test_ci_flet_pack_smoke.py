@@ -111,13 +111,38 @@ def test_manifest_has_embed_windows_toc() -> None:
 
 
 def test_manifest_has_embed_posix_toc() -> None:
+    # The LIGHT Linux client: distro + flavor + arch are all in the filename. This is
+    # the shape that proves an exact-name marker list was only ever working by accident.
     toc = "('flet_desktop/app/flet-linux-ubuntu-22.04-light-x64.tar.gz', '/tmp/x', 'DATA')"
+    assert smoke.manifest_has_embed(toc) is True
+
+
+def test_manifest_has_embed_linux_full_toc() -> None:
+    # …and the FULL Linux client (no flavor token) matches the same rule.
+    toc = "('flet_desktop/app/flet-linux-ubuntu-22.04-x64.tar.gz', '/tmp/x', 'DATA')"
     assert smoke.manifest_has_embed(toc) is True
 
 
 def test_manifest_has_embed_macos_toc() -> None:
     toc = "('flet_desktop/app/flet-macos.tar.gz', '/tmp/x', 'DATA')"
     assert smoke.manifest_has_embed(toc) is True
+
+
+@pytest.mark.parametrize(
+    "archive",
+    ["flet-windows-light.zip", "flet-macos-light.tar.gz", "flet-windows-x64-light.zip"],
+)
+def test_manifest_has_embed_flavor_suffixed_win_mac_names(archive: str) -> None:
+    """A flavor token in the Windows/macOS archive name still reads as an embed.
+
+    HONEST SCOPE: `flet_cli/commands/pack.py` @0.85.3 names those two archives
+    flavor-INDEPENDENTLY (`flet-windows.zip` / `flet-macos.tar.gz`) — verified, so
+    these are not names flet emits today. They pin the generalization's intent: if
+    upstream ever extends the Linux naming convention (which already carries the
+    flavor) to the other OSes, the release gate must not start reporting "no
+    embedded client" for a perfectly good exe.
+    """
+    assert smoke.manifest_has_embed(f"('flet_desktop/app/{archive}', '/tmp/x', 'DATA')") is True
 
 
 def test_manifest_without_archive_is_not_embed() -> None:
@@ -130,6 +155,23 @@ def test_manifest_archive_without_app_dest_is_not_embed() -> None:
     # Archive name present but not under the flet_desktop/app dest => not the embed.
     toc = "('elsewhere/flet-windows.zip', '/tmp/x', 'DATA')"
     assert smoke.manifest_has_embed(toc) is False
+
+
+def test_manifest_dest_and_archive_on_separate_entries_is_not_embed() -> None:
+    """The two halves must be the SAME path — the dest alone vouches for nothing.
+
+    A `flet_desktop/app/` code entry plus an unrelated archive elsewhere in the TOC
+    is exactly the false-PASS shape the archive requirement exists to exclude.
+    """
+    toc = "('flet_desktop/app/__init__.py', '/x', 'DATA'),\n('elsewhere/flet-windows.zip', '/tmp/x', 'DATA')"
+    assert smoke.manifest_has_embed(toc) is False
+
+
+@pytest.mark.parametrize("name", ["flet-windows.txt", "flet-windows", "other-windows.zip", "flet-android.zip"])
+def test_manifest_non_client_archive_at_the_dest_is_not_embed(name: str) -> None:
+    # Not loosened to a bare `flet-` prefix: the OS token AND a real archive
+    # extension both stay required, because the archive name IS the proof.
+    assert smoke.manifest_has_embed(f"('flet_desktop/app/{name}', '/tmp/x', 'DATA')") is False
 
 
 def test_manifest_empty_is_not_embed() -> None:

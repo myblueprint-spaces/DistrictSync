@@ -51,6 +51,7 @@ import argparse
 import contextlib
 import os
 import platform
+import re
 import shutil
 import subprocess  # nosec B404 — launches the packed artifact under test, by design
 import sys
@@ -112,21 +113,36 @@ def orphan_pids(baseline: Iterable[int], current: Iterable[int]) -> set[int]:
     return set(current) - set(baseline)
 
 
+# The embedded Flet client, as it appears in a PyInstaller TOC: the
+# `flet_desktop/app` destination + an `flet-<os-token>…` archive with a real
+# archive extension, in ONE path. Applied to lowercased, forward-slashed text.
+CLIENT_ARCHIVE_RE = re.compile(r"flet_desktop/app/flet-(?:windows|macos|linux)[a-z0-9._-]*\.(?:zip|tar\.gz)")
+
+
 def manifest_has_embed(manifest_text: str) -> bool:
     """Whether a PyInstaller build manifest proves the Flet client is embedded.
 
     ``flet pack`` adds the client tree as ``(bin_path, "flet_desktop/app")`` and
-    compresses it to a per-OS archive (``flet-windows.zip`` / ``flet-macos.tar.gz``
-    / ``flet-linux-*.tar.gz``) — so the manifest (e.g. ``Analysis-00.toc``) must
-    reference BOTH the ``flet_desktop/app`` destination AND a client archive name.
-    Requiring the archive name (not just ``flet_desktop``, which is also a code
-    module) is what makes this a real embed proof. Separator-agnostic (Windows
-    backslashes vs POSIX slashes in the TOC). Pure string scan.
+    compresses it to a per-OS archive — so the manifest (e.g. ``Analysis-00.toc``)
+    must carry a client archive AT that destination. Requiring the archive NAME
+    (not just ``flet_desktop``, which is also a code module) is what makes this a
+    real embed proof, and requiring it in the SAME path as the destination is what
+    stops an unrelated ``flet-windows.zip`` elsewhere in the TOC from vouching for
+    a bundle that has no client in it.
+
+    Matched as OS token + a real archive extension rather than the three exact
+    filenames it used to hardcode: the Linux client already encodes distro, arch
+    AND desktop flavor in its name (``flet-linux-ubuntu-22.04-light-x64.tar.gz``),
+    so an exact-name list only ever worked there by prefix accident. (Verified in
+    ``flet_cli/commands/pack.py`` @0.85.3: Windows/macOS names are currently
+    flavor-independent — this is resilience to that changing, not a fix for a
+    break today.) Deliberately NOT loosened to a bare ``flet-`` prefix: the
+    archive name IS the proof, so the OS token and the extension both stay
+    required. Separator-agnostic (Windows backslashes vs POSIX slashes). Pure
+    string scan.
     """
     text = manifest_text.replace("\\\\", "/").replace("\\", "/").lower()
-    has_dest = "flet_desktop/app" in text
-    has_archive = any(marker in text for marker in ("flet-windows.zip", "flet-macos.tar.gz", "flet-linux"))
-    return has_dest and has_archive
+    return CLIENT_ARCHIVE_RE.search(text) is not None
 
 
 def etl_log_candidates(home: Path, osn: str, env: Mapping[str, str]) -> list[Path]:
