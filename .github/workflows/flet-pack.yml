@@ -203,6 +203,73 @@ jobs:
           ls -la "$F" || true
           python -c "import os,sys; p=sys.argv[1]; print(f'measured size: {os.path.getsize(p)/1e6:.1f} MB')" "$F" || true
 
+      # ---------------------------------------------------------------------
+      # CLI smokes — the packed artifact's OTHER branch (--sis/--input/--output)
+      # ---------------------------------------------------------------------
+      # The GUI smoke below proves a window opens. Nothing proved the same exe still
+      # CONVERTS — the branch every district actually runs nightly — so a packaging
+      # regression in the ETL path could ship. Four phases against the real artifact,
+      # exit codes primary and strings secondary.
+      #
+      # NO xvfb: these open no window. Absolute paths throughout (the frozen exe
+      # chdirs). DISTRICTSYNC_DATA_DIR points every phase at a throwaway profile
+      # (src/utils/paths.user_data_dir step 0 — platformdirs ignores LOCALAPPDATA on
+      # Windows, so this env var is the only way to keep a frozen exe off the
+      # runner's real profile). The phases share it deliberately: the log accumulates
+      # across them, and phase 4 deletes the dir in a `finally`.
+      #
+      # The two paths are single-sourced through $GITHUB_ENV rather than job-level
+      # `env:` because the `runner` context is NOT available there — and four
+      # hand-copied literals that must stay identical is exactly how phase 4 would
+      # end up planting into a profile no other phase used.
+      - name: Prepare the CLI-smoke profile + scratch paths
+        shell: bash
+        run: |
+          echo "SMOKE_PROFILE_DIR=$RUNNER_TEMP/dsync-smoke-profile" >> "$GITHUB_ENV"
+          echo "SMOKE_WORK_DIR=$RUNNER_TEMP/dsync-smoke-work" >> "$GITHUB_ENV"
+
+      - name: CLI smoke 1/4 — --version + the log sink
+        shell: bash
+        env:
+          DISTRICTSYNC_DATA_DIR: ${{ env.SMOKE_PROFILE_DIR }}
+        run: |
+          python scripts/ci_flet_pack_smoke.py "$GITHUB_WORKSPACE/dist" DistrictSync \
+            --cli-smoke --phase version \
+            --input "$GITHUB_WORKSPACE/tests/snapshots/input" \
+            --work-dir "$SMOKE_WORK_DIR"
+
+      - name: CLI smoke 2/4 — dry run (previews, writes nothing, records nothing)
+        shell: bash
+        env:
+          DISTRICTSYNC_DATA_DIR: ${{ env.SMOKE_PROFILE_DIR }}
+        run: |
+          python scripts/ci_flet_pack_smoke.py "$GITHUB_WORKSPACE/dist" DistrictSync \
+            --cli-smoke --phase dry-run \
+            --input "$GITHUB_WORKSPACE/tests/snapshots/input" \
+            --work-dir "$SMOKE_WORK_DIR"
+
+      - name: CLI smoke 3/4 — real write run (the atomic-write path)
+        shell: bash
+        env:
+          DISTRICTSYNC_DATA_DIR: ${{ env.SMOKE_PROFILE_DIR }}
+        run: |
+          python scripts/ci_flet_pack_smoke.py "$GITHUB_WORKSPACE/dist" DistrictSync \
+            --cli-smoke --phase write-run \
+            --input "$GITHUB_WORKSPACE/tests/snapshots/input" \
+            --work-dir "$SMOKE_WORK_DIR"
+
+      # LAST of the four: it plants a corrupt config.json in the smoke profile and
+      # deletes the whole profile dir on the way out.
+      - name: CLI smoke 4/4 — boot on a corrupt profile
+        shell: bash
+        env:
+          DISTRICTSYNC_DATA_DIR: ${{ env.SMOKE_PROFILE_DIR }}
+        run: |
+          python scripts/ci_flet_pack_smoke.py "$GITHUB_WORKSPACE/dist" DistrictSync \
+            --cli-smoke --phase corrupt-profile \
+            --input "$GITHUB_WORKSPACE/tests/snapshots/input" \
+            --work-dir "$SMOKE_WORK_DIR"
+
       # Smoke the REAL exe: PE subsystem (win) + offline-embed (all, gating) +
       # zero-orphan close (win gating via --require-close; lin/mac INFO-only).
       # Linux runs under xvfb so the client opens a real window.

@@ -32,32 +32,43 @@ per-OS DistrictSync app-data dir (it writes there, not stdout, because the exe i
 windowed) — so a failure prints that file, probing the retired legacy
 ``~/.districtsync`` as a secondary fallback.
 
+The same artifact has a SECOND branch — ``--sis/--input/--output``, the one every
+district runs nightly — which no CI job exercised at all. ``--cli-smoke`` adds four
+phases against the real exe (``--version`` · a dry run · a real write run · a boot
+on a corrupt profile); see the CLI-smokes section below for what each proves.
+
 Usage::
 
     python scripts/ci_flet_pack_smoke.py <dist_dir> <base_name> [--require-close]
+    python scripts/ci_flet_pack_smoke.py <dist_dir> <base_name> --cli-smoke [--phase P]
+    python scripts/ci_flet_pack_smoke.py --assert-embed <manifest>
 
 Exit 0 = all gating phases passed (close gated only with ``--require-close``);
 exit 1 = a gating phase failed.
 
 The PURE helpers (``resolve_artifact``, ``orphan_pids``, ``manifest_has_embed``,
-``etl_log_candidates``) are import-safe and unit-tested in
+``override_data_dir``, ``etl_log_candidates``) are import-safe and unit-tested in
 ``tests/test_ci_flet_pack_smoke.py``. Everything that touches a real process / the
-filesystem lives under ``run_smoke``.
+filesystem lives under ``run_smoke`` / ``run_cli_smoke``.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import platform
 import re
 import shutil
 import subprocess  # nosec B404 — launches the packed artifact under test, by design
 import sys
+import tempfile
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # --- single-source, env-overridable timeouts (seconds) ---------------------- #
 # Embed and close are SEPARATE axes with independent budgets (R3/R6/R7): a slow
@@ -145,16 +156,38 @@ def manifest_has_embed(manifest_text: str) -> bool:
     return CLIENT_ARCHIVE_RE.search(text) is not None
 
 
+def override_data_dir(env: Mapping[str, str]) -> Path | None:
+    """The ``DISTRICTSYNC_DATA_DIR`` profile override, or ``None`` when not in play.
+
+    A deliberate non-importing MIRROR of ``src/utils/paths._override_data_dir`` —
+    same normalization (blank means unset, ``~`` expands, absolutized) — kept in
+    lockstep by ``tests/test_ci_flet_pack_smoke.py``'s parity test. Pure.
+    """
+    raw = env.get("DISTRICTSYNC_DATA_DIR", "").strip()
+    if not raw:
+        return None
+    return Path(raw).expanduser().resolve()
+
+
 def etl_log_candidates(home: Path, osn: str, env: Mapping[str, str]) -> list[Path]:
     """Candidate ``etl_tool.log`` paths, the per-OS app-data location first.
 
     Mirrors ``src/utils/paths.user_data_dir()`` WITHOUT importing ``src`` (this
-    script must stay standalone): Windows ``%LOCALAPPDATA%\\DistrictSync``, macOS
-    ``~/Library/Application Support/DistrictSync``, Linux ``$XDG_DATA_HOME``
-    (default ``~/.local/share``) ``/DistrictSync``. The retired legacy
-    ``~/.districtsync`` stays as the secondary fallback (a pre-migration profile
-    on an old runner image). Pure path arithmetic — no filesystem access.
+    script must stay standalone): ``DISTRICTSYNC_DATA_DIR`` if set, else Windows
+    ``%LOCALAPPDATA%\\DistrictSync``, macOS ``~/Library/Application Support/
+    DistrictSync``, Linux ``$XDG_DATA_HOME`` (default ``~/.local/share``)
+    ``/DistrictSync``. The retired legacy ``~/.districtsync`` stays as the
+    secondary fallback (a pre-migration profile on an old runner image). Pure path
+    arithmetic — no filesystem access.
+
+    The override is step 0 in the app and **wins outright** — so it wins outright
+    here too, with the legacy fallback dropped. Mirroring that exactly is the whole
+    point: a smoke that fell back would silently read (and report on) the runner's
+    REAL profile instead of the throwaway one the exe was pointed at.
     """
+    override = override_data_dir(env)
+    if override is not None:
+        return [override / "etl_tool.log"]
     if osn == "Windows":
         local = env.get("LOCALAPPDATA")
         data_root = Path(local) if local else home / "AppData" / "Local"
@@ -563,6 +596,297 @@ def run_smoke(dist: Path, name: str, require_close: bool) -> int:
     return 0
 
 
+# ===========================================================================
+#  CLI smokes — the packed artifact's OTHER branch (--sis/--input/--output)
+# ===========================================================================
+#
+# The GUI smoke above proves the exe opens a window. Nothing proved the same exe
+# still CONVERTS — the branch every district actually runs nightly. These four
+# phases run the real artifact end-to-end against the committed SD74 snapshot
+# extract and assert EXIT CODES first, strings second.
+#
+# Every phase is pointed at a throwaway profile via DISTRICTSYNC_DATA_DIR (the
+# `src/utils/paths` step-0 seam): platformdirs ignores LOCALAPPDATA on Windows, so
+# that env var is the only way to keep a frozen exe off the runner's real profile.
+
+CLI_TIMEOUT_S = float(os.environ.get("SMOKE_CLI_TIMEOUT", "300"))
+
+# The fixture: the committed SD74 snapshot extract, converted through the LIVE
+# sd74myedbc mapping (the exe bundles config/mappings — not the frozen snapshot
+# config). Row COUNTS and values are never asserted here; the golden snapshot test
+# owns those. These phases prove the packed artifact runs, writes, and logs.
+SMOKE_SIS = "sd74myedbc"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_SMOKE_INPUT = _REPO_ROOT / "tests" / "snapshots" / "input"
+
+# The 5 SpacesEDU rostering entities sd74myedbc emits.
+_ROSTERING_ENTITIES = ("Students", "Staff", "Family", "Classes", "Enrollments")
+_ROSTER_ANCHOR_CSV = "Students.csv"
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+# Log markers the phases key off (all owned by src/, cited at their source).
+_RUN_RECORD_MARKER = "__DISTRICTSYNC_RUN__"  # pipeline._log_run_record
+_BANNER_MARKER = "data dir:"  # utils/version.startup_banner
+_UNREADABLE_MARKER = "could not be read as settings"  # AppConfig.load, UNREADABLE provenance
+_PAUSED_MARKER = "Sync paused"  # main._paused_by_sync_window
+
+
+@dataclass(frozen=True)
+class CliSmokeContext:
+    """Everything the CLI phases share: the fixture, a scratch root, and the profile seam."""
+
+    input_dir: Path
+    work_dir: Path
+    seam_dir: Path | None
+    log_path: Path
+
+    @classmethod
+    def build(cls, input_dir: Path, work_dir: Path, env: Mapping[str, str]) -> CliSmokeContext:
+        return cls(
+            input_dir=input_dir,
+            work_dir=work_dir,
+            seam_dir=override_data_dir(env),
+            log_path=etl_log_candidates(_HOME, _OSN, env)[0],
+        )
+
+    def new_output(self, label: str) -> Path:
+        """A fresh, unique output dir — never shared between phases (or reruns)."""
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(prefix=f"out-{label}-", dir=self.work_dir))
+
+    def log_text(self) -> str:
+        """The exe's log as text, or ``""`` when it does not exist yet."""
+        try:
+            return self.log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+
+def _expect(ok: bool, label: str, detail: str = "") -> bool:
+    """Report one check and return it. Never short-circuits — every check is reported."""
+    print(f"   {'ok  ' if ok else 'FAIL'} {label}{f' -> {detail}' if detail else ''}")
+    return ok
+
+
+def _run_cli(art: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run the packed artifact's CLI branch and capture stdout/stderr.
+
+    ``capture_output`` PIPES are sound even for the GUI-subsystem Windows exe:
+    ``_attach_parent_console``'s policy #2 (src/main.py) is "all streams already
+    usable -> no-op", and where it does attach, policy #4 rebinds ONLY the dead
+    (``None``) streams. Either way our pipes survive, so the CLI's ``print``
+    output really does reach this process.
+    """
+    return subprocess.run(  # nosec B603 — fixed artifact path under test, no shell
+        [str(art), *args],
+        capture_output=True,
+        text=True,
+        timeout=CLI_TIMEOUT_S,
+        check=False,
+    )
+
+
+def _convert_args(ctx: CliSmokeContext, out: Path, *extra: str) -> list[str]:
+    """The standard conversion invocation (absolute paths — cwd is never assumed)."""
+    return ["--sis", SMOKE_SIS, "--input", str(ctx.input_dir), "--output", str(out), *extra]
+
+
+def _dump(proc: subprocess.CompletedProcess[str]) -> None:
+    """Print the artifact's captured output (diagnostics for a failed phase)."""
+    for stream, text in (("stdout", proc.stdout), ("stderr", proc.stderr)):
+        if text:
+            print(f"   --- artifact {stream} (last 30 lines) ---")
+            for line in text.splitlines()[-30:]:
+                print(f"      {line}")
+
+
+def _file_signature(path: Path) -> tuple[bool, int, int] | None:
+    """``(exists, size, mtime_ns)`` for a byte-level untouched check; ``None`` if absent."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (True, st.st_size, st.st_mtime_ns)
+
+
+def _last_run_record(log_tail: str) -> dict[str, Any] | None:
+    """Parse the LAST ``__DISTRICTSYNC_RUN__`` JSON payload in a log slice, or ``None``."""
+    lines = [ln for ln in log_tail.splitlines() if _RUN_RECORD_MARKER in ln]
+    if not lines:
+        return None
+    try:
+        return json.loads(lines[-1].split(f"{_RUN_RECORD_MARKER} ", 1)[1])
+    except (IndexError, ValueError):
+        return None
+
+
+def _smoke_version(art: Path, ctx: CliSmokeContext) -> bool:
+    """1 — ``--version``: the exe starts, reports its stamped version, and opens its log sink.
+
+    The log assertion is the load-bearing half: it proves the frozen logging config
+    resolved to the SAME profile this script computes (``etl_log_candidates``), so
+    every later phase is reading the artifact's real output rather than an empty path.
+    """
+    proc = _run_cli(art, ["--version"])
+    stdout = proc.stdout.strip()
+    text = ctx.log_text()
+    banners = [ln for ln in text.splitlines() if _BANNER_MARKER in ln]
+    checks = [
+        _expect(proc.returncode == 0, "exit 0", f"got {proc.returncode}"),
+        _expect(stdout.startswith("DistrictSync "), "stdout starts with 'DistrictSync '", stdout[:60]),
+        _expect(bool(text), f"log written at the seam-resolved path {ctx.log_path}"),
+        _expect(bool(banners), "startup banner in the log", banners[-1][-90:] if banners else "absent"),
+    ]
+    if not all(checks):
+        _dump(proc)
+    return all(checks)
+
+
+def _smoke_dry_run(art: Path, ctx: CliSmokeContext) -> bool:
+    """2 — ``--dry-run``: the packed exe previews a real conversion and writes nothing.
+
+    Row counts are deliberately NOT asserted (the SD74 golden owns values). The
+    run-store assertion is flag 7's end-to-end proof: a preview must not enter the
+    ledger, checked on the real artifact rather than only in unit tests.
+    """
+    out = ctx.new_output("dry-run")
+    before_log = len(ctx.log_text())
+    store = (ctx.seam_dir / "history.db") if ctx.seam_dir else None
+    store_before = _file_signature(store) if store else None
+
+    proc = _run_cli(art, _convert_args(ctx, out, "--dry-run"))
+    tail = ctx.log_text()[before_log:]
+    record = _last_run_record(tail)
+    missing = [name for name in _ROSTERING_ENTITIES if name not in proc.stdout]
+
+    checks = [
+        _expect(proc.returncode == 0, "exit 0", f"got {proc.returncode}"),
+        _expect("=== DRY RUN" in proc.stdout, "'=== DRY RUN' banner on stdout"),
+        _expect(not missing, "all 5 rostering entities previewed", f"missing {missing}" if missing else ""),
+        _expect(not list(out.glob("*.csv")), "no CSV written by the preview"),
+        _expect(record is not None, f"{_RUN_RECORD_MARKER} line in the log"),
+        _expect(bool(record) and record.get("status") == "success", "record status=success"),
+        _expect(bool(record) and record.get("source") == "cli", "record source=cli"),
+    ]
+    if store is not None:
+        checks.append(_expect(_file_signature(store) == store_before, "history.db untouched by the preview (flag 7)"))
+    if not all(checks):
+        _dump(proc)
+    return all(checks)
+
+
+def _smoke_write_run(art: Path, ctx: CliSmokeContext) -> bool:
+    """3 — a REAL write run: the packed exe's atomic-write path, exercised nowhere else.
+
+    Asserts the delivered shape only — the five CSVs exist and are non-empty, the
+    roster anchor carries the UTF-8 BOM SpacesEDU/Excel needs, and no ``.tmp_*``
+    staging dir survived the transactional commit.
+    """
+    out = ctx.new_output("write-run")
+    proc = _run_cli(art, _convert_args(ctx, out))
+
+    empty = [
+        name
+        for name in _ROSTERING_ENTITIES
+        if not (out / f"{name}.csv").is_file() or not (out / f"{name}.csv").stat().st_size
+    ]
+    anchor = out / _ROSTER_ANCHOR_CSV
+    head = anchor.read_bytes()[:3] if anchor.is_file() else b""
+    staging = [p.name for p in out.glob(".tmp_*")]
+
+    checks = [
+        _expect(proc.returncode == 0, "exit 0", f"got {proc.returncode}"),
+        _expect(not empty, "all 5 rostering CSVs written non-empty", f"missing/empty {empty}" if empty else ""),
+        _expect(head == _UTF8_BOM, f"{_ROSTER_ANCHOR_CSV} starts with the UTF-8 BOM", repr(head)),
+        _expect(not staging, "no .tmp_* staging dir left behind", str(staging) if staging else ""),
+    ]
+    if not all(checks):
+        _dump(proc)
+    return all(checks)
+
+
+def _smoke_corrupt_profile(art: Path, ctx: CliSmokeContext) -> bool:
+    """4 — boot on a CORRUPT ``config.json``: degrade honestly, and never overwrite it.
+
+    ``--dry-run --source scheduled`` is the one CLI shape that actually LOADS
+    ``AppConfig`` (the sync-window gate); ``--version`` exits before any config read,
+    so a probe built on it would prove nothing. Runs LAST and cleans the seam dir in
+    a ``finally`` — it plants bytes into the profile, so it must never leave them for
+    another phase (or another job) to trip over.
+    """
+    if ctx.seam_dir is None:
+        print("   FAIL requires DISTRICTSYNC_DATA_DIR — refusing to plant a corrupt config in a real profile")
+        return False
+
+    planted = b'{"sis_type": "sd74myedbc", "output_dir": "/tmp/rost'  # truncated mid-document
+    config_file = ctx.seam_dir / "config.json"
+    out = ctx.new_output("corrupt-profile")
+    try:
+        ctx.seam_dir.mkdir(parents=True, exist_ok=True)
+        config_file.write_bytes(planted)
+        before_log = len(ctx.log_text())
+
+        proc = _run_cli(art, _convert_args(ctx, out, "--dry-run", "--source", "scheduled"))
+        tail = ctx.log_text()[before_log:]
+
+        checks = [
+            _expect(
+                proc.returncode == 0, "exit 0 (a corrupt profile degrades, never crashes)", f"got {proc.returncode}"
+            ),
+            _expect("=== DRY RUN" in proc.stdout, "the run PROCEEDED (not aborted, not window-paused)"),
+            _expect(_PAUSED_MARKER not in tail, "no sync-window pause on a defaults-only config"),
+            _expect(_UNREADABLE_MARKER in tail, "UNREADABLE provenance logged — the plant was READ"),
+            _expect(config_file.read_bytes() == planted, "planted bytes byte-identical (never silently rewritten)"),
+        ]
+        if not all(checks):
+            _dump(proc)
+        return all(checks)
+    finally:
+        shutil.rmtree(ctx.seam_dir, ignore_errors=True)
+
+
+# Ordered: the corrupt-profile plant runs LAST (it deletes the seam dir on the way out).
+CLI_SMOKE_PHASES: dict[str, Callable[[Path, CliSmokeContext], bool]] = {
+    "version": _smoke_version,
+    "dry-run": _smoke_dry_run,
+    "write-run": _smoke_write_run,
+    "corrupt-profile": _smoke_corrupt_profile,
+}
+
+
+def run_cli_smoke(dist: Path, name: str, *, phase: str, input_dir: Path, work_dir: Path) -> int:
+    """Run one CLI smoke phase (or ``all``) against the packed artifact. Returns an exit code."""
+    art = resolve_artifact(dist, name)
+    if not art:
+        print(f"FAIL: no artifact under {dist} for base name '{name}'")
+        return 1
+    ctx = CliSmokeContext.build(input_dir, work_dir, os.environ)
+    print(f"== CLI smoke ({phase}) on {_OSN} ==")
+    print(f"artifact: {art}")
+    print(f"fixture:  {ctx.input_dir}")
+    print(f"profile:  {ctx.seam_dir if ctx.seam_dir else '(DISTRICTSYNC_DATA_DIR unset — real profile!)'}")
+    print(f"scratch:  {ctx.work_dir}")
+    if not ctx.input_dir.is_dir():
+        print(f"FAIL: fixture input dir not found: {ctx.input_dir}")
+        return 1
+
+    selected = CLI_SMOKE_PHASES if phase == "all" else {phase: CLI_SMOKE_PHASES[phase]}
+    for label, fn in selected.items():
+        print(f"-- {label} --")
+        try:
+            passed = fn(art, ctx)
+        except Exception as exc:  # noqa: BLE001 - a smoke reports failures, it never raises them
+            print(f"   FAIL {label} errored: {exc!r}")
+            passed = False
+        if not passed:
+            print(f"cli smoke: FAIL ({label})")
+            _print_etl_log()
+            return 1
+        print(f"   {label}: PASS")
+    print("cli smoke: PASS")
+    return 0
+
+
 def _assert_embed(manifest: Path) -> int:
     """Build-time embed assert (RC1b): scan a PyInstaller manifest for the client.
 
@@ -596,6 +920,29 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="gate on the zero-orphan close (Windows); absent => close is INFO-only.",
     )
+    parser.add_argument(
+        "--cli-smoke",
+        action="store_true",
+        help="run the packed artifact's CLI branch instead of the windowed GUI smoke.",
+    )
+    parser.add_argument(
+        "--phase",
+        choices=[*CLI_SMOKE_PHASES, "all"],
+        default="all",
+        help="which --cli-smoke phase to run (default: all, in order).",
+    )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=DEFAULT_SMOKE_INPUT,
+        help="GDE fixture dir for the --cli-smoke conversions (default: the SD74 snapshot input).",
+    )
+    parser.add_argument(
+        "--work-dir",
+        type=Path,
+        default=None,
+        help="scratch root for --cli-smoke output dirs (default: a fresh temp dir).",
+    )
     return parser.parse_args(argv)
 
 
@@ -606,6 +953,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.dist is None or args.name is None:
         print("FAIL: dist dir and artifact name are required (or use --assert-embed).")
         return 2
+    if args.cli_smoke:
+        work_dir = args.work_dir or Path(tempfile.mkdtemp(prefix="districtsync-cli-smoke-"))
+        return run_cli_smoke(args.dist, args.name, phase=args.phase, input_dir=args.input, work_dir=work_dir)
     return run_smoke(args.dist, args.name, args.require_close)
 
 
