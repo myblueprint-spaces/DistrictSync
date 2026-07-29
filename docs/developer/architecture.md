@@ -35,13 +35,9 @@ CSV files (5–7 depending on tier — see Output tiers below)
 
 ### Output tiers
 
-The base `myedbc_mapping.yaml` defines **all 7 entity templates** but a `global_config.enabled_entities` list controls which ones actually run. Three preset tiers ship in `config/mappings/`:
+The base `myedbc_mapping.yaml` defines **8 entity templates** (5 SpacesEDU rostering + CourseInfo + StudentCourses + StudentAttendance) but a `global_config.enabled_entities` list controls which ones actually run.
 
-| Config | Enabled entities |
-|---|---|
-| `myedbc` (and inheriting district configs) | Students, Staff, Family, Classes, Enrollments |
-| `mbp_all` | All 7 (above + CourseInfo + StudentCourses) — full myBlueprint+ tier |
-| `mbp_core` | Students, CourseInfo, StudentCourses — minimal myBlueprint+ tier |
+**➡ [`output-contract.md`](output-contract.md) is the authority** for what each of the eleven bundled configs emits, column by column, with per-row provenance — including the myBlueprint+ tiers and the attendance tier. It carries the per-config table (gated by a drift test), the per-entity column order, the BOM rule, and the delivery envelope. Read it rather than a summary here; a partial list in this file is how the two drift.
 
 When `enabled_entities` is empty/missing, every mapping in the config is enabled (backward compat). The pipeline filters the entity loop by this list immediately after computing `entity_order`.
 

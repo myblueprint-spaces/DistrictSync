@@ -131,7 +131,9 @@ export/import a mapping file for support tickets.
   designation.** The in-repo `output-contract.md` becomes the authority for the two myB+
   course files, citing internal provenance: Confluence REQ "[PathwaysEDU/SpacesEDU] Support
   for Advanced CSV files" (page 3761406457) and SKB "Imports" (page 3847160494). A
-  real-world SD22 sample (`courseinfo.csv`, Drive `1ANyUbG23baka45xUiF39u4ZZvYWVcl24`) shows
+  real-world SD22 sample (`courseinfo.csv`; file id held in the team's internal Drive;
+  scrubbed from this public repo 2026-07-29 — note git history retains the pre-existing
+  occurrence) shows
   header-spelling variants (`CourseCode`/`SchoolID`/`Integration Id` vs our
   `Course Code`/`School ID`/`IntegrationId`) — same lenient-importer reconciliation as the
   rostering headers; owner confirms per column when the contract doc is written.

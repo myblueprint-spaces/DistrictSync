@@ -1,7 +1,5 @@
 """Output schema contract tests — the mechanical enforcement of the published
-output contract (``docs/developer/output-contract.md``, authored in plan 0038
-S2b; until it lands, this module's :data:`OUTPUT_SCHEMA` is the only in-repo
-statement of the contract).
+output contract (``docs/developer/output-contract.md``).
 
 Verifies that the pipeline output for **every** bundled config produces exactly
 the entity CSVs that config's run is expected to emit, each with exactly the
@@ -9,7 +7,13 @@ contract's columns **in exactly the contract's order**, encoded per the
 per-entity BOM rule. A failure here is a partner-visible change that MAY be
 rejected by the importer or silently mis-read.
 
-Three things are pinned, and each is a *partner-visible* contract:
+The contract's *data* — :data:`OUTPUT_SCHEMA`, :data:`EXPECTED_ENTITIES`,
+:data:`NO_BOM_ENTITIES` — lives in the neutral ``tests/contract_schema.py`` so
+the unit and e2e modules can share it without importing this one (which pulls in
+the conftest-registered ``ci_flet_pack_smoke`` and an 11-config pipeline sweep).
+``tests/test_output_contract_doc.py`` gates that data against the published doc.
+
+Three things are pinned here, and each is a *partner-visible* contract:
 
 1. **Column ORDER equality** (not membership) — ``list(df.columns) == expected``
    per emitted entity. Emitted columns are treated as POSITIONAL:
@@ -18,7 +22,7 @@ Three things are pinned, and each is a *partner-visible* contract:
    and is NOT yet confirmed with the partner for the rostering / course feeds, so
    we pin the emitted order and require importer re-confirmation before changing
    it. The published doc is the authority for both the column set and its order;
-   ``OUTPUT_SCHEMA`` below is its in-test mirror.
+   ``OUTPUT_SCHEMA`` is its in-test mirror.
 2. **The expected-entity table** (:data:`EXPECTED_ENTITIES`) — the single source
    for "which CSVs should this config's contract run have produced". It is NOT
    derivable from config alone: it is ``active_entities ∩ entities whose sources
@@ -73,119 +77,20 @@ import pytest
 
 from src.etl.loader import DataLoader
 from src.main import main
+
+# The contract's DATA lives in the neutral shared module (see its docstring for
+# why the dependency runs this way and not the reverse). Re-bound here as
+# module-level names so `test_contract.OUTPUT_SCHEMA` / `.EXPECTED_ENTITIES`
+# stay the documented handles — the same objects, one definition.
+from tests.contract_schema import (
+    EXPECTED_ENTITIES,
+    NO_BOM_ENTITIES,
+    ORDER_AUTHORITY,
+    OUTPUT_SCHEMA,
+)
 from tests.test_pipeline_e2e_mbponly import FIXTURE_DIR as MBP_GDE_DIR
 
-# ---------------------------------------------------------------------------
-# The published output contract, mirrored
-#
-# Per-entity columns in EXACT emitted order — the base myedbc `field_map` key
-# order, confirmed against the SD74 golden headers. The authority for both the
-# set and the order is docs/developer/output-contract.md; this dict is the
-# mirror the tests enforce. Rostering columns are the SpacesEDU Advanced CSV;
-# CourseInfo/StudentCourses are the myBlueprint+ feeds; StudentAttendance is the
-# 4-column SpacesEDU half-day attendance feed (the contract permits dropping
-# every optional field after Student Number).
-# ---------------------------------------------------------------------------
-
-#: The doc that owns the emitted column set AND its order (named in every
-#: order-failure message so a red test routes to a re-confirmation, not an edit).
-#: Authored in plan 0038 S2b; until it lands, :data:`OUTPUT_SCHEMA` below is the
-#: only in-repo statement of the contract.
-ORDER_AUTHORITY = "docs/developer/output-contract.md"
-
-OUTPUT_SCHEMA: dict[str, list[str]] = {
-    "Students": [
-        "User ID",
-        "Student Number",
-        "First Name",
-        "Last Name",
-        "Date of Birth",
-        "Grade",
-        "EnrollStatus",
-        "SchoolCode",
-        "Homeroom",
-        "PreRegSchoolCode",
-        "Preferred First Name",
-        "Preferred Last Name",
-        "Community Hours",
-        "Literacy Test Completed",
-        "Email Address",
-    ],
-    "Staff": ["User ID", "First Name", "Last Name", "Email", "Role", "School ID"],
-    "Family": ["First Name", "Last Name", "Email", "Student User ID"],
-    "Classes": ["Class ID", "Name", "Grade", "School ID", "Start Date", "End Date"],
-    "Enrollments": ["Class ID", "User ID", "Role", "School ID"],
-    "CourseInfo": [
-        "Course Code",
-        "Alternate Course Code",
-        "School ID",
-        "Course Name",
-        "Course Description",
-        "Discipline",
-        "Department",
-        "Type",
-        "Grade",
-        "MaxGrade",
-        "Credit Value",
-        "IntegrationId",
-        "Year Offered",
-    ],
-    "StudentCourses": [
-        "Student ID",
-        "Course Code",
-        "IntegrationId",
-        "Course Name",
-        "Completion Date",
-        "Final Mark",
-        "Credits Earned",
-        "Alternate Course Code",
-        "Potential Credits Earned",
-        "Term Grade",
-    ],
-    "StudentAttendance": [
-        "School Number",
-        "Absence Date",
-        "Absence Category",
-        "Student Number",
-    ],
-}
-
-#: Entities written as plain UTF-8 (NO BOM) because a strict downstream parser
-#: treats the BOM as part of the case-sensitive first header. The contract's own
-#: statement of the rule; ``DataLoader.csv_encoding`` is the code SSOT and
-#: ``test_loader_encoding_policy_matches_the_contract`` pins the two together.
-NO_BOM_ENTITIES: frozenset[str] = frozenset({"StudentAttendance"})
-
 UTF8_BOM = b"\xef\xbb\xbf"
-
-_ROSTERING = frozenset({"Students", "Staff", "Family", "Classes", "Enrollments"})
-
-#: Per config, the entity CSVs THIS module's contract run is expected to leave on
-#: disk — the single source both the fixtures and the assertions read.
-#:
-#: This is deliberately NOT derived from the config: it is
-#: ``config.active_entities() ∩ entities whose source files the fixture supplies``.
-#: ``sd51myedbc`` actively enables StudentAttendance, but its fixture supplies no
-#: absence GDEs on purpose (the skip-on-empty pin — a missing attendance drop must
-#: never block rostering), so StudentAttendance is absent from its expected set.
-#: Deriving this from `active_entities()` would erase exactly that pin.
-#:
-#: Its VALUES are not free-floating: ``test_expected_entities_track_active_entities``
-#: pins every entry against the real config plus :data:`DELIBERATELY_UNCOVERED`, so
-#: neither erosion direction can pass silently (see that test).
-EXPECTED_ENTITIES: dict[str, frozenset[str]] = {
-    "myedbc": _ROSTERING,
-    "sd40myedbc": _ROSTERING,
-    "sd48myedbc": _ROSTERING,
-    "sd51myedbc": _ROSTERING,  # StudentAttendance enabled, absence GDEs deliberately absent
-    "sd54myedbc": _ROSTERING,
-    "sd60myedbc": _ROSTERING,
-    "sd74myedbc": _ROSTERING,
-    "sd51attendance": frozenset({"StudentAttendance"}),
-    "mbp_all": _ROSTERING | {"CourseInfo", "StudentCourses"},
-    "mbp_core": frozenset({"Students", "CourseInfo", "StudentCourses"}),
-    "mbponly": frozenset({"CourseInfo", "StudentCourses"}),
-}
 
 #: The ONLY entities a config actively enables that this module's fixtures
 #: deliberately do NOT supply sources for — i.e. the only sanctioned gap between
@@ -807,10 +712,8 @@ def _order_failure_message(sis: str, entity: str, actual: list[str]) -> str:
         f"  actual:                   {actual}\n"
         f"  missing: {missing or 'none'} | unexpected: {unexpected or 'none'}\n"
         f"  The authority for this column set AND its order is {ORDER_AUTHORITY}\n"
-        f"  (authored in plan 0038 S2b; until it lands, this module's OUTPUT_SCHEMA is the\n"
-        f"  only in-repo statement of the contract).\n"
-        f"  Emitted columns are treated as POSITIONAL: order-sensitivity is CONFIRMED for\n"
-        f"  StudentAttendance (see src/etl/transformers/student_attendance.py) and NOT yet\n"
+        f"  Emitted columns are treated as POSITIONAL: order-sensitivity is ESTABLISHED IN CODE\n"
+        f"  for StudentAttendance (see src/etl/transformers/student_attendance.py) and NOT\n"
         f"  confirmed with the partner for the rostering / course feeds, so we pin the\n"
         f"  emitted order and require importer re-confirmation before changing it — this is\n"
         f"  a partner-visible change that MAY be rejected or silently mis-read.\n"
@@ -981,7 +884,7 @@ def test_loader_encoding_policy_matches_the_contract():
 
 
 def test_pack_smoke_rostering_entities_match_the_expected_entity_table():
-    """The release-gate exe smoke must not drift from this module's contract table.
+    """The release-gate exe smoke must not drift from the contract table.
 
     `scripts/ci_flet_pack_smoke.py` runs the packed exe against the SD74 fixture
     and asserts a hardcoded rostering-entity list. `EXPECTED_ENTITIES` is the
@@ -989,11 +892,12 @@ def test_pack_smoke_rostering_entities_match_the_expected_entity_table():
     an entity to SD74's output without updating the smoke would otherwise leave
     the release gate silently checking the old set.
 
-    The anchor is deliberately `EXPECTED_ENTITIES["sd74myedbc"]`, not `_ROSTERING`
-    (they are the same object today, by identity). `_ROSTERING` is a fixture-side
-    convenience; the smoke asserts what the RELEASE artifact must produce for
-    SD74. Re-anchoring to `_ROSTERING` would mean a future shrink of this module's
-    SD74 fixture silently demanded the release gate shrink with it.
+    The anchor is deliberately `EXPECTED_ENTITIES["sd74myedbc"]`, not
+    `contract_schema.ROSTERING_ENTITIES` (they are the same object today, by
+    identity). The latter names the 5-CSV rostering SET; the smoke asserts what
+    the RELEASE artifact must produce for SD74. Re-anchoring to it would mean a
+    future shrink of this module's SD74 fixture silently demanded the release
+    gate shrink with it.
     """
     assert frozenset(smoke._ROSTERING_ENTITIES) == EXPECTED_ENTITIES["sd74myedbc"], (
         f"ci_flet_pack_smoke._ROSTERING_ENTITIES={sorted(smoke._ROSTERING_ENTITIES)} disagrees with "

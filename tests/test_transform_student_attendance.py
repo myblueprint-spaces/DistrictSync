@@ -19,17 +19,20 @@ import pytest
 
 from src.config.loader import load_config
 from src.etl.transformer import DataTransformer
+from tests.contract_schema import OUTPUT_SCHEMA
 
 # The 4 required SpacesEDU columns in exact case-sensitive order. The contract
 # permits dropping every optional field after Student Number, so these are the
 # entire output — no trailing blank columns.
-EXPECTED_COLUMNS = [
-    "School Number",
-    "Absence Date",
-    "Absence Category",
-    "Student Number",
-]
-POPULATED = ("School Number", "Absence Date", "Absence Category", "Student Number")
+#
+# LAYER NOTE — the VALUE is shared, the LAYER is not. This module asserts the
+# shape of the transformer's IN-MEMORY frame (pre-loader); tests/test_contract.py
+# asserts the ON-DISK header of the written CSV. Two genuinely different layers
+# that must agree, so they now read the same published contract
+# (tests/contract_schema.py -> docs/developer/output-contract.md) instead of
+# each restating it. Asserting here against a local copy would let the frame and
+# the file drift apart while both stayed green.
+EXPECTED_COLUMNS = OUTPUT_SCHEMA["StudentAttendance"]
 
 
 def _run(df, mapping, global_config, period_df=None):
@@ -130,8 +133,7 @@ class TestPortionRowCount:
         result = _run(df, student_attendance_mapping, attendance_global_config)
         assert len(result) == 2
         # Two IDENTICAL rows (no AM/PM column — multiplicity carries the half-days).
-        cols = list(POPULATED)
-        assert result.iloc[0][cols].equals(result.iloc[1][cols])
+        assert result.iloc[0][EXPECTED_COLUMNS].equals(result.iloc[1][EXPECTED_COLUMNS])
 
     def test_half_day_produces_one_row(self, student_attendance_mapping, attendance_global_config):
         df = pd.DataFrame(
@@ -194,7 +196,6 @@ class TestOutputShape:
         result = _run(student_daily_absences_df, student_attendance_mapping, attendance_global_config)
         # Exactly the 4 required columns, in order — no extra/blank columns.
         assert list(result.columns) == EXPECTED_COLUMNS
-        assert list(result.columns) == list(POPULATED)
         assert len(result.columns) == 4
 
     def test_all_columns_are_populated(

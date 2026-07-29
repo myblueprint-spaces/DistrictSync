@@ -271,11 +271,17 @@ class StudentAttendanceTransformer(BaseTransformer):
 
     @staticmethod
     def _derive_row_count(absent_code: str, portion_value: Any, portion_rule: dict[str, Any]) -> int:
-        """Half-day row multiplicity from the portion rule.
+        """Half-day row multiplicity from the portion rule, checked IN THIS ORDER:
 
-        full-day portion (== ``full_day_value``) → ``full_day_rows`` (2);
-        tardy code → ``tardy_rows`` (1); any other present absence →
-        ``default_rows`` (1).
+        1. tardy code (== ``tardy_code``) → ``tardy_rows`` (1). Checked FIRST, so
+           a tardy recorded against a full-day portion stays ONE row — the
+           portion is never consulted for a tardy.
+        2. else full-day portion (== ``full_day_value``) → ``full_day_rows`` (2).
+        3. else (partial day, or an unparseable portion) → ``default_rows`` (1).
+
+        The precedence is load-bearing, not incidental: stating it the other way
+        round describes a different feed. Callers drop blank-Absent-Code rows
+        before reaching here.
         """
         if absent_code.upper() == str(portion_rule["tardy_code"]).upper():
             return int(portion_rule["tardy_rows"])
