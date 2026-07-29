@@ -14,8 +14,12 @@ guarantee.
 """
 
 import contextlib
+import importlib.util
 import logging
+import os
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import keyring
 import pandas as pd
@@ -24,9 +28,49 @@ import yaml
 from keyring.backend import KeyringBackend
 
 from src.etl.transformer import DataTransformer
+from src.utils.paths import _DATA_DIR_ENV_VAR
+
+# ---------------------------------------------------------------------------
+# The standalone CI smoke script, loaded ONCE by path and registered in
+# sys.modules so any test module can plainly ``import ci_flet_pack_smoke``.
+# ``scripts/`` is not an importable package, and the script deliberately never
+# imports ``src`` — the marker/seam PARITY tests (which pin its constants to the
+# src code that emits them) are the only thing keeping the two in step, so they
+# must all reach the same loaded module. Cheap: the module body is constants and
+# function defs over stdlib imports only (psutil/pefile are function-local).
+# ---------------------------------------------------------------------------
+_CI_SMOKE_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "ci_flet_pack_smoke.py"
+
+
+def _load_ci_smoke_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("ci_flet_pack_smoke", _CI_SMOKE_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Register BEFORE exec (the canonical importlib recipe): `@dataclass` resolves
+    # `cls.__module__` through `sys.modules`, so an unregistered path-load blows up
+    # on any dataclass in the script.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_CI_SMOKE_MODULE = _load_ci_smoke_module()
+
+
+@pytest.fixture(scope="session")
+def ci_smoke_module() -> ModuleType:
+    """The loaded ``scripts/ci_flet_pack_smoke.py`` (see the module-level note above)."""
+    return _CI_SMOKE_MODULE
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    # Step 0 of the real resolution ladder is the DISTRICTSYNC_DATA_DIR override
+    # (src/utils/paths.py). Clear it for the WHOLE session, before any fixture —
+    # including session/module-scoped ones — can resolve a profile: the per-test
+    # ``monkeypatch.delenv`` in ``isolated_user_profile`` runs too late to protect
+    # a higher-scoped fixture, and a developer or CI shell that exports it (the exe
+    # smokes do) would otherwise redirect a test run's profile out from under us.
+    os.environ.pop(_DATA_DIR_ENV_VAR, None)
     config.addinivalue_line(
         "markers",
         "real_user_data_dir: opt out of the autouse user_data_dir isolation so a "
@@ -145,6 +189,12 @@ def isolated_user_profile(request: pytest.FixtureRequest, tmp_path: Path, monkey
     the patched seam — the canary is the tripwire, not a mechanical impossibility.
     """
     data_dir = tmp_path / ".districtsync"
+
+    # Step 0 of the real resolution ladder is the DISTRICTSYNC_DATA_DIR override
+    # (src/utils/paths.py). ``pytest_configure`` already clears it session-wide;
+    # this per-test delenv also UNDOES any leak from a test that set it itself,
+    # for the ``real_user_data_dir`` tests that drive the real seam.
+    monkeypatch.delenv(_DATA_DIR_ENV_VAR, raising=False)
 
     def _fake_user_data_dir() -> Path:
         data_dir.mkdir(parents=True, exist_ok=True)

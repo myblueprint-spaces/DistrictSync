@@ -25,10 +25,12 @@ jobs:
       matrix:
         include:
           # Per-OS desktop flavor (RC6): warm-up, cache key, and `flet pack` MUST
-          # provably agree. Windows/macOS default to `full`; Linux to `light`
-          # (PLAT-0b proved light is enough — no media needs `full`).
+          # provably agree. ALL THREE now ship `light` (D-0037-1, 2026-07-28): the
+          # app plays no audio or video, so the `full` client's media stack was
+          # tens of MB of dead weight in every district download. Linux has shipped
+          # `light` since PLAT-0b; this run is the Windows/macOS evidence.
           - os: windows-latest
-            flavor: full
+            flavor: light
             sep: ";"
             require_close: "--require-close"
             # The brand icon runtime surface (`page.window.icon`) + the Explorer exe icon
@@ -42,7 +44,7 @@ jobs:
             require_close: ""
             icon_arg: ""
           - os: macos-latest
-            flavor: full
+            flavor: light
             sep: ":"
             require_close: ""
             icon_arg: ""
@@ -193,15 +195,66 @@ jobs:
           fi
           python scripts/ci_flet_pack_smoke.py --assert-embed "$MANIFEST"
 
+      # Size evidence for the flavor decision — COMPARABLE across OSes: always the
+      # total BYTES of the shipped artifact (recursively summed for the macOS .app,
+      # which is a directory), never `du -sh`'s block-rounded human string. Written
+      # to the step summary so all three OSes' numbers land in ONE greppable place
+      # instead of three separate job logs (the summary retains with the run, exactly
+      # like the logs do — this is about findability, not longevity).
       - name: Echo measured artifact size (size budget)
         shell: bash
         run: |
           if [ -f "dist/DistrictSync.exe" ]; then F="dist/DistrictSync.exe";
-          elif [ -d "dist/DistrictSync.app" ]; then F="dist/DistrictSync.app"; \
-            echo "macOS .app bundle size:"; du -sh "$F"; exit 0;
+          elif [ -d "dist/DistrictSync.app" ]; then F="dist/DistrictSync.app";
           else F="dist/DistrictSync"; fi
           ls -la "$F" || true
-          python -c "import os,sys; p=sys.argv[1]; print(f'measured size: {os.path.getsize(p)/1e6:.1f} MB')" "$F" || true
+          # bytes + MB in one shot; a directory (the macOS .app) is summed recursively.
+          SIZES=$(python -c "import os,sys;p=sys.argv[1];j=os.path.join;t=sum(os.path.getsize(j(r,f)) for r,_d,fs in os.walk(p) for f in fs if os.path.isfile(j(r,f))) if os.path.isdir(p) else os.path.getsize(p);print(t, f'{t/1e6:.1f}')" "$F")
+          SIZE=${SIZES%% *}
+          MB=${SIZES##* }
+          echo "measured size: $SIZE bytes (${MB} MB)"
+          {
+            echo "### Packed artifact size"
+            echo ""
+            echo "| runner | desktop flavor | bytes | MB |"
+            echo "|---|---|---|---|"
+            echo "| \`${{ matrix.os }}\` | \`${{ matrix.flavor }}\` | $SIZE | $MB |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------------------------------------------------------------------
+      # CLI smokes — the packed artifact's OTHER branch (--sis/--input/--output)
+      # ---------------------------------------------------------------------
+      # The GUI smoke below proves a window opens. Nothing proved the same exe still
+      # CONVERTS — the branch every district actually runs nightly — so a packaging
+      # regression in the ETL path could ship. Four phases against the real artifact,
+      # exit codes primary and strings secondary. Only phase 3 (`write-run`) converts
+      # the fixture end-to-end; 1 starts the exe, 2 previews, 4 boots on a plant.
+      #
+      # ONE invocation, `--phase all`: the phase ORDER is load-bearing (phase 2 pins
+      # history.db absent so phase 3's "the store was created" check is unambiguous;
+      # phase 4 plants a config.json and so must run last) and it lives in exactly one
+      # place — CLI_SMOKE_PHASES in the script. Four separate workflow steps would have
+      # been a second, hand-kept copy of that order, free to drift silently. The script
+      # prints `-- <phase> --` per phase and `cli smoke: FAIL (<phase>)`, so which phase
+      # failed stays obvious in the log.
+      #
+      # NO xvfb: these open no window. Absolute paths throughout (the frozen exe
+      # chdirs); the fixture defaults to the committed SD74 snapshot input, resolved
+      # from the script's own repo root, so it is NOT re-specified here.
+      # DISTRICTSYNC_DATA_DIR points the run at a throwaway profile
+      # (src/utils/paths.user_data_dir step 0 — platformdirs ignores LOCALAPPDATA on
+      # Windows, so this env var is the only way to keep a frozen exe off the runner's
+      # real profile); the script REFUSES to run any phase without it. The profile dir
+      # lives under $RUNNER_TEMP and is discarded with the runner — phase 4 removes only
+      # the config.json it planted, so the log survives for the failure diagnostics.
+      - name: CLI smokes — version, dry run, write run, corrupt profile
+        shell: bash
+        env:
+          DISTRICTSYNC_DATA_DIR: ${{ runner.temp }}/dsync-smoke-profile
+        run: |
+          python scripts/ci_flet_pack_smoke.py "$GITHUB_WORKSPACE/dist" DistrictSync \
+            --cli-smoke --phase all \
+            --work-dir "$RUNNER_TEMP/dsync-smoke-work"
 
       # Smoke the REAL exe: PE subsystem (win) + offline-embed (all, gating) +
       # zero-orphan close (win gating via --require-close; lin/mac INFO-only).

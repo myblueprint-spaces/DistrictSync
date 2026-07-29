@@ -499,14 +499,33 @@ def _emit_run_log(
     _log_run_record(record, error=error)
 
 
-def _store_run_record(record: dict[str, Any], *, source: str) -> bool:
+def _store_run_record(record: dict[str, Any], *, source: str, dry_run: bool) -> bool:
     """Best-effort store write — STRICTLY NON-FATAL (D2b): never raises, never masks a caller error.
 
     ``write_run_record`` already swallows ``sqlite3.Error`` / ``OSError``; this extra guard
     also swallows anything unexpected (a bug, an import problem) so a store write can NEVER
     change ``run_pipeline``'s result, exit code, CSVs, or — critically at the failure site —
     mask the original ETL exception. Returns whether the row was written.
+
+    **A dry run never enters the ledger** (plan 0038, flag 7). ``--dry-run`` writes no
+    files, so recording it as a run painted "your roster is syncing" on the Home verdict
+    and added a phantom Run History row for a preview that delivered nothing — a live
+    defect the moment support asks a partner to run a dry run. The gate lives HERE, at the
+    **pipeline's** single store sink, so no ``run_pipeline`` path (success, failure, or
+    early-exit) can forget it — and ``dry_run`` is a REQUIRED keyword-only argument so the
+    type-checker enforces that claim rather than a default quietly re-opening the hole. The
+    ``__DISTRICTSYNC_RUN__`` diagnostic log line is emitted for a dry run exactly as before,
+    so ops loses nothing (INFO, not DEBUG — ``config/logging.conf`` pins INFO, so the skip
+    line must reach ``etl_tool.log`` or the log/store divergence looks unexplained).
+
+    SCOPE, precisely: this is the pipeline's sink, not the process's only one.
+    ``src/ui_flet/screens/convert.py`` (``_record_manual_run``) calls ``write_run_record``
+    directly for a manual Convert, so it does NOT pass through this gate — Convert has no
+    preview mode today, and would need its own gate if one is ever added.
     """
+    if dry_run:
+        logger.info("Dry run — no run-history record written (the diagnostic log line stands)")
+        return False
     try:
         return write_run_record(record, source=source)
     except Exception as exc:  # noqa: BLE001 - the store is a best-effort sink; it must never propagate
@@ -514,7 +533,7 @@ def _store_run_record(record: dict[str, Any], *, source: str) -> bool:
         return False
 
 
-def _record_early_failure(t0: float, *, source: str, sis_type: str, error: str, category: str) -> None:
+def _record_early_failure(t0: float, *, source: str, sis_type: str, error: str, category: str, dry_run: bool) -> None:
     """Record a pre-ETL failure (bad input dir / config) to BOTH sinks before an early ``sys.exit``.
 
     The ``sys.exit(1)`` paths inside ``run_pipeline`` re-raise through the ``except SystemExit``
@@ -523,6 +542,10 @@ def _record_early_failure(t0: float, *, source: str, sis_type: str, error: str, 
     sees the failure, Run History shows nothing). Same guard shape as the failure sink (D2b):
     recording can never raise, never delays or changes the exit code, and the free-text ``error``
     goes to the diagnostic-log line ONLY — the store carries the bounded ``category`` (privacy split).
+
+    ``dry_run`` is REQUIRED and keyword-only for the same reason it is on
+    :func:`_store_run_record`: every early-exit sink must forward the caller's preview flag,
+    and a default would let a new ``sys.exit`` path silently record a preview as a run.
     """
     try:
         record = build_run_record(
@@ -534,7 +557,8 @@ def _record_early_failure(t0: float, *, source: str, sis_type: str, error: str, 
             error_category=category,
         )
         _log_run_record(record, error=error)  # rich free-text error → LOG only
-        _store_run_record(record, source=source)  # store carries error_category only
+        # store carries error_category only — and nothing at all for a dry run
+        _store_run_record(record, source=source, dry_run=dry_run)
     except Exception as record_exc:  # noqa: BLE001 - recording must never block the early exit
         logger.error(f"Failed to record the failed run ({record_exc}); exiting anyway")
 
@@ -610,6 +634,11 @@ def run_pipeline(
     best-effort and strictly non-fatal — it never changes the result, the CSVs,
     or the exit-code contract (0/1/2/3).
 
+    ``dry_run=True`` writes NO run-history record on ANY path (success, failure, or
+    early exit) — a preview that writes nothing must not appear in Run History or
+    move the Home verdict. Its ``__DISTRICTSYNC_RUN__`` diagnostic log line is
+    unchanged (see :func:`_store_run_record`).
+
     Two boundaries fail LOUD rather than let an unattended run report success —
     both raise, so ``main`` exits **1** (no new exit code): no usable required
     input on the way IN, and :func:`check_delivery_integrity` on the way OUT
@@ -636,6 +665,7 @@ def run_pipeline(
                 sis_type=sis_type,
                 error=error,
                 category=RunErrorCategory.NO_INPUT.value,
+                dry_run=dry_run,
             )
             sys.exit(1)
         logger.info(f"Input directory: {input_dir.resolve()}")
@@ -651,6 +681,7 @@ def run_pipeline(
                 sis_type=sis_type,
                 error=str(e),
                 category=RunErrorCategory.CONFIG.value,
+                dry_run=dry_run,
             )
             sys.exit(1)
         except ValueError as e:
@@ -661,6 +692,7 @@ def run_pipeline(
                 sis_type=sis_type,
                 error=str(e),
                 category=RunErrorCategory.CONFIG.value,
+                dry_run=dry_run,
             )
             sys.exit(1)
 
@@ -800,7 +832,7 @@ def run_pipeline(
             error_category=RunErrorCategory.NONE.value,
         )
         _log_run_record(record)
-        _store_run_record(record, source=resolved_source)
+        _store_run_record(record, source=resolved_source, dry_run=dry_run)
 
         return PipelineResult(
             entity_counts={name: len(df) for name, df in outputs.items()},
@@ -830,7 +862,8 @@ def run_pipeline(
                 error_category=_classify_error_category(e),
             )
             _log_run_record(record, error=str(e))  # rich free-text error → LOG only
-            _store_run_record(record, source=resolved_source)  # store carries error_category only
+            # store carries error_category only — and nothing at all for a dry run
+            _store_run_record(record, source=resolved_source, dry_run=dry_run)
         except Exception as record_exc:  # noqa: BLE001 - recording must never mask the ETL failure
             logger.error(f"Failed to record the failed run ({record_exc}); re-raising the original error")
         raise
