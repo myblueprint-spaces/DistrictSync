@@ -9,6 +9,15 @@
 #
 _base: sd51myedbc
 
+# Overrides the inherited SD51 `district_name` so the two SD51 rows are
+# distinguishable in every district picker. Without it both configs render
+# "SD51 - Boundary School District" and picking between them is a coin flip —
+# see tests/test_ui_flet_mapping_catalog.py::
+# test_bundled_catalog_renders_no_two_identical_labels. Every
+# `friendly_district_name` consumer inherits the fix (plan 0038 S3, flag 10);
+# a `variant_label` schema field is deliberately deferred to Phase 2.
+district_name: "SD51 - Boundary School District · Attendance"
+
 global_config:
   enabled_entities:
     - StudentAttendance

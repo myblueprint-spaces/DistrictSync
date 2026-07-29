@@ -571,14 +571,93 @@ def filter_enabled_entities(names: Iterable[str], enabled: Optional[Iterable[str
     return [name for name in names if name in enabled_set]
 
 
+# The shape a `district_domains:` entry must have — a LOWERCASE domain name: starts
+# alphanumeric, at least one dot, an alphabetic TLD of 2+, and NO `@`. The `@` exclusion
+# is the load-bearing part: it means a full email address pasted into the list fails
+# `make validate-config` LOUDLY, in CI, before it could ship a real person's address in a
+# public repo. Lowercase-only because the author writes this value by hand and matching
+# compares it against an already-normalised (lowercased) domain — a mixed-case row would
+# silently never match. Its case-INSENSITIVE twin, for the value the admin TYPES, is
+# ``validators._IDENTITY_DOMAIN_RE``: two rules for two jobs, tied together by a parity
+# test (tests/test_config_district_domains.py) asserting every shipped domain satisfies
+# both.
+_DISTRICT_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$")
+
+
 class MappingConfig(BaseModel):
     """Root config model — validated representation of the YAML mapping file."""
+
+    # DECLARED EXPLICITLY (plan 0038 S3) rather than left to Pydantic's default.
+    # ``extra="ignore"`` is what makes a mapping YAML FORWARD-COMPATIBLE: a config
+    # authored against a newer build — carrying a root key this build has never heard of
+    # — still loads and runs instead of failing the whole district's nightly sync over a
+    # key it does not need. That is a deliberate contract, not an accident, and it was
+    # holding only by Pydantic's default while FIVE leaf models declare
+    # ``extra="forbid"`` — exactly these: `EmailDerivedDate`, `FieldEmailFormat`,
+    # `FieldEnrollStatus`, `RowFilter`, `CrossEnrollmentConfig`. Everything else INHERITS
+    # ``ignore``, and the explicit negatives matter as much as the positives:
+    # `FieldTransform`, `FieldNameConfig`, `GlobalConfig` and `EntityConfig` do NOT forbid
+    # — which is why a typo'd `enabled_entities` is silently dropped rather than rejected
+    # (S2b's panel finding; see `docs/developer/output-contract.md` -> Config schema,
+    # which documents this asymmetry and the additivity rule that rests on it). Pinned by
+    # `tests/test_config_district_domains.py::test_the_forbid_and_ignore_models_are_exactly_as_documented`,
+    # because this is the SECOND time this list has been written down wrong from memory.
+    model_config = ConfigDict(extra="ignore")
 
     version: Union[str, float]
     sis: str
     district_name: str = ""
+    # The district's PUBLIC staff email domain(s) — e.g. ``["sd48.bc.ca"]``. Presentation
+    # metadata only: it scopes which rows a district picker shows to an admin whose work
+    # email is at one of these domains (plan 0038). It is NOT access control (every
+    # mapping ships in the binary; an unmatched admin sees the full list) and it is NOT
+    # personal data (a school district publishes its own staff domain).
+    #
+    # STRUCTURALLY invisible to the ETL: ``to_raw_dict`` emits only ``mappings`` and
+    # ``global_config``, so no top-level field here can reach a transformer — which is
+    # why this is the right home for it and why adding it changes no output byte.
+    # Deliberately top-level beside ``district_name`` (its precedent) rather than inside
+    # ``global_config``, which is the ETL's own namespace. NOTE the tripwire recorded when
+    # ``district_name`` was the only one: a FOURTH non-ETL field here should trigger
+    # splitting these into a nested presentation section.
+    district_domains: list[str] = Field(default_factory=list)
     global_config: GlobalConfig = Field(default_factory=GlobalConfig)
     mappings: dict[str, EntityConfig]
+
+    @model_validator(mode="after")
+    def validate_district_domains(self):
+        """Fail LOUDLY on a `district_domains:` entry that is not a lowercase domain.
+
+        The gate that keeps a plaintext personal email address out of this public repo:
+        an entry containing ``@`` — i.e. someone pasted a whole address where a domain
+        belongs — fails `make validate-config`, in CI, before it can be merged. Also
+        rejects uppercase (which could never match a normalised domain), whitespace, and
+        anything without a dot + alphabetic TLD.
+
+        Raises rather than warns, on purpose. A silently-dropped bad row would leave the
+        district *unclaimed* — which under the fail-open list rule looks completely
+        normal (its admin just sees every district), so the mistake would never surface.
+
+        **The message NEVER echoes the offending value.** The single most likely thing to
+        trip this validator is a pasted personal email address — and this error surfaces in
+        `make validate-config` output and a PUBLIC CI log, so quoting the value would
+        republish the exact leak the check exists to stop (the same rule
+        `validators.validate_identity_email` and `scripts/check_no_emails.py` already
+        follow). The entry is located by its INDEX and described by shape; the author has
+        the file open.
+        """
+        for index, entry in enumerate(self.district_domains, start=1):
+            if not isinstance(entry, str) or not _DISTRICT_DOMAIN_RE.match(entry):
+                shape = "a full email address (it contains '@')" if isinstance(entry, str) and "@" in entry else "not"
+                raise ValueError(
+                    f"district_domains entry {index} of {len(self.district_domains)} in config "
+                    f"'{self.sis}' is {shape} a bare lowercase domain name. Use the bare domain "
+                    "(e.g. 'sd48.bc.ca') — never a full email address, never uppercase. This list "
+                    "holds a district's PUBLIC staff email domain; a personal address must never be "
+                    "committed to this repository, so the offending value is deliberately NOT quoted "
+                    "here (this message reaches a public CI log)."
+                )
+        return self
 
     @model_validator(mode="after")
     def check_required_entities(self):

@@ -22,8 +22,8 @@ def generate_student_email(row: pd.Series, format_str: str, sanitize: bool = Fal
     becomes ``{legal surname}.{usual first name}@sd54.bc.ca`` — matching
     the lowercased column names. String row values are similarly
     normalised (lowercased, whitespace trimmed, internal spaces collapsed)
-    so double-barrelled surnames like "Goodrick Hill" produce a
-    deliverable local part ("goodrickhill"). NaN/None values become "".
+    so a double-barrelled surname like "Sample Surname" produces a
+    deliverable local part ("samplesurname"). NaN/None values become "".
 
     When ``sanitize`` is True (opt-in), each substituted STRING value is
     reduced to ``[a-z0-9]`` (lowercase) so apostrophes/hyphens/other

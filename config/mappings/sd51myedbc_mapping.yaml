@@ -4,6 +4,15 @@ _base: myedbc
 version: '1.9'
 sis: MyEducationBC
 district_name: SD51 - Boundary School District
+# The district's PUBLIC staff email domain. It WILL scope which district rows this
+# district's admins see in the pickers once the picker filter lands (plan 0038,
+# S4a/S5) — NOTHING READS THIS KEY TODAY; every picker still shows all eleven
+# configs. Presentation metadata, not access control and not personal data;
+# structurally invisible to the ETL.
+# Inherited by `sd51attendance` via `_base` — deliberate: the two SD51 tiers
+# share one staff domain, so an SD51 admin matches BOTH (the matched-several
+# path), which is exactly why each carries a distinct `district_name`.
+district_domains: ["sd51.bc.ca"]
 
 global_config:
   # SD51 has no enabled_entities of its own and deep-merge REPLACES lists, so

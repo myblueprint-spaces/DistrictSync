@@ -1,11 +1,34 @@
 #!/bin/sh
-# claugentic-dev-harness — architecture-tree gate at COMMIT time. Checked once per
-# `git commit`, locally, before the commit is written; a non-zero exit aborts it.
-# `--staged` scopes it to what's being committed. A git failure must never block a
-# commit, so resolve the root defensively and let a clean state pass.
+# Commit-time gates. Checked once per `git commit`, locally, before the commit is
+# written; a non-zero exit aborts it. A git failure must never block a commit, so
+# resolve the root defensively and let a clean state pass.
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
+
+# 1. claugentic-dev-harness architecture-tree gate. `--staged` scopes it to what is
+#    being committed.
 out=$("$PY" "$root/scripts/claugentic-check_architecture_tree.py" --staged 2>&1)
-[ $? -eq 0 ] && exit 0
-printf '%s\n' "$out"
-exit 1
+if [ $? -ne 0 ]; then
+    printf '%s\n' "$out"
+    exit 1
+fi
+
+# 2. No plaintext email address in a tracked file. This repo is PUBLIC and handles
+#    student PII, so the cheapest place to stop a pasted district contact is before
+#    the commit exists. Whole-index scan (NOT `--staged`): a freshly `git add`ed file
+#    is already in the index so a new leak is seen, and re-scanning the rest is
+#    sub-second.
+#
+#    HONEST SCOPE: the script reads the WORKTREE copy of each indexed path, so a leak
+#    that was staged and then edited out of the working copy is committed WITHOUT being
+#    seen here (see the script's third declared gap). This hook REDUCES the chance of a
+#    leak; it does not prevent one. CI runs the same scan on a clean checkout, where
+#    worktree == index, and is what actually gates the merge — it also covers a
+#    `--no-verify` commit and any contributor without `core.hooksPath` set.
+out=$("$PY" "$root/scripts/check_no_emails.py" 2>&1)
+if [ $? -ne 0 ]; then
+    printf '%s\n' "$out"
+    exit 1
+fi
+
+exit 0

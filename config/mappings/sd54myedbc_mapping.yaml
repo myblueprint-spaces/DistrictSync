@@ -34,6 +34,12 @@ _base: myedbc
 version: '1.0'
 sis: MyEducationBC
 district_name: SD54 - Bulkley Valley School District
+# The district's PUBLIC staff email domain. It WILL scope which district rows this
+# district's admins see in the pickers once the picker filter lands (plan 0038,
+# S4a/S5) — NOTHING READS THIS KEY TODAY; every picker still shows all eleven
+# configs. Presentation metadata, not access control and not personal data;
+# structurally invisible to the ETL.
+district_domains: ["sd54.bc.ca"]
 
 global_config:
   school_year_sources:
@@ -54,8 +60,9 @@ mappings:
       # SD54 convention: <legal-surname>.<preferred-first-name>@sd54.bc.ca
       # Example: John Doe (preferred name John) → doe.john@sd54.bc.ca.
       # generate_student_email lowercases values and collapses internal spaces,
-      # so double-barrelled surnames like "Goodrick Hill" become
-      # "goodrickhill.skyler@sd54.bc.ca".
+      # so a double-barrelled surname like "Sample Surname" becomes
+      # "samplesurname.placeholder@sd54.bc.ca" (an obviously-invented example —
+      # never a real contact; this repo is public and email-gated).
       "Email Address":
         format: "{legal surname}.{usual first name}@sd54.bc.ca"
 

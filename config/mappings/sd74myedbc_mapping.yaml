@@ -5,6 +5,12 @@ _base: myedbc
 version: '1.9'
 sis: MyEducationBC
 district_name: SD74 - Gold Trail School District
+# The district's PUBLIC staff email domain. It WILL scope which district rows this
+# district's admins see in the pickers once the picker filter lands (plan 0038,
+# S4a/S5) — NOTHING READS THIS KEY TODAY; every picker still shows all eleven
+# configs. Presentation metadata, not access control and not personal data;
+# structurally invisible to the ETL.
+district_domains: ["sd74.bc.ca"]
 
 global_config:
   school_year_sources:

@@ -351,6 +351,38 @@ def test_list_configs_enumerates_all_ids_in_order(bundle_dir: Path) -> None:
     assert all(s.loaded_ok for s in summaries)
 
 
+def test_bundled_catalog_renders_no_two_identical_labels(bundle_dir: Path) -> None:
+    """G13 — no two BUNDLED catalog rows render the same display text.
+
+    The highest-consequence wrong click in the product is picking the wrong district (a
+    wrong mapping ships a wrong roster). A picker that renders two rows reading exactly
+    the same makes that click a coin flip the admin cannot see — so identical display
+    text is a product defect, not a cosmetic one.
+
+    ``ConfigSummary.district_name`` IS the display text every picker paints
+    (``screens/setup``, ``screens/convert``, ``screens/mapping``), so the invariant is
+    asserted where it is produced rather than in each view. Scoped to the BUNDLED set —
+    the only catalog this repo controls; a user-dropped YAML in
+    ``~/.districtsync/mappings/`` is handled by runtime disambiguation (S5), not by this
+    pin.
+
+    Written RED-first (plan 0038 S3): ``sd51attendance_mapping.yaml`` inherits
+    ``sd51myedbc``'s ``district_name`` via ``_base``, so today both render
+    "SD51 - Boundary School District".
+    """
+    summaries = list_configs(config_dir=bundle_dir)
+
+    by_label: dict[str, list[str]] = {}
+    for summary in summaries:
+        by_label.setdefault(summary.district_name, []).append(summary.sis_type)
+    collisions = {label: ids for label, ids in by_label.items() if len(ids) > 1}
+
+    assert not collisions, (
+        "Bundled district configs render identical picker labels — an admin cannot tell "
+        f"these rows apart: {collisions}. Give each config a distinct `district_name:`."
+    )
+
+
 def test_list_configs_includes_degraded_config_never_omits(tmp_path: Path) -> None:
     """A dir with a broken config still yields a summary for it (degraded), never omitted or crashed."""
     _write(

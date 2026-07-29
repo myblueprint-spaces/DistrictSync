@@ -28,10 +28,16 @@ class TestGenerateStudentEmail:
         assert result == "alice.smith@school.ca"
 
     def test_collapses_internal_spaces_in_values(self):
-        """Double-barrelled names ('Goodrick Hill') produce a single-token local part."""
-        row = pd.Series({"legal surname": "Goodrick Hill", "usual first name": "Skyler"})
+        """A double-barrelled surname produces a single-token local part.
+
+        The names are deliberately obvious inventions: this example is mirrored in
+        sd54myedbc_mapping.yaml's comment, which lives outside the email gate's tests/
+        allowance and therefore needs an allowlist line — so it must never be a name
+        that could have come from real district data.
+        """
+        row = pd.Series({"legal surname": "Sample Surname", "usual first name": "Placeholder"})
         result = self.transformer.generate_student_email(row, "{legal surname}.{usual first name}@sd54.bc.ca")
-        assert result == "goodrickhill.skyler@sd54.bc.ca"
+        assert result == "samplesurname.placeholder@sd54.bc.ca"
 
     def test_nan_value_becomes_empty_string(self):
         """A missing field renders as '' rather than the literal 'nan'."""

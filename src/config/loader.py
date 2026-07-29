@@ -42,9 +42,23 @@ logger = logging.getLogger(__name__)
 
 # Supported mapping-config format version (derived from the bundled configs,
 # which declare 1.0–1.9 today). Bump MINOR when the bundled configs start
-# using new same-major features; bump MAJOR only on a breaking config-format
-# change (and migrate every bundled config in the same release, so the
-# bundled set always loads clean against these constants).
+# using new same-major ETL-AFFECTING features; bump MAJOR only on a breaking
+# config-format change (and migrate every bundled config in the same release,
+# so the bundled set always loads clean against these constants).
+#
+# SCOPE (amended 2026-07-29, plan 0038 S3 — see docs/claugentic-DECISIONS.md):
+# "ETL-affecting" is the operative word. This gate exists so an OLDER build
+# refuses (or warns about) a config whose behaviour it would silently get
+# wrong — which can only happen for a key that changes what the pipeline
+# READS, TRANSFORMS or EMITS. A purely PRESENTATION key (one that
+# `MappingConfig.to_raw_dict` structurally cannot pass to a transformer, e.g.
+# `district_name`, `district_domains`) is invisible to every build: an older
+# one ignores it via `extra="ignore"` and produces byte-identical output. So
+# adding one does NOT bump the minor. Bumping anyway would be actively worse
+# than noise — half the bundled configs pin their own `version` and resolve to
+# 1.0, so the bump would fire a newer-minor WARNING on configs that are
+# perfectly compatible, training operators to ignore the one warning that
+# matters.
 SUPPORTED_CONFIG_MAJOR = 1
 SUPPORTED_CONFIG_MINOR = 9
 

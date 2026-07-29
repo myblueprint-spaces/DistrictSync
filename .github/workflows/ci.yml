@@ -17,6 +17,18 @@ jobs:
         with:
           python-version: "3.13"
 
+      # This repo is PUBLIC and handles student PII. The pre-commit hook runs the same
+      # scan, but a `--no-verify` commit (or a contributor without core.hooksPath set)
+      # bypasses it, so CI is the backstop that actually blocks the merge.
+      #
+      # Placed here, BEFORE `pip install`, because the script is stdlib-only + `git` — so
+      # a leak fails the job in ~15s instead of after the dependency install and the full
+      # suite. A leak is a disclosure; the clock matters. The script's docstring carries
+      # the allowlist model and its ONE declared gap (tests/ is exempt — synthetic data
+      # by contract).
+      - name: Check for plaintext email addresses
+        run: python scripts/check_no_emails.py
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
