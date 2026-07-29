@@ -152,3 +152,18 @@ red-teaming the falsification evidence itself. Beneficiary roles: `implementer`,
 - **Bulk text operations take an is-text filter first.** A line-ending normalizer over
   `git ls-files` stripped CRLF from five binary assets (.ico/.png); caught and restored byte-clean
   pre-commit. Never run a text transform over a tracked-file list without filtering binaries.
+
+## reliability — "Gate destructive cleanup on its subject existing; latch success AFTER the risky work"  [staged 2026-07-29, plan 0038 S4a]
+
+- A destructive side-step (purging recovery snapshots on an erasure path) must be gated on the
+  primary erasure having had something to erase — an empty Save on a fresh install must be a
+  no-op, not a purge. And an operation that ATTEMPTS deletions reports its outcome tri-state
+  (none / all / N remaining) — a fixed success note shown on every branch claims deletions that
+  may not have happened.
+- A one-shot entry latch (`entered = True`) set BEFORE the risky work turns any transient failure
+  into permanently dead buttons; set it only on success (or reset-and-re-raise) so the failure
+  REPEATS loudly instead of going quiet.
+
+Incident: plan 0038 S4a — both live-reproduced by the panel through the real control tree; the
+purge would have destroyed exactly the upgrading population's `config.corrupt-*.json` snapshots.
+Beneficiary roles: `implementer`, `lens-reviewer` (reliability).
