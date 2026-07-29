@@ -43,6 +43,16 @@ Second declared gap: this matches EMAIL-SHAPED text. An address written to evade
 scanner (``name AT district DOT ca``) is not caught, and is not the failure mode this
 guards — the realistic mistake is a copy-paste, not an evasion.
 
+Third declared gap — **the hook reads the WORKTREE, not the index.** :func:`scan` lists
+index paths but reads each file from disk, so the two diverge in one direction that
+matters: a leak that was ``git add``ed and then EDITED OUT of the working copy is **staged
+for commit yet invisible here**, so the hook passes and the leak lands in the commit. (The
+opposite direction is harmless: an unstaged leak in the working copy fails the hook early,
+which is a false alarm at worst.) Reading index blobs would close it; that is a tracked
+ROADMAP item, and CI — which runs against a clean checkout where worktree == index —
+catches this case today. Say "the hook reduces the chance of a leak"; do not say it
+prevents one.
+
 Findings are printed REDACTED. A public CI log echoing a leaked address would be a second
 publication of it; the file:line is what the author needs anyway.
 
@@ -87,7 +97,7 @@ ILLUSTRATIVE_EXAMPLES: dict[str, str] = {
     "firstlast+admission-yy@learn60.ca": "SD60 student-email template (architecture tree)",
     # Made-up people illustrating SD54's surname.firstname convention, in a config comment.
     "doe.john@sd54.bc.ca": "SD54 email-convention example (John Doe)",
-    "goodrickhill.skyler@sd54.bc.ca": "SD54 double-barrelled-surname example",
+    "samplesurname.placeholder@sd54.bc.ca": "SD54 double-barrelled-surname example (invented names)",
     # Placeholders in the plan / decision log.
     "first.last@sdnn.bc.ca": "placeholder address in the decision log",
     "x@sdnn.bc.ca": "placeholder address in a plan-review note",
@@ -151,19 +161,26 @@ def tracked_files(root: Path) -> list[str]:
 def scan(root: Path) -> tuple[list[tuple[str, int, str]], list[tuple[str, int, str, str]], int]:
     """Return ``(findings, allowed, unreadable_count)``.
 
-    Reads the WORKTREE copy of each tracked path — a deliberate simplification over
-    reading index blobs: in CI they are identical, and in the pre-commit hook the only
-    divergence is a staged-then-further-edited file, where reporting what the author
-    actually has on disk is the more useful answer.
+    Reads the WORKTREE copy of each tracked path. See the third declared gap in this
+    module's docstring for the one direction where that diverges from the index and what
+    covers it.
+
+    **Undecodable bytes are DECODED WITH REPLACEMENT, never skipped.** An email address is
+    ASCII, so it is still matchable inside a file that merely fails strict UTF-8 — a mixed
+    encoding, a stray byte, a text file with an embedded binary blob. Skipping such a file
+    would create exactly the kind of silent hole this gate exists to avoid: "no findings"
+    for a reason unrelated to the content. Only a file that cannot be OPENED at all
+    (deleted-but-still-indexed, permission denied) counts as unreadable, and that count is
+    reported so an unexpectedly large one is visible rather than inferred.
     """
     findings: list[tuple[str, int, str]] = []
     allowed: list[tuple[str, int, str, str]] = []
     unreadable = 0
     for rel in tracked_files(root):
         try:
-            text = (root / rel).read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            unreadable += 1  # binary asset, or deleted-but-still-indexed
+            text = (root / rel).read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            unreadable += 1  # deleted-but-still-indexed, or unopenable
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
             for match in EMAIL_RE.finditer(line):

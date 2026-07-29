@@ -89,7 +89,8 @@ _GEOMETRY_FIELD_PREFIX = "window_"
 # family joins automatically. Note the deliberate near-miss it also protects: the seasonal
 # window's fields are named ``sync_window_*`` precisely so they do NOT start with
 # ``window_`` — they ARE admin choices (see the naming-contract comment on those fields).
-_ADVISORY_FIELD_PREFIXES: tuple[str, ...] = (_GEOMETRY_FIELD_PREFIX, "identity_")
+_IDENTITY_FIELD_PREFIX = "identity_"
+_ADVISORY_FIELD_PREFIXES: tuple[str, ...] = (_GEOMETRY_FIELD_PREFIX, _IDENTITY_FIELD_PREFIX)
 
 
 class SettingsOverwriteRefused(RuntimeError):
@@ -437,26 +438,51 @@ class AppConfig:
            became unreadable since — or an instance that was never readable and reached a
            card by another route — must still be refused. Reading the provenance off the
            instance we are about to save is the only check that cannot go stale.
-        2. **Only ``identity_*`` fields are applied.** An unknown key is a programming
-           error and raises ``AttributeError`` loudly (a silently-ignored typo would look
-           like a save that worked); a NON-identity field name is refused with the same
-           loudness, so this entry point can never become a back door for writing
-           ``sis_type``. Identity resolution must NEVER rewrite the configured district —
-           that is a product rule, enforced structurally here.
-        3. **Failure is non-fatal and reported.** ``SettingsOverwriteRefused`` and
+        2. **Both the KEY and the VALUE are validated, and nothing is applied until ALL
+           of them pass.** The key must be a member of :data:`_IDENTITY_FIELD_NAMES`
+           (derived from ``fields(AppConfig)``, so it tracks the dataclass automatically)
+           — membership, NOT ``hasattr``, because ``hasattr`` also answers True for every
+           METHOD on this class, and ``identity_save(identity_save="x")`` would then bind
+           a string over the bound method, permanently disabling the choke point for that
+           instance. The value must satisfy the field's declared type via
+           :func:`_value_fits`, because ``config.json`` is re-read through that same
+           predicate: a mis-typed value written here (``identity_email=None`` →
+           ``"identity_email": null``) makes the WHOLE document UNREADABLE on the next
+           load, dropping the admin's district, folders and delivery settings to
+           defaults. Both raise loudly — a caller passing the wrong type has a bug, and a
+           silently-coerced value would look like a save that worked. Validation runs to
+           completion BEFORE any ``setattr``, so a bad key in a multi-field call cannot
+           leave the instance half-mutated.
+        3. **A NON-identity field is refused with the same loudness**, so this entry point
+           can never become a back door for writing ``sis_type``. Identity resolution must
+           NEVER rewrite the configured district — a product rule, enforced structurally.
+        4. **Failure is non-fatal and reported.** ``SettingsOverwriteRefused`` and
            ``OSError`` are logged and swallowed, and the return value says what happened.
            Identity is advisory: a failed save must never trap the admin at the launch
            page or break a card render. The gate simply asks again next launch.
 
         Returns ``True`` iff the settings were written. Callers persist best-effort and
         then continue regardless — never gate entry into the app on this.
+
+        Raises ``AttributeError`` for an unwritable key and ``TypeError`` for a value that
+        would corrupt the settings document. Neither is caught here: they are programming
+        errors in the CALLER, not runtime conditions to degrade around.
         """
+        field_types = _settings_field_types()
         for name, value in updates.items():
-            if not name.startswith("identity_") or not hasattr(self, name):
+            if name not in _IDENTITY_FIELD_NAMES:
                 raise AttributeError(
-                    f"identity_save() only writes identity_* settings fields; got {name!r}. "
+                    f"identity_save() only writes identity_* settings fields "
+                    f"({', '.join(sorted(_IDENTITY_FIELD_NAMES))}); got {name!r}. "
                     "Route any other settings change through AppConfig.save()."
                 )
+            if not _value_fits(value, field_types[name]):
+                raise TypeError(
+                    f"identity_save() got a {type(value).__name__} for {name!r}, which is declared "
+                    f"{field_types[name]!r}. Writing it would make config.json unreadable on the next "
+                    "load, dropping the admin's district, folders and delivery settings to defaults."
+                )
+        for name, value in updates.items():
             setattr(self, name, value)
 
         if self.settings_unreadable():
@@ -483,6 +509,19 @@ class AppConfig:
         from src.utils.validators import ALLOWED_SFTP_HOSTS
 
         return self.sftp_host.strip().lower() in ALLOWED_SFTP_HOSTS
+
+
+# The exact set of field names :meth:`AppConfig.identity_save` may write. DERIVED from the
+# dataclass, never hand-listed, so a new ``identity_*`` field is writable the moment it is
+# declared and a renamed one cannot leave a stale entry behind.
+#
+# Membership is the guard — deliberately NOT ``hasattr``. Every METHOD on this class also
+# answers ``hasattr`` True, so a ``hasattr``-based check accepts
+# ``identity_save(identity_save="x")``: it would bind a string over the bound method and
+# permanently disable the choke point on that instance while reporting success.
+_IDENTITY_FIELD_NAMES: frozenset[str] = frozenset(
+    f.name for f in fields(AppConfig) if f.name.startswith(_IDENTITY_FIELD_PREFIX)
+)
 
 
 # --------------------------------------------------------------------------- #

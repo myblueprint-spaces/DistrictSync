@@ -175,9 +175,38 @@ def test_tests_dir_is_the_only_path_allowance(fake_repo: Path) -> None:
     assert "DECLARED GAP" in allowed[0][3]
 
 
-def test_binary_and_undecodable_files_are_skipped_not_crashed(fake_repo: Path) -> None:
-    (fake_repo / "asset.bin").write_bytes(b"\x00\xff\xfe" + PLANTED.encode())
+def test_an_address_inside_undecodable_bytes_is_still_CAUGHT(fake_repo: Path) -> None:
+    """INVERTED at the Stage-7 gate — this test previously pinned the SKIP.
+
+    Skipping a file that fails strict UTF-8 was a silent hole: an email address is ASCII,
+    so it is perfectly matchable inside a mixed-encoding file, a text file with an embedded
+    binary blob, or a file with one stray byte. "No findings" would then be true for a
+    reason unrelated to the content — the exact vacuous-green shape this suite exists to
+    refuse. Decoding with ``errors="replace"`` keeps the ASCII intact and the match live.
+    """
+    (fake_repo / "asset.bin").write_bytes(b"\x00\xff\xfe" + PLANTED.encode() + b"\xfe\xff")
     subprocess.run(["git", "add", "asset.bin"], cwd=fake_repo, check=True)
+
+    findings, _allowed, unreadable = scan(fake_repo)
+
+    assert [(f[0], f[2]) for f in findings] == [("asset.bin", PLANTED)]
+    assert unreadable == 0, "an openable file is never 'unreadable' — only an unopenable one is"
+
+
+def test_a_real_binary_asset_produces_no_false_positive(fake_repo: Path) -> None:
+    """The counterweight to the inversion above: replacement decoding must not invent hits."""
+    (fake_repo / "logo.png").write_bytes(bytes(range(256)) * 8)
+    subprocess.run(["git", "add", "logo.png"], cwd=fake_repo, check=True)
+
+    findings, _allowed, _unreadable = scan(fake_repo)
+
+    assert findings == []
+
+
+def test_an_unopenable_indexed_path_is_counted_not_crashed(fake_repo: Path) -> None:
+    """A staged-then-deleted file stays in the index; the walk must survive it."""
+    _add(fake_repo, "gone.py", "X = 1\n")
+    (fake_repo / "gone.py").unlink()
 
     findings, _allowed, unreadable = scan(fake_repo)
 
@@ -248,6 +277,26 @@ def test_the_live_scan_actually_reads_files(capsys) -> None:
 
     assert len(allowed) > 100, "the scan matched almost nothing — is it reading files at all?"
     assert {rel for rel, _l, _a, _r in allowed} & {"src/ui_flet/screens/help.py", "pyproject.toml"}
+
+
+def test_the_gate_is_actually_WIRED_into_the_pre_commit_hook() -> None:
+    """A scanner nobody invokes is a scanner that never runs.
+
+    Every other test here proves the script WORKS; none of them proves anything CALLS it.
+    That is the no-vacuous-greens rule applied to an invocation rather than an assertion —
+    deleting the hook line would leave this whole file green.
+    """
+    hook = (REPO_ROOT / ".githooks" / "pre-commit").read_text(encoding="utf-8")
+
+    assert "check_no_emails" in hook
+    assert "claugentic-check_architecture_tree" in hook, "the tree gate must survive alongside it"
+
+
+def test_the_gate_is_actually_WIRED_into_ci() -> None:
+    """CI is the backstop that gates the MERGE — the hook can be skipped with --no-verify."""
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "scripts/check_no_emails.py" in ci
 
 
 def test_running_the_script_as_a_subprocess_exits_zero() -> None:

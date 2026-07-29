@@ -592,11 +592,16 @@ class MappingConfig(BaseModel):
     # authored against a newer build — carrying a root key this build has never heard of
     # — still loads and runs instead of failing the whole district's nightly sync over a
     # key it does not need. That is a deliberate contract, not an accident, and it was
-    # holding only by Pydantic's default while five leaf models (`FieldTransform`,
-    # `FieldNameConfig`, `EnrollStatus`, `RowFilter`, `CrossEnrollment`) declare
-    # ``extra="forbid"`` — so a reader could reasonably assume the root forbade too and
-    # "tighten" it. See `docs/developer/output-contract.md` -> Config schema, which
-    # documents this asymmetry and the additivity rule that rests on it.
+    # holding only by Pydantic's default while FIVE leaf models declare
+    # ``extra="forbid"`` — exactly these: `EmailDerivedDate`, `FieldEmailFormat`,
+    # `FieldEnrollStatus`, `RowFilter`, `CrossEnrollmentConfig`. Everything else INHERITS
+    # ``ignore``, and the explicit negatives matter as much as the positives:
+    # `FieldTransform`, `FieldNameConfig`, `GlobalConfig` and `EntityConfig` do NOT forbid
+    # — which is why a typo'd `enabled_entities` is silently dropped rather than rejected
+    # (S2b's panel finding; see `docs/developer/output-contract.md` -> Config schema,
+    # which documents this asymmetry and the additivity rule that rests on it). Pinned by
+    # `tests/test_config_district_domains.py::test_the_forbid_and_ignore_models_are_exactly_as_documented`,
+    # because this is the SECOND time this list has been written down wrong from memory.
     model_config = ConfigDict(extra="ignore")
 
     version: Union[str, float]
@@ -632,14 +637,25 @@ class MappingConfig(BaseModel):
         Raises rather than warns, on purpose. A silently-dropped bad row would leave the
         district *unclaimed* — which under the fail-open list rule looks completely
         normal (its admin just sees every district), so the mistake would never surface.
+
+        **The message NEVER echoes the offending value.** The single most likely thing to
+        trip this validator is a pasted personal email address — and this error surfaces in
+        `make validate-config` output and a PUBLIC CI log, so quoting the value would
+        republish the exact leak the check exists to stop (the same rule
+        `validators.validate_identity_email` and `scripts/check_no_emails.py` already
+        follow). The entry is located by its INDEX and described by shape; the author has
+        the file open.
         """
-        for entry in self.district_domains:
+        for index, entry in enumerate(self.district_domains, start=1):
             if not isinstance(entry, str) or not _DISTRICT_DOMAIN_RE.match(entry):
+                shape = "a full email address (it contains '@')" if isinstance(entry, str) and "@" in entry else "not"
                 raise ValueError(
-                    f"district_domains entry {entry!r} in config '{self.sis}' is not a lowercase domain name. "
-                    "Use the bare domain (e.g. 'sd48.bc.ca') — never a full email address, never uppercase. "
-                    "This list holds a district's PUBLIC staff email domain; a personal address must never "
-                    "be committed to this repository."
+                    f"district_domains entry {index} of {len(self.district_domains)} in config "
+                    f"'{self.sis}' is {shape} a bare lowercase domain name. Use the bare domain "
+                    "(e.g. 'sd48.bc.ca') — never a full email address, never uppercase. This list "
+                    "holds a district's PUBLIC staff email domain; a personal address must never be "
+                    "committed to this repository, so the offending value is deliberately NOT quoted "
+                    "here (this message reaches a public CI log)."
                 )
         return self
 

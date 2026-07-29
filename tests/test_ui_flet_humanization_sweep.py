@@ -167,24 +167,41 @@ _SCHEDULE_STATES: dict[str, ScheduleStatus | None] = {
 }
 
 
+# The empty/None-records axes, SHARED by both derivations below. `derive_home_status` and
+# `derive_history_banner` are the same shape over the same inputs, so they get the same
+# sweep — a widening applied to only one of them is exactly the asymmetry that let a leak
+# through last time.
+_EMPTY_STATE_CFG_IDS = ["configured", "unconfigured"]
+_EMPTY_STATE_CREATED_AT: tuple[str | None, ...] = (None, _RAW_ISO)
+_EMPTY_STATE_SCHEDULES: tuple[ScheduleStatus | None, ...] = (
+    _SCHEDULE_STATES["unprobed"],
+    _SCHEDULE_STATES["expected-missing"],  # selects the third fresh-start copy variant
+)
+
+
 class TestHomeStatusSweep:
-    @pytest.mark.parametrize("cfg", [_CFG, _CFG_UNCONFIGURED], ids=["configured", "unconfigured"])
+    @pytest.mark.parametrize("cfg", [_CFG, _CFG_UNCONFIGURED], ids=_EMPTY_STATE_CFG_IDS)
     def test_none_records_degradation_is_clean(self, cfg: AppConfig) -> None:
         _sweep_dataclass(derive_home_status(None, cfg), where="derive_home_status(None)")
 
-    @pytest.mark.parametrize("cfg", [_CFG, _CFG_UNCONFIGURED], ids=["configured", "unconfigured"])
-    @pytest.mark.parametrize("created_at", [None, _RAW_ISO], ids=["no-store", "store-created"])
-    def test_empty_records_is_clean(self, cfg: AppConfig, created_at: str | None) -> None:
-        """Both no-history branches, on BOTH config shapes.
+    @pytest.mark.parametrize("cfg", [_CFG, _CFG_UNCONFIGURED], ids=_EMPTY_STATE_CFG_IDS)
+    @pytest.mark.parametrize("created_at", _EMPTY_STATE_CREATED_AT, ids=["no-store", "store-created"])
+    @pytest.mark.parametrize("schedule", _EMPTY_STATE_SCHEDULES, ids=["unprobed", "expected-missing"])
+    def test_empty_records_is_clean(
+        self, cfg: AppConfig, created_at: str | None, schedule: ScheduleStatus | None
+    ) -> None:
+        """Every no-history branch: BOTH config shapes × store-timestamp × schedule state.
 
         `has_completed_setup()` selects between "Run history starts fresh here" and "No
         sync has run yet"; sweeping only a configured install left the second branch
-        unreachable, so a leak planted there passed the sweep. Both are covered now, and
-        the fresh-start branch is additionally driven with and without a store timestamp.
+        unreachable, so a leak planted there passed the sweep untouched. The schedule axis
+        matters for the same reason — the fresh-start branch composes a THIRD copy variant
+        when the read-back confirms the task is missing, and that variant was also never
+        swept.
         """
         _sweep_dataclass(
-            derive_home_status([], cfg, store_created_at=created_at),
-            where=f"derive_home_status([], store_created_at={created_at!r})",
+            derive_home_status([], cfg, store_created_at=created_at, schedule_status=schedule),
+            where=f"derive_home_status([], store_created_at={created_at!r}, schedule={schedule!r})",
         )
 
     @pytest.mark.parametrize("override", _BRANCH_OVERRIDES)
@@ -205,11 +222,28 @@ class TestHomeStatusSweep:
 
 
 class TestHistoryBannerSweep:
-    def test_none_records_degradation_is_clean(self) -> None:
-        _sweep_dataclass(derive_history_banner(None, _CFG), where="derive_history_banner(None)")
+    """MIRRORS ``TestHomeStatusSweep``'s empty-state axes deliberately.
 
-    def test_empty_records_is_clean(self) -> None:
-        _sweep_dataclass(derive_history_banner([], _CFG), where="derive_history_banner([])")
+    The two derivations are the same shape over the same inputs and share the same
+    `has_completed_setup()`-gated fresh-start branching. Widening one and not the other is
+    precisely the asymmetry that let an identity leak through the Home sweep, so the axes
+    are shared constants rather than two hand-kept parametrisations.
+    """
+
+    @pytest.mark.parametrize("cfg", [_CFG, _CFG_UNCONFIGURED], ids=_EMPTY_STATE_CFG_IDS)
+    def test_none_records_degradation_is_clean(self, cfg: AppConfig) -> None:
+        _sweep_dataclass(derive_history_banner(None, cfg), where="derive_history_banner(None)")
+
+    @pytest.mark.parametrize("cfg", [_CFG, _CFG_UNCONFIGURED], ids=_EMPTY_STATE_CFG_IDS)
+    @pytest.mark.parametrize("created_at", _EMPTY_STATE_CREATED_AT, ids=["no-store", "store-created"])
+    @pytest.mark.parametrize("schedule", _EMPTY_STATE_SCHEDULES, ids=["unprobed", "expected-missing"])
+    def test_empty_records_is_clean(
+        self, cfg: AppConfig, created_at: str | None, schedule: ScheduleStatus | None
+    ) -> None:
+        _sweep_dataclass(
+            derive_history_banner([], cfg, store_created_at=created_at, schedule_status=schedule),
+            where=f"derive_history_banner([], store_created_at={created_at!r}, schedule={schedule!r})",
+        )
 
     @pytest.mark.parametrize("override", _BRANCH_OVERRIDES)
     def test_every_branch_is_clean(self, override: dict) -> None:

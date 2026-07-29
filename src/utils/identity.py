@@ -28,10 +28,14 @@ narrowing to zero is the      narrowing to zero would hide an admin's own distri
 correct outcome               them; it is the failure this design makes unrepresentable
 ===========================  ==========================================================
 
-Concretely: **these functions never raise and never narrow to zero.** They are total over
-any string — including bytes an admin pasted from a mail client, a corrupted stored value,
-and deliberately hostile input. Consumers fail open on top of that (`test_identity.py`
-pins totality; the catalog layer in S5 pins the fail-open list rule).
+Two claims, at two different layers — do not read them as one (S9):
+
+* **Never raises** is a property of THIS CODE, true today and pinned today: both functions
+  are total over any string, including bytes pasted from a mail client, a corrupted stored
+  value, and deliberately hostile input (`test_identity.py`).
+* **Never narrows a district list to zero** is a rule the CONSUMERS must uphold; nothing
+  here can enforce it, and there are no consumers yet. Consumers MUST fail open on top of
+  this (S5's catalog layer is where that list rule is implemented and pinned).
 
 Validation belongs at the BOUNDARY, not here: ``validators.validate_identity_email``
 rejects a malformed typed address loudly before it is normalised or persisted. This

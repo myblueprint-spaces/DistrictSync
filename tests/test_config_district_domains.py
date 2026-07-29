@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from src.config.loader import available_configs, load_config
 from src.config.models import MappingConfig
@@ -235,14 +235,45 @@ def test_a_bad_domain_entry_fails_config_load_loudly(tmp_path, entry, why):
     assert "district_domains" in str(excinfo.value), why
 
 
-def test_the_rejection_message_says_never_an_email_address(tmp_path):
-    """The message must teach the rule, because this one guards a public repository."""
+def test_the_rejection_message_NEVER_echoes_the_offending_value(tmp_path):
+    """INVERTED at the Stage-7 gate — this test previously PINNED the echo.
+
+    The original assertion reasoned "it is config, not PII". That is backwards for this
+    particular field: the single most likely thing to trip this validator is a pasted
+    PERSONAL email address, and the error surfaces in `make validate-config` output and a
+    PUBLIC CI log — so quoting it republishes the exact leak the check exists to stop. It
+    also contradicted the two no-republish rules S3 had already adopted
+    (`validate_identity_email`'s value-free messages, and the scanner's redacted findings).
+
+    The message must still be ACTIONABLE without the value: it names the entry's position
+    and the rule.
+    """
+    leaked_local, leaked_domain = "aparticularperson", "somedistrict.bc.ca"
     with pytest.raises((ValidationError, ValueError)) as excinfo:
-        _load_from(tmp_path, '["someone@sd48.bc.ca"]')
+        _load_from(tmp_path, f'["{leaked_local}@{leaked_domain}"]')
     message = str(excinfo.value)
 
+    assert leaked_local not in message, "the pasted address reached a message that lands in a public CI log"
+    assert f"{leaked_local}@{leaked_domain}" not in message
+    # ...but it still teaches the rule and locates the entry.
     assert "never a full email address" in message
-    assert "sd48.bc.ca" in message  # the offending value IS quoted: it is config, not PII
+    assert "entry 1 of 1" in message
+
+
+def test_the_rejection_message_locates_the_entry_by_index(tmp_path):
+    """Without the value, POSITION is what makes the message actionable in a long list."""
+    with pytest.raises((ValidationError, ValueError)) as excinfo:
+        _load_from(tmp_path, '["sd48.bc.ca", "sd51.bc.ca", "aparticularperson@somedistrict.bc.ca"]')
+    message = str(excinfo.value)
+
+    assert "entry 3 of 3" in message
+    assert "aparticularperson" not in message
+
+
+def test_the_no_echo_pin_would_catch_a_regression():
+    """Falsification twin — prove the assertion above is not vacuous."""
+    leaky = "district_domains entry 'aparticularperson@somedistrict.bc.ca' is not a domain."
+    assert "aparticularperson" in leaky
 
 
 @pytest.mark.parametrize(
@@ -323,3 +354,38 @@ def test_root_model_ignores_unknown_keys_forward_compatibility(tmp_path):
 def test_extra_ignore_is_declared_not_merely_defaulted():
     """The declaration itself is the contract — pinned so a refactor cannot drop it."""
     assert MappingConfig.model_config.get("extra") == "ignore"
+
+
+def test_the_forbid_and_ignore_models_are_exactly_as_documented():
+    """The forbid/ignore split is pinned, because it has now been written down wrong TWICE.
+
+    The S2b panel corrected a doc that claimed nested models reject unknown keys; S3 then
+    named five forbidders from memory and got three of them wrong (two of the names did
+    not even exist). Prose about a mechanism is not a mechanism — this asserts BOTH
+    directions against the real `model_config`, so `models.py`'s comment, CLAUDE.md and
+    the contract doc can be checked against one place instead of against recollection.
+
+    The negatives are the consequential half: `GlobalConfig` and `EntityConfig` inheriting
+    `ignore` is exactly why a typo'd `enabled_entities` is silently dropped — leaving
+    `[]`, which means ALL entities enabled.
+    """
+    from src.config import models
+
+    forbidders = {
+        name
+        for name, obj in vars(models).items()
+        if isinstance(obj, type) and issubclass(obj, BaseModel) and obj.model_config.get("extra") == "forbid"
+    }
+
+    assert forbidders == {
+        "EmailDerivedDate",
+        "FieldEmailFormat",
+        "FieldEnrollStatus",
+        "RowFilter",
+        "CrossEnrollmentConfig",
+    }
+    for permissive in ("FieldTransform", "FieldNameConfig", "GlobalConfig", "EntityConfig", "MappingConfig"):
+        assert getattr(models, permissive).model_config.get("extra", "ignore") == "ignore", (
+            f"{permissive} started forbidding extras — that is a compatibility change, "
+            "not a tidy-up; see models.MappingConfig's comment."
+        )

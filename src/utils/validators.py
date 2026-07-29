@@ -57,10 +57,10 @@ IDENTITY_EMAIL_MAX_LEN = 254
 # :func:`validate_identity_email` for why the narrowing is safe here.
 _IDENTITY_LOCAL_RE = re.compile(r"^[A-Za-z0-9._%+-]+$")
 # Domain: starts alphanumeric, at least one dot, an alphabetic TLD of 2+. Case-insensitive
-# here because the admin TYPES this; the config-side twin
-# (``src/config/models.MappingConfig._DISTRICT_DOMAIN_RE``) is the lowercase-only form,
-# because a config author AUTHORS that value and a mixed-case row would never match a
-# normalised domain. Deliberately two rules for two jobs; a parity test
+# here because the admin TYPES this; the config-side twin is the MODULE-LEVEL
+# ``src/config/models._DISTRICT_DOMAIN_RE`` (module-level, not a class attribute), which is
+# the lowercase-only form because a config author AUTHORS that value and a mixed-case row
+# would never match a normalised domain. Deliberately two rules for two jobs; a parity test
 # (tests/test_config_district_domains.py) pins that every shipped domain satisfies both.
 _IDENTITY_DOMAIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}$")
 

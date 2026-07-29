@@ -1,9 +1,19 @@
 """The identity-PII containment guards (plan 0038 S3).
 
 The admin's work email is personal data. It belongs on exactly two surfaces (Settings and
-Help, both landing in S4a) and in one file (`config.json`). It must never reach a log line,
-a run record, the durable run store, the ETL, or a CLI output — because those are the
-artifacts a district pastes into a support ticket, a shared drive, or an audit export.
+Help, both landing in S4a) and in the settings file. It must never reach a log line, a run
+record, the durable run store, the ETL, or a CLI output — because those are the artifacts a
+district pastes into a support ticket, a shared drive, or an audit export.
+
+**Be precise about "the settings file" — it is not one file.** `AppConfig.save()` preserves
+an unreadable predecessor byte-for-byte as `config.corrupt-<ts>.json` beside `config.json`
+(see `_preserve_unreadable_predecessor`), and NOTHING prunes those copies. So a stored
+identity survives in every quarantine snapshot taken after it was written, in the same
+directory, indefinitely. That is deliberate for its own purpose — the copies exist so an
+admin can recover settings by eye — but it means the honest containment model is
+"`config.json` **and any `config.corrupt-*.json` sibling**", not one file. The consequence
+lands on S4a: the Settings "blank clears" path must ALSO unlink those predecessors, or
+clearing the address leaves it readable on disk (carried into the plan's S4a criteria).
 
 These are BOUNDED REGRESSION GUARDS, and this docstring says so rather than letting the
 green tick imply more. Each pins one specific escape route that is cheap to open by
@@ -54,14 +64,27 @@ IDENTITY_FIELD_NAMES = ("identity_email", "identity_prompt_dismissed", "identity
 # either WRITES A DURABLE ARTIFACT or LEAVES THE MACHINE: the ETL emits CSVs a district
 # uploads, the store is a queryable ledger, SFTP transmits, the scheduler bakes argv into
 # an OS task, and quality builds reports people paste into tickets.
-BANNED_LAYERS = ("src/etl", "src/history", "src/sftp", "src/scheduler", "src/quality")
+BANNED_LAYERS = ("src/etl", "src/history", "src/sftp", "src/scheduler", "src/quality", "src/main.py")
 
 
 # --------------------------------------------------------------------------- #
 # 1. The static layer ban                                                      #
 # --------------------------------------------------------------------------- #
-def _python_files(*relative_dirs: str) -> list[Path]:
-    return sorted(p for d in relative_dirs for p in (REPO_ROOT / d).rglob("*.py"))
+def _python_files(*relative_paths: str) -> list[Path]:
+    """Every ``.py`` under each entry — an entry may be a DIRECTORY or a single FILE.
+
+    ``src/main.py`` is in the list as a file: it is the CLI entry point, and the runtime
+    import-graph pin below only observes a *module-scope* import. A function-local
+    ``import src.utils.identity`` inside the ETL branch — the exact shape that would sneak
+    identity onto the nightly-sync path — is loaded only when that branch RUNS, so the
+    graph snapshot after `--sftp-show` would never see it. The static walk closes that
+    blind spot; the two guards are complementary, not redundant.
+    """
+    files: list[Path] = []
+    for entry in relative_paths:
+        target = REPO_ROOT / entry
+        files.extend([target] if target.is_file() else target.rglob("*.py"))
+    return sorted(files)
 
 
 def test_the_layer_ban_has_files_to_check() -> None:

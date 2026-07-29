@@ -17,9 +17,11 @@ _base: myedbc
 version: '1.0'
 sis: MyEducationBC
 district_name: SD60 - Peace River North School District
-# The district's PUBLIC staff email domain — scopes which district rows this
-# district's admins see in the pickers (plan 0038). Presentation metadata, not
-# access control and not personal data; structurally invisible to the ETL.
+# The district's PUBLIC staff email domain. It WILL scope which district rows this
+# district's admins see in the pickers once the picker filter lands (plan 0038,
+# S4a/S5) — NOTHING READS THIS KEY TODAY; every picker still shows all eleven
+# configs. Presentation metadata, not access control and not personal data;
+# structurally invisible to the ETL.
 # NOTE: this is the STAFF domain, deliberately NOT the generated STUDENT
 # domain used by the email template below. The domain rows come from the
 # owner's verified staff-contact sheet, never from a student template — a

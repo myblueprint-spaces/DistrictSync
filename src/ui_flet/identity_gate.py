@@ -4,13 +4,19 @@ PURE + COUNTED (no ``flet`` import), and deliberately shaped like ``nav.needs_se
 one predicate, one ``AppConfig``, one boolean, guarded by the same
 ``settings_unreadable()`` honesty check so the two launch gates cannot drift apart.
 
-**What this is, and what it is emphatically not.** The launch page is IDENTIFICATION —
-it scopes a district list so the highest-consequence wrong click in the product (picking
-the wrong district, which ships a wrong roster) is harder to make. It is NOT
-authentication: there are no accounts, nothing is unlocked, every mapping ships in the
-executable regardless, and every path — a match, no match, a typo, a skip, a crash in the
-identity layer itself — leads INTO the app. So this predicate can only ever make the app
-ask a question; it can never withhold anything, and it must never be able to fail closed.
+**NO CALLER YET.** S4a mounts the launch page and calls this; today nothing does, and no
+picker is scoped by anything. The design statements below describe what this predicate
+WILL gate — they are the contract S4a must build to, not a description of current
+behaviour.
+
+**What that will be, and what it is emphatically not.** The launch page is
+IDENTIFICATION — it will scope a district list so the highest-consequence wrong click in
+the product (picking the wrong district, which ships a wrong roster) is harder to make. It
+is NOT authentication: there are no accounts, nothing is unlocked, every mapping ships in
+the executable regardless, and every path — a match, no match, a typo, a skip, a crash in
+the identity layer itself — must lead INTO the app. So this predicate can only ever make
+the app ask a question; it can never withhold anything, and it must never be able to fail
+closed.
 """
 
 from __future__ import annotations

@@ -4,8 +4,18 @@ A living, per-work-**TYPE** record. It exists so agents and sessions stay consis
 without re-deriving the same judgment every time, and so the harness never collapses into
 one golden hammer.
 
-**How to use it** (per `docs/claugentic-WORKFLOW.md` → *Choosing the approach for the work
-at hand — the methodology toolbox*):
+> **Provenance and version skew — read before citing this file.** The apply/record/adapt/
+> grow model comes from **claugentic-dev-harness 0.4.1** (the INSTALLED plugin), whose
+> WORKFLOW carries a *methodology toolbox* section. **This repo's managed
+> `docs/claugentic-WORKFLOW.md` is stamped `@0.3.0` and contains no such section**, so do
+> not cite it for the rules below — it does not contain them. This file is therefore
+> **adopted ahead of the repo's harness stamp**: it is a 0.4.1 practice living in a 0.3.0
+> checkout, and it will reconcile when the managed docs are refreshed by a re-`init`.
+> (The version skew itself is a known standing item — the repo stamps 0.3.0 against an
+> installed 0.4.1; re-running `init` is the owner's call.)
+
+**How to use it** (per the installed harness 0.4.1's *methodology toolbox*, NOT per this
+repo's `@0.3.0` WORKFLOW.md — see the provenance note above):
 
 - **APPLY** — an entry exists for this kind of work → continue with the recorded approach.
 - **RECORD** — the first time a kind of work is judged → add a

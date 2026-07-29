@@ -17,7 +17,14 @@ fi
 #    student PII, so the cheapest place to stop a pasted district contact is before
 #    the commit exists. Whole-index scan (NOT `--staged`): a freshly `git add`ed file
 #    is already in the index so a new leak is seen, and re-scanning the rest is
-#    sub-second. Mirrored as a CI step, so a `--no-verify` commit is still caught.
+#    sub-second.
+#
+#    HONEST SCOPE: the script reads the WORKTREE copy of each indexed path, so a leak
+#    that was staged and then edited out of the working copy is committed WITHOUT being
+#    seen here (see the script's third declared gap). This hook REDUCES the chance of a
+#    leak; it does not prevent one. CI runs the same scan on a clean checkout, where
+#    worktree == index, and is what actually gates the merge — it also covers a
+#    `--no-verify` commit and any contributor without `core.hooksPath` set.
 out=$("$PY" "$root/scripts/check_no_emails.py" 2>&1)
 if [ $? -ne 0 ]; then
     printf '%s\n' "$out"

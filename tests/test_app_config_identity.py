@@ -212,6 +212,89 @@ class TestIdentitySave:
         reloaded = AppConfig.load()
         assert reloaded.identity_email == "admin@sd48.bc.ca"
         assert reloaded.identity_sd_number == "48"
+        # What a write must leave behind: a document the NEXT load can still read. A
+        # mis-typed value would round-trip into JSON, fail `_value_fits` on the way back
+        # in, and drop the whole install to defaults — so the round-trip is only proven
+        # once the provenance is asserted too.
+        assert reloaded.load_state is ConfigLoadState.LOADED
+
+    # ---- value validation (the corruption route) ------------------------- #
+    @pytest.mark.parametrize(
+        ("updates", "why"),
+        [
+            ({"identity_email": None}, "None serialises to JSON null; the next load reads UNREADABLE"),
+            ({"identity_email": True}, "a bool where a str is declared"),
+            ({"identity_email": 42}, "an int where a str is declared"),
+            ({"identity_sd_number": 42}, "SD numbers are strings — '08' is not 8"),
+            ({"identity_prompt_dismissed": "yes"}, "a truthy string is not a bool"),
+            ({"identity_prompt_dismissed": 1}, "1 is not a bool (bool is an int subclass; the reverse is not)"),
+        ],
+    )
+    def test_a_wrong_typed_value_raises_before_anything_is_written(self, updates, why, config_file: Path):
+        """A mis-typed value would make the WHOLE settings document unreadable.
+
+        `config.json` is re-read through `_value_fits`, so a `null` or a `42` written here
+        does not merely store a bad identity — it fails the document on the next load and
+        drops the admin's district, folders and delivery settings to defaults. That is a
+        settings-loss bug reached through an ADVISORY field, so it is refused loudly at
+        the choke point rather than coerced.
+        """
+        cfg = AppConfig(**_real_settings())
+
+        with pytest.raises(TypeError, match="identity_save"):
+            cfg.identity_save(**updates)
+
+        assert not config_file.exists(), f"a rejected save wrote to disk: {why}"
+
+    def test_the_rejected_value_is_not_applied_in_memory_either(self):
+        cfg = AppConfig(**_real_settings(), identity_email="admin@sd48.bc.ca")
+
+        with pytest.raises(TypeError):
+            cfg.identity_save(identity_email=None)
+
+        assert cfg.identity_email == "admin@sd48.bc.ca"
+
+    def test_a_bad_key_late_in_the_call_leaves_no_partial_mutation(self):
+        """Validation runs to completion BEFORE any setattr.
+
+        Applying as we validate would let a multi-field call mutate the good fields and
+        then raise, leaving the instance in a state neither the caller nor the disk agrees
+        with — and a caller that catches the error would go on to save it.
+        """
+        cfg = AppConfig(**_real_settings())
+
+        with pytest.raises(AttributeError):
+            cfg.identity_save(identity_email="admin@sd48.bc.ca", sis_type="pwned")
+        assert cfg.identity_email == ""
+        assert cfg.sis_type == "sd48myedbc"
+
+        with pytest.raises(TypeError):
+            cfg.identity_save(identity_email="admin@sd48.bc.ca", identity_prompt_dismissed="yes")
+        assert cfg.identity_email == ""
+        assert cfg.identity_prompt_dismissed is False
+
+    def test_the_method_name_itself_cannot_be_shadowed(self):
+        """`hasattr` answers True for every METHOD — membership is the only safe guard.
+
+        Under a `hasattr` check `identity_save(identity_save="x")` returned True, persisted
+        nothing, and bound a string over the bound method — permanently disabling the choke
+        point on that instance while reporting success.
+        """
+        cfg = AppConfig(**_real_settings())
+
+        with pytest.raises(AttributeError, match="only writes identity_"):
+            cfg.identity_save(identity_save="pwned")
+
+        assert callable(cfg.identity_save)
+
+    def test_the_writable_set_is_derived_from_the_dataclass(self):
+        """Not a hand-list: a new `identity_*` field is writable the moment it is declared."""
+        from dataclasses import fields as dataclass_fields
+
+        from src.config.app_config import _IDENTITY_FIELD_NAMES
+
+        assert {f.name for f in dataclass_fields(AppConfig) if f.name.startswith("identity_")} == _IDENTITY_FIELD_NAMES
+        assert set(IDENTITY_FIELDS) == _IDENTITY_FIELD_NAMES
 
     def test_returns_false_and_writes_nothing_when_settings_are_unreadable(self, config_file: Path, caplog):
         """The guard lives on the WRITE, re-checked on THIS instance at save time.
