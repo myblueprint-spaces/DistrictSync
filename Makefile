@@ -42,9 +42,12 @@ export FLET_DESKTOP_FLAVOR
 # Pre-seed the client cache first if offline (the flavor MUST match the build, or
 # `flet pack` embeds a client you did not warm):
 #   FLET_DESKTOP_FLAVOR=light python -c "import flet_desktop; flet_desktop.ensure_client_cached()"
-# Smoke it after (the window smoke, then the four CLI phases against a throwaway profile):
+# Smoke it after (the window smoke, then the four CLI phases against a throwaway
+# profile). This is the WINDOWS build target, so the second line is PowerShell — the
+# smoke REFUSES to run without DISTRICTSYNC_DATA_DIR, and a POSIX `VAR=x cmd` prefix
+# is a syntax error there, not an export:
 #   python scripts/ci_flet_pack_smoke.py dist DistrictSync --require-close
-#   DISTRICTSYNC_DATA_DIR=/tmp/dsync-smoke python scripts/ci_flet_pack_smoke.py dist DistrictSync --cli-smoke
+#   $env:DISTRICTSYNC_DATA_DIR="$env:TEMP\dsync-smoke"; python scripts/ci_flet_pack_smoke.py dist DistrictSync --cli-smoke
 build-win:
 	flet pack src/main.py --name DistrictSync \
 	  --yes \
