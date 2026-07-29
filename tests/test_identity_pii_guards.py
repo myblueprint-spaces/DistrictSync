@@ -545,6 +545,50 @@ def test_the_home_identity_card_logs_counts_only(isolated_user_profile: Path, ca
         assert probe not in text, f"{probe!r} reached the log"
 
 
+def test_the_district_filter_path_logs_no_domain(isolated_user_profile: Path, caplog, monkeypatch) -> None:
+    """S5's new path, held to the same bar: scoping a picker names no part of the address.
+
+    The domain is the ONE piece of the address the filter actually handles, and it is the
+    piece a support log would most plausibly be given "for diagnostics" — so it is banned
+    outright (the plan's counts-only shape: `matched_districts` already carries the signal
+    without naming an organisation). Driven through the REAL Convert screen at DEBUG, so a
+    diagnostic added anywhere along the scoping path is caught, not just one known logger.
+
+    The WARN that a broken config DOES emit is the positive twin: it proves lines from this
+    path reach caplog at all, and pins that the thing it names is a CONFIG ID.
+    """
+    from unittest.mock import MagicMock
+
+    from src.ui_flet import mapping_catalog
+    from src.ui_flet.screens.convert import build_convert
+
+    cfg = AppConfig(
+        input_dir="/in",
+        output_dir="/out",
+        sis_type="sd48myedbc",
+        setup_completed=True,
+        identity_email=CANARY_EMAIL,
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda _cls: cfg))
+    real_load = mapping_catalog.load_config
+
+    def _one_bad(sis_type, config_dir=None):  # noqa: ANN001, ANN202
+        if sis_type == "sd54myedbc":
+            raise ValueError("this YAML is broken")
+        return real_load(sis_type, config_dir)
+
+    monkeypatch.setattr(mapping_catalog, "load_config", _one_bad)
+    mapping_catalog.reset_catalog_cache()
+
+    with caplog.at_level("DEBUG"):
+        build_convert(MagicMock())
+
+    text = caplog.text
+    assert "sd54myedbc" in text, "the WARN is missing; the absence assertions below would be vacuous"
+    for probe in (CANARY_EMAIL, CANARY_LOCAL, "leak-probe.invalid"):
+        assert probe not in text, f"{probe!r} reached the log on the district-filter path"
+
+
 def _walk(control):  # noqa: ANN001, ANN202 - a walker over an untyped Flet tree
     yield control
     for attr in ("controls", "content"):
@@ -607,10 +651,12 @@ def _module_graph(code: str, tmp_profile: Path) -> set[str]:
 def test_importing_the_cli_never_pulls_in_the_identity_module(tmp_path: Path) -> None:
     """G1 — identity does not touch the nightly sync.
 
-    Honest about its strength: ``src.utils.identity`` has no importer in ``src/`` today, so
-    this is green by construction right now. It exists to BITE LATER, when S4a/S5 wire
-    identity into the UI and someone reaches for a primitive from a shared module the CLI
-    also imports. The positive controls below keep it from being a vacuous check.
+    Honest about its strength, updated as the consumers landed: ``src.utils.identity`` now
+    HAS importers (``ui_flet.identity_gate`` since S5, and the identity screens), so this is
+    no longer green merely by construction — it is asserting that none of them are reachable
+    from the CLI's import graph. It still bites hardest LATER, when someone reaches for a
+    primitive from a module the CLI also imports. The positive controls below keep it from
+    being a vacuous check either way.
     """
     graph = _module_graph("import src.main", tmp_path)
 

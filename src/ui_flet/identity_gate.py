@@ -5,12 +5,13 @@ PURE + COUNTED (no ``flet`` import, no I/O). Two families live here:
 * **the gate** — ``needs_identity``/``gate_reason``/``stored_identity_email``, shaped like
   ``nav.needs_setup`` (one predicate, one ``AppConfig``, one boolean, the same
   ``settings_unreadable()`` honesty guard) so the two launch gates cannot drift apart;
-* **the matching** — ``resolve_domain``/``matched_state``/``resolve_sd_number``, the
-  **S4a→S5 seam**. S4a's launch page (``screens/identity.py``) builds the
-  ``{config id: domains}`` index ad hoc for one page mount; S5 replaces that builder with
-  ``mapping_catalog.filtered_catalog`` reading ``ConfigSummary.district_domains``. **The
-  pure resolver below is the shared piece and does not change when that happens** — it
-  takes the index as DATA, so swapping the source is a caller-side edit.
+* **the matching** — ``resolve_domain``/``matched_state``/``resolve_sd_number``, plus
+  ``stored_identity_domain``. The resolver takes the ``{config id: domains}`` index as
+  **DATA**, which is exactly what let S5 swap its source underneath without changing a line
+  here: the launch page's ad-hoc per-mount builder became ONE session-memoised catalog
+  build (``mapping_catalog.catalog`` → ``ConfigSummary.district_domains``), read by
+  ``district_domain_index`` for the identity surfaces and by ``filtered_catalog`` for the
+  four district pickers. One resolution path, two shapes of answer.
 
 **What this gates, and what it emphatically is not.** The launch page is IDENTIFICATION —
 it scopes a district list so the highest-consequence wrong click in the product (picking
@@ -35,6 +36,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from src.config.app_config import AppConfig
+from src.utils.identity import extract_domain, normalize_email
 from src.utils.validators import validate_identity_email
 
 __all__ = [
@@ -49,6 +51,7 @@ __all__ = [
     "resolve_domain",
     "resolve_sd_number",
     "sd_number_digits",
+    "stored_identity_domain",
     "stored_identity_email",
     "unmapped_sd_number",
 ]
@@ -88,6 +91,32 @@ def stored_identity_email(app_config: AppConfig) -> str:
         return validate_identity_email(app_config.identity_email)
     except (ValueError, AttributeError, TypeError):
         return ""
+
+
+def stored_identity_domain(app_config: AppConfig) -> str:
+    """The stored address reduced to the domain the catalog layer compares. TOTAL.
+
+    The ONE reduction every filtered picker consumes (plan 0038 S5). It exists so the four
+    call sites do not each re-spell ``extract_domain(normalize_email(stored_identity_email(
+    cfg)))`` — three chances apiece to drop the read-time re-validation or the normalisation,
+    and four places to fix a rule that should live once.
+
+    The order is load-bearing: :func:`stored_identity_email` runs FIRST, so a hand-edited
+    ``config.json`` carrying markup, a control character or a 10 KB string reads as
+    UNANSWERED before anything tries to reduce it. Unanswered reduces to ``""``, which the
+    filter reads as "no identity" and answers with the FULL list — the fail-OPEN direction,
+    and the only safe one for a filter that must never narrow a district list to zero.
+
+    **UNREADABLE settings answer ``""`` too** — the same first condition the two ask
+    predicates carry (G2), for a sharper reason here. Under ``settings_unreadable()`` nothing
+    on the instance came off disk: ``sis_type`` is blank, so the saved-district escape that
+    normally keeps a working install's own mapping visible is absent as well. Narrowing a
+    district list on an identity we could not read, with no saved district to fall back on,
+    is the one combination that could hide the right district — so we do not narrow at all.
+    """
+    if app_config.settings_unreadable():
+        return ""
+    return extract_domain(normalize_email(stored_identity_email(app_config)))
 
 
 def needs_identity(app_config: AppConfig) -> bool:
@@ -180,7 +209,7 @@ def can_continue(typed: str) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# Matching — the S4a→S5 seam                                                    #
+# Matching — the shared resolver (index in, config ids out)                     #
 # --------------------------------------------------------------------------- #
 class MatchOutcome(str, Enum):
     """What the admin's domain resolved to — the page-state discriminant."""
@@ -211,10 +240,11 @@ def _normalise_domain(value: str) -> str:
 def resolve_domain(domain: str, domains_by_config: Mapping[str, Sequence[str]]) -> tuple[str, ...]:
     """Every config whose ``district_domains`` contains ``domain`` EXACTLY. TOTAL.
 
-    ``domains_by_config`` is the index as DATA — S4a builds it per page mount, S5 hands it
-    over from the catalog build. Results come back in the mapping's ITERATION order, so
-    the caller owns the ordering (``available_configs()`` is sorted, so the real index is
-    deterministic); re-sorting here would take that choice away from S5's catalog layer.
+    ``domains_by_config`` is the index as DATA, handed over from the catalog build. Results
+    come back in the mapping's ITERATION order, so the caller owns the ordering
+    (``available_configs()`` is sorted, so the real index is deterministic); re-sorting here
+    would take that choice away from the catalog layer, which needs it to keep a filtered
+    picker in the same relative order as the full one.
 
     A blank/whitespace domain matches nothing — "we could not reduce this to a domain"
     must never be mistaken for "this matches everything". A config with an EMPTY domain

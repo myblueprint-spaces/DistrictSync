@@ -32,6 +32,7 @@ from src.ui_flet.identity_gate import (
     matched_excludes_saved,
     needs_identity,
     needs_identity_prompt,
+    stored_identity_domain,
     unmapped_sd_number,
 )
 from src.ui_flet.nav import needs_setup
@@ -261,6 +262,67 @@ def test_unmapped_sd_number_is_total_over_a_hand_edited_value():
     cfg.identity_sd_number = 99  # type: ignore[assignment]
 
     assert unmapped_sd_number(cfg, BUNDLED) == ""
+
+
+# --------------------------------------------------------------------------- #
+# stored_identity_domain — the ONE reduction every filtered picker consumes     #
+# (plan 0038 S5)                                                                #
+# --------------------------------------------------------------------------- #
+class TestStoredIdentityDomain:
+    """The stored address, reduced to the thing the catalog layer actually compares.
+
+    It exists so the four filtered pickers do not each re-spell
+    ``extract_domain(normalize_email(stored_identity_email(cfg)))`` — three chances per call
+    site to drop the re-validation or the normalisation, and four places to fix a rule that
+    should live once. TOTAL and fail-OPEN: anything unusable reduces to ``""``, which the
+    filter reads as "no identity" and answers with the FULL list.
+    """
+
+    def test_a_stored_address_reduces_to_its_domain(self):
+        assert stored_identity_domain(_cfg(identity_email="admin@sd48.bc.ca")) == "sd48.bc.ca"
+
+    def test_nothing_stored_reduces_to_nothing(self):
+        assert stored_identity_domain(_cfg(identity_email="")) == ""
+
+    def test_case_and_padding_are_normalised(self):
+        assert stored_identity_domain(_cfg(identity_email="  Admin@SD48.BC.CA  ")) == "sd48.bc.ca"
+
+    def test_the_dns_root_dot_is_stripped(self):
+        assert stored_identity_domain(_cfg(identity_email="admin@sd48.bc.ca.")) == "sd48.bc.ca"
+
+    def test_plus_addressing_does_not_disturb_the_domain(self):
+        assert stored_identity_domain(_cfg(identity_email="admin+roster@sd48.bc.ca")) == "sd48.bc.ca"
+
+    def test_a_value_that_FAILS_read_time_validation_reduces_to_nothing(self):
+        """``config.json`` is hand-editable and the load check is TYPE-only. A value that
+        cannot pass the boundary validator means UNANSWERED — and an unanswered identity must
+        widen the list, never narrow it on a domain nobody typed."""
+        assert stored_identity_domain(_cfg(identity_email="admin at sd48 dot ca")) == ""
+        assert stored_identity_domain(_cfg(identity_email="two@@sd48.bc.ca")) == ""
+
+    def test_an_UNREADABLE_profile_scopes_NOTHING(self):
+        """G2, applied to the filter and for a sharper reason than the ask predicates have.
+
+        Under UNREADABLE nothing on the instance came off disk — including ``sis_type``, so
+        the saved-district escape that normally keeps a working install's own mapping visible
+        is gone too. An identity we could not read PLUS no saved district to fall back on is
+        the one combination that could hide the right district, so we do not narrow at all.
+        """
+        cfg = _cfg(load_state=ConfigLoadState.UNREADABLE, identity_email="admin@sd48.bc.ca")
+
+        assert stored_identity_domain(cfg) == ""
+
+    def test_the_UNREADABLE_probe_is_not_vacuous(self):
+        """Positive twin — the SAME address on a readable profile does reduce."""
+        cfg = _cfg(load_state=ConfigLoadState.LOADED, identity_email="admin@sd48.bc.ca")
+
+        assert stored_identity_domain(cfg) == "sd48.bc.ca"
+
+    def test_a_non_string_stored_value_reduces_to_nothing(self):
+        cfg = _cfg()
+        cfg.identity_email = 42  # type: ignore[assignment]
+
+        assert stored_identity_domain(cfg) == ""
 
 
 def test_module_imports_no_flet():

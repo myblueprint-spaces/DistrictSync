@@ -284,6 +284,45 @@ The checkable projection of the Features above. All checks are `manual` — Dist
     "check": "manual"
   },
   {
+    "id": "AC-identity-6",
+    "feature": "Launch identity",
+    "flow": [
+      "On a cleared scratch profile, answer the launch page with an address at sd48.bc.ca and press Get started",
+      "Look at the wizard's District dropdown, then press 'Show all districts', then press 'Showing all districts · Show only mine'",
+      "Finish setup, then open Settings > Folders & district, Convert, and Mapping",
+      "Separately: set the district to sd74myedbc, keep the sd48.bc.ca address, and reopen those three surfaces"
+    ],
+    "expect": [
+      "every district list shows only SD48 - Sea to Sky School District, and the District step opens with it already selected",
+      "the District step is still landed on and the selection is still changeable",
+      "the 'Show all districts' line reads as a courtesy about list length, never as an unlock, and reveals all eleven in one click",
+      "the row then offers the way back, and the scoping returns on the next launch (nothing about it is saved)",
+      "with a different saved district, every list carries BOTH the matched district and the saved one",
+      "an unmatched address, no address, or an unreadable settings file all show the full list of eleven"
+    ],
+    "states": ["empty"],
+    "check": "manual"
+  },
+  {
+    "id": "AC-convert-run-district",
+    "feature": "Convert",
+    "flow": [
+      "On a set-up install, open Convert and note the district chip in the header",
+      "Change the district dropdown to a different district (press 'Show all districts' first if the list is scoped)",
+      "Press 'Change mapping'",
+      "Return to Convert and set the dropdown back to the saved district"
+    ],
+    "expect": [
+      "an amber 'This run: <the district just picked>' pill appears beside the header chip, naming the PICKED district and never the saved one",
+      "the header chip continues to show the SAVED district — the two are different facts and both are visible",
+      "'Change mapping' opens the Mapping surface and changes no setting by itself",
+      "Convert stays runnable the whole time — the pill is a label, never a gate",
+      "setting the district back to the saved one makes the pill disappear"
+    ],
+    "states": [],
+    "check": "manual"
+  },
+  {
     "id": "AC-setup-1",
     "feature": "First-run setup wizard",
     "flow": [
@@ -297,7 +336,7 @@ The checkable projection of the Features above. All checks are `manual` — Dist
       "Home shows a calm onboarding welcome with a 'Start setup' button (no dashboard, no metrics)",
       "clicking 'Start setup' opens the wizard at the District step (District leads, then Folders)",
       "a 'Step 1 of 5' style progress indicator is visible",
-      "no district is pre-selected — a 'Choose your district' placeholder is shown unless exactly one config exists"
+      "no district is pre-selected — a 'Choose your district' placeholder is shown unless exactly one option is VISIBLE (which a matched identity can make true; see AC-identity-6)"
     ],
     "states": ["error"],
     "check": "manual"

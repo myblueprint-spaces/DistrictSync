@@ -104,7 +104,7 @@ from pathlib import Path
 import flet as ft
 
 from src.config.app_config import AppConfig
-from src.config.loader import available_configs, load_config
+from src.config.loader import load_config
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader
 from src.etl.pipeline import (
@@ -144,6 +144,7 @@ from src.ui_flet.convert_output import (
     setup_first_copy,
     show_setup_first_card,
     standalone_deliver_state,
+    this_run_label,
 )
 from src.ui_flet.convert_result import (
     ConvertResult,
@@ -156,8 +157,11 @@ from src.ui_flet.convert_result import (
 from src.ui_flet.filepicker import validate_input_dir
 from src.ui_flet.home_status import ENTITY_LABELS
 from src.ui_flet.humanize import friendly_district_name
+from src.ui_flet.identity_gate import stored_identity_domain
 from src.ui_flet.job_runner import JobRunner
+from src.ui_flet.mapping_catalog import disambiguated_labels, filtered_catalog
 from src.ui_flet.picker_field import PickerField
+from src.ui_flet.verdict import Verdict
 
 # GDE files are CSV or TXT (varies by district).
 _GDE_SUFFIXES: tuple[str, ...] = (".csv", ".txt")
@@ -540,11 +544,37 @@ def build_convert(
     stands alone), just without the routing button.
     """
     cfg = AppConfig.load()
-    configs = available_configs()
+    # 0038 S5: the district rows scoped to this admin. Per-SURFACE (flag 5) — re-scoped on
+    # every mount, never persisted; whether it should follow the admin across surfaces for a
+    # session is an owner call tracked in the ROADMAP.
+    scope = {"show_all": False}
+    # The per-run pick, declared HERE (before the first catalog build) so the filter can carry
+    # it. It starts empty — the prefill below is derived FROM the catalog, so it cannot also be
+    # an input to it — and that first build loses nothing: `saved_sis` already carries the
+    # saved district, which is the only value the prefill can ever take.
+    selected: dict[str, str | None] = {"district": None}
+
+    def _catalog():  # noqa: ANN202 - a FilteredCatalog; annotating adds an import for one line
+        # `picked_sis` is the LIVE per-run selection: narrowing back after a widen must not
+        # drop the district this run is set to convert.
+        return filtered_catalog(
+            stored_identity_domain(cfg),
+            saved_sis=cfg.sis_type,
+            show_all=scope["show_all"],
+            picked_sis=selected["district"] or "",
+        )
+
+    catalog = _catalog()
     # D9: NO silent fallback — prefill only from a valid SAVED district; otherwise leave the
     # dropdown on its "Choose your district" placeholder and keep Run disabled until chosen.
-    # (The old `configs[0]` alphabetical guess is gone.)
-    default_district: str | None = cfg.sis_type if cfg.sis_type in configs else None
+    # (The old `configs[0]` alphabetical guess is gone.) The membership test now runs against
+    # the VISIBLE ids, which is safe by construction: `filtered_catalog` carries the saved
+    # district unconditionally when it exists, so scoping can never demote a valid saved
+    # district to "unset" — and a saved id that names no real config still correctly fails
+    # the test, exactly as it did against `available_configs()`.
+    visible_ids = [s.sis_type for s in catalog.summaries]
+    default_district: str | None = cfg.sis_type if cfg.sis_type in visible_ids else None
+    selected["district"] = default_district
 
     # D10: capture the resolved output folder ONCE at build (screens rebuild fresh per
     # navigation, so a Settings change is picked up on the next visit). The gate + caption
@@ -557,7 +587,6 @@ def build_convert(
     setup_done = cfg.has_completed_setup()
 
     runner = JobRunner()
-    selected: dict[str, str | None] = {"district": default_district}
     # The run the on-screen anomaly card is asking about, or None when no card is up (FIX-2).
     # Held here (not in the card closure) because BOTH the interaction table and the ack
     # handler need it: the inputs freeze while it is set, and the re-run is launched from it.
@@ -586,13 +615,34 @@ def build_convert(
     # ------------------------------------------------------------------ #
     # District select — a "Choose your district" placeholder until chosen (D9).
     # ------------------------------------------------------------------ #
+    def _district_options(cat) -> list[ft.dropdown.Option]:  # noqa: ANN001 - a FilteredCatalog
+        # Labels via `disambiguated_labels`: two rows reading identically would make the
+        # highest-consequence wrong click in this product a coin flip.
+        labels = disambiguated_labels(cat.summaries)
+        return [ft.dropdown.Option(key=s.sis_type, text=labels[s.sis_type]) for s in cat.summaries]
+
     district_dropdown = ft.Dropdown(
         label="District",
         value=default_district,
         hint_text="Choose your district",
-        options=[ft.dropdown.Option(key=c, text=friendly_district_name(c)) for c in configs],
+        options=_district_options(catalog),
         width=340,
     )
+    # The show-all affordance sits under the dropdown in its own slot so toggling swaps the
+    # options IN PLACE — rebuilding the form would drop a typed input folder or a result card.
+    scope_slot = ft.Column(spacing=0, controls=[])
+
+    def _toggle_show_all() -> None:
+        scope["show_all"] = not scope["show_all"]
+        _refresh_scope()
+        page.update()
+
+    def _refresh_scope() -> None:
+        cat = _catalog()
+        district_dropdown.options = _district_options(cat)
+        scope_slot.controls = components.list_scope_row(
+            can_filter=cat.can_filter, show_all=scope["show_all"], on_toggle=_toggle_show_all
+        )
 
     # The amber saved-vs-picked heads-up (0035 W3b): visible ONLY when the per-run pick
     # differs from the saved district (pure `district_mismatch_note` decides + words it).
@@ -677,6 +727,7 @@ def build_convert(
     def _on_district_change(_e: ft.ControlEvent) -> None:
         selected["district"] = district_dropdown.value or default_district
         _refresh_district_note()  # the amber differs-from-saved heads-up follows the pick
+        _refresh_header()  # ...and so does the header's "This run: <district>" pill (0038 S5)
         _refresh_files()
         # FIX-4: the deliver card's readiness is DISTRICT-derived (which CSVs on disk this
         # config would actually ship), so a pick change must re-gate it — otherwise the card
@@ -1158,18 +1209,47 @@ def build_convert(
             return
         deliver_slot.controls = _standalone_deliver_controls()
 
+    # Direction B page header (0033 Slice 2): the gradient hero demotes to a slim header; the
+    # saved district identity rides in the header's right slot as a ``district_chip`` (the
+    # per-run selection stays the dropdown below — the chip reflects the configured district).
+    #
+    # 0038 S5 closes the P1 leftover beside it: the chip alone asserted the SAVED district
+    # while the run would use the PICKED one, so the header described a different conversion
+    # from the one the button below would start. A "This run: <district>" pill joins it on
+    # DIVERGENCE only, with a text-tier hop to Mapping (where a saved district is changed for
+    # good). Multi-control trailing follows Home's header precedent.
+    #
+    # It is a LABEL, not a gate: `can_run_convert` is untouched, and no path here can block
+    # a conversion the admin has explicitly set up.
+    header_trailing = ft.Row(
+        spacing=tokens.space_md,
+        tight=True,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[],
+    )
+
+    def _refresh_header() -> None:
+        controls: list[ft.Control] = []
+        if default_district:
+            controls.append(components.district_chip(friendly_district_name(default_district)))
+        run_label = this_run_label(selected["district"], cfg.sis_type)
+        if run_label is not None:
+            controls.append(components.status_pill(f"This run: {run_label}", Verdict.WARNING))
+            if on_navigate is not None:
+                controls.append(components.text_button("Change mapping", lambda _e: on_navigate("mapping")))
+        header_trailing.controls = controls
+
     _refresh_district_note()
+    _refresh_header()
+    _refresh_scope()
     _refresh_files()
     _refresh_convert_gate()
     _refresh_deliver_slot()
 
-    # Direction B page header (0033 Slice 2): the gradient hero demotes to a slim header; the
-    # saved district identity rides in the header's right slot as a ``district_chip`` (the
-    # per-run selection stays the dropdown below — the chip reflects the configured district).
     header = components.page_header(
         "Convert",
         "Build your roster now from your MyEd BC extract files",
-        trailing=components.district_chip(friendly_district_name(default_district)) if default_district else None,
+        trailing=header_trailing,
     )
 
     form = components.card(
@@ -1177,6 +1257,7 @@ def build_convert(
             spacing=20,
             controls=[
                 district_dropdown,
+                scope_slot,
                 district_note,
                 input_field,
                 files_slot,

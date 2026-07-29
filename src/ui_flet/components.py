@@ -54,6 +54,7 @@ from src.ui_flet.home_status import (
     _ROSTERING_ENTITIES,
     ENTITY_LABELS,
 )
+from src.ui_flet.mapping_catalog import show_all_label
 from src.ui_flet.run_history import RunRow, SftpDelivery
 from src.ui_flet.verdict import Verdict, verdict_visuals
 from src.utils.paths import user_log_file
@@ -532,6 +533,34 @@ def district_chip(label: str) -> ft.Container:
             ],
         ),
     )
+
+
+def list_scope_row(
+    *,
+    can_filter: bool,
+    show_all: bool,
+    on_toggle: Callable[[], None],
+) -> list[ft.Control]:
+    """The "Show all districts" affordance under a SCOPED picker — 0 or 1 controls (0038 S5).
+
+    Returned as a LIST so a caller can splat it into a column and get nothing at all when the
+    list hides nothing; the four district pickers all render it identically, and this factory
+    is why "identically" is a fact rather than a hope.
+
+    **Keyed on ``can_filter``, NEVER on "is this list currently narrowed".** That is the whole
+    reason this lives in one place. Keying it on the narrowed-right-now state deletes the
+    toggle the instant it is switched ON — show-all returns the full list — stranding the
+    admin in the long list with no way back to their own short one. The row therefore renders
+    whenever a shorter list EXISTS, and its LABEL (not its presence) carries the state.
+
+    Text tier by design: it is a courtesy about list length, never an unlock, and it must not
+    compete with the screen's one filled primary. ``on_toggle`` takes no event — every caller
+    flips a bool and repaints, and a zero-arg callback keeps the four sites from drifting into
+    four different handler shapes.
+    """
+    if not can_filter:
+        return []
+    return [text_button(show_all_label(show_all=show_all), lambda _e: on_toggle())]
 
 
 def status_pill(label: str, status: Verdict) -> ft.Container:

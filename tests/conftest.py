@@ -233,6 +233,26 @@ def isolated_user_profile(request: pytest.FixtureRequest, tmp_path: Path, monkey
 
 
 @pytest.fixture(autouse=True)
+def _fresh_district_catalog() -> None:
+    """Suite-wide isolation for the session-memoised district catalog (plan 0038 S5).
+
+    ``mapping_catalog.catalog()`` caches the parsed configs for the life of the process — a
+    deliberate ~210 ms saving on the launch path, and a cross-test leak if left alone: a test
+    that monkeypatches ``available_configs`` / ``load_config`` / a fixture ``config_dir``
+    would silently read a previous test's build and pass (or fail) for the wrong reason.
+
+    The same shape as the existing ``isolated_user_profile`` guarantee (D3): global state a
+    test can reach gets reset around every test, on BOTH sides, so neither a leaked entry
+    coming in nor one going out can make an assertion mean something it doesn't.
+    """
+    from src.ui_flet.mapping_catalog import reset_catalog_cache
+
+    reset_catalog_cache()
+    yield
+    reset_catalog_cache()
+
+
+@pytest.fixture(autouse=True)
 def _no_real_uac(monkeypatch: pytest.MonkeyPatch) -> None:
     """HARD test-safety guard (Plan 0029 D5): no test may ever fire a real Windows UAC prompt.
 

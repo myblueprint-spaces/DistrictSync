@@ -23,15 +23,35 @@ crash. ``list_configs`` therefore always returns one summary per enumerated id, 
 output-CSV labels, a file count. It carries NO student PII (a config is a column-name mapping,
 not data) and NEVER interpolates a raw exception string (a Pydantic/OS error text) into any
 admin-facing field — a load failure is named by category (``loaded_ok=False``), never echoed.
-``district_domain_index`` (0038 S4a) adds one more structural fact of the same kind: each
-config's PUBLIC district staff email domains — an organisational fact the district itself
-publishes, never personal data, and never a student's address.
+``district_domains`` (0038) adds one more structural fact of the same kind: each config's
+PUBLIC district staff email domains — an organisational fact the district itself publishes,
+never personal data, and never a student's address.
+
+**The district-list filter (0038 S5) — one choke point, two tiers.** ``filtered_catalog`` is
+the SINGLE place that decides which district rows a picker shows, consumed by all four
+pickers (the wizard District step, its auto-select seed, Settings' folders card, Convert and
+Mapping). The rule, and why it is shaped this way, is on :func:`filtered_catalog`. Two
+structural properties are worth knowing before reading anything else here:
+
+* **the admin's email never enters this module.** The caller passes a bare DOMAIN
+  (``identity_gate.stored_identity_domain(cfg)``); the plaintext address stays confined to
+  the identity/Settings screens and ``AppConfig``. Nothing here logs the domain either;
+* **a filter can only ever be wrong in the WIDENING direction.** Matching is exact equality
+  against a non-empty list, so an unreadable config, an unknown domain and a typo all
+  resolve to "no match", and no match means the FULL list.
+
+Layer note vs CLAUDE.md's UI/ETL isolation: the matching rule sits in this UI-layer module
+deliberately — it is presentation scoping (which rows a picker shows), it consumes config
+data this module already loads, and the ETL structurally cannot see the key
+(``MappingConfig.to_raw_dict`` emits only ``mappings`` + ``global_config``).
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from src.config.loader import available_configs, load_config
@@ -41,6 +61,7 @@ from src.ui_flet.home_status import (
     ENTITY_LABELS,
 )
 from src.ui_flet.humanize import friendly_district_name
+from src.ui_flet.identity_gate import resolve_domain
 from src.ui_flet.schedule_status import ScheduleState
 
 logger = logging.getLogger(__name__)
@@ -62,6 +83,21 @@ class ConfigSummary:
     CSVs it emits, in the canonical order. ``source_file_count`` is how many distinct GDE files
     it reads. ``loaded_ok`` is ``False`` when the config failed to load — a SAFE degraded
     summary the view renders calmly (Apply disabled), NEVER a crash / a raw error.
+
+    ``district_domains`` (0038 S5) is the config's PUBLIC district staff email domains — an
+    organisational fact the district publishes itself, never personal data. It is a
+    **tri-state**, and the filter needs all three apart:
+
+    * ``None`` — UNRESOLVABLE. We could not read the config, so we do not know what it claims;
+      it therefore claims nobody and can never exclude anyone (a broken YAML only widens).
+    * ``()`` — DECLARED EMPTY. It loaded cleanly and claims nobody: an *unclaimed* config (the
+      base mapping, the ``mbp_*`` tiers, a district before its domain row lands).
+    * a non-empty tuple — CLAIMED. The only state that can ever narrow a list.
+
+    ``None ⟺ not loaded_ok`` holds today and is pinned in both directions by
+    ``tests/test_ui_flet_filtered_catalog.py`` — two fields, one fact, asserted rather than
+    assumed, so a future path that breaks the equivalence surfaces as a red test instead of a
+    tier-logic divergence.
     """
 
     sis_type: str
@@ -69,13 +105,15 @@ class ConfigSummary:
     output_labels: tuple[str, ...]
     source_file_count: int
     loaded_ok: bool
+    district_domains: tuple[str, ...] | None
 
 
 def _degraded(sis_type: str, *, config_dir: Path | None) -> ConfigSummary:
     """The safe degraded summary for a config that failed to load — no PII, no raw error text.
 
     ``district_name`` falls back to the raw id via ``friendly_district_name``'s totality (itself
-    total — a nested load failure returns the raw id, never raises).
+    total — a nested load failure returns the raw id, never raises). ``district_domains`` is
+    ``None`` (unresolvable), which is what keeps a broken YAML from ever matching anybody.
     """
     return ConfigSummary(
         sis_type=sis_type,
@@ -83,6 +121,7 @@ def _degraded(sis_type: str, *, config_dir: Path | None) -> ConfigSummary:
         output_labels=(),
         source_file_count=0,
         loaded_ok=False,
+        district_domains=None,
     )
 
 
@@ -107,8 +146,17 @@ def summarize_config(sis_type: str, *, config_dir: Path | None = None) -> Config
             output_labels=output_labels,
             source_file_count=source_file_count,
             loaded_ok=True,
+            district_domains=tuple(cfg.district_domains or ()),
         )
     except Exception:  # noqa: BLE001 - total: any load failure degrades, never surfaces the raw error
+        # ONE WARN naming the config ID — the support signal a silent degradation would cost,
+        # and the only thing worth saying: an unreadable config matches nobody and produces
+        # nothing. Never the raw error (privacy), and never the admin's domain (the filter
+        # path holds one, and this line is on it).
+        logger.warning(
+            "The district mapping %r could not be read; it is shown but can match nobody.",
+            sis_type,
+        )
         return _degraded(sis_type, config_dir=config_dir)
 
 
@@ -146,50 +194,255 @@ def list_configs(*, config_dir: Path | None = None) -> list[ConfigSummary]:
     return [summarize_config(sis_type, config_dir=config_dir) for sis_type in available_configs(config_dir)]
 
 
+# --------------------------------------------------------------------------- #
+# The ONE catalog build — memoised for the session (0038 S5)                    #
+# --------------------------------------------------------------------------- #
+@lru_cache(maxsize=8)
+def _cached_catalog(config_dir: Path | None) -> tuple[ConfigSummary, ...]:
+    """The memoised build. Keyed on ``config_dir`` alone — see :func:`catalog`.
+
+    Deliberately NOT total: the fail-open handling lives in :func:`catalog`, one level out,
+    because ``lru_cache`` does not memoise a raise. A transient enumeration failure therefore
+    costs one degraded call and is retried on the next one — caching the empty result would
+    empty every picker for the rest of the session.
+    """
+    return tuple(list_configs(config_dir=config_dir))
+
+
+def catalog(*, config_dir: Path | None = None) -> tuple[ConfigSummary, ...]:
+    """Every discoverable config, summarised ONCE per session. TOTAL — never raises.
+
+    The single resolution path behind the identity page, the Home cards, and all four
+    district pickers, so those surfaces can never disagree about what exists or who claims
+    what. Parsing eleven bundled YAMLs costs ~210 ms on a district server; that ran on the
+    launch path and again per Settings Save before this cache existed.
+
+    **What is cached, and what deliberately is not.** Only YAML-derived facts (the config
+    ids and their summaries) are memoised. The admin's domain, the saved ``sis_type`` and
+    the show-all toggle are all per-CALL arguments to :func:`filtered_catalog` — so a Mapping
+    **Apply** (which changes ``sis_type`` and nothing else) is reflected on the next mount
+    with nothing to invalidate. That is the whole invalidation rule, and it is pinned by
+    ``tests/test_ui_flet_filtered_catalog.py::TestMemoisation``.
+
+    The residual, stated: a YAML dropped into ``~/.districtsync/mappings/`` **while the app
+    is running** is not picked up until the next launch (or an explicit
+    :func:`reset_catalog_cache`). Installing a mapping is a restart-shaped act, and the
+    alternative — re-parsing on every paint — is the cost this cache exists to remove.
+
+    ``list_configs`` remains the unmemoised sibling for callers (and tests) that must read
+    the disk right now.
+    """
+    try:
+        return _cached_catalog(config_dir)
+    except Exception:  # noqa: BLE001 - fail OPEN: an unreadable catalog still opens the app
+        logger.warning("Could not list the district mappings; the full district list will be shown.", exc_info=True)
+        return ()
+
+
+def reset_catalog_cache() -> None:
+    """Drop the memoised catalog. The support/test seam; the app never needs to call it."""
+    _cached_catalog.cache_clear()
+
+
 def district_domain_index(*, config_dir: Path | None = None) -> dict[str, tuple[str, ...]]:
     """``{config id: its PUBLIC district_domains}`` — the identity resolver's data. TOTAL.
 
-    The **effectful half of the S4a→S5 seam**. S4a's launch page and Settings section each
-    build this ONCE per mount and hand it to the pure ``identity_gate.resolve_domain`` /
-    ``matched_state``; S5 folds the same fact into the single memoised catalog build as
-    ``ConfigSummary.district_domains`` and routes both through ``filtered_catalog``. The
-    PURE resolver does not change when that happens — it takes the index as data.
+    A thin projection of :func:`catalog`, NOT a second builder: S4a's launch page, the
+    Settings identity section and S4b's Home cards keep calling this, and since S5 they
+    share the ONE memoised build with the pickers. The pure resolver
+    (``identity_gate.resolve_domain`` / ``matched_state``) is unchanged by that — it takes
+    the index as DATA.
 
-    Fail-open is structural, in both directions:
+    The tri-state flattens to two here on purpose: the resolver only ever asks "does this
+    config claim my domain?", and an UNRESOLVABLE config (``None``) claims nobody exactly as
+    a declared-empty one does. The distinction that matters — *may this config exclude
+    anyone?* — belongs to :func:`filtered_catalog`, which reads the summaries directly.
 
-    * a failure enumerating the configs returns ``{}``. An empty index matches nobody, and
-      "nobody matched" means the caller shows the FULL unfiltered list;
-    * a single config that fails to load is recorded as UNCLAIMED (``()``) with ONE WARN
-      naming its id. A broken YAML can therefore only ever WIDEN a list — it can never hide
-      a district from its own admin, who by construction matches nothing and sees
-      everything.
-
-    The values are public organisational domains (a district's staff email domain, which
-    the district publishes itself). No personal data, and nothing student-derived.
-
-    **Cost, stated rather than assumed:** this parses all eleven bundled YAMLs — ~210 ms on
-    a district server, once per page mount. It runs on the launch path and again on a
-    Settings Save, which is why the callers build it ONCE per mount and pass it down rather
-    than calling per keystroke. **Memoisation is deliberately NOT here** — it belongs to S5,
-    which folds this fact into the single memoised catalog build (``ConfigSummary``); adding
-    a cache now would create a second, differently-scoped one to unpick.
+    Fail-open is structural in both directions: an enumeration failure yields ``{}`` (an
+    empty index matches nobody, and no match means the FULL list), and a single config that
+    fails to load reads as unclaimed with ONE WARN naming its id (emitted by
+    :func:`summarize_config`).
     """
-    try:
-        sis_ids = available_configs(config_dir)
-    except Exception:  # noqa: BLE001 - fail OPEN: no index at all still enters, unfiltered
-        logger.warning("Could not list the district mappings; the full district list will be shown.", exc_info=True)
-        return {}
+    return {summary.sis_type: summary.district_domains or () for summary in catalog(config_dir=config_dir)}
 
-    index: dict[str, tuple[str, ...]] = {}
-    for sis_type in sis_ids:
-        try:
-            index[sis_type] = tuple(load_config(sis_type, config_dir).district_domains or ())
-        except Exception:  # noqa: BLE001 - one bad config can only widen the list
-            logger.warning(
-                "identity resolve: the district mapping %r could not be read, so it can match nobody.", sis_type
-            )
-            index[sis_type] = ()
-    return index
+
+# --------------------------------------------------------------------------- #
+# The district-list filter (0038 S5) — the one choke point every picker uses    #
+# --------------------------------------------------------------------------- #
+# The show-all affordance's copy, single-sourced for the four pickers. It is a COURTESY,
+# never an unlock: nothing is being withheld (every mapping ships in the executable), the
+# list is merely short. The banned register (sign in / verify / unlock / access / …) is
+# absent by construction and swept by the tests.
+SHOW_ALL_LABEL = "Show all districts — we're only showing yours to keep the list short."
+SHOWING_ALL_LABEL = "Showing all districts · Show only mine"
+
+
+def show_all_label(*, show_all: bool) -> str:
+    """The show-all row's label for the current toggle state (the row INVERTS when on)."""
+    return SHOWING_ALL_LABEL if show_all else SHOW_ALL_LABEL
+
+
+@dataclass(frozen=True)
+class FilteredCatalog:
+    """What one picker should render, plus the one fact its show-all row needs.
+
+    ``summaries`` is the rows to render, in catalog order. ``can_filter`` says a narrower
+    list EXISTS for this admin — which is what the show-all row's visibility keys on,
+    deliberately:
+
+    keying the row on "this list is currently narrowed" would remove the toggle the instant
+    it was switched on (show-all returns the full list), stranding the admin in the long list
+    with no way back to their own short one.
+
+    There is deliberately no ``filtered`` companion field. It had no production reader — every
+    surface keys its row on ``can_filter`` and its label on the toggle it already owns — and a
+    second boolean makes the nonsensical ``(filtered=True, can_filter=False)`` representable.
+    A caller that genuinely needs "is this list narrowed right now?" derives it from the
+    ``show_all`` it passed in: ``can_filter and not show_all``.
+    """
+
+    summaries: tuple[ConfigSummary, ...]
+    can_filter: bool
+
+
+def _normalise_sis(value: str) -> str:
+    """Trim + lowercase a config id for comparison — ``sis_type`` is hand-editable."""
+    return (value or "").strip().lower()
+
+
+def filtered_catalog(
+    domain: str,
+    *,
+    saved_sis: str,
+    show_all: bool,
+    picked_sis: str = "",
+    config_dir: Path | None = None,
+) -> FilteredCatalog:
+    """Which district rows to show this admin. TOTAL — never raises, never fails closed.
+
+    **The rule, in two tiers** (plan 0038, reconciled at the R3 delta gate):
+
+    (i)  **no identity / no match / show-all → ALL configs**, unclaimed ones included.
+         Fail-open is the default state of the world, and it is where every admin whose
+         address we cannot place lands: a personal or board-wide address, a consultant, a
+         typo, a district whose domain row has not shipped yet.
+    (ii) **matched** — at least one config's *resolved, non-empty* ``district_domains``
+         contains ``domain`` — → exactly the matching configs, PLUS ``saved_sis`` and
+         ``picked_sis``, unconditionally.
+
+    **Matching is EXACT, case-normalised domain equality** (``identity_gate.resolve_domain``)
+    — never subdomain, suffix or wildcard. ``mail.sd48.bc.ca`` does not match ``sd48.bc.ca``
+    in either direction. Over-matching is the dangerous direction under fail-open, because it
+    scopes an admin INTO a district that is not theirs; under-matching drops them into tier
+    (i) with the full list, which is always safe.
+
+    **A row is hidden only when some OTHER list claims it.** Four consequences, each the
+    answer to a way this could hurt someone:
+
+    * a config with no domains (``()``) or unreadable ones (``None``) can never match, so a
+      broken or not-yet-claimed YAML only ever WIDENS a list;
+    * an admin whose own district's row is missing or broken matches nothing BY
+      CONSTRUCTION and therefore sees everything — *a district disappearing on its own
+      admin* is the failure this rule makes unrepresentable;
+    * **the SAVED district is present in every rendered list.** ``saved_sis`` is a required
+      keyword-only parameter for exactly that reason (CLAUDE.md: no permissive default on a
+      safety-relevant parameter) — the escape is a property of the choke point, not a thing
+      each of the four call sites has to remember;
+    * **the WORKING pick is too.** ``picked_sis`` is the district the admin has selected on
+      this surface but not yet committed. Without it, "Show all districts" → pick a district
+      outside your scope → toggle back silently DROPS the selection from the list it is still
+      the value of, leaving a dropdown pointing at a row it no longer offers. It unions in
+      exactly like ``saved_sis``.
+
+    Both escapes SELECT a catalog row and never fabricate one, so a hand-edited
+    ``config.json`` (or a stale widget value) naming a district we do not ship cannot put a
+    phantom option into what is structurally an allowlist.
+
+    ``picked_sis`` defaults to ``""``, and that default is SAFE where ``saved_sis``'s would
+    not be: this parameter can only ever WIDEN the result. Omitting it can cost a caller the
+    retention of a transient selection it may not even have; omitting ``saved_sis`` would
+    hide a district the install is actively converting. Different blast radii, different
+    rules — so a read-only surface may leave it out, and every surface that lets an admin
+    PICK passes it.
+
+    ``show_all`` is per-SURFACE state owned by the calling screen, re-scoped on every mount
+    (flag 5 — never an ``AppConfig`` field: a flip-once-forever setting would permanently
+    re-arm the wrong-district risk this feature exists to reduce). Whether it should be
+    session-wide instead is an owner call tracked in the ROADMAP.
+
+    ``domain`` is a bare domain, normally ``identity_gate.stored_identity_domain(cfg)``. The
+    plaintext address never reaches this module, and nothing here logs the domain.
+    """
+    summaries = catalog(config_dir=config_dir)
+    if not summaries:
+        # Nothing to show is not a filter: `can_filter=False` keeps a show-all row that would
+        # claim "we're only showing yours" off a list that hides nothing.
+        return FilteredCatalog(summaries=(), can_filter=False)
+
+    try:
+        visible = _matched_subset(summaries, domain, saved_sis=saved_sis, picked_sis=picked_sis)
+    except Exception:  # noqa: BLE001 - the fail-OPEN floor: a raise costs a short list, never a district
+        logger.warning("Could not scope the district list; showing every district.", exc_info=True)
+        return FilteredCatalog(summaries=summaries, can_filter=False)
+
+    can_filter = len(visible) < len(summaries)
+    if show_all or not can_filter:
+        return FilteredCatalog(summaries=summaries, can_filter=can_filter)
+    return FilteredCatalog(summaries=visible, can_filter=True)
+
+
+def _matched_subset(
+    summaries: Sequence[ConfigSummary],
+    domain: str,
+    *,
+    saved_sis: str,
+    picked_sis: str,
+) -> tuple[ConfigSummary, ...]:
+    """Tier (ii)'s row set: the matching configs plus the saved and picked ones, in CATALOG order.
+
+    Order is preserved rather than re-derived, so a matched admin who presses "Show all
+    districts" finds their own district in the same relative position it already occupied.
+    Only configs whose domains RESOLVED (a non-empty ``district_domains``) are offered to the
+    matcher — an unreadable one (``None``) and a declared-empty one (``()``) both claim
+    nobody, and the ``if s.district_domains`` guard covers both because each is falsy.
+    """
+    claimed = {s.sis_type: s.district_domains for s in summaries if s.district_domains}
+    matched = set(resolve_domain(domain, claimed))
+    if not matched:
+        return tuple(summaries)  # tier (i) — no match, everything shows
+    keep = {_normalise_sis(saved_sis), _normalise_sis(picked_sis)} - {""}
+    return tuple(s for s in summaries if s.sis_type in matched or _normalise_sis(s.sis_type) in keep)
+
+
+def disambiguated_labels(summaries: Sequence[ConfigSummary]) -> dict[str, str]:
+    """``{config id: the label a picker row renders}`` — no two of which may read identically.
+
+    A picker row is a decision, and two rows with the same words are a coin flip the admin
+    cannot see losing (the highest-consequence wrong click in this product is picking the
+    wrong district, because a wrong mapping ships a wrong roster). Where display text
+    collides, EVERY member of the colliding group gets its raw config id appended — suffixing
+    only the later ones would leave the first still reading ambiguously.
+
+    Collision is judged after case-folding and whitespace-trimming, because two labels
+    differing only in padding or case read identically on screen.
+
+    Scope, stated: the BUNDLED set is guaranteed collision-free by distinct ``district_name``
+    lines (G13, pinned at ``test_ui_flet_mapping_catalog``). This runtime pass exists for the
+    YAMLs we do NOT control — a partner-authored mapping dropped into
+    ``~/.districtsync/mappings/``. If it ever starts firing on the bundled catalog, G13 has
+    regressed and that is the bug to fix, not this.
+    """
+    seen: dict[str, list[str]] = {}
+    for summary in summaries:
+        display = (summary.district_name or "").strip() or summary.sis_type
+        seen.setdefault(display.strip().lower(), []).append(summary.sis_type)
+
+    labels: dict[str, str] = {}
+    for summary in summaries:
+        display = (summary.district_name or "").strip() or summary.sis_type
+        collides = len(seen[display.strip().lower()]) > 1
+        labels[summary.sis_type] = f"{display} ({summary.sis_type})" if collides else display
+    return labels
 
 
 def can_apply(pending: ConfigSummary | None, persisted_sis: str) -> bool:

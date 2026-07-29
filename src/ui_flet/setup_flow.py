@@ -238,11 +238,25 @@ def prev_step(step: SetupStep) -> SetupStep | None:
 
 
 def auto_selected_district(available: Sequence[str]) -> str:
-    """The district to pre-select in the District step: the sole config, else nothing (D9).
+    """The district to pre-select in the District step: the sole VISIBLE option, else nothing.
 
-    Auto-select ONLY when exactly one config exists (there is no meaningful choice to make);
-    with zero or multiple configs, return ``""`` so the "Choose your district" placeholder
-    shows and the admin picks explicitly — no silent alphabetical default.
+    Auto-select ONLY when there is exactly one option (there is no meaningful choice to
+    make); with zero or several, return ``""`` so the "Choose your district" placeholder shows
+    and the admin picks explicitly — no silent alphabetical default.
+
+    **``available`` is the VISIBLE list, not the whole catalog (D9 re-scoped, plan 0038 S5 —
+    see the dated DECISIONS entry).** The caller passes
+    ``mapping_catalog.filtered_catalog(...)``'s ids, so a matched admin whose domain resolves
+    to exactly one district gets it pre-selected. Two things that does NOT change:
+
+    * it stays a PRE-SELECTION on a step the admin still lands on — the caller applies it
+      AFTER ``derive_flow``, deliberately, or a satisfied District step would be resumed past
+      and never confirmed;
+    * Convert does not auto-select at all. A per-run conversion is not a setup step; it
+      prefills only from a valid saved ``sis_type`` (the other half of D9, untouched).
+
+    This function is unchanged by the re-scoping — the rule was always "one option", and the
+    caller decides what is on offer.
     """
     return available[0] if len(available) == 1 else ""
 

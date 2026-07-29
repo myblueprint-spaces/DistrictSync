@@ -49,7 +49,21 @@ brand mark** (it signifies DistrictSync — "roster sync for SpacesEDU").
    distinguishable by its rendered text alone. Two byte-identical labels make the
    highest-consequence wrong click in the product — picking the wrong district ships a wrong roster
    — a coin toss. (`sd51attendance` shipped byte-identical to `sd51myedbc` until S3's
-   `district_name` line; S5 adds the runtime disambiguator for user-dropped YAMLs.)
+   `district_name` line; S5 added `mapping_catalog.disambiguated_labels`, the runtime
+   disambiguator for user-dropped YAMLs, which appends the raw config id to EVERY member of a
+   colliding group. Build picker rows through it, never from `district_name` directly.)
+
+9. **A scoped list must always offer its own escape (0038 S5).** Where a district list is
+   shortened by the stored identity, a text-tier "Show all districts — we're only showing yours
+   to keep the list short." row sits at its foot, inverting to "Showing all districts · Show only
+   mine" when on. It is a COURTESY, never an unlock (rule 7 applies to its wording); it is
+   **per-SURFACE, re-scoped on every mount** and never persisted (each screen owns its own
+   toggle — whether it should instead follow the admin across surfaces for a session is an
+   owner call tracked in `docs/claugentic-ROADMAP.md`); and it renders whenever a shorter list
+   EXISTS — including while it is switched on, or the admin is stranded in the long list.
+   Build it through `components.list_scope_row(...)`, never by hand: that factory is where the
+   render rule lives. Copy is single-sourced at `mapping_catalog.SHOW_ALL_LABEL` /
+   `SHOWING_ALL_LABEL`.
 
 ## Tokens — single source: `src/ui_flet/tokens.py`
 Never inline a hex or a px size in a screen or a factory arg; add a token, then reference it.
