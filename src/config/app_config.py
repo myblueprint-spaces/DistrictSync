@@ -64,6 +64,10 @@ CONFIG_FILENAME = "config.json"
 # read alike in a support ticket.
 _QUARANTINE_NAME_FMT = "config.corrupt-%Y%m%d-%H%M%S.json"
 
+# The glob that finds what the format above wrote. Kept beside it so the writer and the
+# only reaper of these files can never disagree about which files are quarantine copies.
+_QUARANTINE_GLOB = "config.corrupt-*.json"
+
 # Fields that describe the LOAD, not the settings. Never written to disk and never
 # accepted from it — one frozenset drives BOTH the save payload and the load allowlist,
 # so persisted-vs-transient can never drift between the two.
@@ -502,6 +506,42 @@ class AppConfig:
             return False
         return True
 
+    def identity_clear(self) -> bool:
+        """Remove who looks after this sync — from ``config.json`` AND its quarantine copies.
+
+        "Blank clears" is only true if the value is actually gone from the disk, and
+        ``config.json`` is not the only place it lives: :func:`_preserve_unreadable_predecessor`
+        copies an unreadable settings file aside as ``config.corrupt-<ts>.json`` byte-for-byte,
+        and nothing prunes those copies. A stored address therefore survives in every
+        quarantine snapshot taken after it was written, in the same directory, indefinitely
+        — so an "erasure" that only empties ``config.json`` leaves the address readable on
+        disk (the containment model recorded in ``tests/test_identity_pii_guards.py``).
+
+        Three fields, one act, because they are one question:
+
+        * ``identity_email`` and ``identity_sd_number`` are the answer;
+        * ``identity_prompt_dismissed`` is reset to ``False`` so the ask can come BACK. Left
+          set, clearing would wedge the states: no stored identity, and no surface willing
+          to ask for one again.
+
+        Ordering is deliberate: purge only AFTER a confirmed write. A refused save (an
+        UNREADABLE profile) means nothing was cleared, and deleting the quarantine copies
+        then would destroy the admin's only recoverable settings for no gain. The purge
+        itself is best-effort — a locked file logs and is skipped; the address is already
+        out of ``config.json``.
+
+        Returns ``True`` iff the settings were written (the same contract as
+        :meth:`identity_save`, which it routes through — the ONE identity write path).
+        """
+        cleared = self.identity_save(
+            identity_email="",
+            identity_sd_number="",
+            identity_prompt_dismissed=False,
+        )
+        if cleared:
+            _purge_quarantined_settings()
+        return cleared
+
     def sftp_is_configured(self) -> bool:
         """Return True if SFTP has been enabled and configured."""
         if not (self.sftp_enabled and self.sftp_host and self.sftp_username and self.sftp_remote_path):
@@ -713,6 +753,37 @@ def _fsync_directory(directory: Path) -> None:
         logger.debug("Could not fsync %s after promoting the settings file (%s)", directory, exc)
     finally:
         os.close(dir_fd)
+
+
+def _purge_quarantined_settings() -> int:
+    """Unlink every ``config.corrupt-*.json`` beside the settings file. Returns the count.
+
+    The counterpart to :func:`_preserve_unreadable_predecessor`, and the ONLY thing that
+    ever removes what it wrote. Called from :meth:`AppConfig.identity_clear`, because those
+    copies hold a byte-for-byte duplicate of whatever ``config.json`` contained when they
+    were taken — including an identity the admin has just asked us to forget.
+
+    Best-effort and never fatal: a copy held open by an editor or an AV scanner logs at
+    WARNING and is left alone. The clear itself has already succeeded by the time this runs
+    (see :meth:`AppConfig.identity_clear` for why that order matters), so a failure here
+    costs a stale copy, never the clear.
+    """
+    removed = 0
+    directory = config_file_path().parent
+    try:
+        stale = sorted(directory.glob(_QUARANTINE_GLOB))
+    except OSError as exc:
+        logger.warning("Could not list older settings copies in %s (%s); none were removed.", directory, exc)
+        return 0
+    for path in stale:
+        try:
+            path.unlink()
+            removed += 1
+        except OSError as exc:
+            logger.warning("Could not remove the older settings copy %s (%s); it is still on disk.", path.name, exc)
+    if removed:
+        logger.info("Removed %d older settings copy/copies alongside %s.", removed, config_file_path().name)
+    return removed
 
 
 def _preserve_unreadable_predecessor(config_file: Path, *, load_was_unreadable: bool) -> None:

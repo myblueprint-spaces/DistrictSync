@@ -15,6 +15,15 @@ another's verdict:
      bundle — so "cache repopulated" == "client is bundled offline" == "window
      booted". (The build-time cache-populated + packed-archive asserts live in the
      workflow; this is the runtime confirmation.)
+
+     **What the window now shows (0038 S4a):** on a fresh CI profile the first paint
+     is the LAUNCH PAGE ("who looks after this sync?"), not the app body — the
+     identity gate mounts between the geometry block and the rail. Nothing here
+     changes: this script asserts a window EXISTS and closes with zero orphans, never
+     what is drawn in it, and the launch page is a normal Flet tree in the same
+     window with the same close handlers (bound ABOVE the gate precisely so the
+     WM_CLOSE below still lands). The rendered-content gate remains the pre-tag
+     QA-checklist walk, which now covers the launch page explicitly.
   3. **Zero-orphan close (Windows gating via ``--require-close``; Linux/macOS
      INFO-only):** baseline-snapshot ``flet``/``flet.exe`` PIDs BEFORE launch, wait
      for a real top-level window owned by a tree PID to EXIST, post ``WM_CLOSE``

@@ -7,13 +7,17 @@ district pastes into a support ticket, a shared drive, or an audit export.
 
 **Be precise about "the settings file" — it is not one file.** `AppConfig.save()` preserves
 an unreadable predecessor byte-for-byte as `config.corrupt-<ts>.json` beside `config.json`
-(see `_preserve_unreadable_predecessor`), and NOTHING prunes those copies. So a stored
+(see `_preserve_unreadable_predecessor`), and NOTHING ELSE prunes those copies. So a stored
 identity survives in every quarantine snapshot taken after it was written, in the same
 directory, indefinitely. That is deliberate for its own purpose — the copies exist so an
 admin can recover settings by eye — but it means the honest containment model is
-"`config.json` **and any `config.corrupt-*.json` sibling**", not one file. The consequence
-lands on S4a: the Settings "blank clears" path must ALSO unlink those predecessors, or
-clearing the address leaves it readable on disk (carried into the plan's S4a criteria).
+"`config.json` **and any `config.corrupt-*.json` sibling**", not one file.
+
+**Resolved in S4a (2026-07-29):** the erasure path is `AppConfig.identity_clear`, and it
+unlinks those siblings after a confirmed write — so "blank clears" is true of the DIRECTORY,
+not merely of one file. Pinned by `TestTheErasurePathCoversTheCopies` below (the
+containment-model half) and by `tests/test_ui_flet_identity_page.py` (the Settings half,
+which also pins that the side effect is STATED to the admin rather than done quietly).
 
 These are BOUNDED REGRESSION GUARDS, and this docstring says so rather than letting the
 green tick imply more. Each pins one specific escape route that is cheap to open by
@@ -328,6 +332,126 @@ def test_a_poisoned_stored_identity_reaches_neither_sink(isolated_user_profile: 
     assert written, "no CSVs were written; the output assertion would be vacuous"
     for probe in (CANARY_EMAIL, CANARY_LOCAL, CANARY_SD):
         assert probe not in written, f"{probe!r} reached an output CSV"
+
+
+# --------------------------------------------------------------------------- #
+# 3b. The erasure path covers the whole containment model (S4a)                #
+# --------------------------------------------------------------------------- #
+class TestTheErasurePathCoversTheCopies:
+    """ "Blank clears" must be true of the DIRECTORY, not just of ``config.json``."""
+
+    def _plant_a_quarantine_copy(self, profile: Path) -> Path:
+        """A byte-for-byte predecessor copy, exactly as ``save()`` would have written it."""
+        profile.mkdir(parents=True, exist_ok=True)  # the fixture's dir is created lazily
+        copy = profile / "config.corrupt-20260728-101500.json"
+        copy.write_text(json.dumps({"identity_email": CANARY_EMAIL, "sis_type": "sd74myedbc"}), encoding="utf-8")
+        return copy
+
+    def test_clearing_removes_the_address_from_every_file_in_the_profile(self, isolated_user_profile: Path) -> None:
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", identity_email=CANARY_EMAIL)
+        cfg.save()
+        copy = self._plant_a_quarantine_copy(isolated_user_profile)
+        # Positive twin FIRST: the canary really is on disk in two places, so the absence
+        # assertion below cannot pass for the wrong reason.
+        planted = [p for p in isolated_user_profile.glob("*.json") if CANARY_EMAIL in p.read_text(encoding="utf-8")]
+        assert len(planted) == 2, f"expected the canary in config.json AND {copy.name}, found {planted}"
+
+        assert cfg.identity_clear() is True
+
+        survivors = [
+            p.name
+            for p in isolated_user_profile.rglob("*")
+            if p.is_file() and CANARY_EMAIL in p.read_bytes().decode("utf-8", "replace")
+        ]
+        assert survivors == [], f"the address survived in {survivors}"
+
+    def test_clearing_re_arms_the_ask_and_leaves_the_real_settings_alone(self, isolated_user_profile: Path) -> None:
+        cfg = AppConfig(
+            input_dir="/in",
+            output_dir="/out",
+            sis_type="sd74myedbc",
+            identity_email=CANARY_EMAIL,
+            identity_sd_number=CANARY_SD,
+            identity_prompt_dismissed=True,
+        )
+        cfg.save()
+
+        cfg.identity_clear()
+
+        stored = json.loads((isolated_user_profile / "config.json").read_text(encoding="utf-8"))
+        assert (stored["identity_email"], stored["identity_sd_number"]) == ("", "")
+        assert stored["identity_prompt_dismissed"] is False, "the ask must be able to come back"
+        assert stored["sis_type"] == "sd74myedbc", "clearing WHO must never change WHICH district"
+
+    def test_a_refused_clear_keeps_the_copies(self, isolated_user_profile: Path) -> None:
+        """Ordering matters: purge only AFTER a confirmed write.
+
+        On an UNREADABLE profile the clear is refused, and those copies may be the admin's
+        only recoverable settings — deleting them then would destroy data to accomplish
+        nothing.
+        """
+        from src.config.app_config import ConfigLoadState
+
+        copy = self._plant_a_quarantine_copy(isolated_user_profile)
+        cfg = AppConfig(identity_email=CANARY_EMAIL, load_state=ConfigLoadState.UNREADABLE)
+
+        assert cfg.identity_clear() is False
+        assert copy.exists(), "a refused clear must not delete the admin's only settings copy"
+
+    def test_a_locked_copy_is_reported_not_fatal(self, isolated_user_profile: Path, monkeypatch, caplog) -> None:
+        """Best-effort: the clear itself has already succeeded when the purge runs."""
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", identity_email=CANARY_EMAIL)
+        cfg.save()
+        self._plant_a_quarantine_copy(isolated_user_profile)
+        monkeypatch.setattr(Path, "unlink", lambda self, **kw: (_ for _ in ()).throw(OSError("locked")))
+
+        with caplog.at_level("WARNING"):
+            assert cfg.identity_clear() is True
+
+        assert "config.corrupt-" in caplog.text
+        assert CANARY_EMAIL not in caplog.text, "the diagnostic must name the FILE, never the value"
+
+
+# --------------------------------------------------------------------------- #
+# 3c. The UI layer's own logging (S4a)                                        #
+# --------------------------------------------------------------------------- #
+def test_the_launch_gate_and_resolution_log_counts_only(isolated_user_profile: Path, caplog) -> None:
+    """The identity surfaces are the ONLY code that holds the address — and they log neither
+    it, its local part, nor its domain.
+
+    Driven through the real shell boot + a real resolution rather than by calling the
+    loggers, so a future line added anywhere in that path is caught.
+    """
+    from unittest.mock import MagicMock
+
+    from src.ui_flet import shell
+    from src.ui_flet.screens import identity as identity_screen
+
+    with caplog.at_level("INFO"):
+        page = MagicMock()
+        shell.main(page)
+        view = page.add.call_args[0][0]
+        fields = [c for c in _walk(view) if type(c).__name__ == "TextField"]
+        fields[0].value = CANARY_EMAIL
+        buttons = [c for c in _walk(view) if getattr(c, "content", None) == identity_screen.CONTINUE_LABEL]
+        buttons[0].on_click(None)
+
+    text = caplog.text
+    assert "identity gate: shown=True reason=no-identity" in text, "the gate line is missing; the rest is vacuous"
+    assert "identity resolve: outcome=" in text, "the resolve line is missing; the rest is vacuous"
+    for probe in (CANARY_EMAIL, CANARY_LOCAL, "leak-probe.invalid"):
+        assert probe not in text, f"{probe!r} reached the log"
+
+
+def _walk(control):  # noqa: ANN001, ANN202 - a walker over an untyped Flet tree
+    yield control
+    for attr in ("controls", "content"):
+        child = getattr(control, attr, None)
+        if child is None:
+            continue
+        for item in child if isinstance(child, list) else [child]:
+            if hasattr(item, "_c"):  # a flet Control
+                yield from _walk(item)
 
 
 # --------------------------------------------------------------------------- #

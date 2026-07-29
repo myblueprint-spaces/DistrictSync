@@ -34,9 +34,17 @@ doc is the reference. On any conflict, the harness + `docs/DESIGN_SYSTEM.md` win
 - **Plain-language vocabulary map:** SFTP → "Delivery to SpacesEDU" · GDE → "MyEd BC extract files" ·
   config/sis_type → "district" · rostering entities → Students/Staff/Families/Classes/Enrollments.
 - **The AA contrast test must stay green.** Any painted fg/bg pair goes in `tokens.UI_CONTRAST_PAIRS`
-  and must clear ≥ 4.5:1 (`tests/test_ui_flet_tokens.py`). Never delete a pair to pass.
-- **Gradient is onboarding-only.** `hero_gradient()` is reserved for the first-run onboarding hero;
-  every other screen leads with `page_header` (no gradient hero).
+  and must clear ≥ 4.5:1 (`tests/test_ui_flet_tokens.py`). Never delete a pair to pass. A
+  TRANSLUCENT foreground (`with_opacity`) is a composite the check cannot evaluate — use a solid
+  token instead, or the pair is ungated.
+- **Gradient is LAUNCH-PAGE-only** (reallocated from onboarding by plan 0038). `hero_gradient()` is
+  reserved for `screens/identity.py`; every other screen leads with `page_header` (no gradient hero).
+- **Identification is never authentication (0038).** On the launch page / Settings identity section /
+  Help echo, never write: sign in · log in · verify · unlock · authorized · account · credentials ·
+  access — and never call the district-domain list protected / secured / anonymous / encrypted. It is
+  a PUBLIC list used to shorten a picker. Swept by `tests/test_ui_flet_identity_page.py`.
+- **No two picker options may read identically.** A duplicate district label makes the
+  highest-consequence wrong click in the product a coin toss.
 
 ## Component inventory — when to use (`src/ui_flet/components.py`)
 - `page_header(title, subtitle=None, trailing=None)` — slim white/transparent top block. `trailing` =

@@ -68,6 +68,8 @@ from src.ui_flet.filepicker import (
     validate_output_dir,
 )
 from src.ui_flet.humanize import friendly_district_name, friendly_sftp_reason
+from src.ui_flet.identity_gate import MatchOutcome, matched_state, stored_identity_email
+from src.ui_flet.mapping_catalog import district_domain_index
 from src.ui_flet.picker_field import PickerField
 from src.ui_flet.schedule_status import (
     ScheduleState,
@@ -75,6 +77,7 @@ from src.ui_flet.schedule_status import (
     interpret_unregister,
     is_transient_location,
 )
+from src.ui_flet.screens.identity import log_resolve, matched_headline
 from src.ui_flet.setup_errors import classify_schedule_error
 from src.ui_flet.setup_flow import (
     TOTAL_STEPS,
@@ -123,7 +126,14 @@ from src.ui_flet.sftp_copy import (
     sftp_test_copy,
 )
 from src.ui_flet.verdict import Verdict
-from src.utils.validators import ALLOWED_SFTP_HOSTS, validate_month_day, validate_run_time
+from src.utils.identity import extract_domain, normalize_email
+from src.utils.validators import (
+    ALLOWED_SFTP_HOSTS,
+    IDENTITY_EMAIL_MAX_LEN,
+    validate_identity_email,
+    validate_month_day,
+    validate_run_time,
+)
 
 # Surfaced after a successful registration when the running exe lives in a transient dir
 # (Downloads/Temp): pinning a scheduled task there risks the "task fires, exe is gone,
@@ -742,9 +752,157 @@ def _mount_settings(  # pragma: no cover - Flet view glue
     # & district FIRST (what/where), then schedule (when), then delivery (destination) — the user's
     # stated mental model. Mirrors the wizard's lead-with-identity reorder. Wizard step order lives in
     # setup_flow.STEP_ORDER; this is the flat post-setup scroll.
-    controls += [folders_card, schedule_card, sftp_card]
+    #
+    # WHO leads (0038 S4a) — the launch page asks it, so this is where the answer is
+    # changeable and clearable. Landing an ask without a way to change or remove the answer
+    # would be a half-done feature, which is why this section ships in the same slice.
+    controls += [_build_identity_section(page, cfg), folders_card, schedule_card, sftp_card]
     root.controls = controls
     page.update()
+
+
+# --------------------------------------------------------------------------- #
+# "Who looks after this sync" — the identity section (0038 S4a).               #
+# --------------------------------------------------------------------------- #
+IDENTITY_TITLE = "Who looks after this sync"
+IDENTITY_EXPLAINER = "We use the part after the @ to show you your district's settings. It stays on this computer."
+IDENTITY_NONE = "No one on file yet."
+IDENTITY_FIELD_LABEL = "Work email address"
+IDENTITY_FIELD_HELPER = "Leave it blank to remove it."
+IDENTITY_CHANGE_LABEL = "Change"
+IDENTITY_ADD_LABEL = "Add an address"
+IDENTITY_SAVE_LABEL = "Save"
+IDENTITY_CANCEL_LABEL = "Cancel"
+# Blank clears — and says so plainly, because it removes MORE than the one file. The
+# quarantine copies (`config.corrupt-*.json`) hold byte-for-byte duplicates of whatever
+# `config.json` contained when they were taken, so an erasure that spared them would leave
+# the address readable on disk. Deleting them is a real side effect on the admin's settings
+# backups, so it is stated rather than done quietly.
+IDENTITY_CLEARED_NOTE = "Removed. We also deleted older copies of your settings file, which contained it."
+IDENTITY_SEVERAL_NOTE = (
+    "That email matches more than one district — you'll choose the right one under Folders & district."
+)
+IDENTITY_NO_MATCH_NOTE = "We don't have that address on file yet — no problem. Nothing else has changed."
+IDENTITY_REFUSED_NOTE = "We couldn't save that just now. Your other settings are untouched."
+
+
+def _build_identity_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma: no cover - Flet view glue
+    """The Settings home of the launch page's question: shown, changeable, CLEARABLE.
+
+    Three rules this section exists to keep true:
+
+    * **the stored value is re-validated at READ time.** ``config.json`` is hand-editable,
+      so ``stored_identity_email`` runs the boundary validator before anything is rendered;
+      a value that fails reads as UNANSWERED and is never echoed to the screen.
+    * **every write goes through ``identity_save`` / ``identity_clear``** — the choke point
+      that re-checks ``settings_unreadable()`` at write time and structurally cannot touch
+      ``sis_type``. Changing WHO looks after the sync never changes WHICH district converts.
+    * **blank clears, including the copies.** See ``AppConfig.identity_clear``.
+
+    It adds no reconcile of its own and no filled primary: the identity is not a task-baked
+    argument (the nightly action carries folders/district/delivery/run-time), so there is
+    nothing for the schedule to reconcile, and the scroll's ONE reconciling Save stays the
+    folders/SFTP pair.
+    """
+    state = {"editing": not stored_identity_email(cfg)}
+    field = ft.TextField(
+        label=IDENTITY_FIELD_LABEL,
+        helper=IDENTITY_FIELD_HELPER,
+        value=stored_identity_email(cfg),
+        width=420,
+        max_length=IDENTITY_EMAIL_MAX_LEN,
+        border_color=tokens.color_border,
+    )
+    note = ft.Text("", size=tokens.type_body, weight=ft.FontWeight.W_600, color=tokens.color_status_healthy)
+    body = ft.Column(spacing=tokens.space_lg)
+
+    def _set_note(text: str, *, color: str = tokens.color_status_healthy) -> None:
+        note.value = text
+        note.color = color
+
+    def _resolved_note(validated: str) -> str:
+        """Re-run the SAME resolution the launch page runs — one rule, two surfaces."""
+        index = district_domain_index()
+        match = matched_state(extract_domain(normalize_email(validated)), index)
+        if match.outcome is MatchOutcome.MATCHED_ONE:
+            log_resolve("matched", 1, index)
+            return f"Saved. {matched_headline(friendly_district_name(match.configs[0]) or match.configs[0])}"
+        if match.outcome is MatchOutcome.MATCHED_SEVERAL:
+            log_resolve("matched", len(match.configs), index)
+            return f"Saved. {IDENTITY_SEVERAL_NOTE}"
+        log_resolve("no_match", 0, index)
+        return f"Saved. {IDENTITY_NO_MATCH_NOTE}"
+
+    def _save(_e: ft.ControlEvent | None = None) -> None:
+        typed = (field.value or "").strip()
+        if not typed:
+            _set_note(IDENTITY_CLEARED_NOTE if cfg.identity_clear() else IDENTITY_REFUSED_NOTE)
+            field.value = ""
+            state["editing"] = False
+            _render()
+            return
+        try:
+            validated = validate_identity_email(typed)
+        except ValueError as exc:
+            # The validator's messages carry the RULE, never the value (it is personal data).
+            log_resolve("invalid", 0, {})
+            _set_note(str(exc), color=tokens.color_status_failed)
+            _render()
+            return
+        if not cfg.identity_save(identity_email=validated):
+            _set_note(IDENTITY_REFUSED_NOTE, color=tokens.color_status_failed)
+            _render()
+            return
+        _set_note(_resolved_note(validated))
+        field.value = validated
+        state["editing"] = False
+        _render()
+
+    def _start_editing(_e: ft.ControlEvent | None = None) -> None:
+        state["editing"] = True
+        note.value = ""
+        _render()
+
+    def _cancel(_e: ft.ControlEvent | None = None) -> None:
+        field.value = stored_identity_email(cfg)
+        state["editing"] = False
+        note.value = ""
+        _render()
+
+    def _render() -> None:
+        controls: list[ft.Control] = [
+            ft.Text(IDENTITY_TITLE, size=tokens.type_title, weight=ft.FontWeight.W_800, color=tokens.color_text),
+            ft.Text(IDENTITY_EXPLAINER, size=tokens.type_emphasis, color=tokens.color_muted),
+        ]
+        stored = stored_identity_email(cfg)
+        if state["editing"]:
+            actions = [components.secondary_button(IDENTITY_SAVE_LABEL, _save, icon=ft.Icons.CHECK_ROUNDED)]
+            if stored:
+                actions.append(components.text_button(IDENTITY_CANCEL_LABEL, _cancel))
+            controls += [field, ft.Row(spacing=tokens.space_lg, controls=actions)]
+        elif stored:
+            controls += [
+                ft.Text(
+                    stored,
+                    size=tokens.type_section,
+                    weight=ft.FontWeight.W_700,
+                    color=tokens.color_text,
+                    selectable=True,
+                ),
+                components.secondary_button(IDENTITY_CHANGE_LABEL, _start_editing, icon=ft.Icons.EDIT_ROUNDED),
+            ]
+        else:
+            controls += [
+                ft.Text(IDENTITY_NONE, size=tokens.type_emphasis, color=tokens.color_muted),
+                components.secondary_button(IDENTITY_ADD_LABEL, _start_editing, icon=ft.Icons.EDIT_ROUNDED),
+            ]
+        if note.value:
+            controls.append(note)
+        body.controls = controls
+        page.update()
+
+    _render()
+    return components.card(content=body)
 
 
 def _build_settings_folders(  # pragma: no cover - Flet view glue

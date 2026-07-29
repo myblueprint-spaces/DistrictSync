@@ -61,6 +61,34 @@ a validator-only probe leaves the shipped rows untested, so at least half the pr
 the data (a row on the base config, two districts claiming one domain, a value re-derived
 from the wrong source, a deleted row).
 
+### Flet view-glue surfaces (coverage-omitted screens) + shell lifecycle refactors
+_Recorded 2026-07-29 (plan 0038 S4a — `src/ui_flet/screens/identity.py`, the Settings section, the Help echo, and the `build_app_body`/`root_host` split of `shell.main`)._
+
+**Approach: two tracks in ONE slice, because it is two kinds of work.**
+
+1. *The new surface* — **copy-first, then per-state render smokes, then a vocabulary
+   sweep.** Write every user-facing string as a module constant before assembling any
+   control, so the copy can be reviewed (and swept) as text rather than excavated from a
+   render function. Then one smoke per page STATE asserting the structural promises the
+   design system makes (one filled primary, an escape, no banned word, the
+   deliberately-absent list actually absent).
+2. *The lifecycle refactor* — **characterise first.** Write the invariants the CURRENT
+   code already has, observe them GREEN before touching it, then refactor.
+
+*Rationale:* red-first does not transfer to view glue. A screen's acceptance criteria are
+"it constructs on this Flet version, it reads honestly, and it has exactly one way
+forward" — a failing test written before the controls exist fails on `ImportError` and
+teaches nothing about any of the three. What DOES transfer is that the copy is the
+requirement: making it data (constants) is what lets a test hold it to the register. And a
+refactor whose only evidence is a green end state proves nothing about what it preserved,
+so the characterisation half is where the discipline actually lives.
+
+*Where the risk really is:* the trust properties (a floor that cannot fail closed, a close
+handler bound early enough, an escape that stores nothing) are NOT view concerns and get
+tested at the seam, not through the screen — and each absence-assertion carries a positive
+twin, because "the app mounted anyway" is equally satisfied by a working floor and by a
+gate that quietly stopped firing.
+
 ### Documentation + its enforcing gate
 _Recorded 2026-07-29 (plan 0038 S2b — `docs/developer/output-contract.md` + its drift test)._
 

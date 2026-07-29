@@ -111,7 +111,14 @@ class TestDirectionBScales:
 
     def test_new_painted_pairs_are_in_the_contract(self):
         """The Direction B fg/bg pairs the design system paints must be AA-gated
-        (in ``UI_CONTRAST_PAIRS``) — so a future palette tweak can't dodge the check."""
+        (in ``UI_CONTRAST_PAIRS``) — so a future palette tweak can't dodge the check.
+
+        This is the anti-vacuity half of the AA gate, and it earns its keep: the AA test
+        iterates whatever the tuple happens to CONTAIN, so **deleting** a failing pair
+        makes it green. `docs/DESIGN_SYSTEM.md` says "never delete a pair to pass"; this
+        test is what makes that a build failure rather than a request. Every pair a new
+        surface paints belongs in BOTH places.
+        """
         required = [
             (tokens.color_on_healthy_tint, tokens.color_status_healthy_tint),
             (tokens.color_on_warning_tint, tokens.color_status_warning_tint),
@@ -121,6 +128,11 @@ class TestDirectionBScales:
             (tokens.MB_DARK, tokens.color_surface),
             (tokens.color_muted, tokens.color_content_wash),
             (tokens.color_text, tokens.color_content_wash),
+            # The launch page's gradient hero (0038 S4a). BOTH endpoints, because
+            # `hero_gradient()` runs MB_DARK -> MB_PRIMARY and the same text sits on both:
+            # gating only the darker end would pass while the light end failed.
+            (tokens.color_on_action_muted, tokens.color_action_primary),
+            (tokens.color_on_action_muted, tokens.color_action_primary_strong),
         ]
         for pair in required:
             assert pair in tokens.UI_CONTRAST_PAIRS, f"{pair} must be in the contrast contract"

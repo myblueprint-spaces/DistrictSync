@@ -31,6 +31,7 @@ from src.ui_flet import components, tokens
 from src.ui_flet.screens.convert import build_convert
 from src.ui_flet.screens.help import build_help
 from src.ui_flet.screens.home import build_home
+from src.ui_flet.screens.identity import build_identity
 from src.ui_flet.screens.mapping import build_mapping
 from src.ui_flet.screens.onboarding import build_onboarding
 from src.ui_flet.screens.run_history import build_run_history
@@ -110,6 +111,16 @@ class TestScreensRender:
     def test_setup_wizard_folders_step(self, stub_page, monkeypatch):
         # A fresh (unconfigured) config renders the wizard's first (Folders) step.
         _assert_renders(lambda: build_setup(stub_page), monkeypatch)
+
+    def test_identity_launch_page(self, stub_page, monkeypatch):
+        # 0038 S4a: the launch page is the FIRST thing a fresh install paints, so an
+        # API-drift crash here is a crash before any surface exists. Its per-state
+        # behaviour lives in tests/test_ui_flet_identity_page.py; this is the mount smoke
+        # every screen owes the design system.
+        _assert_renders(
+            lambda: build_identity(stub_page, app_config=AppConfig(), on_enter=lambda: None),
+            monkeypatch,
+        )
 
     def test_setup_settings_mode(self, stub_page, monkeypatch):
         # A completed config renders the flat Settings scroll without crashing.
