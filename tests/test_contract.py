@@ -1,23 +1,32 @@
 """Output schema contract tests — the mechanical enforcement of the published
-output contract (``docs/developer/output-contract.md``).
+output contract (``docs/developer/output-contract.md``, authored in plan 0038
+S2b; until it lands, this module's :data:`OUTPUT_SCHEMA` is the only in-repo
+statement of the contract).
 
 Verifies that the pipeline output for **every** bundled config produces exactly
 the entity CSVs that config's run is expected to emit, each with exactly the
 contract's columns **in exactly the contract's order**, encoded per the
-per-entity BOM rule. A failure here means the partner's importer will reject the
-file — or silently mis-read it.
+per-entity BOM rule. A failure here is a partner-visible change that MAY be
+rejected by the importer or silently mis-read.
 
 Three things are pinned, and each is a *partner-visible* contract:
 
 1. **Column ORDER equality** (not membership) — ``list(df.columns) == expected``
-   per emitted entity. The published doc is the authority for both the column set
-   and its order; ``OUTPUT_SCHEMA`` below is its in-test mirror.
+   per emitted entity. Emitted columns are treated as POSITIONAL:
+   order-sensitivity is CONFIRMED for ``StudentAttendance`` (see
+   ``src/etl/transformers/student_attendance.py`` — "exact case-sensitive order")
+   and is NOT yet confirmed with the partner for the rostering / course feeds, so
+   we pin the emitted order and require importer re-confirmation before changing
+   it. The published doc is the authority for both the column set and its order;
+   ``OUTPUT_SCHEMA`` below is its in-test mirror.
 2. **The expected-entity table** (:data:`EXPECTED_ENTITIES`) — the single source
    for "which CSVs should this config's contract run have produced". It is NOT
    derivable from config alone: it is ``active_entities ∩ entities whose sources
    this fixture supplies``. ``sd51myedbc`` actively enables StudentAttendance yet
    its fixture deliberately supplies no absence files (the skip-on-empty pin), so
-   its expected set is the 5 rostering entities.
+   its expected set is the 5 rostering entities. Its VALUES are guarded against
+   erosion in both directions by
+   ``test_expected_entities_track_active_entities`` + :data:`DELIBERATELY_UNCOVERED`.
 3. **The on-disk encoding** — the rostering/course CSVs carry the Excel BOM;
    ``StudentAttendance`` must not (``DataLoader.csv_encoding`` is the code SSOT;
    :data:`NO_BOM_ENTITIES` is the contract's own statement of the same rule, and
@@ -36,9 +45,21 @@ Parametrized over ALL 11 bundled configs:
   CSVs), mbponly (the two course CSVs only, reusing the committed
   ``tests/snapshots/mbp_input/`` fixtures its own e2e test owns).
 
-Each district's input builder mirrors that district's REAL GDE header shape
-(column names verified against the district extracts) with fully synthetic
-rows, so the per-district mapping quirks are exercised end-to-end.
+Fixture provenance differs by builder, and the difference matters:
+
+* the **seven district builders** mirror that district's REAL GDE header shape —
+  column names verified against the district extracts — with fully synthetic
+  rows, so the per-district mapping quirks are exercised end-to-end;
+* the **two sd51attendance builders** are authored from the YAML ``headers:``
+  blocks in ``myedbc_mapping.yaml`` (the injected file-order column lists), NOT
+  from a district extract;
+* the **two course-GDE builders** are a READ-SUBSET authored from the
+  StudentCourses field_map / ``source_columns`` roles — an 8-column subset whose
+  order deliberately differs from the 17/16-column committed
+  ``tests/snapshots/mbp_input/`` fixtures (source column ORDER is irrelevant: the
+  extractor normalizes to a name-keyed frame);
+* ``mbponly`` reuses those committed fixtures unchanged.
+
 ``TestDistrictQuirks`` pins the quirk behaviours per district via indirect
 parametrization (reusing the module-scoped pipeline run for that district).
 """
@@ -68,6 +89,8 @@ from tests.test_pipeline_e2e_mbponly import FIXTURE_DIR as MBP_GDE_DIR
 
 #: The doc that owns the emitted column set AND its order (named in every
 #: order-failure message so a red test routes to a re-confirmation, not an edit).
+#: Authored in plan 0038 S2b; until it lands, :data:`OUTPUT_SCHEMA` below is the
+#: only in-repo statement of the contract.
 ORDER_AUTHORITY = "docs/developer/output-contract.md"
 
 OUTPUT_SCHEMA: dict[str, list[str]] = {
@@ -146,6 +169,10 @@ _ROSTERING = frozenset({"Students", "Staff", "Family", "Classes", "Enrollments"}
 #: absence GDEs on purpose (the skip-on-empty pin — a missing attendance drop must
 #: never block rostering), so StudentAttendance is absent from its expected set.
 #: Deriving this from `active_entities()` would erase exactly that pin.
+#:
+#: Its VALUES are not free-floating: ``test_expected_entities_track_active_entities``
+#: pins every entry against the real config plus :data:`DELIBERATELY_UNCOVERED`, so
+#: neither erosion direction can pass silently (see that test).
 EXPECTED_ENTITIES: dict[str, frozenset[str]] = {
     "myedbc": _ROSTERING,
     "sd40myedbc": _ROSTERING,
@@ -158,6 +185,20 @@ EXPECTED_ENTITIES: dict[str, frozenset[str]] = {
     "mbp_all": _ROSTERING | {"CourseInfo", "StudentCourses"},
     "mbp_core": frozenset({"Students", "CourseInfo", "StudentCourses"}),
     "mbponly": frozenset({"CourseInfo", "StudentCourses"}),
+}
+
+#: The ONLY entities a config actively enables that this module's fixtures
+#: deliberately do NOT supply sources for — i.e. the only sanctioned gap between
+#: ``active_entities()`` and :data:`EXPECTED_ENTITIES`, across all 11 bundled
+#: configs. sd51myedbc's absence GDEs are withheld ON PURPOSE so the run pins
+#: skip-on-empty (a missing attendance drop must never block rostering).
+#:
+#: Every gap must be declared HERE, not silently absorbed into a frozenset:
+#: shrinking an ``EXPECTED_ENTITIES`` value to make a red test green now fails
+#: ``test_expected_entities_track_active_entities``, and a future config that
+#: enables an entity whose sources no fixture supplies fails it too.
+DELIBERATELY_UNCOVERED: dict[str, frozenset[str]] = {
+    "sd51myedbc": frozenset({"StudentAttendance"}),
 }
 
 VALID_STAFF_ROLES = {"teacher", "administrator"}
@@ -282,7 +323,9 @@ def _write_course_history(path: Path, filename: str = "StudentCourseHistory.txt"
 
     ``Full Course Code`` ends with ``-<Section>`` so the section-stripping layer
     is exercised end-to-end; the fail row leaves the retake door open for the
-    matching selection row below.
+    matching selection row below. This module asserts only that the entity is
+    emitted with the contract's columns (row-level behaviour pinned in
+    tests/test_transform_student_courses.py).
     """
     pd.DataFrame(
         {
@@ -302,7 +345,9 @@ def _write_course_selection(path: Path, filename: str = "StudentCourseSelection.
     """Two selection rows exercising BOTH selection-pass branches.
 
     S002/MAT10 was already passed -> excluded. S003/ENG12 was failed and this
-    selection starts LATER than the history row -> a retake, included.
+    selection starts LATER than the history row -> a retake, included. This
+    module asserts only that the entity is emitted with the contract's columns
+    (row-level behaviour pinned in tests/test_transform_student_courses.py).
     """
     pd.DataFrame(
         {
@@ -334,7 +379,10 @@ def _write_daily_absences(path: Path, filename: str = "StudentDailyAbsences.txt"
     """K-7 Student Daily Absences (18 columns) — DERIVED category + row multiplicity.
 
     S001: (A, N) at a full-day portion -> category "A", TWO half-day rows.
-    S002: (T, Y) at a half-day portion -> category "L-E", ONE row.
+    S002: (T, Y) at a half-day portion -> category "L-E", ONE row. This module
+    asserts only that the entity is emitted with the contract's columns and
+    encoding (row-level behaviour pinned in
+    tests/test_transform_student_attendance.py).
     """
     pd.DataFrame(
         {
@@ -758,7 +806,14 @@ def _order_failure_message(sis: str, entity: str, actual: list[str]) -> str:
         f"  expected (order matters): {expected}\n"
         f"  actual:                   {actual}\n"
         f"  missing: {missing or 'none'} | unexpected: {unexpected or 'none'}\n"
-        f"  The authority for this column set AND its order is {ORDER_AUTHORITY}.\n"
+        f"  The authority for this column set AND its order is {ORDER_AUTHORITY}\n"
+        f"  (authored in plan 0038 S2b; until it lands, this module's OUTPUT_SCHEMA is the\n"
+        f"  only in-repo statement of the contract).\n"
+        f"  Emitted columns are treated as POSITIONAL: order-sensitivity is CONFIRMED for\n"
+        f"  StudentAttendance (see src/etl/transformers/student_attendance.py) and NOT yet\n"
+        f"  confirmed with the partner for the rostering / course feeds, so we pin the\n"
+        f"  emitted order and require importer re-confirmation before changing it — this is\n"
+        f"  a partner-visible change that MAY be rejected or silently mis-read.\n"
         f"  A red order test is a partner-visible contract change requiring importer "
         f"re-confirmation, not a test edit."
     )
@@ -785,15 +840,23 @@ class TestOutputSchemaContract:
     def test_column_order_matches_contract(self, district_output):
         """EXACT column order per emitted entity — set equality is not enough.
 
-        SpacesEDU's Advanced CSV and the myBlueprint+ feeds are positional
-        contracts; a reordered header is as breaking as a renamed one, and a
-        membership-only assertion would pass straight through it.
+        Emitted columns are treated as POSITIONAL: order-sensitivity is CONFIRMED
+        for StudentAttendance (``src/etl/transformers/student_attendance.py``) and
+        NOT yet confirmed with the partner for the rostering / course feeds, so we
+        pin the emitted order and require importer re-confirmation before changing
+        it. A membership-only assertion would pass straight through a reorder.
+
+        EVERY mismatching entity is reported, not just the first — a config whose
+        output drifted in three entities should say so in one run.
         """
         sis, out = district_output
+        failures = []
         for entity in sorted(EXPECTED_ENTITIES[sis]):
             df = pd.read_csv(out / DataLoader.csv_filename(entity), encoding="utf-8-sig")
             actual = list(df.columns)
-            assert actual == OUTPUT_SCHEMA[entity], _order_failure_message(sis, entity, actual)
+            if actual != OUTPUT_SCHEMA[entity]:
+                failures.append(_order_failure_message(sis, entity, actual))
+        assert not failures, "\n\n".join(failures)
 
     def test_staff_role_values(self, district_output):
         sis, out = district_output
@@ -925,6 +988,12 @@ def test_pack_smoke_rostering_entities_match_the_expected_entity_table():
     single expectation source, so the smoke's list is pinned to it here — adding
     an entity to SD74's output without updating the smoke would otherwise leave
     the release gate silently checking the old set.
+
+    The anchor is deliberately `EXPECTED_ENTITIES["sd74myedbc"]`, not `_ROSTERING`
+    (they are the same object today, by identity). `_ROSTERING` is a fixture-side
+    convenience; the smoke asserts what the RELEASE artifact must produce for
+    SD74. Re-anchoring to `_ROSTERING` would mean a future shrink of this module's
+    SD74 fixture silently demanded the release gate shrink with it.
     """
     assert frozenset(smoke._ROSTERING_ENTITIES) == EXPECTED_ENTITIES["sd74myedbc"], (
         f"ci_flet_pack_smoke._ROSTERING_ENTITIES={sorted(smoke._ROSTERING_ENTITIES)} disagrees with "
@@ -952,12 +1021,59 @@ def test_the_sweep_covers_every_bundled_config():
     )
 
 
+def test_expected_entities_track_active_entities():
+    """EXPECTED_ENTITIES' VALUES are pinned to the real configs — both erosion
+    directions closed.
+
+    ``test_the_sweep_covers_every_bundled_config`` pins the table's KEYS; this
+    pins its VALUES, so the frozensets cannot quietly drift from what the configs
+    actually enable:
+
+    * (i) expected ⊆ active — the table can never claim a CSV the config does not
+      even enable;
+    * (ii) active − expected must equal the config's DECLARED gap — deleting an
+      entity from a frozenset to make a red test green now fails HERE, and a new
+      config that enables an entity whose sources no fixture supplies fails here
+      too (declare it in :data:`DELIBERATELY_UNCOVERED`, with the reason, or give
+      the fixture its sources);
+    * (iii) expected ⊆ OUTPUT_SCHEMA — an entity in the table with no schema
+      would otherwise surface as a bare ``KeyError`` inside the order sweep.
+
+    This PRESERVES the sd51 skip-on-empty pin rather than eroding it: the gap
+    stays, but it is now a declared, reviewed line instead of an unexplained
+    absence.
+    """
+    from src.config.loader import load_config
+
+    for sis, expected in sorted(EXPECTED_ENTITIES.items()):
+        active = load_config(sis).active_entities()
+        declared_gap = DELIBERATELY_UNCOVERED.get(sis, frozenset())
+
+        assert expected <= active, (
+            f"[{sis}] EXPECTED_ENTITIES lists {sorted(expected - active)}, which the config "
+            f"does not enable (active: {sorted(active)})"
+        )
+        assert (active - expected) == declared_gap, (
+            f"[{sis}] the gap between active_entities and EXPECTED_ENTITIES is "
+            f"{sorted(active - expected)}, but DELIBERATELY_UNCOVERED declares "
+            f"{sorted(declared_gap)}. Either supply that entity's source files in this "
+            f"module's fixture builder, or declare the gap (with its reason) in "
+            f"DELIBERATELY_UNCOVERED — never by shrinking an EXPECTED_ENTITIES value."
+        )
+        assert expected <= set(OUTPUT_SCHEMA), (
+            f"[{sis}] EXPECTED_ENTITIES lists {sorted(expected - set(OUTPUT_SCHEMA))}, which has "
+            f"no OUTPUT_SCHEMA entry — add its contract columns (in emitted order) first"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Per-district quirk pins
 #
 # Each test indirect-parametrizes `district_output` to ONE district, so pytest
-# reuses that district's module-scoped pipeline run from the schema tests above
-# (same fixture param → same cached instance; no extra pipeline executions).
+# reuses that district's module-scoped run WITHIN a param block — but it re-enters
+# the default param between indirect blocks, so the module is NOT 11 runs: it is
+# ~6 extra ones (measured with `--setup-show`: 17 fixture setups for 11 params,
+# ~1-2s). Cheap, and still far below the per-test cost without the module scope.
 # ---------------------------------------------------------------------------
 
 
