@@ -153,6 +153,20 @@ red-teaming the falsification evidence itself. Beneficiary roles: `implementer`,
   `git ls-files` stripped CRLF from five binary assets (.ico/.png); caught and restored byte-clean
   pre-commit. Never run a text transform over a tracked-file list without filtering binaries.
 
+## testing — "A string reused across surfaces stops being a usable test proxy"  [staged 2026-07-29, plan 0038 S4b]
+
+DRY on user-facing COPY is right (two wordings of one fact is how surfaces start to disagree)
+— but every existing assertion that used that string as a stand-in for "which surface am I
+looking at?" silently becomes ambiguous the moment a second surface adopts it. Re-ground those
+assertions on STRUCTURE (a control only one surface has, plus one only the other has — both
+halves, so neither can answer alone). The tell is a previously-passing test going red for a
+reason that is not a regression; treat it as the guard telling you the proxy was weak, not as
+noise to route around.
+
+Incident: plan 0038 S4b — the Home identity card imported the launch page's headline
+verbatim, and `test_..._never_sees_the_launch_page` went red because the card it exists to
+prove had appeared. Beneficiary roles: `implementer`, `lens-reviewer` (testing).
+
 ## reliability — "Gate destructive cleanup on its subject existing; latch success AFTER the risky work"  [staged 2026-07-29, plan 0038 S4a]
 
 - A destructive side-step (purging recovery snapshots on an erasure path) must be gated on the
