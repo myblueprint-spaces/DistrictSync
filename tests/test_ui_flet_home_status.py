@@ -19,13 +19,19 @@ from src.scheduler.windows import ScheduleReadback
 from src.ui_flet.home_status import (
     MISSED_RUN_AFTER_HOURS,
     STALE_AFTER_HOURS,
+    WELCOME_FRESH,
+    WELCOME_RESUME_SETTINGS_ONLY,
+    WELCOME_RESUME_WITH_HISTORY,
     HomeStatus,
     LatestReason,
     classify_latest_reason,
     derive_home_status,
+    has_prior_runs,
     is_delivery_only,
     is_stale,
     verdict_for_reason,
+    welcome_band,
+    welcome_band_line,
 )
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus, derive_schedule_status
 from src.ui_flet.verdict import Verdict
@@ -1076,3 +1082,91 @@ def test_derivation_is_total_over_all_inputs(records: list[dict] | None) -> None
     assert isinstance(status, HomeStatus)
     assert status.verdict in Verdict
     assert status.headline and status.detail
+
+
+# --------------------------------------------------------------------------- #
+# The first-run welcome band (0038 S6) — the line above the hosted wizard.     #
+#                                                                             #
+# Written BEFORE the implementation (the charter's recorded approach for a     #
+# pure predicate whose semantics the spec DECIDES), so every judgment call —   #
+# what counts as "history", which of two reassurances is honest, what an       #
+# UNREADABLE store means — is stated as a decision rather than described from  #
+# the code afterwards.                                                         #
+# --------------------------------------------------------------------------- #
+class TestPriorRunsSignal:
+    """What counts as "this install has been running" — the band's one input."""
+
+    def test_no_records_and_no_store_is_a_fresh_install(self) -> None:
+        assert has_prior_runs([], store_created_at=None) is False
+
+    def test_a_record_is_history(self) -> None:
+        assert has_prior_runs([_record()], store_created_at=None) is True
+
+    def test_a_store_that_exists_but_holds_nothing_is_still_history(self) -> None:
+        """``write_run_record`` is the store's sole creator, so a birth stamp means a run
+        was recorded at some point — even if the rows were later lost to a quarantine."""
+        assert has_prior_runs([], store_created_at="2026-01-05T03:00:00") is True
+
+    def test_an_UNREADABLE_store_is_treated_as_history_never_as_fresh(self) -> None:
+        """``read_run_records`` returns ``None`` when a store file exists but could not be
+        read. A file we failed to read is a CHECKED fact that this install is not new —
+        the same honesty ``settings_unreadable`` applies to the settings file. Saying
+        "Welcome" over it is the one direction that can be wrong about a year of runs."""
+        assert has_prior_runs(None, store_created_at=None) is True
+
+
+class TestWelcomeBandLine:
+    """Fresh installs are welcomed; running ones are never greeted as new."""
+
+    def test_a_genuinely_fresh_install_is_welcomed(self) -> None:
+        line = welcome_band_line(has_run_history=False, has_saved_choices=False)
+        assert line == WELCOME_FRESH
+        assert "Welcome" in line
+
+    def test_run_history_switches_the_band_to_finish_setting_up(self) -> None:
+        line = welcome_band_line(has_run_history=True, has_saved_choices=True)
+        assert line == WELCOME_RESUME_WITH_HISTORY
+        assert "Welcome" not in line, "a year of run records must never be greeted as a new install"
+        assert "run history" in line
+
+    def test_saved_choices_alone_never_claims_a_run_history_that_does_not_exist(self) -> None:
+        """The half-configured install: settings on disk, nothing ever run. Reassuring it
+        that "your run history is safe" would assert a thing we know is absent."""
+        line = welcome_band_line(has_run_history=False, has_saved_choices=True)
+        assert line == WELCOME_RESUME_SETTINGS_ONLY
+        assert "Welcome" not in line
+        assert "run history" not in line
+
+    def test_history_outranks_the_absence_of_saved_choices(self) -> None:
+        """A settings file wiped clean under a populated run store still isn't new."""
+        assert welcome_band_line(has_run_history=True, has_saved_choices=False) == WELCOME_RESUME_WITH_HISTORY
+
+    def test_every_line_is_one_calm_sentence_with_no_banned_vocabulary(self) -> None:
+        for line in (WELCOME_FRESH, WELCOME_RESUME_WITH_HISTORY, WELCOME_RESUME_SETTINGS_ONLY):
+            assert line == line.strip() and line.endswith(".")
+            lowered = line.lower()
+            for banned in ("sign in", "log in", "verify", "unlock", "authorized", "account", "credentials"):
+                assert banned not in lowered
+
+
+class TestWelcomeBandOverAConfig:
+    """The AppConfig-facing wrapper — the ONE call Home makes."""
+
+    def test_a_blank_profile_with_an_empty_store_is_welcomed(self) -> None:
+        assert welcome_band(AppConfig(), records=[], store_created_at=None) == WELCOME_FRESH
+
+    def test_a_manual_only_upgrader_is_told_to_finish_setting_up(self) -> None:
+        """Upgrade shape 2: complete + never scheduled, with real runs behind it."""
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+        assert cfg.has_completed_setup() is False  # it genuinely lands in the wizard host
+        assert welcome_band(cfg, records=[_record()], store_created_at=None) == WELCOME_RESUME_WITH_HISTORY
+
+    def test_a_half_finished_wizard_with_no_runs_is_not_welcomed_either(self) -> None:
+        cfg = AppConfig(sis_type="myedbc")
+        assert welcome_band(cfg, records=[], store_created_at=None) == WELCOME_RESUME_SETTINGS_ONLY
+
+    def test_advisory_state_alone_does_not_count_as_a_saved_choice(self) -> None:
+        """Window geometry and the identity answer are not setup progress — an install
+        that only answered the launch page is still a fresh install to the wizard."""
+        cfg = AppConfig(identity_email="admin@sd48.bc.ca", window_width=1200.0)
+        assert welcome_band(cfg, records=[], store_created_at=None) == WELCOME_FRESH

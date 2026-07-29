@@ -254,6 +254,43 @@ class TestBadgeIsWindowAware:
         assert needs_setup_badge(None, paused=True) is False
 
 
+class TestBadgeIsSilentDuringFirstRun:
+    """0038 S6: an install that has not reached the wizard's finish line never badges Setup.
+
+    Home now HOSTS the wizard, so the rail's Setup item and the surface the admin is
+    already looking at are the same task. An "attention" dot on it mid-wizard points at
+    the work in progress and reads as a fault — and the one state that could raise it (a
+    stale task left by an earlier install, firing with no record) is exactly what the
+    Schedule step reconciles against a few keystrokes later.
+    """
+
+    def _contradiction(self) -> object:
+        return _derive(
+            ScheduleReadback(found=True, last_run="2026-07-08T03:00:00"),
+            latest_record_ts="2026-07-07T03:00:00",
+        )
+
+    def _expected_missing(self) -> object:
+        return _derive(ScheduleReadback(found=False), hint_registered=True)
+
+    def test_a_contradiction_is_suppressed_while_setup_is_unfinished(self) -> None:
+        assert needs_setup_badge(self._contradiction(), setup_unfinished=True) is False
+
+    def test_an_expected_missing_task_is_suppressed_too(self) -> None:
+        """The stronger half: even the Event-141 signal waits until setup is finished —
+        "your schedule isn't registered anymore" is not news to someone still registering it."""
+        assert needs_setup_badge(self._expected_missing(), setup_unfinished=True) is False
+
+    def test_both_still_badge_once_setup_is_finished(self) -> None:
+        """The positive twin — without it, the two absences above are equally satisfied by
+        a badge rule that stopped firing altogether."""
+        assert needs_setup_badge(self._contradiction(), setup_unfinished=False) is True
+        assert needs_setup_badge(self._expected_missing(), setup_unfinished=False) is True
+
+    def test_the_default_preserves_the_pre_S6_behaviour(self) -> None:
+        assert needs_setup_badge(self._expected_missing()) is True
+
+
 class TestTransientLocation:
     def test_downloads_is_transient(self) -> None:
         assert is_transient_location(r"C:\Users\jane\Downloads\DistrictSync.exe") is True
