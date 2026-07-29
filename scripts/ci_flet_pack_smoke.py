@@ -35,7 +35,14 @@ windowed) — so a failure prints that file, probing the retired legacy
 The same artifact has a SECOND branch — ``--sis/--input/--output``, the one every
 district runs nightly — which no CI job exercised at all. ``--cli-smoke`` adds four
 phases against the real exe (``--version`` · a dry run · a real write run · a boot
-on a corrupt profile); see the CLI-smokes section below for what each proves.
+on a corrupt profile); see the CLI-smokes section below for what each proves. Exactly
+ONE of the four (``write-run``) converts the fixture end-to-end and writes CSVs; the
+other three assert version/preview/degradation behaviour.
+
+``--cli-smoke`` REFUSES to run without ``DISTRICTSYNC_DATA_DIR`` (the throwaway-profile
+seam) unless ``--allow-real-profile`` is passed — the phases write logs, a run store and
+(in phase 4) a corrupt ``config.json``, so an unset seam would silently exercise the
+operator's real profile.
 
 Usage::
 
@@ -159,14 +166,21 @@ def manifest_has_embed(manifest_text: str) -> bool:
 def override_data_dir(env: Mapping[str, str]) -> Path | None:
     """The ``DISTRICTSYNC_DATA_DIR`` profile override, or ``None`` when not in play.
 
-    A deliberate non-importing MIRROR of ``src/utils/paths._override_data_dir`` —
-    same normalization (blank means unset, ``~`` expands, absolutized) — kept in
-    lockstep by ``tests/test_ci_flet_pack_smoke.py``'s parity test. Pure.
+    A deliberate non-importing MIRROR of ``src/utils/paths._override_data_dir`` — same
+    normalization (blank means unset, ``~`` expands) and the same REFUSAL of a relative
+    value (``ValueError``), kept in lockstep by ``tests/test_ci_flet_pack_smoke.py``'s
+    parity test. Pure.
+
+    Raises:
+        ValueError: the value is set but not absolute.
     """
     raw = env.get("DISTRICTSYNC_DATA_DIR", "").strip()
     if not raw:
         return None
-    return Path(raw).expanduser().resolve()
+    expanded = Path(raw).expanduser()
+    if not expanded.is_absolute():
+        raise ValueError(f"DISTRICTSYNC_DATA_DIR must be an absolute path (got {raw!r})")
+    return expanded.resolve()
 
 
 def etl_log_candidates(home: Path, osn: str, env: Mapping[str, str]) -> list[Path]:
@@ -387,14 +401,19 @@ def _restore_flet(moved: bool) -> None:
         ) from exc
 
 
-def _print_etl_log() -> None:
-    """Print the launcher's boot traceback log (where a windowed exe writes failures).
+def _print_etl_log(label: str = "launcher boot log") -> None:
+    """Print the exe's own log file — the only place a windowed/frozen build reports failures.
 
     Probes the per-OS app-data location first, then the retired legacy
     ``~/.districtsync`` as a secondary fallback; prints the first log found.
+
+    ``label`` names WHICH log this is for the reader: under the GUI smoke it is the
+    launcher's boot traceback, under ``--cli-smoke`` it is the CLI run log (same file,
+    different failure story) — a header that says "launcher boot log" while a CLI
+    conversion failed sends the reader looking for the wrong thing.
     """
     for log in etl_log_candidates(_HOME, _OSN, os.environ):
-        print(f"--- {log} (launcher boot log) ---")
+        print(f"--- {log} ({label}) ---")
         try:
             if log.exists():
                 for line in log.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]:
@@ -602,14 +621,20 @@ def run_smoke(dist: Path, name: str, require_close: bool) -> int:
 #
 # The GUI smoke above proves the exe opens a window. Nothing proved the same exe
 # still CONVERTS — the branch every district actually runs nightly. These four
-# phases run the real artifact end-to-end against the committed SD74 snapshot
-# extract and assert EXIT CODES first, strings second.
+# phases run the real artifact against the committed SD74 snapshot extract and assert
+# EXIT CODES first, strings second. Only `write-run` converts end-to-end and writes
+# CSVs; `version` starts the exe, `dry-run` previews without writing, and
+# `corrupt-profile` boots on a planted config.
 #
 # Every phase is pointed at a throwaway profile via DISTRICTSYNC_DATA_DIR (the
 # `src/utils/paths` step-0 seam): platformdirs ignores LOCALAPPDATA on Windows, so
 # that env var is the only way to keep a frozen exe off the runner's real profile.
+# `run_cli_smoke` REFUSES to run any phase without it (--allow-real-profile opts out).
 
-CLI_TIMEOUT_S = float(os.environ.get("SMOKE_CLI_TIMEOUT", "300"))
+# 120s per invocation: the slowest observed phase is the write run over the SD74
+# fixture, and a one-file exe's self-extract dominates it. Generous enough for a cold
+# Defender scan, tight enough that a hung exe fails the job in minutes, not in five.
+CLI_TIMEOUT_S = float(os.environ.get("SMOKE_CLI_TIMEOUT", "120"))
 
 # The fixture: the committed SD74 snapshot extract, converted through the LIVE
 # sd74myedbc mapping (the exe bundles config/mappings — not the frozen snapshot
@@ -648,6 +673,17 @@ class CliSmokeContext:
             seam_dir=override_data_dir(env),
             log_path=etl_log_candidates(_HOME, _OSN, env)[0],
         )
+
+    @property
+    def store_path(self) -> Path:
+        """The run store (``history.db``) inside the SAME profile the log resolved to.
+
+        Derived from ``log_path.parent`` rather than ``seam_dir`` so it is a plain
+        ``Path`` (never ``None``) and stays correct under ``--allow-real-profile``,
+        where there is no seam. With the seam in play — the gated default — this IS
+        ``seam_dir / "history.db"``.
+        """
+        return self.log_path.parent / "history.db"
 
     def new_output(self, label: str) -> Path:
         """A fresh, unique output dir — never shared between phases (or reruns)."""
@@ -700,24 +736,36 @@ def _dump(proc: subprocess.CompletedProcess[str]) -> None:
                 print(f"      {line}")
 
 
-def _file_signature(path: Path) -> tuple[bool, int, int] | None:
-    """``(exists, size, mtime_ns)`` for a byte-level untouched check; ``None`` if absent."""
+def _file_signature(path: Path) -> tuple[int, int] | None:
+    """``(size, mtime_ns)`` for a touched/untouched comparison; ``None`` when absent.
+
+    Absence is carried by the ``None``, so an always-``True`` "exists" element in the
+    tuple would be dead weight — comparing two signatures already answers both
+    "still absent?" and "still byte-identical?".
+    """
     try:
         st = path.stat()
     except OSError:
         return None
-    return (True, st.st_size, st.st_mtime_ns)
+    return (st.st_size, st.st_mtime_ns)
 
 
-def _last_run_record(log_tail: str) -> dict[str, Any] | None:
-    """Parse the LAST ``__DISTRICTSYNC_RUN__`` JSON payload in a log slice, or ``None``."""
+def _last_run_record(log_tail: str) -> tuple[dict[str, Any] | None, str]:
+    """Parse the LAST ``__DISTRICTSYNC_RUN__`` payload in a log slice.
+
+    Returns ``(record, reason)``: the parsed dict and ``""`` on success, else ``None``
+    plus a reason that DISTINGUISHES the two failures — "the exe never logged a run
+    record" (a run that died before the sink, or a log the smoke is not reading) and
+    "it logged one but the payload is not JSON" (a corrupted/reformatted line) are
+    completely different bugs, and a bare ``None`` made them look identical.
+    """
     lines = [ln for ln in log_tail.splitlines() if _RUN_RECORD_MARKER in ln]
     if not lines:
-        return None
+        return None, f"no {_RUN_RECORD_MARKER} line in this run's log slice"
     try:
-        return json.loads(lines[-1].split(f"{_RUN_RECORD_MARKER} ", 1)[1])
-    except (IndexError, ValueError):
-        return None
+        return json.loads(lines[-1].split(f"{_RUN_RECORD_MARKER} ", 1)[1]), ""
+    except (IndexError, ValueError) as exc:
+        return None, f"{_RUN_RECORD_MARKER} line found but its payload did not parse ({exc})"
 
 
 def _smoke_version(art: Path, ctx: CliSmokeContext) -> bool:
@@ -751,25 +799,39 @@ def _smoke_dry_run(art: Path, ctx: CliSmokeContext) -> bool:
     """
     out = ctx.new_output("dry-run")
     before_log = len(ctx.log_text())
-    store = (ctx.seam_dir / "history.db") if ctx.seam_dir else None
-    store_before = _file_signature(store) if store else None
+    store = ctx.store_path
+    store_before = _file_signature(store)
 
     proc = _run_cli(art, _convert_args(ctx, out, "--dry-run"))
     tail = ctx.log_text()[before_log:]
-    record = _last_run_record(tail)
+    record, why = _last_run_record(tail)
     missing = [name for name in _ROSTERING_ENTITIES if name not in proc.stdout]
+    store_after = _file_signature(store)
 
     checks = [
         _expect(proc.returncode == 0, "exit 0", f"got {proc.returncode}"),
         _expect("=== DRY RUN" in proc.stdout, "'=== DRY RUN' banner on stdout"),
         _expect(not missing, "all 5 rostering entities previewed", f"missing {missing}" if missing else ""),
         _expect(not list(out.glob("*.csv")), "no CSV written by the preview"),
-        _expect(record is not None, f"{_RUN_RECORD_MARKER} line in the log"),
-        _expect(bool(record) and record.get("status") == "success", "record status=success"),
-        _expect(bool(record) and record.get("source") == "cli", "record source=cli"),
+        _expect(record is not None, f"{_RUN_RECORD_MARKER} line in the log", why),
+        _expect(
+            bool(record) and record.get("status") == "success",
+            "record status=success",
+            f"got {record.get('status') if record else why!r}",
+        ),
+        _expect(
+            bool(record) and record.get("source") == "cli",
+            "record source=cli",
+            f"got {record.get('source') if record else why!r}",
+        ),
+        # UNCONDITIONAL (never skipped on a missing seam — `run_cli_smoke` refuses
+        # before any phase runs, so a skip here could only ever be vacuous).
+        _expect(
+            store_after == store_before,
+            "history.db untouched by the preview (flag 7)",
+            f"{store}: before={store_before} after={store_after}",
+        ),
     ]
-    if store is not None:
-        checks.append(_expect(_file_signature(store) == store_before, "history.db untouched by the preview (flag 7)"))
     if not all(checks):
         _dump(proc)
     return all(checks)
@@ -781,6 +843,11 @@ def _smoke_write_run(art: Path, ctx: CliSmokeContext) -> bool:
     Asserts the delivered shape only — the five CSVs exist and are non-empty, the
     roster anchor carries the UTF-8 BOM SpacesEDU/Excel needs, and no ``.tmp_*``
     staging dir survived the transactional commit.
+
+    It also carries flag 7's POSITIVE half: the store file MUST exist afterwards.
+    Phase 2 pinned ``history.db`` absent, so "created here" is unambiguous — without
+    it, a store that never wrote anything at all would satisfy the preview's
+    untouched-check and look like a pass.
     """
     out = ctx.new_output("write-run")
     proc = _run_cli(art, _convert_args(ctx, out))
@@ -793,12 +860,14 @@ def _smoke_write_run(art: Path, ctx: CliSmokeContext) -> bool:
     anchor = out / _ROSTER_ANCHOR_CSV
     head = anchor.read_bytes()[:3] if anchor.is_file() else b""
     staging = [p.name for p in out.glob(".tmp_*")]
+    store = ctx.store_path
 
     checks = [
         _expect(proc.returncode == 0, "exit 0", f"got {proc.returncode}"),
         _expect(not empty, "all 5 rostering CSVs written non-empty", f"missing/empty {empty}" if empty else ""),
         _expect(head == _UTF8_BOM, f"{_ROSTER_ANCHOR_CSV} starts with the UTF-8 BOM", repr(head)),
         _expect(not staging, "no .tmp_* staging dir left behind", str(staging) if staging else ""),
+        _expect(store.is_file(), "the real run entered the run store (history.db created)", str(store)),
     ]
     if not all(checks):
         _dump(proc)
@@ -810,11 +879,16 @@ def _smoke_corrupt_profile(art: Path, ctx: CliSmokeContext) -> bool:
 
     ``--dry-run --source scheduled`` is the one CLI shape that actually LOADS
     ``AppConfig`` (the sync-window gate); ``--version`` exits before any config read,
-    so a probe built on it would prove nothing. Runs LAST and cleans the seam dir in
-    a ``finally`` — it plants bytes into the profile, so it must never leave them for
-    another phase (or another job) to trip over.
+    so a probe built on it would prove nothing. Runs LAST because it plants bytes into
+    the profile, and removes ONLY the planted ``config.json`` in a ``finally`` — the
+    profile dir itself belongs to the caller (``$RUNNER_TEMP`` in CI) and every one of
+    this phase's diagnostics lives inside it: deleting the whole dir here destroyed
+    ``etl_tool.log`` before the failure path could print it, so a red phase 4 reported
+    "(absent)" instead of the traceback that explained it.
     """
     if ctx.seam_dir is None:
+        # Defence in depth: `run_cli_smoke` already refuses an unset seam, and
+        # --allow-real-profile does NOT extend to this phase — it plants bytes.
         print("   FAIL requires DISTRICTSYNC_DATA_DIR — refusing to plant a corrupt config in a real profile")
         return False
 
@@ -828,24 +902,50 @@ def _smoke_corrupt_profile(art: Path, ctx: CliSmokeContext) -> bool:
 
         proc = _run_cli(art, _convert_args(ctx, out, "--dry-run", "--source", "scheduled"))
         tail = ctx.log_text()[before_log:]
+        after = config_file.read_bytes() if config_file.is_file() else b""
 
         checks = [
             _expect(
                 proc.returncode == 0, "exit 0 (a corrupt profile degrades, never crashes)", f"got {proc.returncode}"
             ),
-            _expect("=== DRY RUN" in proc.stdout, "the run PROCEEDED (not aborted, not window-paused)"),
-            _expect(_PAUSED_MARKER not in tail, "no sync-window pause on a defaults-only config"),
-            _expect(_UNREADABLE_MARKER in tail, "UNREADABLE provenance logged — the plant was READ"),
-            _expect(config_file.read_bytes() == planted, "planted bytes byte-identical (never silently rewritten)"),
+            _expect(
+                "=== DRY RUN" in proc.stdout,
+                "the run PROCEEDED (not aborted, not window-paused)",
+                f"stdout tail {proc.stdout.strip().splitlines()[-1:]}",
+            ),
+            _expect(
+                _PAUSED_MARKER not in tail,
+                "no sync-window pause on a defaults-only config",
+                f"found {_PAUSED_MARKER!r} in this run's log slice",
+            ),
+            _expect(
+                _UNREADABLE_MARKER in tail,
+                "UNREADABLE provenance logged — the plant was READ",
+                f"looked for {_UNREADABLE_MARKER!r} in {len(tail)} new log chars",
+            ),
+            _expect(
+                after == planted,
+                "planted bytes byte-identical (never silently rewritten)",
+                f"{len(planted)}B planted, {len(after)}B on disk",
+            ),
         ]
         if not all(checks):
             _dump(proc)
+            # Print the log slice BEFORE the finally-cleanup — the failure story is in
+            # it, and it is already in memory here.
+            print(f"   --- {ctx.log_path} (this phase's new log lines) ---")
+            for line in tail.splitlines()[-40:]:
+                print(f"      {line}")
         return all(checks)
     finally:
-        shutil.rmtree(ctx.seam_dir, ignore_errors=True)
+        # Remove ONLY what this phase planted. The profile dir is the caller's.
+        config_file.unlink(missing_ok=True)
 
 
-# Ordered: the corrupt-profile plant runs LAST (it deletes the seam dir on the way out).
+# Ordered — and this dict is the ONLY place the order lives. The workflow runs a single
+# `--phase all` invocation precisely so CI cannot disagree with it. Two ordering facts:
+# `dry-run` pins history.db ABSENT, which is what makes `write-run`'s "the store was
+# created" check unambiguous; and `corrupt-profile` plants a config.json, so it runs LAST.
 CLI_SMOKE_PHASES: dict[str, Callable[[Path, CliSmokeContext], bool]] = {
     "version": _smoke_version,
     "dry-run": _smoke_dry_run,
@@ -853,19 +953,47 @@ CLI_SMOKE_PHASES: dict[str, Callable[[Path, CliSmokeContext], bool]] = {
     "corrupt-profile": _smoke_corrupt_profile,
 }
 
+_NO_SEAM_FAIL = (
+    "FAIL: DISTRICTSYNC_DATA_DIR is not set — the CLI smokes write a log, a run store and "
+    "(phase 4) a corrupt config.json, so an unset seam would exercise the REAL user profile. "
+    "Point it at a throwaway absolute path, or pass --allow-real-profile if you truly mean to."
+)
 
-def run_cli_smoke(dist: Path, name: str, *, phase: str, input_dir: Path, work_dir: Path) -> int:
-    """Run one CLI smoke phase (or ``all``) against the packed artifact. Returns an exit code."""
+
+def run_cli_smoke(
+    dist: Path,
+    name: str,
+    *,
+    phase: str,
+    input_dir: Path,
+    work_dir: Path,
+    allow_real_profile: bool = False,
+) -> int:
+    """Run one CLI smoke phase (or ``all``) against the packed artifact. Returns an exit code.
+
+    The throwaway-profile seam is a BOUNDARY, not a warning: without
+    ``DISTRICTSYNC_DATA_DIR`` every phase is refused up front (not just the one that
+    plants bytes), because they all write into whatever profile the exe resolves.
+    ``allow_real_profile`` is the explicit, deliberate opt-out — it does NOT extend to
+    ``corrupt-profile``, which refuses on its own regardless.
+    """
     art = resolve_artifact(dist, name)
     if not art:
         print(f"FAIL: no artifact under {dist} for base name '{name}'")
         return 1
-    ctx = CliSmokeContext.build(input_dir, work_dir, os.environ)
+    try:
+        ctx = CliSmokeContext.build(input_dir, work_dir, os.environ)
+    except ValueError as exc:  # a set-but-relative DISTRICTSYNC_DATA_DIR
+        print(f"FAIL: {exc}")
+        return 1
     print(f"== CLI smoke ({phase}) on {_OSN} ==")
     print(f"artifact: {art}")
     print(f"fixture:  {ctx.input_dir}")
     print(f"profile:  {ctx.seam_dir if ctx.seam_dir else '(DISTRICTSYNC_DATA_DIR unset — real profile!)'}")
     print(f"scratch:  {ctx.work_dir}")
+    if ctx.seam_dir is None and not allow_real_profile:
+        print(_NO_SEAM_FAIL)
+        return 1
     if not ctx.input_dir.is_dir():
         print(f"FAIL: fixture input dir not found: {ctx.input_dir}")
         return 1
@@ -880,7 +1008,7 @@ def run_cli_smoke(dist: Path, name: str, *, phase: str, input_dir: Path, work_di
             passed = False
         if not passed:
             print(f"cli smoke: FAIL ({label})")
-            _print_etl_log()
+            _print_etl_log("CLI run log")
             return 1
         print(f"   {label}: PASS")
     print("cli smoke: PASS")
@@ -943,6 +1071,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="scratch root for --cli-smoke output dirs (default: a fresh temp dir).",
     )
+    parser.add_argument(
+        "--allow-real-profile",
+        action="store_true",
+        help=(
+            "run --cli-smoke against the REAL user profile when DISTRICTSYNC_DATA_DIR is unset "
+            "(default: refuse). Does not cover the corrupt-profile phase, which plants bytes."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -955,7 +1091,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.cli_smoke:
         work_dir = args.work_dir or Path(tempfile.mkdtemp(prefix="districtsync-cli-smoke-"))
-        return run_cli_smoke(args.dist, args.name, phase=args.phase, input_dir=args.input, work_dir=work_dir)
+        return run_cli_smoke(
+            args.dist,
+            args.name,
+            phase=args.phase,
+            input_dir=args.input,
+            work_dir=work_dir,
+            allow_real_profile=args.allow_real_profile,
+        )
     return run_smoke(args.dist, args.name, args.require_close)
 
 

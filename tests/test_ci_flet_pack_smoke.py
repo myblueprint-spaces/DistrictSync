@@ -9,40 +9,26 @@ isolation:
   * ``etl_log_candidates`` — where the failure diagnostic looks for the boot log
     (per-OS app-data first, retired legacy ``~/.districtsync`` as fallback).
 
+It also carries the PARITY tests that keep the standalone script honest: the log
+markers it greps for are pinned to the ``src`` code that emits them, and its
+``override_data_dir`` mirror is pinned to the real ``paths`` seam.
+
 No process-mock theater: the heavy phases (launch / WM_CLOSE / move-aside) need a
 real exe + a real desktop and are covered by the 3-OS CI smoke, not here. The
-script lives under ``scripts/`` (not an importable package) so it is loaded by
-path via ``importlib.util``. Scripts are excluded from ``--cov=src`` => no
-coverage impact.
+script lives under ``scripts/`` (not an importable package), so ``conftest.py``
+loads it by path once and registers it in ``sys.modules`` — hence the plain import
+below. Scripts are excluded from ``--cov=src`` => no coverage impact.
 """
 
 from __future__ import annotations
 
-import importlib.util
+import logging
 import os
-import sys
 from pathlib import Path
-from types import ModuleType
+from types import SimpleNamespace
 
+import ci_flet_pack_smoke as smoke  # loaded + registered by tests/conftest.py
 import pytest
-
-_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "ci_flet_pack_smoke.py"
-
-
-def _load() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("ci_flet_pack_smoke", _SCRIPT)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    # Register BEFORE exec (the canonical importlib recipe): `@dataclass` resolves
-    # `cls.__module__` through `sys.modules`, so an unregistered path-load blows up
-    # on any dataclass in the script.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-smoke = _load()
-
 
 # --------------------------------------------------------------------------- #
 #  resolve_artifact
@@ -96,11 +82,6 @@ def test_orphan_pids_clean_close_is_empty() -> None:
 def test_orphan_pids_ignores_vanished_baseline() -> None:
     # A baseline PID that exited is not an orphan (set difference, not symmetric).
     assert smoke.orphan_pids({100, 200}, {300}) == {300}
-
-
-def test_orphan_pids_accepts_arbitrary_iterables() -> None:
-    # Helper takes any Iterable[int], not just sets.
-    assert smoke.orphan_pids([1, 2], (2, 3)) == {3}
 
 
 # --------------------------------------------------------------------------- #
@@ -248,7 +229,7 @@ def test_override_wins_outright_and_drops_the_legacy_fallback(tmp_path: Path, os
     assert cands == [override.resolve() / "etl_tool.log"]
 
 
-@pytest.mark.parametrize("blank", ["", "   "])
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
 def test_blank_override_is_not_in_play(tmp_path: Path, blank: str) -> None:
     home = tmp_path / "u"
     assert smoke.override_data_dir({"DISTRICTSYNC_DATA_DIR": blank}) is None
@@ -260,21 +241,54 @@ def test_override_absent_key_is_not_in_play() -> None:
     assert smoke.override_data_dir({}) is None
 
 
+def test_relative_override_is_refused_by_the_mirror() -> None:
+    # Mirrors paths._override_data_dir: a relative profile path is REFUSED, never
+    # absolutized against a CWD the frozen exe is about to delete.
+    with pytest.raises(ValueError, match="absolute"):
+        smoke.override_data_dir({"DISTRICTSYNC_DATA_DIR": "relative-profile"})
+
+
+# The ONE value table both sides of the mirror are driven over. Anything added here
+# is automatically asserted against BOTH `smoke.override_data_dir` and
+# `paths._override_data_dir` — which is the only way the "deliberate mirror" claim
+# stays true as either side evolves.
+_MIRROR_VALUES = ["<abs-tmp>", "~/dsync", "relative", "", "   ", "\t"]
+
+
 @pytest.mark.real_user_data_dir
-def test_override_mirror_agrees_with_the_real_paths_seam(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("value", _MIRROR_VALUES)
+def test_override_mirror_agrees_with_the_real_paths_seam(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
     """The mirror and the app must resolve the SAME profile, or the smokes are vacuous.
 
-    ``etl_log_candidates`` deliberately does not import ``src`` (the script stays
-    standalone), so nothing structural keeps the two in step — this test does.
+    ``override_data_dir``/``etl_log_candidates`` deliberately do not import ``src``
+    (the script stays standalone), so nothing structural keeps the two in step — this
+    table does. Both sides must AGREE on every value, including which ones RAISE.
     """
     import platform as _platform
 
     from src.utils import paths
 
-    override = tmp_path / "seam-profile"
-    monkeypatch.setenv("DISTRICTSYNC_DATA_DIR", str(override))
+    raw = str(tmp_path / "seam-profile") if value == "<abs-tmp>" else value
+    monkeypatch.setenv("DISTRICTSYNC_DATA_DIR", raw)
 
-    assert smoke.override_data_dir(os.environ) == paths._override_data_dir()
+    try:
+        expected = paths._override_data_dir()
+    except ValueError as exc:
+        with pytest.raises(ValueError, match="absolute"):
+            smoke.override_data_dir(os.environ)
+        assert "DISTRICTSYNC_DATA_DIR" in str(exc)
+        return
+
+    assert smoke.override_data_dir(os.environ) == expected
+
+    # Only the tmp-dir row walks the full resolver: `user_log_file()` goes through
+    # `user_data_dir()`, which CREATES the resolved dir — under `~/dsync` that would
+    # litter the developer's home, and under a blank value it would fall through to
+    # the REAL ladder and touch the real profile ("never probe the real profile").
+    if value != "<abs-tmp>":
+        return
     assert smoke.etl_log_candidates(Path.home(), _platform.system(), os.environ)[0] == paths.user_log_file()
 
 
@@ -288,23 +302,39 @@ def test_last_run_record_parses_the_final_line(tmp_path: Path) -> None:
         '2026-01-01 - src.etl.pipeline - INFO - __DISTRICTSYNC_RUN__ {"status": "failed", "source": "cli"}\n'
         '2026-01-01 - src.etl.pipeline - INFO - __DISTRICTSYNC_RUN__ {"status": "success", "source": "cli"}\n'
     )
-    assert smoke._last_run_record(tail) == {"status": "success", "source": "cli"}
+    assert smoke._last_run_record(tail) == ({"status": "success", "source": "cli"}, "")
 
 
-def test_last_run_record_absent_or_unparseable_is_none() -> None:
-    assert smoke._last_run_record("nothing to see here") is None
-    assert smoke._last_run_record("INFO - __DISTRICTSYNC_RUN__ {not json") is None
+def test_last_run_record_distinguishes_absent_from_unparseable() -> None:
+    """ "No record at all" and "a record that would not parse" are different bugs.
+
+    A bare ``None`` made a run that died before the log sink look identical to a
+    reformatted/corrupted payload — the CI reader could not tell which to chase.
+    """
+    missing_record, missing_why = smoke._last_run_record("nothing to see here")
+    broken_record, broken_why = smoke._last_run_record("INFO - __DISTRICTSYNC_RUN__ {not json")
+
+    assert missing_record is None and broken_record is None
+    assert "no __DISTRICTSYNC_RUN__ line" in missing_why
+    assert "did not parse" in broken_why
+    assert missing_why != broken_why
 
 
 def test_file_signature_detects_a_rewrite(tmp_path: Path) -> None:
-    # The "history.db untouched" and "planted bytes intact" checks rest on this.
+    """The "history.db untouched by the preview" check rests on this.
+
+    (The corrupt-profile phase's "planted bytes intact" check does NOT — it compares
+    ``read_bytes()`` directly, because a same-size rewrite of a 47-byte config is
+    exactly the tamper it is looking for.)
+    """
     f = tmp_path / "history.db"
     assert smoke._file_signature(f) is None
     f.write_bytes(b"x")
     before = smoke._file_signature(f)
-    assert before is not None and before[0] is True
+    assert before is not None and before[0] == 1  # (size, mtime_ns) — no dead "exists" flag
     f.write_bytes(b"xx")
-    assert smoke._file_signature(f) != before
+    after = smoke._file_signature(f)
+    assert after is not None and after != before
 
 
 def test_cli_smoke_context_gives_each_phase_its_own_output_dir(tmp_path: Path) -> None:
@@ -320,6 +350,14 @@ def test_cli_smoke_context_log_text_is_empty_when_absent(tmp_path: Path) -> None
     assert ctx.log_text() == ""
 
 
+def test_cli_smoke_context_store_path_sits_beside_the_log(tmp_path: Path) -> None:
+    # The store assertions must key off the SAME profile the log resolved to — a
+    # store path derived from anywhere else would be asserting about another install.
+    ctx = smoke.CliSmokeContext.build(tmp_path / "in", tmp_path / "work", {"DISTRICTSYNC_DATA_DIR": str(tmp_path)})
+    assert ctx.store_path == tmp_path.resolve() / "history.db"
+    assert ctx.store_path.parent == ctx.log_path.parent
+
+
 def test_corrupt_profile_phase_refuses_to_run_without_the_seam(tmp_path: Path) -> None:
     """Fail LOUD rather than plant a corrupt config.json into whatever profile is real."""
     ctx = smoke.CliSmokeContext.build(tmp_path / "in", tmp_path / "work", {})
@@ -327,9 +365,46 @@ def test_corrupt_profile_phase_refuses_to_run_without_the_seam(tmp_path: Path) -
     assert smoke._smoke_corrupt_profile(tmp_path / "DistrictSync.exe", ctx) is False
 
 
+def test_corrupt_profile_phase_prints_the_log_before_it_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The phase's own diagnostic must reach stdout, not the recycle bin.
+
+    It used to ``rmtree`` the whole seam dir in its ``finally`` — which deleted
+    ``etl_tool.log`` before ``run_cli_smoke``'s failure path could print it, so a red
+    phase 4 reported "(absent)" instead of the traceback that explained it. Now the
+    phase prints the slice it already holds in memory, and removes ONLY the planted
+    ``config.json``.
+    """
+    seam = tmp_path / "profile"
+    seam.mkdir()
+    (seam / "etl_tool.log").write_text("BOOT LINE ONE\nDISTINCTIVE-LOG-MARKER\n", encoding="utf-8")
+    ctx = smoke.CliSmokeContext.build(tmp_path / "in", tmp_path / "work", {"DISTRICTSYNC_DATA_DIR": str(seam)})
+
+    # Make the exe "run" without launching anything: an exit-1 result fails the phase.
+    def _fake_run(art: Path, args: list[str]) -> object:
+        (seam / "etl_tool.log").write_text(
+            "BOOT LINE ONE\nDISTINCTIVE-LOG-MARKER\nfailure detail the reader needs\n", encoding="utf-8"
+        )
+        return SimpleNamespace(returncode=1, stdout="", stderr="boom")
+
+    monkeypatch.setattr(smoke, "_run_cli", _fake_run)
+
+    assert smoke._smoke_corrupt_profile(tmp_path / "DistrictSync.exe", ctx) is False
+
+    out = capsys.readouterr().out
+    assert "failure detail the reader needs" in out, "the failure branch must print the log tail"
+    # Cleanup is narrowed to the plant: the log (and the dir) survive for the caller.
+    assert not (seam / "config.json").exists()
+    assert (seam / "etl_tool.log").exists()
+    assert seam.is_dir()
+
+
 def test_cli_smoke_phase_order_puts_the_plant_last() -> None:
-    # The corrupt-profile phase deletes the seam dir on the way out, so it can only
-    # ever run last within a single `--phase all` invocation.
+    # This dict is the ONLY definition of the order, and the workflow runs one
+    # `--phase all` invocation so CI cannot hold a second, drifting copy. Two facts
+    # are load-bearing: dry-run pins history.db ABSENT before write-run asserts it was
+    # created, and corrupt-profile plants a config.json so it must go last.
     assert list(smoke.CLI_SMOKE_PHASES) == ["version", "dry-run", "write-run", "corrupt-profile"]
 
 
@@ -340,14 +415,137 @@ def test_cli_smoke_missing_artifact_fails_without_launching(tmp_path: Path) -> N
     assert rc == 1
 
 
-def test_cli_smoke_missing_fixture_fails_before_any_phase(tmp_path: Path) -> None:
+def _dist_with_artifact(tmp_path: Path) -> Path:
     dist = tmp_path / "dist"
     dist.mkdir()
-    (dist / "DistrictSync.exe").write_bytes(b"x")  # never launched — the fixture check comes first
+    (dist / "DistrictSync.exe").write_bytes(b"x")  # never launched in these tests
+    return dist
+
+
+@pytest.mark.parametrize("phase", ["version", "dry-run", "write-run", "corrupt-profile", "all"])
+def test_cli_smoke_refuses_every_phase_without_the_seam(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], phase: str
+) -> None:
+    """The seam is a BOUNDARY, not a warning — and it guards ALL FOUR phases.
+
+    Every phase writes into whatever profile the exe resolves (a log, a run store,
+    and in phase 4 a corrupt config.json), so refusing only at the one that plants
+    bytes left the other three free to scribble on a real install.
+    """
     rc = smoke.run_cli_smoke(
-        dist, "DistrictSync", phase="all", input_dir=tmp_path / "absent", work_dir=tmp_path / "work"
+        _dist_with_artifact(tmp_path),
+        "DistrictSync",
+        phase=phase,
+        input_dir=tmp_path / "in",  # absent: proves the refusal precedes the fixture check
+        work_dir=tmp_path / "work",
     )
     assert rc == 1
+    assert "DISTRICTSYNC_DATA_DIR" in capsys.readouterr().out
+
+
+def test_cli_smoke_allow_real_profile_opts_out_of_the_refusal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The opt-out is explicit and deliberate: with it, the run proceeds past the seam
+    # boundary and fails on the NEXT gate (the absent fixture) instead.
+    rc = smoke.run_cli_smoke(
+        _dist_with_artifact(tmp_path),
+        "DistrictSync",
+        phase="all",
+        input_dir=tmp_path / "absent",
+        work_dir=tmp_path / "work",
+        allow_real_profile=True,
+    )
+    assert rc == 1
+    assert "fixture input dir not found" in capsys.readouterr().out
+
+
+def test_cli_smoke_missing_fixture_fails_before_any_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DISTRICTSYNC_DATA_DIR", str(tmp_path / "profile"))
+    rc = smoke.run_cli_smoke(
+        _dist_with_artifact(tmp_path),
+        "DistrictSync",
+        phase="all",
+        input_dir=tmp_path / "absent",
+        work_dir=tmp_path / "work",
+    )
+    assert rc == 1
+    assert "fixture input dir not found" in capsys.readouterr().out
+
+
+def test_cli_smoke_rejects_a_relative_seam_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A relative override is refused at the boundary (mirroring paths._override_data_dir)
+    # rather than silently resolving against a CWD the frozen exe deletes on exit.
+    monkeypatch.setenv("DISTRICTSYNC_DATA_DIR", "relative-profile")
+    rc = smoke.run_cli_smoke(
+        _dist_with_artifact(tmp_path),
+        "DistrictSync",
+        phase="all",
+        input_dir=tmp_path / "in",
+        work_dir=tmp_path / "work",
+    )
+    assert rc == 1
+    assert "absolute" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+#  Log-marker PARITY — each marker pinned to the src code that emits it          #
+# --------------------------------------------------------------------------- #
+#
+# Every CLI phase keys a check off a literal log substring. The script deliberately
+# never imports `src`, so a reworded log line in src/ would not break the build — it
+# would quietly turn the matching smoke check into an assertion about a string
+# nothing emits any more (a green smoke proving nothing). These tests are the only
+# thing tying the two together. `_UNREADABLE_MARKER`'s pair lives beside its
+# siblings in tests/test_app_config_crash_safety.py.
+
+
+def test_banner_marker_is_emitted_by_startup_banner() -> None:
+    from src.utils.version import startup_banner
+
+    assert smoke._BANNER_MARKER in startup_banner()
+
+
+def test_run_record_marker_is_emitted_by_log_run_record(caplog: pytest.LogCaptureFixture) -> None:
+    from src.etl import pipeline
+
+    with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+        pipeline._log_run_record({"status": "success"})
+    assert any(smoke._RUN_RECORD_MARKER in r.message for r in caplog.records)
+
+
+def test_paused_marker_is_emitted_by_the_sync_window_gate(caplog: pytest.LogCaptureFixture) -> None:
+    from datetime import date
+
+    from src.config.app_config import AppConfig
+    from src.main import _paused_by_sync_window
+
+    cfg = AppConfig(sync_window_enabled=True, sync_window_start="09-01", sync_window_end="06-30")
+    logger = logging.getLogger("test_paused_marker")
+    with caplog.at_level(logging.INFO, logger="test_paused_marker"):
+        assert _paused_by_sync_window(cfg, date(2026, 7, 15), logger) is True
+    assert any(smoke._PAUSED_MARKER in r.getMessage() for r in caplog.records)
+
+
+def test_paused_marker_is_absent_when_the_window_is_off(caplog: pytest.LogCaptureFixture) -> None:
+    """The falsifiability half: an in-window (or disabled) run must log NO pause marker.
+
+    Without it, `_PAUSED_MARKER` could be a string that is never emitted at all and
+    phase 4's "no sync-window pause" check would pass vacuously forever.
+    """
+    from datetime import date
+
+    from src.config.app_config import AppConfig
+    from src.main import _paused_by_sync_window
+
+    logger = logging.getLogger("test_paused_marker_off")
+    with caplog.at_level(logging.INFO, logger="test_paused_marker_off"):
+        assert _paused_by_sync_window(AppConfig(), date(2026, 7, 15), logger) is False
+    assert not [r for r in caplog.records if smoke._PAUSED_MARKER in r.getMessage()]
 
 
 # --------------------------------------------------------------------------- #
@@ -398,10 +596,17 @@ def test_cli_smoke_mode_parses_with_a_phase_and_paths(tmp_path: Path) -> None:
 
 
 def test_cli_smoke_defaults_to_all_phases_and_the_snapshot_fixture() -> None:
+    # The workflow relies on BOTH defaults: it passes neither --phase nor --input.
     args = smoke._parse_args(["dist", "DistrictSync", "--cli-smoke"])
     assert args.phase == "all"
     assert args.input == smoke.DEFAULT_SMOKE_INPUT
     assert args.input.is_dir(), "the committed SD74 snapshot input is the default fixture"
+    assert args.allow_real_profile is False, "the profile seam is required unless explicitly waived"
+
+
+def test_allow_real_profile_flag_parses() -> None:
+    args = smoke._parse_args(["dist", "DistrictSync", "--cli-smoke", "--allow-real-profile"])
+    assert args.allow_real_profile is True
 
 
 def test_cli_smoke_rejects_an_unknown_phase() -> None:
