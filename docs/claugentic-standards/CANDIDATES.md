@@ -133,3 +133,22 @@ assertion does NOT cover (the ungated region is where the hazard lives); when a 
 goes vacuously green, fix the assertion, not the probe. The verify panel's job includes
 red-teaming the falsification evidence itself. Beneficiary roles: `implementer`,
 `lens-reviewer` (testing), `synthesizer-gate`.
+
+## security/testing — S3 lessons: value-validated choke points, reality-read pins, tense discipline, is-text filters  [staged 2026-07-29, plan 0038 S3]
+
+- **A choke point validates VALUES, not just keys — and applies all-or-nothing.** `identity_save`
+  gated on `hasattr` and typed `**updates: object`: a `None` value round-tripped to a corrupted
+  (UNREADABLE) settings file and a mistyped kwarg silently shadowed the method itself. Membership
+  from `fields()`, per-value `_value_fits`, and deferred `setattr` until every pair passes. The
+  panel live-reproduced all three failures before the fix.
+- **A list written from memory twice is a list needing a reality-read pin.** The extra="forbid"
+  model roster was written down wrong in S2b's doc, corrected by that panel, then written wrong
+  AGAIN in S3's comment. The fix is a test that enumerates the real `model_config`s in both
+  directions — prose lists of code facts rot; tests that read the code do not.
+- **Dark-shipped machinery needs tense markers on every durable surface.** S3 shipped keys and
+  predicates with zero consumers; ten surfaces described them in the present tense ("scopes the
+  pickers"). Commit messages were honest; the durable artifacts were not. Rule: "will … once X
+  lands (plan N)" until the consumer exists.
+- **Bulk text operations take an is-text filter first.** A line-ending normalizer over
+  `git ls-files` stripped CRLF from five binary assets (.ico/.png); caught and restored byte-clean
+  pre-commit. Never run a text transform over a tracked-file list without filtering binaries.
