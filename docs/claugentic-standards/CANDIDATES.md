@@ -101,3 +101,22 @@ smokes ran against the frozen artifact before the land record claimed them.
   `/simplify` and `/code-review` (say so in the verify record rather than running both twice); a
   solo synthesizer-gate verify still runs them. Loosens a stated Stage-7 instruction — needs the
   owner's nod before promotion.
+
+## testing — "Prove a new assertion's teeth by breaking it; declare coverage gaps, never absorb them"  [staged 2026-07-29, plan 0038 S2a]
+
+Two disciplines from a test-only slice, both cheap and both catching what review alone missed:
+
+- **Perturb-and-restore evidence.** A new assertion class ships with a falsification table — each
+  oracle deliberately broken (a swapped column, a shrunk expectation set, an inverted byte check),
+  the red observed, then restored. "The test passes" says nothing; "the test failed for the right
+  reason when I broke the thing it guards" is evidence. Pairs with the vacuous-green lesson above.
+- **A declared-gap table beats an implicit gap.** When an expectation table legitimately diverges
+  from derived truth (a fixture deliberately omits sources), the divergence lives in an explicit
+  reviewed constant (`DELIBERATELY_UNCOVERED = {...}`) asserted per-config in both directions — so
+  "fixing" a red test by shrinking a frozenset fails the guard, and a new config's uncovered
+  entity surfaces as a red, not silence.
+
+Incident: plan 0038 S2a — EXPECTED_ENTITIES' keys were pinned but its values were "true because
+typed"; the gate demanded the declared-gap guard, and the falsification table (6 perturbations)
+was what let the panel accept a hand-maintained table over a derived one without eroding the
+sd51 skip-on-empty pin. Beneficiary roles: `implementer`, `lens-reviewer` (testing).
