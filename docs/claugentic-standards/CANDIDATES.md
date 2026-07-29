@@ -120,3 +120,16 @@ Incident: plan 0038 S2a — EXPECTED_ENTITIES' keys were pinned but its values w
 typed"; the gate demanded the declared-gap guard, and the falsification table (6 perturbations)
 was what let the panel accept a hand-maintained table over a derived one without eroding the
 sd51 skip-on-empty pin. Beneficiary roles: `implementer`, `lens-reviewer` (testing).
+
+## testing — "Perturbation evidence inherits the perturber's blind spots"  [staged 2026-07-29, plan 0038 S2b]
+
+Perturb-and-restore proves an assertion has teeth ONLY where a perturbation was aimed. Two
+incident shapes from one slice: (a) the doc-wide-stamp hazard was perturbed only INSIDE the
+gated tables, so the assertion that "the confirmed stamp cannot spread" was green while a
+front-matter re-stamp — the exact hazard — passed untouched; (b) a vacuous perturbation
+(replace-first of a twice-occurring string) was caught and fixed on the PERTURBATION side,
+leaving the weak ASSERTION in place. Rules: aim at least one perturbation at the space the
+assertion does NOT cover (the ungated region is where the hazard lives); when a perturbation
+goes vacuously green, fix the assertion, not the probe. The verify panel's job includes
+red-teaming the falsification evidence itself. Beneficiary roles: `implementer`,
+`lens-reviewer` (testing), `synthesizer-gate`.
