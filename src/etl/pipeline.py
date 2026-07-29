@@ -499,7 +499,7 @@ def _emit_run_log(
     _log_run_record(record, error=error)
 
 
-def _store_run_record(record: dict[str, Any], *, source: str, dry_run: bool = False) -> bool:
+def _store_run_record(record: dict[str, Any], *, source: str, dry_run: bool) -> bool:
     """Best-effort store write — STRICTLY NON-FATAL (D2b): never raises, never masks a caller error.
 
     ``write_run_record`` already swallows ``sqlite3.Error`` / ``OSError``; this extra guard
@@ -511,12 +511,20 @@ def _store_run_record(record: dict[str, Any], *, source: str, dry_run: bool = Fa
     files, so recording it as a run painted "your roster is syncing" on the Home verdict
     and added a phantom Run History row for a preview that delivered nothing — a live
     defect the moment support asks a partner to run a dry run. The gate lives HERE, at the
-    single store sink, so no call site (success, failure, or early-exit) can forget it; the
+    **pipeline's** single store sink, so no ``run_pipeline`` path (success, failure, or
+    early-exit) can forget it — and ``dry_run`` is a REQUIRED keyword-only argument so the
+    type-checker enforces that claim rather than a default quietly re-opening the hole. The
     ``__DISTRICTSYNC_RUN__`` diagnostic log line is emitted for a dry run exactly as before,
-    so ops loses nothing.
+    so ops loses nothing (INFO, not DEBUG — ``config/logging.conf`` pins INFO, so the skip
+    line must reach ``etl_tool.log`` or the log/store divergence looks unexplained).
+
+    SCOPE, precisely: this is the pipeline's sink, not the process's only one.
+    ``src/ui_flet/screens/convert.py`` (``_record_manual_run``) calls ``write_run_record``
+    directly for a manual Convert, so it does NOT pass through this gate — Convert has no
+    preview mode today, and would need its own gate if one is ever added.
     """
     if dry_run:
-        logger.debug("Dry run — no run-history record written (the diagnostic log line stands)")
+        logger.info("Dry run — no run-history record written (the diagnostic log line stands)")
         return False
     try:
         return write_run_record(record, source=source)
@@ -525,9 +533,7 @@ def _store_run_record(record: dict[str, Any], *, source: str, dry_run: bool = Fa
         return False
 
 
-def _record_early_failure(
-    t0: float, *, source: str, sis_type: str, error: str, category: str, dry_run: bool = False
-) -> None:
+def _record_early_failure(t0: float, *, source: str, sis_type: str, error: str, category: str, dry_run: bool) -> None:
     """Record a pre-ETL failure (bad input dir / config) to BOTH sinks before an early ``sys.exit``.
 
     The ``sys.exit(1)`` paths inside ``run_pipeline`` re-raise through the ``except SystemExit``
@@ -536,6 +542,10 @@ def _record_early_failure(
     sees the failure, Run History shows nothing). Same guard shape as the failure sink (D2b):
     recording can never raise, never delays or changes the exit code, and the free-text ``error``
     goes to the diagnostic-log line ONLY — the store carries the bounded ``category`` (privacy split).
+
+    ``dry_run`` is REQUIRED and keyword-only for the same reason it is on
+    :func:`_store_run_record`: every early-exit sink must forward the caller's preview flag,
+    and a default would let a new ``sys.exit`` path silently record a preview as a run.
     """
     try:
         record = build_run_record(

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import stat
 import sys
@@ -385,6 +386,48 @@ class TestLoadStateIsHonest:
         cfg = AppConfig.load()
         assert cfg.load_state is ConfigLoadState.LOADED
         assert cfg.settings_unreadable() is False
+
+
+class TestTheUnreadableLogMarkerTheExeSmokeGrepsFor:
+    """The CI exe smoke's phase 4 asserts "the plant was READ" by grepping ONE substring.
+
+    ``scripts/ci_flet_pack_smoke.py`` deliberately never imports ``src`` (it must run
+    standalone against a packed artifact), so nothing structural stops this message
+    being reworded — which would leave the release gate asserting a string nothing
+    emits, i.e. a check that can only ever fail... or, worse for the NEGATIVE half,
+    one that can only ever pass. Both halves are pinned here, beside the UNREADABLE
+    cases they belong to.
+    """
+
+    def test_truncated_bytes_emit_the_marker_the_smoke_greps_for(
+        self, config_dir: tuple[Path, Path], caplog: pytest.LogCaptureFixture, ci_smoke_module
+    ) -> None:
+        cfg_dir, cfg_file = config_dir
+        _write_raw(cfg_dir, cfg_file, TORN_PREFIX)
+
+        with caplog.at_level(logging.ERROR, logger="src.config.app_config"):
+            cfg = AppConfig.load()
+
+        assert cfg.load_state is ConfigLoadState.UNREADABLE
+        assert ci_smoke_module._UNREADABLE_MARKER in caplog.text
+
+    def test_a_valid_config_emits_the_marker_ZERO_times(
+        self, config_dir: tuple[Path, Path], caplog: pytest.LogCaptureFixture, ci_smoke_module
+    ) -> None:
+        """The falsifiability half — without it the positive test proves nothing.
+
+        Phase 4's whole claim is that the corrupt plant, and only the corrupt plant,
+        produces this line. If a healthy load also emitted it, the smoke would be
+        asserting on background noise.
+        """
+        cfg_dir, cfg_file = config_dir
+        _write_raw(cfg_dir, cfg_file, json.dumps({"input_dir": "/in", "output_dir": "/out", "sis_type": "myedbc"}))
+
+        with caplog.at_level(logging.DEBUG, logger="src.config.app_config"):
+            cfg = AppConfig.load()
+
+        assert cfg.load_state is ConfigLoadState.LOADED
+        assert ci_smoke_module._UNREADABLE_MARKER not in caplog.text
 
 
 class TestUnreadableSettingsAreNotANewInstall:

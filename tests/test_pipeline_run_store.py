@@ -528,6 +528,20 @@ class TestDryRunWritesNoRecord:
         assert exc_info.value.code == 1  # the exit-code contract is untouched
         assert read_run_records() == []
 
+    def test_dry_run_config_load_failure_records_nothing_either(self, gde_input: Path, gde_output: Path) -> None:
+        """The CONFIG-load early exits are their own ``_record_early_failure`` call sites.
+
+        ``run_pipeline`` has three ``sys.exit(1)`` sinks — the missing input dir and the
+        two ``load_config`` failures — and each has to forward ``dry_run`` itself. This
+        covers the two the missing-input test does not reach, which is why ``dry_run`` is
+        a REQUIRED keyword-only argument on both sink helpers: no future sink can inherit
+        a quiet default.
+        """
+        with pytest.raises(SystemExit) as exc_info:
+            run_pipeline("no_such_sis", str(gde_input), str(gde_output), dry_run=True)
+        assert exc_info.value.code == 1
+        assert read_run_records() == []
+
 
 # --------------------------------------------------------------------------- #
 # early-exit recording (0034 Slice 4 — kill the false silence)                  #

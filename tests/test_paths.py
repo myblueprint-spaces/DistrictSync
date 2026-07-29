@@ -168,11 +168,29 @@ class TestDataDirOverride:
         assert paths_module._override_data_dir() is None
         assert paths_module.user_data_dir() == data_dirs.new
 
-    def test_relative_value_is_made_absolute(self, data_dirs, monkeypatch):
-        # The frozen launcher chdirs into a temp _MEIPASS that is deleted on exit, so a
-        # relative profile path would be actively dangerous — it is absolutized at once.
-        monkeypatch.setenv(paths_module._DATA_DIR_ENV_VAR, "relative-profile")
-        assert paths_module._override_data_dir().is_absolute()
+    @pytest.mark.parametrize("relative", ["relative-profile", "./sub/dir", "sub/dir"])
+    def test_relative_value_is_REFUSED(self, data_dirs, monkeypatch, relative):
+        # The frozen launcher chdirs into a temp _MEIPASS that is DELETED on exit, and a
+        # scheduled task runs with cwd %SystemRoot%\System32 — "relative" therefore means
+        # "a directory that is about to vanish, or a system directory, and somewhere else
+        # again next run". Silently absolutizing (the old behavior) hid exactly that;
+        # refusing turns it into a one-line fix.
+        monkeypatch.setenv(paths_module._DATA_DIR_ENV_VAR, relative)
+        with pytest.raises(ValueError, match="must be an absolute path"):
+            paths_module._override_data_dir()
+        with pytest.raises(ValueError, match="must be an absolute path"):
+            paths_module.user_data_dir()
+
+    def test_unusable_override_fails_loud_instead_of_falling_back(self, data_dirs, tmp_path, monkeypatch):
+        # A silent fallback to the platform dir would write the profile somewhere the
+        # operator did not ask for and did not know to look — the very confusion the
+        # override exists to remove.
+        blocker = tmp_path / "not-a-dir"
+        blocker.write_text("i am a file", encoding="utf-8")
+        monkeypatch.setenv(paths_module._DATA_DIR_ENV_VAR, str(blocker / "profile"))
+        with pytest.raises(RuntimeError, match="could not be used as the profile directory"):
+            paths_module.user_data_dir()
+        assert not data_dirs.new.exists()
 
     def test_tilde_expands(self, data_dirs, monkeypatch):
         monkeypatch.setenv(paths_module._DATA_DIR_ENV_VAR, "~/dsync-profile")
@@ -203,11 +221,45 @@ class TestDataDirOverride:
         assert (data_dirs.legacy / "config.json").exists()  # legacy untouched
         assert paths_module.user_data_dir() == override.resolve()
 
-    def test_migration_still_runs_once_the_override_is_removed(self, data_dirs, monkeypatch):
+    def test_migration_still_runs_once_the_override_is_removed(self, data_dirs, tmp_path, monkeypatch):
         # The suppression is scoped to the override being in play — not a permanent
-        # opt-out baked into the install.
+        # opt-out baked into the install. SET it, observe the suppression, then UNSET
+        # it and observe the migration: a test that only ever ran with the variable
+        # absent would pass identically if the guard were permanent.
         TestMigrateLegacyDataDir._seed_legacy(data_dirs.legacy)
-        monkeypatch.delenv(paths_module._DATA_DIR_ENV_VAR, raising=False)
+        monkeypatch.setenv(paths_module._DATA_DIR_ENV_VAR, str(tmp_path / "override-profile"))
+        assert paths_module.migrate_legacy_data_dir() is False
+        assert not data_dirs.new.exists()
+
+        monkeypatch.delenv(paths_module._DATA_DIR_ENV_VAR)
+        assert paths_module.migrate_legacy_data_dir() is True
+        assert (data_dirs.new / "config.json").exists()
+
+    def test_override_pointing_AT_the_platform_dir_does_not_suppress_migration(self, data_dirs, monkeypatch):
+        # The guard exists to prevent a SPLIT profile (migrate into the platform dir
+        # while reading the override). An override aimed at the platform dir resolves
+        # to the very location the migration targets, so there is nothing to split —
+        # suppressing there would strand ~/.districtsync forever behind a variable
+        # that changed nothing.
+        TestMigrateLegacyDataDir._seed_legacy(data_dirs.legacy)
+        monkeypatch.setenv(paths_module._DATA_DIR_ENV_VAR, str(data_dirs.new))
+
+        assert paths_module.migrate_legacy_data_dir() is True
+        assert (data_dirs.new / "config.json").exists()
+        assert paths_module.user_data_dir() == data_dirs.new.resolve()
+
+    def test_migration_never_raises_on_an_unresolvable_override(self, data_dirs, monkeypatch):
+        # `migrate_legacy_data_dir` documents a never-raises contract and is called
+        # unconditionally at entry, while `_override_data_dir` deliberately fails loud
+        # (ValueError on a relative value; Path.expanduser raises RuntimeError for an
+        # unknown ~user on POSIX). A bad value is treated as unset HERE and still fails
+        # loud at user_data_dir(), which is the boundary that decides where data goes.
+        TestMigrateLegacyDataDir._seed_legacy(data_dirs.legacy)
+
+        def _boom():
+            raise RuntimeError("Could not determine home directory")
+
+        monkeypatch.setattr(paths_module, "_override_data_dir", _boom)
         assert paths_module.migrate_legacy_data_dir() is True
         assert (data_dirs.new / "config.json").exists()
 

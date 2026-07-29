@@ -147,15 +147,27 @@ def _override_data_dir() -> Path | None:
 
     Boundary validation (the value is untrusted operator input): an unset, empty,
     or whitespace-only value means "not in play" (``FOO=`` in a shell must not
-    resolve the profile to the process CWD). ``~`` expands, and the path is made
-    absolute at call time — the frozen launcher chdirs to a temp ``sys._MEIPASS``
-    that is deleted on exit, so a relative value would be actively dangerous.
-    Always pass an absolute path.
+    resolve the profile to the process CWD). ``~`` expands (an expanded ``~`` is
+    already absolute).
+
+    A RELATIVE value is REFUSED with :class:`ValueError` rather than silently
+    absolutized against the CWD. The frozen launcher chdirs into a temp
+    ``sys._MEIPASS`` that is deleted on exit, and a scheduled task runs with cwd
+    ``%SystemRoot%\\System32`` — so "relative" means the profile lands in a
+    directory that is about to vanish, or in a system directory, and the NEXT run
+    resolves somewhere else again. Silently absolutizing hides that; refusing makes
+    it a one-line fix. Always pass an absolute path.
+
+    Raises:
+        ValueError: the value is set but not absolute.
     """
     raw = os.environ.get(_DATA_DIR_ENV_VAR, "").strip()
     if not raw:
         return None
-    return Path(raw).expanduser().resolve()
+    expanded = Path(raw).expanduser()
+    if not expanded.is_absolute():
+        raise ValueError(f"{_DATA_DIR_ENV_VAR} must be an absolute path (got {raw!r})")
+    return expanded.resolve()
 
 
 def user_data_dir() -> Path:
@@ -181,10 +193,23 @@ def user_data_dir() -> Path:
     The move from (2) to (1) is an explicit, failure-safe entry-point step
     (``migrate_legacy_data_dir``) — NOT a side effect of this resolver — so a read
     can never half-move data.
+
+    Raises:
+        ValueError: the override is set but not absolute (see :func:`_override_data_dir`).
+        RuntimeError: the override is set but unusable as a directory. Fail LOUD rather
+            than fall through to the platform dir — a silent fallback would write the
+            profile somewhere the operator did not ask for and did not know to look,
+            which is precisely the confusion the override exists to remove.
     """
     override = _override_data_dir()
     if override is not None:
-        override.mkdir(parents=True, exist_ok=True)
+        try:
+            override.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"{_DATA_DIR_ENV_VAR}={override} could not be used as the profile directory "
+                f"({exc}). Unset it or point it at a writable absolute path."
+            ) from exc
         return override
     new = _platform_data_dir()
     if new.exists():
@@ -216,6 +241,39 @@ def _write_moved_breadcrumb(legacy: Path, new: Path) -> None:
         logger.warning("Could not write migration breadcrumb in %s (%s)", legacy, exc)
 
 
+def _override_suppresses_migration() -> bool:
+    """Whether ``DISTRICTSYNC_DATA_DIR`` should suppress the legacy migration.
+
+    NARROW by design: only an override pointing SOMEWHERE ELSE suppresses. An override
+    aimed AT the canonical platform dir resolves to the exact location the migration
+    targets, so there is no split-brain to prevent — suppressing there would strand
+    ``~/.districtsync`` forever behind a variable that changed nothing.
+
+    Never raises. :func:`migrate_legacy_data_dir` documents a never-raises contract and
+    is called unconditionally at entry, while :func:`_override_data_dir` deliberately
+    fails LOUD (``ValueError`` on a relative value; ``Path.expanduser`` raises
+    ``RuntimeError`` for an unknown ``~user`` on POSIX). An unresolvable value is
+    treated as unset HERE and still fails loud at :func:`user_data_dir` — the boundary
+    that actually decides where data goes.
+    """
+    try:
+        override = _override_data_dir()
+        if override is None:
+            return False
+        canonical = _platform_data_dir().resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.debug(
+            "%s could not be resolved (%s) — treating it as unset for the legacy migration",
+            _DATA_DIR_ENV_VAR,
+            exc,
+        )
+        return False
+    if override == canonical:
+        return False
+    logger.debug("%s is set — skipping the legacy app-data migration", _DATA_DIR_ENV_VAR)
+    return True
+
+
 def migrate_legacy_data_dir() -> bool:
     """Relocate ``~/.districtsync`` to the platform data dir once, failure-safely.
 
@@ -244,14 +302,14 @@ def migrate_legacy_data_dir() -> bool:
     nothing to migrate OR the migration failed and we safely fell back to the legacy
     location (logged WARNING). Never raises — safe to call unconditionally at entry.
 
-    A set ``DISTRICTSYNC_DATA_DIR`` makes this a **no-op**: this function resolves
-    ``_platform_data_dir()``/``_legacy_data_dir()`` directly (it deliberately does not
-    go through :func:`user_data_dir`), so without the guard an overridden run would
-    migrate the legacy tree into the *platform* dir while reading its profile from the
-    *override* — a split-brain the override exists to prevent.
+    A ``DISTRICTSYNC_DATA_DIR`` pointing ELSEWHERE makes this a **no-op**: this function
+    resolves ``_platform_data_dir()``/``_legacy_data_dir()`` directly (it deliberately
+    does not go through :func:`user_data_dir`), so without the guard an overridden run
+    would migrate the legacy tree into the *platform* dir while reading its profile from
+    the *override* — a split-brain the override exists to prevent. An override pointing
+    AT the platform dir is NOT suppressed (see :func:`_override_suppresses_migration`).
     """
-    if _override_data_dir() is not None:
-        logger.debug("%s is set — skipping the legacy app-data migration", _DATA_DIR_ENV_VAR)
+    if _override_suppresses_migration():
         return False
 
     new = _platform_data_dir()
