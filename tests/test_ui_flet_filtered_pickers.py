@@ -132,6 +132,13 @@ class TestWizardDistrictStep:
         S4a's launch page says "That's SD48 — you'll confirm it on the next step." Until this
         lands, "the next step" was a dropdown of all eleven, and the sentence was true only in
         the weakest sense. Now the District step opens on SD48 alone.
+
+        **Scoped honestly to the path it covers.** The auto-SEED fires only when `ws["sis"]`
+        is empty, i.e. on an install with no district saved — which is the population the
+        launch page actually addresses (the page never shows once setup is complete). On a
+        RESUMED wizard that already has a saved district, the list is still scoped but the
+        value comes from the config, not from the domain; the launch-page promise holds there
+        in the weaker "you'll see it on the next step" sense. Both are covered below.
         """
         _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type=""))
 
@@ -148,6 +155,91 @@ class TestWizardDistrictStep:
         _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type=""))
 
         assert _dropdown(build_setup(page), "District").value == "sd48myedbc"
+
+    def test_the_step_ACKNOWLEDGES_a_choice_it_made_for_the_admin(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """A pre-selection nobody is told about is a silent default.
+
+        The default caption INSTRUCTS a pick ("Pick the district whose…"); rendering that over
+        a value we have already chosen reads as though nothing happened and quietly hides that
+        we chose it. The acknowledging form names the district, says where the guess came from
+        (a public email domain — not a lookup of the person), and offers the correction in the
+        same breath.
+        """
+        from src.ui_flet.screens import setup as setup_screen
+
+        _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type=""))
+
+        text = " ".join(c.value for c in _walk(build_setup(page)) if isinstance(getattr(c, "value", None), str))
+
+        assert "We've picked" in text
+        assert "Sea to Sky" in text
+        assert "change it if that's wrong" in text
+        assert setup_screen.DISTRICT_PICK_PROMPT not in text, "the instruction to pick is superseded"
+
+    def test_an_UNSEEDED_step_keeps_the_plain_instruction(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """The positive twin: with nothing auto-chosen, the caption instructs as it always did."""
+        from src.ui_flet.screens import setup as setup_screen
+
+        _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type="", identity_email=UNMATCHED))
+
+        text = " ".join(c.value for c in _walk(build_setup(page)) if isinstance(getattr(c, "value", None), str))
+
+        assert setup_screen.DISTRICT_PICK_PROMPT in text
+        assert "We've picked" not in text
+
+    def test_an_explicit_pick_retires_the_acknowledgement(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """Once the admin chooses, the caption must stop crediting us with the choice."""
+        _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type=""))
+        root = build_setup(page)
+        _button(root, SHOW_ALL_LABEL).on_click(None)
+        dropdown = _dropdown(root, "District")
+        dropdown.value = "sd74myedbc"
+        dropdown.on_select(_pick_event("sd74myedbc"))
+
+        text = " ".join(c.value for c in _walk(root) if isinstance(getattr(c, "value", None), str))
+
+        assert "We've picked" not in text
+
+    def test_a_SAVED_district_never_triggers_the_auto_seed_claim(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """The weaker half of the first-paint promise, pinned so the stronger claim stays scoped.
+
+        The auto-seed fires ONLY when nothing is saved. With a district already saved, the
+        wizard's resume finds the District step satisfied and opens on Folders — so the admin
+        does not see the District step on this launch at all, and we must certainly not claim
+        to have picked anything for them. The launch-page line holds here only in the weaker
+        "your district is already set" sense, which is exactly right: this population chose it.
+        """
+        _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type="sd48myedbc"))
+
+        text = " ".join(c.value for c in _walk(build_setup(page)) if isinstance(getattr(c, "value", None), str))
+
+        assert "We've picked" not in text
+        assert "Step 2 of 5" in text, "resume moved past the satisfied District step, as it always has"
+
+    def test_a_matched_SEVERAL_list_shows_both_and_auto_selects_NEITHER(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """SD51 ships two tiers behind one staff domain — the LIVE matched-several case.
+
+        Two visible options is a real choice, so D9's rule ("auto-select only when there is no
+        meaningful choice to make") must decline, and the placeholder must prompt an explicit
+        pick. Getting this wrong would silently commit an SD51 admin to whichever tier sorted
+        first — and the two produce different files.
+        """
+        _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type="", identity_email="roster.admin@sd51.bc.ca"))
+
+        dropdown = _dropdown(build_setup(page), "District")
+
+        assert set(_keys(dropdown)) == {"sd51myedbc", "sd51attendance"}
+        assert dropdown.value is None, "two real options must never be auto-selected"
 
     def test_an_UNMATCHED_admin_sees_every_district_and_none_pre_selected(
         self, page: MagicMock, monkeypatch, isolated_user_profile
@@ -236,6 +328,43 @@ class TestWizardDistrictStep:
         assert vars(cfg) == before, "the toggle mutated the shared AppConfig instance"
         assert len(_keys(_dropdown(build_setup(page), "District"))) == 1, "a new mount re-scopes"
 
+    def test_widen_pick_narrow_KEEPS_the_pick_on_the_wizard_step(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """The round trip the `picked_sis` escape exists for.
+
+        Widen the list, choose a district outside your scope, then narrow back: without the
+        working pick riding the filter, the selection silently drops out of the list it is
+        still the VALUE of, and the dropdown points at a row it no longer offers. `saved_sis`
+        cannot cover this — the whole point of the pick is that it has not been saved.
+        """
+        _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type=""))
+        root = build_setup(page)
+
+        _button(root, SHOW_ALL_LABEL).on_click(None)
+        dropdown = _dropdown(root, "District")
+        dropdown.value = "sd74myedbc"
+        dropdown.on_select(_pick_event("sd74myedbc"))
+        _button(root, SHOWING_ALL_LABEL).on_click(None)
+
+        narrowed = _dropdown(root, "District")
+        assert narrowed.value == "sd74myedbc", "the pick survived"
+        assert "sd74myedbc" in _keys(narrowed), "...and the list still offers the row it is set to"
+        assert "sd48myedbc" in _keys(narrowed), "the matched district is still there too"
+
+    def test_the_narrow_really_did_narrow(self, page: MagicMock, monkeypatch, isolated_user_profile) -> None:
+        """Positive twin for the round trip above — the second toggle is not a no-op."""
+        _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type=""))
+        root = build_setup(page)
+
+        _button(root, SHOW_ALL_LABEL).on_click(None)
+        dropdown = _dropdown(root, "District")
+        dropdown.value = "sd74myedbc"
+        dropdown.on_select(_pick_event("sd74myedbc"))
+        _button(root, SHOWING_ALL_LABEL).on_click(None)
+
+        assert len(_keys(_dropdown(root, "District"))) == 2, "matched + picked only, not all eleven"
+
 
 # --------------------------------------------------------------------------- #
 # 2. The Settings folders card — the same list, after setup                    #
@@ -280,6 +409,24 @@ class TestSettingsFoldersCard:
 
         assert len(_keys(dropdown)) == 11, "the SAME control object gained the full option set"
         assert _dropdown(root, "District") is dropdown
+
+    def test_widen_pick_narrow_KEEPS_the_pick_in_Settings(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """The same round trip on the surface that WRITES the saved district — where a dropped
+        selection would be silently reverted by the next Save."""
+        _pin_config(monkeypatch, _cfg())
+        root = build_setup(page)
+        dropdown = _dropdown(root, "District")
+
+        _button(root, SHOW_ALL_LABEL).on_click(None)
+        dropdown.value = "sd74myedbc"
+        dropdown.on_select(_pick_event("sd74myedbc"))
+        _button(root, SHOWING_ALL_LABEL).on_click(None)
+
+        assert dropdown.value == "sd74myedbc"
+        assert "sd74myedbc" in _keys(dropdown)
+        assert len(_keys(dropdown)) == 2, "narrowed to matched + picked, not left wide"
 
 
 # --------------------------------------------------------------------------- #
@@ -421,6 +568,42 @@ class TestConvertScreen:
 
         assert len(_keys(_dropdown(tree, "District"))) == 11
 
+    def test_the_show_all_row_INVERTS_and_is_absent_when_unmatched_on_convert(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """S7: the row's three states pinned on Convert, not only through the setup helper —
+        each surface wires its own toggle, and a wiring bug is per-surface."""
+        _pin_config(monkeypatch, _cfg())
+        tree = build_convert(page)
+        assert _button(tree, SHOW_ALL_LABEL) is not None
+
+        _button(tree, SHOW_ALL_LABEL).on_click(None)
+
+        assert _button(tree, SHOWING_ALL_LABEL) is not None, "the row inverts rather than vanishing"
+        assert _button(tree, SHOW_ALL_LABEL) is None
+
+        _pin_config(monkeypatch, _cfg(identity_email=UNMATCHED))
+        unfiltered = build_convert(page)
+        assert _button(unfiltered, SHOW_ALL_LABEL) is None, "nothing is hidden, so nothing to offer"
+        assert _button(unfiltered, SHOWING_ALL_LABEL) is None
+
+    def test_widen_pick_narrow_KEEPS_the_pick_on_convert(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """The round trip on the surface where the pick decides which roster gets BUILT."""
+        _pin_config(monkeypatch, _cfg())
+        tree = build_convert(page)
+        dropdown = _dropdown(tree, "District")
+
+        _button(tree, SHOW_ALL_LABEL).on_click(None)
+        dropdown.value = "sd74myedbc"
+        dropdown.on_select(_pick_event("sd74myedbc"))
+        _button(tree, SHOWING_ALL_LABEL).on_click(None)
+
+        assert dropdown.value == "sd74myedbc"
+        assert "sd74myedbc" in _keys(dropdown), "the run's district must stay offerable"
+        assert len(_keys(dropdown)) == 2
+
 
 # --------------------------------------------------------------------------- #
 # 4. Mapping — one catalog build, and the current mapping never missing        #
@@ -440,7 +623,16 @@ class TestMappingScreen:
     def test_the_mount_builds_the_catalog_ONCE(self, page: MagicMock, monkeypatch, isolated_user_profile) -> None:
         """The pre-S5 surface parsed all eleven YAMLs TWICE per mount (the summaries dict and
         the dropdown options each called `list_configs()`). One memoised build now serves both,
-        and this counts the parses to prove it rather than trusting the refactor."""
+        and this counts the parses to prove it rather than trusting the refactor.
+
+        **What the counter actually sees, stated so it is not over-read:** it patches
+        `mapping_catalog.load_config`, so it observes the CATALOG's parses only.
+        `friendly_district_name` imports the loader inside its own body and is invisible to
+        this seam, so this is not a whole-mount I/O census. It IS a faithful guard on the
+        defect it exists for — both the retired double `list_configs()` and the eager
+        `setdefault(..., summarize_config(...))` went through exactly this seam, and either
+        one re-appearing surfaces as a duplicate id below.
+        """
         from src.config import loader as loader_mod
         from src.ui_flet import mapping_catalog
 
@@ -451,7 +643,82 @@ class TestMappingScreen:
 
         build_mapping(page, app_config=_cfg())
 
+        # The positive twin: without it a counter that saw NOTHING (a renamed seam, a patch
+        # that missed) passes the uniqueness check trivially — `[] == set([])`.
+        assert len(parsed) == 11, f"the parse counter saw nothing like a full catalog: {parsed}"
         assert len(parsed) == len(set(parsed)), f"a config was parsed more than once: {parsed}"
+
+    def test_the_show_all_row_INVERTS_and_is_absent_when_unmatched_on_mapping(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """S7: the row's three states pinned on Mapping too — each surface wires its own
+        toggle, so a wiring bug is per-surface even with the shared factory."""
+        tree = build_mapping(page, app_config=_cfg())
+        assert _button(tree, SHOW_ALL_LABEL) is not None
+
+        _button(tree, SHOW_ALL_LABEL).on_click(None)
+
+        assert _button(tree, SHOWING_ALL_LABEL) is not None, "the row inverts rather than vanishing"
+        assert _button(tree, SHOW_ALL_LABEL) is None
+
+        unfiltered = build_mapping(page, app_config=_cfg(identity_email=UNMATCHED))
+        assert _button(unfiltered, SHOW_ALL_LABEL) is None
+        assert _button(unfiltered, SHOWING_ALL_LABEL) is None
+
+    def test_widen_pick_narrow_KEEPS_the_pending_switch(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """A pending switch is the most expensive selection to lose here — it is the whole
+        reason the admin opened this surface, and one Apply from changing the nightly sync."""
+        tree = build_mapping(page, app_config=_cfg())
+        dropdown = _dropdown(tree, "Roster mapping")
+
+        _button(tree, SHOW_ALL_LABEL).on_click(None)
+        dropdown.value = "mbp_core"
+        dropdown.on_select(_pick_event("mbp_core"))
+        _button(tree, SHOWING_ALL_LABEL).on_click(None)
+
+        assert "mbp_core" in _keys(dropdown), "the pending switch must stay offerable"
+        assert len(_keys(dropdown)) == 2, "narrowed to matched + pending, not left wide"
+
+    def test_an_APPLIED_district_survives_a_later_pick_and_narrow(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """The frozen-mount-instance bug, pinned end to end.
+
+        `_on_apply` writes through a FRESH `AppConfig.load()`, so the instance captured at
+        build time is stale the moment a switch lands. Building the filter's saved-district
+        escape from that stale instance made the just-applied district vanish from the very
+        dropdown that applied it — leaving no way to revert without a restart.
+
+        **The sequence is load-bearing and was found by falsifying a weaker version of this
+        test.** Immediately after an Apply the pending pick EQUALS the applied district, so
+        `picked_sis` keeps it visible and masks the stale `saved_sis` completely — a
+        widen/apply/toggle test passes with the bug restored. Moving the pick onto a THIRD
+        district first is what leaves the applied one held up by `saved_sis` alone.
+        """
+        from src.config.app_config import AppConfig as _AC
+
+        cfg = _cfg()
+        monkeypatch.setattr(_AC, "load", classmethod(lambda _cls: _cfg()))
+        monkeypatch.setattr(_AC, "save", lambda _self: None)
+        tree = build_mapping(page, app_config=cfg)
+        dropdown = _dropdown(tree, "Roster mapping")
+
+        _button(tree, SHOW_ALL_LABEL).on_click(None)
+        dropdown.value = "mbp_core"
+        dropdown.on_select(_pick_event("mbp_core"))
+        _button(tree, "Use this mapping").on_click(None)  # mbp_core is now the SAVED district
+
+        # Move the pending pick OFF the applied district, then narrow.
+        dropdown.value = "sd74myedbc"
+        dropdown.on_select(_pick_event("sd74myedbc"))
+        _button(tree, SHOWING_ALL_LABEL).on_click(None)
+
+        keys = _keys(_dropdown(tree, "Roster mapping"))
+        assert "mbp_core" in keys, "the district we just applied vanished from its own picker"
+        assert "sd74myedbc" in keys, "...and so did the pending pick"
+        assert "sd48myedbc" in keys, "...alongside the matched district"
 
     def test_show_all_reveals_the_full_list_on_mapping(
         self, page: MagicMock, monkeypatch, isolated_user_profile
@@ -461,6 +728,33 @@ class TestMappingScreen:
         _button(tree, SHOW_ALL_LABEL).on_click(None)
 
         assert len(_keys(_dropdown(tree, "Roster mapping"))) == 11
+
+    def test_NO_saved_district_reads_as_unanswered_not_as_a_FAULT(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """Reachable from Convert's "Change mapping", which fires exactly when nothing is saved.
+
+        A blank `sis_type` used to fall through `summarize_config("")` into the DEGRADED
+        summary and paint "We couldn't read this configuration — it may need attention." over
+        an empty name: a failure report about a district nobody ever chose, on the surface
+        whose job is to let them choose one.
+        """
+        from src.ui_flet.screens import mapping as mapping_screen
+
+        tree = build_mapping(page, app_config=_cfg(sis_type=""))
+        texts = [c.value for c in _walk(tree) if isinstance(getattr(c, "value", None), str)]
+
+        assert mapping_screen.NO_DISTRICT_TITLE in texts
+        assert not any("couldn't read this configuration" in t for t in texts)
+
+    def test_the_failure_card_STILL_fires_for_a_real_fault(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """Positive twin — the empty state must not have swallowed the genuine degraded case."""
+        tree = build_mapping(page, app_config=_cfg(sis_type="sd99nonesuch"))
+        texts = [c.value for c in _walk(tree) if isinstance(getattr(c, "value", None), str)]
+
+        assert any("couldn't read this configuration" in t for t in texts)
 
     def test_a_widened_pick_still_summarises(self, page: MagicMock, monkeypatch, isolated_user_profile) -> None:
         """After a widen, picking a newly-visible config must produce its real output summary

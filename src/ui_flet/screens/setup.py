@@ -78,7 +78,6 @@ from src.ui_flet.mapping_catalog import (
     disambiguated_labels,
     district_domain_index,
     filtered_catalog,
-    show_all_label,
 )
 from src.ui_flet.picker_field import PickerField
 from src.ui_flet.schedule_status import (
@@ -265,15 +264,36 @@ def _finish_summary_card(rows: list[FinishSummaryRow]) -> ft.Control:  # pragma:
     )
 
 
-def _district_catalog(cfg: AppConfig, *, show_all: bool) -> FilteredCatalog:
+# The District step's instruction line, in its two shapes (0038 S5). The default INSTRUCTS a
+# pick; when the step opens with a value already chosen for the admin, instructing them to
+# "pick" a choice that has been made reads as though nothing happened — and quietly hides the
+# fact that we made it. The acknowledging form names the district, says WHERE the guess came
+# from (a public email domain, not a lookup of them), and puts the correction in the same
+# breath. That is what keeps it a correctable pre-selection rather than a silent default.
+DISTRICT_PICK_PROMPT = (
+    "Pick the district whose MyEd BC layout matches your extract. You can switch it later from the Mapping tab."
+)
+
+
+def district_auto_seeded_note(district: str) -> str:
+    return f"We've picked {district} from your email's domain — change it if that's wrong."
+
+
+def _district_catalog(cfg: AppConfig, *, show_all: bool, picked_sis: str = "") -> FilteredCatalog:
     """The district rows THIS admin should see — the one choke point, per mount (0038 S5).
 
     Scoped by the stored identity's DOMAIN when one is on file and it matches a district;
-    otherwise the full list. The saved ``sis_type`` rides every result unconditionally, so
-    the district this install actually converts can never vanish from the picker that edits
-    it. TOTAL — any failure inside the catalog degrades to the full, unfiltered list.
+    otherwise the full list. The saved ``sis_type`` AND the working ``picked_sis`` both ride
+    every result unconditionally, so neither the district this install converts nor the one
+    the admin has just chosen can vanish from the picker that edits it. TOTAL — any failure
+    inside the catalog degrades to the full, unfiltered list.
     """
-    return filtered_catalog(stored_identity_domain(cfg), saved_sis=cfg.sis_type, show_all=show_all)
+    return filtered_catalog(
+        stored_identity_domain(cfg),
+        saved_sis=cfg.sis_type,
+        show_all=show_all,
+        picked_sis=picked_sis,
+    )
 
 
 def _district_options(catalog: FilteredCatalog) -> list[ft.dropdown.Option]:
@@ -294,16 +314,13 @@ def _show_all_row(  # pragma: no cover - Flet view glue
     show_all: bool,
     on_toggle: Callable[[], None],
 ) -> list[ft.Control]:
-    """The text-tier "Show all districts" row — rendered ONLY when a shorter list EXISTS.
+    """This screen's two call sites' shim over the shared ``components.list_scope_row``.
 
-    Keyed on ``can_filter``, not on ``filtered``: the row must survive being switched ON, or
-    the admin is stranded in the long list for the session with no way back to their own.
-    Text tier by design — it is a courtesy about list length, never an unlock, and it must
-    not compete with the step's one filled primary.
+    The rule (render whenever a shorter list EXISTS, never when the list is merely narrowed
+    right now) lives ONCE, in the factory — see its docstring for why that distinction is
+    load-bearing.
     """
-    if not catalog.can_filter:
-        return []
-    return [components.text_button(show_all_label(show_all=show_all), lambda _e: on_toggle())]
+    return components.list_scope_row(can_filter=catalog.can_filter, show_all=show_all, on_toggle=on_toggle)
 
 
 def _district_window_defaults(cfg: AppConfig) -> tuple[str, str]:  # pragma: no cover - Flet view glue (I/O)
@@ -420,7 +437,10 @@ def _mount_wizard(
         # PERSISTED value only — the auto-selection is applied AFTER the resume derivation
         # below, deliberately. See the comment there.
         "sis": cfg.sis_type,
-        "show_all": False,  # per-session list scope (flag 5) — never persisted
+        # Per-SURFACE list scope (flag 5) — re-scoped on every mount, never persisted.
+        # Whether it should be session-wide instead is an owner call (see ROADMAP).
+        "show_all": False,
+        "auto_seeded": False,  # set below iff D9's seed actually fired (drives the step's caption)
         "schedule_skipped": False,
         "schedule_status": None,  # latest ScheduleStatus from the section's read-back
         "window_valid": True,  # the seasonal-window gate (B): enabled+invalid closes Continue
@@ -452,6 +472,8 @@ def _mount_wizard(
     # pre-selection ON that step, which is what D9 always meant.
     if not str(ws["sis"]).strip():
         ws["sis"] = auto_selected_district(visible_ids)  # D9: auto-select iff exactly one VISIBLE
+        # Drives the acknowledging caption on the step: a choice made FOR the admin says so.
+        ws["auto_seeded"] = bool(ws["sis"])
 
     def _step_addressed(step: SetupStep) -> bool:
         """Whether a skippable step is done (LIVE / tested-ok / stored) OR explicitly deferred."""
@@ -563,26 +585,41 @@ def _mount_wizard(
         return ft.Column(spacing=22, controls=[input_field, output_field])
 
     def _district_body() -> ft.Control:
+        def _instruction_text() -> str:
+            picked_now = str(ws["sis"])
+            if ws["auto_seeded"] and picked_now:
+                return district_auto_seeded_note(friendly_district_name(picked_now) or picked_now)
+            return DISTRICT_PICK_PROMPT
+
         def _on_pick(e: ft.ControlEvent) -> None:
             ws["sis"] = e.control.value or ""
+            # An explicit pick supersedes the auto-seed, so the acknowledging caption retires —
+            # it would otherwise credit us with a choice the admin has since made. Updated IN
+            # PLACE rather than by re-rendering the step: a rebuild would replace the dropdown
+            # mid-interaction and take the focus with it.
+            ws["auto_seeded"] = False
+            instruction_line.value = _instruction_text()
             _refresh_footer()
 
         def _toggle_show_all() -> None:
-            # Session-local list scope: re-render the step so the dropdown rebuilds against
-            # the other list. The PICK is untouched — widening the list never un-picks.
+            # Per-SURFACE list scope: re-render the step so the dropdown rebuilds against the
+            # other list. The PICK is untouched — widening never un-picks, and narrowing keeps
+            # the pick visible because it rides `picked_sis` through the filter.
             ws["show_all"] = not bool(ws["show_all"])
             _render()
 
-        catalog = _district_catalog(cfg, show_all=bool(ws["show_all"]))
+        picked = str(ws["sis"])
+        catalog = _district_catalog(cfg, show_all=bool(ws["show_all"]), picked_sis=picked)
         dropdown = ft.Dropdown(
             label="District",
             hint_text="Choose your district",  # D9: no pre-selection; placeholder prompts an explicit pick
-            value=str(ws["sis"]) or None,
+            value=picked or None,
             options=_district_options(catalog),
             on_select=_on_pick,  # Dropdown's value-change is on_select on 0.85.3 (not on_change)
             border_color=tokens.color_border,
             autofocus=True,  # focus the new step's first field (D8 keyboard flow)
         )
+        instruction_line = ft.Text(_instruction_text(), size=14, color=tokens.color_muted)
         return ft.Column(
             spacing=12,
             controls=[
@@ -595,12 +632,7 @@ def _mount_wizard(
                     size=14,
                     color=tokens.color_muted,
                 ),
-                ft.Text(
-                    "Pick the district whose MyEd BC layout matches your extract. "
-                    "You can switch it later from the Mapping tab.",
-                    size=14,
-                    color=tokens.color_muted,
-                ),
+                instruction_line,
                 dropdown,
                 *_show_all_row(catalog, show_all=bool(ws["show_all"]), on_toggle=_toggle_show_all),
             ],
@@ -1008,9 +1040,13 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
     on valid folders.
     """
     state = {"input": cfg.input_dir, "output": cfg.output_dir, "sis": cfg.sis_type}
-    # Per-session list scope (flag 5) — deliberately NOT an AppConfig field: a
-    # flip-once-forever setting would permanently re-arm the wrong-district risk the
-    # scoping exists to reduce. It also resets on every mount, which is the point.
+    # Per-SURFACE list scope (flag 5), re-scoped on every mount and deliberately NOT an
+    # AppConfig field. The reason is about the DEFAULT, not about tidiness: a widened list
+    # re-asserts itself as narrow on the highest-consequence control in the product (picking
+    # the wrong district ships a wrong roster), so the safe state is the one that comes back
+    # by default. Nothing is lost by that — the widened state is never invisible, because the
+    # row inverts to name it and one click restores it. Whether the toggle should instead
+    # follow the admin across surfaces for a session is an owner call (see ROADMAP).
     scope = {"show_all": False}
 
     save_btn = components.primary_button(
@@ -1083,7 +1119,7 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
         label="District",
         hint_text="Choose your district",
         value=cfg.sis_type or None,
-        options=_district_options(_district_catalog(cfg, show_all=False)),
+        options=_district_options(_district_catalog(cfg, show_all=False, picked_sis=cfg.sis_type)),
         on_select=_on_district_change,
         border_color=tokens.color_border,
     )
@@ -1097,7 +1133,10 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
         page.update()
 
     def _refresh_scope() -> None:
-        catalog = _district_catalog(cfg, show_all=scope["show_all"])
+        # `picked_sis` is the LIVE un-saved selection: narrowing the list back must not drop
+        # the district the dropdown is currently set to, or the control points at a row it no
+        # longer offers.
+        catalog = _district_catalog(cfg, show_all=scope["show_all"], picked_sis=str(state["sis"]))
         district_dropdown.options = _district_options(catalog)
         scope_slot.controls = _show_all_row(catalog, show_all=scope["show_all"], on_toggle=_toggle_show_all)
 

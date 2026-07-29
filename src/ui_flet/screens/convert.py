@@ -159,7 +159,7 @@ from src.ui_flet.home_status import ENTITY_LABELS
 from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.identity_gate import stored_identity_domain
 from src.ui_flet.job_runner import JobRunner
-from src.ui_flet.mapping_catalog import disambiguated_labels, filtered_catalog, show_all_label
+from src.ui_flet.mapping_catalog import disambiguated_labels, filtered_catalog
 from src.ui_flet.picker_field import PickerField
 from src.ui_flet.verdict import Verdict
 
@@ -544,14 +544,24 @@ def build_convert(
     stands alone), just without the routing button.
     """
     cfg = AppConfig.load()
-    # 0038 S5: the district rows scoped to this admin. Per-session (flag 5), never persisted.
+    # 0038 S5: the district rows scoped to this admin. Per-SURFACE (flag 5) — re-scoped on
+    # every mount, never persisted; whether it should follow the admin across surfaces for a
+    # session is an owner call tracked in the ROADMAP.
     scope = {"show_all": False}
+    # The per-run pick, declared HERE (before the first catalog build) so the filter can carry
+    # it. It starts empty — the prefill below is derived FROM the catalog, so it cannot also be
+    # an input to it — and that first build loses nothing: `saved_sis` already carries the
+    # saved district, which is the only value the prefill can ever take.
+    selected: dict[str, str | None] = {"district": None}
 
     def _catalog():  # noqa: ANN202 - a FilteredCatalog; annotating adds an import for one line
+        # `picked_sis` is the LIVE per-run selection: narrowing back after a widen must not
+        # drop the district this run is set to convert.
         return filtered_catalog(
             stored_identity_domain(cfg),
             saved_sis=cfg.sis_type,
             show_all=scope["show_all"],
+            picked_sis=selected["district"] or "",
         )
 
     catalog = _catalog()
@@ -564,6 +574,7 @@ def build_convert(
     # the test, exactly as it did against `available_configs()`.
     visible_ids = [s.sis_type for s in catalog.summaries]
     default_district: str | None = cfg.sis_type if cfg.sis_type in visible_ids else None
+    selected["district"] = default_district
 
     # D10: capture the resolved output folder ONCE at build (screens rebuild fresh per
     # navigation, so a Settings change is picked up on the next visit). The gate + caption
@@ -576,7 +587,6 @@ def build_convert(
     setup_done = cfg.has_completed_setup()
 
     runner = JobRunner()
-    selected: dict[str, str | None] = {"district": default_district}
     # The run the on-screen anomaly card is asking about, or None when no card is up (FIX-2).
     # Held here (not in the card closure) because BOTH the interaction table and the ack
     # handler need it: the inputs freeze while it is set, and the re-run is launched from it.
@@ -622,7 +632,7 @@ def build_convert(
     # options IN PLACE — rebuilding the form would drop a typed input folder or a result card.
     scope_slot = ft.Column(spacing=0, controls=[])
 
-    def _toggle_show_all(_e: ft.ControlEvent) -> None:
+    def _toggle_show_all() -> None:
         scope["show_all"] = not scope["show_all"]
         _refresh_scope()
         page.update()
@@ -630,12 +640,8 @@ def build_convert(
     def _refresh_scope() -> None:
         cat = _catalog()
         district_dropdown.options = _district_options(cat)
-        # Keyed on `can_filter`, never on `filtered`: the row must survive being switched on,
-        # or there is no way back to the short list for the rest of the session.
-        scope_slot.controls = (
-            [components.text_button(show_all_label(show_all=scope["show_all"]), _toggle_show_all)]
-            if cat.can_filter
-            else []
+        scope_slot.controls = components.list_scope_row(
+            can_filter=cat.can_filter, show_all=scope["show_all"], on_toggle=_toggle_show_all
         )
 
     # The amber saved-vs-picked heads-up (0035 W3b): visible ONLY when the per-run pick

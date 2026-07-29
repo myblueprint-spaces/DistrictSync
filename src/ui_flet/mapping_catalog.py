@@ -284,21 +284,24 @@ def show_all_label(*, show_all: bool) -> str:
 
 @dataclass(frozen=True)
 class FilteredCatalog:
-    """What one picker should render, plus the two facts its show-all row needs.
+    """What one picker should render, plus the one fact its show-all row needs.
 
-    ``summaries`` is the rows to render, in catalog order. ``filtered`` says THIS list is
-    narrower than the full catalog. ``can_filter`` says a narrower list EXISTS for this
-    admin — which is what the show-all row's visibility keys on, deliberately:
+    ``summaries`` is the rows to render, in catalog order. ``can_filter`` says a narrower
+    list EXISTS for this admin — which is what the show-all row's visibility keys on,
+    deliberately:
 
-    keying the row on ``filtered`` would remove the toggle the instant it was switched on
-    (show-all returns the full list, so ``filtered`` is False), stranding the admin in the
-    long list for the rest of the session with no way back to their own short one.
+    keying the row on "this list is currently narrowed" would remove the toggle the instant
+    it was switched on (show-all returns the full list), stranding the admin in the long list
+    with no way back to their own short one.
 
-    ``filtered`` implies ``can_filter``; the converse holds only while show-all is off.
+    There is deliberately no ``filtered`` companion field. It had no production reader — every
+    surface keys its row on ``can_filter`` and its label on the toggle it already owns — and a
+    second boolean makes the nonsensical ``(filtered=True, can_filter=False)`` representable.
+    A caller that genuinely needs "is this list narrowed right now?" derives it from the
+    ``show_all`` it passed in: ``can_filter and not show_all``.
     """
 
     summaries: tuple[ConfigSummary, ...]
-    filtered: bool
     can_filter: bool
 
 
@@ -312,6 +315,7 @@ def filtered_catalog(
     *,
     saved_sis: str,
     show_all: bool,
+    picked_sis: str = "",
     config_dir: Path | None = None,
 ) -> FilteredCatalog:
     """Which district rows to show this admin. TOTAL — never raises, never fails closed.
@@ -323,8 +327,8 @@ def filtered_catalog(
          address we cannot place lands: a personal or board-wide address, a consultant, a
          typo, a district whose domain row has not shipped yet.
     (ii) **matched** — at least one config's *resolved, non-empty* ``district_domains``
-         contains ``domain`` — → exactly the matching configs, PLUS ``saved_sis``
-         unconditionally.
+         contains ``domain`` — → exactly the matching configs, PLUS ``saved_sis`` and
+         ``picked_sis``, unconditionally.
 
     **Matching is EXACT, case-normalised domain equality** (``identity_gate.resolve_domain``)
     — never subdomain, suffix or wildcard. ``mail.sd48.bc.ca`` does not match ``sd48.bc.ca``
@@ -332,7 +336,7 @@ def filtered_catalog(
     scopes an admin INTO a district that is not theirs; under-matching drops them into tier
     (i) with the full list, which is always safe.
 
-    **A row is hidden only when some OTHER list claims it.** Three consequences, each the
+    **A row is hidden only when some OTHER list claims it.** Four consequences, each the
     answer to a way this could hurt someone:
 
     * a config with no domains (``()``) or unreadable ones (``None``) can never match, so a
@@ -340,36 +344,51 @@ def filtered_catalog(
     * an admin whose own district's row is missing or broken matches nothing BY
       CONSTRUCTION and therefore sees everything — *a district disappearing on its own
       admin* is the failure this rule makes unrepresentable;
-    * the saved district is present in every rendered list. ``saved_sis`` is a required
+    * **the SAVED district is present in every rendered list.** ``saved_sis`` is a required
       keyword-only parameter for exactly that reason (CLAUDE.md: no permissive default on a
       safety-relevant parameter) — the escape is a property of the choke point, not a thing
-      each of the four call sites has to remember. It SELECTS a catalog row; it never
-      fabricates one, so a hand-edited ``config.json`` naming a district we do not ship
-      cannot put a phantom option into a structural allowlist.
+      each of the four call sites has to remember;
+    * **the WORKING pick is too.** ``picked_sis`` is the district the admin has selected on
+      this surface but not yet committed. Without it, "Show all districts" → pick a district
+      outside your scope → toggle back silently DROPS the selection from the list it is still
+      the value of, leaving a dropdown pointing at a row it no longer offers. It unions in
+      exactly like ``saved_sis``.
 
-    ``show_all`` is per-SESSION state owned by the calling surface (flag 5 — never an
-    ``AppConfig`` field: a flip-once-forever setting would permanently re-arm the
-    wrong-district risk this feature exists to reduce).
+    Both escapes SELECT a catalog row and never fabricate one, so a hand-edited
+    ``config.json`` (or a stale widget value) naming a district we do not ship cannot put a
+    phantom option into what is structurally an allowlist.
+
+    ``picked_sis`` defaults to ``""``, and that default is SAFE where ``saved_sis``'s would
+    not be: this parameter can only ever WIDEN the result. Omitting it can cost a caller the
+    retention of a transient selection it may not even have; omitting ``saved_sis`` would
+    hide a district the install is actively converting. Different blast radii, different
+    rules — so a read-only surface may leave it out, and every surface that lets an admin
+    PICK passes it.
+
+    ``show_all`` is per-SURFACE state owned by the calling screen, re-scoped on every mount
+    (flag 5 — never an ``AppConfig`` field: a flip-once-forever setting would permanently
+    re-arm the wrong-district risk this feature exists to reduce). Whether it should be
+    session-wide instead is an owner call tracked in the ROADMAP.
 
     ``domain`` is a bare domain, normally ``identity_gate.stored_identity_domain(cfg)``. The
     plaintext address never reaches this module, and nothing here logs the domain.
     """
     summaries = catalog(config_dir=config_dir)
     if not summaries:
-        # Nothing to show is not a filter: `filtered=False` keeps a show-all row that would
+        # Nothing to show is not a filter: `can_filter=False` keeps a show-all row that would
         # claim "we're only showing yours" off a list that hides nothing.
-        return FilteredCatalog(summaries=(), filtered=False, can_filter=False)
+        return FilteredCatalog(summaries=(), can_filter=False)
 
     try:
-        visible = _matched_subset(summaries, domain, saved_sis=saved_sis)
+        visible = _matched_subset(summaries, domain, saved_sis=saved_sis, picked_sis=picked_sis)
     except Exception:  # noqa: BLE001 - the fail-OPEN floor: a raise costs a short list, never a district
         logger.warning("Could not scope the district list; showing every district.", exc_info=True)
-        return FilteredCatalog(summaries=summaries, filtered=False, can_filter=False)
+        return FilteredCatalog(summaries=summaries, can_filter=False)
 
     can_filter = len(visible) < len(summaries)
     if show_all or not can_filter:
-        return FilteredCatalog(summaries=summaries, filtered=False, can_filter=can_filter)
-    return FilteredCatalog(summaries=visible, filtered=True, can_filter=True)
+        return FilteredCatalog(summaries=summaries, can_filter=can_filter)
+    return FilteredCatalog(summaries=visible, can_filter=True)
 
 
 def _matched_subset(
@@ -377,20 +396,22 @@ def _matched_subset(
     domain: str,
     *,
     saved_sis: str,
+    picked_sis: str,
 ) -> tuple[ConfigSummary, ...]:
-    """Tier (ii)'s row set: the matching configs plus the saved one, in CATALOG order.
+    """Tier (ii)'s row set: the matching configs plus the saved and picked ones, in CATALOG order.
 
     Order is preserved rather than re-derived, so a matched admin who presses "Show all
     districts" finds their own district in the same relative position it already occupied.
-    Only configs whose domains RESOLVED (``district_domains`` is not ``None``) are offered to
-    the matcher — an unreadable one must not be able to claim anybody.
+    Only configs whose domains RESOLVED (a non-empty ``district_domains``) are offered to the
+    matcher — an unreadable one (``None``) and a declared-empty one (``()``) both claim
+    nobody, and the ``if s.district_domains`` guard covers both because each is falsy.
     """
     claimed = {s.sis_type: s.district_domains for s in summaries if s.district_domains}
     matched = set(resolve_domain(domain, claimed))
     if not matched:
         return tuple(summaries)  # tier (i) — no match, everything shows
-    saved = _normalise_sis(saved_sis)
-    return tuple(s for s in summaries if s.sis_type in matched or _normalise_sis(s.sis_type) == saved)
+    keep = {_normalise_sis(saved_sis), _normalise_sis(picked_sis)} - {""}
+    return tuple(s for s in summaries if s.sis_type in matched or _normalise_sis(s.sis_type) in keep)
 
 
 def disambiguated_labels(summaries: Sequence[ConfigSummary]) -> dict[str, str]:

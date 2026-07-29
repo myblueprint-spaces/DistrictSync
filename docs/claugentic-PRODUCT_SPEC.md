@@ -304,6 +304,25 @@ The checkable projection of the Features above. All checks are `manual` — Dist
     "check": "manual"
   },
   {
+    "id": "AC-convert-run-district",
+    "feature": "Convert",
+    "flow": [
+      "On a set-up install, open Convert and note the district chip in the header",
+      "Change the district dropdown to a different district (press 'Show all districts' first if the list is scoped)",
+      "Press 'Change mapping'",
+      "Return to Convert and set the dropdown back to the saved district"
+    ],
+    "expect": [
+      "an amber 'This run: <the district just picked>' pill appears beside the header chip, naming the PICKED district and never the saved one",
+      "the header chip continues to show the SAVED district — the two are different facts and both are visible",
+      "'Change mapping' opens the Mapping surface and changes no setting by itself",
+      "Convert stays runnable the whole time — the pill is a label, never a gate",
+      "setting the district back to the saved one makes the pill disappear"
+    ],
+    "states": [],
+    "check": "manual"
+  },
+  {
     "id": "AC-setup-1",
     "feature": "First-run setup wizard",
     "flow": [

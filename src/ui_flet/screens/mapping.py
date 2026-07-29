@@ -73,7 +73,6 @@ from src.ui_flet.mapping_catalog import (
     disambiguated_labels,
     filtered_catalog,
     post_apply_presentation,
-    show_all_label,
     summarize_config,
 )
 from src.ui_flet.schedule_status import ScheduleState
@@ -118,6 +117,29 @@ def _summary_lines(summary: ConfigSummary) -> list[ft.Control]:
     ]
 
 
+# The "nothing chosen yet" state of the current-mapping card (0038 S5). Without it, a blank
+# `sis_type` fell through `summarize_config("")` into the DEGRADED summary and painted "We
+# couldn't read this configuration — it may need attention." over an empty name: a failure
+# report about a district that was never chosen. Reachable from Convert's "Change mapping"
+# route, which fires precisely when no district is saved.
+NO_DISTRICT_TITLE = "No district saved yet"
+NO_DISTRICT_DETAIL = "Pick one below to set the mapping DistrictSync uses for your nightly sync."
+
+
+def _no_district_card() -> ft.Control:
+    """The honest empty state — an unanswered question, not a fault."""
+    return components.card(
+        content=ft.Column(
+            spacing=10,
+            controls=[
+                ft.Text("Current mapping", size=14, weight=ft.FontWeight.W_700, color=tokens.color_muted),
+                ft.Text(NO_DISTRICT_TITLE, size=20, weight=ft.FontWeight.W_800, color=tokens.color_text),
+                ft.Text(NO_DISTRICT_DETAIL, size=14, color=tokens.color_muted),
+            ],
+        ),
+    )
+
+
 def _summary_card(title: str, summary: ConfigSummary) -> ft.Control:
     """A titled card for one config's summary: friendly name (primary) + what it produces + the raw id hint."""
     return components.card(
@@ -144,35 +166,46 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
     gate compares against ``persisted``, never the captured mount instance, via the pure
     ``mapping_catalog.can_apply``).
     """
+    # The persisted current sis_type — mutated on each successful Apply so the gate, the
+    # current-mapping card AND the scoped option list always track what's actually saved
+    # (never the frozen mount value). It is declared BEFORE the catalog deliberately: reading
+    # `app_config.sis_type` there would freeze the filter's saved-district escape at the mount
+    # value, so after Apply + a show-all toggle the just-applied district would vanish from
+    # the very dropdown that applied it (`_on_apply` writes through a FRESH `AppConfig.load()`,
+    # so the mount instance is stale the moment a switch lands).
+    persisted = {"sis": app_config.sis_type}
+    # Mutable pending selection — starts on the current config (so Apply is a no-op → disabled).
+    pending = {"sis": app_config.sis_type}
+
     # ONE catalog build per mount (0038 S5): the district rows this admin sees, scoped by the
     # stored identity's domain. Replaces the pre-S5 DOUBLE `list_configs()` parse (the
     # summaries dict and the dropdown options each read the disk independently); the build is
     # session-memoised, so the switch selector no longer costs a second pass over 11 YAMLs.
-    scope = {"show_all": False}  # per-session (flag 5), never persisted
+    # Per-SURFACE scope (flag 5) — re-scoped on every mount, never persisted (owner call in
+    # the ROADMAP).
+    scope = {"show_all": False}
 
     def _catalog():  # noqa: ANN202 - a FilteredCatalog; annotating adds an import for one line
         return filtered_catalog(
             stored_identity_domain(app_config),
-            saved_sis=app_config.sis_type,
+            saved_sis=persisted["sis"],
             show_all=scope["show_all"],
+            # The un-applied selection rides too: narrowing back after a widen must not drop
+            # the row the dropdown is set to.
+            picked_sis=pending["sis"],
         )
 
     catalog = _catalog()
     summaries = {s.sis_type: s for s in catalog.summaries}
-    # The persisted current sis_type — mutated on each successful Apply so the gate + the
-    # current-mapping card always track what's actually saved (never the frozen mount value).
-    persisted = {"sis": app_config.sis_type}
     # Ensure the current config is summarizable even if not in the discovered list (defensive).
     # `filtered_catalog` already carries the saved district when it EXISTS; this covers the
     # case where it does not exist at all (a hand-edited `config.json`), which the filter
     # deliberately refuses to fabricate. Guarded by an `if` rather than `setdefault`, whose
     # eagerly-evaluated argument re-parsed the current district's YAML on EVERY mount even
     # though the catalog had just summarised it.
-    if persisted["sis"] not in summaries:
+    if persisted["sis"].strip() and persisted["sis"] not in summaries:
         summaries[persisted["sis"]] = summarize_config(persisted["sis"])
 
-    # Mutable pending selection — starts on the current config (so Apply is a no-op → disabled).
-    pending = {"sis": app_config.sis_type}
     # Apply/pick generation — an in-flight post-Apply schedule probe only paints if the banner
     # it refines is still the current one (a fresh pick/Apply invalidates the stale refine).
     apply_seq = {"n": 0}
@@ -194,9 +227,17 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
     def _refresh() -> None:
         # Re-render the current-mapping card + the pending summary + re-derive the gate, all
         # against the freshly-PERSISTED current — so an Apply is reflected in place and revertible.
-        current_card_slot.controls = [_summary_card("Current mapping", _summary_for(persisted["sis"]))]
+        # A BLANK current district is a question we have not asked, not a config that failed to
+        # load — it gets the honest empty state rather than the degraded failure card.
+        current_card_slot.controls = [
+            _no_district_card()
+            if not persisted["sis"].strip()
+            else _summary_card("Current mapping", _summary_for(persisted["sis"]))
+        ]
         pending_summary = _summary_for(pending["sis"])
-        pending_summary_slot.controls = [_summary_card("Switch to", pending_summary)]
+        pending_summary_slot.controls = (
+            [] if not pending["sis"].strip() else [_summary_card("Switch to", pending_summary)]
+        )
         apply_btn.disabled = not can_apply(pending_summary, persisted["sis"])
         page.update()
 
@@ -309,7 +350,7 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
     )
     scope_slot = ft.Column(spacing=0, controls=[])
 
-    def _toggle_show_all(_e: ft.ControlEvent) -> None:
+    def _toggle_show_all() -> None:
         # Swap the options IN PLACE — re-rendering the card would discard the pending pick
         # and any post-Apply banner the admin is still reading.
         scope["show_all"] = not scope["show_all"]
@@ -322,10 +363,8 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
         # widen resolves from the build rather than costing a fresh parse.
         summaries.update({s.sis_type: s for s in cat.summaries})
         switch_dropdown.options = _options(cat)
-        scope_slot.controls = (
-            [components.text_button(show_all_label(show_all=scope["show_all"]), _toggle_show_all)]
-            if cat.can_filter  # a shorter list EXISTS — keyed on can_filter so the row survives being ON
-            else []
+        scope_slot.controls = components.list_scope_row(
+            can_filter=cat.can_filter, show_all=scope["show_all"], on_toggle=_toggle_show_all
         )
 
     _refresh_scope()
