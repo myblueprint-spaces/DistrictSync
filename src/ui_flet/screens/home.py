@@ -30,6 +30,13 @@ shows a calm surface, never a stack trace. Defense-in-depth — the parser + der
 already TOTAL (their tests prove it); this is the reliability net DS-1 shipped ``ErrorCard``
 for.
 
+**The identity cards (0038 S4b)** ride the configured branch, immediately under the verdict
+block: the one-time upgrade ask, the G3 mismatch question, and the durable "we're building
+the mapping for SD##" card. They are ADVISORY — none of them writes anything but an
+``identity_*`` field (through the ``identity_save`` choke point, which structurally cannot
+touch ``sis_type``), none of them blocks, and they carry their OWN floor so a bug in them
+can never replace the verdict with Home's ``ErrorCard``.
+
 **Sync read on mount** (no loading state): the run store is a small local SQLite DB read to
 a ``list[dict]`` (microseconds), so it is read inline in the factory — the worker-thread
 convention is scoped to ``run_pipeline`` (see ``docs/FLET_1.0_CONVENTIONS.md``), and an
@@ -41,19 +48,38 @@ async path here would add the doc's #1 concurrency trap for no user-perceptible 
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable
+import logging
+from collections.abc import Callable, Sequence
+from enum import Enum
 
 import flet as ft
 
 from src.config.app_config import AppConfig
+from src.config.loader import available_configs
 from src.history.store import read_run_records, store_meta
 from src.scheduler import get_scheduler
-from src.ui_flet import components, nav, tokens
+from src.ui_flet import about, components, nav, tokens
 from src.ui_flet.home_status import ENTITY_LABELS, FixAction, HomeMetrics, derive_home_status, sync_window_paused
 from src.ui_flet.humanize import friendly_district_name
+from src.ui_flet.identity_gate import (
+    can_continue,
+    matched_excludes_saved,
+    matched_state,
+    needs_identity_prompt,
+    unmapped_sd_number,
+)
+from src.ui_flet.mapping_catalog import district_domain_index
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+from src.ui_flet.screens import identity as identity_screen
+from src.ui_flet.screens import setup as setup_screen
+from src.ui_flet.screens.help import SUPPORT_EMAIL
 from src.ui_flet.screens.onboarding import build_onboarding
 from src.ui_flet.verdict import Verdict
+from src.utils.identity import extract_domain, normalize_email
+from src.utils.validators import IDENTITY_EMAIL_MAX_LEN, validate_identity_email
+from src.utils.version import app_version
+
+logger = logging.getLogger(__name__)
 
 
 def _pad_sym(h: float = 0, v: float = 0) -> ft.Padding:
@@ -168,6 +194,453 @@ def _fix_button(fix: FixAction, on_navigate: Callable[[str], None]) -> ft.Contro
     )
 
 
+# --------------------------------------------------------------------------- #
+# The identity cards (0038 S4b) — copy first, controls after.                  #
+#                                                                             #
+# Three cards on the CONFIGURED branch, and one rule above all of them: none   #
+# may touch the sync. They ask, they report, and they hop to the surface that  #
+# owns a change — they never make one. Every write goes through               #
+# ``AppConfig.identity_save``, which structurally cannot write ``sis_type``.   #
+#                                                                             #
+# COPY DISCIPLINE. The register is IDENTIFICATION, never authentication: the   #
+# banned vocabulary (sign in / log in / verify / unlock / authorized /         #
+# account / credentials / access) is absent by construction, and the district- #
+# domain list is never called protected / secured / anonymous / encrypted.     #
+# Where a fact is IDENTICAL to one S4a already worded — the honest helper, the #
+# matched-several note, the calm no-match, the "couldn't save" — the S4a       #
+# constant is IMPORTED rather than retyped. Two wordings of one fact is how    #
+# surfaces start to disagree with each other.                                  #
+# --------------------------------------------------------------------------- #
+IDENTITY_CARD_HEADLINE = identity_screen.HERO_HEADLINE
+# The new fact this card carries that the launch page does not: it is an ASK on a working
+# install, so the first thing it must say is that answering (or not) is free.
+IDENTITY_CARD_DETAIL = f"{identity_screen.HERO_DETAIL} Nothing about your nightly sync changes."
+IDENTITY_CARD_SAVE_LABEL = "Save"
+IDENTITY_CARD_DISMISS_LABEL = "Don't ask again"
+# Permanent, and the copy says where it is recoverable — a dismissal with no stated way
+# back is indistinguishable from a bug the next time the admin wants to answer.
+IDENTITY_CARD_DISMISSED_NOTE = (
+    f'We won\'t ask again. You can add it any time in Settings, under "{setup_screen.IDENTITY_TITLE}".'
+)
+# NOT the launch page's ``matched_headline`` — that one promises "you'll confirm it on the
+# next step", and on Home there is no next step. The fact here is genuinely different: this
+# install is ALREADY set up, and the address agrees with it.
+IDENTITY_CARD_MATCHED_NOTE = "Saved. That's {district} — the district this sync is set up for."
+
+# The G3 mismatch card. It reports a difference and offers two ways to resolve it; it never
+# resolves one itself.
+MISMATCH_HEADLINE = "You're set up for {saved}, and your address matches {matched}."
+MISMATCH_DETAIL = "That can be perfectly normal. Nothing has been changed."
+MISMATCH_KEEP_LABEL = "Keep {saved}"
+MISMATCH_CHANGE_LABEL = "Change district"
+
+# The durable not-listed card — the only reader ``identity_sd_number`` has.
+NOT_LISTED_HEADLINE = "We're building the mapping for SD{digits}"
+NOT_LISTED_DETAIL = (
+    "Email support with a sample MyEd BC extract and we'll set it up. In the meantime you can explore the app."
+)
+NOT_LISTED_EMAIL_LABEL = "Email support"
+NOT_LISTED_DISMISS_LABEL = "Don't show this again"
+
+
+class _CardStage(str, Enum):
+    """What the identity card is currently showing. The test seam for its states."""
+
+    ASK = "ask"
+    ANSWERED = "answered"
+    MISMATCH = "mismatch"
+    DISMISSED = "dismissed"
+    RETIRED = "retired"
+
+
+def join_district_names(names: Sequence[str]) -> str:
+    """ "A" / "A and B" / "A, B and C" — the mismatch headline's matched-side list.
+
+    The spec's sentence is singular, but a single domain legitimately claims several
+    configs (SD51 and its attendance tier share one), so the plural case is real and must
+    read as a sentence rather than as a tuple repr.
+    """
+    if len(names) <= 1:
+        return names[0] if names else ""
+    return f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def mismatch_headline(saved: str, matched: Sequence[str]) -> str:
+    return MISMATCH_HEADLINE.format(saved=saved, matched=join_district_names(matched))
+
+
+def not_listed_headline(digits: str) -> str:
+    return NOT_LISTED_HEADLINE.format(digits=digits)
+
+
+def _card_note(text: str, *, failed: bool = False, muted: bool = False) -> ft.Control:
+    """One inline note under a card's controls — never colour-alone.
+
+    A failure carries the error glyph beside the words; the words themselves always say
+    what happened, so the colour is a second cue and never the only one.
+    """
+    if failed:
+        return ft.Row(
+            spacing=tokens.space_sm,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Icon(ft.Icons.ERROR_OUTLINE_ROUNDED, size=tokens.type_section, color=tokens.color_status_failed),
+                ft.Text(text, size=tokens.type_body, color=tokens.color_status_failed),
+            ],
+        )
+    color = tokens.color_muted if muted else tokens.color_status_healthy
+    return ft.Text(text, size=tokens.type_body, weight=ft.FontWeight.W_600, color=color)
+
+
+def _build_identity_cards(
+    page: ft.Page,
+    app_config: AppConfig,
+    on_navigate: Callable[[str], None],
+) -> ft.Control | None:
+    """The identity card block, or ``None`` when neither card applies.
+
+    Built ONCE per Home mount and handed to ``_render`` as an already-assembled control,
+    so the off-thread schedule read-back's re-derive cannot destroy an address the admin
+    is halfway through typing.
+
+    **Cost, stated rather than assumed.** This runs on the flagship surface's mount, so it
+    reads ``available_configs()`` (a directory listing) and NOT ``district_domain_index()``
+    (~210 ms — eleven YAMLs). The domain index is built lazily inside the Save handler, an
+    event that happens at most once in an install's life. Home's mount cost is unchanged
+    by this slice.
+    """
+    show_prompt = needs_identity_prompt(app_config)
+    sd_digits = unmapped_sd_number(app_config, available_configs())
+    if not show_prompt and not sd_digits:
+        return None
+
+    host = ft.Column(spacing=22)
+    state: dict[str, object] = {
+        "stage": _CardStage.ASK if show_prompt else _CardStage.RETIRED,
+        "note": "",
+        "note_failed": False,
+        "matched": (),
+        "sd_shown": bool(sd_digits),
+        "sd_note": "",
+    }
+
+    # NOT autofocus: Home's purpose is the verdict above this card. Stealing the caret for
+    # our own question on a surface the admin opened to check their sync would invert
+    # exactly the priority this card's placement is meant to express.
+    field = ft.TextField(
+        label=identity_screen.EMAIL_LABEL,
+        hint_text=identity_screen.EMAIL_HINT,
+        helper=identity_screen.EMAIL_HELPER,
+        width=420,
+        max_length=IDENTITY_EMAIL_MAX_LEN,
+        border_color=tokens.color_border,
+    )
+
+    def _guard(work: Callable[[], None]) -> bool:
+        """Run one handler's work; ``True`` on success, ``False`` after logging a failure.
+
+        The card-level half of the identity floor. Identity is advisory metadata: a bug in
+        it may cost the admin this card, never their view of whether the roster synced.
+        """
+        try:
+            work()
+            return True
+        except Exception:  # noqa: BLE001 - the floor: an advisory card never breaks Home
+            logger.warning(
+                "The 'who looks after this sync' card hit a problem; your sync status is unaffected.", exc_info=True
+            )
+            return False
+
+    # ----------------------------------------------------------------- #
+    # The one-time ask                                                   #
+    # ----------------------------------------------------------------- #
+    def _resolve(validated: str) -> None:
+        """Name the district the just-saved address resolves to — or raise the G3 question.
+
+        The index is built HERE (see the cost note above), and the same pure rules the
+        launch page and Settings use decide the outcome: one match, several, none, or a
+        match that disagrees with the configured district.
+        """
+        index = district_domain_index()
+        match = matched_state(extract_domain(normalize_email(validated)), index)
+        names = [friendly_district_name(sis_type) or sis_type for sis_type in match.configs]
+        log_outcome = "matched" if match.configs else "no_match"
+        identity_screen.log_resolve(log_outcome, len(match.configs), index)
+
+        if matched_excludes_saved(app_config.sis_type, match.configs):
+            state["stage"] = _CardStage.MISMATCH
+            state["matched"] = tuple(names)
+            state["note"] = ""
+            return
+        state["stage"] = _CardStage.ANSWERED
+        if len(match.configs) > 1:
+            state["note"] = f"Saved. {setup_screen.IDENTITY_SEVERAL_NOTE}"
+        elif match.configs:
+            state["note"] = IDENTITY_CARD_MATCHED_NOTE.format(district=names[0])
+        else:
+            state["note"] = f"Saved. {setup_screen.IDENTITY_NO_MATCH_NOTE}"
+
+    def _save(_e: ft.ControlEvent | None = None) -> None:
+        def work() -> None:
+            typed = (field.value or "").strip()
+            if not can_continue(typed):
+                return
+            try:
+                validated = validate_identity_email(typed)
+            except ValueError as exc:
+                # The validator's messages carry the RULE, never the value (personal data).
+                identity_screen.log_resolve("invalid", 0, {})
+                state["note"] = str(exc)
+                state["note_failed"] = True
+                return
+            if not app_config.identity_save(identity_email=validated):
+                # Refused (an UNREADABLE profile) or an OSError: the card STAYS, the form
+                # stays, and nothing claims a save that did not happen.
+                state["note"] = setup_screen.IDENTITY_REFUSED_NOTE
+                state["note_failed"] = True
+                return
+            state["note_failed"] = False
+            _resolve(validated)
+
+        _guard(work)
+        _render()
+
+    def _on_change(_e: ft.ControlEvent | None = None) -> None:
+        """Only the Save GATE follows the keystrokes — the format error never does."""
+
+        def work() -> None:
+            save_btn.disabled = not can_continue(field.value or "")
+            page.update()
+
+        _guard(work)
+
+    def _on_blur(_e: ft.ControlEvent | None = None) -> None:
+        """Validate on BLUR only. An error after the third keystroke is an accusation."""
+
+        def work() -> None:
+            typed = (field.value or "").strip()
+            if not can_continue(typed):
+                state["note"] = ""  # an empty field is not yet a mistake
+                state["note_failed"] = False
+                return
+            try:
+                validate_identity_email(typed)
+            except ValueError as exc:
+                identity_screen.log_resolve("invalid", 0, {})
+                state["note"] = str(exc)
+                state["note_failed"] = True
+                return
+            state["note"] = ""
+            state["note_failed"] = False
+
+        _guard(work)
+        _render()
+
+    def _dismiss(_e: ft.ControlEvent | None = None) -> None:
+        """ "Don't ask again" — permanent, and recoverable only in Settings."""
+
+        def work() -> None:
+            if not app_config.identity_save(identity_prompt_dismissed=True):
+                state["note"] = setup_screen.IDENTITY_REFUSED_NOTE
+                state["note_failed"] = True
+                return
+            # DISMISSED, not RETIRED: the card stays for this session carrying the one line
+            # that says where the ask went, then the predicate hides it from the next mount
+            # on. A card that simply vanished would leave the admin no way to learn that.
+            state["stage"] = _CardStage.DISMISSED
+            state["note"] = ""
+            state["note_failed"] = False
+
+        _guard(work)
+        _render()
+
+    # ----------------------------------------------------------------- #
+    # The G3 mismatch card                                               #
+    # ----------------------------------------------------------------- #
+    def _keep_saved(_e: ft.ControlEvent | None = None) -> None:
+        """Keep the configured district: the card retires, and NOTHING is written.
+
+        The address was stored before the resolution ran, so the identity ask is already
+        answered — only the question retires. There is deliberately no write here at all:
+        ``identity_prompt_dismissed`` would be dishonest (the ask WAS answered) and
+        ``sis_type`` is exactly what this card promises never to touch.
+        """
+
+        def work() -> None:
+            state["stage"] = _CardStage.RETIRED
+            state["note"] = ""
+
+        _guard(work)
+        _render()
+
+    def _change_district(_e: ft.ControlEvent | None = None) -> None:
+        """Hand the change to Mapping, which owns the stale-schedule honesty of a switch."""
+        _guard(lambda: on_navigate("mapping"))
+
+    # ----------------------------------------------------------------- #
+    # The durable not-listed card                                        #
+    # ----------------------------------------------------------------- #
+    def _email_support(_e: ft.ControlEvent | None = None) -> None:
+        """The EXISTING Help route, untouched: ``about.support_mailto`` is subject-only.
+
+        Flag 6 — the app never puts the admin's address into anything it sends. The
+        subject carries the version and the district DISPLAY name and nothing else.
+        """
+
+        def work() -> None:
+            mailto = about.support_mailto(SUPPORT_EMAIL, app_version(), friendly_district_name(app_config.sis_type))
+            page.launch_url(mailto)
+
+        _guard(work)  # inside the floor: building the URL reads the version + the config too
+
+    def _dismiss_not_listed(_e: ft.ControlEvent | None = None) -> None:
+        """Clear the stored district number — GATED on there being one to clear.
+
+        The S4a lesson, applied: an operation with a side effect must be gated on its
+        subject existing, so a dismiss that reaches this card by any other route can never
+        fire a write for nothing. ``identity_save`` (not ``identity_clear``) — this is one
+        advisory field going away, not an erasure, and the settings-recovery copies are
+        none of this card's business.
+        """
+
+        def work() -> None:
+            if not (app_config.identity_sd_number or "").strip():
+                state["sd_shown"] = False
+                return
+            if not app_config.identity_save(identity_sd_number=""):
+                state["sd_note"] = setup_screen.IDENTITY_REFUSED_NOTE
+                return
+            state["sd_shown"] = False
+            state["sd_note"] = ""
+
+        _guard(work)
+        _render()
+
+    field.on_change = _on_change
+    field.on_blur = _on_blur
+    field.on_submit = _save
+
+    # OUTLINED, not filled: Home's ONE filled primary belongs to the verdict's fix CTA
+    # whenever there is a fault to fix, and an advisory ask may never compete with it.
+    save_btn = components.secondary_button(
+        IDENTITY_CARD_SAVE_LABEL,
+        _save,
+        disabled=True,
+        disabled_bgcolor=tokens.color_border,
+        icon=ft.Icons.CHECK_ROUNDED,
+    )
+
+    def _ask_card() -> ft.Control:
+        controls: list[ft.Control] = [
+            ft.Text(
+                IDENTITY_CARD_HEADLINE, size=tokens.type_title, weight=ft.FontWeight.W_800, color=tokens.color_text
+            ),
+            ft.Text(IDENTITY_CARD_DETAIL, size=tokens.type_emphasis, color=tokens.color_muted),
+        ]
+        if state["stage"] is _CardStage.ASK:
+            save_btn.disabled = not can_continue(field.value or "")
+            controls += [
+                field,
+                ft.Row(
+                    spacing=tokens.space_lg,
+                    controls=[save_btn, components.text_button(IDENTITY_CARD_DISMISS_LABEL, _dismiss)],
+                ),
+            ]
+        if state["note"]:
+            controls.append(_card_note(str(state["note"]), failed=bool(state["note_failed"])))
+        return components.card(content=ft.Column(spacing=tokens.space_lg, controls=controls))
+
+    def _mismatch_card() -> ft.Control:
+        saved = friendly_district_name(app_config.sis_type) or app_config.sis_type
+        return components.card(
+            content=ft.Column(
+                spacing=tokens.space_lg,
+                controls=[
+                    ft.Text(
+                        mismatch_headline(saved, tuple(state["matched"])),  # type: ignore[arg-type]
+                        size=tokens.type_section,
+                        weight=ft.FontWeight.W_700,
+                        color=tokens.color_text,
+                    ),
+                    ft.Text(MISMATCH_DETAIL, size=tokens.type_emphasis, color=tokens.color_muted),
+                    ft.Row(
+                        spacing=tokens.space_lg,
+                        controls=[
+                            components.secondary_button(MISMATCH_KEEP_LABEL.format(saved=saved), _keep_saved),
+                            components.text_button(MISMATCH_CHANGE_LABEL, _change_district),
+                        ],
+                    ),
+                ],
+            )
+        )
+
+    def _dismissed_card() -> ft.Control:
+        return components.card(content=ft.Column(controls=[_card_note(IDENTITY_CARD_DISMISSED_NOTE, muted=True)]))
+
+    def _not_listed_card() -> ft.Control:
+        controls: list[ft.Control] = [
+            ft.Text(
+                not_listed_headline(sd_digits),
+                size=tokens.type_title,
+                weight=ft.FontWeight.W_800,
+                color=tokens.color_text,
+            ),
+            ft.Text(NOT_LISTED_DETAIL, size=tokens.type_emphasis, color=tokens.color_muted),
+            ft.Row(
+                spacing=tokens.space_lg,
+                controls=[
+                    # PHASE 2 SEAM (D-0037-5): the mapping creator replaces this button with
+                    # "Build my mapping". The card, its copy and its dismiss stay as they are.
+                    components.secondary_button(
+                        NOT_LISTED_EMAIL_LABEL, _email_support, icon=ft.Icons.MAIL_OUTLINE_ROUNDED
+                    ),
+                    components.text_button(NOT_LISTED_DISMISS_LABEL, _dismiss_not_listed),
+                ],
+            ),
+        ]
+        if state["sd_note"]:
+            controls.append(_card_note(str(state["sd_note"]), failed=True))
+        return components.card(content=ft.Column(spacing=tokens.space_lg, controls=controls))
+
+    def _render() -> None:
+        cards: list[ft.Control] = []
+        stage = state["stage"]
+        if stage is _CardStage.MISMATCH:
+            cards.append(_mismatch_card())
+        elif stage is _CardStage.DISMISSED:
+            cards.append(_dismissed_card())
+        elif stage is not _CardStage.RETIRED:
+            cards.append(_ask_card())
+        if state["sd_shown"]:
+            cards.append(_not_listed_card())
+        host.controls = cards
+        page.update()
+
+    _render()
+    return host
+
+
+def _identity_cards(
+    page: ft.Page,
+    app_config: AppConfig,
+    on_navigate: Callable[[str], None],
+) -> ft.Control | None:
+    """The identity cards behind their own floor — a raise here never reaches Home's.
+
+    Home's ``ErrorCard`` floor replaces the WHOLE dashboard, so letting an advisory card's
+    bug fall through to it would trade the admin's answer to "did the roster sync?" for a
+    question about who looks after it. This floor is therefore not defence-in-depth: it is
+    the boundary that keeps the two concerns separable.
+    """
+    try:
+        return _build_identity_cards(page, app_config, on_navigate)
+    except Exception:  # noqa: BLE001 - identity never fails closed, and never fails LOUDLY here
+        logger.warning(
+            "Could not show the 'who looks after this sync' card; your sync status is unaffected.", exc_info=True
+        )
+        return None
+
+
 def _dashboard(
     page: ft.Page,
     app_config: AppConfig,
@@ -190,6 +663,11 @@ def _dashboard(
     store_created_at = meta.get("created_at") if meta else None
     latest_ts = records[0].get("timestamp") if records else None
 
+    # 0038 S4b: built ONCE, here, OUTSIDE ``_render`` — the schedule read-back re-derives
+    # the whole control list below, and rebuilding the card there would wipe an address the
+    # admin was halfway through typing when the probe returned.
+    identity_cards = _identity_cards(page, app_config, on_navigate)
+
     container = ft.Column(spacing=22)
 
     def _render(schedule_status: ScheduleStatus | None) -> None:
@@ -204,6 +682,14 @@ def _dashboard(
         ]
         if status.fix is not None:
             controls.append(_fix_button(status.fix, on_navigate))
+        # 0038 S4b: the identity cards ride HERE — anchored to the verdict block, never to
+        # the tile row below, so S7's subtraction of those tiles cannot move them. They sit
+        # immediately after the verdict's own fix CTA rather than between the two: a fault
+        # and its fix are one thought, and OUR ask may not be wedged into the middle of it.
+        # Below the verdict either way — the verdict is why the admin opened the app; this
+        # is what we would like to know.
+        if identity_cards is not None:
+            controls.append(identity_cards)
         if status.metrics is not None:
             controls.append(components.section_label("Latest roster"))
             controls.append(_metric_tiles_row(status.metrics))

@@ -498,6 +498,53 @@ def test_the_launch_gate_and_resolution_log_counts_only(isolated_user_profile: P
         assert probe not in text, f"{probe!r} reached the log"
 
 
+def test_the_home_identity_card_logs_counts_only(isolated_user_profile: Path, caplog, monkeypatch) -> None:
+    """S4b's surfaces, held to the same bar: the card resolves, dismisses — and says nothing.
+
+    Driven through the real ``build_home`` and the real handlers rather than by calling the
+    logger, so a diagnostic added anywhere along the card's save path is caught. The card
+    is the one place besides the launch page and Settings that ever holds the address.
+    """
+    from unittest.mock import MagicMock
+
+    from src.config.app_config import ConfigLoadState
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+    from src.ui_flet.screens import home as home_screen
+    from src.ui_flet.screens import identity as identity_screen
+
+    # A district number no province will ever issue — distinctive enough that its absence
+    # from the log is a real assertion rather than a coincidence (unlike "48").
+    canary_sd = "987654"
+    benign = ScheduleStatus(state=ScheduleState.UNKNOWN, headline="", detail="")
+    monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: benign)
+    cfg = AppConfig(
+        input_dir="/in",
+        output_dir="/out",
+        sis_type="sd48myedbc",
+        setup_completed=True,
+        identity_sd_number=canary_sd,
+        load_state=ConfigLoadState.LOADED,
+    )
+
+    def _pressed(view: object, label: str) -> None:
+        next(c for c in _walk(view) if getattr(c, "content", None) == label).on_click(None)
+
+    with caplog.at_level("INFO"):
+        page = MagicMock()
+        view = home_screen.build_home(page, app_config=cfg, on_navigate=lambda _d: None)
+        field = next(
+            c for c in _walk(view) if type(c).__name__ == "TextField" and c.label == identity_screen.EMAIL_LABEL
+        )
+        field.value = CANARY_EMAIL
+        _pressed(view, home_screen.IDENTITY_CARD_SAVE_LABEL)
+        _pressed(view, home_screen.NOT_LISTED_DISMISS_LABEL)
+
+    text = caplog.text
+    assert "identity resolve: outcome=" in text, "the resolve line is missing; the rest is vacuous"
+    for probe in (CANARY_EMAIL, CANARY_LOCAL, "leak-probe.invalid", canary_sd):
+        assert probe not in text, f"{probe!r} reached the log"
+
+
 def _walk(control):  # noqa: ANN001, ANN202 - a walker over an untyped Flet tree
     yield control
     for attr in ("controls", "content"):

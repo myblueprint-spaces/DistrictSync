@@ -72,18 +72,11 @@ def test_all_three_fields_round_trip_through_disk(config_file: Path):
     assert set(IDENTITY_FIELDS) <= set(json.loads(config_file.read_text(encoding="utf-8")))
 
 
-def test_a_v38x_config_without_the_keys_loads_unchanged(config_file: Path):
-    """Journey 4, config layer: a LITERAL v3.8.x settings file upgrades in place.
-
-    Written as the literal text a shipped v3.8.x install has on disk (not an
-    ``asdict(AppConfig())`` round-trip, which would silently gain any field this build
-    added and so could never catch the regression). It must load LOADED — not UNREADABLE,
-    not ABSENT — stay `has_completed_setup()`, and NOT be asked for an identity at launch:
-    a working install is never stopped at a front door in front of its own sync.
-    """
-    config_file.parent.mkdir(parents=True, exist_ok=True)
-    config_file.write_text(
-        """{
+# The literal bytes a shipped v3.8.x install has on disk — the single source both halves of
+# Journey 4 read (this file's config-layer half, and the shell's render half). Deliberately
+# NOT derived from `asdict(AppConfig())`: a derived fixture silently gains every field this
+# build added, and would therefore never catch the upgrade regression it exists to catch.
+V38X_CONFIG_JSON = """{
   "input_dir": "C:\\\\DistrictSync\\\\input",
   "output_dir": "C:\\\\DistrictSync\\\\output",
   "sis_type": "sd48myedbc",
@@ -107,9 +100,24 @@ def test_a_v38x_config_without_the_keys_loads_unchanged(config_file: Path):
   "window_top": 60.0,
   "window_maximized": false
 }
-""",
-        encoding="utf-8",
-    )
+"""
+
+
+def test_a_v38x_config_without_the_keys_loads_unchanged(config_file: Path):
+    """Journey 4, config layer: a LITERAL v3.8.x settings file upgrades in place.
+
+    Written as the literal text a shipped v3.8.x install has on disk (not an
+    ``asdict(AppConfig())`` round-trip, which would silently gain any field this build
+    added and so could never catch the regression). It must load LOADED — not UNREADABLE,
+    not ABSENT — stay `has_completed_setup()`, and NOT be asked for an identity at launch:
+    a working install is never stopped at a front door in front of its own sync.
+
+    The RENDER half of the same journey lives in ``tests/test_ui_flet_shell_boot.py`` and
+    reads :data:`V38X_CONFIG_JSON` below, so the two halves cannot drift onto different
+    ideas of what a v3.8.x install looks like.
+    """
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(V38X_CONFIG_JSON, encoding="utf-8")
 
     cfg = AppConfig.load()
 

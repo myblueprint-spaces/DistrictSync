@@ -148,6 +148,31 @@ class TestScreensRender:
             monkeypatch,
         )
 
+    def test_home_dashboard_with_both_identity_cards(self, stub_page, monkeypatch):
+        # 0038 S4b: the configured branch carrying BOTH new cards (the one-time ask and the
+        # durable not-listed one) must construct on 0.85.3. Their per-state behaviour lives
+        # in tests/test_ui_flet_home_identity_cards.py; this is the mount smoke the design
+        # system asks of every new card form.
+        from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+        benign = ScheduleStatus(state=ScheduleState.UNKNOWN, headline="", detail="")
+        monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: benign)
+        cfg = AppConfig(
+            input_dir="/in",
+            output_dir="/out",
+            sis_type="sd48myedbc",
+            setup_completed=True,
+            identity_sd_number="99",
+        )
+        tree = _assert_renders(
+            lambda: build_home(stub_page, app_config=cfg, on_navigate=lambda _d: None),
+            monkeypatch,
+        )
+        from src.ui_flet.screens import home as home_screen
+
+        assert _has_text(tree, home_screen.IDENTITY_CARD_HEADLINE)
+        assert _has_text(tree, home_screen.not_listed_headline("99"))
+
     def test_convert(self, stub_page, monkeypatch):
         _assert_renders(lambda: build_convert(stub_page), monkeypatch)
 

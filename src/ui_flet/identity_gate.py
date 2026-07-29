@@ -42,12 +42,15 @@ __all__ = [
     "MatchOutcome",
     "can_continue",
     "gate_reason",
+    "matched_excludes_saved",
     "matched_state",
     "needs_identity",
+    "needs_identity_prompt",
     "resolve_domain",
     "resolve_sd_number",
     "sd_number_digits",
     "stored_identity_email",
+    "unmapped_sd_number",
 ]
 
 # An SD id, as a config file is named: ``sd`` + the district number + anything. The
@@ -109,6 +112,34 @@ def needs_identity(app_config: AppConfig) -> bool:
     return (
         not app_config.settings_unreadable()
         and not app_config.has_completed_setup()
+        and not stored_identity_email(app_config)
+    )
+
+
+def needs_identity_prompt(app_config: AppConfig) -> bool:
+    """True when HOME should show the one-time identity card (plan 0038 S4b).
+
+    The SAME question :func:`needs_identity` asks, put to the population it cannot ask:
+    an install that already finished setup and is therefore never stopped at a launch
+    page in front of its own working sync. Four conditions, all of which must hold:
+
+    * **the settings file is readable** — same reason as the gate (G2): we could not
+      persist the answer, so we must not ask for it;
+    * **setup IS finished** — the exact inversion of the gate's second condition, which is
+      what makes the two asks mutually exclusive: no install is ever asked twice;
+    * **the ask has not been dismissed** — "Don't ask again" is PERMANENT. The way back is
+      Settings ("Who looks after this sync"), which is also where clearing the address
+      resets this flag (:meth:`AppConfig.identity_clear`) so the states cannot wedge;
+    * **no USABLE identity is on file** — same read-time re-validation as the gate (see
+      :func:`stored_identity_email`).
+
+    Note what is deliberately absent, exactly as on the launch page: nothing here blocks,
+    counts, expires or re-asks on a schedule. It is one card, once, under the verdict.
+    """
+    return (
+        not app_config.settings_unreadable()
+        and app_config.has_completed_setup()
+        and not app_config.identity_prompt_dismissed
         and not stored_identity_email(app_config)
     )
 
@@ -211,6 +242,60 @@ def matched_state(domain: str, domains_by_config: Mapping[str, Sequence[str]]) -
     else:
         outcome = MatchOutcome.NO_MATCH
     return DomainMatch(outcome=outcome, configs=configs)
+
+
+def matched_excludes_saved(saved_sis: str, configs: Sequence[str]) -> bool:
+    """True when a NON-EMPTY match set does not contain the configured district (G3).
+
+    The mismatch card's whole rule, in one place. It is deliberately narrow, because both
+    "empty" cases are questions we must NOT put to an admin:
+
+    * **no match** — we recognised nothing, so there is no second opinion to report. The
+      admin hears the calm "we don't have a district on file for that address yet"
+      instead;
+    * **nothing configured** — there is no saved district to differ FROM.
+
+    Comparison is case- and whitespace-normalised on BOTH sides: the bundled ids are
+    lowercase, but ``sis_type`` comes from a settings file an admin can hand-edit, and a
+    spurious mismatch card would tell a correctly-configured install that it disagrees
+    with itself.
+
+    What this rule can NEVER do is act. The card it drives reports a difference, offers
+    "Keep <saved>" and a hop to Mapping, and changes nothing either way — resolution never
+    rewrites ``sis_type`` (structurally enforced by ``AppConfig.identity_save``).
+    """
+    if not configs:
+        return False
+    saved = _normalise_domain(saved_sis)
+    if not saved:
+        return False
+    return saved not in {_normalise_domain(sis_type) for sis_type in configs}
+
+
+def unmapped_sd_number(app_config: AppConfig, config_ids: Iterable[str]) -> str:
+    """The stored district number when NO bundled config serves it — else ``""``. TOTAL.
+
+    Drives the durable "we're building the mapping for SD##" card (plan 0038 S4b): the
+    reader that finally earns ``identity_sd_number`` its persistence. It is written by the
+    launch page's not-listed path and, until Phase 2 ships the mapping creator, this card
+    is the only thing that ever reads it.
+
+    Two directions, both mattering:
+
+    * a number we DO serve returns ``""`` — telling an admin we are "building" a mapping
+      that ships in the executable they are running would be a plain untruth, and the
+      ``resolve_sd_number`` boundary (``SD4`` never matches ``sd48myedbc``) is what keeps
+      the opposite mistake unrepresentable too;
+    * anything unusable returns ``""`` — no digits, blank, or (a hand-edited profile) not
+      even a string. ``AppConfig._value_fits`` should keep a non-``str`` out of the field,
+      but that is a guarantee made in another module, and this reader must never fail on
+      someone else's invariant. Nothing stored means nothing to say.
+    """
+    raw = app_config.identity_sd_number
+    digits = sd_number_digits(raw if isinstance(raw, str) else "")
+    if not digits or resolve_sd_number(digits, config_ids):
+        return ""
+    return digits
 
 
 def sd_number_digits(raw: str) -> str:

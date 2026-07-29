@@ -89,6 +89,15 @@ tested at the seam, not through the screen — and each absence-assertion carrie
 twin, because "the app mounted anyway" is equally satisfied by a working floor and by a
 gate that quietly stopped firing.
 
+*Grown 2026-07-29 (S4b — the Home identity cards, the same work-type on a second surface).*
+Copy-first held, and copy-first across TWO surfaces adds one rule: **reuse the constant
+where the fact is identical, write new copy where the fact differs** (the launch page's
+"you'll confirm it on the next step" is false on a Home that is already set up). The cost
+to watch for is that a shared string stops being a usable test proxy — reusing one headline
+on both surfaces immediately made an existing "is the launch page showing?" assertion
+ambiguous, and it had to be re-grounded STRUCTURALLY (no rail + a Continue button). Expect
+that trade and look for the assertions it silently weakens.
+
 ### Documentation + its enforcing gate
 _Recorded 2026-07-29 (plan 0038 S2b — `docs/developer/output-contract.md` + its drift test)._
 

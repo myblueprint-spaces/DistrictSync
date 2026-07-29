@@ -29,6 +29,8 @@ import pytest
 
 from src.config.app_config import AppConfig
 from src.ui_flet import shell
+from src.ui_flet.screens import home
+from tests.test_app_config_identity import V38X_CONFIG_JSON
 
 
 @pytest.fixture
@@ -62,6 +64,23 @@ def _added_root(page: MagicMock) -> ft.Control:
 
 def _texts(control) -> list[str]:  # noqa: ANN001 - untyped Flet tree
     return [c.value for c in _iter_controls(control) if isinstance(getattr(c, "value", None), str)]
+
+
+def _shows_launch_page(page: MagicMock) -> bool:
+    """Is the LAUNCH PAGE mounted? Decided STRUCTURALLY, never by its headline.
+
+    S4b gave Home's identity card the same headline the launch page uses ("Who looks after
+    this sync?") on purpose — one fact, one wording — which makes a text-only proxy
+    ambiguous: it now matches BOTH the surface we are checking for and the card that
+    proves we are past it. The launch page is the one surface with no rail and a Continue
+    button; the app body is the one with a rail. Both halves are asserted so neither a
+    missing rail nor a stray button can answer alone.
+    """
+    root = _added_root(page)
+    controls = list(_iter_controls(root))
+    has_rail = any(isinstance(c, ft.NavigationRail) for c in controls)
+    has_continue = any(getattr(c, "content", None) == shell.identity.CONTINUE_LABEL for c in controls)
+    return has_continue and not has_rail
 
 
 def _button_labelled(control, label: str):  # noqa: ANN001, ANN202 - untyped Flet tree
@@ -169,6 +188,7 @@ class TestTheLaunchGate:
 
         assert built == [], "the app body was built while the launch page should be showing"
         assert shell.identity.HERO_HEADLINE in _texts(_added_root(page))
+        assert _shows_launch_page(page), "the positive twin of every '_shows_launch_page is False' below"
 
     def test_the_close_handlers_are_bound_BEFORE_the_launch_page_is_built(
         self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
@@ -196,11 +216,10 @@ class TestTheLaunchGate:
     def test_a_configured_install_never_sees_the_launch_page(
         self, page: MagicMock, isolated_user_profile: Path
     ) -> None:
-        """Journey 4's render half — an upgrading v3.8.x install boots straight to the app.
+        """An upgrading install boots straight to the app (Journey 4's gate half).
 
-        The LITERAL shape a v3.8.0 install has on disk: no identity keys at all, the old
-        finish-line facts present. It gets the dismissible Home card in S4b, never a launch
-        page in front of a sync that already works.
+        The full render half — dashboard, no wizard, asked exactly once — lives in
+        ``TestJourney4UpgradeInPlace`` below, driven from the literal v3.8.x settings file.
         """
         _write_config(
             isolated_user_profile,
@@ -216,8 +235,7 @@ class TestTheLaunchGate:
 
         shell.main(page)
 
-        texts = _texts(_added_root(page))
-        assert shell.identity.HERO_HEADLINE not in texts
+        assert not _shows_launch_page(page)
         assert any(isinstance(c, ft.NavigationRail) for c in _iter_controls(_added_root(page)))
 
     def test_an_unreadable_profile_never_sees_the_launch_page(
@@ -229,7 +247,9 @@ class TestTheLaunchGate:
 
         shell.main(page)
 
-        assert shell.identity.HERO_HEADLINE not in _texts(_added_root(page))
+        assert not _shows_launch_page(page)
+        # ...and G2 holds on Home too: an unreadable profile gets no card either (S4b).
+        assert home.IDENTITY_CARD_HEADLINE not in _texts(_added_root(page))
 
     def test_the_completed_install_boot_reads_the_config_once_for_the_body(
         self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
@@ -244,6 +264,63 @@ class TestTheLaunchGate:
         shell.main(page)
 
         assert [c.sis_type for c in seen] == ["myedbc"]
+
+
+# --------------------------------------------------------------------------- #
+# 2b. Journey 4, the RENDER half — an upgrading install, end to end (S4b)      #
+# --------------------------------------------------------------------------- #
+class TestJourney4UpgradeInPlace:
+    """A shipped v3.8.x install boots into the app and is asked ONCE, on Home.
+
+    Driven from the LITERAL settings file such an install has on disk (single-sourced with
+    the config-layer half in ``tests/test_app_config_identity.py``), through the REAL boot
+    — gate, shell, app body, Home — because the promise being pinned is a composition:
+    no launch page in front of a working sync, no wizard, no re-ask once it is answered or
+    dismissed, and one small card under the verdict.
+    """
+
+    @staticmethod
+    def _plant(profile: Path, **identity: object) -> None:
+        profile.mkdir(parents=True, exist_ok=True)
+        values = json.loads(V38X_CONFIG_JSON)
+        values.update(identity)
+        (profile / "config.json").write_text(json.dumps(values), encoding="utf-8")
+
+    @staticmethod
+    def _boot(page: MagicMock) -> list[str]:
+        shell.main(page)
+        return _texts(_added_root(page))
+
+    def test_it_lands_on_the_dashboard_and_is_asked_once_on_home(
+        self, page: MagicMock, isolated_user_profile: Path
+    ) -> None:
+        self._plant(isolated_user_profile)
+
+        texts = self._boot(page)
+
+        assert not _shows_launch_page(page), "a working install was stopped at a launch page"
+        assert "Welcome to DistrictSync" not in texts, "a configured install was shown the onboarding hero"
+        assert any(isinstance(c, ft.NavigationRail) for c in _iter_controls(_added_root(page)))
+        assert "Home" in texts, "the dashboard did not paint"
+        assert home.IDENTITY_CARD_HEADLINE in texts, "the upgrading install was never asked"
+
+    def test_a_dismissed_profile_is_never_asked_again(self, page: MagicMock, isolated_user_profile: Path) -> None:
+        self._plant(isolated_user_profile, identity_prompt_dismissed=True)
+
+        texts = self._boot(page)
+
+        assert "Home" in texts, "the dashboard did not paint; the absence below would be vacuous"
+        assert home.IDENTITY_CARD_HEADLINE not in texts
+
+    def test_an_install_that_already_answered_is_never_asked_again(
+        self, page: MagicMock, isolated_user_profile: Path
+    ) -> None:
+        self._plant(isolated_user_profile, identity_email="admin@sd48.bc.ca")
+
+        texts = self._boot(page)
+
+        assert "Home" in texts
+        assert home.IDENTITY_CARD_HEADLINE not in texts
 
 
 # --------------------------------------------------------------------------- #
