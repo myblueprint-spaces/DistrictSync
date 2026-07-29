@@ -37,7 +37,9 @@ Any change to one of these **requires fresh importer confirmation before merge**
 - a base `field_map` **key set or key order** for any entity in `config/mappings/myedbc_mapping.yaml` (this is what sets the emitted columns and their order);
 - `DataLoader._NO_BOM_ENTITIES` (the per-entity BOM rule);
 - the attendance knobs — `global_config.attendance.date_format`, `attendance.daily.category_map`, or `attendance.daily.portion`;
-- the entity → filename rule (`DataLoader.csv_filename`) or the delivery envelope (zip name, standalone-file rule).
+- the entity → filename rule (`DataLoader.csv_filename`) or the delivery envelope (zip name, standalone-file rule);
+- **any `to_csv` writer option this document marks GUARANTEED** — quoting, escaping, delimiter, the empty-string representation of `NaN`, the header row, the index column. These are all currently pandas *defaults* that `DataLoader._write_csv` never passes explicitly, so a pandas upgrade or a stray keyword could change an emitted byte **without touching anything named above**. They are contract because we published them, not because anything pins them;
+- **the source constants behind the two owner-confirmed semantics** — `BaseTransformer.DEFAULT_STATUS_COLUMN_ALIASES` / `DEFAULT_ACTIVE_VALUES` (which decide the emitted `EnrollStatus` value) and `global_config.cross_enrollment` (which decides which school reaches `SchoolCode`). The two rows the owner confirmed describe *behaviour*, not just a header spelling: changing these changes what was confirmed, while leaving every column name intact.
 
 A red `tests/test_contract.py` is the mechanical face of this trigger: **a red order test is a partner-visible contract change requiring importer re-confirmation, not a test edit.**
 
@@ -66,10 +68,15 @@ Every verdict row carries two independent axes. Do not collapse them.
 | `emitted` | This is simply what DistrictSync writes today, read from the code/config. Says nothing about acceptance. |
 | `internal` | Internal spec (Confluence / this document). |
 
-**Guarantee** — is this a promise or a courtesy?
+**Guarantee** — is this a promise or a courtesy? Five values are used across the tables; all five are listed so none reads as an unexplained blank:
 
 - **GUARANTEED** — we commit to emitting exactly this. Changing it is partner-visible and hits the re-confirmation trigger.
 - **TOLERATED** — leniency we *rely on* or *accept* but do **not** treat as contract. A TOLERATED item may stop working without any change on our side, and we may not depend on it in new code. The SD22 header-spelling variants (below) are the clearest example: the importer appears to accept them, but **that leniency is not our contract and is not something we emit.**
+- **TOLERATED at most** — we do not emit this and make no promise about it; if it works, that is the importer being lenient. Used for shapes we *could* emit but do not (e.g. the `dd-MMM-yyyy` attendance date the published Doc documents).
+- **not claimed** — we make **no** statement in either direction. Used where the honest answer is "nobody has tested this" (line-ending tolerance) or where a source comment asserts more than the evidence carries.
+- **n/a** — the row is not a partner-facing promise at all but an internal safety rule of ours (the delivery manifest, the `archive_<ts>/` exclusion). Listed because it protects the partner, not because they depend on its shape.
+
+Where the Guarantee applies to a *specific aspect*, the cell says which — e.g. "GUARANTEED (the emitted name)" promises the filename we write, not the published rule's wording.
 
 ---
 
@@ -79,14 +86,14 @@ What actually leaves the machine, and under what names.
 
 | Aspect | Value | Status | Basis | Guarantee |
 |---|---|---|---|---|
-| Entity → filename | `<EntityName>.csv`, exactly — `Students.csv`, `Staff.csv`, `Family.csv`, `Classes.csv`, `Enrollments.csv`, `CourseInfo.csv`, `StudentCourses.csv`, `StudentAttendance.csv`. Single source: `DataLoader.csv_filename`. | pending owner confirmation | emitted | GUARANTEED |
+| Entity → filename | `<EntityName>.csv`, exactly — `Students.csv`, `Staff.csv`, `Family.csv`, `Classes.csv`, `Enrollments.csv`, `CourseInfo.csv`, `StudentCourses.csv`, `StudentAttendance.csv`. `DataLoader.csv_filename` is the intended single source and every *write/detect/manifest* path routes through it — but it is not literally the only spelling: `sftp/uploader.py` re-spells the literal `"StudentAttendance.csv"` to split that feed out of the zip. | pending owner confirmation | emitted | GUARANTEED |
 | Rostering bundle | The rostering + course CSVs ship inside one zip named `districtsync_<district>_YYYY-MM-DD.zip` (e.g. `districtsync_sd40_2026-04-10.zip`); `districtsync_YYYY-MM-DD.zip` when no district is supplied. Single source: `sftp/uploader.build_zip_name`. | pending owner confirmation | emitted | GUARANTEED |
 | Zip idempotency | The date stamp makes a retry a re-put over the same remote name rather than a duplicate delivery. | pending owner confirmation | emitted | GUARANTEED |
 | `StudentAttendance.csv` | Ships **standalone, outside the zip**, put into the same remote directory. SpacesEDU's nightly check looks for it by name and it must not pollute the Advanced-CSV bundle. | pending owner confirmation | observed import, owner knowledge | GUARANTEED |
 | Attendance filename rule | The published BC/Aspen attendance Doc states a "file name must end with" rule. DistrictSync satisfies it by emitting exactly `StudentAttendance.csv`; the Doc's literal wording is **not mirrored in this repo**, so this row is a cited-not-quoted reference. The 2026-06-19 incident's error text (*"Unexpected file: StudentAttendance.csv"*) confirms the importer identifies this feed by name. | pending owner confirmation | published Doc (cited, not quoted), observed import | GUARANTEED (the emitted name) |
 | Delivery manifest | Only files the run *vouched for* are uploaded — `DataLoader.output_filenames(outputs)`, passed as the required keyword-only `manifest=` to `SFTPUploader.upload_csvs`. A stray `*.csv` an admin drops in the output folder never egresses. | n/a (our own safety rule) | emitted | GUARANTEED |
 | `archive_<ts>/` | Stale entity CSVs this run did not produce are **moved** into this subfolder, never deleted. The uploader globs `*.csv` **top-level only**, so archived files structurally cannot ship. | n/a | emitted | GUARANTEED |
-| `.tmp_<ts>_<uid>/` · `.bak_<ts>_<uid>/` | Staging and pre-commit backup dirs used by the atomic write. Both are removed on the way out and are never delivered (same top-level-glob exclusion). | n/a | emitted | GUARANTEED |
+| `.tmp_<ts>_<uid>/` · `.bak_<ts>_<uid>/` | Staging and pre-commit backup dirs used by the atomic write. Both are removed at the end of a **COMPLETED** run; a `.bak_*` stranded by an interrupted run is deliberately **retained** (archived into `archive_<ts>_recovered/`, never auto-deleted — it is the only copy of the pre-commit originals). Neither can ship: both are subfolders, and the uploader globs top-level only. | n/a | emitted | GUARANTEED (neither can ship) |
 
 ---
 
@@ -122,7 +129,7 @@ The two encoding classes are asserted end-to-end on real bytes, one config per c
 | Windows (the district-server case, and the Windows exe) | **CRLF** (`\r\n`) |
 | Linux / macOS artifacts | **LF** (`\n`) |
 
-So the *same* config emitting the *same* data produces byte-different files on different platforms. CRLF is RFC-4180's line ending, so the Windows shape is the standards-conformant one; LF is the common tolerated shape.
+So the *same* config emitting the *same* data produces byte-different files on different platforms. This **matches pandas' documented default (`lineterminator=os.linesep`) and is not pinned by a test** — see Q3. CRLF is RFC-4180's line ending, so the Windows shape is the standards-conformant one; LF is the common tolerated shape.
 
 | Row | Status | Basis | Guarantee |
 |---|---|---|---|
@@ -149,7 +156,7 @@ A `lineterminator="\r\n"` pin in `DataLoader._write_csv` would make this determi
 
 Scope of the universality claim, stated precisely: no bundled config alters any entity's column set or order — verified across all eleven bundled configs and pinned by `test_contract.test_column_order_matches_contract`. That is a property **held by the configs and enforced by a test**, not one guaranteed by the `_base` merge rule: a config *could* override a `field_map`, and a user-dropped YAML in the app-data `mappings/` dir shadows a bundled config entirely. **This document describes the shipped set.**
 
-Emitted columns are treated as **POSITIONAL**. Order-sensitivity is *confirmed* only for `StudentAttendance` ("exact case-sensitive order", `src/etl/transformers/student_attendance.py`); for the rostering and course feeds it is **not** confirmed with the partner, so we pin the emitted order and require re-confirmation before changing it rather than claiming the importer would reject a reorder.
+Emitted columns are treated as **POSITIONAL**. Order-sensitivity is **established in code** only for `StudentAttendance` ("exact case-sensitive order", `src/etl/transformers/student_attendance.py`); for the rostering and course feeds it is **not** confirmed with the partner, so we pin the emitted order and require re-confirmation before changing it rather than claiming the importer would reject a reorder. *(Note the word: "established in code" is a statement about our own source, deliberately NOT the dated `confirmed <date>` Status value above, which means only "the owner checked this against the live importer".)*
 
 ### 1. `Students.csv`
 
@@ -179,9 +186,9 @@ Emitted columns are treated as **POSITIONAL**. Order-sensitivity is *confirmed* 
 2. No status column, or a blank status on that row → fall back to the withdraw-date column. A past or unparseable date → `Inactive`; otherwise `Active`. Four input date formats are recognized.
 3. Neither column present → `Active`, with one warning.
 
-The status column is auto-resolved from the alias list `["Enrollment status", "Enrolment status"]` (both real spellings appear in real district exports). A district overrides `active_values` per config.
+The status column is auto-resolved from the alias list `("enrollment status", "enrolment status")` — matched against the **normalized, lower-cased** frame (the extractor lowercases every column name on load), which is why the constant is spelled in lower case. Both real spellings occur: two-L in real MyEd exports, one-L in SD40's injected headers. A district overrides `active_values` per config.
 
-**Rows that reach the file:** only rows whose label is not `Inactive`, deduplicated on `User ID` (first wins). Under `cross_enrollment.collapse` a student enrolled at several schools collapses to one row at their home school — **while keeping their enrollments and classes at every school** (see `Enrollments.csv`).
+**Rows that reach the file:** only rows whose label is not `Inactive`. A pupil enrolled at several schools produces one row per school unless the district enables `cross_enrollment.collapse`, which keeps the home-school row (first wins) — SD60 today. When it is enabled the student still keeps their enrollments and classes at **every** school (see `Enrollments.csv`); when it is not, `Students.csv` legitimately carries one row per school and the quality report will flag those as duplicates on `User ID`.
 
 **Zero-orphan invariant:** the surviving `User ID` set is published as the active roster and every student row in `Family.csv`, `Classes.csv` and `Enrollments.csv` is filtered against it, so no other feed can reference a student absent from this file.
 
@@ -232,7 +239,7 @@ A district may narrow the source rows with `row_filters` before mapping — SD60
 <Teacher last> <Course title> (<Section>) <Year>
 ```
 
-The teacher part is included only when the primary-teacher-flag column is present and reads `y`; when no flag column is configured, the teacher name is used unconditionally. Empty parts are omitted (no doubled spaces, no stray parentheses). Example: `Liu Math 10 (A) 2026`.
+The flag column gates the teacher part **only when it is both configured and actually present in the row**: in that case the teacher name is included only if the flag reads `y`. If no flag column is configured *or* the configured one is absent from the row, the teacher name is used **unconditionally** — the absent-column case falls into the same unconditional branch, which is why SD60 (no primary-teacher flag in its schedule) still gets teacher names. Empty parts are omitted (no doubled spaces, no stray parentheses). Example: `Liu Math 10 (A) 2026`.
 
 **Which classes exist:** homeroom classes are auto-generated for the configured `homeroom_grades`, subject classes come from the schedule, and blended classes (same teacher/time spanning 2+ grade levels) merge into one. `global_config.excluded_course_codes` drops bookkeeping sections (SD40 excludes `ATT--AM` / `ATT--PM`) before any of it. Homeroom-class creation is filtered to the active roster, so a homeroom with no active students is not emitted.
 
@@ -303,7 +310,7 @@ The teacher part is included only when the primary-teacher-flag column is presen
 
 **Dedup key** (as used by the quality report): `(Student ID, Course Code, Completion Date)`.
 
-**Configurable columns:** since 2026-07-20 every source column read here resolves through the district config — output-keyed reads through the entity `field_map`, auxiliary inputs through the optional per-entity `source_columns:` block (`full_course_code`, `section`, `dl_start_date`). The output column list is derived from the `field_map` keys, so **this table and the YAML cannot disagree.**
+**Configurable columns:** since 2026-07-20 every source column read here resolves through the district config — output-keyed reads through the entity `field_map`, auxiliary inputs through the optional per-entity `source_columns:` block (`full_course_code`, `section`, `dl_start_date`). The output column list is derived from the `field_map` keys, so **this table and the YAML cannot _silently_ disagree** — a divergence surfaces as a red order test rather than as a quietly different CSV.
 
 ### 8. `StudentAttendance.csv`
 
@@ -316,7 +323,7 @@ The teacher part is included only when the primary-teacher-flag column is presen
 | 3 | Absence Category | Derived for the K-7 daily band, passed through for the 8-12 period band — the two are **not** one vocabulary (see below). | pending owner confirmation | observed import | GUARANTEED |
 | 4 | Student Number | Pupil number. | pending owner confirmation | observed import | GUARANTEED |
 
-Only these four columns are emitted. The SpacesEDU attendance spec permits dropping every optional field after `Student Number`, so the previous 28-column shape (24 always-blank columns) was reduced on 2026-06-19. Column order here is **case-sensitive and confirmed order-sensitive** — the one entity for which that is true.
+Only these four columns are emitted. The SpacesEDU attendance spec permits dropping every optional field after `Student Number`, so the previous 28-column shape (24 always-blank columns) was reduced on 2026-06-19. Column order here is **case-sensitive, and order-sensitivity is established in our own code** for this entity — the one entity for which that is true. (Again: "established in code", not the dated `confirmed <date>` Status value.)
 
 **Row multiplicity is intentional.** A full-day K-7 absence emits **two identical rows** (one per half-day). There is no `drop_duplicates` on this entity, and the quality report's duplicate check skips it for exactly that reason.
 
@@ -347,11 +354,17 @@ The output is the union of two independent bands. **They are different kinds of 
 | `T` , `N` | `L` | tardy = late |
 | `T` , `Y` | `L-E` | excused late |
 
-A non-blank pair **absent from the map raises** — it is never silently dropped or mis-bucketed, so a gap is fixed in config, never in code. Row multiplicity comes from the configured `portion` rule: portion `1.0` → 2 rows (a full day is two half-days); code `T` → 1 row; anything else → 1 row.
+A non-blank pair **absent from the map raises** — it is never silently dropped or mis-bucketed, so a gap is fixed in config, never in code. A row with a **blank Absent Code is dropped** before any of this (no absence to report).
+
+Row multiplicity then comes from the configured `portion` rule, and **the order of the checks matters**:
+
+1. **Tardy first** — if the Absent Code equals the configured `tardy_code` (`T`), the row emits `tardy_rows` (1). This wins *before* the portion is even read, so a tardy recorded against a full-day portion is still ONE row, not two.
+2. Otherwise, if `Portion Absent` equals `full_day_value` (`1.0`), emit `full_day_rows` (2) — a full day is two half-days.
+3. Otherwise emit `default_rows` (1) — a partial-day absence, or an unparseable portion.
 
 **8-12 period band** (`StudentPeriodAbsences.txt`) — the category is **PASSED THROUGH from the district's own extract**. The GDE column already holds final codes (`A`, `A-E`, `L`, `AD`, `AL`, `OffSite`, `ISS`, …). SpacesEDU aggregates per-day itself using per-entry weights (8-12 = 0.25/entry, 4 entries = one day, capped at 1/day), so we emit one output row per period-absence row — no AM/PM collapse, no derivation, no filtering. Rows with a blank category **or** a blank student number are dropped; nothing else is.
 
-> **This half is district data we do not control.** We cannot promise its vocabulary, and we do not filter it: SpacesEDU ignores non-accepted codes rather than rejecting the file. Any statement about which period-band codes are *accepted* belongs to the importer, not to us.
+> **This half is district data we do not control.** We cannot promise its vocabulary, and we do not filter it: SpacesEDU is *understood to* ignore non-accepted codes rather than reject the file — **basis: owner knowledge, recorded 2026-06-19; not confirmed against the live importer.** That understanding is why we pass the category through unfiltered, so it is worth re-checking under Q1. Any statement about which period-band codes are *accepted* belongs to the importer, not to us.
 
 ### Published references — precedence ladder
 
@@ -383,7 +396,7 @@ Until Q1 is answered, every row above that references it stays `pending owner co
 
 ### Header-spelling variants — TOLERATED, not contract
 
-A real-world SD22 `courseinfo.csv` sample (held in the team's internal Drive; deliberately **not** linked from this public repo) uses different header spellings from ours:
+A real-world SD22 `courseinfo.csv` sample (file id held in the team's internal Drive; deliberately **not reproduced in this document**, and scrubbed from the plan file that previously carried it — git history still retains that pre-existing occurrence) uses different header spellings from ours:
 
 | Ours (GUARANTEED — what we emit) | SD22 sample variant | Status |
 |---|---|---|
@@ -408,7 +421,9 @@ The output CSVs are one contract; the **mapping YAML schema** is the other. Phas
 
 **New config keys are added, never repurposed.** A key's meaning is fixed once shipped; a changed meaning needs a new key and a MAJOR config-format bump. This is what lets an older app read a newer config without mis-driving a conversion.
 
-`MappingConfig` (the root model) is `extra="ignore"` — an unknown top-level key is dropped rather than rejected. That is deliberate **forward compatibility**: a config carrying a key only a newer build understands still loads and runs on an older build. Note the asymmetry — five sibling models declare `extra="forbid"`, so the leniency is scoped to the root, where forward compatibility is worth more than typo-catching.
+`MappingConfig` (the root model) is `extra="ignore"` — an unknown top-level key is dropped rather than rejected. That is **forward compatibility**: a config carrying a key only a newer build understands still loads and runs on an older build.
+
+**Be precise about how far that leniency reaches** — it is the Pydantic **default everywhere except five leaf models**. `MappingConfig`, `GlobalConfig` and `EntityConfig` all declare no `model_config`, so they inherit `extra="ignore"`. Only `EmailDerivedDate`, `FieldEmailFormat`, `FieldEnrollStatus`, `RowFilter` and `CrossEnrollmentConfig` declare `extra="forbid"`. So a typo in `global_config` or in an entity block is **silently dropped, not rejected** — see the two rows in the matrix below and the `enabled_entities` consequence spelled out there.
 
 ### Two-direction compatibility matrix
 
@@ -419,8 +434,9 @@ Version is `<major>.<minor>` as a **quoted string** (`'1.9'`). A bare YAML float
 | Same major, **older or equal** minor | Loads silently. | In range. |
 | Same major, **newer** minor | Loads, with a loud **WARNING** naming both versions. | Same-major semantics are safe; the config may use features this build ignores. |
 | **Different major** (older *or* newer) | **Fails loud** (`ValueError`), naming the supported major. | An out-of-major-range config must never silently drive a conversion. |
-| Unknown **top-level** key | Ignored. | Forward compatibility (`extra="ignore"`). |
-| Unknown key in a **nested** model | Rejected. | `extra="forbid"` — typo-catching where forward compatibility isn't needed. |
+| Unknown **top-level** key (`MappingConfig`) | **Ignored.** | Forward compatibility — the Pydantic default, declared deliberately. |
+| Unknown key in **`global_config`** or in an **entity block** | **Ignored** (`GlobalConfig` / `EntityConfig` declare no `model_config`, so they inherit `extra="ignore"`). | Forward compatibility again — but note the cost: **typos here are silent.** A mistyped `enabled_entities` (e.g. `enabled_entites:`) is dropped, leaving the field at its `[]` default, and empty `enabled_entities` means **ALL defined mappings are enabled** — so a one-character typo can widen a config's output rather than narrow it. Phase 2's creator should validate key names on the way in rather than rely on the loader. |
+| Unknown key in one of the **five leaf models** — `EmailDerivedDate`, `FieldEmailFormat`, `FieldEnrollStatus`, `RowFilter`, `CrossEnrollmentConfig` | **Rejected** (`extra="forbid"`). | These are small closed value objects where a typo is far more likely than a forward-compat key, so typo-catching wins. |
 
 `_base:` inheritance is a recursive deep merge with cycle detection. **Only dicts merge key-by-key; every other value — including lists — REPLACES wholesale.** An override that wants to extend a list must restate the whole list. A user-dir YAML shadows a same-named bundled config entirely (logged at INFO, never silent).
 
@@ -432,7 +448,7 @@ The loader's rule is: bump MINOR when the bundled configs start using new same-m
 
 ## Expected outputs per config
 
-The **CSVs the contract sweep asserts** column is rendered from `tests/contract_schema.EXPECTED_ENTITIES` and gated by `tests/test_output_contract_doc.py` — this table cannot silently diverge from what the tests enforce. The **Entities enabled** column is gated against each config's real `active_entities()`.
+This table is **hand-written and GATED AGAINST** the enforced contract by `tests/test_output_contract_doc.py` — there is no generator. The **CSVs the contract sweep asserts** column is gated against `tests/contract_schema.EXPECTED_ENTITIES`; the **Entities enabled** column against each config's real `active_entities()`. So the table cannot silently diverge from what the tests enforce, but it is maintained by hand.
 
 <!-- contract-table: expected-outputs -->
 

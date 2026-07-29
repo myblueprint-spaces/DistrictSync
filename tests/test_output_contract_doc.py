@@ -45,6 +45,54 @@ DOC_PATH = Path(__file__).resolve().parents[1] / ORDER_AUTHORITY
 
 _ANCHOR_RE = re.compile(r"<!--\s*contract-table:\s*(?P<id>[A-Za-z0-9_-]+)\s*-->")
 
+#: Any dated confirmation stamp, ANYWHERE in the doc — not just inside an
+#: anchored table. The table-scoped gate below cannot see a stamp added to the
+#: front-matter or to a prose section, which is precisely how a doc-wide stamp
+#: would come back.
+_CONFIRMED_STAMP_RE = re.compile(r"confirmed \d{4}-\d{2}-\d{2}")
+
+#: The literal sentence that makes the no-doc-wide-stamp policy visible to a
+#: reader (front-matter status row).
+_NO_DOC_WIDE_STAMP_SENTENCE = "there is no doc-wide confirmation stamp"
+
+#: Today's stamp population, pinned by count: the legend row that DEFINES the
+#: value, plus the two owner-confirmed Students rows. Anything else is a stamp
+#: that escaped the two-row scope.
+_EXPECTED_STAMP_COUNT = 3
+
+#: The three open owner questions, held VERBATIM. Marker-only matching (e.g.
+#: `"**Q1 — " in text`) let the question BODY be rewritten while the test stayed
+#: green — the exact failure "verbatim" exists to prevent.
+Q1_TEXT = (
+    "**Q1 — attendance category vocabulary + date format: what is the live importer's verdict per value?**\n"
+    "> The published Docs list the categories `A`, `AD`, `A-E`, `A-E OffSite`, `AL`, `AL-E`, `L`, `L AUTH`, "
+    "`L-E` and document `DD-MMM-YYYY` dates. DistrictSync derives `A`, `A-E`, `L`, `L-E` for the K-7 daily "
+    "band and emits ISO `yyyy-MM-dd`. Which of the Docs' values does the live importer actually accept today, "
+    "and is ISO the required date shape (as the base config comment asserts) or merely one accepted shape?"
+)
+Q2_TEXT = (
+    "**Q2 — CourseInfo/StudentCourses header spellings: which spelling does the live importer canonically "
+    "expect?**\n"
+    "> The SD22 sample shows `CourseCode` / `SchoolID` / `Integration Id` where DistrictSync emits "
+    "`Course Code` / `School ID` / `IntegrationId`. Are both accepted by the live importer, and if so which "
+    "is canonical — i.e. should DistrictSync switch, or is our spelling the one to document as canonical in "
+    "the internal spec?"
+)
+Q3_TEXT = (
+    "**Q3 — line-ending tolerance: we emit CRLF on Windows and LF on the Mac/Linux artifacts — does the "
+    "importer care?**\n"
+    "> If it does not, we can leave `os.linesep` and record an accepted divergence. If it does, "
+    "`DataLoader._write_csv` needs a `lineterminator` pin, which changes emitted bytes on two of the three "
+    "build platforms and therefore needs its own snapshot-gated slice."
+)
+
+#: Q1 and Q2 each appear twice (inline beside the rows they govern, and again in
+#: the collected "Open owner questions" section); Q3 appears once (the
+#: line-endings section links to it rather than restating it). Pinning the COUNT
+#: as well as the text stops a silent de-duplication that would strip a question
+#: from the section a reader actually reaches.
+_EXPECTED_QUESTION_COUNTS = {"Q1": (Q1_TEXT, 2), "Q2": (Q2_TEXT, 2), "Q3": (Q3_TEXT, 1)}
+
 
 def _doc_text() -> str:
     assert DOC_PATH.is_file(), (
@@ -105,6 +153,28 @@ def _anchored_ids(text: str) -> set[str]:
     return {m.group("id") for m in _ANCHOR_RE.finditer(text)}
 
 
+def _ordered_anchor_ids(text: str) -> list[str]:
+    """Anchor ids in DOCUMENT order, duplicates included."""
+    return [m.group("id") for m in _ANCHOR_RE.finditer(text)]
+
+
+#: Every anchored table, in the order the document must present them: the BOM
+#: matrix, then the 8 entities in EMITTED order (the base myedbc `mappings` key
+#: order), then the per-config expected-outputs table.
+EXPECTED_ANCHOR_ORDER = [
+    "bom-matrix",
+    "Students",
+    "Staff",
+    "Family",
+    "Classes",
+    "Enrollments",
+    "CourseInfo",
+    "StudentCourses",
+    "StudentAttendance",
+    "expected-outputs",
+]
+
+
 def _split_entities(cell: str) -> set[str]:
     return {part.strip() for part in cell.split(",") if part.strip()}
 
@@ -126,6 +196,26 @@ def test_doc_documents_exactly_the_contract_entities():
         f"{ORDER_AUTHORITY} documents entities {sorted(documented)}, the contract has "
         f"{sorted(OUTPUT_SCHEMA)} (undocumented: {sorted(set(OUTPUT_SCHEMA) - documented) or 'none'}; "
         f"documented but not emitted: {sorted(documented - set(OUTPUT_SCHEMA)) or 'none'})"
+    )
+
+
+def test_anchors_are_unique_and_in_the_documented_section_order():
+    """The anchor list, in document order, is exactly ``EXPECTED_ANCHOR_ORDER``.
+
+    ONE assertion closing two holes at once:
+
+    * **Duplicates** — ``_table_after`` takes the FIRST matching anchor, so a
+      second ``<!-- contract-table: Students -->`` (an easy copy-paste) would
+      leave a whole table completely ungated while everything stayed green.
+    * **Section order** — the doc claims its entities are "in emitted order".
+      Nothing else checks that claim: the per-entity tests are parametrized by
+      entity, so reordering the doc's SECTIONS could not turn any of them red.
+    """
+    actual = _ordered_anchor_ids(_doc_text())
+    assert actual == EXPECTED_ANCHOR_ORDER, (
+        f"{ORDER_AUTHORITY} anchor ids in document order are {actual}, expected "
+        f"{EXPECTED_ANCHOR_ORDER}. A DUPLICATE id silently un-gates a table (the parser takes "
+        f"the first match); a reordering breaks the doc's own 'in emitted order' claim."
     )
 
 
@@ -160,10 +250,15 @@ def test_doc_column_tables_number_their_rows_consistently():
         assert numbers == expected, f"{ORDER_AUTHORITY} -> '{entity}' rows are numbered {numbers}, expected {expected}"
 
 
-def test_every_documented_column_row_carries_a_status_and_a_basis():
+def test_every_column_row_in_the_anchored_tables_carries_a_status_and_a_basis():
     """No verdict row may ship without provenance.
 
-    The doc's entire premise is that a reader can tell a confirmed claim from an
+    SCOPE, stated honestly: this checks the rows **within the eight anchored
+    per-entity tables**. Verdict-shaped rows elsewhere in the doc (the delivery
+    envelope, the BOM matrix, the quoting table, the attendance knob table) are
+    not parsed here — the anchored tables are the machine-read surface.
+
+    The doc's premise is that a reader can tell a confirmed claim from an
     unconfirmed one. A blank Status or Basis cell silently reintroduces the
     doc-wide-stamp problem this format exists to prevent.
     """
@@ -176,13 +271,12 @@ def test_every_documented_column_row_carries_a_status_and_a_basis():
     assert not blanks, f"{ORDER_AUTHORITY} has verdict rows missing Status or Basis: {blanks}"
 
 
-def test_the_doc_carries_no_doc_wide_confirmation_stamp():
+def test_the_confirmed_stamp_appears_on_exactly_the_two_owner_confirmed_columns():
     """Confirmation is PER ROW. Only the two owner-confirmed columns may claim it.
 
-    Plan 0038 flag 13 replaced the brief's doc-wide "confirmed against the live
-    importer" stamp with per-row provenance; this pins that the confirmed marker
-    cannot spread beyond the rows the owner actually confirmed
-    (``Students.EnrollStatus`` and ``Students.SchoolCode``, 2026-07-27).
+    SCOPE: the eight anchored per-entity tables. The doc-WIDE half of this policy
+    is enforced by ``test_no_dated_confirmation_stamp_escapes_the_two_owner_rows``
+    below — this test alone cannot see a stamp added outside a table.
     """
     text = _doc_text()
     confirmed: set[str] = set()
@@ -197,15 +291,52 @@ def test_the_doc_carries_no_doc_wide_confirmation_stamp():
     )
 
 
-def test_the_three_open_owner_questions_are_stated_verbatim():
-    """Q1/Q2/Q3 ship verbatim in the doc — they are the doc's open dependencies.
+def test_no_dated_confirmation_stamp_escapes_the_two_owner_rows():
+    """A dated stamp may not appear ANYWHERE outside the legend + the two rows.
 
-    Deleting a question without answering it would quietly convert a declared
-    pending row into an unexplained one.
+    The table-scoped test above parses only the anchored tables, so re-stamping
+    the FRONT MATTER — the exact shape of the doc-wide stamp plan 0038 flag 13
+    removed — sailed straight through it. This is the text-level sweep that
+    closes that hole: the policy sentence must still be stated, and the total
+    population of dated stamps must stay at exactly the legend row that defines
+    the value plus the two owner-confirmed Students rows.
     """
     text = _doc_text()
-    for marker in ("**Q1 — ", "**Q2 — ", "**Q3 — "):
-        assert marker in text, f"{ORDER_AUTHORITY} no longer states the owner question {marker.strip('* —')}"
+    assert _NO_DOC_WIDE_STAMP_SENTENCE in text, (
+        f"{ORDER_AUTHORITY} no longer states {_NO_DOC_WIDE_STAMP_SENTENCE!r} in its front matter. "
+        f"That sentence IS the policy — removing it is how a doc-wide stamp comes back."
+    )
+    stamps = _CONFIRMED_STAMP_RE.findall(text)
+    assert len(stamps) == _EXPECTED_STAMP_COUNT, (
+        f"{ORDER_AUTHORITY} carries {len(stamps)} dated 'confirmed <date>' stamps, expected "
+        f"{_EXPECTED_STAMP_COUNT} (the Status-legend row + Students.EnrollStatus + "
+        f"Students.SchoolCode). A stamp outside those three places is a doc-wide or "
+        f"unearned confirmation — it needs an owner check against the live importer, not a "
+        f"doc edit. If a genuinely new row was confirmed, raise this count deliberately."
+    )
+
+
+@pytest.mark.parametrize("label", sorted(_EXPECTED_QUESTION_COUNTS))
+def test_the_open_owner_questions_are_stated_verbatim(label):
+    """Q1/Q2/Q3 ship VERBATIM — full text, and the right number of times.
+
+    Matching on a short marker (``"**Q1 — "``) proved worthless: the question
+    BODY could be rewritten, narrowed or gutted with the test still green. The
+    full text is held as a module constant and the occurrence count is pinned, so
+    both a reword and a silent de-duplication go red.
+
+    These questions are the doc's open dependencies — deleting or softening one
+    without answering it would quietly convert a declared pending row into an
+    unexplained one.
+    """
+    question, expected_count = _EXPECTED_QUESTION_COUNTS[label]
+    actual = _doc_text().count(question)
+    assert actual == expected_count, (
+        f"{ORDER_AUTHORITY} states owner question {label} verbatim {actual} time(s), expected "
+        f"{expected_count}. The question text is pinned in this module — if {label} was ANSWERED, "
+        f"retire it deliberately (update the rows it governs, then this constant); if it was "
+        f"reworded, the doc and this pin have diverged."
+    )
 
 
 # ---------------------------------------------------------------------------

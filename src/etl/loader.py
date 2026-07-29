@@ -313,11 +313,12 @@ class DataLoader:
         ``utf-8`` (no BOM) for :data:`_NO_BOM_ENTITIES`, whose strict downstream
         parser rejects a BOM-prefixed first header.
 
-        Every write reaches this through :meth:`_write_csv`, so no caller can
-        pick its own encoding — the StudentAttendance-BOM class of bug (a second
-        write path hardcoding ``utf-8-sig``) is unrepresentable rather than
-        merely avoided. The published statement of this rule, with the incident
-        that motivated it, is the BOM matrix in
+        :meth:`_write_csv` is the one place that consults this, which makes it
+        exactly ONE encoding decision in the tree today — the
+        StudentAttendance-BOM class of bug is structurally avoided as long as
+        that holds; nothing mechanically forbids a new ``to_csv`` call site, so
+        a second write path must route here. The published statement of this
+        rule, with the incident that motivated it, is the BOM matrix in
         ``docs/developer/output-contract.md``; ``tests/contract_schema.py``
         mirrors it and a policy test pins the two to this method."""
         return "utf-8" if entity_name in cls._NO_BOM_ENTITIES else "utf-8-sig"

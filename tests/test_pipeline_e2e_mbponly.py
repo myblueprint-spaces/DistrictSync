@@ -35,6 +35,10 @@ FIXTURE_DIR = Path(__file__).parent / "snapshots" / "mbp_input"
 # but nothing kept them in step, so a contract change could green here while
 # reddening the contract sweep.
 ROSTERING_CSVS = sorted(DataLoader.output_filenames(ROSTERING_ENTITIES))
+# The must-not-exist loop below iterates this list, so an empty/shrunken list
+# would make that assertion pass vacuously. Pin the size the negative check
+# depends on.
+assert len(ROSTERING_CSVS) == 5, f"expected the 5 rostering CSVs, got {ROSTERING_CSVS}"
 
 COURSE_INFO_COLUMNS = OUTPUT_SCHEMA["CourseInfo"]
 
