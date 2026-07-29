@@ -43,8 +43,22 @@ _SECRET_SIS = "SECRET_SIS"
 _RAW_ISO = "2099-01-02T03:04:05"
 _RAW_ANOMALY = "ANOMALY: Students /secret/roster.csv dropped from 200 to 1 rows"
 _TRACEBACK = "Traceback (most recent call last):\n  File secret.py"
+# The admin's identity email (plan 0038) — personal data that belongs on exactly two
+# surfaces (Settings and Help) and NOWHERE a pure derivation module emits. It rides in via
+# the CONFIG rather than the record, which is where a leak would actually originate: every
+# derivation already receives an ``AppConfig``, so surfacing it costs one careless
+# interpolation.
+_SECRET_IDENTITY = "SECRET.ADMIN@secret-district.example"
 
-_SENTINELS: tuple[str, ...] = (_SECRET_PATH, _SECRET_SIS, _RAW_ISO, "ANOMALY:", "Traceback")
+_SENTINELS: tuple[str, ...] = (
+    _SECRET_PATH,
+    _SECRET_SIS,
+    _RAW_ISO,
+    "ANOMALY:",
+    "Traceback",
+    _SECRET_IDENTITY,
+    "SECRET.ADMIN",  # the local part alone is identifying — a partial leak is a leak
+)
 
 
 def _assert_no_sentinel(text: str, *, where: str) -> None:
@@ -75,7 +89,22 @@ def _sweep_triple(triple: tuple[object, str, str], *, where: str) -> None:
 # A configured install so the derivations run their real rules (not an onboarding gate).
 # `sis_type` is deliberately a valid id — the sentinel rides in via the RECORD's free-text
 # fields (`error`/`anomalies`/`timestamp`), which is exactly where a leak would originate.
-_CFG = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=True)
+_CFG = AppConfig(
+    input_dir="/in",
+    output_dir="/out",
+    sis_type="myedbc",
+    schedule_registered=True,
+    identity_email=_SECRET_IDENTITY,
+    identity_sd_number="99",
+)
+
+# An UNCONFIGURED install carrying the same poisoned identity. Added because a
+# perturbation exposed that `_CFG` alone cannot reach the no-history branches gated on
+# `has_completed_setup()` — a leak planted in the "No sync has run yet" copy passed the
+# sweep untouched. Those branches are defensive (the dispatcher gates un-onboarded
+# installs elsewhere), but they still EMIT ADMIN COPY from an AppConfig, so they are a
+# leak surface and must be swept.
+_CFG_UNCONFIGURED = AppConfig(identity_email=_SECRET_IDENTITY, identity_sd_number="99")
 
 
 def _poisoned_record(**overrides: object) -> dict:
@@ -139,11 +168,24 @@ _SCHEDULE_STATES: dict[str, ScheduleStatus | None] = {
 
 
 class TestHomeStatusSweep:
-    def test_none_records_degradation_is_clean(self) -> None:
-        _sweep_dataclass(derive_home_status(None, _CFG), where="derive_home_status(None)")
+    @pytest.mark.parametrize("cfg", [_CFG, _CFG_UNCONFIGURED], ids=["configured", "unconfigured"])
+    def test_none_records_degradation_is_clean(self, cfg: AppConfig) -> None:
+        _sweep_dataclass(derive_home_status(None, cfg), where="derive_home_status(None)")
 
-    def test_empty_records_is_clean(self) -> None:
-        _sweep_dataclass(derive_home_status([], _CFG), where="derive_home_status([])")
+    @pytest.mark.parametrize("cfg", [_CFG, _CFG_UNCONFIGURED], ids=["configured", "unconfigured"])
+    @pytest.mark.parametrize("created_at", [None, _RAW_ISO], ids=["no-store", "store-created"])
+    def test_empty_records_is_clean(self, cfg: AppConfig, created_at: str | None) -> None:
+        """Both no-history branches, on BOTH config shapes.
+
+        `has_completed_setup()` selects between "Run history starts fresh here" and "No
+        sync has run yet"; sweeping only a configured install left the second branch
+        unreachable, so a leak planted there passed the sweep. Both are covered now, and
+        the fresh-start branch is additionally driven with and without a store timestamp.
+        """
+        _sweep_dataclass(
+            derive_home_status([], cfg, store_created_at=created_at),
+            where=f"derive_home_status([], store_created_at={created_at!r})",
+        )
 
     @pytest.mark.parametrize("override", _BRANCH_OVERRIDES)
     def test_every_branch_is_clean(self, override: dict) -> None:
