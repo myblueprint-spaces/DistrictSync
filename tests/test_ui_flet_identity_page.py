@@ -211,12 +211,13 @@ class TestPageStates:
         assert "We found your district" not in text
         assert _button(view, identity.CORRECTION_LABEL) is not None
 
-    def test_no_state_promises_a_SCOPED_picker_before_S5_delivers_one(self, page: MagicMock, fixed_index) -> None:
-        """Until S5 lands `filtered_catalog`, every district list still shows all eleven.
+    def test_no_state_promises_a_SURFACE_this_page_cannot_see(self, page: MagicMock, fixed_index) -> None:
+        """The launch page describes what IT did, never what another screen will do.
 
-        So no state may say "we'll show you your district's settings" — that is a claim
-        about a build behaviour that does not exist yet. The wording chosen instead is true
-        NOW and stays true after S5, so this copy never needs a second edit.
+        Authored when the pickers were unscoped, to stay true on both sides of S5 — and it
+        did: S5 landed and no string on this page changed. The rule outlives its occasion,
+        so the assertion stays: no state may say "we'll show you your district's settings",
+        because this page cannot verify what the District step renders.
         """
         for address in ("admin@sd48.bc.ca", "admin@sd51.bc.ca", "admin@gmail.com"):
             view = build_identity(page, app_config=AppConfig(), on_enter=lambda: None)
@@ -224,7 +225,7 @@ class TestPageStates:
             _button(view, identity.CONTINUE_LABEL).on_click(None)
 
             text = _all_text(view).lower()
-            assert "we'll show you" not in text, f"{address} promises a scoped list S5 has not delivered"
+            assert "we'll show you" not in text, f"{address} promises a surface this page cannot see"
 
     def test_no_state_claims_a_per_person_registry(self, page: MagicMock, fixed_index) -> None:
         """Matching is by a district's public DOMAIN — there is no list of people.

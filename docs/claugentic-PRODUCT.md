@@ -97,8 +97,11 @@ borrowed from stale config.
 - **No two selectable options may read identically.** A picker row is a decision, and two rows with
   the same words are a coin-flip an admin can lose (two SD51 mappings — rostering and attendance —
   ship the wrong files if confused). Every visible option must carry what
-  distinguishes it (the district *and* what it produces — the two SD51 rows read identically today;
-  brief 0037 fixes this); the raw config id is a muted support hint, never the difference.
+  distinguishes it (the district *and* what it produces). The two SD51 rows read identically until
+  brief 0037 gave the attendance tier its own `district_name`, and any residual collision — a
+  partner-authored mapping we do not control — is disambiguated at render time by appending the
+  raw config id to every colliding row; that id is otherwise a muted support hint, never the
+  difference.
 - **Clean native close.** The desktop window opens fast and closes cleanly (zero orphaned threads),
   the way a native app should.
 
@@ -370,9 +373,9 @@ rules make that honest and keep it honest:
   first-class path, not an error path: no lockout, no attempt counter, no delay, no red. The
   allowlist is a release artifact and will always lag reality; a new hire who isn't on it must be
   greeted exactly as well as one who is.
-- **It never touches the network.** Resolution is a local hash comparison, so the front door works
-  on a locked-down district server. The product therefore has no "connecting…" state to design —
-  and must never fake one.
+- **It never touches the network.** Resolution is a local comparison against domain lists carried
+  in the bundled mapping files, so the front door works on a locked-down district server. The
+  product therefore has no "connecting…" state to design — and must never fake one.
 - **It never gates work.** Identity scopes lists and is shown, read-only, beside the support path in Help. It never gates a
   conversion, a delivery, a schedule, or the CLI — a scheduled nightly run of an install that never
   answered the ask keeps running byte-identically — the same output files and exit codes. Nor does it ever silently change the configured

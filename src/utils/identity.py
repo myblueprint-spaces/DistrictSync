@@ -34,8 +34,9 @@ Two claims, at two different layers — do not read them as one (S9):
   are total over any string, including bytes pasted from a mail client, a corrupted stored
   value, and deliberately hostile input (`test_identity.py`).
 * **Never narrows a district list to zero** is a rule the CONSUMERS must uphold; nothing
-  here can enforce it, and there are no consumers yet. Consumers MUST fail open on top of
-  this (S5's catalog layer is where that list rule is implemented and pinned).
+  here can enforce it. The consumer is ``mapping_catalog.filtered_catalog`` (LIVE since
+  plan 0038 S5), which is where that list rule is implemented and pinned — a config that
+  cannot be resolved claims nobody, and no match means the FULL list.
 
 Validation belongs at the BOUNDARY, not here: ``validators.validate_identity_email``
 rejects a malformed typed address loudly before it is normalised or persisted. This

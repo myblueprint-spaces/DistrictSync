@@ -50,6 +50,7 @@ from src.ui_flet.convert_output import (
     setup_first_copy,
     show_setup_first_card,
     standalone_deliver_state,
+    this_run_label,
 )
 
 
@@ -469,6 +470,73 @@ class TestDistrictMismatchNote:
         note = district_mismatch_note("sd40myedbc", "sd99custom", config_dir=tmp_path)
         assert note is not None
         assert "sd40myedbc" not in note
+
+
+class TestThisRunLabel:
+    """The Convert header pill — "This run: <district>" (plan 0038 S5).
+
+    The P1 leftover it closes: the header chip asserts the SAVED district while the run uses
+    the PICKED one, so the one line of identity on the screen was describing a different
+    conversion than the button underneath it would start. The pill names the run's district
+    and is ABSENT when the two agree — a permanent marker would be noise on the common path.
+
+    Written red-first: every row below is a decision the spec makes, not a description of an
+    implementation. Sibling of ``district_mismatch_note`` in the same module, deliberately —
+    same seam, same ``config_dir`` test seam, same TOTAL-over-a-broken-config posture.
+    """
+
+    def test_an_aligned_pick_is_absent(self, tmp_path: Path) -> None:
+        assert this_run_label("myedbc", "myedbc", config_dir=tmp_path) is None
+
+    def test_whitespace_variants_of_the_same_district_are_aligned(self, tmp_path: Path) -> None:
+        assert this_run_label(" myedbc ", "myedbc", config_dir=tmp_path) is None
+
+    def test_no_pick_is_absent(self, tmp_path: Path) -> None:
+        """Nothing has been chosen for this run, so there is no run district to name."""
+        assert this_run_label(None, "myedbc", config_dir=tmp_path) is None
+        assert this_run_label("", "myedbc", config_dir=tmp_path) is None
+        assert this_run_label("   ", "myedbc", config_dir=tmp_path) is None
+
+    def test_a_divergent_pick_names_the_PICKED_district(self, tmp_path: Path) -> None:
+        """The whole point: the pill reads the district THIS RUN will use — never the saved
+        one, which is what the header chip beside it already shows."""
+        label = this_run_label("sd40myedbc", "sd99custom", config_dir=tmp_path)
+
+        assert label == "sd40myedbc"  # empty config_dir → friendly name falls back to the raw id
+        assert label is not None
+        assert "sd99custom" not in label
+
+    def test_a_pick_with_NO_saved_district_is_named(self, tmp_path: Path) -> None:
+        """A blank saved district is not alignment — there is nothing to be aligned WITH, and
+        the header renders no district chip in that state, so the pill is the only thing on
+        the screen naming what the run will use. (This is where it diverges from
+        ``district_mismatch_note``, which stays quiet because it exists to explain that the
+        SAVED settings are untouched — and there are none.)"""
+        assert this_run_label("sd40myedbc", None, config_dir=tmp_path) == "sd40myedbc"
+        assert this_run_label("sd40myedbc", "   ", config_dir=tmp_path) == "sd40myedbc"
+
+    def test_it_renders_the_FRIENDLY_name_when_one_exists(self) -> None:
+        """A trust surface never shows a raw config id (`docs/claugentic-PRODUCT.md`)."""
+        label = this_run_label("sd48myedbc", "sd74myedbc")
+
+        assert label is not None
+        assert "Sea to Sky" in label
+        assert "sd48myedbc" not in label
+
+    def test_a_broken_config_degrades_to_the_raw_id_and_never_raises(self, tmp_path: Path) -> None:
+        """TOTAL — ``friendly_district_name``'s fallback. An admin sees an id at worst, never
+        a crashed Convert screen."""
+        assert this_run_label("no_such_config", "myedbc", config_dir=tmp_path) == "no_such_config"
+
+    def test_it_agrees_with_district_mismatch_note_on_when_to_speak(self, tmp_path: Path) -> None:
+        """The two header/form signals must not contradict each other: wherever the note
+        fires, the pill fires too. (The converse does NOT hold — see the no-saved-district
+        row above, the one deliberate asymmetry.)"""
+        for selected, saved in (("a", "b"), ("myedbc", "myedbc"), (None, "b"), ("a", None)):
+            note = district_mismatch_note(selected, saved, config_dir=tmp_path)
+            pill = this_run_label(selected, saved, config_dir=tmp_path)
+            if note is not None:
+                assert pill is not None, (selected, saved)
 
 
 class TestMissingFilesCopy:

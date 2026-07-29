@@ -57,7 +57,6 @@ from pathlib import Path
 import flet as ft
 
 from src.config.app_config import AppConfig
-from src.config.loader import available_configs
 from src.scheduler import get_scheduler, windows
 from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
 from src.ui_flet import components, tokens
@@ -68,8 +67,19 @@ from src.ui_flet.filepicker import (
     validate_output_dir,
 )
 from src.ui_flet.humanize import friendly_district_name, friendly_sftp_reason
-from src.ui_flet.identity_gate import MatchOutcome, matched_state, stored_identity_email
-from src.ui_flet.mapping_catalog import district_domain_index
+from src.ui_flet.identity_gate import (
+    MatchOutcome,
+    matched_state,
+    stored_identity_domain,
+    stored_identity_email,
+)
+from src.ui_flet.mapping_catalog import (
+    FilteredCatalog,
+    disambiguated_labels,
+    district_domain_index,
+    filtered_catalog,
+    show_all_label,
+)
 from src.ui_flet.picker_field import PickerField
 from src.ui_flet.schedule_status import (
     ScheduleState,
@@ -255,9 +265,45 @@ def _finish_summary_card(rows: list[FinishSummaryRow]) -> ft.Control:  # pragma:
     )
 
 
-def _district_options() -> list[ft.dropdown.Option]:
-    """SIS/district dropdown options — id keyed, ``district_name`` shown (RC2)."""
-    return [ft.dropdown.Option(key=sis_id, text=friendly_district_name(sis_id)) for sis_id in available_configs()]
+def _district_catalog(cfg: AppConfig, *, show_all: bool) -> FilteredCatalog:
+    """The district rows THIS admin should see — the one choke point, per mount (0038 S5).
+
+    Scoped by the stored identity's DOMAIN when one is on file and it matches a district;
+    otherwise the full list. The saved ``sis_type`` rides every result unconditionally, so
+    the district this install actually converts can never vanish from the picker that edits
+    it. TOTAL — any failure inside the catalog degrades to the full, unfiltered list.
+    """
+    return filtered_catalog(stored_identity_domain(cfg), saved_sis=cfg.sis_type, show_all=show_all)
+
+
+def _district_options(catalog: FilteredCatalog) -> list[ft.dropdown.Option]:
+    """SIS/district dropdown options — id keyed, the disambiguated display text shown (RC2).
+
+    Labels come from ``disambiguated_labels`` rather than ``friendly_district_name`` directly:
+    two rows that read identically make the highest-consequence wrong click in this product a
+    coin flip, so any residual collision (a partner-authored YAML we do not control) carries
+    its raw config id.
+    """
+    labels = disambiguated_labels(catalog.summaries)
+    return [ft.dropdown.Option(key=s.sis_type, text=labels[s.sis_type]) for s in catalog.summaries]
+
+
+def _show_all_row(  # pragma: no cover - Flet view glue
+    catalog: FilteredCatalog,
+    *,
+    show_all: bool,
+    on_toggle: Callable[[], None],
+) -> list[ft.Control]:
+    """The text-tier "Show all districts" row — rendered ONLY when a shorter list EXISTS.
+
+    Keyed on ``can_filter``, not on ``filtered``: the row must survive being switched ON, or
+    the admin is stranded in the long list for the session with no way back to their own.
+    Text tier by design — it is a courtesy about list length, never an unlock, and it must
+    not compete with the step's one filled primary.
+    """
+    if not catalog.can_filter:
+        return []
+    return [components.text_button(show_all_label(show_all=show_all), lambda _e: on_toggle())]
 
 
 def _district_window_defaults(cfg: AppConfig) -> tuple[str, str]:  # pragma: no cover - Flet view glue (I/O)
@@ -357,7 +403,13 @@ def _mount_wizard(
     on_schedule_changed: Callable[[], None] | None = None,
 ) -> None:  # pragma: no cover - Flet view glue
     """Render the five-step first-run wizard into ``root`` (resume derived from real state)."""
-    available = available_configs()
+    # D9, re-scoped to the VISIBLE list (0038 S5 — see the dated DECISIONS entry): the seed
+    # reads the FILTERED catalog, so a matched admin whose domain resolves to exactly one
+    # district gets it pre-selected on the District step. That keeps D9's rule intact
+    # ("auto-select only when there is no meaningful choice to make") while making the launch
+    # page's promise — "you'll confirm it on the next step" — literally true. Seeded once from
+    # the unfiltered-by-show-all list, so a later "Show all districts" never rewrites a choice.
+    visible_ids = [s.sis_type for s in _district_catalog(cfg, show_all=False).summaries]
 
     # Shared mutable wizard state. Folders/district selections mirror the config; the schedule
     # status + delivery fact are the injected verification results the finish line + resume read.
@@ -365,7 +417,10 @@ def _mount_wizard(
         "step": SetupStep.DISTRICT,  # placeholder — overwritten by derive_flow(...).resume_step below
         "input": cfg.input_dir,
         "output": cfg.output_dir,
-        "sis": cfg.sis_type or auto_selected_district(available),  # D9: auto-select iff one config
+        # PERSISTED value only — the auto-selection is applied AFTER the resume derivation
+        # below, deliberately. See the comment there.
+        "sis": cfg.sis_type,
+        "show_all": False,  # per-session list scope (flag 5) — never persisted
         "schedule_skipped": False,
         "schedule_status": None,  # latest ScheduleStatus from the section's read-back
         "window_valid": True,  # the seasonal-window gate (B): enabled+invalid closes Continue
@@ -387,6 +442,16 @@ def _mount_wizard(
 
     # Resume: land on the first step real state says is unsatisfied (no stored cursor).
     ws["step"] = derive_flow(_inputs()).resume_step
+
+    # ...and ONLY THEN pre-select the auto-selected district. Order is load-bearing (0038 S5):
+    # `derive_flow` reads `district_chosen`, so seeding the auto-selection first would mark the
+    # District step SATISFIED and resume past it — a matched admin would never see the step the
+    # launch page just promised them ("you'll confirm it on the next step"), and the
+    # "correctable pre-selection" would be neither confirmed nor correctable. Resume derives
+    # from PERSISTED state (what the admin actually chose); the auto-selection is a
+    # pre-selection ON that step, which is what D9 always meant.
+    if not str(ws["sis"]).strip():
+        ws["sis"] = auto_selected_district(visible_ids)  # D9: auto-select iff exactly one VISIBLE
 
     def _step_addressed(step: SetupStep) -> bool:
         """Whether a skippable step is done (LIVE / tested-ok / stored) OR explicitly deferred."""
@@ -502,11 +567,18 @@ def _mount_wizard(
             ws["sis"] = e.control.value or ""
             _refresh_footer()
 
+        def _toggle_show_all() -> None:
+            # Session-local list scope: re-render the step so the dropdown rebuilds against
+            # the other list. The PICK is untouched — widening the list never un-picks.
+            ws["show_all"] = not bool(ws["show_all"])
+            _render()
+
+        catalog = _district_catalog(cfg, show_all=bool(ws["show_all"]))
         dropdown = ft.Dropdown(
             label="District",
             hint_text="Choose your district",  # D9: no pre-selection; placeholder prompts an explicit pick
             value=str(ws["sis"]) or None,
-            options=_district_options(),
+            options=_district_options(catalog),
             on_select=_on_pick,  # Dropdown's value-change is on_select on 0.85.3 (not on_change)
             border_color=tokens.color_border,
             autofocus=True,  # focus the new step's first field (D8 keyboard flow)
@@ -530,6 +602,7 @@ def _mount_wizard(
                     color=tokens.color_muted,
                 ),
                 dropdown,
+                *_show_all_row(catalog, show_all=bool(ws["show_all"]), on_toggle=_toggle_show_all),
             ],
         )
 
@@ -935,6 +1008,10 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
     on valid folders.
     """
     state = {"input": cfg.input_dir, "output": cfg.output_dir, "sis": cfg.sis_type}
+    # Per-session list scope (flag 5) — deliberately NOT an AppConfig field: a
+    # flip-once-forever setting would permanently re-arm the wrong-district risk the
+    # scoping exists to reduce. It also resets on every mount, which is the point.
+    scope = {"show_all": False}
 
     save_btn = components.primary_button(
         # Scope-accurate label (0034 S3-c): this button saves the folders + district (and runs
@@ -1006,11 +1083,25 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
         label="District",
         hint_text="Choose your district",
         value=cfg.sis_type or None,
-        options=_district_options(),
+        options=_district_options(_district_catalog(cfg, show_all=False)),
         on_select=_on_district_change,
         border_color=tokens.color_border,
     )
+    # The show-all row lives in its own slot so the toggle can swap the dropdown's options
+    # IN PLACE — re-rendering the whole card would drop the admin's un-saved folder edits.
+    scope_slot = ft.Column(spacing=0, controls=[])
 
+    def _toggle_show_all() -> None:
+        scope["show_all"] = not scope["show_all"]
+        _refresh_scope()
+        page.update()
+
+    def _refresh_scope() -> None:
+        catalog = _district_catalog(cfg, show_all=scope["show_all"])
+        district_dropdown.options = _district_options(catalog)
+        scope_slot.controls = _show_all_row(catalog, show_all=scope["show_all"], on_toggle=_toggle_show_all)
+
+    _refresh_scope()
     _refresh_gate()
 
     return components.card(
@@ -1021,6 +1112,7 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
                 input_field,
                 output_field,
                 district_dropdown,
+                scope_slot,
                 ft.Row(spacing=16, controls=[save_btn, saved_note]),
             ],
         )

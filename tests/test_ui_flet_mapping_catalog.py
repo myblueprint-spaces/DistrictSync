@@ -248,6 +248,9 @@ def test_missing_config_id_degrades_never_raises(tmp_path: Path) -> None:
         output_labels=(),
         source_file_count=0,
         loaded_ok=False,
+        # UNRESOLVABLE, not declared-empty (0038 S5): we could not read the config, so it
+        # claims nobody and can never narrow anyone's district list to itself.
+        district_domains=None,
     )
 
 
@@ -429,6 +432,7 @@ def _summary(sis: str, *, loaded_ok: bool) -> ConfigSummary:
         output_labels=(),
         source_file_count=0,
         loaded_ok=loaded_ok,
+        district_domains=() if loaded_ok else None,
     )
 
 

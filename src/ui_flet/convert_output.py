@@ -158,6 +158,42 @@ def district_mismatch_note(selected: str | None, saved: str | None, *, config_di
     )
 
 
+def this_run_label(selected: str | None, saved: str | None, *, config_dir: Path | None = None) -> str | None:
+    """The Convert header pill's district — the one THIS RUN will use. ``None`` = no pill.
+
+    The P1 leftover this closes: the header chip names the SAVED district while the run uses
+    the PICKED one, so the single line of identity at the top of the screen described a
+    different conversion from the one the button underneath would start (the pre-0038 code
+    comment at that site admitted as much).
+
+    Fires on DIVERGENCE only — an aligned pick needs no marker, and a permanent pill would be
+    noise on the common path. Two cases count as divergence:
+
+    * a pick that differs from the saved district;
+    * a pick with NO saved district. That is not alignment — there is nothing to be aligned
+      with, and the header renders no district chip at all in that state, so the pill is the
+      only thing on the screen naming what the run will use.
+
+    That second case is the ONE deliberate asymmetry with the sibling
+    :func:`district_mismatch_note`, which stays quiet there because its job is to reassure
+    that the SAVED settings are untouched — and there are none. Everywhere the note speaks,
+    the pill speaks too (pinned).
+
+    Renders the FRIENDLY name (a trust surface never shows a raw config id) via
+    ``friendly_district_name``, which is TOTAL — a broken config degrades to the raw id, never
+    a crashed Convert screen. ``config_dir`` is that helper's test seam, threaded through.
+    Names only config-derived district identity — never PII.
+
+    **Not a gate input.** ``can_run_convert`` is untouched: this is a label, and a label may
+    never decide whether a conversion may run.
+    """
+    sel = (selected or "").strip()
+    sav = (saved or "").strip()
+    if not sel or sel == sav:
+        return None
+    return friendly_district_name(sel, config_dir=config_dir) or sel
+
+
 def missing_files_copy() -> tuple[str, str]:
     """The softened (heading, reassurance) copy over the expected-but-missing file chips.
 

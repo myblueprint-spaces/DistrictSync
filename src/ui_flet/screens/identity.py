@@ -9,8 +9,8 @@ boundary. This file assembles them into ``components.py`` factories and owns no 
 unlocked, and every district mapping ships in the executable no matter what is typed here.
 The page exists for exactly one reason: the highest-consequence wrong click in this product
 is picking the wrong district, because a wrong mapping ships a wrong roster. Knowing which
-district an admin belongs to lets the pickers show theirs first (S5), and that is the whole
-of it.
+district an admin belongs to lets the pickers show theirs first — LIVE since S5, via
+``mapping_catalog.filtered_catalog`` — and that is the whole of it.
 
 **Deliberately absent — each absence IS the register.** None of the following exists here,
 and none should be added:
@@ -75,13 +75,13 @@ logger = logging.getLogger(__name__)
 #    account / credentials / access) is absent by construction, and the        #
 #    district-domain list is never described as protected / secured /          #
 #    anonymous / encrypted. It is a PUBLIC list used to shorten a picker.      #
-# 2. NO PROMISE S5 HAS NOT KEPT. Until S5 lands `filtered_catalog`, every      #
-#    district picker still shows all eleven configs — so this copy may not say #
-#    "we'll show you your district's settings". It says what is true NOW       #
-#    (we recognise the district; you confirm it next) and stays true AFTER S5  #
-#    lands: **S5 tightens nothing here, and this copy must not need a second   #
-#    edit.** If you find yourself wanting to re-word it when the pickers get   #
-#    scoped, the wording was wrong, not the plan.                              #
+# 2. NO PROMISE THE BUILD HAS NOT KEPT. Written before S5 scoped the district  #
+#    pickers, deliberately worded to stay true on BOTH sides of that change —  #
+#    and it did: S5 landed and **not one string below needed an edit.** It     #
+#    says what is still exactly true (we recognise the district; you confirm   #
+#    it next), which the District step now delivers literally, pre-selected.   #
+#    Keep the property: never promise a SURFACE behaviour this page cannot     #
+#    see for itself.                                                           #
 # 3. NO REGISTRY LANGUAGE. Matching is by a district's public DOMAIN — there   #
 #    is no per-person list, so nothing may read as "we have you on file".      #
 # --------------------------------------------------------------------------- #
@@ -151,11 +151,12 @@ def matched_headline(district: str) -> str:
     precisely because the hint can be wrong (a shared district domain, a consultant, a
     board-wide address).
 
-    It also does not promise a SCOPED picker: until S5 lands, every district list still
-    shows all eleven configs, so "we'll show you X's settings" would be a claim the build
-    cannot keep. "You'll confirm it on the next step" is true today AND after S5 — the
-    District step is a confirmation surface either way (D9 auto-selects a single visible
-    option, and it stays correctable). No second edit needed when the scoping lands.
+    It also does not over-promise the picker. This line was authored before S5 scoped the
+    district lists and deliberately survives it UNCHANGED: "you'll confirm it on the next
+    step" was true when that step showed all eleven, and it is true now that the step opens
+    on the matched district alone, pre-selected and still correctable (D9 auto-selects a
+    single VISIBLE option). "We'll show you X's settings" was avoided because it described a
+    surface behaviour this page cannot verify — keep it that way.
     """
     return f"That's {district} — you'll confirm it on the next step."
 
@@ -414,9 +415,10 @@ def build_identity(
 
         This is the affordance that makes the matched state a *correctable* pre-selection
         rather than a verdict, so it must not persist the very domain the admin has just
-        told us is wrong. That address is the ONE input to S5's scoping: keeping it would
-        turn a correction into a durable mis-scope, and the correction would have to be
-        made twice — here and again in Settings.
+        told us is wrong. That address is the ONE input to the district-list scoping: keeping
+        it would turn a correction into a durable mis-scope (every picker would open on the
+        rejected district), and the correction would have to be made twice — here and again
+        in Settings.
 
         So it behaves like the escape: enter unfiltered, store nothing, ask again next
         launch. The admin who wants to record a DIFFERENT address can retype it (the

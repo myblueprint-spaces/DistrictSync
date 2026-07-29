@@ -9,8 +9,9 @@ Three concerns, deliberately together because they only make sense as one contra
    the retired hashed-allowlist design this batch CAN be tested end to end: each shipped
    domain is asserted to resolve to exactly its own district.
 
-The matching rule these feed (`filtered_catalog`) lands in S5; what is pinned here is the
-DATA layer it will consume, plus the exact-equality semantics it must implement.
+The matching rule these feed is `mapping_catalog.filtered_catalog` (LIVE since S5, with its
+own truth table in `test_ui_flet_filtered_catalog.py`); what is pinned HERE is the DATA layer
+it consumes, plus the exact-equality semantics it implements.
 """
 
 from __future__ import annotations
