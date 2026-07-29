@@ -37,8 +37,11 @@ doc is the reference. On any conflict, the harness + `docs/DESIGN_SYSTEM.md` win
   and must clear ≥ 4.5:1 (`tests/test_ui_flet_tokens.py`). Never delete a pair to pass. A
   TRANSLUCENT foreground (`with_opacity`) is a composite the check cannot evaluate — use a solid
   token instead, or the pair is ungated.
-- **Gradient is LAUNCH-PAGE-only** (reallocated from onboarding by plan 0038). `hero_gradient()` is
-  reserved for `screens/identity.py`; every other screen leads with `page_header` (no gradient hero).
+- **Gradient's home is the LAUNCH PAGE** (`screens/identity.py`, reallocated from onboarding by plan
+  0038); every other screen leads with `page_header` (no gradient hero). **In transition — don't
+  "fix" the strays:** `screens/onboarding.py`'s hero is still reachable and retires in **S6**;
+  `shell.build_placeholder` is effectively dead and is roadmapped. Removing either early is out of
+  scope and collides with S6.
 - **Identification is never authentication (0038).** On the launch page / Settings identity section /
   Help echo, never write: sign in · log in · verify · unlock · authorized · account · credentials ·
   access — and never call the district-domain list protected / secured / anonymous / encrypted. It is

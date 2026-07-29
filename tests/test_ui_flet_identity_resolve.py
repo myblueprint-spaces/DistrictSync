@@ -1,4 +1,4 @@
-"""The launch page's PURE matching layer (plan 0038 S4a) — the S4a→S5 seam.
+r"""The launch page's PURE matching layer (plan 0038 S4a) — the S4a→S5 seam.
 
 Written RED-FIRST per `docs/claugentic-CHARTER.md` → "Pure predicate / primitive modules
 whose semantics the spec DECIDES": every judgment call below (exact-vs-suffix matching,
@@ -8,9 +8,12 @@ quietly make it.
 
 **Independence, stated honestly:** no sub-agent tool was available in this session, so
 these tests are SELF-AUTHORED, not written by an independent test-author spawn. That is
-the weaker form (see the charter's independence caveat). The compensation is the
-falsification pass recorded in the slice report: each guard below was perturbed, observed
-red, and restored.
+the weaker form (see the charter's independence caveat). The compensation is a
+perturb-and-restore pass over the rules below — each broken in the source, observed RED
+here, then restored: exact-equality swapped for `endswith` (the subdomain rows), the
+resolver re-sorted (the caller-order row), the SD boundary `(?!\d)` dropped (the
+SD4-is-not-SD48 row), and the read-time re-validation removed (the hand-edited table).
+Named inline rather than in a report, so the evidence lives where the assertions do.
 
 The one rule that carries real risk: **matching is EXACT, case-normalised equality.**
 Suffix matching over-matches (`mail.sd48.bc.ca` would scope an admin into SD48 who is not
@@ -217,6 +220,21 @@ def test_a_hand_edited_stored_value_reads_as_unanswered(stored: str, why: str) -
     cfg = AppConfig(identity_email=stored, load_state=ConfigLoadState.LOADED)
 
     assert stored_identity_email(cfg) == "", why
+
+
+@pytest.mark.parametrize("stored", [None, 42, ["admin@sd48.bc.ca"], {"a": 1}, b"admin@sd48.bc.ca"])
+def test_a_NON_STRING_stored_value_reads_as_unanswered_rather_than_raising(stored: object) -> None:
+    """A non-``str`` raises ``AttributeError``/``TypeError`` inside the validator, not ``ValueError``.
+
+    ``AppConfig._value_fits`` should keep a non-``str`` out of this field — but that is a
+    guarantee made in a DIFFERENT module, and a directly-constructed instance never went
+    through a load at all. A reader whose whole contract is "never fail closed" must not be
+    hostage to someone else's invariant, so the catch is widened rather than relying on it.
+    """
+    cfg = AppConfig(load_state=ConfigLoadState.LOADED)
+    cfg.identity_email = stored  # type: ignore[assignment]  - deliberately bypassing the choke point
+
+    assert stored_identity_email(cfg) == ""
 
 
 def test_a_good_stored_value_reads_back_as_typed() -> None:

@@ -557,12 +557,21 @@ def main(page: ft.Page) -> None:
         answer and THEN calls this, so the app body's first paint must see what was just
         written (D1's per-mount freshness only helps from the NEXT hop onward). The
         no-gate path passes the startup snapshot explicitly — nothing has changed under it.
+
+        **The latch is set only on SUCCESS**, and that is not a detail. Arming it first
+        would mean a TRANSIENT failure (a locked profile, a probe that raised once) left the
+        launch page still mounted with the latch already down: every affordance on it — Get
+        started, the correction, the escape — would become a silent no-op, forever, with no
+        error on screen. The admin would be stuck in front of their own sync by a bug that
+        had already passed. A failed entry therefore leaves the door open for the next press
+        AND re-raises, so the failure is visible rather than absorbed.
         """
         nonlocal entered
         if entered:
             return
+        body = build_app_body(page, AppConfig.load() if app_config is None else app_config)
         entered = True
-        root_host.content = build_app_body(page, AppConfig.load() if app_config is None else app_config)
+        root_host.content = body
         page.update()
 
     try:

@@ -131,6 +131,26 @@ class TestBootInvariantsSurviveTheRefactor:
         assert len(rails) == 1, "expected exactly one NavigationRail in the app body"
         assert len(rails[0].destinations) == 6
 
+    def test_the_first_paint_actually_renders_the_initial_destination(
+        self, page: MagicMock, isolated_user_profile: Path
+    ) -> None:
+        """The content pane is POPULATED on the first paint, not merely present.
+
+        Closes a characterisation hole the refactor made easy to fall into: deleting the
+        `render_by_id(initial_id)` call at the tail of `build_app_body` left the whole
+        shell-touching suite green while shipping an empty content pane — a rail beside a
+        blank rectangle. Every other test walks the tree and finds the RAIL, which exists
+        either way.
+        """
+        _write_config(
+            isolated_user_profile, setup_completed=True, input_dir="/in", output_dir="/out", sis_type="myedbc"
+        )
+
+        shell.main(page)
+
+        # A completed install launches on Home, whose page header titles the surface.
+        assert "Home" in _texts(_added_root(page)), "the content host is empty on the first paint"
+
 
 # --------------------------------------------------------------------------- #
 # 2. The launch gate                                                           #
@@ -376,8 +396,15 @@ class TestTheIdentityFloor:
 
         # Entering is the one act on this page that is NOT guarded. Swallowing it would
         # leave a launch page whose Get started button quietly does nothing.
+        get_started = _button_labelled(page.add.call_args[0][0], shell.identity.GET_STARTED_LABEL)
         with pytest.raises(RuntimeError, match="the app body exploded"):
-            _button_labelled(page.add.call_args[0][0], shell.identity.GET_STARTED_LABEL).on_click(None)
+            get_started.on_click(None)
+
+        # And the SECOND press must raise too. A latch armed before the body was built
+        # would swallow this one — the page still mounted, the button now inert forever,
+        # which is a trap dressed as a working screen.
+        with pytest.raises(RuntimeError, match="the app body exploded"):
+            get_started.on_click(None)
 
     def test_a_raise_in_the_app_body_is_not_floored_on_the_ESCAPE_path_either(
         self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
@@ -389,9 +416,40 @@ class TestTheIdentityFloor:
 
         monkeypatch.setattr(shell, "build_app_body", _boom)
         shell.main(page)
+        skip = _button_labelled(_added_root(page), shell.identity.SKIP_LABEL)
 
         with pytest.raises(RuntimeError, match="the app body exploded"):
-            _button_labelled(_added_root(page), shell.identity.SKIP_LABEL).on_click(None)
+            skip.on_click(None)
+        # The second press repeats — the latch was never armed by the failed attempt.
+        with pytest.raises(RuntimeError, match="the app body exploded"):
+            skip.on_click(None)
+
+    def test_a_TRANSIENT_app_body_failure_leaves_the_page_usable(
+        self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The point of latching on SUCCESS: one bad press must not disable the page.
+
+        A locked profile or a probe that raised once is transient by nature. If the latch
+        armed before the body was built, the admin would be left in front of a launch page
+        whose every affordance had become a silent no-op.
+        """
+        attempts: list[int] = []
+
+        def _flaky(_page: ft.Page, cfg: AppConfig) -> ft.Control:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise RuntimeError("a transient failure")
+            return ft.Text("body")
+
+        monkeypatch.setattr(shell, "build_app_body", _flaky)
+        shell.main(page)
+        skip = _button_labelled(_added_root(page), shell.identity.SKIP_LABEL)
+
+        with pytest.raises(RuntimeError, match="a transient failure"):
+            skip.on_click(None)
+        skip.on_click(None)  # the retry succeeds
+
+        assert len(attempts) == 2
 
     def test_the_floor_probes_are_not_vacuous(
         self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch

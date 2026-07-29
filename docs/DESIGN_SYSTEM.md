@@ -95,13 +95,19 @@ Never inline a hex or a px size in a screen or a factory arg; add a token, then 
 weaker one to `secondary_button`. (Settings is a stack of independent SECTIONS, each with at most one
 filled action — folders, schedule, delivery; a new section rides those rather than adding a fourth.)
 
-**Gradient (`hero_gradient`) is reserved for the LAUNCH PAGE** (`screens/identity.py`) — reallocated
-there from the first-run onboarding hero by plan 0038 (S4a moves it; S6 retires the hero, whose front
-door becomes Home hosting the wizard). It marks the one moment the app is not yet itself: before the
-rail exists. Every other screen leads with `page_header`. Text on the gradient uses
+**Gradient (`hero_gradient`) — the LAUNCH PAGE (`screens/identity.py`) is its home**, reallocated
+there from the first-run onboarding hero by plan 0038. It marks the one moment the app is not yet
+itself: before the rail exists. Every other screen leads with `page_header`. Text on the gradient uses
 `color_on_action` / `color_on_action_muted` — both AA-gated against BOTH gradient endpoints, because
 a translucent white is a composite the contrast function cannot evaluate and would therefore be an
 ungated painted pair.
+
+**This is a TRANSITION, not a finished state — do not "fix" the other two out of scope.** Three
+callers exist today and each has its own disposition: the launch page (the home, above);
+`screens/onboarding.py`'s hero, still REACHABLE from unconfigured Home and retiring in **S6**, when
+Home hosts the wizard itself; and `shell.build_placeholder`, effectively dead (every destination
+overrides its placeholder before the rail renders) and **roadmapped** for removal alongside that
+retirement. Removing either early is out of scope and will conflict with S6.
 
 ## Accessibility
 Every foreground/background pair the UI paints is enumerated in `tokens.UI_CONTRAST_PAIRS` and the

@@ -68,28 +68,45 @@ logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Copy — every user-facing string on this page, in one place.                  #
-# The banned vocabulary (sign in / log in / verify / unlock / authorized /     #
-# account / credentials / access) is absent BY CONSTRUCTION here, and a test   #
-# sweeps the rendered tree of every state to keep it that way. The contact     #
-# list is likewise never described as protected / secured / anonymous /        #
-# encrypted — it is a list of public district domains used to shorten a list.  #
+#                                                                              #
+# Three standing constraints, each with a test behind it:                      #
+#                                                                              #
+# 1. BANNED VOCABULARY (sign in / log in / verify / unlock / authorized /      #
+#    account / credentials / access) is absent by construction, and the        #
+#    district-domain list is never described as protected / secured /          #
+#    anonymous / encrypted. It is a PUBLIC list used to shorten a picker.      #
+# 2. NO PROMISE S5 HAS NOT KEPT. Until S5 lands `filtered_catalog`, every      #
+#    district picker still shows all eleven configs — so this copy may not say #
+#    "we'll show you your district's settings". It says what is true NOW       #
+#    (we recognise the district; you confirm it next) and stays true AFTER S5  #
+#    lands: **S5 tightens nothing here, and this copy must not need a second   #
+#    edit.** If you find yourself wanting to re-word it when the pickers get   #
+#    scoped, the wording was wrong, not the plan.                              #
+# 3. NO REGISTRY LANGUAGE. Matching is by a district's public DOMAIN — there   #
+#    is no per-person list, so nothing may read as "we have you on file".      #
 # --------------------------------------------------------------------------- #
 HERO_HEADLINE = "Who looks after this sync?"
-HERO_DETAIL = "Tell us their work email and we'll show you your district's settings."
+HERO_DETAIL = "Tell us their work email and we'll recognise your district."
 
 EMAIL_LABEL = "Work email address"
 EMAIL_HINT = "name@yourdistrict.bc.ca"
-EMAIL_HELPER = "We use only the part after the @ — your district's email domain. It stays on this computer."
+# Minimisation honesty: the DOMAIN is what we match on, but the WHOLE address is stored
+# and rendered — so "we use only the part after the @" would understate what is kept.
+EMAIL_HELPER = (
+    "We match on the part after the @ — your district's email domain. "
+    "The whole address is saved on this computer and nowhere else."
+)
 
 CONTINUE_LABEL = "Continue"
 GET_STARTED_LABEL = "Get started"
-SKIP_LABEL = "I'm not the person who set this up"
+SKIP_LABEL = "I'm not the person who looks after this sync"
 
-CORRECTION_LABEL = "Not your district? Choose a different one."
-SEVERAL_HEADLINE = "Which district are you setting up?"
-SEVERAL_DETAIL = "That email matches more than one setup — you'll choose the right one in a moment."
+RETRY_LABEL = "That's not my address — try again"
+CORRECTION_LABEL = "That's not my district"
+SEVERAL_HEADLINE = "Your district has more than one setup."
+SEVERAL_DETAIL = "You'll choose the right one in a moment."
 
-NO_MATCH_HEADLINE = "We don't have that address on file yet — no problem."
+NO_MATCH_HEADLINE = "We don't have a district on file for that address yet — no problem."
 NO_MATCH_DETAIL = (
     "You can carry on and choose your district in a moment. "
     "If you know your district number, tell us and we'll look for it."
@@ -97,7 +114,12 @@ NO_MATCH_DETAIL = (
 SD_LABEL = "District number (optional)"
 SD_HINT = "e.g. 48"
 NOT_LISTED_LABEL = "My district isn't listed yet"
-NOT_LISTED_NOTE_TAIL = "Choose the closest district for now — Help has our support address if none of them fit."
+# NOT "choose the closest district" — picking a district that is not yours is the
+# highest-consequence wrong click in this product (a wrong mapping ships a wrong roster).
+NOT_LISTED_NOTE_TAIL = (
+    "We'll need to build a mapping for your district — Help has our support address, "
+    "and we'll ask for a sample extract."
+)
 
 
 class Stage(str, Enum):
@@ -128,12 +150,18 @@ def matched_headline(district: str) -> str:
     show, not a fact about who this person is. The correction affordance rides beside it
     precisely because the hint can be wrong (a shared district domain, a consultant, a
     board-wide address).
+
+    It also does not promise a SCOPED picker: until S5 lands, every district list still
+    shows all eleven configs, so "we'll show you X's settings" would be a claim the build
+    cannot keep. "You'll confirm it on the next step" is true today AND after S5 — the
+    District step is a confirmation surface either way (D9 auto-selects a single visible
+    option, and it stays correctable). No second edit needed when the scoping lands.
     """
-    return f"We'll show you {district}'s settings."
+    return f"That's {district} — you'll confirm it on the next step."
 
 
 def sd_resolved_note(district: str) -> str:
-    return f"That's {district}. We'll show you its settings."
+    return f"That's {district} — you'll confirm it on the next step."
 
 
 def sd_unknown_note(digits: str) -> str:
@@ -381,6 +409,39 @@ def build_identity(
         _guard(work)  # a failed persist is logged and ignored...
         on_enter()  # ...and we enter either way, OUTSIDE the guard (see `_guard`).
 
+    def _wrong_district(_e: ft.ControlEvent | None = None) -> None:
+        """ "That's not my district" — enter with the FULL list, storing NOTHING.
+
+        This is the affordance that makes the matched state a *correctable* pre-selection
+        rather than a verdict, so it must not persist the very domain the admin has just
+        told us is wrong. That address is the ONE input to S5's scoping: keeping it would
+        turn a correction into a durable mis-scope, and the correction would have to be
+        made twice — here and again in Settings.
+
+        So it behaves like the escape: enter unfiltered, store nothing, ask again next
+        launch. The admin who wants to record a DIFFERENT address can retype it (the
+        "try again" affordance) or set it later in Settings.
+        """
+        _guard(lambda: log_resolve("show_all", 0, index))
+        on_enter()
+
+    def _try_again(_e: ft.ControlEvent | None = None) -> None:
+        """Back to the field with the typed value intact — a typo's cheapest fix.
+
+        Without it, the only way out of a wrong resolution is to skip the page entirely
+        and go hunting in Settings; a mistyped domain (``sd84`` for ``sd48``) is by far the
+        likeliest way to land in the wrong state, and re-typing is the obvious remedy.
+        """
+
+        def work() -> None:
+            st.stage = Stage.ASK
+            st.error = ""
+            st.note = ""
+            st.configs = ()
+            _paint()
+
+        _guard(work)
+
     def _skip(_e: ft.ControlEvent | None = None) -> None:
         """The escape (flag 1) — enter with the FULL list and store NOTHING.
 
@@ -431,7 +492,9 @@ def build_identity(
                     weight=ft.FontWeight.W_700,
                     color=tokens.color_text,
                 ),
-                components.text_button(CORRECTION_LABEL, _persist_and_enter),
+                # Enters WITHOUT storing — a correction may never persist the rejected
+                # domain (see `_wrong_district`).
+                components.text_button(CORRECTION_LABEL, _wrong_district),
             ]
         else:
             controls = [
@@ -440,10 +503,12 @@ def build_identity(
                 ),
                 _muted(SEVERAL_DETAIL),
                 ft.Row(spacing=tokens.space_sm, wrap=True, controls=[components.district_chip(n) for n in names]),
+                components.text_button(CORRECTION_LABEL, _wrong_district),
             ]
         controls.append(
             components.primary_button(GET_STARTED_LABEL, _persist_and_enter, icon=ft.Icons.ARROW_FORWARD_ROUNDED)
         )
+        controls.append(components.text_button(RETRY_LABEL, _try_again))
         return controls
 
     def _no_match_controls() -> list[ft.Control]:
@@ -458,6 +523,7 @@ def build_identity(
         controls.append(
             components.primary_button(GET_STARTED_LABEL, _persist_and_enter, icon=ft.Icons.ARROW_FORWARD_ROUNDED)
         )
+        controls.append(components.text_button(RETRY_LABEL, _try_again))
         return controls
 
     def _card() -> ft.Control:

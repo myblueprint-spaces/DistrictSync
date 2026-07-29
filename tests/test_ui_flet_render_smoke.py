@@ -90,10 +90,21 @@ def _settings_config(**over):
     """A completed config → ``build_setup`` renders SETTINGS mode (the flat scroll).
 
     The wizard reuses the same schedule/SFTP section builders, so the flat-scroll tests pin
-    the shared behaviour via Settings mode (all sections present at the top level)."""
+    the shared behaviour via Settings mode (all sections present at the top level).
+
+    Carries a stored identity by default (0038 S4a) so the "Who looks after this sync"
+    section renders its VALUE branch under the ErrorCard spy — with an empty one it opens
+    in edit mode and the display path never constructs. Any test that needs the empty
+    shape passes ``identity_email=""``."""
     from src.config.app_config import AppConfig
 
-    base = {"input_dir": "/in", "output_dir": "/out", "sis_type": "myedbc", "setup_completed": True}
+    base = {
+        "input_dir": "/in",
+        "output_dir": "/out",
+        "sis_type": "myedbc",
+        "setup_completed": True,
+        "identity_email": "admin@sd48.bc.ca",
+    }
     base.update(over)
     return AppConfig(**base)
 
@@ -378,6 +389,21 @@ class TestScreensRender:
 
     def test_help(self, stub_page, app_cfg, monkeypatch):
         _assert_renders(lambda: build_help(stub_page, app_config=app_cfg), monkeypatch)
+
+    def test_help_with_a_stored_identity(self, stub_page, monkeypatch):
+        # 0038 S4a: the "who looks after this sync" echo renders ONLY when an address is
+        # stored, so the default-config smoke above never constructs it. Without this the
+        # new branch ships un-smoked — an API-drift crash in it would reach an admin first.
+        from src.config.app_config import AppConfig
+
+        _assert_renders(
+            lambda: build_help(
+                stub_page,
+                app_config=AppConfig(identity_email="admin@sd48.bc.ca"),
+                on_navigate=lambda _d: None,
+            ),
+            monkeypatch,
+        )
 
     def test_onboarding(self, stub_page, monkeypatch):
         _assert_renders(

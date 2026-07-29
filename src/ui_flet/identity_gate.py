@@ -72,10 +72,18 @@ def stored_identity_email(app_config: AppConfig) -> str:
     This is "validate at boundaries" applied to the boundary S3 did not have: the FILE,
     not the keyboard. Returns the value exactly as ``validate_identity_email`` returns it
     (trimmed, un-normalised) so what the admin sees is what the admin typed.
+
+    The caught set is deliberately wider than ``ValueError``. A non-``str`` value raises
+    ``AttributeError`` (no ``.strip``) or ``TypeError`` inside the validator, and while
+    ``AppConfig._value_fits`` should keep a non-``str`` out of this field, that is a
+    guarantee made in a DIFFERENT module — a reader that must never fail closed should not
+    be hostage to someone else's invariant, or to a directly-constructed instance that
+    never went through a load. Anything unusable reads as UNANSWERED, which is the safe
+    answer in every case.
     """
     try:
         return validate_identity_email(app_config.identity_email)
-    except ValueError:
+    except (ValueError, AttributeError, TypeError):
         return ""
 
 

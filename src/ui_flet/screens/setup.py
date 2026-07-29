@@ -765,7 +765,13 @@ def _mount_settings(  # pragma: no cover - Flet view glue
 # "Who looks after this sync" — the identity section (0038 S4a).               #
 # --------------------------------------------------------------------------- #
 IDENTITY_TITLE = "Who looks after this sync"
-IDENTITY_EXPLAINER = "We use the part after the @ to show you your district's settings. It stays on this computer."
+# MINIMISATION HONESTY: matching uses the domain, but the WHOLE address is what gets stored
+# and rendered — so "we use only the part after the @" would understate what is kept. Say
+# what is matched AND what is saved, in that order.
+IDENTITY_EXPLAINER = (
+    "We match on the part after the @ — your district's email domain. "
+    "The whole address is saved on this computer and nowhere else."
+)
 IDENTITY_NONE = "No one on file yet."
 IDENTITY_FIELD_LABEL = "Work email address"
 IDENTITY_FIELD_HELPER = "Leave it blank to remove it."
@@ -773,17 +779,26 @@ IDENTITY_CHANGE_LABEL = "Change"
 IDENTITY_ADD_LABEL = "Add an address"
 IDENTITY_SAVE_LABEL = "Save"
 IDENTITY_CANCEL_LABEL = "Cancel"
-# Blank clears — and says so plainly, because it removes MORE than the one file. The
-# quarantine copies (`config.corrupt-*.json`) hold byte-for-byte duplicates of whatever
-# `config.json` contained when they were taken, so an erasure that spared them would leave
-# the address readable on disk. Deleting them is a real side effect on the admin's settings
-# backups, so it is stated rather than done quietly.
-IDENTITY_CLEARED_NOTE = "Removed. We also deleted older copies of your settings file, which contained it."
-IDENTITY_SEVERAL_NOTE = (
-    "That email matches more than one district — you'll choose the right one under Folders & district."
+# Blank clears — and the note branches on what actually happened, because "we also deleted
+# the older copies" is a FALSE claim in two of the three outcomes (nothing to delete, and
+# every unlink failed). The copies (`config.corrupt-*.json`) hold byte-for-byte duplicates
+# of whatever `config.json` held when they were taken, so removing them is a real side
+# effect on the admin's settings backups: stated, never done quietly, and never over-stated.
+IDENTITY_CLEARED_NOTE = "Removed."
+IDENTITY_CLEARED_WITH_COPIES_NOTE = "Removed — including the older copies of your settings file that held it."
+IDENTITY_CLEARED_COPIES_LEFT_NOTE = (
+    "Removed from your settings. We couldn't remove {n} older {copies} — they're still in your settings folder."
 )
-IDENTITY_NO_MATCH_NOTE = "We don't have that address on file yet — no problem. Nothing else has changed."
+IDENTITY_SEVERAL_NOTE = "That email matches more than one setup — you'll choose the right one under Folders & district."
+IDENTITY_NO_MATCH_NOTE = "We don't have a district on file for that address yet — no problem. Nothing else has changed."
 IDENTITY_REFUSED_NOTE = "We couldn't save that just now. Your other settings are untouched."
+
+
+def identity_cleared_note(removed: int, remaining: int) -> str:
+    """The erasure note, branched on what the purge ACTUALLY did (never a blanket claim)."""
+    if remaining:
+        return IDENTITY_CLEARED_COPIES_LEFT_NOTE.format(n=remaining, copies="copy" if remaining == 1 else "copies")
+    return IDENTITY_CLEARED_WITH_COPIES_NOTE if removed else IDENTITY_CLEARED_NOTE
 
 
 def _build_identity_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pragma: no cover - Flet view glue
@@ -836,7 +851,11 @@ def _build_identity_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
     def _save(_e: ft.ControlEvent | None = None) -> None:
         typed = (field.value or "").strip()
         if not typed:
-            _set_note(IDENTITY_CLEARED_NOTE if cfg.identity_clear() else IDENTITY_REFUSED_NOTE)
+            outcome = cfg.identity_clear()
+            if outcome.cleared:
+                _set_note(identity_cleared_note(outcome.removed, outcome.remaining))
+            else:
+                _set_note(IDENTITY_REFUSED_NOTE, color=tokens.color_status_failed)
             field.value = ""
             state["editing"] = False
             _render()

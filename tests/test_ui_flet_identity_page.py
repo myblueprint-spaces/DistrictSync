@@ -205,11 +205,39 @@ class TestPageStates:
         view = _page_at(page, "admin@sd48.bc.ca")
 
         text = _all_text(view)
-        assert "We'll show you" in text
-        assert "settings" in text
+        assert "Sea to Sky" in text
+        assert "you'll confirm it on the next step" in text
         # The register: a hint about which list to show, never a finding about a person.
         assert "We found your district" not in text
         assert _button(view, identity.CORRECTION_LABEL) is not None
+
+    def test_no_state_promises_a_SCOPED_picker_before_S5_delivers_one(self, page: MagicMock, fixed_index) -> None:
+        """Until S5 lands `filtered_catalog`, every district list still shows all eleven.
+
+        So no state may say "we'll show you your district's settings" — that is a claim
+        about a build behaviour that does not exist yet. The wording chosen instead is true
+        NOW and stays true after S5, so this copy never needs a second edit.
+        """
+        for address in ("admin@sd48.bc.ca", "admin@sd51.bc.ca", "admin@gmail.com"):
+            view = build_identity(page, app_config=AppConfig(), on_enter=lambda: None)
+            _field(view, identity.EMAIL_LABEL).value = address
+            _button(view, identity.CONTINUE_LABEL).on_click(None)
+
+            text = _all_text(view).lower()
+            assert "we'll show you" not in text, f"{address} promises a scoped list S5 has not delivered"
+
+    def test_no_state_claims_a_per_person_registry(self, page: MagicMock, fixed_index) -> None:
+        """Matching is by a district's public DOMAIN — there is no list of people.
+
+        "We don't have that address on file" describes the hashed per-person allowlist the
+        owner retired on 2026-07-28; saying it would misdescribe the whole design and imply
+        a database of admins that does not exist.
+        """
+        view = _page_at(page, "admin@gmail.com")
+
+        text = _all_text(view)
+        assert "have a district on file for that address" in text
+        assert "have that address on file" not in text
 
     def test_matched_several_asks_which_and_names_them(self, page: MagicMock, fixed_index) -> None:
         view = _page_at(page, "admin@sd51.bc.ca")
@@ -318,6 +346,37 @@ class TestTheRegister:
         """The other direction: a word-boundary match, so "address" is not "access"."""
         _assert_no_banned_vocabulary("Work email address — it stays on this computer.", "our own copy")
 
+    def test_the_explainers_say_what_is_STORED_not_only_what_is_matched(self) -> None:
+        """Minimisation honesty, on both surfaces that explain the field.
+
+        The DOMAIN is what we match on — but the WHOLE address is what we keep, render in
+        Settings and echo on Help. Copy that says "we use only the part after the @"
+        describes a data-minimising design we did not build, which is the most defensible-
+        sounding kind of untrue.
+        """
+        from src.ui_flet.screens import setup
+
+        for where, text in (("the launch page", identity.EMAIL_HELPER), ("Settings", setup.IDENTITY_EXPLAINER)):
+            assert "only the part after the @" not in text, f"{where} under-states what is stored"
+            assert "whole address is saved" in text, f"{where} never says the whole address is kept"
+
+    def test_the_not_listed_note_never_suggests_a_district_that_is_not_theirs(
+        self, page: MagicMock, fixed_index
+    ) -> None:
+        """ "Choose the closest district for now" would advise the worst click in the product.
+
+        A wrong mapping ships a wrong roster — real students, to a real partner. An admin
+        whose district has no mapping must be routed to support for one, never nudged into
+        someone else's config as a stopgap.
+        """
+        view = _page_at(page, "admin@gmail.com")
+        _field(view, identity.SD_LABEL).value = "99"
+        _button(view, identity.NOT_LISTED_LABEL).on_click(None)
+
+        text = _all_text(view).lower()
+        assert "closest district" not in text
+        assert "build a mapping" in text, "the honest route (ask support for a mapping) is missing"
+
     @pytest.mark.parametrize("address", ["", "admin@sd48.bc.ca", "admin@gmail.com"])
     def test_no_password_field_no_spinner_no_lock_glyph(self, page: MagicMock, fixed_index, address: str) -> None:
         """Three of the "deliberately absent" list, asserted where they are testable.
@@ -383,13 +442,35 @@ def test_get_started_writes_through_the_choke_point(page: MagicMock, fixed_index
     assert writes == [{"identity_email": "Admin.Person@SD48.bc.ca"}], "stored AS TYPED, never normalised"
 
 
-def test_the_correction_affordance_stores_WHO_and_only_who(page: MagicMock, fixed_index, monkeypatch) -> None:
-    """ "Not your district? Choose a different one." is an EXIT, so check what it writes.
+@pytest.mark.parametrize("address", ["admin@sd48.bc.ca", "admin@sd51.bc.ca"])
+def test_the_correction_affordance_stores_NOTHING(page: MagicMock, fixed_index, monkeypatch, address: str) -> None:
+    """ "That's not my district" must not persist the domain the admin just rejected.
 
-    Aimed at ungated space: it is the one affordance that both leaves the page AND persists,
-    and it sits on the matched state — so a careless implementation could bake the matched
-    district while the admin is in the act of saying it is wrong. It writes the address and
-    nothing else; the district is chosen in the wizard, where it is correctable.
+    This is the affordance that makes the matched state a *correctable* pre-selection
+    rather than a verdict. The stored address is the ONE input to S5's scoping, so keeping
+    it would turn a correction into a durable mis-scope — the admin would have to make the
+    same correction twice, here and again in Settings, and every picker would be wrong in
+    between. So it behaves like the escape: enter unfiltered, store nothing, ask next launch.
+    """
+    writes: list[dict] = []
+    monkeypatch.setattr(AppConfig, "identity_save", lambda self, **kw: writes.append(kw) or True)
+    entered: list[int] = []
+
+    view = build_identity(page, app_config=AppConfig(), on_enter=lambda: entered.append(1))
+    _field(view, identity.EMAIL_LABEL).value = address
+    _button(view, identity.CONTINUE_LABEL).on_click(None)
+    _button(view, identity.CORRECTION_LABEL).on_click(None)
+
+    assert writes == [], "the rejected domain was persisted anyway"
+    assert entered == [1], "the correction must still open the app"
+
+
+def test_try_again_returns_to_the_field_without_storing(page: MagicMock, fixed_index, monkeypatch) -> None:
+    """A typo's cheapest fix is re-typing — so there must be a way back to the field.
+
+    Without it the only exit from a wrong resolution is to skip the page entirely and go
+    hunting in Settings, and a mistyped domain (`sd84` for `sd48`) is the likeliest way to
+    land in a wrong state at all.
     """
     writes: list[dict] = []
     monkeypatch.setattr(AppConfig, "identity_save", lambda self, **kw: writes.append(kw) or True)
@@ -398,10 +479,20 @@ def test_the_correction_affordance_stores_WHO_and_only_who(page: MagicMock, fixe
     view = build_identity(page, app_config=AppConfig(), on_enter=lambda: entered.append(1))
     _field(view, identity.EMAIL_LABEL).value = "admin@sd48.bc.ca"
     _button(view, identity.CONTINUE_LABEL).on_click(None)
-    _button(view, identity.CORRECTION_LABEL).on_click(None)
+    _button(view, identity.RETRY_LABEL).on_click(None)
 
-    assert writes == [{"identity_email": "admin@sd48.bc.ca"}], "correcting the district must not bake one in"
-    assert entered == [1]
+    assert _button(view, identity.CONTINUE_LABEL) is not None, "we're back at the ask state"
+    assert _field(view, identity.EMAIL_LABEL).value == "admin@sd48.bc.ca", "the typed value survives for editing"
+    assert (writes, entered) == ([], []), "retrying stores nothing and does not enter"
+
+
+def test_try_again_is_offered_from_the_no_match_state_too(page: MagicMock, fixed_index) -> None:
+    """The state a typo lands in MOST often is no-match — it needs the way back most."""
+    view = _page_at(page, "admin@gmial.com")
+
+    _button(view, identity.RETRY_LABEL).on_click(None)
+
+    assert _button(view, identity.CONTINUE_LABEL) is not None
 
 
 def test_not_listed_without_a_number_still_reads_as_a_complete_sentence(page: MagicMock, fixed_index) -> None:
@@ -684,7 +775,56 @@ class TestTheSettingsSection:
 
         assert not quarantine.exists(), "the address survived in a quarantine copy"
         assert not list(isolated_user_profile.glob("config.corrupt-*.json"))
-        assert setup.IDENTITY_CLEARED_NOTE in _all_text(tree), "the side effect must be stated, not silent"
+        # The side effect is STATED — and stated accurately: this run really did delete a copy.
+        assert setup.IDENTITY_CLEARED_WITH_COPIES_NOTE in _all_text(tree)
+
+    def test_a_blank_save_with_nothing_stored_keeps_the_copies_and_claims_nothing(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """The data-loss row, at the surface: an empty Save on an empty field destroys nothing.
+
+        The admin most likely to own a settings-recovery copy is the one whose settings file
+        went unreadable — who may never have answered the identity question. Sweeping their
+        copies because they pressed Save on a blank field would delete real data to erase a
+        value that was never there.
+        """
+        from src.ui_flet.screens import setup
+
+        cfg = _completed()
+        cfg.save()
+        quarantine = isolated_user_profile / "config.corrupt-20260728-101500.json"
+        quarantine.write_text(json.dumps({"input_dir": "C:/gde/in"}), encoding="utf-8")
+
+        # With nothing on file the section opens already in edit mode (there is nothing to
+        # display), so the blank field and its Save are on screen from the start.
+        tree = _settings_tree(page, monkeypatch, cfg)
+        _field(tree, setup.IDENTITY_FIELD_LABEL).value = ""
+        _button(tree, setup.IDENTITY_SAVE_LABEL).on_click(None)
+
+        assert quarantine.exists(), "an empty Save deleted the admin's settings-recovery copy"
+        text = _all_text(tree)
+        assert setup.IDENTITY_CLEARED_NOTE in text
+        assert "including the older copies" not in text, "claimed a deletion that never happened"
+
+    def test_a_locked_copy_is_reported_honestly_in_the_note(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """When every unlink fails, the note must NOT say the copies are gone."""
+        from src.ui_flet.screens import setup
+
+        cfg = _completed(identity_email="admin@sd48.bc.ca")
+        cfg.save()
+        (isolated_user_profile / "config.corrupt-20260728-101500.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(Path, "unlink", lambda self, **kw: (_ for _ in ()).throw(OSError("locked")))
+
+        tree = _settings_tree(page, monkeypatch, cfg)
+        _button(tree, setup.IDENTITY_CHANGE_LABEL).on_click(None)
+        _field(tree, setup.IDENTITY_FIELD_LABEL).value = ""
+        _button(tree, setup.IDENTITY_SAVE_LABEL).on_click(None)
+
+        text = _all_text(tree)
+        assert "couldn't remove 1 older copy" in text
+        assert "including the older copies" not in text
 
     def test_the_section_uses_no_banned_vocabulary(self, page: MagicMock, monkeypatch, isolated_user_profile) -> None:
         """Both halves: every ``IDENTITY_*`` constant, AND the tree as actually rendered.

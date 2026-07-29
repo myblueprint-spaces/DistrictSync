@@ -356,14 +356,44 @@ class TestTheErasurePathCoversTheCopies:
         planted = [p for p in isolated_user_profile.glob("*.json") if CANARY_EMAIL in p.read_text(encoding="utf-8")]
         assert len(planted) == 2, f"expected the canary in config.json AND {copy.name}, found {planted}"
 
-        assert cfg.identity_clear() is True
+        outcome = cfg.identity_clear()
 
+        assert (outcome.cleared, outcome.removed, outcome.remaining) == (True, 1, 0)
         survivors = [
             p.name
             for p in isolated_user_profile.rglob("*")
             if p.is_file() and CANARY_EMAIL in p.read_bytes().decode("utf-8", "replace")
         ]
         assert survivors == [], f"the address survived in {survivors}"
+
+    def test_a_clear_with_NOTHING_STORED_never_touches_the_copies(self, isolated_user_profile: Path) -> None:
+        """The data-loss row: an empty Save on an install with no identity destroys nothing.
+
+        The population most likely to OWN a `config.corrupt-*.json` is the population whose
+        settings file went unreadable — who may well have never answered the identity
+        question at all. Purging on a no-op clear would delete their only settings-recovery
+        snapshot in one press, to erase a value that was never there.
+        """
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc")
+        cfg.save()
+        copy = self._plant_a_quarantine_copy(isolated_user_profile)
+
+        outcome = cfg.identity_clear()
+
+        assert outcome.cleared is True, "the settings still save — the clear is a no-op, not a failure"
+        assert (outcome.removed, outcome.remaining) == (0, 0), "nothing was stored, so nothing may be swept"
+        assert copy.exists(), "an empty Save deleted the admin's settings-recovery copy"
+
+    def test_an_sd_number_ALONE_still_counts_as_something_to_erase(self, isolated_user_profile: Path) -> None:
+        """The gate reads BOTH answer fields — a not-listed district is an answer too."""
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", identity_sd_number=CANARY_SD)
+        cfg.save()
+        copy = self._plant_a_quarantine_copy(isolated_user_profile)
+
+        outcome = cfg.identity_clear()
+
+        assert outcome.removed == 1
+        assert not copy.exists()
 
     def test_clearing_re_arms_the_ask_and_leaves_the_real_settings_alone(self, isolated_user_profile: Path) -> None:
         cfg = AppConfig(
@@ -395,21 +425,46 @@ class TestTheErasurePathCoversTheCopies:
         copy = self._plant_a_quarantine_copy(isolated_user_profile)
         cfg = AppConfig(identity_email=CANARY_EMAIL, load_state=ConfigLoadState.UNREADABLE)
 
-        assert cfg.identity_clear() is False
-        assert copy.exists(), "a refused clear must not delete the admin's only settings copy"
+        outcome = cfg.identity_clear()
 
-    def test_a_locked_copy_is_reported_not_fatal(self, isolated_user_profile: Path, monkeypatch, caplog) -> None:
-        """Best-effort: the clear itself has already succeeded when the purge runs."""
+        assert outcome.cleared is False
+        assert copy.exists(), "a refused clear must not delete the admin's only settings copy"
+        assert cfg.identity_email == CANARY_EMAIL, "a refused write must leave the instance untouched too"
+
+    def test_a_locked_copy_is_reported_not_fatal_AND_not_over_claimed(
+        self, isolated_user_profile: Path, monkeypatch, caplog
+    ) -> None:
+        """Best-effort — and the outcome must say so, because the NOTE is built from it.
+
+        The failure this pins is a claim, not a crash: when every unlink fails, a caller
+        told only "the clear succeeded" says "we also deleted the older copies" while all of
+        them are still sitting in the folder.
+        """
+        from src.ui_flet.screens.setup import identity_cleared_note
+
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", identity_email=CANARY_EMAIL)
         cfg.save()
         self._plant_a_quarantine_copy(isolated_user_profile)
         monkeypatch.setattr(Path, "unlink", lambda self, **kw: (_ for _ in ()).throw(OSError("locked")))
 
         with caplog.at_level("WARNING"):
-            assert cfg.identity_clear() is True
+            outcome = cfg.identity_clear()
 
+        assert (outcome.cleared, outcome.removed, outcome.remaining) == (True, 0, 1)
+        note = identity_cleared_note(outcome.removed, outcome.remaining)
+        assert "couldn't remove 1 older copy" in note
+        assert "including the older copies" not in note, "the note claimed a deletion that did not happen"
         assert "config.corrupt-" in caplog.text
         assert CANARY_EMAIL not in caplog.text, "the diagnostic must name the FILE, never the value"
+
+    def test_the_note_matches_each_of_the_three_outcomes(self) -> None:
+        """The three sentences, side by side — one per thing that can actually happen."""
+        from src.ui_flet.screens.setup import identity_cleared_note
+
+        assert identity_cleared_note(0, 0) == "Removed."
+        assert "including the older copies" in identity_cleared_note(2, 0)
+        assert "couldn't remove 1 older copy" in identity_cleared_note(0, 1)
+        assert "couldn't remove 3 older copies" in identity_cleared_note(1, 3)
 
 
 # --------------------------------------------------------------------------- #

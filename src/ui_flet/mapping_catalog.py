@@ -166,6 +166,13 @@ def district_domain_index(*, config_dir: Path | None = None) -> dict[str, tuple[
 
     The values are public organisational domains (a district's staff email domain, which
     the district publishes itself). No personal data, and nothing student-derived.
+
+    **Cost, stated rather than assumed:** this parses all eleven bundled YAMLs — ~210 ms on
+    a district server, once per page mount. It runs on the launch path and again on a
+    Settings Save, which is why the callers build it ONCE per mount and pass it down rather
+    than calling per keystroke. **Memoisation is deliberately NOT here** — it belongs to S5,
+    which folds this fact into the single memoised catalog build (``ConfigSummary``); adding
+    a cache now would create a second, differently-scoped one to unpick.
     """
     try:
         sis_ids = available_configs(config_dir)
