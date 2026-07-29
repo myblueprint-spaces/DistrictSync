@@ -45,3 +45,59 @@ findings) — and the ASSEMBLED program still carried a shipping-grade cross-sli
 wizard registered the nightly task before delivery was configured; no seam re-registered).
 Only the persona-journey walk through the assembled code found it. Composition seams between
 slices deserve their own regression tests (register→enable-delivery→assert the task action).
+
+## testing — "Vacuous-green protection: pair the absence-assertion, pin the copied literal"  [staged 2026-07-29, plan 0038 S1]
+
+Good looks like — a check can only go green for the reason it claims. Two named failure
+modes, both of which pass while proving nothing:
+
+- **unpaired absence-assertion** — "X was NOT created / NOT changed / NOT logged" is satisfied
+  both by the guard working and by the mechanism *never running at all*. Every absence-assertion
+  needs a POSITIVE twin in the same suite, ordered so the twin is unambiguous (pin absent first,
+  then prove the same mechanism creates it).
+- **orphaned copied literal** — a marker/constant duplicated out of the code that emits it (a
+  standalone script that must not import the app, a CI list, a doc table) silently rots into an
+  assertion about a string nothing produces. Where the duplicate is genuinely unavoidable, a
+  PARITY test driven off ONE shared value table is the single source — never a comment asking a
+  human to keep two places in step.
+- Corollary: a **skip** on a missing precondition is a vacuous pass. Refuse once, up front,
+  before any phase runs — don't skip per-check.
+
+Incident: plan 0038 S1 (2026-07-29), the exe CLI smokes. `--dry-run` writes no run record, so the
+smoke asserted `history.db` untouched — which on a fresh CI profile also passes if the store never
+writes at all; `write-run` gained the positive twin and the phase order became load-bearing and
+single-sourced in `CLI_SMOKE_PHASES`. The same script copies four log markers and the
+`DISTRICTSYNC_DATA_DIR` parsing rule out of `src/` (it must stay import-free); each is now pinned
+by a parity test. Prior art in-repo: an isolation canary watching an abandoned path, an exit-code
+test asserting `sys.exit(3)` exits 3, a profile smoke vacuous twice over (platformdirs ignores
+`LOCALAPPDATA`). Beneficiary roles: `lens-reviewer` (testing), `implementer`.
+
+## role: implementer — "An acceptance criterion that names an ARTIFACT is not met by a stand-in"  [staged 2026-07-29, plan 0038 S1]
+
+Prompt line to fold in — when a criterion names the built/packed/deployed ARTIFACT (the exe, the
+image, the bundle), exercising the same source another way (`python -m src.main`, the unit suite,
+a dev server) is NOT evidence: it proves the code, not the packaging — and packaging is exactly
+what the criterion doubts. If the artifact cannot be produced in-session, report the criterion as
+**CI-pending, naming the run that will decide it** — never as met.
+
+Incident: plan 0038 S1 — the implementer validated the four exe smokes with `python -m src.main`,
+satisfying the criterion's letter and skipping its point; the verify panel caught it and the
+smokes ran against the frozen artifact before the land record claimed them.
+
+## workflow — Land/Verify process lessons  [staged 2026-07-29, plan 0038 S1 — WORKFLOW.md is a managed copy, so staged here]
+
+- **A rollback rule is a COUNTER-COMMIT, not a revert.** "If X is red, `git revert <commit>`" is
+  valid only while that commit's lines are untouched — a verify batch routinely edits the prose
+  that commit introduced (corrections that *should* survive a rollback). Write the rule as the
+  exact lines to flip. (Provenance: the light-flavor revert became impossible mid-slice and was
+  restated as a 3-line counter-commit.)
+- **An interrupted panel: an absent lens is an ABSENT verdict, never a CLEAN.** A fan-out that
+  dies part-way (usage limits, an outage) is re-run for the missing lenses — pinned to the same
+  model tier so the re-run is comparable — and the synthesis names which lenses actually returned.
+  (Provenance: a mid-panel usage-limit outage, recovered by re-running the missing lenses
+  model-pinned via a workflow.)
+- **[OWNER DECISION PENDING] Panel discharge of /simplify + /code-review.** Proposed rule: when
+  the fan-out panel ran, yagni-sentinel's explicit simplification pass + the lens panel discharge
+  `/simplify` and `/code-review` (say so in the verify record rather than running both twice); a
+  solo synthesizer-gate verify still runs them. Loosens a stated Stage-7 instruction — needs the
+  owner's nod before promotion.
