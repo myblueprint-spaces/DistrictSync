@@ -72,15 +72,24 @@ def _shows_launch_page(page: MagicMock) -> bool:
     S4b gave Home's identity card the same headline the launch page uses ("Who looks after
     this sync?") on purpose — one fact, one wording — which makes a text-only proxy
     ambiguous: it now matches BOTH the surface we are checking for and the card that
-    proves we are past it. The launch page is the one surface with no rail and a Continue
-    button; the app body is the one with a rail. Both halves are asserted so neither a
-    missing rail nor a stray button can answer alone.
+    proves we are past it.
+
+    The positive half is the ESCAPE, not "Continue": the setup wizard labels a button
+    "Continue" too, so that half would be doing nothing and ``not has_rail`` would silently
+    be carrying the whole predicate — the same weak-proxy shape this helper exists to fix.
+    ``SKIP_LABEL`` ("I'm not the person who looks after this sync") is on every launch-page
+    state and on no other surface in the app.
     """
     root = _added_root(page)
     controls = list(_iter_controls(root))
     has_rail = any(isinstance(c, ft.NavigationRail) for c in controls)
-    has_continue = any(getattr(c, "content", None) == shell.identity.CONTINUE_LABEL for c in controls)
-    return has_continue and not has_rail
+    has_escape = any(getattr(c, "content", None) == shell.identity.SKIP_LABEL for c in controls)
+    return has_escape and not has_rail
+
+
+def _has_rail(page: MagicMock) -> bool:
+    """The app body's structural marker — the positive twin of every launch-page absence."""
+    return any(isinstance(c, ft.NavigationRail) for c in _iter_controls(_added_root(page)))
 
 
 def _button_labelled(control, label: str):  # noqa: ANN001, ANN202 - untyped Flet tree
@@ -190,6 +199,28 @@ class TestTheLaunchGate:
         assert shell.identity.HERO_HEADLINE in _texts(_added_root(page))
         assert _shows_launch_page(page), "the positive twin of every '_shows_launch_page is False' below"
 
+    def test_the_proxy_label_is_the_ONE_that_actually_discriminates(
+        self, page: MagicMock, isolated_user_profile: Path
+    ) -> None:
+        """Why ``_shows_launch_page`` reads the ESCAPE and not "Continue".
+
+        The setup wizard's footer button is also labelled "Continue", so a proxy built on
+        that label contributes nothing and ``not has_rail`` silently carries the whole
+        predicate — the weak-proxy shape that made the headline check ambiguous in the
+        first place. This asserts the discriminating property directly, so it stays true
+        (or goes red) as either surface's copy changes.
+        """
+        from src.ui_flet.screens.setup import build_setup
+
+        wizard_labels = {getattr(c, "content", None) for c in _iter_controls(build_setup(MagicMock()))}
+        shell.main(page)
+        launch_labels = {getattr(c, "content", None) for c in _iter_controls(_added_root(page))}
+
+        assert shell.identity.SKIP_LABEL in launch_labels
+        assert shell.identity.SKIP_LABEL not in wizard_labels, "the escape label is no longer unique to the gate"
+        assert shell.identity.CONTINUE_LABEL in launch_labels
+        assert shell.identity.CONTINUE_LABEL in wizard_labels, "'Continue' would discriminate after all — recheck"
+
     def test_the_close_handlers_are_bound_BEFORE_the_launch_page_is_built(
         self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -236,7 +267,7 @@ class TestTheLaunchGate:
         shell.main(page)
 
         assert not _shows_launch_page(page)
-        assert any(isinstance(c, ft.NavigationRail) for c in _iter_controls(_added_root(page)))
+        assert _has_rail(page)
 
     def test_an_unreadable_profile_never_sees_the_launch_page(
         self, page: MagicMock, isolated_user_profile: Path
@@ -248,6 +279,10 @@ class TestTheLaunchGate:
         shell.main(page)
 
         assert not _shows_launch_page(page)
+        # The positive half: something real mounted. Without it, "no launch page" and "no
+        # card" are both satisfied by a blank page — which is exactly the failure a gate
+        # that crashed silently would produce.
+        assert _has_rail(page), "the app body never mounted; the absences below are vacuous"
         # ...and G2 holds on Home too: an unreadable profile gets no card either (S4b).
         assert home.IDENTITY_CARD_HEADLINE not in _texts(_added_root(page))
 
@@ -300,7 +335,7 @@ class TestJourney4UpgradeInPlace:
 
         assert not _shows_launch_page(page), "a working install was stopped at a launch page"
         assert "Welcome to DistrictSync" not in texts, "a configured install was shown the onboarding hero"
-        assert any(isinstance(c, ft.NavigationRail) for c in _iter_controls(_added_root(page)))
+        assert _has_rail(page)
         assert "Home" in texts, "the dashboard did not paint"
         assert home.IDENTITY_CARD_HEADLINE in texts, "the upgrading install was never asked"
 
@@ -309,7 +344,7 @@ class TestJourney4UpgradeInPlace:
 
         texts = self._boot(page)
 
-        assert "Home" in texts, "the dashboard did not paint; the absence below would be vacuous"
+        assert _has_rail(page) and "Home" in texts, "the dashboard did not paint; the absence below is vacuous"
         assert home.IDENTITY_CARD_HEADLINE not in texts
 
     def test_an_install_that_already_answered_is_never_asked_again(
@@ -319,7 +354,7 @@ class TestJourney4UpgradeInPlace:
 
         texts = self._boot(page)
 
-        assert "Home" in texts
+        assert _has_rail(page) and "Home" in texts, "the dashboard did not paint; the absence below is vacuous"
         assert home.IDENTITY_CARD_HEADLINE not in texts
 
 

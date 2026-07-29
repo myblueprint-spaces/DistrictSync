@@ -163,13 +163,18 @@ def test_needs_identity_prompt_truth_table(unreadable, completed, dismissed, ema
     assert needs_identity_prompt(cfg) is expected, why
 
 
-def test_the_two_asks_are_mutually_exclusive():
-    """No install is ever asked TWICE — at the launch page and again on Home.
+def test_the_two_asks_are_never_BOTH_true_for_one_settings_state():
+    """The launch page and the Home card can never fire off the SAME settings state.
 
     The two predicates differ on exactly one input (``has_completed_setup()``), so this is
-    a structural property rather than a coincidence — but it is the property the whole
-    "never a gate in front of a working sync" promise rests on, so it is swept rather
-    than sampled.
+    structural rather than coincidental — but it is the property the whole "never a gate in
+    front of a working sync" promise rests on, so it is swept rather than sampled.
+
+    Be precise about the scope, because the looser reading ("nobody is ever asked twice")
+    is FALSE: someone who declines at the launch page stores nothing, and finishing setup
+    CHANGES the settings state, so they legitimately meet the ask once more on Home — where
+    it is dismissible forever. That transition is an owner-facing product judgment (tracked
+    in the ROADMAP), not something this sweep claims to prevent.
     """
     for state, completed, dismissed, email in itertools.product(
         (ConfigLoadState.LOADED, ConfigLoadState.ABSENT, ConfigLoadState.UNREADABLE),
@@ -181,7 +186,7 @@ def test_the_two_asks_are_mutually_exclusive():
             load_state=state, setup_completed=completed, identity_email=email, identity_prompt_dismissed=dismissed
         )
         assert not (needs_identity(cfg) and needs_identity_prompt(cfg)), (
-            f"asked twice with {state=} {completed=} {dismissed=} {email=}"
+            f"both asks fired for one settings state: {state=} {completed=} {dismissed=} {email=}"
         )
 
 

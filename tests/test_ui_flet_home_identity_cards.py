@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -33,7 +34,7 @@ import flet as ft
 import pytest
 
 from src.config.app_config import AppConfig, ConfigLoadState
-from src.ui_flet import components
+from src.ui_flet import components, tokens
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.screens import home
 from src.ui_flet.screens.home import build_home
@@ -179,6 +180,54 @@ class TestWhenTheCardAppears:
 
         assert card > banner, "the identity ask rendered above the verdict block"
 
+    def test_the_ask_sits_BELOW_the_verdicts_fix_CTA_in_the_FAULT_state(self, page, monkeypatch) -> None:
+        """The placement deviation, pinned where it actually matters.
+
+        The spec's literal wording puts the cards immediately after the banner; they attach
+        one line later, AFTER the verdict's fix button, because a fault and its fix are one
+        thought and an advisory ask may not be wedged into the middle of it. That is only
+        observable in a FAULT state — the healthy state has no fix CTA at all, so the
+        order test above would pass under either placement.
+        """
+        failed = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "status": "failed",
+            "duration_s": 2.0,
+            "sftp_attempted": False,
+            "sftp_ok": False,
+            "error": "",
+            "error_category": "input_missing",
+            "anomalies": [],
+            "data_errors": {},
+        }
+        monkeypatch.setattr(home, "read_run_records", lambda: [failed])
+        cfg = _cfg()
+        status = home.derive_home_status([failed], cfg, store_created_at=None, schedule_status=None)
+        assert status.fix is not None, "the fixture did not produce a fix CTA; the order below is vacuous"
+
+        view = _home(page, cfg, monkeypatch)
+        children = list(view.controls)
+        banner = next(i for i, c in enumerate(children) if status.headline in _all_text(c))
+        fix = next(i for i, c in enumerate(children) if _has_button(c, status.fix.label))
+        card = next(i for i, c in enumerate(children) if home.IDENTITY_CARD_HEADLINE in _all_text(c))
+
+        assert banner < fix < card, f"expected banner < fix CTA < card, got {banner} / {fix} / {card}"
+
+    def test_no_card_headline_outshouts_the_verdict(self, page, monkeypatch) -> None:
+        """Type hierarchy IS the verdict-first promise, restated in points.
+
+        A card set in the page-title ramp (``type_title``/W_800) reads as the most important
+        thing on Home, which is exactly what the placement exists to prevent. Nothing in the
+        card block may exceed the verdict headline's ``type_section``/W_700.
+        """
+        view = _home(page, _cfg(identity_sd_number="99"), monkeypatch)
+
+        texts = [c for c in _iter_controls(_card_host(view)) if isinstance(c, ft.Text)]
+        sized = [c for c in texts if isinstance(getattr(c, "size", None), (int, float))]
+        assert sized, "no sized text found in the cards; the bound below is vacuous"
+        assert max(c.size for c in sized) <= tokens.type_section
+        assert not [c for c in texts if c.weight == ft.FontWeight.W_800]
+
     def test_a_stored_identity_retires_the_ask(self, page, monkeypatch) -> None:
         view = _home(page, _cfg(identity_email="admin@sd48.bc.ca"), monkeypatch)
 
@@ -292,29 +341,60 @@ class TestTheAnswers:
         # ...and the form retires: the question has been answered.
         assert not _has_button(view, home.IDENTITY_CARD_SAVE_LABEL)
 
-    def test_the_matched_note_never_promises_a_next_step_that_does_not_exist(self, page, monkeypatch) -> None:
-        """The launch page's ``matched_headline`` says "you'll confirm it on the next step".
+    @pytest.mark.parametrize(
+        ("sis_type", "address", "state"),
+        [
+            ("sd48myedbc", "admin@sd48.bc.ca", "matched-one"),
+            ("sd51myedbc", "admin@sd51.bc.ca", "matched-several"),
+        ],
+    )
+    def test_no_answered_note_promises_an_ACTION_this_card_cannot_cause(
+        self, page, monkeypatch, sis_type: str, address: str, state: str
+    ) -> None:
+        """Two launch-page/Settings habits that are both wrong on a CONFIGURED Home.
 
-        On Home there IS no next step — the install is already set up — so reusing that
-        sentence here would be the launch page's promise made where it cannot be kept.
+        The launch page's ``matched_headline`` says "you'll confirm it on the next step" —
+        there is no next step here. Settings' several-note says "you'll choose the right one
+        under Folders & district" — nothing is pending to choose, and that instruction sends
+        the admin into the district picker, which is the ONE action these cards promise
+        never to cause. (Not hypothetical: SD51's two configs share a domain, so every SD51
+        admin lands on the several branch.)
         """
         _spy_saves(monkeypatch)
-        view = _home(page, _cfg(), monkeypatch)
+        view = _home(page, _cfg(sis_type=sis_type), monkeypatch)
 
-        _answer(view, "admin@sd48.bc.ca")
+        _answer(view, address)
 
-        assert "next step" not in _all_text(view)
+        note = _all_text(_card_host(view)).lower()
+        for phrase in ("you'll", "next step", "choose"):
+            assert phrase not in note, f"the {state} note promises an action ({phrase!r}): {note}"
 
-    def test_several_matches_reuse_the_S4a_more_than_one_setup_wording(self, page, monkeypatch) -> None:
+    def test_several_matches_state_the_fact_and_name_the_configured_district(self, page, monkeypatch) -> None:
         """SD51 + its attendance tier share one domain — the LIVE matched-several shape."""
-        from src.ui_flet.screens import setup as setup_screen
-
         _spy_saves(monkeypatch)
         view = _home(page, _cfg(sis_type="sd51myedbc"), monkeypatch)
 
         _answer(view, "admin@sd51.bc.ca")
 
-        assert setup_screen.IDENTITY_SEVERAL_NOTE in _all_text(view)
+        assert home.IDENTITY_CARD_SEVERAL_NOTE.format(district="SD51 - Boundary School District") in _all_text(
+            _card_host(view)
+        )
+
+    @pytest.mark.parametrize("address", ["admin@sd48.bc.ca", "admin@sd51.bc.ca"])
+    def test_a_blank_configured_district_is_never_named_as_one(self, page, monkeypatch, address: str) -> None:
+        """A hand-edited profile can carry ``setup_completed: true`` with NO district.
+
+        Every "…this sync is set up for X" phrasing would then name a district the install
+        does not run — so both matched branches drop the clause instead.
+        """
+        _spy_saves(monkeypatch)
+        view = _home(page, _cfg(sis_type=""), monkeypatch)
+
+        _answer(view, address)
+
+        note = _all_text(_card_host(view))
+        assert "set up for" not in note, f"named a district for an install that has none: {note}"
+        assert "Saved." in note, "the save was still confirmed"
 
     def test_no_match_is_calm_and_STORES_ANYWAY(self, page, monkeypatch) -> None:
         """The address is the support identity regardless of whether we recognise it."""
@@ -329,6 +409,10 @@ class TestTheAnswers:
         text = _all_text(view)
         assert setup_screen.IDENTITY_NO_MATCH_NOTE in text
         assert not _error_texts(view), "a no-match is not an error and is never painted as one"
+        # The branch most likely to be a typo'd address is the one branch that names NO
+        # district — so it is the one that most needs a stated way back.
+        assert home.IDENTITY_CARD_CHANGE_CLAUSE in text
+        assert "Settings" in text
 
     def test_a_refused_save_leaves_the_card_UP_and_claims_nothing(self, page, monkeypatch) -> None:
         from src.ui_flet.screens import setup as setup_screen
@@ -426,6 +510,9 @@ class TestTheMismatchCard:
         assert "You're set up for" in text
         assert "Sea to Sky" in text and "Boundary" in text
         assert home.MISMATCH_DETAIL in text
+        # It renders immediately after a SUCCESSFUL save, so it may not read as if nothing
+        # was written — it says WHAT was saved and what was not.
+        assert "We've saved your address" in home.MISMATCH_DETAIL
         assert _button(view, "Keep SD48 - Sea to Sky School District") is not None
         assert _button(view, home.MISMATCH_CHANGE_LABEL) is not None
 
@@ -520,11 +607,16 @@ class TestTheNotListedCard:
         assert _button(view, home.NOT_LISTED_EMAIL_LABEL) is not None
 
     def test_it_stays_QUIET_when_we_actually_ship_that_mapping(self, page, monkeypatch) -> None:
-        """Telling an admin we are "building" a mapping that ships in their exe is a plain
-        untruth — and the likeliest way to write one is to forget this branch."""
+        """Telling an admin we have no mapping for a district that ships in their exe is a
+        plain untruth — and the likeliest way to write one is to forget this branch.
+
+        Indexed off ``not_listed_headline`` rather than a copied literal: a copied string
+        goes vacuous the moment the copy changes, which is exactly what happened to this
+        assertion once the headline was corrected.
+        """
         view = _home(page, _cfg(identity_email="admin@x.example.com", identity_sd_number="48"), monkeypatch)
 
-        assert "We're building the mapping" not in _all_text(view)
+        assert home.not_listed_headline("48") not in _all_text(view)
 
     def test_email_support_uses_the_EXISTING_subject_only_route(self, page, monkeypatch) -> None:
         """Flag 6 — the app never puts the admin's address into anything it sends."""
@@ -537,6 +629,25 @@ class TestTheNotListedCard:
         assert "body=" not in url
         assert "admin@x.example.com" not in url
 
+    def test_the_support_address_is_readable_without_a_mail_client(self, page, monkeypatch) -> None:
+        """This card's only action is a ``mailto:`` — a silent dead click on a locked-down
+        district server with no mail client registered. The house pattern (``help.py``) is
+        to ALSO show the address, selectable, with a copy button; the button label names it
+        too, so the destination is never hidden behind a verb."""
+        from src.ui_flet.screens.help import SUPPORT_EMAIL
+
+        view = _home(page, _cfg(identity_email="admin@x.example.com", identity_sd_number="99"), monkeypatch)
+
+        card = _card_host(view)
+        assert SUPPORT_EMAIL in home.NOT_LISTED_EMAIL_LABEL, "the button hides where the click goes"
+        selectable = [
+            c
+            for c in _iter_controls(card)
+            if isinstance(c, ft.Text) and c.value == SUPPORT_EMAIL and getattr(c, "selectable", False)
+        ]
+        assert selectable, "the address is not readable/selectable off-screen-reader"
+        assert [c for c in _iter_controls(card) if isinstance(c, ft.IconButton)], "no copy affordance"
+
     def test_dismiss_clears_the_stored_number(self, page, monkeypatch) -> None:
         writes = _spy_saves(monkeypatch)
         view = _home(page, _cfg(identity_email="admin@x.example.com", identity_sd_number="99"), monkeypatch)
@@ -544,7 +655,7 @@ class TestTheNotListedCard:
         _button(view, home.NOT_LISTED_DISMISS_LABEL).on_click(None)
 
         assert writes == [{"identity_sd_number": ""}]
-        assert "We're building the mapping" not in _all_text(view)
+        assert home.not_listed_headline("99") not in _all_text(view)
 
     def test_dismiss_NEVER_purges_the_settings_recovery_copies(
         self, page, monkeypatch, isolated_user_profile: Path
@@ -672,7 +783,7 @@ class TestTheFloor:
 
     def test_a_raise_ENUMERATING_the_mappings_leaves_the_dashboard_intact(self, page, monkeypatch) -> None:
         """The not-listed card's input. Failing to list the configs must not tell an admin
-        we are building a mapping we may well already ship — silence is the safe answer."""
+        we have no mapping for a district we may well already ship — silence is safe."""
 
         def _boom(*_a: object, **_kw: object) -> list[str]:
             raise OSError("the mappings dir is gone")
@@ -683,7 +794,7 @@ class TestTheFloor:
 
         text = _all_text(view)
         assert "Home" in text
-        assert "We're building the mapping" not in text
+        assert home.not_listed_headline("99") not in text
 
     def test_the_positive_twin_the_same_build_DOES_render_a_card(self, page, monkeypatch) -> None:
         """Without which both absences above are equally satisfied by a card that stopped
@@ -720,6 +831,23 @@ class TestTheRegister:
 
         assert home.IDENTITY_CARD_DISMISSED_NOTE in text, "the sweep missed a constant; it may be vacuous"
         _assert_no_banned_vocabulary(text, "the Home identity-card constants")
+
+    def test_the_not_listed_card_claims_no_work_nobody_was_told_about(self) -> None:
+        """The card renders BEFORE any request exists.
+
+        The district number lives only in this computer's ``config.json``, the support mail
+        is subject-only (flag 6), and the card's own detail line asks the ADMIN to send the
+        extract — so a headline asserting that a mapping is being built would describe work
+        nobody outside this machine knows about. It says what is true of US instead.
+        (Pinned so the plan's original sketch literal cannot come back silently.)
+        """
+        headline = home.NOT_LISTED_HEADLINE.lower()
+
+        for claim in ("building", "we're working", "in progress", "underway"):
+            assert claim not in headline, f"the not-listed headline asserts vendor work: {home.NOT_LISTED_HEADLINE!r}"
+        assert "don't have a mapping" in headline
+        # ...and the ACTION still lives on the card, so the correction did not remove the path.
+        assert "email support" in home.NOT_LISTED_DETAIL.lower()
 
     @pytest.mark.parametrize(
         ("address", "state"),

@@ -226,20 +226,46 @@ IDENTITY_CARD_DISMISSED_NOTE = (
 # next step", and on Home there is no next step. The fact here is genuinely different: this
 # install is ALREADY set up, and the address agrees with it.
 IDENTITY_CARD_MATCHED_NOTE = "Saved. That's {district} — the district this sync is set up for."
+# ...and NOT Settings' several-note either ("you'll choose the right one under Folders &
+# district"). On a CONFIGURED Home nothing is pending to choose, and that instruction would
+# send an SD51 admin — whose two configs share one domain, so this is the LIVE case, not a
+# hypothetical — into the district picker: the single action this card promises never to
+# cause. Home's version states the fact and stops.
+IDENTITY_CARD_SEVERAL_NOTE = "Saved. That email matches more than one setup — this sync is set up for {district}."
+# The blank-`sis_type` companions. A hand-edited profile can carry `setup_completed: true`
+# with no district, and "the district this sync is set up for" would then name a district
+# the install does not use.
+IDENTITY_CARD_MATCHED_NO_DISTRICT_NOTE = "Saved. That's {district}."
+IDENTITY_CARD_SEVERAL_NO_DISTRICT_NOTE = "Saved. That email matches more than one setup."
+# The way back from an address that is VALID but wrong — the dismissed line already names
+# Settings, and an answered card must not be the one state with no stated route.
+IDENTITY_CARD_CHANGE_CLAUSE = f'You can change it in Settings, under "{setup_screen.IDENTITY_TITLE}".'
 
 # The G3 mismatch card. It reports a difference and offers two ways to resolve it; it never
-# resolves one itself.
+# resolves one itself. The detail is precise about WHAT was saved, because it renders
+# immediately after a SUCCESSFUL `identity_save` — a bare "Nothing has been changed." there
+# would contradict the write that just happened.
 MISMATCH_HEADLINE = "You're set up for {saved}, and your address matches {matched}."
-MISMATCH_DETAIL = "That can be perfectly normal. Nothing has been changed."
+MISMATCH_DETAIL = (
+    "That can be perfectly normal. We've saved your address; your district and sync settings are unchanged."
+)
 MISMATCH_KEEP_LABEL = "Keep {saved}"
 MISMATCH_CHANGE_LABEL = "Change district"
 
 # The durable not-listed card — the only reader ``identity_sd_number`` has.
-NOT_LISTED_HEADLINE = "We're building the mapping for SD{digits}"
+#
+# It says what is TRUE OF US, not what is happening at a vendor. The district number lives
+# only in this computer's `config.json`, the support mail is subject-only, and the detail
+# line asks the ADMIN to start the conversation — so "We're building the mapping for SD##"
+# would assert work nobody has been told about. (`identity_gate.unmapped_sd_number` calls
+# the opposite error — claiming to be "building" a mapping that already ships — a plain
+# untruth; this is the same error pointed the other way.)
+NOT_LISTED_HEADLINE = "We don't have a mapping for SD{digits} yet"
 NOT_LISTED_DETAIL = (
     "Email support with a sample MyEd BC extract and we'll set it up. In the meantime you can explore the app."
 )
-NOT_LISTED_EMAIL_LABEL = "Email support"
+NOT_LISTED_EMAIL_LABEL = f"Email {SUPPORT_EMAIL}"
+NOT_LISTED_COPY_TOOLTIP = "Copy email address"
 NOT_LISTED_DISMISS_LABEL = "Don't show this again"
 
 
@@ -314,7 +340,7 @@ def _build_identity_cards(
     if not show_prompt and not sd_digits:
         return None
 
-    host = ft.Column(spacing=22)
+    host = ft.Column(spacing=tokens.space_xl)
     state: dict[str, object] = {
         "stage": _CardStage.ASK if show_prompt else _CardStage.RETIRED,
         "note": "",
@@ -373,12 +399,26 @@ def _build_identity_cards(
             state["note"] = ""
             return
         state["stage"] = _CardStage.ANSWERED
+        # A blank `sis_type` is reachable on a hand-edited profile (`setup_completed: true`
+        # with no district), and every "…this sync is set up for X" phrasing would then name
+        # a district the install does not run.
+        configured = friendly_district_name(app_config.sis_type) or app_config.sis_type.strip()
         if len(match.configs) > 1:
-            state["note"] = f"Saved. {setup_screen.IDENTITY_SEVERAL_NOTE}"
+            state["note"] = (
+                IDENTITY_CARD_SEVERAL_NOTE.format(district=configured)
+                if configured
+                else IDENTITY_CARD_SEVERAL_NO_DISTRICT_NOTE
+            )
         elif match.configs:
-            state["note"] = IDENTITY_CARD_MATCHED_NOTE.format(district=names[0])
+            state["note"] = (
+                IDENTITY_CARD_MATCHED_NOTE.format(district=names[0])
+                if configured
+                else IDENTITY_CARD_MATCHED_NO_DISTRICT_NOTE.format(district=names[0])
+            )
         else:
-            state["note"] = f"Saved. {setup_screen.IDENTITY_NO_MATCH_NOTE}"
+            # The one branch with no district named at all: we recognised nothing, so the
+            # address may simply be the wrong one. Say where it can be changed.
+            state["note"] = f"Saved. {setup_screen.IDENTITY_NO_MATCH_NOTE} {IDENTITY_CARD_CHANGE_CLAUSE}"
 
     def _save(_e: ft.ControlEvent | None = None) -> None:
         def work() -> None:
@@ -531,9 +571,12 @@ def _build_identity_cards(
     )
 
     def _ask_card() -> ft.Control:
+        # `type_section`/W_700 — never larger or heavier than the verdict headline above it.
+        # An advisory ask set in the page-title ramp would out-shout the one line the admin
+        # opened Home to read, which is the same inversion the placement exists to prevent.
         controls: list[ft.Control] = [
             ft.Text(
-                IDENTITY_CARD_HEADLINE, size=tokens.type_title, weight=ft.FontWeight.W_800, color=tokens.color_text
+                IDENTITY_CARD_HEADLINE, size=tokens.type_section, weight=ft.FontWeight.W_700, color=tokens.color_text
             ),
             ft.Text(IDENTITY_CARD_DETAIL, size=tokens.type_emphasis, color=tokens.color_muted),
         ]
@@ -581,8 +624,8 @@ def _build_identity_cards(
         controls: list[ft.Control] = [
             ft.Text(
                 not_listed_headline(sd_digits),
-                size=tokens.type_title,
-                weight=ft.FontWeight.W_800,
+                size=tokens.type_section,
+                weight=ft.FontWeight.W_700,
                 color=tokens.color_text,
             ),
             ft.Text(NOT_LISTED_DETAIL, size=tokens.type_emphasis, color=tokens.color_muted),
@@ -597,10 +640,25 @@ def _build_identity_cards(
                     components.text_button(NOT_LISTED_DISMISS_LABEL, _dismiss_not_listed),
                 ],
             ),
+            # The house pattern (`help.py`'s `_copyable_line`): this card's ONLY action is a
+            # `mailto:`, which is a silent dead click on a locked-down district server with
+            # no mail client registered. The address is therefore also on screen, selectable
+            # and copyable, so the admin can act on it by hand.
+            _support_address_line(),
         ]
         if state["sd_note"]:
             controls.append(_card_note(str(state["sd_note"]), failed=True))
         return components.card(content=ft.Column(spacing=tokens.space_lg, controls=controls))
+
+    def _support_address_line() -> ft.Control:
+        return ft.Row(
+            spacing=tokens.space_xs,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Text(SUPPORT_EMAIL, size=tokens.type_body, selectable=True, color=tokens.color_muted),
+                components.copy_button(page, SUPPORT_EMAIL, tooltip=NOT_LISTED_COPY_TOOLTIP),
+            ],
+        )
 
     def _render() -> None:
         cards: list[ft.Control] = []

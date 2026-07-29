@@ -125,8 +125,13 @@ def needs_identity_prompt(app_config: AppConfig) -> bool:
 
     * **the settings file is readable** — same reason as the gate (G2): we could not
       persist the answer, so we must not ask for it;
-    * **setup IS finished** — the exact inversion of the gate's second condition, which is
-      what makes the two asks mutually exclusive: no install is ever asked twice;
+    * **setup IS finished** — the exact inversion of the gate's second condition, so the
+      two are never both true: an install is never asked twice **from one settings
+      state**. Be precise about what that does and does not promise — someone who declines
+      at the launch page (storing nothing) and then finishes setup has CHANGED the settings
+      state, and legitimately meets the ask once more here, where it is dismissible
+      forever. That transition is a product judgment, tracked in the ROADMAP, not a bug in
+      this predicate;
     * **the ask has not been dismissed** — "Don't ask again" is PERMANENT. The way back is
       Settings ("Who looks after this sync"), which is also where clearing the address
       resets this flag (:meth:`AppConfig.identity_clear`) so the states cannot wedge;
@@ -273,19 +278,24 @@ def matched_excludes_saved(saved_sis: str, configs: Sequence[str]) -> bool:
 
 
 def unmapped_sd_number(app_config: AppConfig, config_ids: Iterable[str]) -> str:
-    """The stored district number when NO bundled config serves it — else ``""``. TOTAL.
+    """The stored district number when NO available config serves it — else ``""``. TOTAL.
 
-    Drives the durable "we're building the mapping for SD##" card (plan 0038 S4b): the
+    Drives the durable "we don't have a mapping for SD## yet" card (plan 0038 S4b): the
     reader that finally earns ``identity_sd_number`` its persistence. It is written by the
     launch page's not-listed path and, until Phase 2 ships the mapping creator, this card
     is the only thing that ever reads it.
 
+    ``config_ids`` is whatever the CALLER supplies, and the answer is only ever as good as
+    that list: in the app it is ``available_configs()``, i.e. the bundled mappings PLUS any
+    user-dropped YAML in the profile's ``mappings/`` dir — so a district that has been
+    handed a mapping by hand correctly stops seeing the card.
+
     Two directions, both mattering:
 
-    * a number we DO serve returns ``""`` — telling an admin we are "building" a mapping
-      that ships in the executable they are running would be a plain untruth, and the
-      ``resolve_sd_number`` boundary (``SD4`` never matches ``sd48myedbc``) is what keeps
-      the opposite mistake unrepresentable too;
+    * a number we DO serve returns ``""`` — telling an admin we have no mapping for a
+      district that ships in the executable they are running would be a plain untruth, and
+      the ``resolve_sd_number`` boundary (``SD4`` never matches ``sd48myedbc``) is what
+      keeps the opposite mistake unrepresentable too;
     * anything unusable returns ``""`` — no digits, blank, or (a hand-edited profile) not
       even a string. ``AppConfig._value_fits`` should keep a non-``str`` out of the field,
       but that is a guarantee made in another module, and this reader must never fail on
