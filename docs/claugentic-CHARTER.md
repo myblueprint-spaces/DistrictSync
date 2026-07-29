@@ -98,6 +98,19 @@ on both surfaces immediately made an existing "is the launch page showing?" asse
 ambiguous, and it had to be re-grounded STRUCTURALLY (no rail + a Continue button). Expect
 that trade and look for the assertions it silently weakens.
 
+*Grown 2026-07-29 (S6 — Home HOSTING `build_setup`, i.e. one screen mounted inside
+another).* Both tracks held again; hosting adds two rules, both learned the hard way:
+1. **Assert the two mounts are the SAME screen, by rendered tree.** The risk of hosting is
+   silent divergence, and no amount of per-behaviour testing catches a host that slowly
+   grows its own variant. Comparing the hostee's rendered texts + button labels between the
+   two mounts is one cheap assertion that covers all of it; anything the host legitimately
+   adds (a band) sits OUTSIDE what the hostee returns, so the comparison stays honest.
+2. **A callback the host forwards is NOT pinned by testing the forwarding.** "Host passes
+   `x` to hostee" stays green when the caller above supplies `None` — a forwarded `None`
+   forwards perfectly. Pin the SUPPLY separately, and by EFFECT (fire the callback, observe
+   the work), not by presence. Found by a falsification probe going green, and fixed on the
+   assertion side.
+
 ### Documentation + its enforcing gate
 _Recorded 2026-07-29 (plan 0038 S2b — `docs/developer/output-contract.md` + its drift test)._
 
