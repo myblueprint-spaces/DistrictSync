@@ -143,7 +143,9 @@ _Last reconciled on `feat/pre-partner-completion` @ b772054 (2026-07-20)._
 - `config/mappings/mbp_all_mapping.yaml` — myBlueprint+ full tier (`_base: myedbc`): extends `enabled_entities` to all 7 (adds CourseInfo + StudentCourses on top of the standard 5 rostering CSVs).
 - `config/mappings/mbp_core_mapping.yaml` — myBlueprint+ minimal tier (`_base: myedbc`): `enabled_entities` = [Students, CourseInfo, StudentCourses] only; for districts that need course history/selection but not full class rosters.
 - `config/mappings/mbponly_mapping.yaml` — myBlueprint+ courses-only tier (`_base: myedbc`): `enabled_entities` = [CourseInfo, StudentCourses] only (no Students); requires only CourseInformation.txt + StudentCourseHistory.txt + StudentCourseSelection.txt.
-- `config/mappings/sd51attendance_mapping.yaml` — SD51 attendance-only tier (`_base: sd51myedbc`): `enabled_entities` = [StudentAttendance] only; generates just `StudentAttendance.csv` from the two absence GDEs, independent of the rostering pipeline (no rostering GDEs needed).
+- `config/mappings/sd51attendance_mapping.yaml` — SD51 attendance-only tier (`_base: sd51myedbc`): `enabled_entities` = [StudentAttendance] only; generates just `StudentAttendance.csv` from the two absence GDEs, independent of the rostering pipeline (no rostering GDEs needed). Overrides `district_name` so it can't render identically to `sd51myedbc` in a picker (G13); INHERITS SD51's `district_domains` deliberately.
+
+Note: the six district configs (sd40/48/51/54/60/74) each carry a top-level `district_domains:` list — the district's PUBLIC staff email domain, used to scope district pickers (plan 0038). Presentation-only and structurally invisible to the ETL (`to_raw_dict` emits only `mappings` + `global_config`); the base and the `mbp_*` tiers carry none (unclaimed). SD60's is the STAFF domain, not its generated student one.
 
 ---
 
@@ -165,6 +167,7 @@ _Last reconciled on `feat/pre-partner-completion` @ b772054 (2026-07-20)._
 - `tests/snapshots/` — Frozen SD74 snapshot data: `input/` holds 6 synthetic GDE files (StudentDemographic, Staff, Family, Classes, Schedule, CourseInfo); `output/` holds 5 golden CSV files (Students, Staff, Family, Classes, Enrollments) locked against regression.
 - `tests/snapshots/mbp_input/` — Small hand-authored synthetic GDEs for the `mbponly` course tier (CourseInformation, StudentCourseHistory, StudentCourseSelection); consumed by the mbponly end-to-end pipeline test and REUSED (copied in) by the contract sweep's mbponly run, which imports the path constant that test owns.
 - `tests/test_config.py` — Config model and loader: Pydantic validation of YAML structure, `classify_field()` dispatch, `_base` inheritance deep-merge, cycle detection.
+- `tests/test_config_district_domains.py` — The `district_domains` key, its validator and the SIX SHIPPED rows: each domain resolves to exactly its district via the real `extract_domain(normalize_email(...))` path; none claimed by two lineages; base/`mbp_*` unclaimed; `sd51attendance` inherits, never restates; a child restating REPLACES; a pasted address fails load LOUDLY; `to_raw_dict` can't carry it; `extra="ignore"` declared.
 - `tests/test_config_loader_multi_dir.py` — Two-tier config discovery: user-dir override wins over bundled, `_base` resolution across search dirs, `available_configs()` deduplication.
 - `tests/test_pipeline_e2e.py` — Full ETL e2e with synthetic on-disk GDE files: verifies output CSV structure and data for the standard myedbc config.
 - `tests/test_pipeline_e2e_districts.py` — District-specific e2e: verifies sd48 and sd74 district configs produce all 5 expected CSVs from synthetic GDE files using district-specific filenames.
