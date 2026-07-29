@@ -204,6 +204,7 @@ Priority order: **SOLID > DRY > KISS > YAGNI**. Keep layers isolated (UI / ETL-b
 - **Fail loudly.** Never swallow an exception to hide a config/column mismatch. The homeroom-enrollments bug (PR #12) was a caught `KeyError` that silently dropped rows — validate expected columns at transformer entry and raise/warn with an actionable message instead.
 - **Validate at boundaries.** Pydantic validates configs at load; GDE inputs are untrusted — check for required columns rather than `KeyError`-ing mid-transform.
 - **Single source of truth.** Never duplicate config, types, or constants across files.
+- **No permissive default on a safety-relevant parameter.** Make the unsafe call unrepresentable rather than defaulted — `upload_csvs(..., *, manifest)`, `ack_authorizes` refusing a bare bool, `_store_run_record(..., *, dry_run)` required at BOTH pipeline sinks, `--cli-smoke` refusing without `DISTRICTSYNC_DATA_DIR` instead of warning.
 
 The **full, reusable quality bar** — every dimension an implementation is held to (performance/caching, security/secrets, privacy/PII, resilience, concurrency, data integrity, observability, extensibility, i18n, …) — lives in **`docs/claugentic-ENGINEERING_STANDARDS.md`**, a *growing catch-all*. Per change, apply the **relevant** dimensions *fully* (never skip a relevant one; don't gold-plate irrelevant ones); you may **add** dimensions and may **justify a novel pattern** rather than be confined to known ones. Its **Current scope** section tracks which dimensions are live in DistrictSync *today* (a non-capping snapshot that grows with the stack).
 
@@ -249,6 +250,7 @@ Three rules are non-negotiable:
 - Mock datetime for school year tests: patch `src.etl.transformers.base.datetime`
 - Config tests validate against real YAML files and test Pydantic model behavior
 - CI: ruff check + ruff format + mypy (non-UI) + bandit + pytest (80% coverage gate) + config validation — every config `available_configs()` discovers, with the count **pinned at 11** so a deleted/unregistered config fails loudly (keep the pin in lockstep with the Makefile's `validate-config` list)
+- **No vacuous greens.** An "X was not created/changed" assertion needs a positive twin proving the mechanism works at all (the `--dry-run`↔`write-run` `history.db` pair in `scripts/ci_flet_pack_smoke.py`); any literal copied out of `src/` into a standalone script/CI/doc needs a parity test tying it back. Full rule + incidents: `docs/claugentic-standards/CANDIDATES.md`.
 
 <!-- harness:managed:start -->
 ## claugentic-dev-harness
