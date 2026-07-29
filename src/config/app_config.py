@@ -71,10 +71,25 @@ _TRANSIENT_FIELDS = frozenset({"load_state"})
 
 # Ambient window state, NOT a setting the admin chose. The ``window_*`` naming is the
 # contract (see the geometry block on :class:`AppConfig`) so a future window field joins
-# the set automatically rather than being forgotten in a hand-maintained list. Used by
-# :meth:`AppConfig._carries_chosen_settings` to tell an admin's settings write apart from
-# the shell's advisory geometry write.
+# the set automatically rather than being forgotten in a hand-maintained list.
 _GEOMETRY_FIELD_PREFIX = "window_"
+
+# ADVISORY field families — persisted, but NOT settings that make the sync work. Used by
+# :meth:`AppConfig._carries_chosen_settings` to tell an admin's real settings write apart
+# from a write that carries nothing worth overwriting an unreadable file for:
+#
+# * ``window_`` — ambient shell geometry (the original member; behaviour unchanged).
+# * ``identity_`` — who looks after this sync (plan 0038). Advisory for exactly the same
+#   reason: it scopes a picker and echoes on Help, and it changes NOTHING about which
+#   district converts, from where, to where, or when. So an identity-only save on a
+#   profile we FAILED TO READ must be refused by the existing machinery rather than
+#   trading the admin's real folders/district/delivery settings for invented blanks.
+#
+# A prefix contract rather than a hand-maintained name list, so a future field in either
+# family joins automatically. Note the deliberate near-miss it also protects: the seasonal
+# window's fields are named ``sync_window_*`` precisely so they do NOT start with
+# ``window_`` — they ARE admin choices (see the naming-contract comment on those fields).
+_ADVISORY_FIELD_PREFIXES: tuple[str, ...] = (_GEOMETRY_FIELD_PREFIX, "identity_")
 
 
 class SettingsOverwriteRefused(RuntimeError):
@@ -178,6 +193,24 @@ class AppConfig:
     # trusted from a flag). Set explicitly by the wizard's finish line in Slice 8; until
     # then it is inferred on load from the old finish-line condition (see load()).
     setup_completed: bool = False
+
+    # Identity — WHO looks after this sync (plan 0038). Advisory metadata, never a
+    # credential and never a setting the ETL reads: it scopes the district pickers so the
+    # highest-consequence wrong click is harder to make, echoes read-only on Help, and is
+    # the recipient a future failure notification would go to. It is NOT authentication —
+    # there are no accounts, every mapping ships in the binary regardless, and every path
+    # enters the app.
+    #
+    # NAMING CONTRACT (do not break): the ``identity_`` prefix is load-bearing. It puts
+    # all three fields in ``_ADVISORY_FIELD_PREFIXES``, which is what makes an
+    # identity-only save on an UNREADABLE profile get REFUSED by the existing
+    # ``_carries_chosen_settings`` machinery instead of replacing the admin's real
+    # settings with blanks. Rename the prefix and that protection silently disappears.
+    #
+    # Additive with safe defaults, so a v3.8.x ``config.json`` loads unchanged.
+    identity_email: str = ""  # as TYPED (case preserved); normalisation happens at compare time
+    identity_prompt_dismissed: bool = False  # the Home card was dismissed — permanent, Settings-recoverable
+    identity_sd_number: str = ""  # "my district isn't listed yet" — the SD number they told us
 
     # SFTP (non-sensitive only)
     sftp_enabled: bool = False
@@ -328,10 +361,13 @@ class AppConfig:
         UNREADABLE load every field is (b) — so if none has since moved off its default,
         the document is 100% invention and writing it is pure destruction.
 
-        Window geometry is excluded by the ``window_*`` prefix contract: it is ambient
-        window state, not a setting the admin chose, so a geometry-only mutation leaves
-        the settings wholly invented. This is exactly what separates the shell's advisory
-        exit-time geometry save (refused) from a save carrying an admin choice (allowed).
+        The ADVISORY families are excluded by the ``_ADVISORY_FIELD_PREFIXES`` contract:
+        window geometry is ambient shell state and ``identity_*`` is "who looks after
+        this" metadata — neither is a setting that makes the sync work, so a save carrying
+        only those leaves the actual settings wholly invented. This is exactly what
+        separates the shell's advisory exit-time geometry save (refused) and an
+        identity-only save on an unreadable profile (also refused) from a save carrying a
+        real admin choice (allowed).
 
         Note the asymmetry this predicate deliberately does NOT resolve: it answers "is
         this payload entirely invented?", not "is this payload a complete repair?". One
@@ -346,7 +382,7 @@ class AppConfig:
         return any(
             getattr(self, f.name) != getattr(defaults, f.name)
             for f in fields(AppConfig)
-            if f.name not in _TRANSIENT_FIELDS and not f.name.startswith(_GEOMETRY_FIELD_PREFIX)
+            if f.name not in _TRANSIENT_FIELDS and not f.name.startswith(_ADVISORY_FIELD_PREFIXES)
         )
 
     def settings_unreadable(self) -> bool:
@@ -385,6 +421,60 @@ class AppConfig:
         constructed directly.
         """
         return self.setup_completed or (self.is_complete() and self.schedule_registered)
+
+    def identity_save(self, **updates: object) -> bool:
+        """THE choke point for every identity write. Applies ``identity_*`` fields, then saves.
+
+        **Every future identity writer must go through here** — the launch page, the Home
+        cards, the Settings section, and anything Phase 2 adds. Not a convenience wrapper:
+        it is the one place three separate obligations are discharged together, and a
+        caller that hand-rolls ``cfg.identity_email = ...; cfg.save()`` silently drops all
+        three.
+
+        1. **The guard lives on the WRITE, not on the boot-time decision.** It re-checks
+           :meth:`settings_unreadable` on THIS instance at write time. The gate predicate
+           (``identity_gate.needs_identity``) is evaluated once at launch; a config that
+           became unreadable since — or an instance that was never readable and reached a
+           card by another route — must still be refused. Reading the provenance off the
+           instance we are about to save is the only check that cannot go stale.
+        2. **Only ``identity_*`` fields are applied.** An unknown key is a programming
+           error and raises ``AttributeError`` loudly (a silently-ignored typo would look
+           like a save that worked); a NON-identity field name is refused with the same
+           loudness, so this entry point can never become a back door for writing
+           ``sis_type``. Identity resolution must NEVER rewrite the configured district —
+           that is a product rule, enforced structurally here.
+        3. **Failure is non-fatal and reported.** ``SettingsOverwriteRefused`` and
+           ``OSError`` are logged and swallowed, and the return value says what happened.
+           Identity is advisory: a failed save must never trap the admin at the launch
+           page or break a card render. The gate simply asks again next launch.
+
+        Returns ``True`` iff the settings were written. Callers persist best-effort and
+        then continue regardless — never gate entry into the app on this.
+        """
+        for name, value in updates.items():
+            if not name.startswith("identity_") or not hasattr(self, name):
+                raise AttributeError(
+                    f"identity_save() only writes identity_* settings fields; got {name!r}. "
+                    "Route any other settings change through AppConfig.save()."
+                )
+            setattr(self, name, value)
+
+        if self.settings_unreadable():
+            logger.warning(
+                "Not saving who looks after this sync: the settings file could not be read this session, "
+                "so the saved settings are left untouched. We'll ask again next time."
+            )
+            return False
+        try:
+            self.save()
+        except SettingsOverwriteRefused:
+            # Belt-and-braces: the check above should have caught this, but save() owns
+            # the refusal rule and may widen it. Already logged at WARNING by save().
+            return False
+        except OSError as exc:
+            logger.warning("Could not save who looks after this sync (%s). Nothing else was changed.", exc)
+            return False
+        return True
 
     def sftp_is_configured(self) -> bool:
         """Return True if SFTP has been enabled and configured."""

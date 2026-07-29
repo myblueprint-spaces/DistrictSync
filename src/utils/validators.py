@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import unicodedata
 from datetime import date
 
 # ---------------------------------------------------------------------------
@@ -45,6 +46,23 @@ _RUN_AS_USER_RE = re.compile(r"^[A-Za-z0-9._-]+(?:\\[A-Za-z0-9._-]+)?$")
 
 # Maximum length for a run-as account string (DOMAIN\user).
 _RUN_AS_USER_MAX_LEN = 256
+
+# The admin's identity email (plan 0038). 254 is the RFC 5321 maximum length of a
+# deliverable address (the SMTP ``MAIL FROM`` path limit minus its angle brackets), so it
+# is the honest ceiling rather than an invented one.
+IDENTITY_EMAIL_MAX_LEN = 254
+
+# Local part: the conventional, well-trodden subset. RFC 5322 additionally permits
+# ``!#$&'*/=?^`{|}~`` and quoted forms; those are deliberately REFUSED — see
+# :func:`validate_identity_email` for why the narrowing is safe here.
+_IDENTITY_LOCAL_RE = re.compile(r"^[A-Za-z0-9._%+-]+$")
+# Domain: starts alphanumeric, at least one dot, an alphabetic TLD of 2+. Case-insensitive
+# here because the admin TYPES this; the config-side twin
+# (``src/config/models.MappingConfig._DISTRICT_DOMAIN_RE``) is the lowercase-only form,
+# because a config author AUTHORS that value and a mixed-case row would never match a
+# normalised domain. Deliberately two rules for two jobs; a parity test
+# (tests/test_config_district_domains.py) pins that every shipped domain satisfies both.
+_IDENTITY_DOMAIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}$")
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +154,81 @@ def validate_month_day(md: str) -> str:
     except ValueError as exc:
         raise ValueError(f"Invalid month-day '{md}': not a real calendar date (MM-DD).") from exc
     return md
+
+
+def _is_unusable_character(ch: str) -> bool:
+    """True for whitespace and every Unicode ``C*`` category (control / format / surrogate).
+
+    Catches what a strict ASCII regex would also catch, but EARLIER and with a far more
+    actionable message — the common real cases are a trailing newline from a paste, a
+    non-breaking space from a Word document, and a zero-width or bidi-override character
+    smuggled in from a rich-text source. ``C*`` covers Cc (control), Cf (format, incl.
+    U+200B and U+202E), Cs, Co and Cn in one rule.
+    """
+    return ch.isspace() or unicodedata.category(ch).startswith("C")
+
+
+def validate_identity_email(raw: str) -> str:
+    """Validate the admin's typed work email at the BOUNDARY; return it un-normalised.
+
+    The single rejection point for the identity page / Settings section (plan 0038). It
+    runs BEFORE ``src.utils.identity.normalize_email`` and before anything is persisted —
+    "validate at boundaries", so a malformed value can never reach the stored settings,
+    the Help echo, or the matching comparison.
+
+    Two deliberate differences from every sibling validator in this module, both
+    load-bearing:
+
+    * **It does not normalise.** Only surrounding whitespace is trimmed; case and Unicode
+      form are returned exactly as typed, so the address echoed back to the admin is the
+      one they entered. Reduction for COMPARISON is ``identity.normalize_email``'s job and
+      lives there alone.
+    * **Its messages never quote the value.** Siblings echo the offending input
+      (``Invalid SIS type 'x'``); an email address is personal data, so a caller that logs
+      ``str(exc)`` would leak it. Each message carries the RULE and an example instead,
+      and that is pinned by a test.
+
+    Accepted: a single ``@``; a non-empty local part of ``A-Z a-z 0-9 . _ % + -``; a
+    domain starting alphanumeric with at least one dot and a 2+ letter alphabetic TLD;
+    total length ≤ :data:`IDENTITY_EMAIL_MAX_LEN`. Rejected: anything else — including CR,
+    LF, NUL and other control characters, internal whitespace, zero-width and
+    bidirectional-control characters, and non-ASCII.
+
+    **The non-ASCII narrowing is deliberate and it is a real limitation.** This module is
+    the security-validator layer, and an allowlist that a reviewer can hold in their head
+    is worth more here than RFC 6531 completeness; every district this product serves uses
+    ASCII staff addresses. An admin whose address this refuses is not stranded: the launch
+    page's "I'm not the person who set this up" path and the SD-number path both enter the
+    app with the full unfiltered district list (identification is never a gate). If a real
+    partner ever needs an internationalised address, widen the charset here — that is the
+    one place to change.
+
+    Returns the trimmed value on success; raises ``ValueError`` otherwise.
+    """
+    value = raw.strip()
+    if not value:
+        raise ValueError("Enter the work email address of the person who looks after this sync.")
+    if len(value) > IDENTITY_EMAIL_MAX_LEN:
+        raise ValueError(f"That email address is too long (the maximum is {IDENTITY_EMAIL_MAX_LEN} characters).")
+    if any(_is_unusable_character(ch) for ch in value):
+        raise ValueError(
+            "That email address contains characters we can't use — remove any spaces, line breaks, "
+            "or invisible characters and try again."
+        )
+    local, at, domain = value.partition("@")
+    if not at or "@" in domain:
+        raise ValueError("An email address needs exactly one @ — for example, name@yourdistrict.bc.ca.")
+    if not _IDENTITY_LOCAL_RE.match(local):
+        raise ValueError(
+            "The part before the @ doesn't look right. Use letters, digits, and . _ % + - "
+            "— for example, name@yourdistrict.bc.ca."
+        )
+    # Tolerate EXACTLY the one trailing root dot ``identity.normalize_email`` strips, and
+    # no more — so the validator accepts precisely the set normalisation can reduce.
+    bare_domain = domain[:-1] if domain.endswith(".") else domain
+    if not _IDENTITY_DOMAIN_RE.match(bare_domain):
+        raise ValueError("The part after the @ doesn't look like a domain — for example, name@yourdistrict.bc.ca.")
+    return value
 
 
 def validate_sftp_host(host: str) -> str:
