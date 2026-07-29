@@ -461,6 +461,13 @@ def _cli(argv: list[str] | None) -> int:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    # CI-PINNED STRING — do not reword without updating the smoke.
+    # `scripts/ci_flet_pack_smoke.py` (smoke 1, run against the PACKED exe in
+    # `.github/workflows/flet-pack.yml`) asserts stdout starts with the literal
+    # "DistrictSync " prefix. The exit code is the primary signal and this prefix
+    # the secondary one, so a reword degrades the release gate rather than
+    # breaking it loudly — hence this note. Same discipline as the `=== DRY RUN`
+    # banner in `src/etl/pipeline.py` (smoke 2).
     parser.add_argument("--version", action="version", version=f"DistrictSync {version}")
 
     # ETL pipeline flags (required only when running the pipeline)

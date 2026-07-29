@@ -23,40 +23,22 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from src.etl.loader import DataLoader
 from src.main import main
+from tests.contract_schema import OUTPUT_SCHEMA, ROSTERING_ENTITIES
 
 FIXTURE_DIR = Path(__file__).parent / "snapshots" / "mbp_input"
 
-ROSTERING_CSVS = ["Students.csv", "Staff.csv", "Family.csv", "Classes.csv", "Enrollments.csv"]
+# All three expectations below are the PUBLISHED CONTRACT, read from its single
+# in-test mirror (tests/contract_schema.py -> docs/developer/output-contract.md)
+# rather than restated here. They used to be literal copies; the copies agreed
+# but nothing kept them in step, so a contract change could green here while
+# reddening the contract sweep.
+ROSTERING_CSVS = sorted(DataLoader.output_filenames(ROSTERING_ENTITIES))
 
-COURSE_INFO_COLUMNS = [
-    "Course Code",
-    "Alternate Course Code",
-    "School ID",
-    "Course Name",
-    "Course Description",
-    "Discipline",
-    "Department",
-    "Type",
-    "Grade",
-    "MaxGrade",
-    "Credit Value",
-    "IntegrationId",
-    "Year Offered",
-]
+COURSE_INFO_COLUMNS = OUTPUT_SCHEMA["CourseInfo"]
 
-STUDENT_COURSES_COLUMNS = [
-    "Student ID",
-    "Course Code",
-    "IntegrationId",
-    "Course Name",
-    "Completion Date",
-    "Final Mark",
-    "Credits Earned",
-    "Alternate Course Code",
-    "Potential Credits Earned",
-    "Term Grade",
-]
+STUDENT_COURSES_COLUMNS = OUTPUT_SCHEMA["StudentCourses"]
 
 
 @pytest.fixture

@@ -167,6 +167,8 @@ Use [semantic versioning](https://semver.org/) for the tag itself:
 - **Minor** (`v1.1.0`) — new feature, backward compatible (new district config, new CLI flag)
 - **Major** (`v2.0.0`) — breaking change (output CSV schema change, renamed flags)
 
+> **"Output CSV schema change" is judged against [`output-contract.md`](output-contract.md)** — the emitted column set, column order, per-entity encoding, filenames and delivery envelope. That document also names the re-confirmation trigger: a change to any of those requires fresh confirmation against the live SpacesEDU importer **before merge**, not before tag.
+
 ---
 
 ## Checklist before tagging
@@ -180,7 +182,7 @@ Use [semantic versioning](https://semver.org/) for the tag itself:
 - [ ] Security scan passes: `bandit -r src/`
 - [ ] **MANDATORY: manual QA pass on the built Windows exe** — the six-step [QA checklist](qa-checklist.md) (~10 min; native dialogs, fresh/stale profiles, exit hygiene — what CI can't see)
 - [ ] CHANGELOG or commit messages are meaningful (Actions generates release notes from commit history)
-- [ ] If output CSV schema changed — partner guide and FAQ are updated
+- [ ] If output CSV schema changed — [`output-contract.md`](output-contract.md) is updated (with a `contract_version` bump and the per-row provenance for anything newly confirmed), **and** the partner guide and FAQ are updated
 
 ---
 

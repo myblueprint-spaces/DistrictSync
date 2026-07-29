@@ -798,6 +798,13 @@ def run_pipeline(
                 sftp_ok = _sftp_upload(output_path, sis_type, manifest=DataLoader.output_filenames(outputs))
 
         # Dry-run summary
+        #
+        # CI-PINNED STRING — do not reword the banner without updating the smoke.
+        # `scripts/ci_flet_pack_smoke.py` (smoke 2, run against the PACKED exe in
+        # `.github/workflows/flet-pack.yml`) asserts the literal "=== DRY RUN"
+        # banner plus the entity names printed below (never the row counts — the
+        # SD74 golden owns values). Same discipline as the `--version` string in
+        # `src/main.py` (smoke 1).
         if dry_run:
             print("\n=== DRY RUN (no files written) ===")
             for name, df in outputs.items():

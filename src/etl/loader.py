@@ -251,13 +251,22 @@ class DataLoader:
         in order), failing **loud** if any ordered column is absent.
 
         This is the ONE place column selection + the missing-column check live,
-        so every write path — the disk/SFTP write (``_write_csv``) and the UI
-        download/zip path (``02_Convert.create_zip`` + the per-CSV buttons) —
-        raises the SAME ``ValueError`` instead of a raw ``KeyError`` from
-        ``df[field_order]``. A ``field_order`` comes from ``field_map`` keys,
-        which are not guaranteed to materialize as frame columns (the documented
-        ``student_courses.py`` partial-transform debt), so this guard is reachable
-        on the download path too — it must surface cleanly, not as a traceback.
+        so every write path raises the SAME ``ValueError`` instead of a raw
+        ``KeyError`` from ``df[field_order]``. Both of today's consumers reach it
+        through :meth:`_write_csv`: the transactional pipeline write
+        (:meth:`save_all` — used by the CLI *and* the Flet Convert screen, which
+        delegates to the same ``run_transform -> save_all`` path) and the direct
+        single-entity write (:meth:`save_to_csv`, retained for ad-hoc/test use).
+        The retired Streamlit ``02_Convert.create_zip`` download path this
+        docstring used to name is gone — there is no longer a second write path
+        with its own column selection, which is exactly the outcome this
+        single-source guard was introduced to reach.
+
+        A ``field_order`` comes from ``field_map`` keys, which are not guaranteed
+        to materialize as frame columns (the documented ``student_courses.py``
+        partial-transform debt), so this guard is genuinely reachable — it must
+        surface cleanly, not as a traceback. The emitted column set and order it
+        enforces are published in ``docs/developer/output-contract.md``.
         """
         missing_cols = [c for c in field_order if c not in df.columns]
         if missing_cols:
@@ -301,10 +310,16 @@ class DataLoader:
     def csv_encoding(cls, entity_name: str) -> str:
         """Return the CSV encoding for ``entity_name`` — the ONE place the BOM
         rule lives. ``utf-8-sig`` (BOM, Excel-friendly) by default; plain
-        ``utf-8`` (no BOM) for ``_NO_BOM_ENTITIES`` whose strict downstream
-        parser rejects a BOM-prefixed first header. Both the disk write path
-        (``_write_csv``) and the UI download/zip path call this, so the two
-        never diverge again (the StudentAttendance-BOM class of bug)."""
+        ``utf-8`` (no BOM) for :data:`_NO_BOM_ENTITIES`, whose strict downstream
+        parser rejects a BOM-prefixed first header.
+
+        Every write reaches this through :meth:`_write_csv`, so no caller can
+        pick its own encoding — the StudentAttendance-BOM class of bug (a second
+        write path hardcoding ``utf-8-sig``) is unrepresentable rather than
+        merely avoided. The published statement of this rule, with the incident
+        that motivated it, is the BOM matrix in
+        ``docs/developer/output-contract.md``; ``tests/contract_schema.py``
+        mirrors it and a policy test pins the two to this method."""
         return "utf-8" if entity_name in cls._NO_BOM_ENTITIES else "utf-8-sig"
 
     # ------------------------------------------------------------------

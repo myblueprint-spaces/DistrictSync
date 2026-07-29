@@ -19,17 +19,21 @@ import pytest
 
 from src.config.loader import load_config
 from src.etl.transformer import DataTransformer
+from tests.contract_schema import OUTPUT_SCHEMA
 
 # The 4 required SpacesEDU columns in exact case-sensitive order. The contract
 # permits dropping every optional field after Student Number, so these are the
 # entire output — no trailing blank columns.
-EXPECTED_COLUMNS = [
-    "School Number",
-    "Absence Date",
-    "Absence Category",
-    "Student Number",
-]
-POPULATED = ("School Number", "Absence Date", "Absence Category", "Student Number")
+#
+# LAYER NOTE — the VALUE is shared, the LAYER is not. This module asserts the
+# shape of the transformer's IN-MEMORY frame (pre-loader); tests/test_contract.py
+# asserts the ON-DISK header of the written CSV. Two genuinely different layers
+# that must agree, so they now read the same published contract
+# (tests/contract_schema.py -> docs/developer/output-contract.md) instead of
+# each restating it. Asserting here against a local copy would let the frame and
+# the file drift apart while both stayed green.
+EXPECTED_COLUMNS = OUTPUT_SCHEMA["StudentAttendance"]
+POPULATED = tuple(EXPECTED_COLUMNS)
 
 
 def _run(df, mapping, global_config, period_df=None):
