@@ -40,6 +40,14 @@ htmlcov/
 tmp_pdf/
 convert-before-select.png
 
+# District CONTACT working files — never committed. The owner's verified staff-contact
+# sheet stays local; only the six PUBLIC staff DOMAINS derived from it are in the repo
+# (config/mappings/*.yaml `district_domains:`). Belt and braces with
+# scripts/check_no_emails.py: the scanner blocks a leaked address, these patterns stop
+# the sheet being staged in the first place.
+*allowlist*candidate*
+*.emails
+
 # Virtual environments
 .venv/
 venv/

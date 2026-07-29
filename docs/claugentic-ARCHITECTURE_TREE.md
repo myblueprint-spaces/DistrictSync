@@ -149,6 +149,14 @@ Note: the six district configs (sd40/48/51/54/60/74) each carry a top-level `dis
 
 ---
 
+## scripts/  (developer + CI gates — outside the tree-check's INCLUDE_GLOBS, indexed here by convention)
+
+- `scripts/check_no_emails.py` — Repo-hygiene gate: scans EVERY git-tracked file for email-shaped strings and fails on any not covered by its four allowance tiers (published org addresses · illustrative examples · IANA-reserved names · the ONE path allowance, `tests/`, a DECLARED gap). Findings print REDACTED so a public CI log can't republish a leak. Wired into `.githooks/pre-commit` and `ci.yml`.
+- `scripts/claugentic-check_architecture_tree.py` — Harness gate: verifies this file indexes every in-scope source file (`src/**/*.py`, `config/mappings/*.yaml`), flags staleness/glob drift and over-budget entries; run `--staged` by the pre-commit hook.
+- `scripts/ci_flet_pack_smoke.py` — CI smoke driver for the PACKED artifact: `resolve_artifact`/`_launch` + `manifest_has_embed` (offline-embed assert) and the `--cli-smoke` phases (version · dry-run · write-run · corrupt-profile) run against the frozen exe. Deliberately imports nothing from `src/`.
+
+---
+
 ## Root
 
 - `pyproject.toml` — Project metadata (name=districtsync, version=3.2.0), setuptools build config, pytest settings (addopts, benchmarks deselected, coverage omits), ruff lint/format rules, mypy config, bandit exclusions.
@@ -201,6 +209,7 @@ Note: the six district configs (sd40/48/51/54/60/74) each carry a top-level `dis
 - `tests/test_ui_flet_identity_gate.py` — `needs_identity` truth table (all three inputs) + the UNREADABLE (G2) sweep, identity-alone-never-completes-setup, agreement with `nav.needs_setup` on the UNREADABLE row, and a no-flet import pin.
 - `tests/test_app_config.py` — `AppConfig` load/save round-trip, unknown-field tolerance, default values; `has_completed_setup()` + `setup_completed` back-compat inference on load (D4a — no deployed install regresses into onboarding).
 - `tests/test_app_config_identity.py` — The `identity_*` fields + `identity_save`: three-field round-trip, the LITERAL v3.8.x `config.json` upgrade fixture (Journey 4 — LOADED, stays completed, NOT asked), unknown-key survival, the `_ADVISORY_FIELD_PREFIXES` truth table (geometry refused · identity-only refused under UNREADABLE · `sync_window_*` still a choice), the write-time refusal + its positive twin, raising-save handling, back-door refusal.
+- `tests/test_check_no_emails.py` — `scripts/check_no_emails.py`: a planted address is CAUGHT in each of 11 directories (the parametrisation IS the no-path-hole assertion), a staged-uncommitted file is scanned, the failure output never republishes the address, every allowlist tier survives, `tests/` is the ONLY path allowance (both ways), no dead allowlist entry, and the LIVE repo scans clean + a positive twin.
 - `tests/test_isolation_canary.py` — D3 isolation tripwire: `AppConfig.save()` + `get_logger()` under the autouse isolation fixture leave the real user-data profile (config.json/etl_tool.log/history.db in `paths.user_data_dir()`) byte-untouched vs the conftest-import baseline, and the writes land in the isolated tmp dir.
 - `tests/test_entry_logging.py` — Entry-path logging (D3): CLI (`_configure_cli_logging`) and Flet launcher (`boot_logging`) each attach a file handler resolved through the paths seam; a fresh-interpreter import of `src.main` configures NO file sink (import-time-pollution regression guard).
 - `tests/test_main_helpers.py` — Pipeline helper functions: `_check_anomalies`, `_emit_run_log`, `extract_required_files`, `_sftp_upload`, `_print_diff`.
