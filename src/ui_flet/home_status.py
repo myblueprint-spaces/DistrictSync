@@ -122,6 +122,26 @@ _SCHEDULE_GONE_NOTE = (
 # resume date is a PURE fact (``next_resume_date``), rendered PII-free via ``friendly_date_short``.
 _PAUSED_HEADLINE = "Paused for the summer"
 
+# --------------------------------------------------------------------------- #
+# The first-run welcome band (0038 S6) — the one line above the hosted wizard. #
+#                                                                             #
+# Home hosts the setup wizard while the install has not reached the finish     #
+# line, and the wizard is reachable in states that are anything but new: an    #
+# upgrade that ran manually for a year without ever registering a schedule, a  #
+# wizard abandoned halfway. "Welcome to DistrictSync" over a populated run      #
+# store is the copy failure this band exists to make unrepresentable — so the  #
+# greeting is a DERIVED fact, never a constant, and each variant claims only    #
+# what its inputs establish. (The register is calm and quiet by design: the    #
+# gradient hero retired with `screens/onboarding.py` in this slice, and the    #
+# gradient's one home is the launch page — see docs/DESIGN_SYSTEM.md.)         #
+# --------------------------------------------------------------------------- #
+WELCOME_FRESH = "Welcome — four quick steps, about 3 minutes."
+WELCOME_RESUME_WITH_HISTORY = "Let's finish setting up — your files and run history are safe."
+# The half-configured install with nothing ever run. It is NOT new (it carries choices we
+# would be dismissing), but "your run history is safe" would reassure it about a thing we
+# know is absent — the assert-unchecked-state failure mode, in a welcome line.
+WELCOME_RESUME_SETTINGS_ONLY = "Let's finish setting up — everything you've already entered is safe."
+
 
 @dataclass(frozen=True)
 class FixAction:
@@ -672,6 +692,57 @@ def _missed_run_status() -> HomeStatus:
         ),
         fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
         metrics=None,
+    )
+
+
+def has_prior_runs(records: list[dict] | None, *, store_created_at: str | None) -> bool:
+    """Whether this install has ever recorded a run (pure, TOTAL, deliberately generous).
+
+    Three signals, OR-ed, and the generosity is the point — every wrong answer in the
+    ``True`` direction costs a slightly formal welcome line, while a wrong ``False`` greets
+    a district that has been syncing for a year as a brand-new install:
+
+    * a run record in hand;
+    * the store's birth stamp (``write_run_record`` is its sole creator, so a stamp means a
+      run WAS recorded, even if a later quarantine-recreate left the table empty);
+    * ``records is None`` — the store exists but could not be READ. The file's existence is
+      a checked fact, exactly as ``AppConfig.settings_unreadable`` treats a torn
+      ``config.json``: we stop asserting "you are new" without asserting anything else.
+    """
+    return records is None or bool(records) or bool(store_created_at)
+
+
+def _has_saved_choices(app_config: AppConfig) -> bool:
+    """Whether the admin has already entered any of the wizard's OWN answers.
+
+    Deliberately the three fields the wizard collects and the band's copy refers to — the
+    folders and the district. Advisory state (window geometry, the launch-page identity
+    answer) is excluded on the same reasoning as ``_ADVISORY_FIELD_PREFIXES``: answering
+    "who looks after this sync" is not setup progress, and treating it as such would tell
+    every admin who used the launch page that they have something half-done.
+    """
+    return bool(app_config.input_dir.strip() or app_config.output_dir.strip() or app_config.sis_type.strip())
+
+
+def welcome_band_line(*, has_run_history: bool, has_saved_choices: bool) -> str:
+    """The line above the hosted wizard, keyed on what this install can be said to HAVE.
+
+    Precedence: run history first (the strongest evidence the install is established), then
+    saved choices, then the fresh welcome. Only the first branch may mention run history —
+    see ``WELCOME_RESUME_SETTINGS_ONLY``.
+    """
+    if has_run_history:
+        return WELCOME_RESUME_WITH_HISTORY
+    if has_saved_choices:
+        return WELCOME_RESUME_SETTINGS_ONLY
+    return WELCOME_FRESH
+
+
+def welcome_band(app_config: AppConfig, *, records: list[dict] | None, store_created_at: str | None) -> str:
+    """The ONE call the Home host makes — the band line for this install (pure, TOTAL)."""
+    return welcome_band_line(
+        has_run_history=has_prior_runs(records, store_created_at=store_created_at),
+        has_saved_choices=_has_saved_choices(app_config),
     )
 
 

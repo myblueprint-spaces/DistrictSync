@@ -100,7 +100,7 @@ Never inline a hex or a px size in a screen or a factory arg; add a token, then 
 | `primary_button(...)` | the **one** filled action | max ONE per screen; `disabled_bgcolor` carries a gated fill |
 | `secondary_button(...)` | supporting actions | **outlined** (white bg, soft-blue border, blue text) — many allowed |
 | `text_button(...)` | tertiary / dismiss | MB_PRIMARY text; `color` overridable for coloured grounds |
-| `card(content, gradient=None, ...)` | a surface | white `radius_lg` + 1dp shadow; `gradient` = the LAUNCH PAGE hero only (0038) |
+| `card(content, gradient=None, ...)` | a surface | white `radius_lg` + 1dp shadow; `gradient` = the LAUNCH PAGE hero only (0038, exclusive since S6) |
 | `district_chip(label)` | district identity | rounded `color_chip_bg` pill in the header right-slot |
 | `status_pill(label, status)` | a compact status marker | toned per `Verdict`; icon + text (never colour-alone) |
 | `FileChip` · `run_table` · `ErrorCard` | file chip · run table · never-crash error surface | unchanged intent |
@@ -109,19 +109,25 @@ Never inline a hex or a px size in a screen or a factory arg; add a token, then 
 weaker one to `secondary_button`. (Settings is a stack of independent SECTIONS, each with at most one
 filled action — folders, schedule, delivery; a new section rides those rather than adding a fourth.)
 
-**Gradient (`hero_gradient`) — the LAUNCH PAGE (`screens/identity.py`) is its home**, reallocated
-there from the first-run onboarding hero by plan 0038. It marks the one moment the app is not yet
-itself: before the rail exists. Every other screen leads with `page_header`. Text on the gradient uses
-`color_on_action` / `color_on_action_muted` — both AA-gated against BOTH gradient endpoints, because
-a translucent white is a composite the contrast function cannot evaluate and would therefore be an
-ungated painted pair.
+**Gradient (`hero_gradient`) — the LAUNCH PAGE (`screens/identity.py`) is its home, and its ONLY
+one.** Reallocated there from the first-run onboarding hero by plan 0038 (S4a) and made exclusive by
+**S6**, which retired `screens/onboarding.py` (Home hosts the setup wizard itself now) and dropped
+the gradient from `shell.build_placeholder`. The gradient marks the one moment the app is not yet
+itself: before the rail exists. Every surface behind the rail leads with `page_header`. Text on the
+gradient uses `color_on_action` / `color_on_action_muted` — both AA-gated against BOTH gradient
+endpoints, because a translucent white is a composite the contrast function cannot evaluate and would
+therefore be an ungated painted pair (the placeholder's old sub-line was exactly that, and went with
+its gradient).
 
-**This is a TRANSITION, not a finished state — do not "fix" the other two out of scope.** Three
-callers exist today and each has its own disposition: the launch page (the home, above);
-`screens/onboarding.py`'s hero, still REACHABLE from unconfigured Home and retiring in **S6**, when
-Home hosts the wizard itself; and `shell.build_placeholder`, effectively dead (every destination
-overrides its placeholder before the rail renders) and **roadmapped** for removal alongside that
-retirement. Removing either early is out of scope and will conflict with S6.
+**The transition is CLOSED.** One product caller remains, by design. The only other reference is
+`components.build_design_demo`, the dev-only `DISTRICTSYNC_UI_DEMO` gallery, which exercises the
+factory rather than shipping a surface. A second gradient hero is now a review finding, not a
+migration leftover.
+
+**A first-run surface is calm text, not a hero.** The welcome line above Home's hosted wizard sits in
+the muted caption tier (`type_emphasis` / `color_muted`), because the wizard's own step header owns
+the title ramp and the moment is orientation, not arrival. It is also **state-aware** — an install
+with run history is never greeted with "Welcome" (`home_status.welcome_band`).
 
 ## Accessibility
 Every foreground/background pair the UI paints is enumerated in `tokens.UI_CONTRAST_PAIRS` and the

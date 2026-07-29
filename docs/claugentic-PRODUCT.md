@@ -111,9 +111,11 @@ borrowed from stale config.
 
 The landing surface answers *"is my roster syncing?"* three ways:
 
-- If the install isn't set up yet (`needs_setup`), Home routes to **onboarding** — a calm first-run
-  welcome that previews what's ahead in one subdued line (the four input steps + a ~3-minute
-  estimate) and points at Setup (one front door — no separate welcome screen).
+- If the install isn't set up yet (`needs_setup`), Home **IS the setup wizard** (0038 S6) — one calm
+  welcome line above step 1, right there. It knows the difference between a brand-new install and one
+  that has been running ("Welcome — four quick steps, about 3 minutes." vs "Let's finish setting
+  up — your files and run history are safe"). The old hero that previewed the steps and pointed at
+  the Setup tab is retired: a front door into the room you were standing in.
 - Otherwise Home derives a single **verdict** from the newest run record (`derive_home_status`): a
   HEALTHY "Your roster is syncing" with metric tiles (per-entity output counts + the plain last-run
   time + an SFTP-delivered flag), or an amber/red WARNING/FAILED with a plain headline and a "Check
@@ -257,7 +259,7 @@ success isn't gated on having a Windows password and live SFTP credentials in ha
 precedes Schedule so the nightly task's `--sftp` flag is baked from a committed delivery choice at
 registration time.)
 
-- **Empty / start** — one front door (Home's onboarding hero → the wizard), never three competing
+- **Empty / start** — one front door: Home IS the wizard while unconfigured, never three competing
   entrances.
 - **Per step** — a valid/invalid inline state; the step advances only when its own gate is satisfied.
 - **Schedule (async)** — a UAC prompt in flight ("waiting for the Windows permission prompt…"),
@@ -331,8 +333,9 @@ slice lands.
   and live SFTP credentials being at hand.
 - **Explicit district everywhere.** No silent default; "Choose your district" until chosen;
   auto-select only when exactly one config exists; Convert refuses to run without an explicit choice.
-- **One front door.** While unconfigured, Home's onboarding hero is the only entrance to setup — no
-  competing Setup-tab / Setup-led-nav doors.
+- **One front door.** While unconfigured, Home HOSTS the wizard — so the front door and the work are
+  the same surface. The Setup rail item mounts that same wizard (one wizard, two ways in, resuming
+  from the same real state), never a second, differently-worded entrance.
 - **Stable nav order.** The rail order is fixed (spatial memory is protected); a newcomer is guided by
   the initial selection + a "needs attention" badge, never by reordering the rail.
 - **Output visible at the view layer.** The resolved output folder is shown before and after a

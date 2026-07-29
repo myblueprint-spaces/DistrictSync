@@ -244,11 +244,16 @@ class TestWhenTheCardAppears:
 
         assert home.IDENTITY_CARD_HEADLINE not in _all_text(view)
 
-    def test_an_unconfigured_install_gets_the_onboarding_branch_not_a_card(self, page, monkeypatch) -> None:
-        """The launch page owns that population (S4a); Home must not ask a second time."""
+    def test_an_unconfigured_install_gets_the_hosted_WIZARD_not_a_card(self, page, monkeypatch) -> None:
+        """The launch page owns that population (S4a); Home must not ask a second time.
+
+        Branch (a) is the hosted setup wizard since S6 — asserted positively, because "no
+        card" is equally satisfied by a Home that rendered nothing at all.
+        """
         view = _home(page, _cfg(setup_completed=False, input_dir="", output_dir="", sis_type=""), monkeypatch)
 
         assert home.IDENTITY_CARD_HEADLINE not in _all_text(view)
+        assert "Choose your district" in _all_text(view), "branch (a) did not host the wizard"
 
 
 # --------------------------------------------------------------------------- #

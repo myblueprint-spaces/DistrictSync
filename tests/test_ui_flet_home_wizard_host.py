@@ -228,3 +228,332 @@ class TestTheFirstRunPromisesThatMustSurvive:
         assert any(isinstance(c, ft.NavigationRail) for c in _iter_controls(root)), "the app body never mounted"
         assert DISTRICT_STEP_TITLE in _texts(root)
         assert "Step 1 of 5" in _texts(root)
+
+
+# --------------------------------------------------------------------------- #
+# 2. The host — branch (a) is the wizard now                                   #
+# --------------------------------------------------------------------------- #
+class TestHomeHostsTheWizard:
+    def test_the_district_step_renders_under_the_welcome_band(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tree = _home(page, _unfinished(), monkeypatch)
+
+        texts = _texts(tree)
+        assert home_status_mod.WELCOME_FRESH in texts
+        assert DISTRICT_STEP_TITLE in texts and "Step 1 of 5" in texts
+
+    def test_there_is_no_second_front_door_pointing_somewhere_else(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The retired hero's whole shape: a "Start setup" CTA routing to another rail item.
+
+        Asserted as an ABSENCE with its positive twin right above it — the wizard's own
+        forward button IS present, so this cannot pass by branch (a) rendering nothing.
+        """
+        hops: list[str] = []
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: _unfinished()))
+        tree = build_home(page, app_config=_unfinished(), on_navigate=hops.append)
+
+        labels = _labels(tree)
+        assert "Continue" in labels, "the hosted wizard's forward button is missing"
+        assert "Start setup" not in labels
+        assert hops == [], "branch (a) navigated somewhere on mount"
+
+    def test_the_band_says_finish_setting_up_over_a_run_history(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Upgrade shape 2 — complete, never scheduled, a year of manual runs behind it."""
+        monkeypatch.setattr(home_screen, "read_run_records", lambda: [{"timestamp": "2026-07-01T03:00:00"}])
+        cfg = _unfinished(input_dir="/in", output_dir="/out", sis_type="myedbc")
+
+        texts = _texts(_home(page, cfg, monkeypatch))
+
+        assert home_status_mod.WELCOME_RESUME_WITH_HISTORY in texts
+        assert home_status_mod.WELCOME_FRESH not in texts
+        assert not any("Welcome" in t for t in texts), "a running install was greeted as a new one"
+
+    def test_the_band_never_claims_a_run_history_that_is_absent(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The half-configured install: choices on disk, nothing ever run."""
+        texts = _texts(_home(page, _unfinished(sis_type="myedbc"), monkeypatch))
+
+        assert home_status_mod.WELCOME_RESUME_SETTINGS_ONLY in texts
+        assert not any("run history" in t for t in texts)
+
+    def test_an_unreadable_profile_gets_the_dashboard_not_the_wizard(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """G2's Home half, restated for the host: we could not read the settings, so we may
+        not assert "you are a new user" by putting a first-run wizard in front of them."""
+        cfg = AppConfig(load_state=ConfigLoadState.UNREADABLE)
+
+        texts = _texts(_home(page, cfg, monkeypatch))
+
+        assert DISTRICT_STEP_TITLE not in texts
+        assert "Home" in texts, "the dashboard did not paint; the absence above is vacuous"
+
+    def test_the_hosted_wizard_and_the_rail_item_are_the_same_wizard(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One wizard, two mounts — the divergence this test exists to catch is the whole
+        risk of hosting a screen inside another screen.
+
+        Compared on the wizard's OWN rendered surface (its step header, its instruction
+        copy, its buttons); the band is Home's and is excluded by construction, since it
+        is not part of what ``build_setup`` returns.
+        """
+        cfg = _unfinished()
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+
+        hosted = build_home(page, app_config=cfg, on_navigate=lambda _d: None)
+        wizard_in_host = next(c for c in hosted.controls if isinstance(c, ft.Column))
+        from_rail = build_setup(page)
+
+        assert _texts(wizard_in_host) == _texts(from_rail)
+        assert _labels(wizard_in_host) == _labels(from_rail)
+
+
+class TestTheBranchAFloor:
+    """A broken wizard must not take Home down — and must not lie about the sync."""
+
+    def _broken(self, page: MagicMock, monkeypatch: pytest.MonkeyPatch, hops: list[str]) -> ft.Control:
+        def _boom(*_a: object, **_kw: object) -> ft.Control:
+            raise RuntimeError("the wizard exploded")
+
+        monkeypatch.setattr(setup_screen, "build_setup", _boom)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: _unfinished()))
+        return build_home(page, app_config=_unfinished(), on_navigate=hops.append)
+
+    def test_a_raise_in_the_wizard_lands_on_the_branch_a_error_card(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tree = self._broken(page, monkeypatch, [])
+
+        texts = _texts(tree)
+        assert home_screen.SETUP_UNAVAILABLE_HEADLINE in texts
+        assert home_screen.SETUP_UNAVAILABLE_DETAIL in texts
+
+    def test_the_floor_never_reuses_the_dashboards_false_reassurance(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The dashboard floor says "your nightly sync keeps running in the background".
+        For an install with no schedule and no run that is false in every particular — and
+        it is the sentence a copy-paste of the other floor would have produced."""
+        texts = _texts(self._broken(page, monkeypatch, []))
+
+        assert not any("keeps running" in t for t in texts)
+        assert not any("nightly sync" in t.lower() for t in texts)
+
+    def test_the_floor_offers_a_route_to_a_person(self, page: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        hops: list[str] = []
+        tree = self._broken(page, monkeypatch, hops)
+
+        _button(tree, home_screen.SETUP_UNAVAILABLE_HELP_LABEL).on_click(None)
+
+        assert hops == ["help"]
+
+    def test_the_help_route_is_secondary_not_a_filled_primary(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The screen's one filled action belongs to the wizard's forward button; an error
+        card's escape hatch may not out-weight the action that fixes anything."""
+        tree = self._broken(page, monkeypatch, [])
+
+        assert not [c for c in _iter_controls(tree) if isinstance(c, ft.FilledButton)]
+
+    def test_the_floor_probe_is_not_vacuous(self, page: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        """POSITIVE twin: without the injected raise the SAME build shows no error card."""
+        texts = _texts(_home(page, _unfinished(), monkeypatch))
+
+        assert home_screen.SETUP_UNAVAILABLE_HEADLINE not in texts
+        assert DISTRICT_STEP_TITLE in texts
+
+    def test_a_raise_while_deriving_the_band_still_shows_the_floor_not_a_trace(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The band is inside the floor deliberately — an unreadable run store must not be
+        able to replace a working wizard with a stack trace."""
+
+        def _boom() -> list[dict]:
+            raise RuntimeError("the run store exploded")
+
+        monkeypatch.setattr(home_screen, "read_run_records", _boom)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: _unfinished()))
+
+        tree = build_home(page, app_config=_unfinished(), on_navigate=lambda _d: None)
+
+        assert home_screen.SETUP_UNAVAILABLE_HEADLINE in _texts(tree)
+
+
+class TestTheFinishSeam:
+    """``on_complete`` fires only after a VERIFIED save — the slice's load-bearing promise."""
+
+    def _hosted_finish(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hops: list[str]
+    ) -> ft.Control:
+        cfg = _ready_to_finish(tmp_path)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        tree = build_home(page, app_config=cfg, on_navigate=hops.append)
+        _drive_to_finish(tree)
+        return tree
+
+    def test_a_verified_save_re_enters_home(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        saved: list[bool] = []
+        monkeypatch.setattr(AppConfig, "save", lambda self: saved.append(self.setup_completed))
+        hops: list[str] = []
+
+        tree = self._hosted_finish(page, tmp_path, monkeypatch, hops)
+        assert hops == [], "nothing may navigate before the finish press"
+        _button(tree, FINISH_BUTTON).on_click(None)
+
+        assert saved and saved[-1] is True
+        assert hops == ["home"], "the finish line must hand the payoff back to Home"
+
+    def test_the_hosted_finish_does_NOT_mount_the_settings_scroll(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two payoffs for one press would flash a Settings page under a screen that is
+        being replaced. ``on_complete`` fires INSTEAD of the graduation, never as well."""
+        monkeypatch.setattr(AppConfig, "save", lambda self: None)
+        tree = self._hosted_finish(page, tmp_path, monkeypatch, [])
+
+        _button(tree, FINISH_BUTTON).on_click(None)
+
+        assert TRANSITION_CUE not in _texts(tree)
+
+    def test_the_summary_stays_visible_until_the_finish_press(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Finish-in-place: the checked summary IS the payoff, and it is on screen for as
+        long as the admin wants it — the press is what moves them on."""
+        tree = self._hosted_finish(page, tmp_path, monkeypatch, [])
+
+        assert "Here's what you set up" in _texts(tree)
+        assert _button(tree, FINISH_BUTTON) is not None
+
+    def test_a_raising_save_keeps_the_summary_and_never_bounces_to_step_1(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """THE regression this seam exists for.
+
+        Firing ``on_complete`` on an unverified save would re-render Home, Home would
+        re-read a config that still says "unfinished", and the admin would land back on
+        step 1 having just been told they were done — indistinguishable from "it undid my
+        setup". So: the note appears, the summary stays, no hop is recorded, and the
+        in-memory flag is rolled back so nothing downstream inherits a false completion.
+        """
+        cfg = _ready_to_finish(tmp_path)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        hops: list[str] = []
+        tree = build_home(page, app_config=cfg, on_navigate=hops.append)
+        _drive_to_finish(tree)
+
+        def _boom(self: AppConfig) -> None:
+            raise OSError("the settings folder is read-only")
+
+        monkeypatch.setattr(AppConfig, "save", _boom)
+        _button(tree, FINISH_BUTTON).on_click(None)
+
+        texts = _texts(tree)
+        assert setup_screen.FINISH_SAVE_FAILED_NOTE in texts
+        assert "Step 5 of 5" in texts and "Step 1 of 5" not in texts
+        assert "Here's what you set up" in texts, "the summary the admin earned was taken away"
+        assert hops == [], "on_complete fired on a save that never happened"
+        assert cfg.setup_completed is False, "the instance kept a completion the disk does not have"
+
+    def test_the_retry_after_a_failed_save_succeeds(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The note says "try again", so pressing again must be a real retry — the positive
+        twin of the failure above (without it, a permanently inert button would pass)."""
+        cfg = _ready_to_finish(tmp_path)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        hops: list[str] = []
+        tree = build_home(page, app_config=cfg, on_navigate=hops.append)
+        _drive_to_finish(tree)
+        attempts: list[int] = []
+
+        def _flaky(self: AppConfig) -> None:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise OSError("transient")
+
+        monkeypatch.setattr(AppConfig, "save", _flaky)
+        _button(tree, FINISH_BUTTON).on_click(None)
+        _button(tree, FINISH_BUTTON).on_click(None)
+
+        assert len(attempts) == 2
+        assert hops == ["home"]
+        assert setup_screen.FINISH_SAVE_FAILED_NOTE not in _texts(tree)
+
+    def test_the_rail_hosted_wizard_still_graduates_in_place(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``on_complete=None`` — today's behaviour, unchanged. Paired with the hosted case
+        above so "the seam fires" and "the seam is opt-in" are both proven."""
+        cfg = _ready_to_finish(tmp_path)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        monkeypatch.setattr(AppConfig, "save", lambda self: None)
+
+        tree = build_setup(page)
+        _drive_to_finish(tree)
+        _button(tree, FINISH_BUTTON).on_click(None)
+
+        assert TRANSITION_CUE in _texts(tree)
+
+    def test_a_raising_save_from_the_RAIL_item_also_keeps_the_summary(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The save-verify is the wizard's, not the host's — both mounts inherit it."""
+        cfg = _ready_to_finish(tmp_path)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        tree = build_setup(page)
+        _drive_to_finish(tree)
+
+        def _boom(self: AppConfig) -> None:
+            raise OSError("read-only")
+
+        monkeypatch.setattr(AppConfig, "save", _boom)
+        _button(tree, FINISH_BUTTON).on_click(None)
+
+        texts = _texts(tree)
+        assert setup_screen.FINISH_SAVE_FAILED_NOTE in texts
+        assert TRANSITION_CUE not in texts, "the Settings graduation ran on an unsaved finish"
+        assert cfg.setup_completed is False
+
+
+class TestTheScheduleBadgeCallbackReachesTheHostedWizard:
+    """A nightly task registered from HOME must re-probe the rail badge, as from Setup."""
+
+    def test_the_callback_is_forwarded_into_the_hosted_wizard(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, object] = {}
+
+        def _spy(_page: ft.Page, **kwargs: object) -> ft.Control:
+            seen.update(kwargs)
+            return ft.Text("wizard")
+
+        monkeypatch.setattr(setup_screen, "build_setup", _spy)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: _unfinished()))
+        sentinel = lambda: None  # noqa: E731 - identity is the assertion
+
+        build_home(
+            page,
+            app_config=_unfinished(),
+            on_navigate=lambda _d: None,
+            on_schedule_changed=sentinel,
+        )
+
+        assert seen["on_schedule_changed"] is sentinel
+        assert callable(seen["on_complete"])
+
+    def test_a_host_without_the_callback_still_builds(self, page: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The defensive default: every caller without a badge to refresh is unchanged."""
+        tree = _home(page, _unfinished(), monkeypatch)
+
+        assert DISTRICT_STEP_TITLE in _texts(tree)

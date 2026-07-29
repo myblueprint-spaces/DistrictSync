@@ -6,10 +6,11 @@ derives the verdict). This file only RENDERS that already-tested output, verdict
 so a non-technical admin's deep question — *"is my sync OK?"* — is answered in one
 plain-language banner before any metric.
 
-Three-way dispatch (mirrors the IA model + IA-2's promise that onboarding is branch (a)):
-  * **(a) unconfigured** — ``nav.needs_setup(app_config)`` → reuse ``build_onboarding``
-    VERBATIM (the same hero the IA-2 shell showed), with an ``on_start_setup`` that
-    navigates to Setup. No throwaway.
+Three-way dispatch (mirrors the IA model; branch (a) is the first-run surface):
+  * **(a) not set up yet** — ``nav.needs_setup(app_config)`` → Home **HOSTS the setup
+    wizard itself** (0038 S6), under one state-aware welcome line. There is no longer a
+    hero pointing at another rail item: the old ``screens/onboarding.py`` was a door into
+    the room you were standing in, so it retired and its CTA's destination moved here.
   * **(b) configured + healthy** — a green ``HealthVerdictBanner`` + light metric tiles
     (entity counts, a PLAIN last-run time, SFTP delivered ✓) + the friendly district
     greeting.
@@ -24,11 +25,13 @@ Built as a **callback-driven factory** — ``build_home`` owns NO navigation or 
 Assembled ENTIRELY from ``components.py`` (cards/buttons/banner) + ``tokens`` — never
 hand-rolled controls (the ``FilledButton(text=)`` trap; see ``docs/FLET_1.0_CONVENTIONS.md``).
 
-**Never-crash floor:** the configured-branch read/derive/render is wrapped in
-``try/except`` → ``components.ErrorCard`` on any unexpected error, so even a view-layer bug
-shows a calm surface, never a stack trace. Defense-in-depth — the parser + derivation are
-already TOTAL (their tests prove it); this is the reliability net DS-1 shipped ``ErrorCard``
-for.
+**Never-crash floor — TWO of them, with DIFFERENT copy on purpose.** The configured-branch
+read/derive/render is wrapped in ``try/except`` → ``components.ErrorCard`` on any unexpected
+error, so even a view-layer bug shows a calm surface, never a stack trace (defense-in-depth
+— the parser + derivation are already TOTAL). Branch (a) has its own, because the dashboard
+floor's reassurance ("your nightly sync keeps running in the background") is FALSE for an
+install that has not finished setup: there is no schedule and there has never been a run.
+Its copy says what is true instead — nothing has been changed — and routes to Help.
 
 **The identity cards (0038 S4b)** ride the configured branch, immediately under the verdict
 block: the one-time upgrade ask, the G3 mismatch question, and the durable "we're building
@@ -59,7 +62,14 @@ from src.config.loader import available_configs
 from src.history.store import read_run_records, store_meta
 from src.scheduler import get_scheduler
 from src.ui_flet import about, components, nav, tokens
-from src.ui_flet.home_status import ENTITY_LABELS, FixAction, HomeMetrics, derive_home_status, sync_window_paused
+from src.ui_flet.home_status import (
+    ENTITY_LABELS,
+    FixAction,
+    HomeMetrics,
+    derive_home_status,
+    sync_window_paused,
+    welcome_band,
+)
 from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.identity_gate import (
     can_continue,
@@ -73,7 +83,6 @@ from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.screens import identity as identity_screen
 from src.ui_flet.screens import setup as setup_screen
 from src.ui_flet.screens.help import SUPPORT_EMAIL
-from src.ui_flet.screens.onboarding import build_onboarding
 from src.ui_flet.verdict import Verdict
 from src.utils.identity import extract_domain, normalize_email
 from src.utils.validators import IDENTITY_EMAIL_MAX_LEN, validate_identity_email
@@ -164,6 +173,22 @@ def _schedule_card(status: ScheduleStatus, on_navigate: Callable[[str], None]) -
         ),
         padding=_pad_sym(tokens.space_lg + 4, tokens.space_lg),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Branch (a) — Home HOSTS the setup wizard (0038 S6). Copy first.              #
+#                                                                             #
+# The floor copy here is branch-SPECIFIC and that is the whole reason it       #
+# exists. Home's dashboard floor reassures the admin that "your nightly sync   #
+# keeps running in the background" — true of a working install whose STATUS    #
+# view broke, and false in every particular for an install that has no         #
+# schedule, no run and no district yet. The only reassurance we can honestly   #
+# offer this admin is that we changed nothing, and the only route worth        #
+# offering is the one that reaches a person.                                   #
+# --------------------------------------------------------------------------- #
+SETUP_UNAVAILABLE_HEADLINE = "We couldn't open setup right now"
+SETUP_UNAVAILABLE_DETAIL = "Nothing has been changed. Close DistrictSync and open it again, or contact support."
+SETUP_UNAVAILABLE_HELP_LABEL = "Get help"
 
 
 def _metric_tiles_row(metrics: HomeMetrics) -> ft.Control:
@@ -699,6 +724,66 @@ def _identity_cards(
         return None
 
 
+def _wizard_host(
+    page: ft.Page,
+    app_config: AppConfig,
+    on_navigate: Callable[[str], None],
+    *,
+    on_schedule_changed: Callable[[], None] | None,
+) -> ft.Control:
+    """Branch (a): Home IS the setup wizard until the finish line is reached (0038 S6).
+
+    A host, not a copy — ``setup.build_setup`` is mounted here verbatim, so the rail's
+    Setup item and this surface run ONE wizard with one resume rule and one set of steps.
+    The two differences are deliberate and both live outside the wizard: the welcome band
+    above it, and where the finish line hands off (``on_complete`` → a Home re-render into
+    the health view, instead of the in-place Settings graduation the rail item keeps).
+
+    ``on_complete`` re-enters Home through the injected navigation rather than swapping
+    anything itself: the shell's Home factory re-reads ``AppConfig``, so the fresh load is
+    what routes the now-completed install to branch (b)/(c). The wizard fires it only after
+    a VERIFIED save, so this re-render can never land back on branch (a) — the bounce that
+    would read as "it undid my setup".
+
+    The floor is branch-(a)-specific (see the copy block above) and wraps the WHOLE host,
+    including the band: a raise while deriving the welcome line must not take the wizard
+    down with it, and a wizard that cannot build must not leave a bare band on screen.
+    """
+    try:
+        line = welcome_band(app_config, records=read_run_records(), store_created_at=_store_created_at())
+        return ft.Column(
+            spacing=tokens.space_xl,
+            controls=[
+                # Calm caption tier, NOT a heading: the wizard's own step header owns the
+                # title ramp. (The gradient hero this replaces retired with
+                # `screens/onboarding.py`; the gradient's one home is the launch page.)
+                ft.Text(line, size=tokens.type_emphasis, color=tokens.color_muted),
+                setup_screen.build_setup(
+                    page,
+                    on_schedule_changed=on_schedule_changed,
+                    on_complete=lambda: on_navigate("home"),
+                ),
+            ],
+        )
+    except Exception:  # noqa: BLE001 - the first-run floor: never a stack trace, never a false reassurance
+        logger.warning("Could not open the setup wizard on Home.", exc_info=True)
+        return components.ErrorCard(
+            SETUP_UNAVAILABLE_HEADLINE,
+            SETUP_UNAVAILABLE_DETAIL,
+            action=components.secondary_button(
+                SETUP_UNAVAILABLE_HELP_LABEL,
+                lambda _e: on_navigate("help"),
+                icon=ft.Icons.HELP_OUTLINE_ROUNDED,
+            ),
+        )
+
+
+def _store_created_at() -> str | None:
+    """The run store's birth stamp, or ``None`` when it was never created."""
+    meta = store_meta()
+    return meta.get("created_at") if meta else None
+
+
 def _dashboard(
     page: ft.Page,
     app_config: AppConfig,
@@ -717,8 +802,7 @@ def _dashboard(
     # The store's birth stamp feeds the fresh-start empty copy AND the missed-run fresh-start
     # guard (which must also hold when a populated table's newest run is old) — fetched
     # unconditionally; a second tiny SQLite read on mount is the honest price.
-    meta = store_meta()
-    store_created_at = meta.get("created_at") if meta else None
+    store_created_at = _store_created_at()
     latest_ts = records[0].get("timestamp") if records else None
 
     # 0038 S4b: built ONCE, here, OUTSIDE ``_render`` — the schedule read-back re-derives
@@ -816,22 +900,26 @@ def build_home(
     app_config: AppConfig,
     on_navigate: Callable[[str], None],
     on_refresh: Callable[[], None] | None = None,
+    on_schedule_changed: Callable[[], None] | None = None,
 ) -> ft.Control:
     """Build the three-way Home surface. ``on_navigate(dest_id)`` is injected by the shell.
 
-    ``page`` is threaded to ``build_onboarding`` (branch (a)) for the uniform
-    ``functools.partial(build_*, page)`` mount form. Branch (a) reuses the IA-2 onboarding
-    hero verbatim; branches (b)/(c) render the health dashboard from the pure trust core (with
-    the off-thread schedule read-back injected), wrapped in a never-crash ``ErrorCard`` fallback.
-    ``on_refresh`` (injected by the shell) adds a Refresh affordance on the dashboard branches
-    for the leaves-it-open Watcher; the onboarding branch (a) is unaffected.
+    Branch (a) HOSTS the setup wizard (0038 S6); branches (b)/(c) render the health
+    dashboard from the pure trust core (with the off-thread schedule read-back injected),
+    wrapped in a never-crash ``ErrorCard`` fallback. ``build_home`` keeps owning the branch
+    decision — the shell mounts it unconditionally and forwards the callbacks either branch
+    might need, rather than branching itself. The trade-off is stated: the shell hands over
+    one callback (``on_schedule_changed``) that only branch (a) uses, and in exchange there
+    is exactly ONE place that decides which Home an admin gets.
+
+    ``on_refresh`` (injected by the shell) adds a Refresh affordance on the dashboard
+    branches for the leaves-it-open Watcher; branch (a) has no status to refresh.
+    ``on_schedule_changed`` (also shell-owned) is forwarded to the hosted wizard so
+    registering the nightly task from HERE re-probes the rail's Setup badge, exactly as it
+    does from the Setup rail item.
     """
     if nav.needs_setup(app_config):
-        return build_onboarding(
-            page,
-            sis_type=app_config.sis_type,
-            on_start_setup=lambda: on_navigate("setup"),
-        )
+        return _wizard_host(page, app_config, on_navigate, on_schedule_changed=on_schedule_changed)
 
     try:
         return _dashboard(page, app_config, on_navigate, on_refresh)

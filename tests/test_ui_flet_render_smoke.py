@@ -27,13 +27,12 @@ import flet as ft
 import pytest
 
 from src.config.app_config import AppConfig, config_file_path
-from src.ui_flet import components, tokens
+from src.ui_flet import components, home_status, tokens
 from src.ui_flet.screens.convert import build_convert
 from src.ui_flet.screens.help import build_help
 from src.ui_flet.screens.home import build_home
 from src.ui_flet.screens.identity import build_identity
 from src.ui_flet.screens.mapping import build_mapping
-from src.ui_flet.screens.onboarding import build_onboarding
 from src.ui_flet.screens.run_history import build_run_history
 from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.setup_flow import (
@@ -359,7 +358,7 @@ class TestScreensRender:
     def test_home_with_refresh(self, stub_page, monkeypatch):
         # The Refresh affordance (D1) must render on the dashboard branch without
         # crashing — a configured+scheduled config is required to reach that branch
-        # (the default unconfigured config renders onboarding, which has no Refresh).
+        # (the default unconfigured config hosts the setup wizard, which has no Refresh).
         configured = AppConfig(
             input_dir="in",
             output_dir="out",
@@ -430,11 +429,44 @@ class TestScreensRender:
             monkeypatch,
         )
 
-    def test_onboarding(self, stub_page, monkeypatch):
-        _assert_renders(
-            lambda: build_onboarding(stub_page, sis_type="myedbc", on_start_setup=lambda: None),
+    def test_home_hosts_the_wizard_when_setup_is_unfinished(self, stub_page, monkeypatch):
+        # 0038 S6: branch (a) is no longer a static hero — it MOUNTS the setup wizard, so
+        # the mount smoke has to cover the composed control tree (a Flet API drift inside
+        # the wizard is now a crash on the FIRST surface a new admin sees). Per-state
+        # behaviour lives in tests/test_ui_flet_home_wizard_host.py.
+        from src.ui_flet.screens import home as home_screen
+
+        tree = _assert_renders(
+            lambda: build_home(stub_page, app_config=AppConfig(), on_navigate=lambda _d: None),
             monkeypatch,
         )
+        assert _has_text(tree, home_status.WELCOME_FRESH), "the state-aware welcome band did not render"
+        assert _has_text(tree, "Choose your district"), "the hosted wizard's first step did not render"
+        assert not _has_text(tree, home_screen.SETUP_UNAVAILABLE_HEADLINE)
+
+    def test_home_hosts_the_wizard_with_the_has_history_band(self, stub_page, monkeypatch):
+        # Upgrade shape 2 (complete + never scheduled, with real runs behind it): the SAME
+        # host, a different band. Never "Welcome" over a populated run store.
+        from src.ui_flet.screens import home as home_screen
+
+        monkeypatch.setattr(home_screen, "read_run_records", lambda: [{"timestamp": "2026-07-01T03:00:00"}])
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc")
+        tree = _assert_renders(
+            lambda: build_home(stub_page, app_config=cfg, on_navigate=lambda _d: None),
+            monkeypatch,
+        )
+        assert _has_text(tree, home_status.WELCOME_RESUME_WITH_HISTORY)
+        assert not _has_text(tree, home_status.WELCOME_FRESH)
+
+    def test_shell_placeholder_renders_without_a_gradient(self, monkeypatch):
+        # 0038 S6 dropped the placeholder's second gradient hero (and its ungated
+        # translucent-white sub-line). Effectively dead code — smoked here so the swap to
+        # `page_header` is exercised at least once rather than shipping unbuilt.
+        from src.ui_flet import nav, shell
+
+        tree = _assert_renders(lambda: shell.build_placeholder(nav.DESTINATIONS[0]), monkeypatch)
+        assert all(getattr(c, "gradient", None) is None for c in _iter_controls(tree))
+        assert _has_text(tree, "Home")
 
     def test_design_demo(self, monkeypatch):
         # The DISTRICTSYNC_UI_DEMO override target (Help slot).
@@ -796,7 +828,7 @@ def test_nav_rail_builds_and_exposes_rail_handle():
     from src.ui_flet import nav, nav_rail
     from src.utils.version import app_version
 
-    ordered = nav.ordered_destinations(nav.nav_model(AppConfig()))
+    ordered = nav.ordered_destinations(nav.nav_model())
     view, rail = nav_rail.build_nav(
         ordered=ordered,
         selected_id="setup",
@@ -822,7 +854,7 @@ def test_nav_rail_renders_setup_attention_badge():
     """
     from src.ui_flet import nav, nav_rail
 
-    ordered = nav.ordered_destinations(nav.nav_model(AppConfig()))
+    ordered = nav.ordered_destinations(nav.nav_model())
     _view, rail = nav_rail.build_nav(
         ordered=ordered,
         selected_id="home",

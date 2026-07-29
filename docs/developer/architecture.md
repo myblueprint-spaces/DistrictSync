@@ -228,7 +228,7 @@ Six surfaces, one per module under `src/ui_flet/screens/`:
 | Mapping | `screens/mapping.py` | Review the active district config and switch between pre-built configs — **not** a full YAML editor |
 | Help | `screens/help.py` | In-app documentation and support links |
 
-`screens/onboarding.py` covers first-run onboarding. The old Streamlit `src/ui/` directory (and the `streamlit` dependency) has been removed entirely.
+First run has no surface of its own: `screens/home.py`'s branch (a) HOSTS `screens/setup.py`'s wizard while `nav.needs_setup` (plan 0038 S6 — the former `screens/onboarding.py` hero is retired). `screens/identity.py` is the launch page that precedes the rail. The old Streamlit `src/ui/` directory (and the `streamlit` dependency) has been removed entirely.
 
 ---
 

@@ -28,7 +28,7 @@ import flet as ft
 import pytest
 
 from src.config.app_config import AppConfig
-from src.ui_flet import shell
+from src.ui_flet import home_status, nav, shell
 from src.ui_flet.screens import home
 from tests.test_app_config_identity import V38X_CONFIG_JSON
 
@@ -334,7 +334,12 @@ class TestJourney4UpgradeInPlace:
         texts = self._boot(page)
 
         assert not _shows_launch_page(page), "a working install was stopped at a launch page"
-        assert "Welcome to DistrictSync" not in texts, "a configured install was shown the onboarding hero"
+        # NOT a string check for the retired onboarding hero: that copy no longer exists
+        # anywhere, so asserting its absence would pass for the wrong reason forever (0038
+        # S6). The first-run surface is now the WIZARD, and its step header is what a
+        # configured install must not be shown.
+        assert "Step 1 of 5" not in texts, "a configured install was dropped into the setup wizard"
+        assert home_status.WELCOME_FRESH not in texts
         assert _has_rail(page)
         assert "Home" in texts, "the dashboard did not paint"
         assert home.IDENTITY_CARD_HEADLINE in texts, "the upgrading install was never asked"
@@ -356,6 +361,180 @@ class TestJourney4UpgradeInPlace:
 
         assert _has_rail(page) and "Home" in texts, "the dashboard did not paint; the absence below is vacuous"
         assert home.IDENTITY_CARD_HEADLINE not in texts
+
+
+# --------------------------------------------------------------------------- #
+# 2c. The COMPOSED first-run journey — gate → band → wizard (S4a × S6)          #
+# --------------------------------------------------------------------------- #
+class TestTheComposedFirstRunJourney:
+    """One walk through everything a brand-new admin meets, in order.
+
+    The plan assigns this row to whichever of S4a/S6 lands second, and it is the shape the
+    0029 retrospective named: both halves passed their own verify and the ASSEMBLED program
+    still carried a cross-slice bug, because nothing walked the seam. Here the seam is
+    "where does Get started actually put them" — a question neither slice can answer alone.
+    """
+
+    @staticmethod
+    def _answer_the_launch_page(page: MagicMock, address: str) -> None:
+        root = _added_root(page)
+        next(c for c in _iter_controls(root) if isinstance(c, ft.TextField)).value = address
+        _button_labelled(root, shell.identity.CONTINUE_LABEL).on_click(None)
+        _button_labelled(_added_root(page), shell.identity.GET_STARTED_LABEL).on_click(None)
+
+    def test_a_fresh_install_walks_gate_then_band_then_the_district_step(
+        self, page: MagicMock, isolated_user_profile: Path
+    ) -> None:
+        shell.main(page)
+        assert _shows_launch_page(page), "the launch page is not the first surface"
+        assert "Step 1 of 5" not in _texts(_added_root(page)), "the wizard rendered behind the gate"
+
+        self._answer_the_launch_page(page, "admin@sd48.bc.ca")
+
+        texts = _texts(_added_root(page))
+        assert not _shows_launch_page(page), "Get started did not enter the app"
+        assert _has_rail(page)
+        # The band, then the wizard's own step header — on HOME, not one rail item away.
+        assert home_status.WELCOME_FRESH in texts, "the welcome band did not render above the wizard"
+        assert "Choose your district" in texts and "Step 1 of 5" in texts
+
+    def test_the_rail_lands_on_home_and_home_is_where_the_wizard_is(
+        self, page: MagicMock, isolated_user_profile: Path
+    ) -> None:
+        """The "you are here" half. Pre-S6 the rail selected Setup on a fresh install; if
+        that survived while Home hosted the wizard, the highlight would point at a surface
+        the admin is not on."""
+        shell.main(page)
+        self._answer_the_launch_page(page, "admin@sd48.bc.ca")
+
+        rails = [c for c in _iter_controls(_added_root(page)) if isinstance(c, ft.NavigationRail)]
+        ordered = nav.ordered_destinations(nav.nav_model())
+        assert rails[0].selected_index == nav.selected_index_for("home", ordered)
+        assert "Choose your district" in _texts(_added_root(page))
+
+    def test_the_matched_district_is_pre_selected_and_still_confirmable(
+        self, page: MagicMock, isolated_user_profile: Path
+    ) -> None:
+        """The launch page promises "you'll confirm it on the next step" (S4a) and S5 seeds
+        the pick. Composed, that promise is only true if the step is actually LANDED on."""
+        shell.main(page)
+        self._answer_the_launch_page(page, "admin@sd48.bc.ca")
+
+        root = _added_root(page)
+        dropdowns = [c for c in _iter_controls(root) if isinstance(c, ft.Dropdown)]
+        assert dropdowns and dropdowns[0].value == "sd48myedbc"
+        assert "Step 1 of 5" in _texts(root), "the promised confirmation step was skipped"
+
+    def test_the_escape_lands_on_the_same_wizard_with_the_same_band(
+        self, page: MagicMock, isolated_user_profile: Path
+    ) -> None:
+        """G7: the person who is not the admin gets the same first-run surface, unfiltered."""
+        shell.main(page)
+        _button_labelled(_added_root(page), shell.identity.SKIP_LABEL).on_click(None)
+
+        texts = _texts(_added_root(page))
+        assert home_status.WELCOME_FRESH in texts
+        assert "Choose your district" in texts and "Step 1 of 5" in texts
+
+
+# --------------------------------------------------------------------------- #
+# 2c-bis. The shell's own wiring into Home (S6)                                 #
+# --------------------------------------------------------------------------- #
+class TestTheShellWiresHomeForTheHostedWizard:
+    """Added after a falsification probe went GREEN: deleting the shell's
+    ``on_schedule_changed=...`` line broke nothing.
+
+    ``tests/test_ui_flet_home_wizard_host.py`` proves Home FORWARDS the callback into the
+    hosted wizard — but a forwarded ``None`` forwards perfectly, so the half that was
+    actually unpinned is the shell handing one over. Registering a nightly task from the
+    Home-hosted wizard would then leave the rail badge stale until a restart, which is
+    exactly the 0032 T1 #8 defect the callback exists to fix.
+    """
+
+    def test_home_is_handed_a_callback_that_really_re_probes_the_badge(
+        self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(shell, "build_home", lambda _page, **kwargs: seen.update(kwargs) or ft.Text("home"))
+        monkeypatch.setattr(shell, "get_scheduler", lambda: MagicMock(supports_read_schedule=True))
+        threads: list[object] = []
+        page.run_thread = threads.append
+        _write_config(isolated_user_profile, identity_email="admin@sd48.bc.ca")
+
+        shell.main(page)
+
+        callback = seen.get("on_schedule_changed")
+        assert callable(callback), "the shell did not hand Home a schedule-changed callback"
+        # Asserted as an EFFECT, not as presence: firing it must dispatch the same
+        # off-thread badge re-probe the Setup rail item's registration does.
+        before = len(threads)
+        callback()  # type: ignore[operator]
+        assert len(threads) == before + 1, "Home's callback does not re-probe the Setup badge"
+
+
+# --------------------------------------------------------------------------- #
+# 2d. The Setup rail badge stays silent during first run (S6)                   #
+# --------------------------------------------------------------------------- #
+class TestTheSetupBadgeDuringFirstRun:
+    """The badge probe runs at the tail of ``build_app_body``; drive it and read the rail.
+
+    The pure rule is pinned in ``tests/test_ui_flet_schedule_status.py``; this pins the
+    WIRING — that the shell actually passes the first-run fact, which a green pure test
+    cannot tell you.
+    """
+
+    @staticmethod
+    def _drive(page: MagicMock, monkeypatch: pytest.MonkeyPatch, attention: object) -> ft.NavigationRail:
+        import asyncio
+
+        monkeypatch.setattr(shell, "get_scheduler", lambda: MagicMock(supports_read_schedule=True))
+        monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: attention)
+        page.run_thread = lambda fn: fn()  # the worker body runs inline
+        page.run_task = lambda fn, *a: asyncio.run(fn(*a))
+
+        shell.main(page)
+
+        rails = [c for c in _iter_controls(_added_root(page)) if isinstance(c, ft.NavigationRail)]
+        assert rails, "the app body never mounted"
+        return rails[0]
+
+    @staticmethod
+    def _missing_while_expected() -> object:
+        from src.ui_flet.schedule_status import ScheduleReadback, derive_schedule_status
+
+        status = derive_schedule_status(ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None)
+        assert status.attention is True, "the fixture must be a badge-worthy status"
+        return status
+
+    def test_an_unfinished_install_is_never_badged(
+        self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_config(isolated_user_profile, identity_email="admin@sd48.bc.ca", schedule_registered=True)
+
+        rail = self._drive(page, monkeypatch, self._missing_while_expected())
+
+        idx = nav.selected_index_for("setup", nav.ordered_destinations(nav.nav_model()))
+        assert rail.destinations[idx].badge is None
+        assert "Step 1 of 5" in _texts(_added_root(page)), "the wizard is not showing; the absence is vacuous"
+
+    def test_a_completed_install_with_the_same_fault_IS_badged(
+        self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The positive twin — same probe result, same drive, only the finish line differs."""
+        _write_config(
+            isolated_user_profile,
+            identity_email="admin@sd48.bc.ca",
+            setup_completed=True,
+            input_dir="/in",
+            output_dir="/out",
+            sis_type="sd48myedbc",
+            schedule_registered=True,
+        )
+
+        rail = self._drive(page, monkeypatch, self._missing_while_expected())
+
+        idx = nav.selected_index_for("setup", nav.ordered_destinations(nav.nav_model()))
+        assert rail.destinations[idx].badge is not None
 
 
 # --------------------------------------------------------------------------- #

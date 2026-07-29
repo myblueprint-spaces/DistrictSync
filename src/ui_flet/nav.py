@@ -8,10 +8,15 @@ The rail order is **FIXED** — Home, Convert, Run History, Setup, Mapping, Help
 in every state (D7). Spatial memory is a trust property: a district admin who
 opens DistrictSync a few times a year must find the same rail in the same order,
 so nothing here reorders by setup state (the earlier state-dependent prominence
-reordering read as instability and destroyed spatial memory). The ONLY state-aware
-decision is the *initial selection*: a launch lands on **Setup** while the install
-still ``needs_setup`` (a newcomer starts where the work is), otherwise on the first
-destination (Home).
+reordering read as instability and destroyed spatial memory).
+
+**Since 0038 S6 the launch selection is Home in EVERY state**, so this module has no
+state-aware output left at all. It used to select Setup while the install still
+``needs_setup``, because the newcomer's work lived on that rail item; Home now HOSTS
+the setup wizard itself, so selecting Setup would land the same wizard one rail item
+away from where the admin already is — and would make the rail's "you are here"
+disagree with the surface. ``needs_setup`` stays here (Home's branch predicate reads
+it, and so does the Setup badge rule), but nothing in the nav MODEL varies any more.
 
 ``needs_setup`` is re-keyed (Slice 5, D4a) to ``AppConfig.has_completed_setup()`` — the durable
 finish-line (an explicit flag, or inferred for installs predating the wizard) — rather than the
@@ -53,18 +58,18 @@ DESTINATIONS: tuple[Destination, ...] = (
     Destination("help", "Help", "HELP_OUTLINE_ROUNDED", "HELP_ROUNDED"),
 )
 
-# The destination a launch selects while the install still needs setup (the
-# newcomer starts where the work is). Once set up, the launch lands on the first
-# destination instead.
-_INITIAL_WHEN_SETUP_NEEDED = "setup"
-
 
 @dataclass(frozen=True)
 class NavModel:
-    """Resolved navigation state: the FIXED ordered destinations + the launch selection."""
+    """The navigation model: the FIXED ordered destinations, and nothing else.
+
+    Collapsed at 0038 S6 — the ``initial_id`` field went with the state-aware launch
+    selection it carried. The launch destination is now derivable from the model itself
+    (``initial_destination_id``), which is what a single-field model is for: one fact,
+    read one way.
+    """
 
     destinations: tuple[Destination, ...]
-    initial_id: str
 
 
 def needs_setup(app_config: AppConfig) -> bool:
@@ -79,33 +84,28 @@ def needs_setup(app_config: AppConfig) -> bool:
 
     W2-B adds the second, symmetrical guard: an install whose ``config.json`` EXISTS but
     could not be READ (``settings_unreadable()``) is provably NOT a fresh install — the
-    file's existence is a checked fact — so onboarding, which asserts "you are a new
-    user", is suppressed. Note what this deliberately does NOT do: it does not fake
+    file's existence is a checked fact — so the first-run branch, which asserts "you are a
+    new user", is suppressed. Note what this deliberately does NOT do: it does not fake
     ``has_completed_setup()`` True. We stop asserting a state we know to be false without
     asserting the opposite state we cannot verify — Home then reports from the run store,
     which is a separate, intact artifact.
+
+    Three consumers since 0038 S6, all reading THIS one predicate: Home's branch (a) host,
+    ``setup.build_setup``'s wizard-vs-Settings choice (through the ``has_completed_setup()``
+    it wraps), and the Setup rail badge's first-run suppression.
     """
     if app_config.settings_unreadable():
         return False
     return not app_config.has_completed_setup()
 
 
-def nav_model(app_config: AppConfig) -> NavModel:
-    """Build the navigation model for the given runtime config (pure).
+def nav_model() -> NavModel:
+    """Build the navigation model (pure, and — since 0038 S6 — config-independent).
 
-    Order is FIXED (``DESTINATIONS``); only ``initial_id`` is state-aware.
+    Kept as a factory rather than collapsed into ``DESTINATIONS`` so the shell keeps ONE
+    seam to read the rail's shape from, and a future state-aware rail has somewhere to go.
     """
-    return NavModel(destinations=DESTINATIONS, initial_id=_initial_id(app_config))
-
-
-def _initial_id(app_config: AppConfig) -> str:
-    """The launch selection: Setup while ``needs_setup``, else the first destination.
-
-    ``DESTINATIONS`` is a fixed, non-empty module constant, so ``[0]`` is always safe;
-    ``prominent_initial_id`` carries the empty-model totality (a hand-built ``NavModel``
-    may still set ``initial_id=""``).
-    """
-    return _INITIAL_WHEN_SETUP_NEEDED if needs_setup(app_config) else DESTINATIONS[0].id
+    return NavModel(destinations=DESTINATIONS)
 
 
 def ordered_destinations(model: NavModel) -> tuple[Destination, ...]:
@@ -113,9 +113,14 @@ def ordered_destinations(model: NavModel) -> tuple[Destination, ...]:
     return model.destinations
 
 
-def prominent_initial_id(model: NavModel) -> str:
-    """The id of the destination to select on launch (Setup while unset, else the first)."""
-    return model.initial_id
+def initial_destination_id(model: NavModel) -> str:
+    """The destination a launch selects: the FIRST one (Home), in every state (0038 S6).
+
+    Derived from the model rather than named as a second constant, so "the rail leads with
+    Home" is stated exactly once (``DESTINATIONS``). TOTAL: a hand-built empty model
+    degrades to ``""`` rather than raising.
+    """
+    return model.destinations[0].id if model.destinations else ""
 
 
 def selected_index_for(dest_id: str, ordered: tuple[Destination, ...]) -> int:
