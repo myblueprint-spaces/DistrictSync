@@ -339,17 +339,50 @@ class TestIdentitySave:
             assert cfg.identity_save(identity_email="admin@sd48.bc.ca") is False
 
         assert any("Could not save who looks after this sync" in r.message for r in caplog.records)
-        # The in-memory value is still applied — the caller may carry on this session.
-        assert cfg.identity_email == "admin@sd48.bc.ca"
+        # CORRECTED SEMANTICS (S4a): the instance is ROLLED BACK, so "nothing else was
+        # changed" is true of the object as well as the file. This instance is SHARED —
+        # the Settings scroll hands one AppConfig to every section — so leaving the
+        # unwritten value on it would render state the disk does not have and let the next
+        # unrelated Save commit it silently.
+        assert cfg.identity_email == ""
 
     def test_swallows_a_refusal_raised_by_save_itself(self, monkeypatch):
-        """Defence in depth: if ``save()`` widens its refusal rule, we still don't raise."""
+        """Defence in depth: if ``save()`` widens its refusal rule, we still don't raise.
+
+        And the instance is rolled back on THIS branch too — both failure paths share the
+        contract, so a fix applied to only one of them is a half-fix. The shared-instance
+        hazard is identical either way: a value left on the object renders as if it were
+        saved and gets committed by the next unrelated Settings Save.
+        """
 
         def refuse(self):
             raise SettingsOverwriteRefused("nope")
 
         monkeypatch.setattr(AppConfig, "save", refuse)
-        assert AppConfig(**_real_settings()).identity_save(identity_email="admin@sd48.bc.ca") is False
+        cfg = AppConfig(**_real_settings())
+
+        assert cfg.identity_save(identity_email="admin@sd48.bc.ca") is False
+        assert cfg.identity_email == "", "a refused write must leave the shared instance untouched"
+
+    def test_a_multi_field_failure_rolls_back_EVERY_field(self, monkeypatch):
+        """All-or-nothing at the instance level, not just for the first key."""
+
+        def boom(self):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(AppConfig, "save", boom)
+        cfg = AppConfig(**_real_settings(), identity_email="old@sd74.bc.ca", identity_sd_number="74")
+
+        assert (
+            cfg.identity_save(identity_email="new@sd48.bc.ca", identity_sd_number="48", identity_prompt_dismissed=True)
+            is False
+        )
+
+        assert (cfg.identity_email, cfg.identity_sd_number, cfg.identity_prompt_dismissed) == (
+            "old@sd74.bc.ca",
+            "74",
+            False,
+        )
 
     def test_never_raises_out_of_the_two_handled_failure_modes(self, monkeypatch):
         """The contract the launch page and the Home cards both rely on."""

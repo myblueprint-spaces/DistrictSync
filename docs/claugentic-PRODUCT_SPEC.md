@@ -37,12 +37,67 @@ Naming these is the trust bar applied to the product's own edges: a tool that sa
 
 Each feature below carries a **Flow** (the happy path), **States** (only which of loading/empty/error this surface has — the *bar* for those states is the standard [`docs/claugentic-standards/product-ux.md`](claugentic-standards/product-ux.md) → *Loading / empty / error states* and *User-flow completeness*, not restated here), and **What good feels like**. The pytest suite (~1,686 tests, SD74 golden-file snapshot, config validation, 80% coverage gate) is the real automated gate behind these; the acceptance criteria are the plain-English projection a person can check.
 
+### Launch identity — "who looks after this sync?"
+
+The first thing a fresh install shows: one question, one field, and a dozen ways past it.
+It exists because the highest-consequence wrong click in this product is picking the wrong
+district — a wrong mapping ships a wrong roster — so knowing which district an admin belongs
+to lets every picker lead with theirs.
+
+**It is identification, never authentication.** There are no accounts, nothing is unlocked,
+and every district mapping ships inside the executable no matter what is typed. The copy
+never says sign in / log in / verify / unlock / authorized / account / credentials / access,
+and the district-domain list is never described as protected, secured, anonymous or
+encrypted — it is a list of PUBLIC district domains used to shorten a picker.
+
+- **Flow**
+  1. Launch a fresh install. The launch page asks for the work email of the person who looks
+     after the sync. Continue is disabled until something is typed.
+  2. Press Continue. The address is matched — locally, instantly — on the part after the `@`
+     against the district staff domains carried in the bundled mappings. Nothing leaves the
+     machine.
+  3. **Matched one district** → it is named as a *pre-selection you can correct*: "That's
+     SD48 – Sea to Sky School District — you'll confirm it on the next step", beside "That's
+     not my district".
+     **Matched several** (one district with two setups — SD51 and its attendance tier) →
+     "Your district has more than one setup", with both named.
+     **No match** → calm, not an error: "We don't have a district on file for that address
+     yet — no problem", plus an optional district-number box and "My district isn't listed
+     yet".
+  4. Press Get started. The answer is saved to this computer, then the app opens.
+- **States** — **error** (an invalid address format, shown on leaving the field or pressing
+  Continue, never mid-keystroke, and never echoing the value back). There is no loading
+  state and no empty state: resolution is a local lookup, so a spinner would imply a server
+  that does not exist.
+- **Deliberately absent** — no lockout, no attempt counter, no artificial delay, no lock or
+  shield glyph, no password field, no network/"connecting…" state. Each absence is the
+  register: this is a question, not a door.
+- **Every path leads INTO the app** — a match, no match, a typo, "That's not my district",
+  "I'm not the person who looks after this sync", a settings file we cannot write, or a
+  crash in the identity layer itself. A failure to save still opens the app; the question is
+  simply asked again next launch.
+- **Changeable and clearable, always** — the answer lives in Settings → "Who looks after this
+  sync" (shown plainly, editable, and cleared by saving a blank field), and is echoed
+  read-only on Help. Clearing removes it from the settings file *and* from the older
+  settings copies that held it, and says which of those actually happened.
+- **What good feels like** — Being recognised, not challenged. The page reads like a
+  receptionist asking who you're here to see, not a guard asking for ID. Nobody is ever
+  stuck on it: the person at the console who is not the admin has a one-click way past that
+  stores nothing, and a mistyped address has a one-click way back to the field.
+- **Upgrade in place** — an install that has already finished setup NEVER sees this page. It
+  keeps booting straight to its dashboard; the same question arrives later as a dismissible
+  card on Home (S4b), which changes no setting and never interrupts the nightly sync. An
+  install whose settings file cannot be read is never asked at all — we could not record the
+  answer, so asking would be a question we would silently drop.
+
 ### First-run setup wizard
 
 The Installer's single guided path from a fresh download to a verified nightly sync.
 
 - **Flow**
-  1. Open the app for the first time; Home shows a calm onboarding welcome (the single front door) and a "Start setup" button.
+  1. Open the app for the first time. The launch page asks who looks after this sync (see
+     **Launch identity** above); past it, Home shows a calm onboarding welcome (the single
+     front door) and a "Start setup" button.
   2. **District** — choose the district config from a "Choose your district" picker (auto-selected only when exactly one config exists — never a silent default). District leads: *pick who you are first, then where your files live.*
   3. **Folders** — pick the GDE input folder and the output folder.
   4. **Delivery** — enter and test the SFTP credential, or "Set up later". Delivery precedes Schedule so the delivery setting is already baked in when the task is registered.
@@ -140,14 +195,105 @@ The checkable projection of the Features above. All checks are `manual` — Dist
 ```json
 [
   {
+    "id": "AC-identity-1",
+    "feature": "Launch identity",
+    "flow": [
+      "Point DISTRICTSYNC_DATA_DIR at an empty folder and launch the app",
+      "Observe the first surface",
+      "Type any local part at a real district staff domain (sd48.bc.ca) and press Continue",
+      "Press Get started, then close and relaunch"
+    ],
+    "expect": [
+      "the launch page opens first — 'Who looks after this sync?' — with no navigation rail and no Exit button",
+      "Continue is disabled until something is typed",
+      "the result names SD48 - Sea to Sky School District and offers 'That's not my district' beside it",
+      "no text on the page says sign in, log in, verify, unlock, authorized, account, credentials or access",
+      "no password field, no lock or shield icon, no spinner, no attempt counter appears in any state",
+      "after Get started the app opens, and the relaunch goes straight to the app — the question is not repeated",
+      "Settings > 'Who looks after this sync' shows the address that was typed"
+    ],
+    "states": ["error"],
+    "check": "manual"
+  },
+  {
+    "id": "AC-identity-2",
+    "feature": "Launch identity",
+    "flow": [
+      "On a cleared scratch profile, type 'admin' (no @) and click away from the field",
+      "Correct it to any address at example.com and press Continue",
+      "Type 99 in the district-number box and click away",
+      "Press 'My district isn't listed yet'"
+    ],
+    "expect": [
+      "the format error appears only AFTER leaving the field, never while typing, and never quotes what was typed",
+      "the no-match state reads calm and grey ('no problem'), never red, and never says we don't have that ADDRESS on file",
+      "SD99 reports no mapping yet and still offers a way forward",
+      "the not-listed note says we'll need to build a mapping and points at Help — it never suggests choosing the closest district",
+      "'That's not my address - try again' returns to the email field with the typed value intact"
+    ],
+    "states": ["error"],
+    "check": "manual"
+  },
+  {
+    "id": "AC-identity-3",
+    "feature": "Launch identity",
+    "flow": [
+      "On a cleared scratch profile, click 'I'm not the person who looks after this sync'",
+      "Open config.json in the profile folder",
+      "Close the app and relaunch"
+    ],
+    "expect": [
+      "the app opens immediately",
+      "config.json carries no identity value at all",
+      "the launch page asks again on the next launch"
+    ],
+    "states": [],
+    "check": "manual"
+  },
+  {
+    "id": "AC-identity-4",
+    "feature": "Launch identity",
+    "flow": [
+      "With an address on file, open Settings > 'Who looks after this sync' and press Change",
+      "Enter a different district's address and Save",
+      "Press Change again, blank the field, and Save",
+      "Inspect the profile folder"
+    ],
+    "expect": [
+      "the change names the new district inline and is written to config.json",
+      "the blank Save empties identity_email and identity_sd_number and resets identity_prompt_dismissed to false",
+      "the note reports exactly what happened to the older config.corrupt-*.json copies — that they were removed, or how many could not be, and claims nothing when there were none",
+      "changing or clearing WHO never changes WHICH district the sync converts (sis_type is untouched)"
+    ],
+    "states": ["error"],
+    "check": "manual"
+  },
+  {
+    "id": "AC-identity-5",
+    "feature": "Launch identity",
+    "flow": [
+      "Restore a v3.8.x profile (a completed install: folders, district, registered schedule) and launch",
+      "Separately, truncate config.json mid-object and launch again"
+    ],
+    "expect": [
+      "the completed install boots straight to its dashboard — the launch page never appears",
+      "the unreadable profile also never sees the launch page (we could not save an answer, so we do not ask)",
+      "neither launch changes any existing setting, and the nightly schedule is untouched"
+    ],
+    "states": [],
+    "check": "manual"
+  },
+  {
     "id": "AC-setup-1",
     "feature": "First-run setup wizard",
     "flow": [
       "Launch a freshly installed DistrictSync desktop app",
+      "Get past the launch identity page (answer it or skip it)",
       "Observe the Home surface",
       "Click 'Start setup'"
     ],
     "expect": [
+      "the launch identity page precedes Home on a fresh install (see AC-identity-1)",
       "Home shows a calm onboarding welcome with a 'Start setup' button (no dashboard, no metrics)",
       "clicking 'Start setup' opens the wizard at the District step (District leads, then Folders)",
       "a 'Step 1 of 5' style progress indicator is visible",

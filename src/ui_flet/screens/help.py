@@ -32,11 +32,14 @@ impossible, but the wrapper matches ``home.py`` / ``run_history.py``).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import flet as ft
 
 from src.config.app_config import AppConfig
 from src.ui_flet import about, components, tokens
 from src.ui_flet.humanize import friendly_district_name
+from src.ui_flet.identity_gate import stored_identity_email
 from src.utils.version import app_version
 
 # The single canonical support article — the "org knowledge-article base" the scope-lock
@@ -132,6 +135,44 @@ def _get_help_card(page: ft.Page, app_config: AppConfig) -> ft.Control:
     )
 
 
+# --------------------------------------------------------------------------- #
+# "Who looks after this sync" — the read-only echo (0038 S4a, flag 6).         #
+# --------------------------------------------------------------------------- #
+IDENTITY_TITLE = "Who looks after this sync"
+# HONEST about what it is NOT: the support mail is subject-only (`about.support_mailto`),
+# so this must never read as "we'll tell support who you are". The address is on this
+# computer, it is not attached to anything the app sends, and if support needs it the
+# admin types it themselves. (Flag 6: echo, not prefill — which is also what makes
+# PRODUCT.md's "never transmitted by the app" literally true.)
+IDENTITY_DETAIL = "This is saved on this computer. We don't send it anywhere — mention it yourself if you email us."
+IDENTITY_CHANGE_LABEL = "Change this in Settings"
+
+
+def _who_looks_after_card(app_config: AppConfig, on_navigate: Callable[[str], None] | None) -> ft.Control | None:
+    """The stored address, read-only — or ``None`` when there is nothing to echo.
+
+    RE-VALIDATED at read time (``stored_identity_email``): ``config.json`` is hand-editable,
+    so a value that fails the boundary validator is treated as UNANSWERED and this card
+    simply does not render. A support surface is the last place to paint back whatever
+    happened to be in a file.
+    """
+    stored = stored_identity_email(app_config)
+    if not stored:
+        return None
+    controls: list[ft.Control] = [
+        ft.Text(IDENTITY_TITLE, size=20, weight=ft.FontWeight.W_800, color=tokens.color_text),
+        ft.Text(stored, size=tokens.type_section, weight=ft.FontWeight.W_700, color=tokens.color_text, selectable=True),
+        ft.Text(IDENTITY_DETAIL, size=tokens.type_emphasis, color=tokens.color_muted),
+    ]
+    if on_navigate is not None:
+        controls.append(
+            components.text_button(
+                IDENTITY_CHANGE_LABEL, lambda _e: on_navigate("setup"), icon=ft.Icons.SETTINGS_ROUNDED
+            )
+        )
+    return components.card(content=ft.Column(spacing=tokens.space_md, controls=controls))
+
+
 def _reassurance_card(app_config: AppConfig) -> ft.Control:
     """The "What DistrictSync does" reassurance card — the "what even is this?" gap-closer.
 
@@ -224,27 +265,35 @@ def _about_card(page: ft.Page) -> ft.Control:
     )
 
 
-def build_help(page: ft.Page, *, app_config: AppConfig) -> ft.Control:
+def build_help(
+    page: ft.Page,
+    *,
+    app_config: AppConfig,
+    on_navigate: Callable[[str], None] | None = None,
+) -> ft.Control:
     """Build the Help surface (read-only, link-out). ``page`` opens external destinations.
 
     A branded hero + a "Get help" card (the one-click Help Centre + prefilled support-email
-    paths, with the addresses also as offline-readable selectable text + copy buttons) + a
-    plain "what DistrictSync does / the nightly sync is independent" reassurance card + the
-    About block (version, "Copy version", release notes). Wrapped in a never-crash
-    ``ErrorCard`` fallback so even a view-layer bug shows a calm surface, never a stack
-    trace. Owns no lifecycle — it navigates the admin OUT to the browser / mail client,
-    not to another screen.
+    paths, with the addresses also as offline-readable selectable text + copy buttons) + the
+    read-only "who looks after this sync" echo (0038 S4a — rendered only when a VALID
+    address is stored) + a plain "what DistrictSync does / the nightly sync is independent"
+    reassurance card + the About block (version, "Copy version", release notes). Wrapped in
+    a never-crash ``ErrorCard`` fallback so even a view-layer bug shows a calm surface,
+    never a stack trace.
+
+    ``on_navigate`` (optional, the shell's ``select_by_id``) turns the echo's "Change this
+    in Settings" into a one-click hop with rail-follow; without it the card still renders,
+    just without the shortcut — Help owns no lifecycle and never depends on a router.
     """
     try:
-        return ft.Column(
-            spacing=22,
-            controls=[
-                _greeting_header(app_config),
-                _get_help_card(page, app_config),
-                _reassurance_card(app_config),
-                _about_card(page),
-            ],
-        )
+        controls: list[ft.Control] = [
+            _greeting_header(app_config),
+            _get_help_card(page, app_config),
+        ]
+        if (who := _who_looks_after_card(app_config, on_navigate)) is not None:
+            controls.append(who)
+        controls += [_reassurance_card(app_config), _about_card(page)]
+        return ft.Column(spacing=22, controls=controls)
     except Exception:  # noqa: BLE001 - the reliability floor: a view bug shows a calm surface, never a trace
         return components.ErrorCard(
             "We couldn't open Help",

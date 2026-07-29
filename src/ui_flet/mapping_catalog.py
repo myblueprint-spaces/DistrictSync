@@ -23,10 +23,14 @@ crash. ``list_configs`` therefore always returns one summary per enumerated id, 
 output-CSV labels, a file count. It carries NO student PII (a config is a column-name mapping,
 not data) and NEVER interpolates a raw exception string (a Pydantic/OS error text) into any
 admin-facing field — a load failure is named by category (``loaded_ok=False``), never echoed.
+``district_domain_index`` (0038 S4a) adds one more structural fact of the same kind: each
+config's PUBLIC district staff email domains — an organisational fact the district itself
+publishes, never personal data, and never a student's address.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +42,8 @@ from src.ui_flet.home_status import (
 )
 from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.schedule_status import ScheduleState
+
+logger = logging.getLogger(__name__)
 
 # The canonical entity ORDER for the output-CSV summary — rostering entities first, then the
 # myBlueprint+ / attendance keys — reusing `home_status`'s entity tuples so the label order
@@ -138,6 +144,52 @@ def list_configs(*, config_dir: Path | None = None) -> list[ConfigSummary]:
     listed, never omitted or crashed on). ``config_dir`` is the test seam.
     """
     return [summarize_config(sis_type, config_dir=config_dir) for sis_type in available_configs(config_dir)]
+
+
+def district_domain_index(*, config_dir: Path | None = None) -> dict[str, tuple[str, ...]]:
+    """``{config id: its PUBLIC district_domains}`` — the identity resolver's data. TOTAL.
+
+    The **effectful half of the S4a→S5 seam**. S4a's launch page and Settings section each
+    build this ONCE per mount and hand it to the pure ``identity_gate.resolve_domain`` /
+    ``matched_state``; S5 folds the same fact into the single memoised catalog build as
+    ``ConfigSummary.district_domains`` and routes both through ``filtered_catalog``. The
+    PURE resolver does not change when that happens — it takes the index as data.
+
+    Fail-open is structural, in both directions:
+
+    * a failure enumerating the configs returns ``{}``. An empty index matches nobody, and
+      "nobody matched" means the caller shows the FULL unfiltered list;
+    * a single config that fails to load is recorded as UNCLAIMED (``()``) with ONE WARN
+      naming its id. A broken YAML can therefore only ever WIDEN a list — it can never hide
+      a district from its own admin, who by construction matches nothing and sees
+      everything.
+
+    The values are public organisational domains (a district's staff email domain, which
+    the district publishes itself). No personal data, and nothing student-derived.
+
+    **Cost, stated rather than assumed:** this parses all eleven bundled YAMLs — ~210 ms on
+    a district server, once per page mount. It runs on the launch path and again on a
+    Settings Save, which is why the callers build it ONCE per mount and pass it down rather
+    than calling per keystroke. **Memoisation is deliberately NOT here** — it belongs to S5,
+    which folds this fact into the single memoised catalog build (``ConfigSummary``); adding
+    a cache now would create a second, differently-scoped one to unpick.
+    """
+    try:
+        sis_ids = available_configs(config_dir)
+    except Exception:  # noqa: BLE001 - fail OPEN: no index at all still enters, unfiltered
+        logger.warning("Could not list the district mappings; the full district list will be shown.", exc_info=True)
+        return {}
+
+    index: dict[str, tuple[str, ...]] = {}
+    for sis_type in sis_ids:
+        try:
+            index[sis_type] = tuple(load_config(sis_type, config_dir).district_domains or ())
+        except Exception:  # noqa: BLE001 - one bad config can only widen the list
+            logger.warning(
+                "identity resolve: the district mapping %r could not be read, so it can match nobody.", sis_type
+            )
+            index[sis_type] = ()
+    return index
 
 
 def can_apply(pending: ConfigSummary | None, persisted_sis: str) -> bool:

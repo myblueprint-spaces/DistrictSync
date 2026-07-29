@@ -64,6 +64,10 @@ CONFIG_FILENAME = "config.json"
 # read alike in a support ticket.
 _QUARANTINE_NAME_FMT = "config.corrupt-%Y%m%d-%H%M%S.json"
 
+# The glob that finds what the format above wrote. Kept beside it so the writer and the
+# only reaper of these files can never disagree about which files are quarantine copies.
+_QUARANTINE_GLOB = "config.corrupt-*.json"
+
 # Fields that describe the LOAD, not the settings. Never written to disk and never
 # accepted from it — one frozenset drives BOTH the save payload and the load allowlist,
 # so persisted-vs-transient can never drift between the two.
@@ -91,6 +95,22 @@ _GEOMETRY_FIELD_PREFIX = "window_"
 # ``window_`` — they ARE admin choices (see the naming-contract comment on those fields).
 _IDENTITY_FIELD_PREFIX = "identity_"
 _ADVISORY_FIELD_PREFIXES: tuple[str, ...] = (_GEOMETRY_FIELD_PREFIX, _IDENTITY_FIELD_PREFIX)
+
+
+@dataclass(frozen=True)
+class ClearOutcome:
+    """What :meth:`AppConfig.identity_clear` actually managed to do.
+
+    Three outcomes hide behind a bare ``True``, and they warrant three different sentences
+    to the admin: nothing to sweep, everything swept, or some copies still on disk because
+    a file was locked. Returning the counts is what lets the caller's note be true in all
+    three — a single "we also deleted the older copies" line is a false claim in two of
+    them, including the one where EVERY unlink failed.
+    """
+
+    cleared: bool  # the settings file was written
+    removed: int  # quarantine copies unlinked
+    remaining: int  # quarantine copies still on disk (locked, or nothing to sweep)
 
 
 class SettingsOverwriteRefused(RuntimeError):
@@ -456,10 +476,21 @@ class AppConfig:
         3. **A NON-identity field is refused with the same loudness**, so this entry point
            can never become a back door for writing ``sis_type``. Identity resolution must
            NEVER rewrite the configured district — a product rule, enforced structurally.
-        4. **Failure is non-fatal and reported.** ``SettingsOverwriteRefused`` and
-           ``OSError`` are logged and swallowed, and the return value says what happened.
-           Identity is advisory: a failed save must never trap the admin at the launch
-           page or break a card render. The gate simply asks again next launch.
+        4. **Failure is non-fatal, reported, and leaves the INSTANCE untouched too.**
+           ``SettingsOverwriteRefused`` and ``OSError`` are logged and swallowed, and the
+           return value says what happened. Identity is advisory: a failed save must never
+           trap the admin at the launch page or break a card render. The gate simply asks
+           again next launch.
+
+           All-or-nothing applies at **two** levels, and the second one is easy to miss.
+           The obvious level is the payload (a bad key in a multi-field call cannot leave
+           the instance half-mutated). The subtler one is the FAILED WRITE: this instance is
+           SHARED — the Settings scroll hands one ``AppConfig`` to the folders, schedule,
+           delivery and identity sections — so a refused write that left the new value on
+           the object would (a) render a value the disk does not have, and (b) get committed
+           silently by the next unrelated ``Save`` on any other section. So the values are
+           snapshotted, applied, and RESTORED on any failure: after a ``False`` return, the
+           instance holds exactly what it held before the call.
 
         Returns ``True`` iff the settings were written. Callers persist best-effort and
         then continue regardless — never gate entry into the app on this.
@@ -482,25 +513,97 @@ class AppConfig:
                     f"{field_types[name]!r}. Writing it would make config.json unreadable on the next "
                     "load, dropping the admin's district, folders and delivery settings to defaults."
                 )
-        for name, value in updates.items():
-            setattr(self, name, value)
 
+        # Checked BEFORE anything is applied: on an unreadable profile there is no write to
+        # attempt, so there must be no mutation to undo either.
         if self.settings_unreadable():
             logger.warning(
                 "Not saving who looks after this sync: the settings file could not be read this session, "
                 "so the saved settings are left untouched. We'll ask again next time."
             )
             return False
+
+        previous = {name: getattr(self, name) for name in updates}
+        for name, value in updates.items():
+            setattr(self, name, value)
         try:
             self.save()
         except SettingsOverwriteRefused:
             # Belt-and-braces: the check above should have caught this, but save() owns
             # the refusal rule and may widen it. Already logged at WARNING by save().
+            self._restore(previous)
             return False
         except OSError as exc:
             logger.warning("Could not save who looks after this sync (%s). Nothing else was changed.", exc)
+            self._restore(previous)
             return False
         return True
+
+    def _restore(self, previous: dict[str, Any]) -> None:
+        """Put back the pre-call values after a refused/failed identity write.
+
+        The other half of "nothing else was changed": the message is only true if the
+        in-memory object agrees with the disk, because this instance outlives the call and
+        is shared across every Settings section.
+        """
+        for name, value in previous.items():
+            setattr(self, name, value)
+
+    def identity_clear(self) -> ClearOutcome:
+        """Remove who looks after this sync — from ``config.json`` AND its quarantine copies.
+
+        "Blank clears" is only true if the value is actually gone from the disk, and
+        ``config.json`` is not the only place it lives: :func:`_preserve_unreadable_predecessor`
+        copies an unreadable settings file aside as ``config.corrupt-<ts>.json`` byte-for-byte,
+        and nothing else prunes those copies. A stored address therefore survives in every
+        quarantine snapshot taken after it was written, in the same directory, indefinitely
+        — so an "erasure" that only empties ``config.json`` leaves the address readable on
+        disk (the containment model recorded in ``tests/test_identity_pii_guards.py``).
+
+        Three fields, one act, because they are one question:
+
+        * ``identity_email`` and ``identity_sd_number`` are the answer;
+        * ``identity_prompt_dismissed`` is reset to ``False`` so the ask can come BACK. Left
+          set, clearing would wedge the states: no stored identity, and no surface willing
+          to ask for one again.
+
+        **The purge is gated on there having BEEN something to erase**, and that gate is the
+        whole reason this method is more than two lines. The quarantine copies are the
+        admin's settings-recovery snapshots, and the population most likely to own one is
+        the population whose settings file went unreadable — who may well have no stored
+        identity at all. Deleting their only recoverable copy because they pressed Save on
+        an already-empty field would be destroying data to accomplish nothing. So
+        ``had_identity`` is read BEFORE the write, and a no-op clear touches no file but
+        ``config.json``.
+
+        Ordering is deliberate for the same reason: purge only AFTER a confirmed write. A
+        refused save (an UNREADABLE profile) means nothing was cleared, so there is nothing
+        to follow through on. The purge itself is best-effort — a locked file logs and is
+        skipped, which is exactly why the outcome carries ``remaining``: the caller may not
+        tell the admin the copies are gone when some of them are still there.
+
+        **The residual this does NOT cover, stated rather than implied:** a crash between
+        ``mkstemp`` and ``os.replace`` inside :func:`_atomic_write_text` can leave a
+        ``.config.json.<rand>.tmp`` staging file holding a full settings payload. Those are
+        removed on every handled failure and are not matched by :data:`_QUARANTINE_GLOB`, so
+        an erasure does not sweep them; a power loss at exactly the wrong instant is the
+        only way to make one, and it survives until something else writes the profile.
+
+        Returns a :class:`ClearOutcome` — ``cleared`` (the settings were written, the same
+        contract as :meth:`identity_save`, which this routes through as the ONE identity
+        write path), plus how many quarantine copies were ``removed`` and how many are
+        ``remaining``. A caller that only needs the boolean reads ``.cleared``.
+        """
+        had_identity = bool(self.identity_email.strip() or self.identity_sd_number.strip())
+        cleared = self.identity_save(
+            identity_email="",
+            identity_sd_number="",
+            identity_prompt_dismissed=False,
+        )
+        if not (cleared and had_identity):
+            return ClearOutcome(cleared=cleared, removed=0, remaining=0)
+        removed, remaining = _purge_quarantined_settings()
+        return ClearOutcome(cleared=True, removed=removed, remaining=remaining)
 
     def sftp_is_configured(self) -> bool:
         """Return True if SFTP has been enabled and configured."""
@@ -713,6 +816,45 @@ def _fsync_directory(directory: Path) -> None:
         logger.debug("Could not fsync %s after promoting the settings file (%s)", directory, exc)
     finally:
         os.close(dir_fd)
+
+
+def _purge_quarantined_settings() -> tuple[int, int]:
+    """Unlink every ``config.corrupt-*.json`` beside the settings file. → ``(removed, remaining)``.
+
+    The counterpart to :func:`_preserve_unreadable_predecessor`, and the ONLY thing that
+    ever removes what it wrote. Called from :meth:`AppConfig.identity_clear`, because those
+    copies hold a byte-for-byte duplicate of whatever ``config.json`` contained when they
+    were taken — including an identity the admin has just asked us to forget.
+
+    Best-effort and never fatal: a copy held open by an editor or an AV scanner logs at
+    WARNING and is left alone. The clear itself has already succeeded by the time this runs
+    (see :meth:`AppConfig.identity_clear` for why that order matters), so a failure here
+    costs a stale copy, never the clear.
+
+    **Both numbers are returned because both are load-bearing to the admin.** A caller that
+    only knew "the purge ran" would say "we deleted the older copies" even when every single
+    unlink failed — the exact shape of over-claim the trust architecture exists to prevent.
+    """
+    removed = 0
+    remaining = 0
+    directory = config_file_path().parent
+    try:
+        stale = sorted(directory.glob(_QUARANTINE_GLOB))
+    except OSError as exc:
+        logger.warning("Could not list older settings copies in %s (%s); none were removed.", directory, exc)
+        # Unknown, and "unknown" must not read as "none left" — a listing we could not do
+        # is a folder we cannot claim is clean.
+        return 0, 1
+    for path in stale:
+        try:
+            path.unlink()
+            removed += 1
+        except OSError as exc:
+            remaining += 1
+            logger.warning("Could not remove the older settings copy %s (%s); it is still on disk.", path.name, exc)
+    if removed:
+        logger.info("Removed %d older settings copy/copies alongside %s.", removed, config_file_path().name)
+    return removed, remaining
 
 
 def _preserve_unreadable_predecessor(config_file: Path, *, load_was_unreadable: bool) -> None:

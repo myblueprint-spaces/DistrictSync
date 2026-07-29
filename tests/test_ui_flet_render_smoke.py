@@ -31,6 +31,7 @@ from src.ui_flet import components, tokens
 from src.ui_flet.screens.convert import build_convert
 from src.ui_flet.screens.help import build_help
 from src.ui_flet.screens.home import build_home
+from src.ui_flet.screens.identity import build_identity
 from src.ui_flet.screens.mapping import build_mapping
 from src.ui_flet.screens.onboarding import build_onboarding
 from src.ui_flet.screens.run_history import build_run_history
@@ -89,10 +90,21 @@ def _settings_config(**over):
     """A completed config → ``build_setup`` renders SETTINGS mode (the flat scroll).
 
     The wizard reuses the same schedule/SFTP section builders, so the flat-scroll tests pin
-    the shared behaviour via Settings mode (all sections present at the top level)."""
+    the shared behaviour via Settings mode (all sections present at the top level).
+
+    Carries a stored identity by default (0038 S4a) so the "Who looks after this sync"
+    section renders its VALUE branch under the ErrorCard spy — with an empty one it opens
+    in edit mode and the display path never constructs. Any test that needs the empty
+    shape passes ``identity_email=""``."""
     from src.config.app_config import AppConfig
 
-    base = {"input_dir": "/in", "output_dir": "/out", "sis_type": "myedbc", "setup_completed": True}
+    base = {
+        "input_dir": "/in",
+        "output_dir": "/out",
+        "sis_type": "myedbc",
+        "setup_completed": True,
+        "identity_email": "admin@sd48.bc.ca",
+    }
     base.update(over)
     return AppConfig(**base)
 
@@ -110,6 +122,16 @@ class TestScreensRender:
     def test_setup_wizard_folders_step(self, stub_page, monkeypatch):
         # A fresh (unconfigured) config renders the wizard's first (Folders) step.
         _assert_renders(lambda: build_setup(stub_page), monkeypatch)
+
+    def test_identity_launch_page(self, stub_page, monkeypatch):
+        # 0038 S4a: the launch page is the FIRST thing a fresh install paints, so an
+        # API-drift crash here is a crash before any surface exists. Its per-state
+        # behaviour lives in tests/test_ui_flet_identity_page.py; this is the mount smoke
+        # every screen owes the design system.
+        _assert_renders(
+            lambda: build_identity(stub_page, app_config=AppConfig(), on_enter=lambda: None),
+            monkeypatch,
+        )
 
     def test_setup_settings_mode(self, stub_page, monkeypatch):
         # A completed config renders the flat Settings scroll without crashing.
@@ -367,6 +389,21 @@ class TestScreensRender:
 
     def test_help(self, stub_page, app_cfg, monkeypatch):
         _assert_renders(lambda: build_help(stub_page, app_config=app_cfg), monkeypatch)
+
+    def test_help_with_a_stored_identity(self, stub_page, monkeypatch):
+        # 0038 S4a: the "who looks after this sync" echo renders ONLY when an address is
+        # stored, so the default-config smoke above never constructs it. Without this the
+        # new branch ships un-smoked — an API-drift crash in it would reach an admin first.
+        from src.config.app_config import AppConfig
+
+        _assert_renders(
+            lambda: build_help(
+                stub_page,
+                app_config=AppConfig(identity_email="admin@sd48.bc.ca"),
+                on_navigate=lambda _d: None,
+            ),
+            monkeypatch,
+        )
 
     def test_onboarding(self, stub_page, monkeypatch):
         _assert_renders(

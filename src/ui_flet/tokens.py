@@ -100,6 +100,12 @@ color_chip_bg = MB_LIGHT_BG  # chip / pill fill (alias of the brand light tint)
 color_text = MB_TEXT
 color_muted = "#475569"  # slate-600 — AA-safe muted text on white AND the page tint
 color_on_action = WHITE  # text/icons sitting on a filled action surface
+# The SUPPORTING line on a brand-gradient hero (the launch page's sub-headline). A SOLID
+# pale blue rather than white-at-an-opacity: an opacity is a composite the contrast
+# function cannot evaluate, so a translucent caption is an UNGATED painted pair. This is a
+# real token, so both gradient endpoints are AA-gated below (4.99:1 on the brand blue,
+# 9.99:1 on the rail navy).
+color_on_action_muted = "#D6E2F5"  # supporting text on a gradient hero
 # Text/icons on the amber warning fill — white clears AA (5.02:1 on amber-700).
 # A named alias so the verdict banner reads by intent, not by reusing color_on_action.
 color_on_status_warning = WHITE
@@ -217,4 +223,9 @@ UI_CONTRAST_PAIRS: tuple[tuple[str, str], ...] = (
     (MB_DARK, color_surface),  # navy metric numerals on a white tile (13.06)
     (color_muted, color_content_wash),  # muted captions on the content wash (7.18)
     (color_text, color_content_wash),  # body text on the content wash (16.93)
+    # --- The launch page's gradient hero (0038 S4a) --- #
+    # `hero_gradient()` runs MB_DARK -> MB_PRIMARY, so BOTH endpoints are painted ground
+    # for the same text: gating only the darker one would pass while the light end fails.
+    (color_on_action_muted, color_action_primary),  # hero sub-line on the blue end (4.99)
+    (color_on_action_muted, color_action_primary_strong),  # hero sub-line on the navy end (9.99)
 )

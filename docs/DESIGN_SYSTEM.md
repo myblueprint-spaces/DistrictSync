@@ -33,8 +33,23 @@ brand mark** (it signifies DistrictSync — "roster sync for SpacesEDU").
    SpacesEDU", GDE → "MyEd BC extract files", "config" → "district".
 5. **Every failure routes to a fix.** A warning/failed band names the fault and offers the concrete
    fix as the screen's single filled action (e.g. "Open Setup").
-6. **Honesty.** A band asserts only **verified** facts (e.g. "delivered" only after a confirmed
+6. **Honesty.** A band asserts only **checked** facts (e.g. "delivered" only after a confirmed
    upload) — the trust architecture the UI was built on.
+7. **Identification is never authentication (0038).** The launch page asks who looks after the sync
+   so the district lists can be shortened. There are no accounts, nothing is unlocked, and every
+   mapping ships in the exe regardless. **Banned vocabulary in any admin-facing copy, doc or release
+   note:** *sign in · log in · verify · unlock · authorized · account · credentials · access* — and
+   the district-domain list is never described as *protected / secured / anonymous / not harvestable
+   / encrypted*. It is a list of PUBLIC district domains used to shorten a picker; dressing it as a
+   security control is the same lie in adjectives. (The SFTP and Windows-schedule sections keep
+   "credential"/"account": those features genuinely have both. The ban is about the identity
+   surfaces, not a repo-wide word ban.) Enforced by a word-boundary sweep over every launch-page
+   state and over the Settings section's copy — `tests/test_ui_flet_identity_page.py`.
+8. **No two options may read identically (0038).** Every row of a district picker must be
+   distinguishable by its rendered text alone. Two byte-identical labels make the
+   highest-consequence wrong click in the product — picking the wrong district ships a wrong roster
+   — a coin toss. (`sd51attendance` shipped byte-identical to `sd51myedbc` until S3's
+   `district_name` line; S5 adds the runtime disambiguator for user-dropped YAMLs.)
 
 ## Tokens — single source: `src/ui_flet/tokens.py`
 Never inline a hex or a px size in a screen or a factory arg; add a token, then reference it.
@@ -52,6 +67,7 @@ Never inline a hex or a px size in a screen or a factory arg; add a token, then 
 | `MB_BORDER` / `color_border` | `#DBEAFE` | card / hairline border |
 | `color_text` / `MB_TEXT` | `#0F172A` | body text |
 | `color_muted` | `#475569` | muted captions (AA-safe on white AND wash) |
+| `color_on_action_muted` | `#D6E2F5` | supporting text on a gradient hero (AA on BOTH endpoints) |
 | `color_rail_text` / `color_rail_text_active` | `#BFCBE4` / `#FFFFFF` | rail label at rest / active |
 | `color_status_healthy` · `_warning` · `_failed` | `#15803D` · `#B45309` · `#DC2626` | solid verdict **icon-disc** fills |
 | healthy tint / line / on-tint | `#E8F3EC` / `#BFDCCB` / `#14532D` | healthy band + pill |
@@ -70,14 +86,28 @@ Never inline a hex or a px size in a screen or a factory arg; add a token, then 
 | `primary_button(...)` | the **one** filled action | max ONE per screen; `disabled_bgcolor` carries a gated fill |
 | `secondary_button(...)` | supporting actions | **outlined** (white bg, soft-blue border, blue text) — many allowed |
 | `text_button(...)` | tertiary / dismiss | MB_PRIMARY text; `color` overridable for coloured grounds |
-| `card(content, gradient=None, ...)` | a surface | white `radius_lg` + 1dp shadow; `gradient` = onboarding hero only |
+| `card(content, gradient=None, ...)` | a surface | white `radius_lg` + 1dp shadow; `gradient` = the LAUNCH PAGE hero only (0038) |
 | `district_chip(label)` | district identity | rounded `color_chip_bg` pill in the header right-slot |
 | `status_pill(label, status)` | a compact status marker | toned per `Verdict`; icon + text (never colour-alone) |
 | `FileChip` · `run_table` · `ErrorCard` | file chip · run table · never-crash error surface | unchanged intent |
 
 **The one-primary rule is a review gate:** a screen with two `primary_button`s is a bug — demote the
-weaker one to `secondary_button`. Gradient (`hero_gradient`) is reserved for the first-run onboarding
-hero; every other screen leads with `page_header`.
+weaker one to `secondary_button`. (Settings is a stack of independent SECTIONS, each with at most one
+filled action — folders, schedule, delivery; a new section rides those rather than adding a fourth.)
+
+**Gradient (`hero_gradient`) — the LAUNCH PAGE (`screens/identity.py`) is its home**, reallocated
+there from the first-run onboarding hero by plan 0038. It marks the one moment the app is not yet
+itself: before the rail exists. Every other screen leads with `page_header`. Text on the gradient uses
+`color_on_action` / `color_on_action_muted` — both AA-gated against BOTH gradient endpoints, because
+a translucent white is a composite the contrast function cannot evaluate and would therefore be an
+ungated painted pair.
+
+**This is a TRANSITION, not a finished state — do not "fix" the other two out of scope.** Three
+callers exist today and each has its own disposition: the launch page (the home, above);
+`screens/onboarding.py`'s hero, still REACHABLE from unconfigured Home and retiring in **S6**, when
+Home hosts the wizard itself; and `shell.build_placeholder`, effectively dead (every destination
+overrides its placeholder before the rail renders) and **roadmapped** for removal alongside that
+retirement. Removing either early is out of scope and will conflict with S6.
 
 ## Accessibility
 Every foreground/background pair the UI paints is enumerated in `tokens.UI_CONTRAST_PAIRS` and the

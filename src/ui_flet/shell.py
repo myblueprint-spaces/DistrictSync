@@ -15,6 +15,12 @@ identical in every state — D7); the initial selection is Setup while the insta
 handle and ``select_by_id`` syncs its ``selected_index`` on every id-keyed hop (via
 ``nav.selected_index_for``) so programmatic navigation — Home's "Start setup" / fix
 CTAs / error fallback — moves the highlight too, not only user clicks.
+
+Split again at 0038 S4a for the launch gate: everything after the geometry block is
+:func:`build_app_body` (module level, not a 110-line closure), and :func:`main` owns the
+BOOT ORDER and the one ``root_host`` whose ``content`` swaps between the launch page and
+the app body. See :func:`main` for the enumerated order and why each step sits where it
+does — the close-handler hoist in particular is a lifecycle guarantee, not tidiness.
 """
 
 from __future__ import annotations
@@ -30,6 +36,8 @@ import flet as ft
 from src.config.app_config import AppConfig
 from src.scheduler import get_scheduler
 from src.ui_flet import components, geometry, nav, nav_rail, tokens
+from src.ui_flet.identity_gate import gate_reason, needs_identity
+from src.ui_flet.screens import identity
 from src.ui_flet.screens.convert import build_convert, is_write_in_flight
 from src.ui_flet.screens.help import build_help
 from src.ui_flet.screens.home import build_home
@@ -212,62 +220,60 @@ async def _close_window(page: ft.Page) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# App shell + lifecycle                                                        #
+# Window lifecycle — hoisted so it is bound BEFORE anything is rendered        #
 # --------------------------------------------------------------------------- #
-def main(page: ft.Page) -> None:
-    """Build the DistrictSync shell. Called by ``ft.run`` from ``launcher.py``."""
-    # --- paint themed chrome FIRST (no flash of unstyled window) ----------- #
-    page.title = "DistrictSync"
-    page.padding = 0
-    # Direction B (0033 Slice 2): the content area sits on the calm ``color_content_wash``
-    # (white cards float on it); the navy rail owns the contrast. Set on the page too so there
-    # is no flash of the brand page-tint before the content host paints.
-    page.bgcolor = tokens.color_content_wash
-    page.theme_mode = ft.ThemeMode.LIGHT
-    page.theme = build_theme()
+def bind_window_lifecycle(page: ft.Page) -> None:
+    """Bind the two ZERO-ORPHAN close paths (PLAT-0). Module level, called ONCE, EARLY.
 
-    # Startup-only snapshot: drives the nav MODEL's launch selection at build time (the rail
-    # ORDER is fixed and config-independent — D7). Keeping the startup config here is a bounded,
-    # known remainder — the launch predicate re-keys from `needs_setup` to `setup_completed` in
-    # Slice 5; every SCREEN below already loads AppConfig fresh, so display state is never stale.
-    # Loaded BEFORE the sizing block since the geometry restore reads the saved window bounds.
-    app_cfg = AppConfig.load()
+    Hoisted above the launch gate at 0038 S4a, and that position is load-bearing rather
+    than tidy: the launch page renders no rail and therefore no Exit button, so the
+    title-bar close is the ONLY way out of it. Binding these after the gate — their
+    pre-S4a position — would leave the OS close unhandled for exactly as long as that page
+    is up, which is precisely when it is the admin's only exit.
 
-    # --- window sizing + brand icon (native mode only; harmless in web) ----- #
+    Both paths stay byte-identical to the proven ones: ``page.window.on_event`` routes a
+    CLOSE event into the single ``_close_window`` (geometry persist → awaited
+    ``destroy()`` → ``os._exit`` fallback), and ``page.on_disconnect`` guarantees the
+    python host cannot outlive its view.
+    """
+
+    async def on_window_event(e: ft.WindowEvent) -> None:
+        etype = getattr(e, "type", None)
+        if etype == ft.WindowEventType.CLOSE or getattr(e, "data", None) == "close":
+            await _close_window(page)
+
     try:
-        # Geometry restore (0032 T2 #8): the saved bounds via the pure `geometry.restore_plan`
-        # — size shrunk to the current work area, position applied only CLAMPED inside it (a
-        # window restored onto a since-removed monitor is a support call), first-run height
-        # min(860, work-area height). Defaults/minimums are single-sourced in `geometry`.
-        plan = geometry.restore_plan(
-            geometry.SavedGeometry(
-                width=app_cfg.window_width,
-                height=app_cfg.window_height,
-                left=app_cfg.window_left,
-                top=app_cfg.window_top,
-                maximized=app_cfg.window_maximized,
-            ),
-            geometry.probe_work_area(),
-        )
-        page.window.width = plan.width
-        page.window.height = plan.height
-        page.window.min_width = geometry.MIN_WIDTH
-        page.window.min_height = geometry.MIN_HEIGHT
-        if plan.left is not None:
-            page.window.left = plan.left
-        if plan.top is not None:
-            page.window.top = plan.top
-        if plan.maximized:
-            # Set LAST among the bounds so an unmaximize returns to the restored size.
-            page.window.maximized = True
-        # Brand the running window/title-bar/taskbar with the myBlueprint mark
-        # (owner decision 2026-07-15: myB on the bar up top; the EXE file keeps the
-        # DistrictSync sync mark via flet-pack --icon). Resolved via the pure
-        # `paths.window_icon_path()` (dev tree vs frozen `_MEIPASS`); set LAST so a
-        # failure here can't skip sizing.
-        page.window.icon = str(paths.window_icon_path())
-    except Exception:  # nosec B110 — window sizing/icon are native-only; harmless no-op in web mode
+        # prevent_close=False -> the OS close button tears the app down on its own;
+        # the handler still binds so any explicit close path destroys cleanly.
+        page.window.prevent_close = False
+        page.window.on_event = on_window_event
+    except Exception:  # nosec B110 — window lifecycle is native-only; harmless no-op in web mode
         pass
+
+    # When the desktop client disconnects, ensure the host process doesn't orphan.
+    def on_disconnect(_e: ft.ControlEvent) -> None:
+        os._exit(0)
+
+    page.on_disconnect = on_disconnect
+
+
+# --------------------------------------------------------------------------- #
+# The app body — everything behind the launch gate                             #
+# --------------------------------------------------------------------------- #
+def build_app_body(page: ft.Page, app_cfg: AppConfig) -> ft.Control:
+    """The rail + content host + screen map: the whole app, minus the window lifecycle.
+
+    Extracted to module level at 0038 S4a (it was a ~110-line closure inside ``main``) so
+    the shell's boot order is legible and the launch gate has ONE thing to swap in. It
+    builds and returns a control; it never calls ``page.add`` — ``main`` owns the single
+    root host.
+
+    ``app_cfg`` is a startup snapshot used ONLY for the nav model's launch selection (the
+    rail ORDER is fixed and config-independent — D7). Every SCREEN below re-reads
+    ``AppConfig`` fresh per mount (D1), so display state is never stale — and after the
+    launch gate the instance passed here is a FRESH load, so a just-answered identity is
+    in hand from the first paint.
+    """
     model = nav.nav_model(app_cfg)
     screens = build_screens(model.destinations)
 
@@ -322,7 +328,13 @@ def main(page: ft.Page) -> None:
     )
     # Swap the `help` placeholder for the real link-out Help surface (IA-7). Placed BEFORE the
     # DISTRICTSYNC_UI_DEMO override below so the dev override still wins (it re-assigns last).
-    screens["help"] = lambda: build_help(page, app_config=AppConfig.load())
+    screens["help"] = lambda: build_help(
+        page,
+        app_config=AppConfig.load(),
+        # 0038 S4a: the read-only "who looks after this sync" echo offers a one-click hop
+        # to Settings, where the address is changeable and clearable.
+        on_navigate=lambda dest: select_by_id(dest),
+    )
     # Dev-only: behind DISTRICTSYNC_UI_DEMO, route the Help slot to the design-system
     # gallery (3 verdict banners + ErrorCard) so the front-loaded spine is visually
     # exercised. NOT a user nav entry — a hidden override on an existing route.
@@ -372,7 +384,7 @@ def main(page: ft.Page) -> None:
         on_exit=do_exit,
     )
 
-    page.add(ft.Row(spacing=0, expand=True, controls=[nav_view, content_host]))
+    body = ft.Row(spacing=0, expand=True, controls=[nav_view, content_host])
 
     # --- Setup "needs attention" badge (D4): probe the REAL schedule OFF the UI thread --- #
     # The rail must never trust the config flag for the badge — it reflects the tri-state
@@ -408,30 +420,180 @@ def main(page: ft.Page) -> None:
 
         page.run_task(_apply)
 
+    render_by_id(initial_id)
+
+    # The probe lives HERE, at the tail of the app body, so it fires only AFTER entry —
+    # never while the launch page is up. A schedule badge on a rail the admin cannot see
+    # yet would be work done for nobody, and it would read the profile mid-question.
     if get_scheduler().supports_read_schedule:
         # The badge is advisory; a probe/thread failure simply leaves it clear.
         with contextlib.suppress(Exception):
             page.run_thread(_refresh_setup_badge)
 
-    # --- graceful window-close handling (native): ZERO orphans ------------- #
-    async def on_window_event(e: ft.WindowEvent) -> None:
-        etype = getattr(e, "type", None)
-        if etype == ft.WindowEventType.CLOSE or getattr(e, "data", None) == "close":
-            await _close_window(page)
+    return body
 
+
+def _gate_frame(view: ft.Control) -> ft.Control:
+    """Frame the launch page the way ``render_by_id`` frames a screen — inset, capped, scrollable.
+
+    The launch page mounts into the SAME root host as the app body, which carries no
+    padding of its own (the app body's ``content_host`` owns that inset). Narrower than a
+    screen's ~960px cap because this is one short form, and a form measured in feet is
+    harder to read, not more generous.
+    """
+    return ft.Container(
+        expand=True,
+        padding=pad_sym(36, 28),
+        bgcolor=tokens.color_content_wash,
+        content=ft.Column(
+            controls=[ft.Container(content=view, width=760)],
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        ),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# App shell + lifecycle                                                        #
+# --------------------------------------------------------------------------- #
+def main(page: ft.Page) -> None:
+    """Build the DistrictSync shell. Called by ``ft.run`` from ``launcher.py``.
+
+    **BOOT ORDER (enumerated — each step depends on the one before it):**
+
+    1. **chrome** — title, padding, theme. First, so there is no flash of an unstyled
+       window whichever surface paints next.
+    2. **geometry** — the saved window bounds, restored CLAMPED to the work area, plus the
+       brand icon. Needs the startup ``AppConfig``; native-only, so the whole block is
+       failure-tolerant.
+    3. **close handlers** — :func:`bind_window_lifecycle`. **ABOVE the gate on purpose:**
+       the launch page renders no rail and therefore no Exit button, so the title-bar close
+       is the only exit from it. Binding these afterwards would leave that close unhandled
+       for exactly as long as the page is up. (Closing at the launch page is an ACCEPTED
+       exit — it orphans nothing, and nothing is stored.)
+    4. **gate-or-body** — ``page.add(root_host)`` happens exactly ONCE here, and
+       ``root_host.content`` is swapped between the launch page and the app body (the
+       proven ``content_host`` pattern — no new Flet 0.85.3 API). ``needs_identity`` decides
+       which; ``_enter_app`` runs at most once and builds the body from a FRESH
+       ``AppConfig.load()`` after the gate, so a just-answered identity is in hand from the
+       first paint.
+    5. **probes** — the off-thread Setup badge, at the tail of :func:`build_app_body`, so it
+       never runs while the launch page is up.
+
+    **The identity FLOOR.** Steps 4's gate is wrapped so that ANY failure in the identity
+    layer — the predicate, the page build, or (inside the page) resolution — logs and falls
+    through to the app body. Identification can never fail closed: the cost of a bug here
+    is an unfiltered district list, never a locked-out admin.
+    """
+    # --- 1. paint themed chrome FIRST (no flash of unstyled window) -------- #
+    page.title = "DistrictSync"
+    page.padding = 0
+    # Direction B (0033 Slice 2): the content area sits on the calm ``color_content_wash``
+    # (white cards float on it); the navy rail owns the contrast. Set on the page too so there
+    # is no flash of the brand page-tint before the content host paints.
+    page.bgcolor = tokens.color_content_wash
+    page.theme_mode = ft.ThemeMode.LIGHT
+    page.theme = build_theme()
+
+    # Startup snapshot: the geometry restore reads the saved window bounds, and the nav
+    # model's launch selection is derived from it when there is no gate to show.
+    app_cfg = AppConfig.load()
+
+    # --- 2. window sizing + brand icon (native mode only; harmless in web) -- #
     try:
-        # prevent_close=False -> the OS close button tears the app down on its own;
-        # the handler still binds so any explicit close path destroys cleanly.
-        page.window.prevent_close = False
-        page.window.on_event = on_window_event
-    except Exception:  # nosec B110 — window lifecycle is native-only; harmless no-op in web mode
+        # Geometry restore (0032 T2 #8): the saved bounds via the pure `geometry.restore_plan`
+        # — size shrunk to the current work area, position applied only CLAMPED inside it (a
+        # window restored onto a since-removed monitor is a support call), first-run height
+        # min(860, work-area height). Defaults/minimums are single-sourced in `geometry`.
+        plan = geometry.restore_plan(
+            geometry.SavedGeometry(
+                width=app_cfg.window_width,
+                height=app_cfg.window_height,
+                left=app_cfg.window_left,
+                top=app_cfg.window_top,
+                maximized=app_cfg.window_maximized,
+            ),
+            geometry.probe_work_area(),
+        )
+        page.window.width = plan.width
+        page.window.height = plan.height
+        page.window.min_width = geometry.MIN_WIDTH
+        page.window.min_height = geometry.MIN_HEIGHT
+        if plan.left is not None:
+            page.window.left = plan.left
+        if plan.top is not None:
+            page.window.top = plan.top
+        if plan.maximized:
+            # Set LAST among the bounds so an unmaximize returns to the restored size.
+            page.window.maximized = True
+        # Brand the running window/title-bar/taskbar with the myBlueprint mark
+        # (owner decision 2026-07-15: myB on the bar up top; the EXE file keeps the
+        # DistrictSync sync mark via flet-pack --icon). Resolved via the pure
+        # `paths.window_icon_path()` (dev tree vs frozen `_MEIPASS`); set LAST so a
+        # failure here can't skip sizing.
+        page.window.icon = str(paths.window_icon_path())
+    except Exception:  # nosec B110 — window sizing/icon are native-only; harmless no-op in web mode
         pass
 
-    # When the desktop client disconnects, ensure the host process doesn't orphan.
-    def on_disconnect(_e: ft.ControlEvent) -> None:
-        os._exit(0)
+    # --- 3. close handlers, BEFORE anything is rendered (see the docstring) - #
+    bind_window_lifecycle(page)
 
-    page.on_disconnect = on_disconnect
+    # --- 4. the ONE root host; its content is the gate OR the app body ------ #
+    # No padding here: the app body's own `content_host` owns the content inset, and the
+    # launch page is framed by `_gate_frame` below. Double padding would inset the rail.
+    root_host = ft.Container(expand=True, bgcolor=tokens.color_content_wash)
+    page.add(root_host)
 
-    render_by_id(initial_id)
-    page.update()
+    entered = False
+
+    def _enter_app(app_config: AppConfig | None = None) -> None:
+        """Swap the app body in. Idempotent — a second call is a no-op, by design.
+
+        The launch page can reach this from several affordances (Get started, the
+        correction link, the escape) and its own error floor calls it too; a double entry
+        would stack a second rail + screen map on the same host.
+
+        ``app_config=None`` means **read the settings again**: the launch page persists the
+        answer and THEN calls this, so the app body's first paint must see what was just
+        written (D1's per-mount freshness only helps from the NEXT hop onward). The
+        no-gate path passes the startup snapshot explicitly — nothing has changed under it.
+
+        **The latch is set only on SUCCESS**, and that is not a detail. Arming it first
+        would mean a TRANSIENT failure (a locked profile, a probe that raised once) left the
+        launch page still mounted with the latch already down: every affordance on it — Get
+        started, the correction, the escape — would become a silent no-op, forever, with no
+        error on screen. The admin would be stuck in front of their own sync by a bug that
+        had already passed. A failed entry therefore leaves the door open for the next press
+        AND re-raises, so the failure is visible rather than absorbed.
+        """
+        nonlocal entered
+        if entered:
+            return
+        body = build_app_body(page, AppConfig.load() if app_config is None else app_config)
+        entered = True
+        root_host.content = body
+        page.update()
+
+    try:
+        show_gate = needs_identity(app_cfg)
+        logger.info("identity gate: shown=%s reason=%s", show_gate, gate_reason(app_cfg))
+    except Exception:  # noqa: BLE001 - the floor: a broken predicate must not block the app
+        logger.warning("The launch-page check failed; opening DistrictSync as usual.", exc_info=True)
+        show_gate = False
+
+    if not show_gate:
+        _enter_app(app_cfg)
+        return
+
+    try:
+        root_host.content = _gate_frame(
+            identity.build_identity(
+                page,
+                app_config=app_cfg,
+                on_enter=_enter_app,  # no argument -> a FRESH AppConfig.load() (persist-then-enter)
+            )
+        )
+        page.update()
+    except Exception:  # noqa: BLE001 - the floor: a broken launch page opens the app unfiltered
+        logger.warning("The launch page could not be built; opening DistrictSync as usual.", exc_info=True)
+        _enter_app(app_cfg)
