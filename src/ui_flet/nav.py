@@ -79,8 +79,7 @@ def needs_setup(app_config: AppConfig) -> bool:
     (an explicit flag, or inferred for installs predating the wizard), NOT the schedule flag
     directly — so a Firefighter whose task broke (Event-141) is never greeted as a newcomer: a
     completed install stays out of onboarding even when its schedule is later found MISSING
-    (schedule live-ness is exclusively ``schedule_status``, read back from the OS). The
-    onboarding gate + launch selection both key off this single predicate.
+    (schedule live-ness is exclusively ``schedule_status``, read back from the OS).
 
     W2-B adds the second, symmetrical guard: an install whose ``config.json`` EXISTS but
     could not be READ (``settings_unreadable()``) is provably NOT a fresh install — the
@@ -92,7 +91,9 @@ def needs_setup(app_config: AppConfig) -> bool:
 
     Three consumers since 0038 S6, all reading THIS one predicate: Home's branch (a) host,
     ``setup.build_setup``'s wizard-vs-Settings choice (through the ``has_completed_setup()``
-    it wraps), and the Setup rail badge's first-run suppression.
+    it wraps), and the Setup rail badge's first-run suppression. **The launch selection is
+    NOT one of them any more** — it is Home in every state, so this predicate no longer has
+    any say in where a launch lands.
     """
     if app_config.settings_unreadable():
         return False

@@ -255,7 +255,10 @@ def bind_window_lifecycle(page: ft.Page) -> None:
 # --------------------------------------------------------------------------- #
 # The app body — everything behind the launch gate                             #
 # --------------------------------------------------------------------------- #
-def build_app_body(page: ft.Page, app_cfg: AppConfig) -> ft.Control:  # noqa: ARG001 - see the docstring
+def build_app_body(
+    page: ft.Page,
+    app_cfg: AppConfig,  # noqa: ARG001 - the persist-then-enter seam; see the docstring
+) -> ft.Control:
     """The rail + content host + screen map: the whole app, minus the window lifecycle.
 
     Extracted to module level at 0038 S4a (it was a ~110-line closure inside ``main``) so
@@ -504,8 +507,11 @@ def main(page: ft.Page) -> None:
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme = build_theme()
 
-    # Startup snapshot: the geometry restore reads the saved window bounds, and the nav
-    # model's launch selection is derived from it when there is no gate to show.
+    # Startup snapshot, consumed by the geometry restore (window bounds) and by the identity
+    # layer: `needs_identity` decides whether the launch page shows, and the page itself
+    # renders from this instance. It no longer feeds the NAV model — since 0038 S6 the launch
+    # selection is Home in every state — and the app body behind the gate reads nothing from
+    # it (`_enter_app` re-loads on the persist-then-enter path; see `build_app_body`).
     app_cfg = AppConfig.load()
 
     # --- 2. window sizing + brand icon (native mode only; harmless in web) -- #

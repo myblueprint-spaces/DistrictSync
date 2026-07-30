@@ -381,13 +381,15 @@ def card(
 
 
 def hero_gradient() -> ft.LinearGradient:
-    """The brand diagonal navy→blue hero gradient — the LAUNCH PAGE's, and nothing else's.
+    """The brand diagonal navy→blue hero gradient — the LAUNCH PAGE's, and no other PRODUCT surface's.
 
     Reallocated to ``screens/identity.py`` by plan 0038 (S4a) and made exclusive by S6,
-    which retired the onboarding hero and un-gradiented the shell placeholder. It marks the
-    one moment the app is not yet itself: before the rail exists. Text on it uses
-    ``color_on_action`` / ``color_on_action_muted`` — never a translucent white, which is a
-    composite the AA check cannot evaluate. See ``docs/DESIGN_SYSTEM.md``.
+    which retired the onboarding hero and un-gradiented the shell placeholder. That leaves
+    exactly two callers: the launch page, and ``build_design_demo`` below — the dev-only
+    component gallery, which ships no surface and is why the claim above is qualified rather
+    than absolute. It marks the one moment the app is not yet itself: before the rail exists.
+    Text on it uses ``color_on_action`` / ``color_on_action_muted`` — never a translucent
+    white, which is a composite the AA check cannot evaluate. See ``docs/DESIGN_SYSTEM.md``.
     """
     return ft.LinearGradient(
         begin=ft.Alignment(-1, -1),

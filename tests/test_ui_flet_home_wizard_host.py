@@ -282,6 +282,37 @@ class TestHomeHostsTheWizard:
         assert home_status_mod.WELCOME_RESUME_SETTINGS_ONLY in texts
         assert not any("run history" in t for t in texts)
 
+    def test_a_store_stamp_with_no_rows_still_reads_as_history(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The quarantine-recreated store — and the SUPPLY of ``store_created_at``.
+
+        Added after a probe: replacing the host's ``store_created_at=_store_created_at()``
+        with ``None`` left 364 tests green, because every other band row reaches its answer
+        through ``records``. The pure layer knowing the rule proves nothing about the view
+        passing it. This is the only row where the stamp is the sole evidence.
+        """
+        monkeypatch.setattr(home_screen, "store_meta", lambda: {"created_at": "2026-01-05T03:00:00"})
+        cfg = _unfinished(input_dir="/in", output_dir="/out", sis_type="myedbc")
+
+        texts = _texts(_home(page, cfg, monkeypatch))
+
+        assert home_status_mod.WELCOME_RESUME_WITH_HISTORY in texts
+        assert home_status_mod.WELCOME_RESUME_SETTINGS_ONLY not in texts
+
+    def test_an_unreadable_run_store_is_promised_nothing(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A store we could not open is not a store we may call safe."""
+        monkeypatch.setattr(home_screen, "read_run_records", lambda: None)
+        cfg = _unfinished(input_dir="/in", output_dir="/out", sis_type="myedbc")
+
+        texts = _texts(_home(page, cfg, monkeypatch))
+
+        assert home_status_mod.WELCOME_RESUME_SETTINGS_ONLY in texts
+        assert not any("run history" in t for t in texts)
+        assert home_status_mod.WELCOME_FRESH not in texts, "an established install was greeted as new"
+
     def test_an_unreadable_profile_gets_the_dashboard_not_the_wizard(
         self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -300,9 +331,11 @@ class TestHomeHostsTheWizard:
         """One wizard, two mounts — the divergence this test exists to catch is the whole
         risk of hosting a screen inside another screen.
 
-        Compared on the wizard's OWN rendered surface (its step header, its instruction
-        copy, its buttons); the band is Home's and is excluded by construction, since it
-        is not part of what ``build_setup`` returns.
+        Compared by rendered TEXT and BUTTON LABELS on the wizard's own surface (its step
+        header, its instruction copy, its buttons); the band is Home's and is excluded by
+        construction, since it is not part of what ``build_setup`` returns. What this does
+        NOT claim is that S6 preserved the rail item byte-for-byte: the SUCCESS path is
+        unchanged, and the FAILURE path is deliberately new on BOTH mounts.
         """
         cfg = _unfinished()
         monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
@@ -373,8 +406,13 @@ class TestTheBranchAFloor:
     def test_a_raise_while_deriving_the_band_still_shows_the_floor_not_a_trace(
         self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The band is inside the floor deliberately — an unreadable run store must not be
-        able to replace a working wizard with a stack trace."""
+        """The band is INSIDE the floor, and the floor is all-or-nothing on purpose.
+
+        A raise deriving the welcome line takes the wizard down with it — deliberately.
+        This branch has exactly one thing to offer, and a wizard sitting under a line we
+        failed to derive (or a bare band over nothing) is a worse surface than the honest
+        card. Degrading the band while keeping the wizard was considered and rejected.
+        """
 
         def _boom() -> list[dict]:
             raise RuntimeError("the run store exploded")
@@ -412,6 +450,147 @@ class TestTheFinishSeam:
 
         assert saved and saved[-1] is True
         assert hops == ["home"], "the finish line must hand the payoff back to Home"
+
+    def test_a_double_press_saves_once_and_hops_once(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The button stays on screen until the HOST replaces the surface, so it is
+        genuinely double-clickable. Un-latched, the reliability lens reproduced two saves
+        and two navigations from one impatient admin."""
+        saved: list[bool] = []
+        monkeypatch.setattr(AppConfig, "save", lambda self: saved.append(self.setup_completed))
+        hops: list[str] = []
+
+        tree = self._hosted_finish(page, tmp_path, monkeypatch, hops)
+        button = _button(tree, FINISH_BUTTON)
+        button.on_click(None)
+        button.on_click(None)
+
+        assert saved == [True]
+        assert hops == ["home"]
+
+    def test_the_badge_is_re_probed_when_setup_finishes(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The boot probe was suppressed because the install was unfinished (S6).
+
+        Nothing re-asks it, so an admin who SKIPS the Schedule step on a machine carrying a
+        leftover task would keep a silent rail for the rest of the session — the exact
+        fault the badge exists to raise. Firing ``on_schedule_changed`` on completion is
+        what closes that window. It goes FIRST so the probe still happens if the navigation
+        raises — not because the re-render could race it (the shell's refresh does its own
+        ``AppConfig.load()`` off-thread, so the order cannot change what it reads).
+        """
+        monkeypatch.setattr(AppConfig, "save", lambda self: None)
+        cfg = _ready_to_finish(tmp_path)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        order: list[str] = []
+        tree = build_home(
+            page,
+            app_config=cfg,
+            on_navigate=lambda dest: order.append(f"navigate:{dest}"),
+            on_schedule_changed=lambda: order.append("re-probe"),
+        )
+        _drive_to_finish(tree)
+
+        _button(tree, FINISH_BUTTON).on_click(None)
+
+        assert order == ["re-probe", "navigate:home"]
+
+    def test_the_RAIL_finish_re_probes_the_badge_too(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The twin of the row above on the OTHER mount — the divergence S6 exists to stop.
+
+        The badge suppression is keyed on ``nav.needs_setup``, not on where the wizard is
+        mounted, so an admin who walks it from the Setup RAIL item and skips the Schedule
+        step was left with the same silenced rail the hosted path now rescues. One wizard
+        means one re-probe rule.
+        """
+        cfg = _ready_to_finish(tmp_path)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        monkeypatch.setattr(AppConfig, "save", lambda self: None)
+        fired: list[str] = []
+
+        tree = build_setup(page, on_schedule_changed=lambda: fired.append("re-probe"))
+        _drive_to_finish(tree)
+        _button(tree, FINISH_BUTTON).on_click(None)
+
+        assert fired == ["re-probe"], "the rail mount finished without re-probing the badge"
+        assert TRANSITION_CUE in _texts(tree), "the graduation itself must still happen"
+
+    def test_a_raising_re_probe_costs_neither_mount_its_payoff(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The badge refresh is ADVISORY on both mounts — the siblings' stated contract.
+
+        Paired with the two rows above, which prove the callback genuinely fires: without
+        them "nothing broke" would be equally satisfied by a callback wired to nothing.
+        """
+        cfg = _ready_to_finish(tmp_path)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        monkeypatch.setattr(AppConfig, "save", lambda self: None)
+
+        def _boom() -> None:
+            raise RuntimeError("the probe thread would not start")
+
+        hosted = build_home(page, app_config=cfg, on_navigate=(hops := []).append, on_schedule_changed=_boom)
+        _drive_to_finish(hosted)
+        _button(hosted, FINISH_BUTTON).on_click(None)
+        assert hops == ["home"], "an advisory badge refresh cost the hosted admin their finish"
+
+        cfg.setup_completed = False  # a second, independent walk from the rail item
+        from_rail = build_setup(page, on_schedule_changed=_boom)
+        _drive_to_finish(from_rail)
+        _button(from_rail, FINISH_BUTTON).on_click(None)
+        assert TRANSITION_CUE in _texts(from_rail), "the same raise blocked the rail graduation"
+
+    def test_a_raising_hand_off_re_opens_the_finish_latch(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A one-shot latch set BEFORE the risky work turns a transient fault into a dead
+        button (the S4a lesson, restated for this latch).
+
+        The save SUCCEEDED here and the hand-off did not, so ``FINISH_SAVE_FAILED_NOTE``
+        would be a lie — the failure is re-raised LOUD instead, and the latch re-opens so
+        the press actually repeats rather than going quiet.
+        """
+        cfg = _ready_to_finish(tmp_path)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        monkeypatch.setattr(AppConfig, "save", lambda self: None)
+        hops: list[str] = []
+
+        def _hop(dest: str) -> None:
+            hops.append(dest)
+            if len(hops) == 1:
+                raise RuntimeError("the shell blew up on the way to Home")
+
+        tree = build_home(page, app_config=cfg, on_navigate=_hop)
+        _drive_to_finish(tree)
+
+        with pytest.raises(RuntimeError):
+            _button(tree, FINISH_BUTTON).on_click(None)
+        assert hops == ["home"]
+        assert setup_screen.FINISH_SAVE_FAILED_NOTE not in _texts(tree), (
+            "a hand-off failure was reported as a save failure"
+        )
+
+        _button(tree, FINISH_BUTTON).on_click(None)
+
+        assert hops == ["home", "home"], "the latch stayed shut — Finish was dead for the rest of the mount"
+
+    def test_a_host_without_the_callback_still_finishes(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The positive twin of the ordering above: the re-probe is OPTIONAL, and its
+        absence must not cost the admin their finish."""
+        monkeypatch.setattr(AppConfig, "save", lambda self: None)
+        hops: list[str] = []
+
+        tree = self._hosted_finish(page, tmp_path, monkeypatch, hops)
+        _button(tree, FINISH_BUTTON).on_click(None)
+
+        assert hops == ["home"]
 
     def test_the_hosted_finish_does_NOT_mount_the_settings_scroll(
         self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -524,6 +703,57 @@ class TestTheFinishSeam:
         assert setup_screen.FINISH_SAVE_FAILED_NOTE in texts
         assert TRANSITION_CUE not in texts, "the Settings graduation ran on an unsaved finish"
         assert cfg.setup_completed is False
+
+    def test_the_retry_after_a_failed_save_from_the_RAIL_item_also_graduates(
+        self, page: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The RAIL item's post-failure SUCCESS path — the half the hosted retry cannot reach.
+
+        Mirrors ``test_the_retry_after_a_failed_save_succeeds``, which only walks the
+        ``on_complete`` branch. With ``on_complete=None`` the way out is the in-place
+        ``_mount_settings(transition_cue=True)`` graduation, and the stale-note clear +
+        ``_render()`` that precede it were unexercised on this mount.
+
+        The note assertion is taken AT THE HANDOFF, not after it: ``_mount_settings``
+        replaces the whole surface, so "the note is gone once Settings is up" is satisfied
+        just as well by a note that was never cleared. Spying the handoff is what makes the
+        clear falsifiable on a path that ends by discarding the control it lives on.
+        """
+        cfg = _ready_to_finish(tmp_path)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+        tree = build_setup(page)
+        _drive_to_finish(tree)
+
+        at_handoff: list[str] = []
+        real_mount = setup_screen._mount_settings
+
+        def _spy_mount(*args: object, **kwargs: object) -> None:
+            at_handoff.extend(_texts(tree))
+            real_mount(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(setup_screen, "_mount_settings", _spy_mount)
+        attempts: list[int] = []
+
+        def _flaky(self: AppConfig) -> None:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise OSError("transient")
+
+        monkeypatch.setattr(AppConfig, "save", _flaky)
+        _button(tree, FINISH_BUTTON).on_click(None)
+
+        assert setup_screen.FINISH_SAVE_FAILED_NOTE in _texts(tree), "the failure half never fired"
+        assert at_handoff == [], "the rail item graduated on a save that raised"
+
+        _button(tree, FINISH_BUTTON).on_click(None)
+
+        assert attempts == [1, 1], "the second press was swallowed — the finish latch never re-opened"
+        # The positive twin FIRST, so the absence below cannot pass by never having happened.
+        assert at_handoff, "the retry never reached _mount_settings — the absence assertion would be vacuous"
+        assert setup_screen.FINISH_SAVE_FAILED_NOTE not in at_handoff, (
+            "Settings was handed a surface still saying the save failed"
+        )
+        assert TRANSITION_CUE in _texts(tree)
 
 
 class TestTheScheduleBadgeCallbackReachesTheHostedWizard:

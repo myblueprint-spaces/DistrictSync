@@ -350,15 +350,20 @@ The checkable projection of the Features above. All checks are `manual` — Dist
     "id": "AC-setup-5",
     "feature": "First-run setup wizard",
     "flow": [
-      "On a scratch profile that has RUN before but never finished the wizard (run history present, setup_completed false), open the app",
+      "On a scratch profile that has RUN before but never finished the wizard (run history present, setup_completed false AND schedule_registered false — has_completed_setup() re-infers the flag on load from a registered schedule), open the app",
       "Read the line above the wizard",
-      "Separately, on a fresh scratch profile, read the same line"
+      "Separately, on a fresh scratch profile, read the same line",
+      "Separately again, on a profile with a district and folders saved but NO runs (walk the wizard to Delivery and close), read the same line"
     ],
     "expect": [
-      "the install with history reads \"Let's finish setting up — your files and run history are safe\"",
+      "the install with history reads \"Let's finish setting up — your files and run history are safe.\"",
       "the word 'Welcome' appears nowhere on an install that has run before",
-      "the fresh profile reads \"Welcome — four quick steps, about 3 minutes.\"",
-      "neither line is a coloured hero — it is one quiet sentence above the step"
+      "the fresh profile reads \"Welcome — this takes about 3 minutes.\"",
+      "the saved-choices-but-no-runs profile reads \"Let's finish setting up — everything you've already entered is safe.\" — it must NOT say 'run history', which this install does not have; the same line is used when saved choices sit beside a run store that cannot be read",
+      "a profile with NOTHING entered beside an unreadable run store reads the bare \"Let's finish setting up.\" — it may name neither the run history nor the settings, because it has been checked to have neither",
+      "no variant names a step count — the wizard's own 'Step 1 of 5' indicator owns that",
+      "none of the lines is a coloured hero — each is one quiet sentence above the step",
+      "the Setup rail item shows the same wizard with NO welcome line — the band belongs to the landing, not to the wizard"
     ],
     "states": [],
     "check": "manual"

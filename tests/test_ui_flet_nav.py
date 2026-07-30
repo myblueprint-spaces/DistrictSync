@@ -86,20 +86,20 @@ class TestFixedOrder:
     def test_order_is_the_fixed_rail_order(self):
         assert [d.id for d in ordered_destinations(nav_model())] == _FIXED_ORDER
 
-    def test_the_model_cannot_vary_by_state_at_all(self):
-        # The load-bearing D7 guarantee, now structural: ``nav_model`` takes no config, so
-        # "needs-setup and fully-configured render the same rail" is not a coincidence two
-        # calls happen to share — there is nothing for a state to change.
-        assert nav_model() == nav_model()
-        assert ordered_destinations(nav_model()) == DESTINATIONS
-
     def test_the_model_factory_accepts_no_state_at_all(self):
-        """The SIGNATURE, pinned deliberately — added after a falsification probe went green.
+        """The load-bearing D7 guarantee, now STRUCTURAL — and the only falsifiable form of it.
 
-        Re-admitting a config parameter (even an unused, defaulted one) restores the door
-        state-awareness walked through before 0038 S6, and every behavioural assertion here
-        stays green while it stands open. The absence of the parameter IS the guarantee, so
-        the absence is what gets asserted.
+        "Needs-setup and fully-configured render the same rail" stopped being a coincidence
+        two call sites share when ``nav_model`` lost its config parameter: there is nothing
+        left for a state to change. Re-admitting one (even unused and defaulted) re-opens the
+        door 0038 S6 closed, and every behavioural assertion in this class stays green while
+        it stands open — so the ABSENCE of the parameter is what gets asserted.
+
+        The pin is the signature deliberately. An earlier ``nav_model() == nav_model()``
+        stood here and could not fail for any deterministic factory (vacuous green, per
+        CLAUDE.md's testing conventions); its second line duplicated
+        ``test_model_destinations_match_module_constant`` verbatim, since
+        ``ordered_destinations`` returns ``model.destinations`` unchanged.
         """
         import inspect
 

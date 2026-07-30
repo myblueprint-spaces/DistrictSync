@@ -28,6 +28,7 @@ import flet as ft
 import pytest
 
 from src.config.app_config import AppConfig
+from src.history.store import write_run_record
 from src.ui_flet import home_status, nav, shell
 from src.ui_flet.screens import home
 from tests.test_app_config_identity import V38X_CONFIG_JSON
@@ -283,8 +284,15 @@ class TestTheLaunchGate:
         # card" are both satisfied by a blank page — which is exactly the failure a gate
         # that crashed silently would produce.
         assert _has_rail(page), "the app body never mounted; the absences below are vacuous"
+        texts = _texts(_added_root(page))
         # ...and G2 holds on Home too: an unreadable profile gets no card either (S4b).
-        assert home.IDENTITY_CARD_HEADLINE not in _texts(_added_root(page))
+        assert home.IDENTITY_CARD_HEADLINE not in texts
+        # ...and no WIZARD either (S6, upgrade shape 3): we could not read the settings, so
+        # "you are a new user" is a claim we know to be unverifiable. Walked through the
+        # real boot rather than through `build_home`, because the shape is a composition —
+        # the predicate, the launch selection and Home's branch all have to agree.
+        assert "Step 1 of 5" not in texts, "an unreadable profile was shown the first-run wizard"
+        assert "Home" in texts, "the dashboard did not paint; the absences above are vacuous"
 
     def test_the_completed_install_boot_reads_the_config_once_for_the_body(
         self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
@@ -362,6 +370,53 @@ class TestJourney4UpgradeInPlace:
         assert _has_rail(page) and "Home" in texts, "the dashboard did not paint; the absence below is vacuous"
         assert home.IDENTITY_CARD_HEADLINE not in texts
 
+    def test_upgrade_shape_2_lands_on_the_HOSTED_wizard_with_the_has_history_band(
+        self, page: MagicMock, isolated_user_profile: Path
+    ) -> None:
+        """Complete + manual-only, walked through the REAL boot (S6).
+
+        The same shipped v3.8.x profile minus the two facts that make
+        ``has_completed_setup()`` true — the explicit flag, and the registered schedule the
+        older inference reads. That combination is upgrade shape 2, and it is only
+        reachable by removing BOTH: leaving ``schedule_registered`` true keeps the install
+        finished no matter what the flag says. Pinned end-to-end because "does this admin
+        meet the wizard or the dashboard?" is a composition of the predicate, the gate, the
+        launch selection and Home's branch — no one of which can answer it.
+        """
+        profile = isolated_user_profile
+        profile.mkdir(parents=True, exist_ok=True)
+        values = json.loads(V38X_CONFIG_JSON)
+        values.pop("setup_completed", None)
+        values["schedule_registered"] = False
+        (profile / "config.json").write_text(json.dumps(values), encoding="utf-8")
+        # A REAL run in a REAL store — written through the app's own writer, so the band's
+        # "your run history is safe" rests on the same artefact Run History reads.
+        assert write_run_record({"timestamp": "2026-07-01T03:00:00", "status": "success"}, source="manual")
+
+        shell.main(page)
+
+        # It IS asked at the launch page first, and that is correct: setup was never
+        # finished and no address is on file, so `needs_identity` holds. Walking through
+        # the ESCAPE keeps the planted profile byte-identical (it stores nothing), so what
+        # lands behind the gate is the shipped shape and not one this test edited.
+        assert _shows_launch_page(page), "an unfinished install must still be asked once"
+        _button_labelled(_added_root(page), shell.identity.SKIP_LABEL).on_click(None)
+
+        texts = _texts(_added_root(page))
+        assert _has_rail(page)
+        assert home_status.WELCOME_RESUME_WITH_HISTORY in texts, "the has-history band did not render"
+        assert home_status.WELCOME_FRESH not in texts, "an install with a run history was greeted as new"
+        # The wizard IS hosted — and it resumed from REAL state rather than restarting.
+        # Step 2, not 1: this profile already carries a district, so the District step is
+        # satisfied and `derive_flow` lands on Folders. Asserting "Step 1 of 5" here would
+        # have been asserting a falsehood about the very population this row exists for.
+        assert "Step 2 of 5" in texts, "upgrade shape 2 did not land on the hosted wizard"
+        assert "Choose your folders" in texts
+        assert home.IDENTITY_CARD_HEADLINE not in texts, "the identity card rode the first-run branch"
+        assert "identity_email" not in (profile / "config.json").read_text(encoding="utf-8"), (
+            "the escape wrote to the planted profile"
+        )
+
 
 # --------------------------------------------------------------------------- #
 # 2c. The COMPOSED first-run journey — gate → band → wizard (S4a × S6)          #
@@ -397,6 +452,11 @@ class TestTheComposedFirstRunJourney:
         # The band, then the wizard's own step header — on HOME, not one rail item away.
         assert home_status.WELCOME_FRESH in texts, "the welcome band did not render above the wizard"
         assert "Choose your district" in texts and "Step 1 of 5" in texts
+        # ...and exactly ONE of them counts the steps. Co-locating the band with the
+        # indicator is what made a step count in the band a contradiction; the assertion
+        # lives HERE, on the composed surface, because neither half is wrong alone.
+        counted = [t for t in texts if "step" in t.lower()]
+        assert counted == ["Step 1 of 5"], f"more than one control names a step count: {counted}"
 
     def test_the_rail_lands_on_home_and_home_is_where_the_wizard_is(
         self, page: MagicMock, isolated_user_profile: Path

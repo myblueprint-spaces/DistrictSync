@@ -135,12 +135,33 @@ _PAUSED_HEADLINE = "Paused for the summer"
 # gradient hero retired with `screens/onboarding.py` in this slice, and the    #
 # gradient's one home is the launch page — see docs/DESIGN_SYSTEM.md.)         #
 # --------------------------------------------------------------------------- #
-WELCOME_FRESH = "Welcome — four quick steps, about 3 minutes."
+#
+# THE RULE these four variants encode: **never NAME an artefact you know is absent, or
+# cannot see.** A reassurance is a claim; "your run history is safe" is a promise about a
+# thing, and it may only be made when that thing is known to exist AND is readable. The rule
+# cuts BOTH ways and the fourth line is what makes that true — a band that names "everything
+# you've already entered" over an install that entered nothing is the same over-claim
+# pointed at the settings instead of the store.
+#
+# The band also carries NO step count. It sits one line above the wizard's own
+# "Step 1 of 5" indicator, and two numbers on one screen is a contradiction the moment
+# either moves — which the open 5→4 "Finish unnumbered" question (ROADMAP) means is
+# coming. The indicator owns the count; the band owns the reassurance.
+WELCOME_FRESH = "Welcome — this takes about 3 minutes."
 WELCOME_RESUME_WITH_HISTORY = "Let's finish setting up — your files and run history are safe."
-# The half-configured install with nothing ever run. It is NOT new (it carries choices we
-# would be dismissing), but "your run history is safe" would reassure it about a thing we
-# know is absent — the assert-unchecked-state failure mode, in a welcome line.
+# Saved choices, but no run history we may speak for. TWO installs land here, and BOTH have
+# something on disk to point at: the half-configured one (choices saved, nothing ever run) —
+# "your run history is safe" would reassure it about a thing we know is absent; and the one
+# whose run store EXISTS but could not be READ: it is certainly not new, but we cannot see
+# the history to promise anything about it. This line names only what we can still see.
 WELCOME_RESUME_SETTINGS_ONLY = "Let's finish setting up — everything you've already entered is safe."
+# The install that is NOT new and has NOTHING we can name: no saved choices, and the only
+# evidence it is established is a run store we could not open. Reached by a readable-but-blank
+# `config.json` (which the launch page's identity-only save creates) beside an unreadable
+# `history.db`. "Welcome" would be false (the store's existence is a checked fact) and
+# "everything you've already entered" would name settings we have positively checked are
+# absent — so this variant reassures about NOTHING and simply gets on with the task.
+WELCOME_RESUME_PLAIN = "Let's finish setting up."
 
 
 @dataclass(frozen=True)
@@ -724,18 +745,35 @@ def _has_saved_choices(app_config: AppConfig) -> bool:
     return bool(app_config.input_dir.strip() or app_config.output_dir.strip() or app_config.sis_type.strip())
 
 
-def welcome_band_line(*, has_run_history: bool, has_saved_choices: bool) -> str:
+def welcome_band_line(*, has_run_history: bool, has_saved_choices: bool, run_history_readable: bool) -> str:
     """The line above the hosted wizard, keyed on what this install can be said to HAVE.
 
-    Precedence: run history first (the strongest evidence the install is established), then
-    saved choices, then the fresh welcome. Only the first branch may mention run history —
-    see ``WELCOME_RESUME_SETTINGS_ONLY``.
+    Two questions, deliberately separate, because they have different answers for the
+    UNREADABLE store: *is this install new?* (``has_run_history`` — no) and *may we make a
+    promise about its run history?* (``run_history_readable`` — no, we could not read it).
+    Collapsing them would greet an established install as new; ignoring the second would
+    tell an admin their run history is safe when we could not open it.
+
+    ``run_history_readable`` is REQUIRED, not defaulted: the permissive value is the
+    over-claiming one, and CLAUDE.md's rule is that the unsafe call be unrepresentable
+    rather than merely discouraged.
+
+    Every branch is a claim about an artefact, so each one is gated on that artefact being
+    checked-present — including the LAST. Falling through to the settings-only line on an
+    install whose ``has_saved_choices`` we just checked as ``False`` would name the entered
+    settings anyway: the same over-claim as promising an unreadable run history, aimed at
+    the other artefact. The plain line exists for exactly that arm.
     """
-    if has_run_history:
+    if not (has_run_history or has_saved_choices):
+        return WELCOME_FRESH
+    if has_run_history and run_history_readable:
         return WELCOME_RESUME_WITH_HISTORY
-    if has_saved_choices:
-        return WELCOME_RESUME_SETTINGS_ONLY
-    return WELCOME_FRESH
+    if not has_saved_choices:
+        # Reaching here with nothing saved means ``has_run_history`` carried the branch and
+        # the store was UNREADABLE (a readable one would have returned above). Established,
+        # and nothing we can name — so the line names nothing.
+        return WELCOME_RESUME_PLAIN
+    return WELCOME_RESUME_SETTINGS_ONLY
 
 
 def welcome_band(app_config: AppConfig, *, records: list[dict] | None, store_created_at: str | None) -> str:
@@ -743,6 +781,8 @@ def welcome_band(app_config: AppConfig, *, records: list[dict] | None, store_cre
     return welcome_band_line(
         has_run_history=has_prior_runs(records, store_created_at=store_created_at),
         has_saved_choices=_has_saved_choices(app_config),
+        # ``None`` is ``read_run_records``'s "the store exists but would not open".
+        run_history_readable=records is not None,
     )
 
 

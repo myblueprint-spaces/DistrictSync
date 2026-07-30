@@ -20,7 +20,7 @@ Three-way dispatch (mirrors the IA model; branch (a) is the first-run surface):
 
 Built as a **callback-driven factory** — ``build_home`` owns NO navigation or lifecycle
 (``on_navigate(dest_id)`` is injected by the shell = ``select_by_id``), mirroring
-``onboarding``/``nav_rail`` discipline.
+``nav_rail``'s discipline.
 
 Assembled ENTIRELY from ``components.py`` (cards/buttons/banner) + ``tokens`` — never
 hand-rolled controls (the ``FilledButton(text=)`` trap; see ``docs/FLET_1.0_CONVENTIONS.md``).
@@ -34,8 +34,9 @@ install that has not finished setup: there is no schedule and there has never be
 Its copy says what is true instead — nothing has been changed — and routes to Help.
 
 **The identity cards (0038 S4b)** ride the configured branch, immediately under the verdict
-block: the one-time upgrade ask, the G3 mismatch question, and the durable "we're building
-the mapping for SD##" card. They are ADVISORY — none of them writes anything but an
+block: the one-time upgrade ask, the G3 mismatch question, and the durable "we don't have a
+mapping for SD## yet" card (see ``NOT_LISTED_HEADLINE`` — never a claim about vendor work
+nobody has been told about). They are ADVISORY — none of them writes anything but an
 ``identity_*`` field (through the ``identity_save`` choke point, which structurally cannot
 touch ``sis_type``), none of them blocks, and they carry their OWN floor so a bug in them
 can never replace the verdict with Home's ``ErrorCard``.
@@ -743,25 +744,52 @@ def _wizard_host(
     anything itself: the shell's Home factory re-reads ``AppConfig``, so the fresh load is
     what routes the now-completed install to branch (b)/(c). The wizard fires it only after
     a VERIFIED save, so this re-render can never land back on branch (a) — the bounce that
-    would read as "it undid my setup".
+    would read as "it undid my setup". It ALSO re-probes the Setup badge on the way out (see
+    ``_on_setup_complete``).
 
-    The floor is branch-(a)-specific (see the copy block above) and wraps the WHOLE host,
-    including the band: a raise while deriving the welcome line must not take the wizard
-    down with it, and a wizard that cannot build must not leave a bare band on screen.
+    The floor is branch-(a)-specific (see the copy block above) and covers the band and the
+    wizard TOGETHER, on purpose: this branch has exactly one thing to offer, so a bare band
+    over nothing, or a wizard under a line we failed to derive, are both worse than the
+    honest card. All-or-nothing is the state to be in when the only surface is the task.
     """
+
+    def _on_setup_complete() -> None:
+        """Re-probe the rail badge, THEN re-enter Home.
+
+        The badge probe runs once, at boot, and S6 suppresses it while ``needs_setup`` — so
+        an admin who finishes setup in this session has a rail whose badge was deliberately
+        silenced and never re-asked. The case that matters is the one this wizard makes
+        easy: skip the Schedule step on a machine that still carries a leftover task, and
+        the very fault the badge exists to raise stays invisible until a restart.
+
+        Ordered BEFORE the navigation so the probe still fires if the navigation raises —
+        NOT because the re-render would race it (``shell._refresh_setup_badge`` does its own
+        ``AppConfig.load()`` off-thread at probe time, so the order cannot change what it
+        reads). The probe is the advisory half and goes first for the same reason it is
+        suppressed: it must never be the thing that stops the admin reaching Home.
+        """
+        # Advisory, like the register/unregister callers: a stale badge is a blemish, an
+        # escaping raise here would skip the navigation AND leave the wizard's finish latch
+        # closed, deadening the button for the rest of the mount.
+        with contextlib.suppress(Exception):
+            if on_schedule_changed is not None:
+                on_schedule_changed()
+        on_navigate("home")
+
     try:
         line = welcome_band(app_config, records=read_run_records(), store_created_at=_store_created_at())
         return ft.Column(
             spacing=tokens.space_xl,
             controls=[
                 # Calm caption tier, NOT a heading: the wizard's own step header owns the
-                # title ramp. (The gradient hero this replaces retired with
-                # `screens/onboarding.py`; the gradient's one home is the launch page.)
+                # title ramp — and the step COUNT, which is why this line carries none.
+                # (The gradient hero this replaces retired with the first-run module; the
+                # gradient's one home is the launch page.)
                 ft.Text(line, size=tokens.type_emphasis, color=tokens.color_muted),
                 setup_screen.build_setup(
                     page,
                     on_schedule_changed=on_schedule_changed,
-                    on_complete=lambda: on_navigate("home"),
+                    on_complete=_on_setup_complete,
                 ),
             ],
         )
