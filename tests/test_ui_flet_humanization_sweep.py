@@ -100,7 +100,7 @@ _CFG = AppConfig(
 
 # An UNCONFIGURED install carrying the same poisoned identity. Added because a
 # perturbation exposed that `_CFG` alone cannot reach the no-history branches gated on
-# `has_completed_setup()` — a leak planted in the "No sync has run yet" copy passed the
+# `has_completed_setup()` — a leak planted in the empty-store "no runs recorded" copy passed the
 # sweep untouched. Those branches are defensive (the dispatcher gates un-onboarded
 # installs elsewhere), but they still EMIT ADMIN COPY from an AppConfig, so they are a
 # leak surface and must be swept.

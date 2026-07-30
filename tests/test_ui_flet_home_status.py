@@ -124,48 +124,104 @@ class TestUnavailableSentinel:
 
 
 class TestEmptyState:
-    def test_empty_established_is_fresh_start_not_no_sync(self) -> None:
-        # An established (completed-setup) install with an empty store post-update must NOT be
-        # told "No sync has run yet" — the store is fresh for everyone after this update.
-        status = derive_home_status([], _CONFIGURED, now=_NOW)
+    """0038 S7 part (i) re-based the fresh-start discriminator on ``store_created_at`` ALONE.
+
+    ``has_completed_setup()`` used to be an OR-disjunct, and the wizard flips it the instant
+    it saves — so from S6 (Home HOSTS the wizard) a brand-new install landed, at its peak
+    moment, on "if you used an earlier version, its run history isn't carried over". These
+    rows changed EXPECTATION, not strictness: each pair below asserts BOTH directions of the
+    new rule (a store stamp still reads as an upgrade; setup-completed alone no longer does),
+    so a regression to the old disjunct fails on the twin rather than passing quietly.
+    """
+
+    # A RECENT birth stamp: the store exists (so this is an upgrader) but is younger than
+    # MISSED_RUN_AFTER_HOURS, which keeps the missed-run rule — it outranks the empty-state
+    # copy on a LIVE schedule — out of these rows. Its own coverage lives in TestMissedRun.
+    _STORE_STAMP = _RECENT
+
+    def test_empty_with_a_store_stamp_is_fresh_start(self) -> None:
+        # The UPGRADER: a store that already exists is evidence a run was once recorded.
+        status = derive_home_status([], _CONFIGURED, now=_NOW, store_created_at=self._STORE_STAMP)
         assert status.verdict is Verdict.WARNING  # amber-toned, never red
-        assert status.headline == "Run history starts fresh here"
+        assert status.headline == home_status_mod.EMPTY_FRESH_START_HEADLINE
         assert status.fix is None  # nothing to fix — just wait
-        # Honesty C: the hidden-history claim is CONDITIONED (newcomer-vs-upgrader is unknown),
-        # never a flat assertion that earlier runs exist.
+        # Honesty C: the hidden-history claim is CONDITIONED (which earlier build wrote the
+        # store is unknowable), never a flat assertion that earlier runs exist.
         assert "If you used an earlier version" in status.detail
 
-    def test_empty_established_with_live_schedule_shows_next_run(self) -> None:
+    def test_empty_with_NO_store_is_never_told_about_an_earlier_version(self) -> None:
+        # The twin, and the whole point of part (i): the same completed-setup config with no
+        # store must NOT inherit the upgrader's conditional past-version sentence.
+        status = derive_home_status([], _CONFIGURED, now=_NOW, store_created_at=None)
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == home_status_mod.EMPTY_NO_RUNS_HEADLINE
+        assert "earlier version" not in status.detail
+        assert status.detail == "Your nightly sync will appear here."
+        # …and it does not call that sync the FIRST one either. ``_CONFIGURED`` carries
+        # ``schedule_registered=True``, which is exactly what a <= v3.4.0 upgrader has — an
+        # install with months of nightly syncs behind it and no ``history.db``, because the
+        # store did not exist before v3.5.0. "Your first nightly sync" is the same
+        # ledger-vs-world falsehood the headline was rewritten to avoid.
+        assert "first" not in status.detail
+
+    def test_empty_upgrader_with_live_schedule_shows_next_run(self) -> None:
         # The next-run reassurance derives from the LIVE read-back (D4), not the config flag.
-        status = derive_home_status([], _CONFIGURED, now=_NOW, schedule_status=_live_schedule("3:00 AM"))
-        assert status.headline == "Run history starts fresh here"
+        status = derive_home_status(
+            [], _CONFIGURED, now=_NOW, store_created_at=self._STORE_STAMP, schedule_status=_live_schedule("3:00 AM")
+        )
+        assert status.headline == home_status_mod.EMPTY_FRESH_START_HEADLINE
         assert "3:00 AM" in status.detail
 
-    def test_empty_established_without_schedule_status_omits_next_run(self) -> None:
+    def test_empty_upgrader_without_schedule_status_omits_next_run(self) -> None:
         # No injected read-back → NO schedule assertion (never claim a time we didn't confirm).
-        status = derive_home_status([], _CONFIGURED, now=_NOW)
+        status = derive_home_status([], _CONFIGURED, now=_NOW, store_created_at=self._STORE_STAMP)
         assert "scheduled for" not in status.detail
+
+    def test_empty_first_run_with_live_schedule_names_the_scheduled_time(self) -> None:
+        # S7: the never-run install now gets the confirmed time too — AC-home-2's "with the
+        # scheduled nightly time if one is registered" was only ever honoured on the OTHER
+        # branch. Its own sentence, not the upgrader's ("first"/"next" would argue).
+        #
+        # Stage-7 BLOCK-2: "first" is GONE. An empty store is not proof of a first sync — an
+        # install upgrading from <= v3.4.0 (history.db shipped in 3.5.0, no backfill) has synced
+        # nightly for months and still lands here. The scheduled time is true either way.
+        status = derive_home_status(
+            [], _CONFIGURED, now=_NOW, store_created_at=None, schedule_status=_live_schedule("3:00 AM")
+        )
+        assert status.headline == home_status_mod.EMPTY_NO_RUNS_HEADLINE
+        assert status.detail == "Your nightly sync is scheduled for 3:00 AM."
+        assert "first" not in status.detail
 
     def test_empty_genuine_first_run_unscheduled_says_no_sync_yet(self) -> None:
         # Not established (never completed setup, no store yet) → the calm genuine-first-run copy.
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
         status = derive_home_status([], cfg, now=_NOW, store_created_at=None)
         assert status.verdict is Verdict.WARNING
-        assert status.headline == "No sync has run yet"
+        assert status.headline == home_status_mod.EMPTY_NO_RUNS_HEADLINE
         assert "scheduled for" not in status.detail
+        # Stage-7 BLOCK-2: and it names NO nightly at all. Nothing here has confirmed or even
+        # recorded a schedule, so "your first nightly sync will appear here" would be naming
+        # automation this install does not have.
+        assert "nightly sync" not in status.detail
 
-    def test_empty_completed_manual_only_upgrader_gets_fresh_start(self) -> None:
-        # D4a: a completed-setup manual-only install (unscheduled) is established via
-        # setup_completed — the honest fresh-start copy, not the false "No sync has run yet".
+    def test_empty_completed_manual_only_install_is_NOT_an_upgrader(self) -> None:
+        # Part (i), stated as the case it fixes: finishing setup is evidence about the SETTINGS,
+        # never about a run. (Before S7 this row asserted the opposite, via ``setup_completed``.)
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
         status = derive_home_status([], cfg, now=_NOW, store_created_at=None)
-        assert status.headline == "Run history starts fresh here"
+        assert status.headline == home_status_mod.EMPTY_NO_RUNS_HEADLINE
 
-    def test_empty_store_created_at_signals_established_even_if_unscheduled(self) -> None:
-        # A store that already exists (created_at present) is an established signal on its own.
+    def test_empty_store_created_at_signals_an_upgrade_even_if_unscheduled(self) -> None:
+        # A store that already exists (created_at present) is the established signal, on its own.
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
-        status = derive_home_status([], cfg, now=_NOW, store_created_at="2026-07-01T03:00:00")
-        assert status.headline == "Run history starts fresh here"
+        status = derive_home_status([], cfg, now=_NOW, store_created_at=self._STORE_STAMP)
+        assert status.headline == home_status_mod.EMPTY_FRESH_START_HEADLINE
+
+    def test_the_discriminator_ignores_a_blank_stamp(self) -> None:
+        # Totality: a whitespace-only stamp is not evidence of anything.
+        assert home_status_mod.has_earlier_run_history(store_created_at="   ") is False
+        assert home_status_mod.has_earlier_run_history(store_created_at=None) is False
+        assert home_status_mod.has_earlier_run_history(store_created_at=self._STORE_STAMP) is True
 
     def test_empty_completed_but_confirmed_unscheduled_says_no_auto_sync(self) -> None:
         # #1b: a completed install whose read-back CONFIRMS no schedule (MISSING) must be told
@@ -179,13 +235,97 @@ class TestEmptyState:
         assert "won't sync automatically" in status.detail
         assert "New syncs will appear" not in status.detail
 
-    def test_empty_completed_unconfirmed_schedule_keeps_neutral_fresh_start(self) -> None:
+    def test_empty_upgrader_confirmed_unscheduled_still_says_no_auto_sync(self) -> None:
+        # The no-automation nudge is NOT scoped to newcomers: an upgrader whose task is
+        # confirmed gone needs it just as much. (Its headline stays the upgrader's.)
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
+        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        status = derive_home_status([], cfg, now=_NOW, store_created_at=self._STORE_STAMP, schedule_status=missing)
+        assert status.headline == home_status_mod.EMPTY_FRESH_START_HEADLINE
+        assert "won't sync automatically" in status.detail
+
+    def test_empty_completed_unconfirmed_schedule_keeps_the_neutral_copy(self) -> None:
         # Honesty inverse: an UNKNOWN/None read-back must NOT assert "won't sync automatically"
-        # (we can't see the schedule) — it keeps the neutral fresh-start copy.
+        # (we can't see the schedule) — each branch keeps its own neutral copy.
+        #
+        # Stage-7 BLOCK-2: this config never registered a schedule, so the neutral copy may not
+        # name a nightly either. This is the state Home paints on EVERY mount before the
+        # off-thread probe returns, and permanently whenever the read-back is UNKNOWN.
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
         status = derive_home_status([], cfg, now=_NOW, schedule_status=None)
         assert "won't sync automatically" not in status.detail
-        assert "New syncs will appear" in status.detail
+        assert status.detail == home_status_mod._NO_RUNS_YET_LEAD
+        assert "nightly sync" not in status.detail
+
+        upgrader = derive_home_status([], cfg, now=_NOW, store_created_at=self._STORE_STAMP, schedule_status=None)
+        assert "won't sync automatically" not in upgrader.detail
+        assert "New syncs will appear" in upgrader.detail
+
+    # ------------------------------------------------------------------ #
+    # Stage-7 BLOCK-2 — no empty-state sentence may NAME an absent nightly #
+    # ------------------------------------------------------------------ #
+    def test_the_first_sync_lead_needs_a_POSITIVE_schedule_signal(self) -> None:
+        """The gate, both directions — an unprobed install with a registered task keeps it."""
+        registered = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=True)
+        unregistered = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+
+        # (a) the app's OWN record that it registered one — the only signal available on the
+        #     initial paint (the probe is off-thread), so it is admitted.
+        assert derive_home_status([], registered, now=_NOW).detail == home_status_mod._FIRST_SYNC_LEAD
+        # (b) nothing registered AND nothing confirmed → no nightly may be named.
+        assert derive_home_status([], unregistered, now=_NOW).detail == home_status_mod._NO_RUNS_YET_LEAD
+        # (c) a CONFIRMED-LIVE read-back with no next-run time to quote still counts as a signal
+        #     (the assertion is that a schedule EXISTS, not a promise to name its hour).
+        live_no_time = ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="")
+        assert (
+            derive_home_status([], unregistered, now=_NOW, schedule_status=live_no_time).detail
+            == home_status_mod._FIRST_SYNC_LEAD
+        )
+
+    def test_the_neutral_lead_names_no_automation_and_no_earlier_version(self) -> None:
+        """The replacement sentence is true for BOTH readings of an empty store."""
+        lead = home_status_mod._NO_RUNS_YET_LEAD
+        assert "nightly sync" not in lead  # names no automation nobody set up …
+        assert "earlier version" not in lead  # … and makes no claim about a past install
+        assert "Convert" in lead  # but still says how a run can reach the ledger
+
+    def test_NO_empty_state_lead_calls_the_next_sync_the_FIRST_one(self) -> None:
+        """Discharge-round BLOCK-2: the gate admits ``schedule_registered``, so a <= v3.4.0
+        upgrader (months of nightly syncs, no ``history.db`` because it shipped in v3.5.0)
+        reaches ``_FIRST_SYNC_LEAD``. Calling its next sync "the first" is the same
+        ledger-vs-world falsehood ``EMPTY_NO_RUNS_HEADLINE`` was rewritten to avoid, and the
+        module docstring three lines above the branch already says "first" is deliberately
+        absent — so the two must not disagree. Swept over EVERY lead this branch can emit.
+        """
+        for name in ("_FIRST_SYNC_LEAD", "_NO_RUNS_YET_LEAD", "_FRESH_START_LEAD"):
+            lead = getattr(home_status_mod, name)
+            assert "first" not in lead.lower(), f"{name} calls the next sync the first one: {lead!r}"
+
+    def test_the_registered_upgrader_is_never_told_this_is_its_first_sync(self) -> None:
+        """The reproduction, on the real derivation, in BOTH states that reach it.
+
+        ``schedule_status=None`` is Home's INITIAL paint on every mount (the probe is
+        off-thread) and ``UNKNOWN`` is its PERMANENT state wherever the OS read-back fails —
+        so this is not a corner, it is what a registered upgrader sees.
+        """
+        upgrader = AppConfig(
+            input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True, schedule_registered=True
+        )
+        unknown = ScheduleStatus(state=ScheduleState.UNKNOWN, headline="", detail="")
+        for schedule in (None, unknown):
+            status = derive_home_status([], upgrader, now=_NOW, store_created_at=None, schedule_status=schedule)
+            assert status.detail == home_status_mod._FIRST_SYNC_LEAD  # the gate still admits it …
+            assert "first" not in status.detail  # … but the sentence no longer over-claims
+
+    def test_the_no_runs_headline_speaks_about_the_LEDGER_not_the_world(self) -> None:
+        """BLOCK-2(a): the <= v3.4.0 upgrader has synced for months and still has no store.
+
+        ``store_created_at`` cannot separate "never ran" from "ran before the store existed",
+        so the headline may only claim what the ledger knows. The old wording ("No sync has run
+        yet") was a flat assertion about the world, and false for that whole population.
+        """
+        assert home_status_mod.EMPTY_NO_RUNS_HEADLINE == "No runs recorded yet"
+        assert "has run" not in home_status_mod.EMPTY_NO_RUNS_HEADLINE
 
 
 class TestScheduleAttention:
@@ -886,6 +1026,298 @@ class TestHealthy:
         assert status.metrics is not None
         assert status.metrics.entity_counts["CourseInfo"] == 15
         assert status.metrics.entity_counts["StudentCourses"] == 200
+
+
+# --------------------------------------------------------------------------- #
+# The healthy line's roster-size clause (0038 S7) — the truth table            #
+# --------------------------------------------------------------------------- #
+class TestSizeClause:
+    """Slim Home drops the tile row, so the healthy line carries ONE size number.
+
+    The hazard the table exists for: the run record writes EVERY entity key with a defaulted
+    ``0`` (``pipeline.build_run_record`` over ``_RECORD_ENTITY_KEYS``), so the record alone
+    cannot tell "this config doesn't emit Students" from "the roster collapsed to zero". The
+    clause therefore takes the config's OWN produced entities as data. A non-zero filter would
+    have conflated the two and hidden exactly the alarm this feature exists to raise.
+    """
+
+    _ROSTERING = ("Students", "Staff", "Family", "Classes", "Enrollments")
+    _ATTENDANCE_ONLY = ("StudentAttendance",)
+    _MYB_ONLY = ("CourseInfo", "StudentCourses")
+    _MBP_CORE = ("Students", "CourseInfo", "StudentCourses")
+
+    def test_a_rostering_config_counts_students(self) -> None:
+        status = derive_home_status([_record()], _CONFIGURED, now=_NOW, output_entities=self._ROSTERING)
+        assert status.detail == "Last sync delivered to SpacesEDU 5 hours ago. It included 100 students."
+
+    def test_an_attendance_only_config_counts_attendance_rows_not_zero_students(self) -> None:
+        # THE headline hazard: this config's record carries Students=0 by shape.
+        record = _record(Students=0, Staff=0, Family=0, Classes=0, Enrollments=0, StudentAttendance=8140)
+        status = derive_home_status([record], _CONFIGURED, now=_NOW, output_entities=self._ATTENDANCE_ONLY)
+        assert "It included 8,140 attendance rows." in status.detail
+        assert "student" not in status.detail
+
+    def test_a_myblueprint_only_config_counts_courses_not_zero_students(self) -> None:
+        record = _record(Students=0, Staff=0, Family=0, Classes=0, Enrollments=0, CourseInfo=1204, StudentCourses=9)
+        status = derive_home_status([record], _CONFIGURED, now=_NOW, output_entities=self._MYB_ONLY)
+        assert "It included 1,204 courses." in status.detail
+        assert "0 students" not in status.detail
+
+    def test_a_mixed_config_leads_with_the_first_produced_entity(self) -> None:
+        record = _record(CourseInfo=1204, StudentCourses=9)
+        status = derive_home_status([record], _CONFIGURED, now=_NOW, output_entities=self._MBP_CORE)
+        assert "It included 100 students." in status.detail
+
+    def test_a_genuine_zero_on_a_rostering_config_IS_printed(self) -> None:
+        # The alarm, not a case to hide: this district DOES emit Students and shipped none.
+        status = derive_home_status([_record(Students=0)], _CONFIGURED, now=_NOW, output_entities=self._ROSTERING)
+        assert "It included 0 students." in status.detail
+
+    def test_one_row_is_singular(self) -> None:
+        status = derive_home_status([_record(Students=1)], _CONFIGURED, now=_NOW, output_entities=self._ROSTERING)
+        assert "It included 1 student." in status.detail
+
+    def test_classes_pluralise_irregularly(self) -> None:
+        # ``humanize.pluralize`` is a naive ``+ "s"`` and would render "1 classs"/"40 classs";
+        # both forms are authored in SIZE_NOUNS for exactly this reason.
+        assert (
+            home_status_mod.size_clause({"Classes": 40}, ("Classes",), expected_sis_type="myedbc")
+            == "It included 40 classes."
+        )
+        assert (
+            home_status_mod.size_clause({"Classes": 1}, ("Classes",), expected_sis_type="myedbc")
+            == "It included 1 class."
+        )
+
+    def test_no_counts_record_means_no_clause(self) -> None:
+        assert home_status_mod.size_clause(None, self._ROSTERING, expected_sis_type="myedbc") == ""
+
+    def test_unknown_output_entities_means_no_clause(self) -> None:
+        # A degraded/unreadable config resolves to () — the clause vanishes, never guesses.
+        status = derive_home_status([_record()], _CONFIGURED, now=_NOW, output_entities=())
+        assert status.detail == "Last sync delivered to SpacesEDU 5 hours ago."
+        assert "It included" not in status.detail
+
+    def test_a_partner_entity_with_no_authored_noun_means_no_clause(self) -> None:
+        # The table is the allowlist: a key out of a hand-dropped YAML is never echoed into
+        # admin-facing copy, and never falls back to the raw key.
+        assert home_status_mod.size_clause({"SomethingElse": 42}, ("SomethingElse",), expected_sis_type="myedbc") == ""
+
+    def test_the_clause_vanishes_when_the_delivery_has_no_build_behind_it(self) -> None:
+        # ``_counts_source`` → None (a delivery-only latest with no successful build): the
+        # tiles were already suppressed here, and the clause must be too.
+        delivery = _record(Students=0, Staff=0, Family=0, Classes=0, Enrollments=0, delivery_only=True, source="manual")
+        status = derive_home_status([delivery], _CONFIGURED, now=_NOW, output_entities=self._ROSTERING)
+        assert status.verdict is Verdict.HEALTHY
+        assert status.metrics is None
+        assert "It included" not in status.detail
+
+    def test_a_delivery_takes_its_size_from_the_build_it_shipped(self) -> None:
+        # The positive twin of the row above: with a successful build behind it, the delivery
+        # names THAT build's roster rather than its own zero-shaped counts.
+        delivery = _record(Students=0, Staff=0, Family=0, Classes=0, Enrollments=0, delivery_only=True, source="manual")
+        build = _record(Students=4812)
+        status = derive_home_status([delivery, build], _CONFIGURED, now=_NOW, output_entities=self._ROSTERING)
+        assert "It included 4,812 students." in status.detail
+
+    def test_the_clause_rides_the_no_sftp_phrasing_too(self) -> None:
+        status = derive_home_status(
+            [_record(sftp_attempted=False, sftp_ok=False)], _CONFIGURED, now=_NOW, output_entities=self._ROSTERING
+        )
+        assert status.detail == (
+            "Last sync completed 5 hours ago — files were written to your output folder. It included 100 students."
+        )
+
+    def test_the_clause_only_rides_the_HEALTHY_line(self) -> None:
+        # Every fault branch names a category and offers a fix; a roster size there would be a
+        # number attached to a run that did not deliver.
+        for extra in ({"status": "failed"}, {"sftp_attempted": True, "sftp_ok": False}, {"anomalies": ["ANOMALY: x"]}):
+            status = derive_home_status([_record(**extra)], _CONFIGURED, now=_NOW, output_entities=self._ROSTERING)
+            assert "It included" not in status.detail, extra
+
+    def test_garbage_counts_do_not_crash_the_clause(self) -> None:
+        assert (
+            home_status_mod.size_clause({"Students": "not-a-number"}, ("Students",), expected_sis_type="myedbc")
+            == "It included 0 students."
+        )
+
+    # ------------------------------------------------------------------ #
+    # Stage-7 BLOCK-1 — the entity list and the counts must be the SAME    #
+    # district. Both divergence routes below are shipped design:           #
+    #   * Mapping's Apply writes ``sis_type`` and does NOT re-register the #
+    #     nightly task, so later SCHEDULED records carry the OLD district; #
+    #   * Convert records the district picked in its dropdown without      #
+    #     saving it (the S5 "This run: <district>" pill exists for this).  #
+    # Before the guard, an ``sd51attendance`` record under a saved         #
+    # ``sd48myedbc`` rendered "It included 0 students." under a GREEN band.#
+    # ------------------------------------------------------------------ #
+    def test_a_record_from_a_DIFFERENT_district_prints_no_number(self) -> None:
+        # The attendance record's rostering keys are zero BY SHAPE; the saved district's entity
+        # list says Students, so the clause would have read "0 students" — a false alarm number
+        # under a healthy verdict.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="sd48myedbc", schedule_registered=True)
+        record = _record(Students=0, Staff=0, Family=0, Classes=0, Enrollments=0, StudentAttendance=8140)
+        record["sis_type"] = "sd51attendance"
+        status = derive_home_status([record], cfg, now=_NOW, output_entities=self._ROSTERING)
+        assert status.verdict is Verdict.HEALTHY  # the verdict itself is untouched …
+        assert "It included" not in status.detail  # … only the number drops out
+        assert "0 students" not in status.detail
+
+    def test_the_OTHER_direction_too_a_rostering_record_under_a_courses_config(self) -> None:
+        # The mirror case the panel reproduced: an sd48 record (4,812 students, no course keys)
+        # under a saved ``mbponly`` read "It included 0 courses."
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="mbponly", schedule_registered=True)
+        record = _record(Students=4812)
+        record["sis_type"] = "sd48myedbc"
+        status = derive_home_status([record], cfg, now=_NOW, output_entities=self._MYB_ONLY)
+        assert "It included" not in status.detail
+        assert "0 courses" not in status.detail
+
+    def test_the_positive_twin_an_AGREEING_district_still_prints(self) -> None:
+        # Without this the guard could be satisfied by suppressing the clause outright.
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="sd48myedbc", schedule_registered=True)
+        record = _record(Students=4812)
+        record["sis_type"] = "sd48myedbc"
+        status = derive_home_status([record], cfg, now=_NOW, output_entities=self._ROSTERING)
+        assert "It included 4,812 students." in status.detail
+
+    def test_a_record_with_no_district_at_all_still_prints(self) -> None:
+        # Totality + back-compat: pre-enrichment records carry no ``sis_type``, and an absent
+        # value is NOT a disagreement. Mirrors ``run_history._district_note``: BOTH sides must
+        # be known non-empty to establish a difference.
+        assert "sis_type" not in _record()
+        status = derive_home_status([_record()], _CONFIGURED, now=_NOW, output_entities=self._ROSTERING)
+        assert "It included 100 students." in status.detail
+        # …and the same rule from the other side, at the function boundary.
+        assert (
+            home_status_mod.size_clause({"Students": 7, "sis_type": "sd40myedbc"}, ("Students",), expected_sis_type="")
+            == "It included 7 students."
+        )
+
+    def test_the_guard_is_applied_to_the_BUILD_a_delivery_shipped(self) -> None:
+        """The walk-back is where ``records[0]`` would have been the wrong anchor.
+
+        A delivery-only latest carries no counts, so ``_counts_source`` walks back to the newest
+        successful BUILD — which can be a different district again. Guarding ``records[0]`` would
+        have compared the DELIVERY's district and then printed the older build's numbers.
+        """
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="sd48myedbc", schedule_registered=True)
+        delivery = _record(Students=0, Staff=0, Family=0, Classes=0, Enrollments=0, delivery_only=True)
+        delivery["sis_type"] = "sd48myedbc"  # the delivery AGREES — only the build behind it does not
+        foreign_build = _record(Students=99)
+        foreign_build["sis_type"] = "sd74myedbc"
+        status = derive_home_status([delivery, foreign_build], cfg, now=_NOW, output_entities=self._ROSTERING)
+        assert "It included" not in status.detail, "the guard must follow the counts, not the latest record"
+
+        # The positive twin: the same shape with an agreeing build behind it DOES print.
+        own_build = _record(Students=99)
+        own_build["sis_type"] = "sd48myedbc"
+        agreeing = derive_home_status([delivery, own_build], cfg, now=_NOW, output_entities=self._ROSTERING)
+        assert "It included 99 students." in agreeing.detail
+
+    def test_the_injected_entity_ORDER_does_not_decide_the_lead(self) -> None:
+        """Pins the fact ``mapping_catalog._ordered_entities``'s docstring now states.
+
+        That docstring used to guarantee "a picker's label order and Home's 'which entity
+        leads' rule can never diverge". They are not coupled at all: ``size_clause`` collects
+        ``output_entities`` into a SET and walks ``SIZE_NOUNS``, so THAT dict's order is the
+        lead rule and the injected order is discarded. Asserted here so the corrected wording
+        cannot quietly rot back into the false one.
+        """
+        counts = {"Students": 10, "CourseInfo": 20, "sis_type": "myedbc"}
+        forward = home_status_mod.size_clause(counts, ("Students", "CourseInfo"), expected_sis_type="myedbc")
+        backward = home_status_mod.size_clause(counts, ("CourseInfo", "Students"), expected_sis_type="myedbc")
+        assert forward == backward == "It included 10 students."
+
+    def test_every_entity_key_home_can_see_has_an_authored_noun(self) -> None:
+        """Totality against the record's own key set — a new output entity cannot ship mute.
+
+        Read off ``pipeline._RECORD_ENTITY_KEYS`` rather than re-typed, so adding an entity to
+        the pipeline without a noun here is RED instead of a silently-absent clause.
+        """
+        from src.etl.pipeline import _RECORD_ENTITY_KEYS
+
+        assert set(_RECORD_ENTITY_KEYS) == set(home_status_mod.SIZE_NOUNS), (
+            "every entity the run record can count needs a singular/plural noun for the size clause"
+        )
+        for key, forms in home_status_mod.SIZE_NOUNS.items():
+            assert len(forms) == 2 and all(forms), key
+            assert forms[0] != forms[1], f"{key} has no distinct singular/plural"
+
+
+# --------------------------------------------------------------------------- #
+# The quick-action strip (0038 S7) — tiering as a COUNTED rule                 #
+# --------------------------------------------------------------------------- #
+class TestQuickActions:
+    _FIXES = (
+        None,
+        home_status_mod.FixAction("Check Run History", "run_history"),
+        home_status_mod.FixAction("Open Settings", "setup"),
+        home_status_mod.FixAction("Fix the nightly schedule", "setup"),
+    )
+
+    @pytest.mark.parametrize("fix", _FIXES, ids=["healthy", "fix-run-history", "fix-settings", "fix-schedule"])
+    def test_exactly_one_filled_action_exists_on_the_surface(self, fix) -> None:
+        """The design system's one-primary rule, as arithmetic over the WHOLE surface.
+
+        The strip's filled count plus the verdict's fix CTA (1 when present) must be exactly
+        one in every state — the property the render smokes then confirm on the built tree.
+        """
+        actions = home_status_mod.quick_actions(fix)
+        filled_in_strip = sum(1 for action in actions if action.filled)
+        assert filled_in_strip + (1 if fix is not None else 0) == 1
+
+    @pytest.mark.parametrize("fix", _FIXES, ids=["healthy", "fix-run-history", "fix-settings", "fix-schedule"])
+    def test_the_strip_never_repeats_the_fixs_destination(self, fix) -> None:
+        actions = home_status_mod.quick_actions(fix)
+        if fix is not None:
+            assert fix.dest_id not in {action.dest_id for action in actions}
+        assert len({action.dest_id for action in actions}) == len(actions)
+
+    def test_the_healthy_strip_leads_with_convert(self) -> None:
+        actions = home_status_mod.quick_actions(None)
+        assert [(a.label, a.dest_id, a.filled) for a in actions] == [
+            ("Convert now", "convert", True),
+            ("Run History", "run_history", False),
+            ("Settings", "setup", False),
+        ]
+
+    def test_every_fix_this_module_can_emit_is_covered(self) -> None:
+        """Reality-read: the parametrized fixes above must be the real ``FixAction`` shapes.
+
+        Hand-listed cases rot. Every fix destination ``derive_home_status`` can actually return
+        is swept here, so a new fix route cannot quietly acquire an untested tiering.
+        """
+        emitted = {status.fix.dest_id for status in _every_home_status() if status.fix is not None}
+        assert emitted <= {fix.dest_id for fix in TestQuickActions._FIXES if fix is not None}
+        assert emitted, "no fix CTA was produced at all — this sweep would be vacuous"
+
+    def test_the_strip_destinations_are_real_rail_destinations(self) -> None:
+        from src.ui_flet.nav import DESTINATIONS
+
+        known = {dest.id for dest in DESTINATIONS}
+        for action in home_status_mod.quick_actions(None):
+            assert action.dest_id in known, f"{action.dest_id} is not a rail destination"
+
+
+def _every_home_status() -> list[HomeStatus]:
+    """Every ``HomeStatus`` the module's rules can produce over a spread of inputs."""
+    missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None)
+    records = [
+        None,
+        [],
+        [_record()],
+        [_record(status="failed")],
+        [_record(sftp_attempted=True, sftp_ok=False)],
+        [_record(anomalies=["ANOMALY: x"])],
+        [_record(data_errors={"total": 2})],
+        [_record(timestamp=_OLD)],
+    ]
+    out: list[HomeStatus] = []
+    for schedule in (None, _live_schedule(), missing):
+        for recs in records:
+            out.append(derive_home_status(recs, _CONFIGURED, now=_NOW, schedule_status=schedule))
+    return out
 
 
 class TestPrivacyNoErrorLeak:

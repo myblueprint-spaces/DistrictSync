@@ -130,10 +130,11 @@ The Watcher's daily glance. One plain sentence answers *"is my roster syncing?"*
 
 - **Flow**
   1. Open the app; Home derives a single verdict from the newest run record.
-  2. Read the verdict: HEALTHY "Your roster is syncing" (with metric tiles — per-entity counts, the plain last-run time, an SFTP-delivered flag), or an amber/red WARNING/FAILED with a plain headline.
+  2. Read the verdict: HEALTHY "Your roster is syncing", whose detail carries the last-sync phrasing plus ONE roster-size number ("It included 4,812 students") — or an amber/red WARNING/FAILED with a plain headline. There are no metric tiles: the tile row retired at 0038 S7. Per-entity counts live in Run History for the rostering and myBlueprint+ entities; an attendance district's row count reaches exactly ONE place — this size sentence — since that table's columns exclude `StudentAttendance`, and it is shown only on the healthy verdict. An OPEN gap in `claugentic-ROADMAP.md`.
   3. If not healthy, follow the one fix button, which routes to the right place (Run History or Settings) and keeps the nav "you are here" highlight truthful.
-- **States** — **loading** (a fast synchronous local read), **empty** (no runs yet → a calm "No sync has run yet" WARNING, never red, with the scheduled time if registered; or the fresh-store "run history starts fresh with this update" note), **error** (the never-crash `ErrorCard` floor — never a stack trace; a Refresh re-checks in place). Degraded and stale reads render as calm WARNINGs, not red.
-- **What good feels like** — Calm and honest. "Your roster is syncing" is asserted only on a confirmed-LIVE schedule read-back; a local-only run reads "completed — files were written to your output folder"; "delivered to SpacesEDU" appears only when the upload actually succeeded. When a LIVE nightly task exists but no run arrived in the last ~26 hours (and a run was genuinely expected), Home says "We expected a nightly sync that didn't arrive" and routes to Run History. Faults are named by category only, never by echoing a raw error.
+  4. Below the verdict block sits a quick-action strip — the few places you actually go next (Convert / Run History / Settings), minus whichever one the fix button already offers.
+- **States** — **loading** (a fast synchronous local read), **empty** (no runs yet → a calm amber WARNING, never red: an install whose run store has never been created reads "No runs recorded yet" — a claim about the ledger, since a pre-v3.5.0 upgrader has no store either — naming the nightly time only when the schedule read-back CONFIRMS one (a merely-registered task whose read-back is unprobed or UNKNOWN names no time) and no mention of a nightly at all when nothing confirms or records one; an install whose store predates this update reads "Run history starts fresh here"), **error** (the never-crash `ErrorCard` floor — never a stack trace; a Refresh re-checks in place). Degraded and stale reads render as calm WARNINGs, not red.
+- **What good feels like** — Calm and honest. "Your roster is syncing" is asserted only on a confirmed-LIVE schedule read-back; a local-only run reads "completed — files were written to your output folder"; "delivered to SpacesEDU" appears only when the upload actually succeeded. The roster-size number is the one sanity check the verdict alone cannot give (a sync that quietly shrank to 12 students is "delivered" by every structured field on the record); it names the entity the config actually produces, and disappears rather than guessing — including when the run it would describe came from a district other than the one saved now. When a LIVE nightly task exists but no run arrived in the last ~26 hours (and a run was genuinely expected), Home says "We expected a nightly sync that didn't arrive" and routes to Run History. Faults are named by category only, never by echoing a raw error.
 
 ### Convert — run a sync now
 
@@ -532,22 +533,43 @@ The checkable projection of the Features above. All checks are `manual` — Dist
     ],
     "expect": [
       "Home leads with a single HEALTHY verdict and a plain headline before any numbers",
-      "metric tiles show per-entity output counts and a plain last-run time",
+      "there is no metric-tile row and no 'Latest roster' label anywhere on the surface",
+      "the verdict's detail carries exactly ONE roster-size number, opening 'It included ' and naming an entity the config that produced THAT RUN actually emits",
       "'delivered to SpacesEDU' appears only if the upload actually succeeded"
     ],
     "states": ["loading", "empty", "error"],
     "check": "manual"
   },
   {
+    "id": "AC-home-1b",
+    "feature": "Home health verdict",
+    "flow": [
+      "On an attendance-only or myBlueprint+-only district (e.g. sd51attendance, mbponly) with a recent successful run, open the app",
+      "Read the healthy verdict's detail line"
+    ],
+    "expect": [
+      "the size number names attendance rows / courses, whichever config produced THE RUN being described",
+      "it never reads '0 students' — the entity is chosen from the district's own config, never from the run record's zero-filled count keys",
+      "when the run on record was produced by a DIFFERENT district than the one saved now (a mapping switch, or a Convert run against a district that was never saved), the size sentence is absent — the counts and the entity list must come from the same district or no number is printed",
+      "on a district whose config cannot be read at all, the size sentence is simply absent (never a guessed number)"
+    ],
+    "states": ["empty"],
+    "check": "manual"
+  },
+  {
     "id": "AC-home-2",
     "feature": "Home health verdict",
     "flow": [
-      "On a configured install with no runs recorded yet, open the app",
+      "On a configured install whose run store has never recorded anything (a brand-new install, including one that has JUST finished the setup wizard), open the app",
       "Read the Home verdict"
     ],
     "expect": [
       "Home shows a calm WARNING (amber), never red",
-      "the copy reads that no sync has run yet, with the scheduled nightly time if one is registered",
+      "the headline reads 'No runs recorded yet' — a claim about the ledger, not about the world: an install upgrading from v3.4.0 or earlier has no run store either (history.db shipped in v3.5.0 and there is no backfill), and it may have been syncing nightly for months",
+      "the detail names the nightly time ONLY when the schedule read-back CONFIRMS a live task — a task this install merely recorded registering, whose read-back has not returned yet or came back UNKNOWN, names no time (it says the nightly sync will appear here, which is all that is known)",
+      "it mentions no nightly sync at all when nothing confirms OR records one — an admin who skipped the Schedule step is never told about automation they declined",
+      "no sentence calls the coming sync the FIRST one: an install upgrading from v3.4.0 or earlier has months of nightly syncs behind it and still arrives with no run store",
+      "it never says anything about 'an earlier version' — that sentence belongs only to an install that HAS a run store, which then reads 'Run history starts fresh here'; a store stamp is evidence a run was once recorded, so its absence cannot be read as proof of a first run",
       "no stack trace or raw error is shown"
     ],
     "states": ["empty"],
@@ -562,10 +584,26 @@ The checkable projection of the Features above. All checks are `manual` — Dist
     ],
     "expect": [
       "the fault is named by category (e.g. didn't reach SpacesEDU / ETL failed), never a raw error string",
-      "a single fix button routes to the right surface (Run History or Settings)",
+      "exactly one FILLED button exists on the screen and it is the fix; the quick-action strip below is outlined and drops whichever destination the fix already offers",
+      "the fix routes to the right surface (Run History or Settings)",
       "the nav 'you are here' highlight follows the route so orientation is never lost"
     ],
     "states": ["error"],
+    "check": "manual"
+  },
+  {
+    "id": "AC-home-5",
+    "feature": "Home health verdict",
+    "flow": [
+      "Open Home on a healthy install, then on a faulted one",
+      "Count the filled (solid blue) buttons on each"
+    ],
+    "expect": [
+      "exactly one filled button in BOTH states — 'Convert now' when there is nothing to fix, the fix CTA when there is",
+      "every other action on the surface is outlined or text-tier, including the identity card's Save",
+      "the same three destinations are reachable in both states (Convert / Run History / Settings)"
+    ],
+    "states": [],
     "check": "manual"
   },
   {

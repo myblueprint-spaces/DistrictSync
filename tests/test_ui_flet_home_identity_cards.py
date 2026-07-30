@@ -743,6 +743,32 @@ class TestTheMountIsCheapAndTheCardIsStable:
         _answer(view, "admin@sd48.bc.ca")
         assert calls == [1], "the resolution never consulted the domain index at all"
 
+    def test_the_S7_size_clause_reads_ONE_config_not_the_whole_catalog(self, page, monkeypatch) -> None:
+        """0038 S7 kept the same promise while adding a config read to Home's mount.
+
+        The roster-size clause needs the ACTIVE district's produced entities. That is one
+        config (memoised per session), resolved ONCE outside ``_render``; going through the
+        eleven-YAML ``catalog()`` build here would re-introduce exactly the cost the row above
+        exists to refuse — and the schedule probe re-derives the control list, so a per-render
+        resolution would pay it repeatedly.
+        """
+        from src.ui_flet import mapping_catalog
+
+        catalog_calls: list[int] = []
+        entity_calls: list[str] = []
+        monkeypatch.setattr(mapping_catalog, "catalog", lambda **_kw: catalog_calls.append(1) or ())
+        real = home.active_output_entities
+        monkeypatch.setattr(
+            home,
+            "active_output_entities",
+            lambda sis, **kw: (entity_calls.append(sis), real(sis, **kw))[1],
+        )
+
+        _home(page, _cfg(sis_type="sd48myedbc"), monkeypatch)
+
+        assert catalog_calls == [], "mounting Home built the eleven-config catalog"
+        assert entity_calls == ["sd48myedbc"], f"expected ONE per-mount resolution, got {entity_calls}"
+
     def test_a_half_typed_address_survives_the_schedule_read_back(self, monkeypatch) -> None:
         """The card is built ONCE, outside ``_render``.
 

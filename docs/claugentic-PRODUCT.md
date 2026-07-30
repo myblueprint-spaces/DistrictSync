@@ -140,15 +140,33 @@ are pinned verbatim against `home_status` by `tests/test_ui_flet_band_copy_parit
   exactly the per-mount divergence the rendered-text/label equality test between the two mounts
   exists to catch: a rail item and a hosted wizard that drift apart are two wizards.
 - Otherwise Home derives a single **verdict** from the newest run record (`derive_home_status`): a
-  HEALTHY "Your roster is syncing" with metric tiles (per-entity output counts + the plain last-run
-  time + an SFTP-delivered flag), or an amber/red WARNING/FAILED with a plain headline and a "Check
-  Run History" fix button.
+  HEALTHY "Your roster is syncing" whose detail names when the sync landed and how big the roster
+  was ("It included 4,812 students"), or an amber/red WARNING/FAILED with a plain headline and a
+  routed fix button. **The metric-tile row retired at 0038 S7.** It only ever rendered on the happy
+  path, and the one thing it carried that the verdict does not — *does this roster look the right
+  size?* — moved into the healthy line. The size number names whatever entity the district's own
+  config actually produces (students, attendance rows, courses), because the run record writes every
+  entity count with a defaulted zero and cannot tell "this config doesn't emit Students" from "the
+  roster collapsed"; when that answer is unknowable the sentence is simply absent — including when
+  the run on record came from a DIFFERENT district than the one saved now (switching mappings does
+  not re-register the nightly task, and Convert can run a district it never saved, so the two
+  legitimately diverge). **Per-entity counts move to Run History for the rostering and
+  myBlueprint+ entities. An attendance district's row count reaches exactly ONE place — the healthy
+  size sentence above** — because that table's columns exclude `StudentAttendance` by design; and
+  because the sentence rides the healthy verdict only, a warning or failed attendance run shows its
+  size nowhere. That is an OPEN gap tracked in `claugentic-ROADMAP.md`, not an accepted residual.
+- Below the verdict block (and the identity cards) sits a **quick-action strip**: Convert / Run
+  History / Settings, minus whichever destination the fix button already offers. **Exactly one
+  filled button exists in every state** — the fix when there is a fault, "Convert now" when there is
+  not. Before S7 the healthy dashboard had none at all.
 
 States:
-- **Loading** — reads the run log synchronously; fast.
-- **Empty** — no runs yet: a calm "No sync has run yet" WARNING (never red), with the scheduled nightly
-  time if one is registered.
-- **Degraded** — the log couldn't be read: "Sync status unavailable" WARNING, reassuring the nightly
+- **Loading** — reads the run store synchronously; fast.
+- **Empty (nothing recorded)** — a calm "No runs recorded yet" WARNING (never red), naming the
+  nightly time only when the read-back CONFIRMS a live task (a merely-registered one names no
+  time), and naming no nightly at all when nothing confirms or records one.
+- **Empty (store predates this update)** — "Run history starts fresh here" (see Journey 2).
+- **Degraded** — the store couldn't be read: "Sync status unavailable" WARNING, reassuring the nightly
   sync may still be running.
 - **Stale** — a clean success that's simply too old (>~1.5 nightly cycles): "No recent sync" WARNING.
 - **Error** — the never-crash floor renders an `ErrorCard`, never a trace.
@@ -300,12 +318,25 @@ Open → read one verdict → done. Home derives a single HEALTHY / WARNING / FA
 newest run record.
 
 - **Loading** — a synchronous local read; fast, no spinner needed.
-- **Empty (genuinely new)** — a calm "no sync has run yet", with the scheduled time if one is
-  registered.
-- **Empty (fresh store, existing install)** — *"Run history starts fresh with this update — earlier
-  runs aren't shown"*, never "no sync has run yet" (the store starts clean at this update; there is no
-  backfill).
-- **Healthy** — the verdict + metric tiles, greeting the *current* district.
+- **Empty (nothing recorded)** — a calm *"No runs recorded yet"*, naming the nightly time only when
+  the read-back CONFIRMS a live task. **This includes an install that has just finished the wizard.** Until
+  0038 S7 that admin was shown the upgrader's copy below, because the discriminator OR-ed in "has
+  finished setup" — a flag the wizard flips on save — so a brand-new install was told about "an
+  earlier version" it had never had, at the one moment it had just set the product up.
+  **The headline speaks about the LEDGER, not the world**, and deliberately so: `history.db`
+  shipped in v3.5.0 with no backfill, so an install upgrading from v3.4.0 or earlier lands here
+  after months of nightly syncing, so the flat assertion this replaced was false for it. For
+  the same reason nothing in this state NAMES a nightly sync unless one is positively signalled
+  (a confirmed-live read-back, or this install's own record that it registered one) — an admin who
+  skipped the Schedule step must not be told about automation they declined.
+- **Empty (fresh store, existing install)** — *"Run history starts fresh here"*, never a bare "no
+  runs recorded" (the store starts clean at this update; there is no backfill). The discriminator is the
+  store's own birth stamp — the only artefact that is evidence a run was once recorded — and the
+  claim stays conditioned ("if you used an earlier version"), because a re-created store cannot
+  prove which build wrote it. Home and Run History read that rule from ONE shared predicate, so the
+  two surfaces cannot describe the same install differently.
+- **Healthy** — the verdict, its one roster-size number, and the quick-action strip, greeting the
+  *current* district.
 - **Warning / failed** — the fault named by category + a fix path that routes and keeps the nav
   highlight truthful.
 - **Degraded / error** — "sync status unavailable" or a calm ErrorCard, never a stack trace; a Refresh
@@ -417,11 +448,11 @@ nothing once answered: a front door, not a turnstile.
 itself (one shared component, one derived-from-real-state flow — the Setup rail item mounts the same
 wizard, so a hop between them resumes in the same place); the launch selection is Home in every
 state. Once complete, Home is **one plain-language verdict line plus a few quick actions** — the
-metric-tile dashboard retires. The verdict derivation already encodes every fault category (failed /
-didn't reach SpacesEDU / anomaly / data warnings / missed run / stale / paused / schedule gone) with
-a routed fix, and the per-run numbers live in Run History and Convert; the one thing the tiles
-carried that the verdict does not — a roster-size sanity check — is folded into the healthy detail
-line. Home's remaining job is
+metric-tile dashboard retired at 0038 S7. The verdict derivation already encodes every fault category
+(failed / didn't reach SpacesEDU / anomaly / data warnings / missed run / stale / paused / schedule
+gone) with a routed fix, and the per-run numbers live in Run History and Convert; the one thing the
+tiles carried that the verdict does not — a roster-size sanity check — is folded into the healthy
+detail line. Home's remaining job is
 unchanged and absolute: answer *"is my roster syncing?"* in one sentence, and *"will it run again?"*
 where a schedule can be confirmed.
 

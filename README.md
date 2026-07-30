@@ -90,7 +90,7 @@ python -m src.main
 ```
 
 **Screens:**
-- **Home** — The sync-health verdict: one plain answer to "is my roster syncing?", with per-entity counts and the last run time
+- **Home** — The sync-health verdict: one plain answer to "is my roster syncing?", with the last run time and one roster-size number (per-entity counts live in Run History)
 - **Convert** — Pick GDE files and run a conversion on demand
 - **Run History** — A read-only record of past runs (nightly, manual, and command-line)
 - **Setup** — First run walks a 5-step wizard (district → folders → delivery → schedule); afterwards the same screen becomes Settings

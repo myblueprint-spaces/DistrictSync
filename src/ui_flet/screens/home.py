@@ -11,12 +11,22 @@ Three-way dispatch (mirrors the IA model; branch (a) is the first-run surface):
     wizard itself** (0038 S6), under one state-aware welcome line. There is no longer a
     hero pointing at another rail item: the old ``screens/onboarding.py`` was a door into
     the room you were standing in, so it retired and its CTA's destination moved here.
-  * **(b) configured + healthy** — a green ``HealthVerdictBanner`` + light metric tiles
-    (entity counts, a PLAIN last-run time, SFTP delivered ✓) + the friendly district
-    greeting.
+  * **(b) configured + healthy** — a green ``HealthVerdictBanner`` whose detail carries one
+    roster-SIZE number, then the quick-action strip. The metric-tile row retired at 0038 S7:
+    it only ever rendered on the happy path, and the one thing it carried that the verdict
+    does not — "does this roster look the right size?" — folded into the healthy line
+    (``home_status.size_clause``). Per-entity counts live in Run History for the rostering +
+    myBlueprint+ entities; an attendance district's row count reaches exactly ONE surface — that
+    healthy size clause — because Run History's columns exclude ``StudentAttendance``, and the
+    clause is HEALTHY-branch only. An OPEN item in ``docs/claugentic-ROADMAP.md``.
   * **(c) configured + broken / attention / empty / unavailable** — an amber/red banner
     NAMING the fault (from the pure derivation, never a raw ``error``/path) + a concrete
-    fix-path CTA (``status.fix``).
+    fix-path CTA (``status.fix``), then the same strip minus the destination that CTA owns.
+
+**One filled primary, in EVERY dashboard state** (Direction B): the fix CTA when there is a
+fault, "Convert now" when there is not — decided by the pure ``home_status.quick_actions``,
+never by this file. Both were previously under-satisfied: the healthy dashboard carried NO
+filled action at all.
 
 Built as a **callback-driven factory** — ``build_home`` owns NO navigation or lifecycle
 (``on_navigate(dest_id)`` is injected by the shell = ``select_by_id``), mirroring
@@ -64,10 +74,9 @@ from src.history.store import read_run_records, store_meta
 from src.scheduler import get_scheduler
 from src.ui_flet import about, components, nav, tokens
 from src.ui_flet.home_status import (
-    ENTITY_LABELS,
     FixAction,
-    HomeMetrics,
     derive_home_status,
+    quick_actions,
     sync_window_paused,
     welcome_band,
 )
@@ -79,7 +88,7 @@ from src.ui_flet.identity_gate import (
     needs_identity_prompt,
     unmapped_sd_number,
 )
-from src.ui_flet.mapping_catalog import district_domain_index
+from src.ui_flet.mapping_catalog import active_output_entities, district_domain_index
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.screens import identity as identity_screen
 from src.ui_flet.screens import setup as setup_screen
@@ -192,21 +201,27 @@ SETUP_UNAVAILABLE_DETAIL = "Nothing has been changed. Close DistrictSync and ope
 SETUP_UNAVAILABLE_HELP_LABEL = "Get help"
 
 
-def _metric_tiles_row(metrics: HomeMetrics) -> ft.Control:
-    """The light metric-tiles row: entity counts + plain last-run time + SFTP ✓.
+def _quick_actions_row(fix: FixAction | None, on_navigate: Callable[[str], None]) -> ft.Control | None:
+    """Slim Home's quick-action strip (0038 S7) — the few places an admin actually goes next.
 
-    Renders EXACTLY the entity counts present in ``metrics.entity_counts`` (the pure
-    derivation already trimmed it to the 5 rostering tiles + myBlueprint+ only-when-nonzero
-    — this view never adds a zero-tile or ``StudentAttendance``).
+    Replaces the metric-tile row that stood here. The TIERING is decided by the pure
+    ``home_status.quick_actions`` (which action is filled, and which destination the verdict's
+    fix CTA already owns); this function is assembly only. Exactly one filled button exists on
+    the surface in every state — the fix when there is a fault, "Convert now" when there is
+    not — so the design system's one-primary rule holds without the view having to reason
+    about it.
+
+    The ``dest_id`` is bound as a DEFAULT ARGUMENT, not captured from the loop variable: a
+    late-binding closure here would wire every button to the last destination in the strip.
     """
-    tiles: list[ft.Control] = [
-        components.metric_tile(ENTITY_LABELS.get(name, name), str(count))
-        for name, count in metrics.entity_counts.items()
-    ]
-    tiles.append(components.metric_tile("Last run", metrics.last_run_display))
-    if metrics.sftp_delivered:
-        tiles.append(components.metric_tile("Delivery", "Delivered to SpacesEDU ✓"))
-    return ft.Row(spacing=16, wrap=True, controls=tiles)
+    actions = quick_actions(fix)
+    if not actions:
+        return None
+    controls: list[ft.Control] = []
+    for action in actions:
+        factory = components.primary_button if action.filled else components.secondary_button
+        controls.append(factory(action.label, lambda _e, dest=action.dest_id: on_navigate(dest)))
+    return ft.Row(spacing=tokens.space_md, wrap=True, controls=controls)
 
 
 def _fix_button(fix: FixAction, on_navigate: Callable[[str], None]) -> ft.Control:
@@ -838,14 +853,27 @@ def _dashboard(
     # admin was halfway through typing when the probe returned.
     identity_cards = _identity_cards(page, app_config, on_navigate)
 
+    # 0038 S7: what THIS district's config actually emits — the only honest way to know
+    # whether "0 students" would mean "the roster collapsed" (an alarm worth raising) or
+    # "this config doesn't emit Students at all" (a lie). Resolved ONCE per mount, outside
+    # ``_render``, and memoised per session by ``mapping_catalog``; it reads ONE config, never
+    # the eleven-YAML catalog the S4b cost note keeps off this path.
+    output_entities = active_output_entities(app_config.sis_type)
+
     container = ft.Column(spacing=22)
 
     def _render(schedule_status: ScheduleStatus | None) -> None:
         status = derive_home_status(
-            records, app_config, store_created_at=store_created_at, schedule_status=schedule_status
+            records,
+            app_config,
+            store_created_at=store_created_at,
+            schedule_status=schedule_status,
+            output_entities=output_entities,
         )
         # Verdict-first (Direction B): a slim page header, then the health band as the FIRST
-        # content element, then the detail (fix / metrics / the clean-schedule confirmation card).
+        # content element, then the detail (fix / identity cards / quick actions / the
+        # clean-schedule confirmation card). ``status.metrics`` is deliberately NOT read — the
+        # tile row it fed retired at 0038 S7.
         controls: list[ft.Control] = [
             _header(app_config, on_refresh),
             components.HealthVerdictBanner(status.verdict, headline=status.headline, detail=status.detail),
@@ -853,16 +881,20 @@ def _dashboard(
         if status.fix is not None:
             controls.append(_fix_button(status.fix, on_navigate))
         # 0038 S4b: the identity cards ride HERE — anchored to the verdict block, never to
-        # the tile row below, so S7's subtraction of those tiles cannot move them. They sit
-        # immediately after the verdict's own fix CTA rather than between the two: a fault
-        # and its fix are one thought, and OUR ask may not be wedged into the middle of it.
-        # Below the verdict either way — the verdict is why the admin opened the app; this
-        # is what we would like to know.
+        # the tile row that used to sit below, which is why S7's subtraction of those tiles
+        # did not move them. They sit immediately after the verdict's own fix CTA rather than
+        # between the two: a fault and its fix are one thought, and OUR ask may not be wedged
+        # into the middle of it. Below the verdict either way — the verdict is why the admin
+        # opened the app; this is what we would like to know.
         if identity_cards is not None:
             controls.append(identity_cards)
-        if status.metrics is not None:
-            controls.append(components.section_label("Latest roster"))
-            controls.append(_metric_tiles_row(status.metrics))
+        # 0038 S7: the quick-action strip replaces the "Latest roster" tile row. It sits BELOW
+        # the identity cards so the verdict / fix / ask block stays one uninterrupted thought;
+        # the roster-size number the tiles used to carry now rides the healthy verdict's own
+        # detail line (``home_status.size_clause``).
+        quick_row = _quick_actions_row(status.fix, on_navigate)
+        if quick_row is not None:
+            controls.append(quick_row)
         # The clean-schedule row-card surfaces the LIVE read-back only — an attention state is
         # already named above (as the dominant WARNING band + fix button, or — when the latest
         # record is FAILED and outranks it, W3-B — as the secondary clause on the FAILED band),

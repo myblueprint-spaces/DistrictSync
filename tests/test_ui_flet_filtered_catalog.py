@@ -519,6 +519,7 @@ class TestDisambiguatedLabels:
             ConfigSummary(
                 sis_type=sis,
                 district_name=name,
+                output_entities=(),
                 output_labels=(),
                 source_file_count=0,
                 loaded_ok=True,
