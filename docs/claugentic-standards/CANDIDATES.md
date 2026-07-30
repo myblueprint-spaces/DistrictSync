@@ -188,6 +188,58 @@ Both were fixed on the ASSERTION side and re-probed RED (per the S2b lesson: whe
 goes green, fix the assertion, not the probe). Beneficiary roles: `implementer`,
 `lens-reviewer` (testing), `synthesizer-gate`.
 
+## verify — "A correction that APPENDS leaves the falsehood standing; a reroute inherits the destination's claims"  [staged 2026-07-30, plan 0038 S6 discharge round]
+
+S6 needed TWO adversarial rounds. The Stage-7 panel found three blockers; the fix batch for them
+introduced two more, and only a second panel — a *discharge check* re-reading the CURRENT text
+rather than the diff hunk — caught them. Four rules, all cheap, all earned:
+
+- **Correct the sentence that is wrong, do not annotate around it.** Told that a `nav.py` docstring
+  claim was false, the fix appended the correct fact ten lines below and left the false clause in
+  place: one docstring asserting P and NOT-P, with a reader of the first half getting the falsehood.
+  A review naming a FALSE sentence is discharged by deleting or rewriting *that* sentence.
+- **Verify the commit message like any other published claim.** The same batch listed the untouched
+  line among the claims "corrected". A commit message is a durable assertion about what was done.
+- **A reroute inherits the destination's claims.** Closing "don't tell an admin their run history is
+  safe when the store would not open" by routing that case to an EXISTING branch imported that
+  branch's copy — "everything you've already entered is safe" — for an install the code had just
+  positively checked had entered nothing. When a fix moves a case rather than adding one, re-check
+  the destination against the FULL cross-product of its inputs. Stating a rule as an invariant
+  ("never name an artefact you know is absent") means sweeping every branch, not the one under repair.
+- **A discharge check is not the same review again.** Re-read the tree at HEAD, sweep the repo for
+  the whole defect CLASS (the fix batch found three more stale quotes than the panel had listed),
+  and mark each obligation DISCHARGED / PARTIAL / NOT DISCHARGED with evidence. Two of the four
+  lenses independently re-ran the perturbations rather than trusting the reported numbers.
+
+Also: the panel was wrong twice and the implementer was right both times (a control-flow premise,
+and a proposed `finally` that would have deleted a double-press guard). A fix batch must be free to
+refute an item with evidence rather than apply a bad fix — and the verdict should adjudicate, not
+rubber-stamp. Beneficiary roles: `synthesizer-gate`, `honesty-reviewer`, `implementer`.
+
+## workflow — "Green locally is not green; and perturbing reviewers must not share a worktree"  [staged 2026-07-30, plan 0038 S6]
+
+- **`main` was RED for three consecutive pushes and no slice noticed.** A test added in S4b failed on
+  every Linux CI run — the code path it exercised returns early on a platform without OS scheduler
+  read-back, so the row tripped its own vacuity guard. S4b and S5 both merged over it, because every
+  slice ran its gates on Windows, read "all green", and treated the multi-OS gate as a formality.
+  **Reading `gh pr checks` output is a REQUIRED step of Land, not a habit** — and a "last CI run on
+  `main` is not green" signal belongs in `doctor`. Corollary: a platform-divergent branch deserves a
+  capability seam so it is exercised on every OS, not a `skipif` that hides the gap where it matters.
+- **Isolate any reviewer that perturbs source.** A four-lens panel was pointed at ONE worktree and
+  told it was read-only, but three lenses needed perturb-and-restore to do their job; one ran
+  `git checkout --` over another's in-flight probe. That can restore a file mid-perturbation and
+  turn a green suite into a FALSE DISCHARGE. Give perturbing agents their own copy
+  (`git archive HEAD` into scratch, or a worktree) — a brief asking for restraint does not provide
+  isolation when the task requires mutation. One verifier did this unprompted; its results were the
+  trustworthy ones.
+- **The scratch-profile rule covers ad-hoc scripts, not just the app.** A lens ran a debug script
+  from outside `tests/`, so the autouse isolation fixture did not apply and a store read resolved
+  against the REAL user profile, printing real run records into tool output. The pytest fixture only
+  protects code run under pytest from inside `tests/`; any process importing the profile/store
+  modules needs the env override. Read-only here, but it is a privacy seam.
+
+Beneficiary roles: orchestrator (Land sequence + panel design), `doctor`, `lens-reviewer`.
+
 ## reliability — "Gate destructive cleanup on its subject existing; latch success AFTER the risky work"  [staged 2026-07-29, plan 0038 S4a]
 
 - A destructive side-step (purging recovery snapshots on an erasure path) must be gated on the
