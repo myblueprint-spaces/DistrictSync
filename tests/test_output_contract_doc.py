@@ -55,20 +55,40 @@ _CONFIRMED_STAMP_RE = re.compile(r"confirmed \d{4}-\d{2}-\d{2}")
 #: reader (front-matter status row).
 _NO_DOC_WIDE_STAMP_SENTENCE = "there is no doc-wide confirmation stamp"
 
-#: Today's stamp population, pinned by count: the legend row that DEFINES the
-#: value, plus the two owner-confirmed Students rows. Anything else is a stamp
-#: that escaped the two-row scope.
-_EXPECTED_STAMP_COUNT = 3
+#: Today's stamp population, pinned by count and ENUMERATED here so a bump has to
+#: name what it added:
+#:   1. the legend row that DEFINES the value
+#:   2. Students.EnrollStatus        (owner, 2026-07-27)
+#:   3. Students.SchoolCode          (owner, 2026-07-27)
+#:   4. attendance date format — the ISO default row      (owner, 2026-07-30, Q1a)
+#:   5. attendance date format — the base config comment  (owner, 2026-07-30, Q1a)
+#: Rows 4-5 sit in the attendance-knob table, which is NOT one of the anchored
+#: per-entity tables, so ``test_the_confirmed_stamp_appears_on_exactly_the_two_owner_confirmed_columns``
+#: (which parses only those) stays at the two Students columns. This count is the
+#: doc-WIDE sweep and is the only place rows 4-5 are visible — raise it only with
+#: an owner confirmation behind it, never to make an edit pass.
+_EXPECTED_STAMP_COUNT = 5
 
-#: The three open owner questions, held VERBATIM. Marker-only matching (e.g.
+#: The open owner questions, held VERBATIM. Marker-only matching (e.g.
 #: `"**Q1 — " in text`) let the question BODY be rewritten while the test stayed
 #: green — the exact failure "verbatim" exists to prevent.
-Q1_TEXT = (
-    "**Q1 — attendance category vocabulary + date format: what is the live importer's verdict per value?**\n"
+#:
+#: **Q1 was RETIRED on 2026-07-30 and replaced by Q1b.** The original asked two
+#: things at once — date format and category vocabulary. The owner settled the
+#: date half (Q1a: ISO is REQUIRED; `dd-MMM-yyyy` is NOT accepted), so the rows it
+#: governed moved to `confirmed`/`REFUTED` and the question narrowed to the half
+#: still open. Retiring it here rather than leaving Q1_TEXT unmatched is the
+#: deliberate retirement this test's failure message asks for.
+Q1B_TEXT = (
+    "**Q1b — attendance category vocabulary: does the live importer IGNORE an unaccepted code, or "
+    "REJECT the file?**\n"
     "> The published Docs list the categories `A`, `AD`, `A-E`, `A-E OffSite`, `AL`, `AL-E`, `L`, `L AUTH`, "
-    "`L-E` and document `DD-MMM-YYYY` dates. DistrictSync derives `A`, `A-E`, `L`, `L-E` for the K-7 daily "
-    "band and emits ISO `yyyy-MM-dd`. Which of the Docs' values does the live importer actually accept today, "
-    "and is ISO the required date shape (as the base config comment asserts) or merely one accepted shape?"
+    "`L-E`. DistrictSync DERIVES only `A`, `A-E`, `L`, `L-E` for the K-7 daily band — that vocabulary is "
+    "ours to promise — and PASSES THROUGH the district's own codes unfiltered for the 8-12 period band, "
+    "including values the Docs never list (`OffSite`, `ISS`, …). That pass-through rests on an "
+    "understanding recorded 2026-06-19 and never confirmed: that SpacesEDU ignores non-accepted codes "
+    "rather than rejecting the file. Which of the Docs' values does the live importer actually accept "
+    "today, and what does it do with one it does not — skip the row, or refuse the whole feed?"
 )
 Q2_TEXT = (
     "**Q2 — CourseInfo/StudentCourses header spellings: which spelling does the live importer canonically "
@@ -91,7 +111,16 @@ Q3_TEXT = (
 #: line-endings section links to it rather than restating it). Pinning the COUNT
 #: as well as the text stops a silent de-duplication that would strip a question
 #: from the section a reader actually reaches.
-_EXPECTED_QUESTION_COUNTS = {"Q1": (Q1_TEXT, 2), "Q2": (Q2_TEXT, 2), "Q3": (Q3_TEXT, 1)}
+_EXPECTED_QUESTION_COUNTS = {"Q1b": (Q1B_TEXT, 2), "Q2": (Q2_TEXT, 2), "Q3": (Q3_TEXT, 1)}
+
+#: The RETIRED question text. Q1a was answered, so the two-part Q1 must not still
+#: be posed anywhere — a doc that keeps asking a question the owner has settled
+#: sends the next reader to re-litigate it. Pinned as an ABSENCE, with the
+#: presence pin above as its positive twin (if the section were deleted wholesale,
+#: this test would pass vacuously while the Q1b count test went red).
+Q1_RETIRED_TEXT = (
+    "**Q1 — attendance category vocabulary + date format: what is the live importer's verdict per value?**"
+)
 
 
 def _doc_text() -> str:
@@ -336,6 +365,23 @@ def test_the_open_owner_questions_are_stated_verbatim(label):
         f"{expected_count}. The question text is pinned in this module — if {label} was ANSWERED, "
         f"retire it deliberately (update the rows it governs, then this constant); if it was "
         f"reworded, the doc and this pin have diverged."
+    )
+
+
+def test_the_answered_question_is_no_longer_posed():
+    """Q1a was settled (owner, 2026-07-30), so the two-part Q1 must not survive.
+
+    A doc that keeps asking a question its owner has answered sends the next
+    reader to re-litigate a closed decision — the same defect class as a stale
+    `pending` row, pointing the other way. The positive twin is the Q1b count
+    pin above: delete the section wholesale and this test still passes, but that
+    one goes red.
+    """
+    assert Q1_RETIRED_TEXT not in _doc_text(), (
+        f"{ORDER_AUTHORITY} still poses the retired two-part Q1. Its date half was answered on "
+        f"2026-07-30 (ISO is REQUIRED; `dd-MMM-yyyy` is NOT accepted) and the open half is now Q1b. "
+        f"If Q1a has been REOPENED, restore the question and move its rows back to pending — but do "
+        f"not leave both the answer and the question standing."
     )
 
 
