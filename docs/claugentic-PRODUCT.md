@@ -109,11 +109,36 @@ borrowed from stale config.
 
 ### Home — the sync-health dashboard
 
-The landing surface answers *"is my roster syncing?"* three ways:
+The landing surface answers *"is my roster syncing?"* three ways (the band literals quoted below
+are pinned verbatim against `home_status` by `tests/test_ui_flet_band_copy_parity.py`):
 
-- If the install isn't set up yet (`needs_setup`), Home routes to **onboarding** — a calm first-run
-  welcome that previews what's ahead in one subdued line (the four input steps + a ~3-minute
-  estimate) and points at Setup (one front door — no separate welcome screen).
+- If the install isn't set up yet (`needs_setup`), Home **IS the setup wizard** (0038 S6) — one calm
+  welcome line above the first step, right there. The line knows what this install actually has, in
+  **four** states, because each of the others would have made a promise we cannot keep. Every
+  variant names only an artefact it has positively checked is there — that rule is what decides the
+  count, and it cuts both ways (settings as well as run history):
+  - brand-new — "Welcome — this takes about 3 minutes."
+  - a readable run history — "Let's finish setting up — your files and run history are safe."
+  - **saved choices but no runs**, *or* saved choices beside a run store that exists and would not
+    open — "Let's finish setting up — everything you've already entered is safe." This is the
+    variant a real abandoned-wizard upgrader hits most.
+  - **nothing entered AND a run store we could not open** — "Let's finish setting up." Not new (the
+    store's existence is a checked fact), but there is nothing on disk we are entitled to name, so
+    the line reassures about nothing at all. Rare, and reachable: a readable-but-blank `config.json`
+    — which the launch page's identity-only save creates — beside a damaged `history.db`.
+
+  The line never carries a step count — the wizard's own "Step 1 of 5" indicator owns that, and two
+  numbers on one screen contradict each other the moment either moves. The old hero that previewed
+  the steps and pointed at the Setup tab is retired: a front door into the room you were standing in.
+
+  **Rule — the band belongs to the LANDING, not to the wizard.** The Setup rail item runs the same
+  wizard and shows **no** welcome line, and that asymmetry is the design, not an omission: Home is
+  where the admin is *put*, Setup is where they *chose to go*, and only the first needs saying why
+  a setup form is in front of them. The reassurance half ("your run history is safe") is a property
+  of the STATE rather than of the arrival, so if parity is ever wanted it belongs **inside the
+  wizard's first step, once** — never as a second band. A band bolted onto the Setup mount alone is
+  exactly the per-mount divergence the rendered-text/label equality test between the two mounts
+  exists to catch: a rail item and a hosted wizard that drift apart are two wizards.
 - Otherwise Home derives a single **verdict** from the newest run record (`derive_home_status`): a
   HEALTHY "Your roster is syncing" with metric tiles (per-entity output counts + the plain last-run
   time + an SFTP-delivered flag), or an amber/red WARNING/FAILED with a plain headline and a "Check
@@ -257,7 +282,7 @@ success isn't gated on having a Windows password and live SFTP credentials in ha
 precedes Schedule so the nightly task's `--sftp` flag is baked from a committed delivery choice at
 registration time.)
 
-- **Empty / start** — one front door (Home's onboarding hero → the wizard), never three competing
+- **Empty / start** — one front door: Home IS the wizard while unconfigured, never three competing
   entrances.
 - **Per step** — a valid/invalid inline state; the step advances only when its own gate is satisfied.
 - **Schedule (async)** — a UAC prompt in flight ("waiting for the Windows permission prompt…"),
@@ -331,8 +356,9 @@ slice lands.
   and live SFTP credentials being at hand.
 - **Explicit district everywhere.** No silent default; "Choose your district" until chosen;
   auto-select only when exactly one config exists; Convert refuses to run without an explicit choice.
-- **One front door.** While unconfigured, Home's onboarding hero is the only entrance to setup — no
-  competing Setup-tab / Setup-led-nav doors.
+- **One front door.** While unconfigured, Home HOSTS the wizard — so the front door and the work are
+  the same surface. The Setup rail item mounts that same wizard (one wizard, two ways in, resuming
+  from the same real state), never a second, differently-worded entrance.
 - **Stable nav order.** The rail order is fixed (spatial memory is protected); a newcomer is guided by
   the initial selection + a "needs attention" badge, never by reordering the rail.
 - **Output visible at the view layer.** The resolved output folder is shown before and after a

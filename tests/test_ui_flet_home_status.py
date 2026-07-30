@@ -16,16 +16,24 @@ import pytest
 
 from src.config.app_config import AppConfig
 from src.scheduler.windows import ScheduleReadback
+from src.ui_flet import home_status as home_status_mod
 from src.ui_flet.home_status import (
     MISSED_RUN_AFTER_HOURS,
     STALE_AFTER_HOURS,
+    WELCOME_FRESH,
+    WELCOME_RESUME_PLAIN,
+    WELCOME_RESUME_SETTINGS_ONLY,
+    WELCOME_RESUME_WITH_HISTORY,
     HomeStatus,
     LatestReason,
     classify_latest_reason,
     derive_home_status,
+    has_prior_runs,
     is_delivery_only,
     is_stale,
     verdict_for_reason,
+    welcome_band,
+    welcome_band_line,
 )
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus, derive_schedule_status
 from src.ui_flet.verdict import Verdict
@@ -1076,3 +1084,202 @@ def test_derivation_is_total_over_all_inputs(records: list[dict] | None) -> None
     assert isinstance(status, HomeStatus)
     assert status.verdict in Verdict
     assert status.headline and status.detail
+
+
+# --------------------------------------------------------------------------- #
+# The first-run welcome band (0038 S6) — the line above the hosted wizard.     #
+#                                                                             #
+# Written BEFORE the implementation (the charter's recorded approach for a     #
+# pure predicate whose semantics the spec DECIDES), so every judgment call —   #
+# what counts as "history", which of two reassurances is honest, what an       #
+# UNREADABLE store means — is stated as a decision rather than described from  #
+# the code afterwards.                                                         #
+# --------------------------------------------------------------------------- #
+class TestPriorRunsSignal:
+    """What counts as "this install has been running" — the band's one input."""
+
+    def test_no_records_and_no_store_is_a_fresh_install(self) -> None:
+        assert has_prior_runs([], store_created_at=None) is False
+
+    def test_a_record_is_history(self) -> None:
+        assert has_prior_runs([_record()], store_created_at=None) is True
+
+    def test_a_store_that_exists_but_holds_nothing_is_still_history(self) -> None:
+        """``write_run_record`` is the store's sole creator, so a birth stamp means a run
+        was recorded at some point — even if the rows were later lost to a quarantine."""
+        assert has_prior_runs([], store_created_at="2026-01-05T03:00:00") is True
+
+    def test_an_UNREADABLE_store_is_treated_as_history_never_as_fresh(self) -> None:
+        """``read_run_records`` returns ``None`` when a store file exists but could not be
+        read. A file we failed to read is a CHECKED fact that this install is not new —
+        the same honesty ``settings_unreadable`` applies to the settings file. Saying
+        "Welcome" over it is the one direction that can be wrong about a year of runs."""
+        assert has_prior_runs(None, store_created_at=None) is True
+
+
+def _all_band_lines() -> tuple[str, ...]:
+    """Every welcome-band constant the module DEFINES, read off the module itself.
+
+    A reality-read rather than a hand-kept list: the two copy sweeps below must cover a
+    variant the moment it exists, and this file has already shipped one they missed.
+    """
+    return tuple(
+        value for name, value in vars(home_status_mod).items() if name.startswith("WELCOME_") and isinstance(value, str)
+    )
+
+
+class TestWelcomeBandLine:
+    """Fresh installs are welcomed; running ones are never greeted as new."""
+
+    def test_a_genuinely_fresh_install_is_welcomed(self) -> None:
+        line = welcome_band_line(has_run_history=False, has_saved_choices=False, run_history_readable=True)
+        assert line == WELCOME_FRESH
+        assert "Welcome" in line
+
+    def test_run_history_switches_the_band_to_finish_setting_up(self) -> None:
+        line = welcome_band_line(has_run_history=True, has_saved_choices=True, run_history_readable=True)
+        assert line == WELCOME_RESUME_WITH_HISTORY
+        assert "Welcome" not in line, "a year of run records must never be greeted as a new install"
+        assert "run history" in line
+
+    def test_saved_choices_alone_never_claims_a_run_history_that_does_not_exist(self) -> None:
+        """The half-configured install: settings on disk, nothing ever run. Reassuring it
+        that "your run history is safe" would assert a thing we know is absent."""
+        line = welcome_band_line(has_run_history=False, has_saved_choices=True, run_history_readable=True)
+        assert line == WELCOME_RESUME_SETTINGS_ONLY
+        assert "Welcome" not in line
+        assert "run history" not in line
+
+    def test_history_outranks_the_absence_of_saved_choices(self) -> None:
+        """A settings file wiped clean under a populated run store still isn't new."""
+        line = welcome_band_line(has_run_history=True, has_saved_choices=False, run_history_readable=True)
+        assert line == WELCOME_RESUME_WITH_HISTORY
+
+    def test_an_UNREADABLE_store_is_not_new_but_is_promised_NOTHING(self) -> None:
+        """The two questions come apart here, which is why they are separate parameters.
+
+        The install is established (a store file exists), so "Welcome" would be false — but
+        we could not OPEN that store, so "your run history is safe" is a promise about a
+        thing we cannot see. And nothing was entered either — so the settings-only line
+        would name the entered settings on an install this call has POSITIVELY CHECKED has
+        none, which is the same over-claim pointed at the other artefact. This arm gets the
+        line that reassures about nothing at all.
+        """
+        line = welcome_band_line(has_run_history=True, has_saved_choices=False, run_history_readable=False)
+        assert line == WELCOME_RESUME_PLAIN
+        assert "Welcome" not in line
+        assert "run history" not in line
+        assert "entered" not in line, "the band named settings it just checked were absent"
+
+    def test_an_UNREADABLE_store_WITH_saved_choices_keeps_the_settings_only_line(self) -> None:
+        """The twin of the row above: same unreadable store, but there IS something on disk
+        to point at, so the settings-only line is honest here and must not be lost."""
+        line = welcome_band_line(has_run_history=True, has_saved_choices=True, run_history_readable=False)
+        assert line == WELCOME_RESUME_SETTINGS_ONLY
+        assert "run history" not in line
+
+    def test_no_band_line_carries_a_step_count(self) -> None:
+        """The band sits one line above the wizard's own "Step 1 of 5" indicator.
+
+        Two counts on one screen contradict each other the moment either moves — and the
+        5→4 "Finish unnumbered" question is open on the ROADMAP, so one of them will. The
+        indicator owns the count; the band owns the reassurance.
+        """
+        for line in _all_band_lines():
+            lowered = line.lower()
+            for count in ("four", "five", "step", "4 ", "5 "):
+                assert count not in lowered, f"the band names a step count: {line!r}"
+
+    def test_every_line_is_one_calm_sentence_with_no_banned_vocabulary(self) -> None:
+        for line in _all_band_lines():
+            assert line == line.strip() and line.endswith(".")
+            lowered = line.lower()
+            for banned in ("sign in", "log in", "verify", "unlock", "authorized", "account", "credentials"):
+                assert banned not in lowered
+
+    def test_the_sweeps_above_see_every_band_constant_the_module_defines(self) -> None:
+        """The sweeps read the MODULE, not a hand-kept list — pinned in both directions.
+
+        A hand-listed loop is how a fifth variant ships unswept (this file already shipped
+        a fourth that the two loops above did not cover). ``_all_band_lines`` derives from
+        ``vars(home_status)``, so a new constant is swept the moment it is defined; this row
+        is the other direction — the four we know about must still be in there, so a rename
+        or a deletion cannot quietly shrink the sweep to nothing.
+        """
+        swept = _all_band_lines()
+        assert set(swept) >= {
+            WELCOME_FRESH,
+            WELCOME_RESUME_WITH_HISTORY,
+            WELCOME_RESUME_SETTINGS_ONLY,
+            WELCOME_RESUME_PLAIN,
+        }
+        assert len(swept) == len(set(swept)), "two band constants hold the same string"
+
+
+class TestWelcomeBandOverAConfig:
+    """The AppConfig-facing wrapper — the ONE call Home makes."""
+
+    def test_a_blank_profile_with_an_empty_store_is_welcomed(self) -> None:
+        assert welcome_band(AppConfig(), records=[], store_created_at=None) == WELCOME_FRESH
+
+    def test_a_manual_only_upgrader_is_told_to_finish_setting_up(self) -> None:
+        """Upgrade shape 2: complete + never scheduled, with real runs behind it."""
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+        assert cfg.has_completed_setup() is False  # it genuinely lands in the wizard host
+        assert welcome_band(cfg, records=[_record()], store_created_at=None) == WELCOME_RESUME_WITH_HISTORY
+
+    def test_a_half_finished_wizard_with_no_runs_is_not_welcomed_either(self) -> None:
+        cfg = AppConfig(sis_type="myedbc")
+        assert welcome_band(cfg, records=[], store_created_at=None) == WELCOME_RESUME_SETTINGS_ONLY
+
+    def test_an_input_folder_ALONE_is_a_saved_choice(self) -> None:
+        """A wizard abandoned on the Folders step, before a district was picked.
+
+        Written after a falsification probe: narrowing ``_has_saved_choices`` to
+        ``sis_type`` alone left the whole suite green, because every existing row happened
+        to carry a district. Each arm of an OR needs its own row.
+        """
+        assert welcome_band(AppConfig(input_dir="/in"), records=[], store_created_at=None) == (
+            WELCOME_RESUME_SETTINGS_ONLY
+        )
+
+    def test_an_output_folder_ALONE_is_a_saved_choice(self) -> None:
+        assert welcome_band(AppConfig(output_dir="/out"), records=[], store_created_at=None) == (
+            WELCOME_RESUME_SETTINGS_ONLY
+        )
+
+    def test_a_district_ALONE_is_a_saved_choice(self) -> None:
+        assert welcome_band(AppConfig(sis_type="myedbc"), records=[], store_created_at=None) == (
+            WELCOME_RESUME_SETTINGS_ONLY
+        )
+
+    def test_advisory_state_alone_does_not_count_as_a_saved_choice(self) -> None:
+        """Window geometry and the identity answer are not setup progress — an install
+        that only answered the launch page is still a fresh install to the wizard."""
+        cfg = AppConfig(identity_email="admin@sd48.bc.ca", window_width=1200.0)
+        assert welcome_band(cfg, records=[], store_created_at=None) == WELCOME_FRESH
+
+    def test_a_store_stamp_with_no_rows_still_reads_as_history(self) -> None:
+        """The quarantine-recreated store: `write_run_record` made it, so runs HAPPENED,
+        but the rows were lost. ``store_created_at`` is the only surviving evidence — and
+        it is a SUPPLY the view must actually pass (see the wizard-host test of the same
+        name, added after dropping it here left 364 tests green)."""
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc")
+        stamped = welcome_band(cfg, records=[], store_created_at="2026-01-05T03:00:00")
+        assert stamped == WELCOME_RESUME_WITH_HISTORY
+
+    def test_an_unreadable_store_gets_the_settings_only_line(self) -> None:
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc")
+        assert welcome_band(cfg, records=None, store_created_at=None) == WELCOME_RESUME_SETTINGS_ONLY
+
+    def test_an_unreadable_store_over_a_BLANK_profile_names_nothing_at_all(self) -> None:
+        """The real config that reaches the plain line, not just the parameter triple.
+
+        A readable-but-blank ``config.json`` — exactly what the launch page's identity-only
+        save leaves behind — beside a ``history.db`` that exists and will not open. It is
+        established (the file is a checked fact) but there is nothing on disk we can name,
+        so the band must promise neither the run history nor the settings.
+        """
+        blank = AppConfig(identity_email="admin@sd48.bc.ca")
+        assert home_status_mod._has_saved_choices(blank) is False, "the fixture is not the blank profile"
+        assert welcome_band(blank, records=None, store_created_at=None) == WELCOME_RESUME_PLAIN

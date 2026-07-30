@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import logging
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -157,6 +158,25 @@ _TRANSIENT_LOCATION_WARNING = (
 # must ALWAYS be released, so the worker marshals one of these instead of stranding the UI.
 _WORKER_ERROR_REGISTER = "We couldn't set up the nightly sync just now. Please try again."
 _WORKER_ERROR_UNREGISTER = "We couldn't remove the nightly sync just now. Please try again."
+
+# The finish line's save FAILED (0038 S6). Two things must be true of this line and neither is
+# decoration: it must not claim THIS save lost anything (it did not — the only field it adds is
+# the completion flag, and the two steps that persist the admin's own answers, District and
+# Folders, save inside `_forward` BEFORE advancing, so a failure there leaves them on the step
+# rather than walking them past it), and it must leave the admin somewhere they can act. The
+# summary they just earned STAYS on screen with this note beneath the Finish button, so pressing
+# it again is the whole retry. What must never happen is the wizard re-deriving its resume step
+# from a config that still says "unfinished" and dropping them back at step 1 — a bounce that
+# would read as "it undid my setup".
+#
+# Scope this deliberately does NOT claim: the SKIPPABLE steps' own section-level saves (the
+# seasonal-window write and the delivery write) are unguarded and do not block advancement, so
+# under the same fault the admin can reach this note with those entries unpersisted. Tracked in
+# `docs/claugentic-ROADMAP.md` ("Spotted during S6") — the fix is a step-level note, not a
+# reword of the copy below.
+FINISH_SAVE_FAILED_NOTE = "We couldn't save your settings just now — nothing was lost. Please try again."
+
+logger = logging.getLogger(__name__)
 
 
 def _kick_probe_thread(page: ft.Page, work: Callable[[], None]) -> None:  # pragma: no cover - view glue
@@ -392,6 +412,7 @@ def build_setup(
     page: ft.Page,
     *,
     on_schedule_changed: Callable[[], None] | None = None,
+    on_complete: Callable[[], None] | None = None,
 ) -> ft.Control:  # pragma: no cover - Flet view glue
     """Build the Setup surface — the first-run wizard, or the Settings page once completed.
 
@@ -399,11 +420,22 @@ def build_setup(
     register/unregister success so the shell can re-probe the rail's Setup attention
     badge (probed once at boot, so it would otherwise stay stale until a restart).
     Defensive ``None`` default — every caller without a badge to refresh is unchanged.
+
+    ``on_complete`` (0038 S6) is the HOST seam: fired after the finish line's save is
+    VERIFIED, so a host that owns the surrounding surface can take the admin somewhere the
+    wizard cannot reach on its own (Home re-renders into its health view). It is fired
+    INSTEAD of the in-place Settings graduation, never as well — two payoffs for one press
+    would leave a Settings scroll flashing under a screen that is being replaced.
+
+    With ``on_complete=None`` — the Setup RAIL item — the finish line behaves exactly as it
+    always has: `_mount_settings(..., transition_cue=True)` in place. That equivalence is
+    the point of the seam and is pinned by a test, because a rail item and a hosted wizard
+    that quietly diverge are two wizards.
     """
     cfg = AppConfig.load()
     root = ft.Column(spacing=22)
     if not cfg.has_completed_setup():
-        _mount_wizard(page, cfg, root, on_schedule_changed=on_schedule_changed)
+        _mount_wizard(page, cfg, root, on_schedule_changed=on_schedule_changed, on_complete=on_complete)
     else:
         _mount_settings(page, cfg, root, transition_cue=False, on_schedule_changed=on_schedule_changed)
     return root
@@ -418,6 +450,7 @@ def _mount_wizard(
     root: ft.Column,
     *,
     on_schedule_changed: Callable[[], None] | None = None,
+    on_complete: Callable[[], None] | None = None,
 ) -> None:  # pragma: no cover - Flet view glue
     """Render the five-step first-run wizard into ``root`` (resume derived from real state)."""
     # D9, re-scoped to the VISIBLE list (0038 S5 — see the dated DECISIONS entry): the seed
@@ -448,6 +481,8 @@ def _mount_wizard(
         "delivery_host": cfg.sftp_host,
         "delivery_user": cfg.sftp_username,
         "forward_btn": None,  # the current step's forward button (re-gated in place on input change)
+        "finish_error": "",  # set ONLY when the finish line's save raised (0038 S6)
+        "finishing": False,  # the finish press is latched until it fails (0038 S6)
     }
 
     def _inputs() -> FlowInputs:
@@ -536,13 +571,85 @@ def _mount_wizard(
         if prev is not None:
             _go(prev)
 
+    def _fire_schedule_changed() -> None:
+        """Re-probe the rail's Setup badge, advisory — never let it break the graduation.
+
+        The same guard the register/unregister callers use (``contextlib.suppress`` under
+        "advisory: never let it break the result paint"): a badge that failed to refresh is
+        a stale dot, while a raise here would abort a finish line that already saved.
+        """
+        if on_schedule_changed is not None:
+            with contextlib.suppress(Exception):
+                on_schedule_changed()
+
     def _finish() -> None:
-        # The ONLY completion signal (D8/D4a): reaching the finish line — never any single step —
-        # marks the install set up. Then graduate this surface to Settings mode in place.
-        cfg.setup_completed = True
-        cfg.save()
-        _mount_settings(page, AppConfig.load(), root, transition_cue=True, on_schedule_changed=on_schedule_changed)
-        page.update()
+        """Save FIRST, verify, and only then hand the payoff on (0038 S6).
+
+        The ONLY completion signal (D8/D4a): reaching the finish line — never any single
+        step — marks the install set up.
+
+        The save is the whole risk here. The realistic failure is I/O — a locked, read-only
+        or full settings folder — and NOT ``SettingsOverwriteRefused``: that refusal needs
+        ``settings_unreadable() and not _carries_chosen_settings()``, and the assignment in
+        the ``try`` below moves ``setup_completed`` off its constructor default first, which
+        is neither transient nor ``_ADVISORY_FIELD_PREFIXES``-prefixed, so the second half is
+        False by construction at this exact call site. The bare ``except`` covers both
+        regardless (a future field rule must not re-open the hole silently), and the
+        consequence of treating a failure as success is specific and bad: the host would
+        re-render Home, Home would re-read a config that still says "unfinished", and the
+        admin would be dropped back at step 1 having just been told they were done. So a
+        raised save (a) rolls the in-memory flag back, so this instance never claims a state
+        the disk lacks, (b) leaves the finish summary exactly where it is, with an honest
+        note under the button they can press again, and (c) does NOT fire ``on_complete``.
+
+        **The press is latched**, and only a FAILED attempt un-latches it. A second click
+        while the first is still landing would save twice and hand off twice — on the hosted
+        path that is two navigations, and the button is genuinely double-clickable because
+        it stays on screen right up until the host replaces the surface. A failure must
+        re-open it, because the note that failure prints promises a retry.
+        """
+        if ws["finishing"]:
+            return
+        ws["finishing"] = True
+        try:
+            cfg.setup_completed = True
+            cfg.save()
+        except Exception:  # noqa: BLE001 - honest on screen, LOUD in the log, never a silent bounce
+            cfg.setup_completed = False
+            ws["finishing"] = False  # the retry the note promises must actually be possible
+            ws["finish_error"] = FINISH_SAVE_FAILED_NOTE
+            logger.warning("Could not record setup completion; the finish step stays open.", exc_info=True)
+            _render()
+            return
+        if ws["finish_error"]:
+            # A previous attempt failed and THIS one succeeded. Drop the stale note before
+            # the surface is handed on: what the host does next is the host's business, and
+            # a "we couldn't save your settings" line left sitting over a save that did
+            # happen is a lie no host should be able to leave on screen.
+            ws["finish_error"] = ""
+            _render()
+        try:
+            if on_complete is not None:
+                # The host owns what happens next (Home re-renders into its health view). The
+                # summary stays on screen until this press, which IS the "take me there" action.
+                on_complete()
+                return
+            # The RAIL mount's own badge re-probe — the twin of the host's ``_on_setup_complete``.
+            # The boot-time probe is suppressed while ``needs_setup``, so an admin who finishes
+            # HERE and skipped the Schedule step keeps a silenced badge for the whole session,
+            # and a leftover task firing with no record stays invisible until a restart. Same
+            # guard as the register/unregister callers: advisory, never breaks the graduation.
+            _fire_schedule_changed()
+            _mount_settings(page, AppConfig.load(), root, transition_cue=True, on_schedule_changed=on_schedule_changed)
+            page.update()
+        except Exception:
+            # The save SUCCEEDED and the hand-off did not. Re-open the latch so the button
+            # stays pressable (a one-shot latch set before risky work turns any transient
+            # failure into a permanently dead button), then re-raise: this is not the save
+            # failure, so ``FINISH_SAVE_FAILED_NOTE`` would be a lie, and a silent swallow
+            # would leave the admin pressing a button that does nothing. Fail LOUD.
+            ws["finishing"] = False
+            raise
 
     def _on_sched_status(status: ScheduleStatus) -> None:
         ws["schedule_status"] = status
@@ -709,13 +816,23 @@ def _mount_wizard(
         # on the Save-then-Test path, whose Test flips the session delivery fact to TESTED_OK).
         attention = finish_needs_attention(delivery=ws["delivery"], delivery_desync=desync)  # type: ignore[arg-type]
         verdict = Verdict.WARNING if attention else Verdict.HEALTHY
-        return ft.Column(
-            spacing=18,
-            controls=[
-                components.HealthVerdictBanner(verdict, headline=headline, detail=detail),
-                _finish_summary_card(rows),
-            ],
-        )
+        controls: list[ft.Control] = [
+            components.HealthVerdictBanner(verdict, headline=headline, detail=detail),
+            _finish_summary_card(rows),
+        ]
+        if ws["finish_error"]:
+            # Never colour-alone: the glyph rides beside words that say what happened.
+            controls.append(
+                ft.Row(
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(ft.Icons.ERROR_OUTLINE_ROUNDED, size=18, color=tokens.color_status_failed),
+                        ft.Text(str(ws["finish_error"]), size=13, color=tokens.color_status_failed),
+                    ],
+                )
+            )
+        return ft.Column(spacing=18, controls=controls)
 
     _BODIES: dict[SetupStep, Callable[[], ft.Control]] = {
         SetupStep.FOLDERS: _folders_body,

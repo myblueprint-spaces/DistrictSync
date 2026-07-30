@@ -209,12 +209,21 @@ def _is_contradiction(readback: ScheduleReadback, latest_record_ts: str | None) 
     return last is not None and newest is not None and last > newest
 
 
-def needs_setup_badge(status: ScheduleStatus | None, *, paused: bool = False) -> bool:
+def needs_setup_badge(status: ScheduleStatus | None, *, paused: bool = False, setup_unfinished: bool = False) -> bool:
     """Whether the Setup nav destination should show a "needs attention" badge (pure).
 
     Driven by the single ``attention`` signal — an expected-but-missing schedule (the
     Event-141 case) or a fired-but-no-record contradiction, both of which route to Setup.
     A ``None`` status (not yet probed / not applicable) never badges.
+
+    ``setup_unfinished`` (0038 S6 — ``nav.needs_setup``) suppresses the badge OUTRIGHT while
+    the install has not reached the wizard's finish line. Home HOSTS the wizard in that
+    state, so the rail's Setup item and the surface the admin is already working through are
+    the same task: an attention dot on it names the work in progress as a fault. The one
+    state that could otherwise raise it — a task left behind by an earlier install, firing
+    with no record — is reconciled by the Schedule step a few keystrokes later ("already
+    scheduled"), so nothing is lost by staying quiet until then. Defaults to ``False``, so
+    every existing caller keeps its pre-S6 behaviour; the shell passes it explicitly.
 
     ``paused`` is the seasonal-window fact (an ENABLED window currently outside its season —
     see ``home_status.sync_window_paused``). During an intentional pause NO run is expected, so
@@ -227,6 +236,8 @@ def needs_setup_badge(status: ScheduleStatus | None, *, paused: bool = False) ->
     case and never masks a MISSING one.
     """
     if status is None:
+        return False
+    if setup_unfinished:
         return False
     if paused and status.contradiction:
         return False

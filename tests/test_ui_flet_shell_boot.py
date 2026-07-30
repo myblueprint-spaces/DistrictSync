@@ -28,7 +28,8 @@ import flet as ft
 import pytest
 
 from src.config.app_config import AppConfig
-from src.ui_flet import shell
+from src.history.store import write_run_record
+from src.ui_flet import home_status, nav, shell
 from src.ui_flet.screens import home
 from tests.test_app_config_identity import V38X_CONFIG_JSON
 
@@ -283,8 +284,15 @@ class TestTheLaunchGate:
         # card" are both satisfied by a blank page — which is exactly the failure a gate
         # that crashed silently would produce.
         assert _has_rail(page), "the app body never mounted; the absences below are vacuous"
+        texts = _texts(_added_root(page))
         # ...and G2 holds on Home too: an unreadable profile gets no card either (S4b).
-        assert home.IDENTITY_CARD_HEADLINE not in _texts(_added_root(page))
+        assert home.IDENTITY_CARD_HEADLINE not in texts
+        # ...and no WIZARD either (S6, upgrade shape 3): we could not read the settings, so
+        # "you are a new user" is a claim we know to be unverifiable. Walked through the
+        # real boot rather than through `build_home`, because the shape is a composition —
+        # the predicate, the launch selection and Home's branch all have to agree.
+        assert "Step 1 of 5" not in texts, "an unreadable profile was shown the first-run wizard"
+        assert "Home" in texts, "the dashboard did not paint; the absences above are vacuous"
 
     def test_the_completed_install_boot_reads_the_config_once_for_the_body(
         self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
@@ -334,7 +342,12 @@ class TestJourney4UpgradeInPlace:
         texts = self._boot(page)
 
         assert not _shows_launch_page(page), "a working install was stopped at a launch page"
-        assert "Welcome to DistrictSync" not in texts, "a configured install was shown the onboarding hero"
+        # NOT a string check for the retired onboarding hero: that copy no longer exists
+        # anywhere, so asserting its absence would pass for the wrong reason forever (0038
+        # S6). The first-run surface is now the WIZARD, and its step header is what a
+        # configured install must not be shown.
+        assert "Step 1 of 5" not in texts, "a configured install was dropped into the setup wizard"
+        assert home_status.WELCOME_FRESH not in texts
         assert _has_rail(page)
         assert "Home" in texts, "the dashboard did not paint"
         assert home.IDENTITY_CARD_HEADLINE in texts, "the upgrading install was never asked"
@@ -356,6 +369,232 @@ class TestJourney4UpgradeInPlace:
 
         assert _has_rail(page) and "Home" in texts, "the dashboard did not paint; the absence below is vacuous"
         assert home.IDENTITY_CARD_HEADLINE not in texts
+
+    def test_upgrade_shape_2_lands_on_the_HOSTED_wizard_with_the_has_history_band(
+        self, page: MagicMock, isolated_user_profile: Path
+    ) -> None:
+        """Complete + manual-only, walked through the REAL boot (S6).
+
+        The same shipped v3.8.x profile minus the two facts that make
+        ``has_completed_setup()`` true — the explicit flag, and the registered schedule the
+        older inference reads. That combination is upgrade shape 2, and it is only
+        reachable by removing BOTH: leaving ``schedule_registered`` true keeps the install
+        finished no matter what the flag says. Pinned end-to-end because "does this admin
+        meet the wizard or the dashboard?" is a composition of the predicate, the gate, the
+        launch selection and Home's branch — no one of which can answer it.
+        """
+        profile = isolated_user_profile
+        profile.mkdir(parents=True, exist_ok=True)
+        values = json.loads(V38X_CONFIG_JSON)
+        values.pop("setup_completed", None)
+        values["schedule_registered"] = False
+        (profile / "config.json").write_text(json.dumps(values), encoding="utf-8")
+        # A REAL run in a REAL store — written through the app's own writer, so the band's
+        # "your run history is safe" rests on the same artefact Run History reads.
+        assert write_run_record({"timestamp": "2026-07-01T03:00:00", "status": "success"}, source="manual")
+
+        shell.main(page)
+
+        # It IS asked at the launch page first, and that is correct: setup was never
+        # finished and no address is on file, so `needs_identity` holds. Walking through
+        # the ESCAPE keeps the planted profile byte-identical (it stores nothing), so what
+        # lands behind the gate is the shipped shape and not one this test edited.
+        assert _shows_launch_page(page), "an unfinished install must still be asked once"
+        _button_labelled(_added_root(page), shell.identity.SKIP_LABEL).on_click(None)
+
+        texts = _texts(_added_root(page))
+        assert _has_rail(page)
+        assert home_status.WELCOME_RESUME_WITH_HISTORY in texts, "the has-history band did not render"
+        assert home_status.WELCOME_FRESH not in texts, "an install with a run history was greeted as new"
+        # The wizard IS hosted — and it resumed from REAL state rather than restarting.
+        # Step 2, not 1: this profile already carries a district, so the District step is
+        # satisfied and `derive_flow` lands on Folders. Asserting "Step 1 of 5" here would
+        # have been asserting a falsehood about the very population this row exists for.
+        assert "Step 2 of 5" in texts, "upgrade shape 2 did not land on the hosted wizard"
+        assert "Choose your folders" in texts
+        assert home.IDENTITY_CARD_HEADLINE not in texts, "the identity card rode the first-run branch"
+        assert "identity_email" not in (profile / "config.json").read_text(encoding="utf-8"), (
+            "the escape wrote to the planted profile"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# 2c. The COMPOSED first-run journey — gate → band → wizard (S4a × S6)          #
+# --------------------------------------------------------------------------- #
+class TestTheComposedFirstRunJourney:
+    """One walk through everything a brand-new admin meets, in order.
+
+    The plan assigns this row to whichever of S4a/S6 lands second, and it is the shape the
+    0029 retrospective named: both halves passed their own verify and the ASSEMBLED program
+    still carried a cross-slice bug, because nothing walked the seam. Here the seam is
+    "where does Get started actually put them" — a question neither slice can answer alone.
+    """
+
+    @staticmethod
+    def _answer_the_launch_page(page: MagicMock, address: str) -> None:
+        root = _added_root(page)
+        next(c for c in _iter_controls(root) if isinstance(c, ft.TextField)).value = address
+        _button_labelled(root, shell.identity.CONTINUE_LABEL).on_click(None)
+        _button_labelled(_added_root(page), shell.identity.GET_STARTED_LABEL).on_click(None)
+
+    def test_a_fresh_install_walks_gate_then_band_then_the_district_step(
+        self, page: MagicMock, isolated_user_profile: Path
+    ) -> None:
+        shell.main(page)
+        assert _shows_launch_page(page), "the launch page is not the first surface"
+        assert "Step 1 of 5" not in _texts(_added_root(page)), "the wizard rendered behind the gate"
+
+        self._answer_the_launch_page(page, "admin@sd48.bc.ca")
+
+        texts = _texts(_added_root(page))
+        assert not _shows_launch_page(page), "Get started did not enter the app"
+        assert _has_rail(page)
+        # The band, then the wizard's own step header — on HOME, not one rail item away.
+        assert home_status.WELCOME_FRESH in texts, "the welcome band did not render above the wizard"
+        assert "Choose your district" in texts and "Step 1 of 5" in texts
+        # ...and exactly ONE of them counts the steps. Co-locating the band with the
+        # indicator is what made a step count in the band a contradiction; the assertion
+        # lives HERE, on the composed surface, because neither half is wrong alone.
+        counted = [t for t in texts if "step" in t.lower()]
+        assert counted == ["Step 1 of 5"], f"more than one control names a step count: {counted}"
+
+    def test_the_rail_lands_on_home_and_home_is_where_the_wizard_is(
+        self, page: MagicMock, isolated_user_profile: Path
+    ) -> None:
+        """The "you are here" half. Pre-S6 the rail selected Setup on a fresh install; if
+        that survived while Home hosted the wizard, the highlight would point at a surface
+        the admin is not on."""
+        shell.main(page)
+        self._answer_the_launch_page(page, "admin@sd48.bc.ca")
+
+        rails = [c for c in _iter_controls(_added_root(page)) if isinstance(c, ft.NavigationRail)]
+        ordered = nav.ordered_destinations(nav.nav_model())
+        assert rails[0].selected_index == nav.selected_index_for("home", ordered)
+        assert "Choose your district" in _texts(_added_root(page))
+
+    def test_the_matched_district_is_pre_selected_and_still_confirmable(
+        self, page: MagicMock, isolated_user_profile: Path
+    ) -> None:
+        """The launch page promises "you'll confirm it on the next step" (S4a) and S5 seeds
+        the pick. Composed, that promise is only true if the step is actually LANDED on."""
+        shell.main(page)
+        self._answer_the_launch_page(page, "admin@sd48.bc.ca")
+
+        root = _added_root(page)
+        dropdowns = [c for c in _iter_controls(root) if isinstance(c, ft.Dropdown)]
+        assert dropdowns and dropdowns[0].value == "sd48myedbc"
+        assert "Step 1 of 5" in _texts(root), "the promised confirmation step was skipped"
+
+    def test_the_escape_lands_on_the_same_wizard_with_the_same_band(
+        self, page: MagicMock, isolated_user_profile: Path
+    ) -> None:
+        """G7: the person who is not the admin gets the same first-run surface, unfiltered."""
+        shell.main(page)
+        _button_labelled(_added_root(page), shell.identity.SKIP_LABEL).on_click(None)
+
+        texts = _texts(_added_root(page))
+        assert home_status.WELCOME_FRESH in texts
+        assert "Choose your district" in texts and "Step 1 of 5" in texts
+
+
+# --------------------------------------------------------------------------- #
+# 2c-bis. The shell's own wiring into Home (S6)                                 #
+# --------------------------------------------------------------------------- #
+class TestTheShellWiresHomeForTheHostedWizard:
+    """Added after a falsification probe went GREEN: deleting the shell's
+    ``on_schedule_changed=...`` line broke nothing.
+
+    ``tests/test_ui_flet_home_wizard_host.py`` proves Home FORWARDS the callback into the
+    hosted wizard — but a forwarded ``None`` forwards perfectly, so the half that was
+    actually unpinned is the shell handing one over. Registering a nightly task from the
+    Home-hosted wizard would then leave the rail badge stale until a restart, which is
+    exactly the 0032 T1 #8 defect the callback exists to fix.
+    """
+
+    def test_home_is_handed_a_callback_that_really_re_probes_the_badge(
+        self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(shell, "build_home", lambda _page, **kwargs: seen.update(kwargs) or ft.Text("home"))
+        monkeypatch.setattr(shell, "get_scheduler", lambda: MagicMock(supports_read_schedule=True))
+        threads: list[object] = []
+        page.run_thread = threads.append
+        _write_config(isolated_user_profile, identity_email="admin@sd48.bc.ca")
+
+        shell.main(page)
+
+        callback = seen.get("on_schedule_changed")
+        assert callable(callback), "the shell did not hand Home a schedule-changed callback"
+        # Asserted as an EFFECT, not as presence: firing it must dispatch the same
+        # off-thread badge re-probe the Setup rail item's registration does.
+        before = len(threads)
+        callback()  # type: ignore[operator]
+        assert len(threads) == before + 1, "Home's callback does not re-probe the Setup badge"
+
+
+# --------------------------------------------------------------------------- #
+# 2d. The Setup rail badge stays silent during first run (S6)                   #
+# --------------------------------------------------------------------------- #
+class TestTheSetupBadgeDuringFirstRun:
+    """The badge probe runs at the tail of ``build_app_body``; drive it and read the rail.
+
+    The pure rule is pinned in ``tests/test_ui_flet_schedule_status.py``; this pins the
+    WIRING — that the shell actually passes the first-run fact, which a green pure test
+    cannot tell you.
+    """
+
+    @staticmethod
+    def _drive(page: MagicMock, monkeypatch: pytest.MonkeyPatch, attention: object) -> ft.NavigationRail:
+        import asyncio
+
+        monkeypatch.setattr(shell, "get_scheduler", lambda: MagicMock(supports_read_schedule=True))
+        monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: attention)
+        page.run_thread = lambda fn: fn()  # the worker body runs inline
+        page.run_task = lambda fn, *a: asyncio.run(fn(*a))
+
+        shell.main(page)
+
+        rails = [c for c in _iter_controls(_added_root(page)) if isinstance(c, ft.NavigationRail)]
+        assert rails, "the app body never mounted"
+        return rails[0]
+
+    @staticmethod
+    def _missing_while_expected() -> object:
+        from src.ui_flet.schedule_status import ScheduleReadback, derive_schedule_status
+
+        status = derive_schedule_status(ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None)
+        assert status.attention is True, "the fixture must be a badge-worthy status"
+        return status
+
+    def test_an_unfinished_install_is_never_badged(
+        self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_config(isolated_user_profile, identity_email="admin@sd48.bc.ca", schedule_registered=True)
+
+        rail = self._drive(page, monkeypatch, self._missing_while_expected())
+
+        idx = nav.selected_index_for("setup", nav.ordered_destinations(nav.nav_model()))
+        assert rail.destinations[idx].badge is None
+        assert "Step 1 of 5" in _texts(_added_root(page)), "the wizard is not showing; the absence is vacuous"
+
+    def test_a_completed_install_with_the_same_fault_IS_badged(
+        self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The positive twin — same probe result, same drive, only the finish line differs."""
+        _write_config(
+            isolated_user_profile,
+            identity_email="admin@sd48.bc.ca",
+            setup_completed=True,
+            input_dir="/in",
+            output_dir="/out",
+            sis_type="sd48myedbc",
+            schedule_registered=True,
+        )
+
+        rail = self._drive(page, monkeypatch, self._missing_while_expected())
+
+        idx = nav.selected_index_for("setup", nav.ordered_destinations(nav.nav_model()))
+        assert rail.destinations[idx].badge is not None
 
 
 # --------------------------------------------------------------------------- #

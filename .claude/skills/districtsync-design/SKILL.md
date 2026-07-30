@@ -37,11 +37,14 @@ doc is the reference. On any conflict, the harness + `docs/DESIGN_SYSTEM.md` win
   and must clear ≥ 4.5:1 (`tests/test_ui_flet_tokens.py`). Never delete a pair to pass. A
   TRANSLUCENT foreground (`with_opacity`) is a composite the check cannot evaluate — use a solid
   token instead, or the pair is ungated.
-- **Gradient's home is the LAUNCH PAGE** (`screens/identity.py`, reallocated from onboarding by plan
-  0038); every other screen leads with `page_header` (no gradient hero). **In transition — don't
-  "fix" the strays:** `screens/onboarding.py`'s hero is still reachable and retires in **S6**;
-  `shell.build_placeholder` is effectively dead and is roadmapped. Removing either early is out of
-  scope and collides with S6.
+- **Gradient's home is the LAUNCH PAGE** (`screens/identity.py`) and its ONLY one — reallocated from
+  onboarding by plan 0038 (S4a) and made exclusive by S6, which retired `screens/onboarding.py` (Home
+  hosts the wizard) and un-gradiented `shell.build_placeholder`. Every surface behind the rail leads
+  with `page_header`. **The transition is closed:** a second gradient hero is a review finding now,
+  not a leftover. (`components.build_design_demo`, the dev-only gallery, is not a product surface.)
+- **A first-run surface is calm text, not a hero.** Home's welcome line above the hosted wizard is
+  muted caption tier and STATE-AWARE — never "Welcome" over an install with run history
+  (`home_status.welcome_band`).
 - **Identification is never authentication (0038).** On the launch page / Settings identity section /
   Help echo, never write: sign in · log in · verify · unlock · authorized · account · credentials ·
   access — and never call the district-domain list protected / secured / anonymous / encrypted. It is

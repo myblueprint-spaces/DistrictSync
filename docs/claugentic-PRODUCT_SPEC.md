@@ -96,14 +96,18 @@ The Installer's single guided path from a fresh download to a verified nightly s
 
 - **Flow**
   1. Open the app for the first time. The launch page asks who looks after this sync (see
-     **Launch identity** above); past it, Home shows a calm onboarding welcome (the single
-     front door) and a "Start setup" button.
+     **Launch identity** above); past it, **Home IS the wizard** — one calm welcome line and
+     step 1 right there. There is no hero and no "Start setup" button pointing at another
+     part of the app: the front door opens onto the work. The welcome line knows the
+     difference between a brand-new install and one that has been running (an install with
+     run history reads "Let's finish setting up — your files and run history are safe",
+     never "Welcome").
   2. **District** — choose the district config from a "Choose your district" picker (auto-selected only when exactly one config exists — never a silent default). District leads: *pick who you are first, then where your files live.*
   3. **Folders** — pick the GDE input folder and the output folder.
   4. **Delivery** — enter and test the SFTP credential, or "Set up later". Delivery precedes Schedule so the delivery setting is already baked in when the task is registered.
   5. **Schedule** — pick a nightly run time and register the Windows task (a one-time UAC permission prompt), or "Set up later".
-  6. **Finish** — an honest, adaptive summary names what was checked and when, plus a checked-summary card listing each step as configured (✓) or deferred. Reaching this finish line — not any single step — is the only thing that marks the install "set up".
-- **States** — **loading** (schedule registration and SFTP test run with a spinner/"waiting for the Windows permission prompt…"), **error** (validation, declined/failed/timed-out schedule, SFTP test failure — each a calm category card). The wizard **resumes from real state** (the first step not truthfully done, read from validated folders + a live schedule read-back + a keyring check) and **reconciles** against side effects already performed ("already scheduled — daily at HH:MM", "a delivery password is already saved") instead of double-registering.
+  6. **Finish** — an honest, adaptive summary names what was checked and when, plus a checked-summary card listing each step as configured (✓) or deferred. Reaching this finish line — not any single step — is the only thing that marks the install "set up". The summary stays on screen until the admin presses Finish setup; from Home that press lands them on Home's health view, and from the Setup tab it turns the page into Settings in place.
+- **States** — **loading** (schedule registration and SFTP test run with a spinner/"waiting for the Windows permission prompt…"), **error** (validation, declined/failed/timed-out schedule, SFTP test failure — each a calm category card; and if the finish line itself cannot be saved, the summary stays put with "we couldn't save your settings just now — nothing was lost", never a silent return to step 1). The wizard **resumes from real state** (the first step not truthfully done, read from validated folders + a live schedule read-back + a keyring check) and **reconciles** against side effects already performed ("already scheduled — daily at HH:MM", "a delivery password is already saved") instead of double-registering.
 - **What good feels like** — Certainty over celebration. No confetti (a trust instrument doesn't cheer): the finish card reads "Delivery configured", never "data was delivered". Skippable Schedule/Delivery mean the first success isn't gated on having a Windows password and a live SFTP credential in hand. Every error is fixed-category prose with an actionable hint, never the admin's raw input echoed back.
 
 ### Nightly scheduled sync
@@ -329,14 +333,53 @@ The checkable projection of the Features above. All checks are `manual` — Dist
       "Launch a freshly installed DistrictSync desktop app",
       "Get past the launch identity page (answer it or skip it)",
       "Observe the Home surface",
-      "Click 'Start setup'"
+      "Click the Setup rail item, then click Home again"
     ],
     "expect": [
       "the launch identity page precedes Home on a fresh install (see AC-identity-1)",
-      "Home shows a calm onboarding welcome with a 'Start setup' button (no dashboard, no metrics)",
-      "clicking 'Start setup' opens the wizard at the District step (District leads, then Folders)",
-      "a 'Step 1 of 5' style progress indicator is visible",
-      "no district is pre-selected — a 'Choose your district' placeholder is shown unless exactly one option is VISIBLE (which a matched identity can make true; see AC-identity-6)"
+      "Home IS the setup wizard — one calm welcome line above the District step, no dashboard, no metrics, and no 'Start setup' button pointing anywhere else",
+      "the rail's highlight is on Home, and the Setup item carries no attention badge",
+      "a 'Step 1 of 5' style progress indicator is visible (District leads, then Folders)",
+      "no district is pre-selected — a 'Choose your district' placeholder is shown unless exactly one option is VISIBLE (which a matched identity can make true; see AC-identity-6)",
+      "the Setup rail item shows the same wizard at the same step — one wizard, two ways in"
+    ],
+    "states": ["error"],
+    "check": "manual"
+  },
+  {
+    "id": "AC-setup-5",
+    "feature": "First-run setup wizard",
+    "flow": [
+      "On a scratch profile that has RUN before but never finished the wizard (run history present, setup_completed false AND schedule_registered false — has_completed_setup() re-infers the flag on load from a registered schedule), open the app",
+      "Read the line above the wizard",
+      "Separately, on a fresh scratch profile, read the same line",
+      "Separately again, on a profile with a district and folders saved but NO runs (walk the wizard to Delivery and close), read the same line"
+    ],
+    "expect": [
+      "the install with history reads \"Let's finish setting up — your files and run history are safe.\"",
+      "the word 'Welcome' appears nowhere on an install that has run before",
+      "the fresh profile reads \"Welcome — this takes about 3 minutes.\"",
+      "the saved-choices-but-no-runs profile reads \"Let's finish setting up — everything you've already entered is safe.\" — it must NOT say 'run history', which this install does not have; the same line is used when saved choices sit beside a run store that cannot be read",
+      "a profile with NOTHING entered beside an unreadable run store reads the bare \"Let's finish setting up.\" — it may name neither the run history nor the settings, because it has been checked to have neither",
+      "no variant names a step count — the wizard's own 'Step 1 of 5' indicator owns that",
+      "none of the lines is a coloured hero — each is one quiet sentence above the step",
+      "the Setup rail item shows the same wizard with NO welcome line — the band belongs to the landing, not to the wizard"
+    ],
+    "states": [],
+    "check": "manual"
+  },
+  {
+    "id": "AC-setup-6",
+    "feature": "First-run setup wizard",
+    "flow": [
+      "Reach the wizard's finish step on a scratch profile",
+      "Make the profile folder read-only (or otherwise unwritable), then press 'Finish setup'",
+      "Restore write access and press 'Finish setup' again"
+    ],
+    "expect": [
+      "the failed save keeps the finish summary exactly where it is and adds 'We couldn't save your settings just now — nothing was lost. Please try again.'",
+      "it does NOT return to step 1, and it does not open Settings or the Home dashboard",
+      "the retry succeeds, the note disappears, and Home shows its health view"
     ],
     "states": ["error"],
     "check": "manual"

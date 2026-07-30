@@ -167,6 +167,27 @@ Incident: plan 0038 S4b — the Home identity card imported the launch page's he
 verbatim, and `test_..._never_sees_the_launch_page` went red because the card it exists to
 prove had appeared. Beneficiary roles: `implementer`, `lens-reviewer` (testing).
 
+## testing — "A pass-through is pinned at the SUPPLY, not at the forwarding — and an absence must be pinned STRUCTURALLY when behaviour cannot see it"  [staged 2026-07-29, plan 0038 S6]
+
+Two blind spots a falsification pass found in one slice, both invisible to a full green suite:
+
+- **The forwarded-`None` hole.** A test that asserts "B passes `callback` on to C" stays green
+  when A stops supplying one — a forwarded `None` forwards perfectly. Every hand-off in a chain
+  needs the SUPPLY pinned separately, and pinned by EFFECT (fire it, observe the work it causes)
+  rather than by presence, since `callable(x)` is satisfied by a callback wired to nothing.
+  Incident: the shell's `on_schedule_changed=` line into Home was deletable with the whole suite
+  green, because the only assertion lived one level down in Home.
+- **A structural guarantee needs a structural assertion.** When a refactor's guarantee is *the
+  absence of an input* ("this factory can no longer vary by state"), every behavioural test stays
+  green while the input is quietly re-admitted as an unused defaulted parameter — the door stands
+  open and nothing walks through it *yet*. Assert the signature (`inspect.signature`), because the
+  absence IS the guarantee. Same family as the vacuous-green rule, one level up: not "did the
+  mechanism run?" but "can the hazard be represented at all?".
+
+Both were fixed on the ASSERTION side and re-probed RED (per the S2b lesson: when a perturbation
+goes green, fix the assertion, not the probe). Beneficiary roles: `implementer`,
+`lens-reviewer` (testing), `synthesizer-gate`.
+
 ## reliability — "Gate destructive cleanup on its subject existing; latch success AFTER the risky work"  [staged 2026-07-29, plan 0038 S4a]
 
 - A destructive side-step (purging recovery snapshots on an erasure path) must be gated on the

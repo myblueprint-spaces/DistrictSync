@@ -10,11 +10,11 @@ Slimmed at IA-1 (plan 0014 F6 split): the rail VIEW moved to ``nav_rail.py`` —
 shell now owns window paint + sizing, the placeholder host, id-keyed selection, and
 the close lifecycle, and assembles the rail from ``nav_rail.build_nav``. The rail is
 a single flat ``ft.NavigationRail`` in ONE fixed order (``nav.ordered_destinations``,
-identical in every state — D7); the initial selection is Setup while the install
-``needs_setup``, else Home (``nav.prominent_initial_id``). The shell HOLDS the rail
-handle and ``select_by_id`` syncs its ``selected_index`` on every id-keyed hop (via
-``nav.selected_index_for``) so programmatic navigation — Home's "Start setup" / fix
-CTAs / error fallback — moves the highlight too, not only user clicks.
+identical in every state — D7); the initial selection is **Home in every state**
+(``nav.initial_destination_id``) since 0038 S6 put the setup wizard on Home. The shell
+HOLDS the rail handle and ``select_by_id`` syncs its ``selected_index`` on every id-keyed
+hop (via ``nav.selected_index_for``) so programmatic navigation — the wizard-finish
+re-entry / fix CTAs / error fallback — moves the highlight too, not only user clicks.
 
 Split again at 0038 S4a for the launch gate: everything after the geometry block is
 :func:`build_app_body` (module level, not a 110-line closure), and :func:`main` owns the
@@ -66,27 +66,22 @@ def build_placeholder(dest: nav.Destination) -> ft.Control:
 
     Reassuring product voice — never a dev stub. Every real surface (IA-1+) drops
     into this same frame, so the tone here is the tone the whole app inherits.
+
+    **No gradient here (0038 S6).** It led with a ``hero_gradient()`` card whose sub-line
+    was a TRANSLUCENT white — a composite the AA contrast function cannot evaluate, so an
+    ungated painted pair — and, since S4a reallocated the gradient to the launch page, a
+    second gradient surface the design system no longer sanctions. It leads with the
+    ordinary ``page_header`` now, like every other surface. This function is effectively
+    dead (all six destinations replace their placeholder in ``build_app_body`` before the
+    rail renders); it is kept because ``build_screens`` guarantees ``render_by_id`` a
+    factory for EVERY destination, so a future rail entry can never KeyError its way to a
+    blank pane. (Roadmap item discharged; see ``docs/claugentic-ROADMAP.md``.)
     """
     icon_name = getattr(ft.Icons, dest.selected_icon, ft.Icons.WIDGETS_ROUNDED)
     return ft.Column(
         spacing=22,
         controls=[
-            components.card(
-                content=ft.Column(
-                    spacing=4,
-                    controls=[
-                        ft.Text(dest.label, size=26, weight=ft.FontWeight.W_800, color=tokens.color_on_action),
-                        ft.Text(
-                            "Your nightly roster sync — calm, branded, and built to be trusted.",
-                            size=14,
-                            color=ft.Colors.with_opacity(0.85, tokens.color_on_action),
-                        ),
-                    ],
-                ),
-                gradient=components.hero_gradient(),
-                padding=pad_sym(32, 26),
-                border_radius=18,
-            ),
+            components.page_header(dest.label, "Your nightly roster sync — calm, branded, and built to be trusted."),
             components.card(
                 content=ft.Column(
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -260,7 +255,10 @@ def bind_window_lifecycle(page: ft.Page) -> None:
 # --------------------------------------------------------------------------- #
 # The app body — everything behind the launch gate                             #
 # --------------------------------------------------------------------------- #
-def build_app_body(page: ft.Page, app_cfg: AppConfig) -> ft.Control:
+def build_app_body(
+    page: ft.Page,
+    app_cfg: AppConfig,  # noqa: ARG001 - the persist-then-enter seam; see the docstring
+) -> ft.Control:
     """The rail + content host + screen map: the whole app, minus the window lifecycle.
 
     Extracted to module level at 0038 S4a (it was a ~110-line closure inside ``main``) so
@@ -268,13 +266,16 @@ def build_app_body(page: ft.Page, app_cfg: AppConfig) -> ft.Control:
     builds and returns a control; it never calls ``page.add`` — ``main`` owns the single
     root host.
 
-    ``app_cfg`` is a startup snapshot used ONLY for the nav model's launch selection (the
-    rail ORDER is fixed and config-independent — D7). Every SCREEN below re-reads
-    ``AppConfig`` fresh per mount (D1), so display state is never stale — and after the
-    launch gate the instance passed here is a FRESH load, so a just-answered identity is
-    in hand from the first paint.
+    ``app_cfg`` is the config the shell ENTERED with, and since 0038 S6 nothing inside
+    reads it: the nav model's launch selection was its last consumer, and that selection is
+    now Home in every state. It is kept as a parameter because it is the observable half of
+    the persist-then-enter contract (S4a) — the launch page persists the answer, then
+    ``_enter_app`` re-loads and hands the FRESH instance here, and the boot tests assert on
+    exactly that. Every SCREEN below re-reads ``AppConfig`` per mount (D1) regardless, which
+    is what actually makes the first paint correctly scoped; dropping the parameter would
+    delete the one point where the ORDER is checkable without weakening it in the code.
     """
-    model = nav.nav_model(app_cfg)
+    model = nav.nav_model()
     screens = build_screens(model.destinations)
 
     # Config-freshness (D1): the screens that render config-derived state bind a fresh
@@ -298,17 +299,24 @@ def build_app_body(page: ft.Page, app_cfg: AppConfig) -> ft.Control:
                 page.run_thread(_refresh_setup_badge)
 
     screens["setup"] = lambda: build_setup(page, on_schedule_changed=_on_schedule_changed)
-    # Swap the `home` placeholder for the three-way health dashboard UNCONDITIONALLY —
-    # `build_home` owns the branch decision itself (branch (a) reuses `build_onboarding`
-    # when `nav.needs_setup(...)`, (b)/(c) render the verdict-first dashboard). The `on_navigate`
+    # Swap the `home` placeholder for the three-way Home surface UNCONDITIONALLY —
+    # `build_home` owns the branch decision itself (branch (a) HOSTS the setup wizard when
+    # `nav.needs_setup(...)`, (b)/(c) render the verdict-first dashboard). The `on_navigate`
     # / `on_refresh` lambdas close over `select_by_id` (defined below) — Python resolves the free
     # name at call-time (navigation), so this late binding is correct and all screen-map mutation
     # stays co-located here. `on_refresh` re-invokes this screen's build in place (fresh read).
+    #
+    # `on_schedule_changed` is forwarded (0038 S6) because branch (a)'s hosted wizard runs the
+    # SAME register flow the Setup rail item does — a nightly task registered from Home must
+    # re-probe the rail badge exactly as one registered from Setup. The shell hands the callback
+    # to a screen that only sometimes uses it rather than branching on setup state itself: ONE
+    # place decides which Home an admin gets, and it is `build_home`.
     screens["home"] = lambda: build_home(
         page,
         app_config=AppConfig.load(),
         on_navigate=lambda dest: select_by_id(dest),
         on_refresh=lambda: select_by_id("home"),
+        on_schedule_changed=_on_schedule_changed,
     )
     # Swap the `convert` placeholder for the real manual-convert surface (IA-5a).
     screens["convert"] = functools.partial(build_convert, page, on_navigate=lambda dest: select_by_id(dest))
@@ -342,7 +350,7 @@ def build_app_body(page: ft.Page, app_cfg: AppConfig) -> ft.Control:
         screens["help"] = components.build_design_demo
 
     ordered = nav.ordered_destinations(model)
-    initial_id = nav.prominent_initial_id(model)
+    initial_id = nav.initial_destination_id(model)
 
     # The content area sits on the Direction B wash; screens' white cards float on it.
     content_host = ft.Container(expand=True, padding=pad_sym(36, 28), bgcolor=tokens.color_content_wash)
@@ -361,8 +369,8 @@ def build_app_body(page: ft.Page, app_cfg: AppConfig) -> ft.Control:
 
     def select_by_id(dest_id: str) -> None:
         render_by_id(dest_id)
-        # Sync the rail highlight for BOTH user clicks and programmatic hops (Home's
-        # "Start setup" / fix CTAs / error fallback). The native rail only self-highlights
+        # Sync the rail highlight for BOTH user clicks and programmatic hops (the
+        # wizard-finish re-entry / fix CTAs / error fallback). The native rail only self-highlights
         # on click, so code-driven navigation must set the index here — single-sourced
         # through `nav.selected_index_for` so a click and a code hop can never diverge.
         # (`rail` is bound below before any navigation fires; resolved late at call time.)
@@ -411,10 +419,14 @@ def build_app_body(page: ft.Page, app_cfg: AppConfig) -> ft.Control:
         # contradiction is by design (matches Home's calm "Paused" state) — a MISSING task
         # still badges. `sync_window_paused` is the SAME pure fact Home derives (single source).
         paused = sync_window_paused(cfg, now=None)
+        # First-run silence (0038 S6): Home HOSTS the wizard while `needs_setup`, so an
+        # attention dot on the Setup rail item would flag the work in progress as a fault.
+        # Read here, at probe time, from the SAME predicate Home branches on.
+        unfinished = nav.needs_setup(cfg)
 
         async def _apply() -> None:
             idx = nav.selected_index_for("setup", ordered)
-            show_badge = needs_setup_badge(status, paused=paused)
+            show_badge = needs_setup_badge(status, paused=paused, setup_unfinished=unfinished)
             rail.destinations[idx].badge = nav_rail.attention_badge() if show_badge else None
             page.update()
 
@@ -495,8 +507,11 @@ def main(page: ft.Page) -> None:
     page.theme_mode = ft.ThemeMode.LIGHT
     page.theme = build_theme()
 
-    # Startup snapshot: the geometry restore reads the saved window bounds, and the nav
-    # model's launch selection is derived from it when there is no gate to show.
+    # Startup snapshot, consumed by the geometry restore (window bounds) and by the identity
+    # layer: `needs_identity` decides whether the launch page shows, and the page itself
+    # renders from this instance. It no longer feeds the NAV model — since 0038 S6 the launch
+    # selection is Home in every state — and the app body behind the gate reads nothing from
+    # it (`_enter_app` re-loads on the persist-then-enter path; see `build_app_body`).
     app_cfg = AppConfig.load()
 
     # --- 2. window sizing + brand icon (native mode only; harmless in web) -- #

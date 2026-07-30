@@ -24,7 +24,7 @@ The component inventory (see ``docs/DESIGN_SYSTEM.md`` for usage rules):
     single filled primary keeps the visual weight.
   * ``text_button`` — the tertiary text-tier action (MB_PRIMARY text).
   * ``card`` — the bordered white ``Container`` (radius ``radius_lg`` + a 1dp
-    shadow) or, with a ``gradient``, a hero header (onboarding only after Slice 2).
+    shadow) or, with a ``gradient``, a hero header (the LAUNCH PAGE only — 0038).
   * ``metric_tile`` — a calm tile: a navy ``type_metric`` numeral over a muted caps
     caption.
   * ``HealthVerdictBanner`` — the verdict-first band: a toned tint + 1px line + a
@@ -361,8 +361,11 @@ def card(
 
     Default = a white ``radius_lg`` card with an MB_BORDER hairline and the subtle 1dp
     shadow the mockup uses (cards *float* a hair above the content wash). ``gradient``
-    (when given) paints a hero header instead — border dropped, no shadow (the
-    onboarding hero after Slice 2). ``metric_tile`` builds on this exact surface.
+    (when given) paints a hero header instead — border dropped, no shadow. Since 0038 S6
+    the LAUNCH PAGE (``screens/identity.py``) is its ONE product caller: the first-run
+    onboarding hero retired with its module, and the shell placeholder dropped its
+    gradient in the same slice (``components.build_design_demo``, the dev-only gallery,
+    still exercises the form). ``metric_tile`` builds on this exact surface.
     """
     is_hero = gradient is not None
     border = _b_all(1, tokens.color_border) if (bordered and not is_hero) else None
@@ -378,7 +381,16 @@ def card(
 
 
 def hero_gradient() -> ft.LinearGradient:
-    """The brand diagonal navy→blue hero gradient (shell placeholder, Setup header)."""
+    """The brand diagonal navy→blue hero gradient — the LAUNCH PAGE's, and no other PRODUCT surface's.
+
+    Reallocated to ``screens/identity.py`` by plan 0038 (S4a) and made exclusive by S6,
+    which retired the onboarding hero and un-gradiented the shell placeholder. That leaves
+    exactly two callers: the launch page, and ``build_design_demo`` below — the dev-only
+    component gallery, which ships no surface and is why the claim above is qualified rather
+    than absolute. It marks the one moment the app is not yet itself: before the rail exists.
+    Text on it uses ``color_on_action`` / ``color_on_action_muted`` — never a translucent
+    white, which is a composite the AA check cannot evaluate. See ``docs/DESIGN_SYSTEM.md``.
+    """
     return ft.LinearGradient(
         begin=ft.Alignment(-1, -1),
         end=ft.Alignment(1, 1),
@@ -463,8 +475,8 @@ def page_header(
     Direction B's top-of-screen element — quiet and white/transparent (NO gradient, NO
     card), so the verdict band directly under it owns the colour. ``trailing`` (a
     ``district_chip`` / a ``secondary_button`` / etc.) sits pushed to the right. Slice 2
-    wires this into every screen in place of the old gradient hero (the hero gradient is
-    reserved for the first-run onboarding).
+    wired this into every screen in place of the old gradient heroes; since 0038 S6 it is
+    the top of EVERY surface behind the rail (the hero gradient is the launch page's alone).
     """
     left = ft.Column(
         spacing=tokens.space_xs // 2,

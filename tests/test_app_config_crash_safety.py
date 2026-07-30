@@ -45,7 +45,7 @@ import pytest
 import src.config.app_config as app_config
 from src.config.app_config import AppConfig, ConfigLoadState
 from src.ui_flet.home_status import derive_home_status
-from src.ui_flet.nav import nav_model, needs_setup, prominent_initial_id
+from src.ui_flet.nav import initial_destination_id, nav_model, needs_setup
 from src.ui_flet.verdict import Verdict
 
 # A realistic torn write: a valid JSON *prefix* truncated mid-value — exactly what a
@@ -880,8 +880,15 @@ class TestTheUnreadableStateMisleadsNeitherSurface:
         return cfg
 
     def test_the_launch_lands_on_home_not_on_setup(self, unreadable: AppConfig) -> None:
-        """The rail must not shove a configured admin at the wizard as if they were new."""
-        assert prominent_initial_id(nav_model(unreadable)) == "home"
+        """The rail must not shove a configured admin at the wizard as if they were new.
+
+        Since 0038 S6 the launch selection is Home unconditionally, so the rail half of
+        this promise is structural. ``needs_setup`` is what still carries it where it can
+        now go wrong — it is the predicate Home's branch reads, and an unreadable profile
+        must reach the DASHBOARD, not the hosted wizard.
+        """
+        assert initial_destination_id(nav_model()) == "home"
+        assert needs_setup(unreadable) is False, "an unreadable profile would be shown the setup wizard"
 
     def test_home_shows_the_dashboard_and_reports_the_real_run(self, unreadable: AppConfig) -> None:
         """Home reads the run store — a separate, intact artifact — not the lost settings.
