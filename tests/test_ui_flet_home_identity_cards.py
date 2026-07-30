@@ -749,10 +749,19 @@ class TestTheMountIsCheapAndTheCardIsStable:
         The off-thread schedule probe re-derives Home's whole control list when it returns.
         Rebuilding the card there would silently wipe an address the admin was midway
         through typing — a data-loss bug with no error and no trace.
+
+        ``get_scheduler`` is stubbed because ``_probe_schedule_async`` returns EARLY on a
+        scheduler with no read-back (``supports_read_schedule`` is False for Linux cron), so
+        on CI the probe never marshalled and this row failed on its own vacuity guard —
+        red on every Linux run since it was written. Stubbing the capability rather than
+        skipping the platform is deliberate: the subject is the card surviving a re-render,
+        which is OS-independent, so the coverage should be too. Same seam and shape as
+        ``tests/test_ui_flet_shell_boot.py``'s badge-probe rows.
         """
         live = ScheduleStatus(
             state=ScheduleState.LIVE, headline="Nightly sync is scheduled", detail="Next run at 3:00 AM"
         )
+        monkeypatch.setattr(home, "get_scheduler", lambda: MagicMock(supports_read_schedule=True))
         monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: live)
         captured: list = []
         page = MagicMock()
