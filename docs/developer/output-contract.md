@@ -337,9 +337,20 @@ Only these four columns are emitted. The SpacesEDU attendance spec permits dropp
 
 | Row | Status | Basis | Guarantee |
 |---|---|---|---|
-| Default `yyyy-MM-dd` is what the live importer requires | **pending owner confirmation** — part of **owner question Q1** | observed import (2026-06-22: a non-ISO shape was rejected) | GUARANTEED as the emitted default |
-| The base config comment asserting the importer "requires" ISO | **pending owner confirmation** — the comment states a requirement no in-repo evidence fully settles; it rests on one observed rejection | observed import | not claimed |
-| `dd-MMM-yyyy` (the shape the published BC/Aspen Doc documents) is still accepted | **pending owner confirmation** — part of **owner question Q1** | published Doc | TOLERATED at most; we do not emit it by default |
+| Default `yyyy-MM-dd` is what the live importer requires | **confirmed 2026-07-30 (owner)** — Q1a settled: ISO is REQUIRED, not merely preferred | owner confirmation against the live importer; corroborated by the 2026-06-22 observed rejection | GUARANTEED as the emitted default |
+| The base config comment asserting the importer "requires" ISO | **confirmed 2026-07-30 (owner)** — the comment was ahead of its evidence when written; the claim is now earned rather than inferred from one rejection | owner confirmation | GUARANTEED |
+| `dd-MMM-yyyy` (the shape the published BC/Aspen Doc documents) is still accepted | **REFUTED 2026-07-30 (owner)** — the live importer does **not** accept it | owner confirmation (rank 1) **over** the published Doc (rank 2) | NOT accepted — see the footgun note below |
+
+> **⚠ The `attendance.date_format` knob can express a shape the importer rejects.** `dd-MMM-yyyy` is
+> expressible (the token vocabulary supports it) and, as of Q1a, would produce a file the live importer
+> refuses. Nothing validates that today — an unsupported *token* fails loud, but a well-formed
+> *non-ISO shape* does not. A district config setting it is a silent delivery failure at 3am. Tracked
+> in `docs/claugentic-ROADMAP.md`; the candidate fix is to accept only ISO unless an explicit
+> acknowledgement key is set, per CLAUDE.md's "make the unsafe call unrepresentable" rule.
+>
+> **This is a rank-1-over-rank-2 divergence:** the published BC/Aspen Doc documents `DD-MMM-YYYY`, and
+> the live importer refuses it. The Doc is wrong or stale on this point and should be corrected —
+> divergence register row 1.
 
 ### Two bands, two vocabularies — never one merged list
 
@@ -377,12 +388,20 @@ Highest authority first. **The live importer always wins.**
 | 3 | *Attendance Import for SpacesEDU* (generic) — Google Doc `1s-Ai0OD70A0LJLz_n8QtA1z7cAlxdN4c0xc6yQ4Tgvs` | Partner-facing, SIS-agnostic. 4 required fields; K-7 0.5/entry vs 8-12 0.25/entry weighting. |
 | 4 | [SpacesEDU Help Centre — *How do attendance imports work?*](https://help.spacesedu.com/en-ca/article/how-do-attendance-imports-work-4gc9ay/) | **User-facing.** Written for district admins, not as a format spec. Never cite it against a lower-ranked engineering statement. |
 
-### Owner question Q1 — verbatim
+### Owner question Q1b — verbatim
 
-> **Q1 — attendance category vocabulary + date format: what is the live importer's verdict per value?**
-> The published Docs list the categories `A`, `AD`, `A-E`, `A-E OffSite`, `AL`, `AL-E`, `L`, `L AUTH`, `L-E` and document `DD-MMM-YYYY` dates. DistrictSync derives `A`, `A-E`, `L`, `L-E` for the K-7 daily band and emits ISO `yyyy-MM-dd`. Which of the Docs' values does the live importer actually accept today, and is ISO the required date shape (as the base config comment asserts) or merely one accepted shape?
+The original Q1 asked two things at once — the date format and the category vocabulary. **The date half
+(Q1a) was settled by the owner on 2026-07-30: ISO `yyyy-MM-dd` is REQUIRED and `dd-MMM-yyyy` is not
+accepted.** The vocabulary half remains open and is restated here on its own, because it is the half with
+live consequences:
 
-Until Q1 is answered, every row above that references it stays `pending owner confirmation`.
+> **Q1b — attendance category vocabulary: does the live importer IGNORE an unaccepted code, or REJECT the file?**
+> The published Docs list the categories `A`, `AD`, `A-E`, `A-E OffSite`, `AL`, `AL-E`, `L`, `L AUTH`, `L-E`. DistrictSync DERIVES only `A`, `A-E`, `L`, `L-E` for the K-7 daily band — that vocabulary is ours to promise — and PASSES THROUGH the district's own codes unfiltered for the 8-12 period band, including values the Docs never list (`OffSite`, `ISS`, …). That pass-through rests on an understanding recorded 2026-06-19 and never confirmed: that SpacesEDU ignores non-accepted codes rather than rejecting the file. Which of the Docs' values does the live importer actually accept today, and what does it do with one it does not — skip the row, or refuse the whole feed?
+
+Until Q1b is answered, every row above that references it stays `pending owner confirmation`. **It is the
+first thing to settle in the certification pass**, not the last: if the answer is "refuse the whole feed",
+the unfiltered pass-through is a live defect — one unexpected code in one district's extract would kill
+that district's entire attendance delivery, silently, on a nightly run.
 
 ---
 
@@ -474,8 +493,8 @@ Where this contract differs from a published reference, and what we intend to do
 
 | # | Divergence | Detail | Action |
 |---|---|---|---|
-| 1 | Attendance **date format** | We emit ISO `yyyy-MM-dd` by default; the BC/Aspen Doc documents `DD-MMM-YYYY`. A non-ISO shape was observed rejected on 2026-06-22. | **feed back to the published Doc** (pending Q1) |
-| 2 | Attendance **category vocabulary** | The Docs list nine values; our derived K-7 map emits four (`A`, `A-E`, `L`, `L-E`). The 8-12 band passes district values through, including `OffSite` / `ISS`, which are not in the Docs' accepted list. | **pending Q1** — then per value: feed back, or accepted divergence |
+| 1 | Attendance **date format** | We emit ISO `yyyy-MM-dd`; the BC/Aspen Doc documents `DD-MMM-YYYY`, which the live importer **rejects** (owner, 2026-07-30 — Q1a). The Doc is wrong or stale on this point, and it is rank 2 against the importer's rank 1. | **feed back to the published Doc** — CONFIRMED divergence, no longer pending |
+| 2 | Attendance **category vocabulary** | The Docs list nine values; our derived K-7 map emits four (`A`, `A-E`, `L`, `L-E`). The 8-12 band passes district values through, including `OffSite` / `ISS`, which are not in the Docs' accepted list. | **pending Q1b** — see the blast-radius note under Open owner questions |
 | 3 | **BOM rule undocumented** | No published reference states that the attendance feed must be BOM-free. We learned it from a rejection. | **feed back to the published Doc** |
 | 4 | Advanced CSV Doc **scope** | Doc v1.0 covers only the 5 rostering CSVs. The two myBlueprint+ course feeds and StudentAttendance are outside it. | **accepted divergence** — courses are internal spec here; attendance has its own two Docs |
 | 5 | Advanced CSV Doc **lags the live importer** | Owner statement (2026-07-27): the live importer is authoritative and the Doc lags slightly as functionality has evolved. `EnrollStatus` and `SchoolCode` as emitted are confirmed correct. | **feed back to the published Doc** |
@@ -486,16 +505,42 @@ Where this contract differs from a published reference, and what we intend to do
 
 ## Open owner questions
 
-All three ship with this document as `pending owner confirmation`. That is an accepted landing state — a **status field, not debt**. Each is stated verbatim beside the rows it governs; collected here for convenience.
+**Q1a is SETTLED (owner, 2026-07-30).** Three remain `pending owner confirmation` — an accepted landing
+state, a **status field, not debt**. Each is stated verbatim beside the rows it governs; collected here
+with the exact check that would settle it, so the certification pass is a short bench test rather than a
+research task. **Ordered by blast radius, not by number.**
 
-> **Q1 — attendance category vocabulary + date format: what is the live importer's verdict per value?**
-> The published Docs list the categories `A`, `AD`, `A-E`, `A-E OffSite`, `AL`, `AL-E`, `L`, `L AUTH`, `L-E` and document `DD-MMM-YYYY` dates. DistrictSync derives `A`, `A-E`, `L`, `L-E` for the K-7 daily band and emits ISO `yyyy-MM-dd`. Which of the Docs' values does the live importer actually accept today, and is ISO the required date shape (as the base config comment asserts) or merely one accepted shape?
+> **✅ Q1a — attendance date format. SETTLED: ISO `yyyy-MM-dd` is REQUIRED.**
+> `dd-MMM-yyyy` — the shape the published BC/Aspen Doc documents — is **not accepted** by the live
+> importer. Confirmed by the owner on 2026-07-30, corroborated by the 2026-06-22 observed rejection.
+> Consequences already applied above: the default row and the base config comment are confirmed, the
+> "still accepted" row is REFUTED, divergence register row 1 is confirmed (the Doc needs correcting),
+> and the `attendance.date_format` footgun is recorded in the ROADMAP.
+
+> **Q1b — attendance category vocabulary: does the live importer IGNORE an unaccepted code, or REJECT the file?**
+> The published Docs list the categories `A`, `AD`, `A-E`, `A-E OffSite`, `AL`, `AL-E`, `L`, `L AUTH`, `L-E`. DistrictSync DERIVES only `A`, `A-E`, `L`, `L-E` for the K-7 daily band — that vocabulary is ours to promise — and PASSES THROUGH the district's own codes unfiltered for the 8-12 period band, including values the Docs never list (`OffSite`, `ISS`, …). That pass-through rests on an understanding recorded 2026-06-19 and never confirmed: that SpacesEDU ignores non-accepted codes rather than rejecting the file. Which of the Docs' values does the live importer actually accept today, and what does it do with one it does not — skip the row, or refuse the whole feed?
+
+**🔴 Settle Q1b FIRST.** Everything else here is a documentation question; this one is a live correctness
+question with district-wide blast radius. *The check:* import a `StudentAttendance.csv` carrying one row
+with a category outside the Docs' nine (e.g. `ISS`) alongside several valid rows. Does the importer
+(a) accept the file and skip that row, (b) accept the file and import the row, or (c) reject the whole
+file? Then repeat for the Docs' values we never emit (`AD`, `AL`, `A-E OffSite`, `AL-E`, `L AUTH`) to
+learn which are genuinely live. **If the answer is (c), this is a defect rather than a doc gap** — the
+unfiltered pass-through needs a filter or a build-time loud failure, ahead of release.
 
 > **Q2 — CourseInfo/StudentCourses header spellings: which spelling does the live importer canonically expect?**
 > The SD22 sample shows `CourseCode` / `SchoolID` / `Integration Id` where DistrictSync emits `Course Code` / `School ID` / `IntegrationId`. Are both accepted by the live importer, and if so which is canonical — i.e. should DistrictSync switch, or is our spelling the one to document as canonical in the internal spec?
 
+*The check:* import one `CourseInfo.csv` with our spelling and one with the SD22 spelling; note which
+import cleanly. **Lowest urgency of the three** — it only forces a change if we decide to switch, and
+switching is a partner-visible output change needing its own snapshot-gated slice.
+
 > **Q3 — line-ending tolerance: we emit CRLF on Windows and LF on the Mac/Linux artifacts — does the importer care?**
 > If it does not, we can leave `os.linesep` and record an accepted divergence. If it does, `DataLoader._write_csv` needs a `lineterminator` pin, which changes emitted bytes on two of the three build platforms and therefore needs its own snapshot-gated slice.
+
+*The check:* import the same file twice, once CRLF-terminated and once LF-terminated. **Low urgency in
+practice** — districts run the Windows exe, so CRLF is what actually ships today, and the LF shape is
+only reachable from an artifact nobody currently delivers from.
 
 ---
 
