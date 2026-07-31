@@ -9,6 +9,77 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-07-31
+
+Phase 1 of the front-door programme (plan 0038, nine slices, PRs #67–#75). The
+first-run experience and the Home dashboard were both rewritten. **No CSV output
+changes** — the SD74 golden and every district contract test pass untouched.
+
+**Released ahead of the certification pass by owner decision (2026-07-31).** The
+audit + product-gap + QA-checklist walk that `docs/claugentic-DECISIONS.md`
+(D-0037-6) reserves for after Phase 2 has **not** run against this build; see that
+decision log for what this release is and is not evidence of.
+
+### Added
+
+- **A launch page that asks who looks after this sync.** One work email, matched
+  against the district's public staff domain, before the app opens. Every path
+  leads into the app — a match, no match, a typo, skipping it entirely, or a crash
+  on the page itself. The answer is changeable and clearable any time in Settings
+  and echoed on Help; it is never sent anywhere.
+- **District pickers scoped to your district.** Once an address is on file, the
+  wizard, Settings, Convert and Mapping lists show just that district's options,
+  with "Show all districts" one click away. A district is hidden only when some
+  other district's list claims it, so a broken or unclaimed config only ever
+  *widens* a list — your own district can never disappear from the surface that
+  edits it.
+- **Convert names the district this run will actually use.** A "This run: …" pill
+  plus a one-click route to Mapping, shown only when the run's district differs
+  from the saved one. A label, never a gate.
+- **Home carries one roster-size number** on a healthy sync ("It included 4,812
+  students"), so a suspiciously tiny sync cannot look fine. It names whatever the
+  district actually produces — students, attendance rows or courses — and says
+  nothing at all rather than guess when it cannot tell.
+- **A quick-action strip on Home** (Convert now / Run History / Settings).
+
+### Changed
+
+- **Setup now happens on Home.** A new install opens straight into the wizard
+  instead of a hero page pointing at another tab. The welcome line knows the
+  difference between a brand-new install and one that has been running for months
+  but never finished setup.
+- **Home is slimmer after setup:** the metric-tile row is gone, replaced by one
+  plain-language verdict, the size number, and the actions you would actually
+  take. The "will it run again?" schedule card is unchanged.
+- **The finish line saves before it hands you anywhere.** If saving fails, the
+  summary stays on screen with an honest note and a retry, instead of silently
+  bouncing you back to step 1.
+- **Smaller downloads on Windows and macOS** — the packaged app drops an unused
+  media engine (light Flet flavour).
+
+### Fixed
+
+- **An install that has synced for months is no longer greeted as new.** Run
+  history has only been recorded since 3.5.0, so an upgrade from an earlier
+  version arrives with an empty ledger; Home and Run History now say "No runs
+  recorded yet" — a claim about the ledger — rather than "No sync has run yet".
+- **No empty-state sentence names a nightly sync that was never set up.**
+- **The roster-size number can no longer describe the wrong district.** Switching
+  district in Mapping does not re-register the nightly task, and Convert can run a
+  one-off district without saving it, so a stored run can predate the district
+  now saved. The number is suppressed rather than computed from a mismatch.
+- Attendance dates: the importer requires ISO `yyyy-MM-dd`, confirmed against the
+  live importer (contract question Q1a). The `dd-MMM-yyyy` shape the published
+  BC/Aspen document describes is **not** accepted.
+
+### Documentation
+
+- **`docs/developer/output-contract.md`** — a per-column contract for every file
+  DistrictSync emits, with the honest provenance of each claim (confirmed against
+  the live importer, or pending), a divergence register against the published
+  partner docs, and three open owner questions each carrying the bench check that
+  would settle it.
+
 ## [3.8.1] - 2026-07-27
 
 A field-test patch. Owner testing of the packaged Windows exe surfaced a crash
