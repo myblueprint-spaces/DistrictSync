@@ -238,7 +238,81 @@ rubber-stamp. Beneficiary roles: `synthesizer-gate`, `honesty-reviewer`, `implem
   protects code run under pytest from inside `tests/`; any process importing the profile/store
   modules needs the env override. Read-only here, but it is a privacy seam.
 
+**OWNER DECIDED 2026-07-30 — BOTH remedies, not one.** (1) The Land gate is now stated in this repo's `CLAUDE.md` Development Workflow section: a slice is not landed until CI's own result has been READ and REPORTED (`gh pr checks --watch` / `gh run watch --exit-status`), quoted rather than assumed. (2) `doctor` should gain a **"`main`'s last CI run is not green"** signal — it is a managed plugin skill, so it is requested here rather than edited: the check is one `gh run list --branch main --workflow ci.yml --limit 1` call, and it catches the case the Land gate cannot (a landing that skipped or shortcut the sequence, or a push straight to `main`). The two are deliberately redundant because they fail independently.
+
 Beneficiary roles: orchestrator (Land sequence + panel design), `doctor`, `lens-reviewer`.
+
+## verify — S7 lessons: the fix batch is where the next false claim gets written  [staged 2026-07-31, plan 0038 S7]
+
+S7 needed TWO adversarial rounds and produced six blockers between them. Every durable lesson below was
+paid for twice in this program — once in S6, once here — which is what promotes them from incident to rule.
+
+## 1. A fix batch closing an over-claim is the MOST likely place to author a new one — budget a discharge round
+**Incidents: S6 round 1 AND S7 round 1. Twice in one program, same shape.**
+- S6: closing "don't call an unreadable run store *safe*" rerouted the case onto "everything you've
+  already entered is safe" — shown to an install the code had just checked had entered nothing.
+- S7: closing "you struck out a live defect on the false premise that Home renders no counts" produced a
+  restatement built on **the same false premise**, propagated to TEN sites including `CLAUDE.md`, while
+  two green tests asserted Home renders `It included 8,140 attendance rows.`
+**Rule.** A batch whose subject is a false claim is operating in exactly the register where false claims
+are easy to write. Treat "fix batch on a copy/claims blocker" as automatically warranting a discharge
+round; do not treat the blocker list as the finish line. And when a batch RESTATES something it was told
+was false, re-derive the restatement from the code — do not edit the sentence.
+
+## 2. A struck-through backlog line is one nobody re-raises
+**Incident (S7 BLOCK-3).** A live Run History defect was marked `~~struck~~ — DISSOLVED (not fixed) by
+plan 0038 S7` on a premise that was false. Strikethrough reads as *settled* to every future reader, so a
+wrong discharge in a backlog is far more durable than a wrong sentence in a docstring — nobody re-opens
+it to check.
+**Rule.** A discharge claim in ROADMAP is a CLAIM and needs the same bar as a confirmed contract row:
+name what actually changed, and keep any symptom the change did not touch OPEN and unstruck. Prefer
+"reduced, not resolved — here is what remains" over strikethrough whenever a change is partial.
+
+## 3. A prescribed fix can have a hole — verify the OUTCOME, not the prescription
+**Incident (S7 BLOCK-2).** The panel prescribed: gate `_FIRST_SYNC_LEAD` on a positive schedule signal.
+The implementer did exactly that, correctly. But `_expects_a_nightly` admits `schedule_registered`, which
+is precisely what the ≤v3.4.0 upgrader has — so the falsehood the blocker was raised on survived in 2 of
+4 schedule states, with the module contradicting itself three lines above the offending arm.
+**Rule.** Implementing a review's prescription literally is correct behaviour and must not be penalised.
+The obligation on the *verifier* is to re-check the STATE the blocker named, not to confirm the
+prescribed edit was made. Write blockers as "state X must no longer render Y", with the suggested fix
+labelled as a suggestion.
+
+## 4. A volunteered in-class fix still needs a pin
+**Incident (S7).** The batch swept a defect class beyond its brief (good — CANDIDATES mandates it) and
+fixed a twin over-claim in `run_history.py`. Then wrote three documents saying the class was closed. The
+fix was reverted in a probe and **400 targeted tests stayed green**, and the sweep had in fact stopped
+one arm short of a sibling that still carried the over-claim.
+**Rule.** Sweeping the class is right; *claiming* the class is closed is a verifiable assertion. Any
+volunteered fix needs (a) a positive assertion that bites, and (b) an actual enumeration of the class
+before any document says it is swept. An unpinned fix plus a "class closed" sentence is worse than
+neither — it retires the reader's suspicion without retiring the defect.
+
+## 5. Guard the number, not the config: an entity vocabulary must come from the run that produced the counts
+**Incident (S7 BLOCK-1, the slice's most serious defect).** The size clause resolved its entity
+vocabulary from the district saved NOW and applied it to a record produced by whatever ran THEN,
+rendering `It included 0 students.` under a GREEN "Your roster is up to date" band — the exact string
+the acceptance criterion forbade, and the exact failure the feature existed to prevent. Two SHIPPED
+paths produce the divergence (Mapping switches `sis_type` without re-registering the task; Convert
+records a per-run district without saving).
+**Rule.** Whenever a view interprets a stored RECORD using CURRENT config, the record's own provenance
+field is the authority — and if the two disagree, say nothing rather than compute a number. Generalise:
+*data rendered from a historical record must be interpreted with that record's metadata, never with
+today's settings.* Related: an AC phrased about the CONFIG ("a config that does not emit Students is
+never counted in students") was **literally satisfied by the buggy render** — phrase acceptance criteria
+about the run that produced the data, not about the active configuration.
+
+## 6. `isinstance`-filtered harvests silently exclude whole shapes
+**Incident (S7 SHOULD 4).** The doc copy-parity test harvests module constants by prefix with
+`isinstance(value, str)`. `SIZE_NOUNS` is a **dict**, so it is structurally unreachable by the pin — yet
+its nouns are quoted word-for-word in three docs and an AC. Renaming one reddens unit rows but never the
+doc side. The same file's own docstring says an undeclared gap IS the defect.
+**Rule.** A reflective harvest's FILTER is part of its coverage claim. State what shape it can see, and
+put anything it structurally cannot reach on the declared-gap list — a prefix pin that silently skips
+every non-`str` container is an absorbed gap wearing a pin's clothes.
+
+
+---
 
 ## reliability — "Gate destructive cleanup on its subject existing; latch success AFTER the risky work"  [staged 2026-07-29, plan 0038 S4a]
 
