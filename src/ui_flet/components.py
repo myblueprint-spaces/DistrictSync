@@ -14,8 +14,6 @@ file only assembles ``ft.Control``s from them.
 The component inventory (see ``docs/DESIGN_SYSTEM.md`` for usage rules):
   * ``page_header`` — the slim white page header (title + sub + optional right
     slot). Replaces the gradient hero as the top-of-screen element (Slice 2).
-  * ``section_label`` — a muted uppercased caps label introducing a group (the
-    mockup's "Latest roster" over a tile row).
   * ``primary_button`` — the ONE filled brand-blue action per screen
     (``FilledButton``; hover/pressed/focused states; ``disabled_bgcolor`` carries
     the security Save-gate fill in ``setup.py``).
@@ -399,7 +397,7 @@ def hero_gradient() -> ft.LinearGradient:
 
 
 # --------------------------------------------------------------------------- #
-# Metric tile — one big value over a muted caption (shared by Home + Convert)   #
+# Metric tile — one big value over a muted caption (Convert's result row)       #
 # --------------------------------------------------------------------------- #
 def metric_tile(label: str, value: str) -> ft.Container:
     """One calm metric tile: a navy ``type_metric`` numeral over a muted caps caption.
@@ -408,8 +406,9 @@ def metric_tile(label: str, value: str) -> ft.Container:
     (letter-spaced tight, mimicking the mockup's tabular figures; Flet 0.85.3 ``TextStyle``
     has no ``font-variant-numeric``, so the tabular look is approximated via the tight
     tracking). The label is an uppercased, letter-spaced ``type_caption`` in muted slate.
-    The single source of the entity-count / status tile shape (Home + Convert render a
-    row of these).
+    The single source of the entity-count / status tile shape. **Convert's post-run result row
+    is its ONLY caller** since 0038 S7 retired Home's tile row — kept (unlike ``section_label``,
+    which S7 deleted outright) because that caller is live.
     """
     return card(
         content=ft.Column(
@@ -498,24 +497,11 @@ def page_header(
     )
 
 
-def section_label(text: str) -> ft.Control:
-    """A small uppercased caps label introducing a group (Direction B ``.section-label``).
-
-    An uppercased, letter-spaced ``type_caption`` in muted slate — the quiet header the mockup
-    puts above a metric-tile row ("Latest roster"). Muted-on-wash / muted-on-white are both
-    AA-gated (``UI_CONTRAST_PAIRS``). Assembly, not styling: screens call this rather than
-    hand-rolling the caps ``ft.Text``.
-    """
-    return ft.Container(
-        padding=ft.Padding(left=tokens.space_xs // 2, top=0, right=0, bottom=0),
-        content=ft.Text(
-            text.upper(),
-            size=tokens.type_caption,
-            weight=ft.FontWeight.W_700,
-            color=tokens.color_muted,
-            style=ft.TextStyle(letter_spacing=0.8),
-        ),
-    )
+# ``section_label`` (a muted uppercased caps group header) RETIRED at 0038 S7. Its one and
+# only caller in the repo was Home's "Latest roster" line above the metric-tile row, and slim
+# Home removed both. An uncalled factory in the module the design system calls "the ONLY
+# control factories" advertises a shape nothing uses; re-adding it is a dozen lines if a
+# future screen genuinely needs a group header. See docs/claugentic-DECISIONS.md.
 
 
 # --------------------------------------------------------------------------- #
@@ -607,7 +593,7 @@ def status_pill(label: str, status: Verdict) -> ft.Container:
 # run_table — the first ft.DataTable consumer (Run History)                     #
 # --------------------------------------------------------------------------- #
 # The 5 rostering entities always shown, then the 2 myBlueprint+ entities shown
-# only when a row has them — mirroring the `home_status`/Home tile rule. Each entry
+# only when a row has them — off the `home_status` entity tuples. Each entry
 # is (entity key -> column header). Both the entity ORDER (the `home_status` tuples)
 # and the entity→label fact (`home_status.ENTITY_LABELS`) are single-sourced — this
 # `run_table` and the pure `mapping_catalog` read ONE definition, so a label rename

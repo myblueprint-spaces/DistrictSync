@@ -398,6 +398,143 @@ class TestScreensRender:
             "the verdict band must be the first content element after the page header"
         )
 
+    # ------------------------------------------------------------------ #
+    # 0038 S7 — slim Home: the subtraction and the quick-action strip     #
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _slim_home(stub_page, monkeypatch, *, records, sis_type="sd48myedbc"):
+        """Mount Home's DASHBOARD branch over a chosen run store.
+
+        ``get_scheduler`` is stubbed to a read-back-less scheduler rather than the platform being
+        skipped, so these rows exercise the same initial paint on Windows, Linux and macOS (the
+        S6 lesson: a ``skipif`` hides the gap exactly where it matters).
+        """
+        from src.ui_flet.screens import home as home_screen
+
+        cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type=sis_type, setup_completed=True, identity_email="")
+        monkeypatch.setattr(home_screen, "read_run_records", lambda: records)
+        monkeypatch.setattr(home_screen, "_store_created_at", lambda: "2026-07-04T03:00:00")
+        monkeypatch.setattr(home_screen, "get_scheduler", lambda: MagicMock(supports_read_schedule=False))
+        return _assert_renders(
+            lambda: build_home(stub_page, app_config=cfg, on_navigate=lambda _d: None),
+            monkeypatch,
+        )
+
+    @staticmethod
+    def _filled(tree):
+        return [c for c in _iter_controls(tree) if isinstance(c, ft.FilledButton)]
+
+    @staticmethod
+    def _outlined(tree):
+        return [c for c in _iter_controls(tree) if isinstance(c, ft.OutlinedButton)]
+
+    def _clean_record(self, **over):
+        record = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "status": "success",
+            "sftp_attempted": True,
+            "sftp_ok": True,
+            "anomalies": [],
+            "data_errors": {},
+            "Students": 4812,
+            "Staff": 210,
+            "Family": 3900,
+            "Classes": 640,
+            "Enrollments": 21000,
+        }
+        record.update(over)
+        return record
+
+    def test_home_healthy_has_EXACTLY_one_filled_primary(self, stub_page, monkeypatch):
+        # Before S7 the healthy dashboard carried ZERO filled actions — the one-primary rule was
+        # UNDER-satisfied, which is what makes this smoke non-vacuous rather than a restatement.
+        # The config carries no stored address, so the S4b identity ASK card rides along too:
+        # its Save must stay OUTLINED beside the strip's one filled action.
+        tree = self._slim_home(stub_page, monkeypatch, records=[self._clean_record()])
+        filled = self._filled(tree)
+        assert [b.content for b in filled] == ["Convert now"], (
+            f"healthy Home must carry exactly one filled primary, got {[b.content for b in filled]}"
+        )
+        outlined = {b.content for b in self._outlined(tree)}
+        assert {"Run History", "Settings"} <= outlined
+        assert "Convert now" not in outlined, "Convert must be the FILLED action when there is no fault"
+
+    def test_home_fault_has_EXACTLY_one_filled_primary_and_it_is_the_fix(self, stub_page, monkeypatch):
+        tree = self._slim_home(stub_page, monkeypatch, records=[self._clean_record(status="failed")])
+        filled = self._filled(tree)
+        assert [b.content for b in filled] == ["Check Run History"]
+        # The strip drops the destination the fix already owns — never the same button twice.
+        outlined = {b.content for b in self._outlined(tree)}
+        assert {"Convert now", "Settings"} <= outlined
+        assert "Run History" not in outlined, "the fix CTA's destination must not repeat in the strip"
+
+    def test_home_no_longer_renders_the_metric_tile_row(self, stub_page, monkeypatch):
+        # The subtraction, asserted on the BUILT tree: the tiles used to render exactly here
+        # (a clean delivered run is the only state that ever produced them).
+        tree = self._slim_home(stub_page, monkeypatch, records=[self._clean_record()])
+        assert not _has_text(tree, "LATEST ROSTER"), "the retired section label is still rendered"
+        assert not _has_text(tree, "Latest roster")
+        assert not _has_text(tree, "Last run"), "a metric tile is still rendered"
+        assert not _has_text(tree, "Delivered to SpacesEDU ✓")
+        # The positive twin: the run's SIZE is still on the surface, in the verdict's own line.
+        assert _has_text_containing(tree, "It included 4,812 students."), (
+            "the roster-size number vanished with the tiles — the size clause is not wired"
+        )
+
+    def test_home_supplies_the_configs_own_entities_to_the_size_clause(self, stub_page, monkeypatch):
+        # Pins the SUPPLY, not the forwarding: an attendance-only district must never read
+        # "0 students" just because the record writes that key with a defaulted zero.
+        record = self._clean_record(Students=0, Staff=0, Family=0, Classes=0, Enrollments=0, StudentAttendance=8140)
+        tree = self._slim_home(stub_page, monkeypatch, records=[record], sis_type="sd51attendance")
+        assert _has_text_containing(tree, "It included 8,140 attendance rows.")
+        assert not _has_text_containing(tree, "0 students")
+
+    def test_home_omits_the_size_clause_when_the_district_is_unknowable(self, stub_page, monkeypatch):
+        # A config that cannot be read resolves to () — the clause vanishes rather than guesses.
+        tree = self._slim_home(stub_page, monkeypatch, records=[self._clean_record()], sis_type="not_a_config")
+        assert not _has_text_containing(tree, "It included")
+
+    def test_home_prints_no_size_number_for_a_record_from_ANOTHER_district(self, stub_page, monkeypatch):
+        """Stage-7 BLOCK-1, on the BUILT tree with the REAL bundled YAMLs.
+
+        The entity list comes from the district saved NOW; the counts come from whatever ran
+        THEN, and Mapping's Apply (which rewrites ``sis_type`` without re-registering the
+        nightly task) makes the pair diverge by design. This exact pair rendered
+        "It included 0 students." under a GREEN band.
+        """
+        record = self._clean_record(
+            Students=0, Staff=0, Family=0, Classes=0, Enrollments=0, StudentAttendance=8140, sis_type="sd51attendance"
+        )
+        tree = self._slim_home(stub_page, monkeypatch, records=[record], sis_type="sd48myedbc")
+        assert not _has_text_containing(tree, "It included"), "a foreign district's counts must print no number"
+        assert not _has_text_containing(tree, "0 students")
+        # The verdict itself is untouched — only the number drops out.
+        assert _has_text_containing(tree, "Last sync delivered to SpacesEDU")
+
+    def test_home_DOES_print_the_size_number_when_the_districts_agree(self, stub_page, monkeypatch):
+        """The positive twin: without it, suppressing the clause outright would pass the row above."""
+        record = self._clean_record(sis_type="sd48myedbc")
+        tree = self._slim_home(stub_page, monkeypatch, records=[record], sis_type="sd48myedbc")
+        assert _has_text_containing(tree, "It included 4,812 students.")
+
+    def test_home_verdict_block_order_survives_the_subtraction(self, stub_page, monkeypatch):
+        # header(0) → verdict band(1) → [fix] → [identity cards] → quick-action strip.
+        # The strip sits BELOW the verdict block so a fault and its fix stay one thought.
+        tree = self._slim_home(stub_page, monkeypatch, records=[self._clean_record(status="failed")])
+        children = tree.controls
+        assert getattr(children[1], "bgcolor", None) == tokens.color_status_failed_tint
+        fix_index = next(
+            i
+            for i, c in enumerate(children)
+            if any(getattr(b, "content", None) == "Check Run History" for b in _find(c, ft.FilledButton))
+        )
+        strip_index = next(
+            i
+            for i, c in enumerate(children)
+            if any(getattr(b, "content", None) == "Convert now" for b in _find(c, ft.OutlinedButton))
+        )
+        assert 1 < fix_index < strip_index, f"band/fix/strip order is {1}/{fix_index}/{strip_index}"
+
     def test_run_history(self, stub_page, app_cfg, monkeypatch):
         _assert_renders(lambda: build_run_history(stub_page, app_config=app_cfg), monkeypatch)
 
@@ -1460,6 +1597,48 @@ def test_wizard_window_regate_recovers_stranded_schedule_step(tmp_path, stub_pag
 
     # THE fix: the rebuilt Schedule step re-derives its window gate -> the forward gate is open again.
     assert _footer_forward(tree).disabled is False
+
+
+def test_home_still_renders_the_live_schedule_card_after_the_S7_subtraction(monkeypatch):
+    """AC-1's "schedule card intact", with POSITIVE evidence (Stage-7 SHOULD 4).
+
+    The only assertion naming this card on Home was a NEGATIVE one (the paused-suppression row
+    below), which is the absence-without-a-positive-twin shape CLAUDE.md's "no vacuous greens"
+    rule bans: the strip S7 added was appended into the same ``controls`` list two lines above
+    the card, so a mis-edit there could have taken the card with it and every gate would still
+    be green. None of S7's own slim-Home smokes can see this — they stub
+    ``supports_read_schedule=False``, so the probe never fires and the card can never construct.
+
+    Driven inline on any OS via ``_driving_page`` + a stubbed ``probe_schedule`` (never a
+    ``skipif`` — the S6 lesson: a platform skip hides the gap exactly where it matters).
+    """
+    from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+    monkeypatch.setattr("src.ui_flet.screens.home.read_run_records", lambda: [])
+    monkeypatch.setattr("src.ui_flet.screens.home.store_meta", lambda: None)
+    live = ScheduleStatus(
+        state=ScheduleState.LIVE,
+        headline="Nightly sync is scheduled",
+        detail="Next run at 3:00 AM",
+        next_run_display="3:00 AM",
+    )
+    monkeypatch.setattr("src.ui_flet.schedule_probe.probe_schedule", lambda *a, **k: live)
+    monkeypatch.setattr(sys, "platform", "win32")  # supports_read_schedule -> the probe fires
+
+    cfg = AppConfig(
+        input_dir="/in", output_dir="/out", sis_type="sd48myedbc", setup_completed=True, schedule_registered=True
+    )
+    captured: list = []
+    surface = build_home(_driving_page(captured), app_config=cfg, on_navigate=lambda _d: None)
+    assert captured, "the schedule probe must fire — without it this row could not see the card"
+    for coro_fn, _args in captured:  # deliver the async LIVE read-back
+        asyncio.run(coro_fn())
+
+    assert _has_text(surface, "Nightly sync scheduled"), "the 'will it run again?' card must survive S7"
+    assert _has_text(surface, "Confirmed"), "…including its Confirmed status pill"
+    # …and the quick-action strip S7 appended into the same controls list is there too, so this
+    # row pins the pair rather than either alone (buttons carry ``content``, not ``value``).
+    assert any(getattr(b, "content", None) == "Convert now" for b in _find(surface, ft.FilledButton))
 
 
 def test_home_suppresses_live_schedule_card_while_paused(monkeypatch):

@@ -25,6 +25,7 @@ import pytest
 
 from src.ui_flet.mapping_catalog import (
     ConfigSummary,
+    active_output_entities,
     can_apply,
     list_configs,
     post_apply_presentation,
@@ -245,6 +246,7 @@ def test_missing_config_id_degrades_never_raises(tmp_path: Path) -> None:
     assert summary == ConfigSummary(
         sis_type="does_not_exist",
         district_name="does_not_exist",  # friendly fallback to the raw id
+        output_entities=(),
         output_labels=(),
         source_file_count=0,
         loaded_ok=False,
@@ -429,6 +431,7 @@ def _summary(sis: str, *, loaded_ok: bool) -> ConfigSummary:
     return ConfigSummary(
         sis_type=sis,
         district_name=sis,
+        output_entities=(),
         output_labels=(),
         source_file_count=0,
         loaded_ok=loaded_ok,
@@ -556,3 +559,129 @@ def test_blank_old_district_name_falls_back(blank: str) -> None:
 
     assert pres.notice is not None
     assert pres.notice.headline == "Your nightly schedule still uses the previous district"
+
+
+# --------------------------------------------------------------------------- #
+# active_output_entities (0038 S7) — Home's roster-size clause needs the TRUTH  #
+# --------------------------------------------------------------------------- #
+def test_output_entities_and_labels_are_one_ordering(bundle_dir: Path) -> None:
+    """``output_labels`` is DERIVED from ``output_entities`` — one produced set, one order.
+
+    Two independently-built tuples would let a picker's label order and Home's "which entity
+    leads" rule drift apart while both looked right in isolation.
+    """
+    from src.ui_flet.home_status import ENTITY_LABELS
+
+    for sis_type in ("sd48myedbc", "mbp_all", "mbp_core", "mbponly", "sd51attendance", "sd51myedbc"):
+        summary = summarize_config(sis_type, config_dir=bundle_dir)
+        assert summary.output_labels == tuple(ENTITY_LABELS.get(key, key) for key in summary.output_entities), sis_type
+
+
+def test_a_rostering_config_leads_with_students(bundle_dir: Path) -> None:
+    entities = summarize_config("sd48myedbc", config_dir=bundle_dir).output_entities
+    assert entities[0] == "Students"
+    assert set(entities) == {"Students", "Staff", "Family", "Classes", "Enrollments"}
+
+
+def test_the_attendance_only_config_produces_ONLY_attendance(bundle_dir: Path) -> None:
+    # The config whose record carries Students=0 by SHAPE — the "0 students" hazard.
+    assert summarize_config("sd51attendance", config_dir=bundle_dir).output_entities == ("StudentAttendance",)
+
+
+def test_the_myblueprint_only_config_leads_with_courses(bundle_dir: Path) -> None:
+    assert summarize_config("mbponly", config_dir=bundle_dir).output_entities == ("CourseInfo", "StudentCourses")
+
+
+def test_a_degraded_config_produces_no_entities(tmp_path: Path) -> None:
+    """Unknowable → ``()``, which makes Home's size clause vanish rather than guess."""
+    assert summarize_config("does_not_exist", config_dir=tmp_path).output_entities == ()
+
+
+def test_active_output_entities_is_total_over_junk() -> None:
+    assert active_output_entities("") == ()
+    assert active_output_entities("   ") == ()
+    assert active_output_entities("no_such_district_config") == ()
+
+
+def test_active_output_entities_memoises_one_parse_per_district(monkeypatch, bundle_dir: Path) -> None:
+    """The mount-cost claim, asserted: Home resolves ONE config, once per session."""
+    from src.ui_flet import mapping_catalog
+
+    mapping_catalog.reset_catalog_cache()
+    calls: list[str] = []
+    real = mapping_catalog.summarize_config
+    monkeypatch.setattr(
+        mapping_catalog,
+        "summarize_config",
+        lambda sis, **kw: (calls.append(sis), real(sis, **kw))[1],
+    )
+
+    first = mapping_catalog.active_output_entities("sd48myedbc", config_dir=bundle_dir)
+    second = mapping_catalog.active_output_entities("sd48myedbc", config_dir=bundle_dir)
+
+    assert first == second
+    assert calls == ["sd48myedbc"], f"expected exactly one parse per district, got {calls}"
+    mapping_catalog.reset_catalog_cache()
+
+
+def test_reset_clears_the_per_config_cache_too(tmp_path: Path) -> None:
+    """Both caches drop together — a fresh catalog beside a stale summary is a split brain."""
+    from src.ui_flet import mapping_catalog
+
+    _write(
+        tmp_path,
+        "later",
+        """
+        version: '1.0'
+        sis: later
+        district_name: Later
+        global_config:
+          enabled_entities: [Students]
+        mappings:
+          Students:
+            source_files:
+              student_demographic: StudentDemographicInformation.txt
+            field_map:
+              "User ID": student number
+        """,
+    )
+    mapping_catalog.reset_catalog_cache()
+    assert mapping_catalog.active_output_entities("later", config_dir=tmp_path) == ("Students",)
+
+    (tmp_path / "later_mapping.yaml").unlink()
+    assert mapping_catalog.active_output_entities("later", config_dir=tmp_path) == ("Students",)  # memoised
+
+    mapping_catalog.reset_catalog_cache()
+    assert mapping_catalog.active_output_entities("later", config_dir=tmp_path) == ()
+
+
+def test_every_bundled_config_can_name_its_own_roster_size(bundle_dir: Path) -> None:
+    """The reality-read across all ELEVEN shipped configs — the AC, over real data.
+
+    For each config: the size clause must (a) exist, (b) name an entity that config genuinely
+    produces, and (c) never mention students on a config that does not emit Students. Reads the
+    real YAMLs rather than a hand-listed table, so a twelfth config joins this sweep for free.
+    """
+    from src.config.loader import available_configs
+    from src.ui_flet.home_status import SIZE_NOUNS, size_clause
+
+    ids = available_configs(bundle_dir)
+    assert len(ids) == 11, f"the bundled config count moved ({len(ids)}) — keep this pin in lockstep"
+
+    # A record where EVERY entity key is non-zero and DISTINCT, so the entity the clause chose
+    # is identifiable from the number it printed.
+    counts = {key: 1000 + index for index, key in enumerate(SIZE_NOUNS)}
+
+    for sis_type in ids:
+        entities = summarize_config(sis_type, config_dir=bundle_dir).output_entities
+        # The record is this config's OWN — the sweep is about which entity gets named, not
+        # about the Stage-7 different-district guard (which has its own rows in
+        # ``tests/test_ui_flet_home_status.py``). Stamping the district keeps the two axes
+        # separate: without it the sweep would silently exercise the "no district on the
+        # record" path instead of the agreeing one.
+        clause = size_clause(dict(counts, sis_type=sis_type), entities, expected_sis_type=sis_type)
+        assert clause, f"{sis_type} produces {entities} but Home can name none of it"
+        leading = next(key for key in SIZE_NOUNS if key in set(entities))
+        assert f"{counts[leading]:,}" in clause, f"{sis_type} named the wrong entity: {clause}"
+        if "Students" not in entities:
+            assert "student" not in clause, f"{sis_type} does not emit Students but the clause says {clause!r}"

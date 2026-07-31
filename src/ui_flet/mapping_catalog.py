@@ -98,10 +98,17 @@ class ConfigSummary:
     ``tests/test_ui_flet_filtered_catalog.py`` — two fields, one fact, asserted rather than
     assumed, so a future path that breaks the equivalence surfaces as a red test instead of a
     tier-logic divergence.
+
+    ``output_entities`` (0038 S7) is the same produced set as ``output_labels`` but as raw
+    entity KEYS, in the same canonical order — the truth Home's roster-size clause needs
+    (``home_status.size_clause`` counts by key, and a record's flat count keys are keys, not
+    labels). ``output_labels`` is derived FROM it, so the ordering and the produced set are
+    decided exactly once.
     """
 
     sis_type: str
     district_name: str
+    output_entities: tuple[str, ...]
     output_labels: tuple[str, ...]
     source_file_count: int
     loaded_ok: bool
@@ -118,6 +125,7 @@ def _degraded(sis_type: str, *, config_dir: Path | None) -> ConfigSummary:
     return ConfigSummary(
         sis_type=sis_type,
         district_name=friendly_district_name(sis_type, config_dir=config_dir) or sis_type,
+        output_entities=(),
         output_labels=(),
         source_file_count=0,
         loaded_ok=False,
@@ -138,12 +146,13 @@ def summarize_config(sis_type: str, *, config_dir: Path | None = None) -> Config
         # produces no CSV (the pipeline's own enforcement gates on `entity in mappings` too),
         # so the summary reflects only what actually gets produced (truthful, never a phantom CSV).
         produced = cfg.active_entities()
-        output_labels = _output_labels(produced)
+        output_entities = _ordered_entities(produced)
         source_file_count = _source_file_count(cfg, produced)
         return ConfigSummary(
             sis_type=sis_type,
             district_name=friendly_district_name(sis_type, config_dir=config_dir) or sis_type,
-            output_labels=output_labels,
+            output_entities=output_entities,
+            output_labels=_output_labels(output_entities),
             source_file_count=source_file_count,
             loaded_ok=True,
             district_domains=tuple(cfg.district_domains or ()),
@@ -160,17 +169,28 @@ def summarize_config(sis_type: str, *, config_dir: Path | None = None) -> Config
         return _degraded(sis_type, config_dir=config_dir)
 
 
-def _output_labels(enabled: set[str]) -> tuple[str, ...]:
-    """Map the enabled entity keys to plain-language CSV labels, in the canonical order.
+def _ordered_entities(enabled: set[str]) -> tuple[str, ...]:
+    """The produced entity KEYS in the canonical order — the one place that ordering is decided.
 
     Canonical keys (rostering then myBlueprint+) lead in ``_ENTITY_ORDER`` order; any enabled
-    entity NOT in that spine (a non-standard partner key) is appended after (sorted for a stable
-    order), labelled via ``ENTITY_LABELS`` with a raw-key fallback (total).
+    entity NOT in that spine (``StudentAttendance``, a non-standard partner key) is appended
+    after, sorted for a stable order. ``_output_labels`` and ``ConfigSummary.output_entities``
+    both come from here, so every PICKER's label order is decided in one place.
+
+    **It does NOT decide Home's "which entity leads" rule.** ``home_status.size_clause``
+    collects ``output_entities`` into a SET and then walks ``SIZE_NOUNS`` — that dict's order is
+    the lead rule (as its own docstring says), and this ordering is discarded on that path:
+    forward and reversed, the clause is identical. Claiming the two can never diverge would be
+    claiming a coupling the code does not have.
     """
-    labels: list[str] = [ENTITY_LABELS.get(key, key) for key in _ENTITY_ORDER if key in enabled]
-    extras = sorted(enabled - set(_ENTITY_ORDER))
-    labels.extend(ENTITY_LABELS.get(key, key) for key in extras)
-    return tuple(labels)
+    ordered: list[str] = [key for key in _ENTITY_ORDER if key in enabled]
+    ordered.extend(sorted(enabled - set(_ENTITY_ORDER)))
+    return tuple(ordered)
+
+
+def _output_labels(ordered: tuple[str, ...]) -> tuple[str, ...]:
+    """Map already-ordered entity keys to plain-language CSV labels (raw-key fallback, total)."""
+    return tuple(ENTITY_LABELS.get(key, key) for key in ordered)
 
 
 def _source_file_count(cfg, produced: set[str]) -> int:  # type: ignore[no-untyped-def]
@@ -239,9 +259,50 @@ def catalog(*, config_dir: Path | None = None) -> tuple[ConfigSummary, ...]:
         return ()
 
 
+@lru_cache(maxsize=8)
+def _cached_summary(sis_type: str, config_dir: Path | None) -> ConfigSummary:
+    """One config's summary, memoised for the session. ``summarize_config`` is already TOTAL."""
+    return summarize_config(sis_type, config_dir=config_dir)
+
+
+def active_output_entities(sis_type: str, *, config_dir: Path | None = None) -> tuple[str, ...]:
+    """The ordered entity keys ``sis_type`` actually produces — TOTAL, ``()`` when unknowable.
+
+    Routes through ``MappingConfig.active_entities()`` (via :func:`summarize_config`), which
+    CLAUDE.md names as THE accessor for the ``enabled_entities`` selection — never a re-spelled
+    ``enabled_entities or []``, and never a "non-zero counts" heuristic (that would read "this
+    district produced no students" as "this config emits no Students", hiding the exact alarm
+    Home's size clause exists to raise).
+
+    **Why a second, narrower cache than :func:`catalog`.** The one caller is Home's mount, the
+    flagship surface, which needs exactly ONE config; going through the eleven-YAML catalog
+    build there is the ~210 ms cost the S4b note deliberately refuses to pay on that path
+    (pinned by ``tests/test_ui_flet_home_identity_cards.py``). Keyed per ``sis_type`` so a
+    Mapping **Apply** resolves the new district on the next mount with nothing to invalidate;
+    :func:`reset_catalog_cache` clears both caches, so the support/test seam stays one call.
+
+    Degrades to ``()`` on anything unreadable — which makes the size clause vanish rather than
+    guess (``home_status.size_clause``).
+    """
+    sis = sis_type.strip()
+    if not sis:
+        return ()
+    try:
+        return _cached_summary(sis, config_dir).output_entities
+    except Exception:  # noqa: BLE001 - defence in depth: an unknowable config costs a sentence, never Home
+        logger.warning("Could not read the district mapping %r; Home's roster-size line is omitted.", sis)
+        return ()
+
+
 def reset_catalog_cache() -> None:
-    """Drop the memoised catalog. The support/test seam; the app never needs to call it."""
+    """Drop BOTH memoised builds (the full catalog and the per-config summaries).
+
+    The support/test seam; the app never needs to call it. Both are cleared together so a
+    caller that re-reads the disk after dropping a YAML cannot get a fresh catalog beside a
+    stale single-config summary.
+    """
     _cached_catalog.cache_clear()
+    _cached_summary.cache_clear()
 
 
 def district_domain_index(*, config_dir: Path | None = None) -> dict[str, tuple[str, ...]]:

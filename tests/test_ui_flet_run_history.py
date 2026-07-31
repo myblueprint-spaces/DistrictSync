@@ -23,6 +23,7 @@ import pytest
 
 from src.config.app_config import AppConfig
 from src.scheduler.windows import ScheduleReadback
+from src.ui_flet import home_status as home_status_mod
 from src.ui_flet.home_status import (
     STALE_AFTER_HOURS,
     LatestReason,
@@ -167,38 +168,53 @@ class TestBannerUnavailable:
 
 
 class TestBannerEmpty:
-    def test_empty_established_with_live_schedule_shows_plain_time(self) -> None:
-        # An established install with an empty store post-update → fresh-start copy, NOT the
-        # false "No sync has run yet"; the next-run time derives from the LIVE read-back (D4).
-        banner = derive_history_banner([], _CONFIGURED, now=_NOW, schedule_status=_live_schedule("3:00 AM"))
+    """0038 S7 part (i): the fresh-start discriminator moved to ``store_created_at`` ALONE, and
+    is now IMPORTED from ``home_status`` rather than duplicated here — so this surface can no
+    longer be left behind when Home's rule changes (it was, byte-for-byte, until S7)."""
+
+    _STORE_STAMP = _RECENT
+
+    def test_empty_upgrader_with_live_schedule_shows_plain_time(self) -> None:
+        # An UPGRADER (a store already exists) with an empty table post-update → fresh-start
+        # copy, NOT the bare "nothing recorded" one; the time derives from the LIVE read-back.
+        banner = derive_history_banner(
+            [], _CONFIGURED, now=_NOW, store_created_at=self._STORE_STAMP, schedule_status=_live_schedule("3:00 AM")
+        )
         assert banner.verdict is Verdict.WARNING  # never red
-        assert banner.headline == "Run history starts fresh here"
+        assert banner.headline == home_status_mod.EMPTY_FRESH_START_HEADLINE
         assert "3:00 AM" in banner.detail
 
-    def test_empty_established_without_schedule_status_omits_time(self) -> None:
-        banner = derive_history_banner([], _CONFIGURED, now=_NOW)
-        assert banner.headline == "Run history starts fresh here"
+    def test_empty_upgrader_without_schedule_status_omits_time(self) -> None:
+        banner = derive_history_banner([], _CONFIGURED, now=_NOW, store_created_at=self._STORE_STAMP)
+        assert banner.headline == home_status_mod.EMPTY_FRESH_START_HEADLINE
         assert "Scheduled for" not in banner.detail
         # Honesty C: conditioned hidden-history claim, never a flat assertion.
         assert "If you used an earlier version" in banner.detail
+
+    def test_empty_with_NO_store_is_never_told_about_an_earlier_version(self) -> None:
+        # The twin: the SAME completed-setup config with no store must not inherit the
+        # upgrader's conditional past-version sentence (the defect part (i) removes).
+        banner = derive_history_banner([], _CONFIGURED, now=_NOW, store_created_at=None)
+        assert banner.headline == home_status_mod.EMPTY_NO_RUNS_HEADLINE
+        assert "earlier version" not in banner.detail
 
     def test_empty_genuine_first_run_unscheduled_says_no_sync_yet(self) -> None:
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
         banner = derive_history_banner([], cfg, now=_NOW, store_created_at=None)
         assert banner.verdict is Verdict.WARNING
-        assert banner.headline == "No sync has run yet"
+        assert banner.headline == home_status_mod.EMPTY_NO_RUNS_HEADLINE
         assert "scheduled for" not in banner.detail.lower()
 
-    def test_empty_completed_manual_only_upgrader_gets_fresh_start(self) -> None:
-        # D4a: a completed-setup manual-only install is established via setup_completed.
+    def test_empty_completed_manual_only_install_is_NOT_an_upgrader(self) -> None:
+        # Part (i): finishing setup is evidence about the SETTINGS, never about a run.
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
         banner = derive_history_banner([], cfg, now=_NOW, store_created_at=None)
-        assert banner.headline == "Run history starts fresh here"
+        assert banner.headline == home_status_mod.EMPTY_NO_RUNS_HEADLINE
 
-    def test_empty_store_created_at_signals_established(self) -> None:
+    def test_empty_store_created_at_signals_an_upgrade(self) -> None:
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
-        banner = derive_history_banner([], cfg, now=_NOW, store_created_at="2026-07-01T03:00:00")
-        assert banner.headline == "Run history starts fresh here"
+        banner = derive_history_banner([], cfg, now=_NOW, store_created_at=self._STORE_STAMP)
+        assert banner.headline == home_status_mod.EMPTY_FRESH_START_HEADLINE
 
     def test_empty_completed_but_confirmed_unscheduled_says_no_auto_sync(self) -> None:
         # #1b: same honest no-auto-sync copy as Home when the read-back CONFIRMS no schedule.
@@ -207,7 +223,57 @@ class TestBannerEmpty:
         banner = derive_history_banner([], cfg, now=_NOW, schedule_status=missing)
         assert banner.verdict is Verdict.WARNING
         assert "won't sync automatically" in banner.detail
-        assert "New nightly syncs will appear" not in banner.detail
+        # The positive twin for this negative lives in ``TestBannerEmptyLeadsArePinned`` below —
+        # this row only proves the no-auto-sync branch WINS over the fresh-start one.
+        assert home_status_mod._FRESH_START_LEAD not in banner.detail
+
+
+class TestBannerEmptyLeadsArePinned:
+    """Discharge-round BLOCK-3(ii): BOTH empty-state details, asserted POSITIVELY.
+
+    Neither of this banner's two empty leads was referenced anywhere in ``tests/``. The only
+    mention was a NEGATIVE assertion on a third branch with no positive twin, so reverting
+    either string to an over-claiming one left ~400 targeted tests green — the exact
+    "No vacuous greens" / "pin at the SUPPLY" shape this slice raised against Home's schedule
+    card. Each row below asserts the EXACT sentence, so a silent rewording is RED.
+    """
+
+    _STORE_STAMP = _RECENT
+
+    def test_the_upgrade_arm_names_the_ledger_and_no_nightly(self) -> None:
+        """The arm is gated on the store's birth stamp ALONE — nothing about a schedule.
+
+        A manual-only install with a stamped-but-empty store reaches it (the store's
+        quarantine-recreate path; QA row 1o stages exactly this by emptying ``history.db``),
+        so "New NIGHTLY syncs will appear here" told an admin who skipped the Schedule step
+        about automation they declined. Home's twin arm is scrubbed the same way.
+        """
+        manual_only = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+        banner = derive_history_banner([], manual_only, now=_NOW, store_created_at=self._STORE_STAMP)
+        assert banner.headline == home_status_mod.EMPTY_FRESH_START_HEADLINE
+        assert banner.detail == (
+            "New runs will appear here from now on. If you used an earlier version, its run history isn't carried over."
+        )
+        assert "nightly" not in banner.detail.lower()
+
+    def test_the_no_stamp_arm_names_no_nightly_either(self) -> None:
+        """The sentence the Stage-7 batch volunteered, now pinned so it cannot silently revert."""
+        manual_only = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
+        banner = derive_history_banner([], manual_only, now=_NOW, store_created_at=None)
+        assert banner.headline == home_status_mod.EMPTY_NO_RUNS_HEADLINE
+        assert banner.detail == "Runs will appear here once the first one completes."
+        assert "nightly" not in banner.detail.lower()
+
+    def test_a_CONFIRMED_LIVE_read_back_is_what_earns_the_nightly_mention(self) -> None:
+        """The positive twin for both rows above — the gate suppresses, it does not delete.
+
+        Without this, scrubbing every mention of a nightly from this surface would pass the
+        two rows above while removing a true, useful sentence.
+        """
+        banner = derive_history_banner(
+            [], _CONFIGURED, now=_NOW, store_created_at=self._STORE_STAMP, schedule_status=_live_schedule("3:00 AM")
+        )
+        assert banner.detail.endswith("Scheduled for 3:00 AM each night.")
 
 
 class TestBannerLatestRules:

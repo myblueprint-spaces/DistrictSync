@@ -3,7 +3,14 @@
 NO ``flet`` import. Given the run records (newest-first, from
 ``history.store.read_run_records``) + the ``AppConfig`` state, derive a single
 ``HomeStatus`` — a ``Verdict`` (HEALTHY / WARNING / FAILED) + a plain-language
-headline + supporting detail + an optional fix path + optional metric tiles.
+headline + supporting detail + an optional fix path + an optional ``HomeMetrics``.
+
+**``HomeMetrics`` is DERIVED but no longer RENDERED by Home.** 0038 S7 retired the metric-tile
+row; the one number that survived rides the healthy detail's ``size_clause``. The bundle stays
+on the model as the pipeline↔UI record-shape contract ``tests/test_pipeline_run_store.py``
+reads, and as the honest "no countable build behind this run" signal (``metrics is None``).
+Retiring it from the model is a named residual in ``docs/claugentic-ROADMAP.md`` — not a claim
+that a screen still paints it.
 
 **Graceful degradation is a first-class OUTPUT, not an exception path** — an
 unreadable log (``records is None``) becomes a calm "status unavailable" WARNING,
@@ -35,6 +42,7 @@ re-buckets those flat keys into its own ``entity_counts`` dict.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -51,9 +59,12 @@ from src.ui_flet.humanize import (
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.verdict import Verdict
 
-# The 5 SpacesEDU rostering entities always shown, then the 2 myBlueprint+ entities
-# shown ONLY when non-zero (a SpacesEDU district run shows 5 tiles, not 7-with-two-zeros).
-# ``StudentAttendance`` is deliberately omitted, mirroring ``03_Run_History``'s columns.
+# The 5 SpacesEDU rostering entities always counted, then the 2 myBlueprint+ entities counted
+# ONLY when non-zero (a SpacesEDU district run yields 5 keys, not 7-with-two-zeros).
+# ``StudentAttendance`` is deliberately omitted. Its ONE surface is Home's healthy ``size_clause``
+# ("It included 8,140 attendance rows.") — nowhere else: Run History's per-entity columns derive
+# from these same two tuples, so an attendance-only run renders five zeros there, and the clause
+# itself is emitted only from the HEALTHY branch. Still-open in ``docs/claugentic-ROADMAP.md``.
 _ROSTERING_ENTITIES: tuple[str, ...] = ("Students", "Staff", "Family", "Classes", "Enrollments")
 _MYBLUEPRINT_ENTITIES: tuple[str, ...] = ("CourseInfo", "StudentCourses")
 
@@ -74,6 +85,47 @@ ENTITY_LABELS: dict[str, str] = {
     "StudentCourses": "Student courses",
     "StudentAttendance": "Attendance",
 }
+
+# --------------------------------------------------------------------------- #
+# The healthy line's roster-size clause (0038 S7)                              #
+#                                                                             #
+# Slim Home drops the metric-tile row, and with it the one thing the tiles     #
+# carried that the verdict does not: a SIZE sanity check. A sync that quietly  #
+# shrank to 12 students is "delivered to SpacesEDU" by every structured field  #
+# on the record, so the healthy line names one number and lets the admin — the #
+# only person who knows the district is not that small — see it.               #
+# --------------------------------------------------------------------------- #
+#
+# WHY A SECOND VOCABULARY, beside ``ENTITY_LABELS``. That map names the output CSV
+# ("Attendance", "Courses") — a heading. This one names a COUNTABLE THING ("8,140
+# attendance rows", "1,204 courses"), which is a different presentation fact and reads
+# wrong if borrowed: "8,140 attendance" and "4,812 family" are not sentences. Both forms
+# are written out rather than derived, because ``humanize.pluralize`` is a naive ``+ "s"``
+# and would render "1 classs".
+#
+# ORDER IS SEMANTIC. The dict order IS the "which entity leads" rule: the first key this
+# config actually produces wins. That is what keeps an attendance-only or myBlueprint+-only
+# config off the rostering keys entirely (see ``size_clause``).
+#
+# THE TABLE IS THE ALLOWLIST. A config may enable a partner-defined entity whose key came
+# out of a hand-dropped YAML; an unknown key produces NO clause rather than being echoed
+# into admin-facing copy. Same posture as the rest of this module: never render a string
+# we did not author.
+SIZE_NOUNS: dict[str, tuple[str, str]] = {
+    "Students": ("student", "students"),
+    "Staff": ("staff record", "staff records"),
+    # NOT "families": a ``Family.csv`` row is one parent/guardian contact and a student may
+    # have several, so counting rows as families would overstate a number by design.
+    "Family": ("family contact", "family contacts"),
+    "Classes": ("class", "classes"),
+    "Enrollments": ("enrollment", "enrollments"),
+    "CourseInfo": ("course", "courses"),
+    "StudentCourses": ("student course", "student courses"),
+    "StudentAttendance": ("attendance row", "attendance rows"),
+}
+
+SIZE_CLAUSE_LEAD = "It included "
+"""The size clause's fixed opening — the one literal docs quote (pinned by the copy-parity test)."""
 
 STALE_AFTER_HOURS = 36
 """A nightly job → a successful run older than ~1.5 nightly cycles is "no recent sync".
@@ -121,6 +173,65 @@ _SCHEDULE_GONE_NOTE = (
 # so its verdict is HEALTHY (an amber "attention" tone would train the admin to ignore amber). The
 # resume date is a PURE fact (``next_resume_date``), rendered PII-free via ``friendly_date_short``.
 _PAUSED_HEADLINE = "Paused for the summer"
+
+# --------------------------------------------------------------------------- #
+# The empty-store copy — SHARED with Run History (0038 S7 part (i))            #
+#                                                                             #
+# Two surfaces answer "there are no runs here yet" and they must never split   #
+# on WHICH empty state this is. Before S7 each carried its own copy of the     #
+# discriminator AND of both headlines, byte-identical by hand — which is       #
+# exactly how two surfaces begin to disagree. The headlines, the              #
+# no-automation note and the rule itself now live here; the LEAD sentences     #
+# stay per-surface on purpose (Run History's lines reference the ledger        #
+# beneath them, Home's do not).                                                #
+# --------------------------------------------------------------------------- #
+EMPTY_FRESH_START_HEADLINE = "Run history starts fresh here"
+# A claim about the LEDGER, never about the world. ``store_created_at`` is the only
+# discriminator either surface has, and it cannot separate "never ran" from "ran before the
+# store existed": ``history.db`` shipped in v3.5.0, ``write_run_record`` is its sole creator,
+# and there is no backfill — so an install upgrading from <= v3.4.0 that has synced nightly for
+# months arrives here with no stamp. "No sync has run yet" was flatly false for that district;
+# "no runs recorded" is true for it AND for the genuine newcomer, which is the only headline
+# both readings can carry. (Both surfaces inherit it — the constant is single-sourced.)
+EMPTY_NO_RUNS_HEADLINE = "No runs recorded yet"
+
+# Shown to a CONFIRMED-unscheduled install that HAS finished setup (finding #1b): an
+# install with no nightly task does not sync on its own, and saying "new syncs will
+# appear here" would imply automation nobody set up. Calm WARNING, no fix CTA — a
+# manual-only district must not be nagged. Byte-identical on both surfaces because the
+# FACT is identical, so it is single-sourced rather than typed twice.
+EMPTY_NO_AUTO_SYNC_DETAIL = (
+    "Your roster won't sync automatically until you add a nightly schedule — set one up "
+    "in Settings whenever you're ready. Manual conversions from the Convert tab appear here too."
+)
+
+# HOME's two lead sentences (Run History writes its own — its lines reference the ledger
+# below them). The upgrader's claim stays CONDITIONED: a store birth stamp proves a run was
+# once recorded, never which build recorded it, so "if you used an earlier version" is the
+# strongest honest form.
+_FRESH_START_LEAD = (
+    "New syncs will appear here from now on. If you used an earlier version, its run history isn't carried over."
+)
+# NAMES a nightly, so it may only be shown where one is positively signalled (see
+# ``_expects_a_nightly``). Until S7 it was near-dead — ``nav.needs_setup`` gated the whole
+# empty branch to the wizard — and promoting it to the default lead for every fresh install
+# meant an admin who SKIPPED the Schedule step read about automation they had declined. That
+# state is Home's INITIAL paint on every mount (the probe is off-thread) and its permanent one
+# whenever the read-back is UNKNOWN.
+#
+# It says "your nightly sync", never "your FIRST": ``_expects_a_nightly`` admits
+# ``schedule_registered``, which is exactly what a <= v3.4.0 upgrader has — an install that has
+# synced nightly for months and lands in this empty state only because ``history.db`` did not
+# exist before v3.5.0. Naming its next sync as the first would be the same ledger-vs-world
+# falsehood ``EMPTY_NO_RUNS_HEADLINE`` was rewritten to avoid, two lines further down the page.
+# The wording is true for the genuine newcomer AND the upgrader, which is the bar every
+# sentence in this branch has to clear.
+_FIRST_SYNC_LEAD = "Your nightly sync will appear here."
+# The artefact-free lead for the same empty store with NO nightly we can point at. It names
+# only the ledger and the two ways a run can reach it, so it is true whether or not this
+# install ever gets a schedule. (``EMPTY_NO_AUTO_SYNC_DETAIL`` is the stronger, CONFIRMED-
+# missing form — this one covers "we cannot see one", which is not the same claim.)
+_NO_RUNS_YET_LEAD = "Whenever a sync runs — nightly, or from the Convert tab — its result appears here."
 
 # --------------------------------------------------------------------------- #
 # The first-run welcome band (0038 S6) — the one line above the hosted wizard. #
@@ -174,10 +285,14 @@ class FixAction:
 
 @dataclass(frozen=True)
 class HomeMetrics:
-    """Light metric tiles for a delivered run: entity counts + plain last-run time + SFTP flag.
+    """What a delivered run shipped: entity counts + plain last-run time + SFTP flag.
 
     ``entity_counts`` is re-bucketed from the record's flat top-level count keys — the 5
     rostering entities always, the 2 myBlueprint+ entities only when non-zero.
+
+    **No screen renders this.** It fed Home's metric-tile row until 0038 S7 retired it; what
+    survives on the model is the record-shape contract the pipeline tests read and the
+    ``None``-vs-populated signal that says whether any honest build sits behind the latest run.
     """
 
     entity_counts: dict[str, int]
@@ -194,6 +309,140 @@ class HomeStatus:
     detail: str
     fix: FixAction | None
     metrics: HomeMetrics | None
+
+
+@dataclass(frozen=True)
+class QuickAction:
+    """One row of slim Home's quick-action strip: a ``label``, its ``dest_id``, and its TIER."""
+
+    label: str
+    dest_id: str
+    filled: bool
+
+
+# The three places a Home visitor actually goes next, in the order they are offered.
+QUICK_CONVERT_LABEL = "Convert now"
+QUICK_RUN_HISTORY_LABEL = "Run History"
+QUICK_SETTINGS_LABEL = "Settings"
+
+_CONVERT_DEST = "convert"
+
+_QUICK_DESTINATIONS: tuple[tuple[str, str], ...] = (
+    (QUICK_CONVERT_LABEL, _CONVERT_DEST),
+    (QUICK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
+    (QUICK_SETTINGS_LABEL, _SETUP_FIX),
+)
+
+
+def quick_actions(fix: FixAction | None) -> tuple[QuickAction, ...]:
+    """Slim Home's quick-action strip — the actions offered BESIDE the verdict's fix CTA.
+
+    The strip deliberately never contains the fix itself: a fault and its fix are one
+    thought and the view renders that CTA directly under the band (the identity cards sit
+    between the two blocks, so moving it down here would separate them). What the strip
+    DOES do is drop any destination the fix already carries — "Check Run History" filled
+    above an outlined "Run History" is the same button twice.
+
+    **The design-system invariant, stated as arithmetic:** exactly one filled action exists
+    on the surface in every state — the fix when there is a fault, "Convert now" when there
+    is not. It holds even if a future ``FixAction`` ever routed to Convert (the strip would
+    drop Convert, keeping the total at one). Pure + TOTAL: no I/O, no config, no records.
+    """
+    taken = {fix.dest_id} if fix is not None else set()
+    return tuple(
+        QuickAction(label, dest_id, filled=(fix is None and dest_id == _CONVERT_DEST))
+        for label, dest_id in _QUICK_DESTINATIONS
+        if dest_id not in taken
+    )
+
+
+def has_earlier_run_history(*, store_created_at: str | None) -> bool:
+    """Whether an EMPTY store is an upgrader's, not a newcomer's — the ONE discriminator (S7 (i)).
+
+    ``store_created_at`` is the run store's birth stamp and ``write_run_record`` is the
+    store's SOLE creator, so a stamp is *evidence* that a run was once recorded — even if a
+    later quarantine-recreate emptied the table. That evidence is the whole basis for
+    telling someone "if you used an earlier version, its run history isn't carried over".
+
+    **Deliberately NOT ``has_completed_setup()``** (0038 S7 part (i), carried from S6's
+    gate). The moment the wizard saves, that flag is True — so a brand-new install that has
+    never recorded anything was reading a conditional sentence about a past version it
+    provably never had, at the one moment it had just finished setting up. Finishing setup
+    is evidence about the SETTINGS, never about a run.
+
+    Keyword-only and shared by ``derive_home_status`` and
+    ``run_history.derive_history_banner``: both surfaces classify the same empty store, so
+    the rule is single-sourced rather than duplicated (it was duplicated, byte-identically,
+    until this slice).
+    """
+    return bool((store_created_at or "").strip())
+
+
+def _expects_a_nightly(app_config: AppConfig, schedule_status: ScheduleStatus | None) -> bool:
+    """Whether ANY positive signal says this install has a nightly schedule (pure + TOTAL).
+
+    The gate on every empty-state sentence that NAMES a nightly sync. Two signals, OR-ed, and
+    both must be POSITIVE — the absence of evidence is not evidence of a schedule:
+
+    * a CONFIRMED-LIVE read-back (the probe queried the OS and found the task); or
+    * ``schedule_registered`` — the app's own record that it registered one. Weaker than a
+      read-back and deliberately admitted anyway: it is the only signal available on Home's
+      INITIAL paint (the probe is off-thread) and on every platform without read-back, and it
+      is the install's own history rather than a guess about the OS.
+
+    This is the inverse posture to ``_schedule_confirmed_missing`` (which drives the stronger
+    "won't sync automatically" copy and demands a CONFIRMED absence). Neither may be inferred
+    from the other: "not confirmed missing" is not "present".
+    """
+    return _schedule_confirmed_live(schedule_status) or bool(app_config.schedule_registered)
+
+
+def size_clause(counts_record: dict | None, output_entities: Sequence[str], *, expected_sis_type: str) -> str:
+    """The healthy line's roster-size sentence, or ``""`` when there is nothing honest to say.
+
+    ``output_entities`` is what THIS district's config actually produces (injected by the
+    view from ``mapping_catalog.active_output_entities`` — this module stays I/O-free). It
+    is the only thing that can distinguish "this config does not emit Students" from "the
+    roster collapsed to zero students", because the run record writes every entity key with
+    a defaulted ``0`` and cannot tell them apart. The first produced entity in
+    ``SIZE_NOUNS`` order wins, so an attendance-only config counts attendance rows and a
+    myBlueprint+-only config counts courses — never "0 students".
+
+    ``expected_sis_type`` is the district those entities were resolved FOR, and it is
+    keyword-only + REQUIRED because forgetting it is the unsafe call. ``output_entities``
+    describes the district saved **now**; ``counts_record`` was written by whatever ran
+    **then**, and the two legitimately diverge — Mapping's Apply rewrites ``sis_type``
+    without re-registering the nightly task (so later *scheduled* records still carry the
+    OLD district), and Convert records the district picked in its dropdown without saving it
+    (which is why the S5 "This run: <district>" pill exists). Applying one district's entity
+    list to another district's counts printed a FALSE number under a GREEN band — an
+    ``sd51attendance`` record read "It included 0 students." on a saved ``sd48myedbc``.
+    The record already carries the authority (``pipeline`` writes ``sis_type`` onto it, and
+    ``run_history._district_note`` already reads it), so a KNOWN mismatch simply drops the
+    clause. The predicate mirrors ``_district_note``: BOTH sides must be known non-empty to
+    establish a difference — an absent record district or an unset active district is not a
+    disagreement, and neither is a guess.
+
+    A genuinely-zero count on a config that DOES emit that entity is printed, loudly: that
+    is the alarm this clause exists to raise, not a case to hide.
+
+    Returns ``""`` — the clause simply vanishes — whenever the answer would be a guess:
+    no counts record, a record from a DIFFERENT district, an unknown/empty
+    ``output_entities``, or a produced entity this module has no authored noun for.
+    """
+    if counts_record is None:
+        return ""
+    record_sis = str(counts_record.get("sis_type") or "").strip()
+    expected = (expected_sis_type or "").strip()
+    if record_sis and expected and record_sis != expected:
+        return ""
+    produced = {str(name) for name in output_entities}
+    for key, (singular, plural) in SIZE_NOUNS.items():
+        if key not in produced:
+            continue
+        count = _as_int(counts_record.get(key))
+        return f"{SIZE_CLAUSE_LEAD}{count:,} {singular if count == 1 else plural}."
+    return ""
 
 
 def is_stale(
@@ -333,7 +582,7 @@ def _as_int(value: object) -> int:
 
 
 def _build_metrics(record: dict, *, now: datetime | None, counts_record: dict | None = None) -> HomeMetrics:
-    """Populate the metric tiles from a delivered-success record.
+    """Populate the ``HomeMetrics`` bundle from a delivered-success record.
 
     ``counts_record`` (default: the record itself) supplies the entity counts — a
     delivery-only latest carries no build counts of its own, so the caller passes the
@@ -351,9 +600,13 @@ def _counts_source(records: list[dict], latest: dict) -> dict | None:
 
     A build record IS its own counts source. A delivery-only latest shipped the newest
     SUCCESSFUL build's committed CSVs (a failed build never commits — atomic ``save_all``
-    rolls back — and its record carries zero counts), so its tiles fall back to the newest
+    rolls back — and its record carries zero counts), so it falls back to the newest
     ``status == "success"`` build; with no successful build on record there is no honest
-    count → ``None`` (no tiles — never a "0 Students" lie).
+    count → ``None`` (no number at all — never a "0 Students" lie).
+
+    Its return is what the roster-size clause is keyed on, which is why the clause's
+    different-district guard is applied HERE rather than to ``records[0]``: this walk-back can
+    land on a build from a district the admin has since switched away from.
     """
     if not is_delivery_only(latest):
         return latest
@@ -370,6 +623,7 @@ def derive_home_status(
     now: datetime | None = None,
     store_created_at: str | None = None,
     schedule_status: ScheduleStatus | None = None,
+    output_entities: Sequence[str] = (),
 ) -> HomeStatus:
     """Derive the Home sync-health verdict from the run records + config (pure, TOTAL).
 
@@ -388,6 +642,18 @@ def derive_home_status(
     failures-above-warnings precedence and so NEVER masks a FAILED latest record (W3-B). A
     ``None`` (not yet probed / non-applicable) or UNKNOWN schedule is silently ignored — Home
     NEVER asserts an unconfirmed schedule.
+
+    ``output_entities`` (0038 S7) is the ordered set of entity keys the ACTIVE district config
+    actually produces, injected by the view (``mapping_catalog.active_output_entities``) so this
+    module keeps its no-I/O contract. It feeds ONLY the healthy line's roster-size clause. Its
+    default is the CONSERVATIVE value, not a convenient one: an unsupplied/unknown answer makes
+    the clause vanish, so forgetting it can cost a true sentence but can never produce a false
+    number (see ``size_clause`` — this is the shape CLAUDE.md's "no permissive default on a
+    safety-relevant parameter" rule asks for; the SUPPLY is pinned separately, by a Home render
+    test, because a silently-absent clause is invisible from inside this module). Those entities
+    describe the district saved NOW, so the clause is additionally gated on the counts record's
+    OWN ``sis_type`` agreeing with ``app_config.sis_type`` — a record from a district the admin
+    has since switched away from prints no number rather than a wrong one.
     """
     # Rule: status unavailable (the never-crash floor) — the reader couldn't read the store.
     if records is None:
@@ -446,15 +712,20 @@ def derive_home_status(
 
     # Rule: no runs yet (empty but readable, configured). Two honest sub-states — the
     # run store is fresh for EVERY install after this update (no backfill from the polluted
-    # log), so an established install must NOT be told "No sync has run yet":
-    #   * established (finished setup once, or the store already exists) → "history starts
-    #     fresh" — earlier runs live only in the old diagnostic log and aren't shown here;
+    # log), so an UPGRADER must NOT be told its history simply does not exist:
+    #   * the store already exists (``has_earlier_run_history``) → "history starts fresh" —
+    #     earlier runs live only in the old diagnostic log and aren't shown here;
     #   * otherwise → the calm "waiting for the first sync".
-    # Slice 5 (D4a) re-based the discriminator on the durable ``has_completed_setup()`` fact so a
-    # completed manual-only upgrader gets the honest fresh-start copy; newcomer-vs-upgrader remain
-    # indistinguishable, so fresh-start is the chosen default (not a verified fact) — the copy is
-    # therefore conditioned ("If you used an earlier version…"), never a flat claim of hidden
-    # history. The next-run reassurance derives from the LIVE read-back, never the raw config flag.
+    # 0038 S7 part (i) narrowed the discriminator to the store's birth stamp ALONE. Slice 5
+    # (D4a) had OR-ed in ``has_completed_setup()``, which the wizard flips the instant it saves
+    # — so from S6 (Home HOSTS the wizard) a brand-new install landed, at its peak moment, on a
+    # conditional sentence about "an earlier version" it provably never had. Finishing setup is
+    # evidence about the settings, never about a run. Newcomer-vs-upgrader is now decided by the
+    # only artefact that is evidence of a RUN; the copy stays conditioned ("If you used an
+    # earlier version…") because a re-created store cannot prove WHICH version wrote it.
+    # The schedule sentences derive from the LIVE/MISSING read-back, never the raw config flag,
+    # and now apply to BOTH sub-states (the never-run install is exactly the one that most needs
+    # to know its roster won't sync on its own).
     if not records:
         # Rule: seasonal pause (empty store) — outside an enabled window no run is expected, so an
         # empty store is calm, not a missed run. Beats the missed-run/fresh-start empty sub-states.
@@ -464,36 +735,37 @@ def derive_home_status(
         # runs at all is not a calm fresh start: the nightly we promised never arrived.
         if missed_run:
             return _missed_run_status()
-        if app_config.has_completed_setup() or store_created_at:
-            fresh = (
-                "New syncs will appear here from now on. "
-                "If you used an earlier version, its run history isn't carried over."
-            )
+        upgrade = has_earlier_run_history(store_created_at=store_created_at)
+        if app_config.has_completed_setup() and _schedule_confirmed_missing(schedule_status):
+            # Honest (finding #1b): a completed install with NO nightly schedule does NOT sync on
+            # its own — say so plainly instead of "new syncs will appear" / "your nightly sync
+            # will appear" (both imply automation that isn't set up). Calm WARNING, NO fix CTA/badge
+            # — a manual-only district must not be nagged. Only fires on a CONFIRMED-absent
+            # read-back (MISSING), never on an unconfirmed None/UNKNOWN (which would falsely deny a
+            # schedule we simply can't see).
+            detail = EMPTY_NO_AUTO_SYNC_DETAIL
+        elif upgrade:
+            detail = _FRESH_START_LEAD
             if _schedule_is_live(schedule_status):
-                detail = fresh + f" Your next nightly sync is scheduled for {schedule_status.next_run_display}."  # type: ignore[union-attr]
-            elif app_config.has_completed_setup() and _schedule_confirmed_missing(schedule_status):
-                # Honest (finding #1b): a completed install with NO nightly schedule does NOT sync on
-                # its own — say so plainly instead of "new syncs will appear" (which implies automation
-                # that isn't set up). Calm WARNING, NO fix CTA/badge — a manual-only district must not
-                # be nagged. Only fires on a CONFIRMED-absent read-back (MISSING), never on an
-                # unconfirmed None/UNKNOWN (which would falsely deny a schedule we simply can't see).
-                detail = (
-                    "Your roster won't sync automatically until you add a nightly schedule — set one up "
-                    "in Settings whenever you're ready. Manual conversions from the Convert tab appear here too."
-                )
-            else:
-                detail = fresh
-            return HomeStatus(
-                verdict=Verdict.WARNING,
-                headline="Run history starts fresh here",
-                detail=detail,
-                fix=None,
-                metrics=None,
-            )
+                detail += f" Your next nightly sync is scheduled for {schedule_status.next_run_display}."  # type: ignore[union-attr]
+        elif _schedule_is_live(schedule_status):
+            # An install with an empty store and a CONFIRMED-LIVE nightly: name the time instead
+            # of the generic wait. "first" is deliberately absent HERE and in ``_FIRST_SYNC_LEAD``
+            # alike — an empty store is not proof of a first sync (the <= v3.4.0 upgrader has
+            # none, and ``_expects_a_nightly`` admits it via ``schedule_registered``), while the
+            # scheduled time is true either way. The upgrade branch above says "next" rather than
+            # nothing because a store stamp IS evidence a run was already recorded.
+            detail = f"Your nightly sync is scheduled for {schedule_status.next_run_display}."  # type: ignore[union-attr]
+        elif _expects_a_nightly(app_config, schedule_status):
+            detail = _FIRST_SYNC_LEAD
+        else:
+            # No stamp, no confirmed schedule and no registration on record — nothing here may
+            # name a nightly sync at all.
+            detail = _NO_RUNS_YET_LEAD
         return HomeStatus(
             verdict=Verdict.WARNING,
-            headline="No sync has run yet",
-            detail="Your first nightly sync will appear here.",
+            headline=EMPTY_FRESH_START_HEADLINE if upgrade else EMPTY_NO_RUNS_HEADLINE,
+            detail=detail,
             fix=None,  # nothing to fix — just wait for the first run
             metrics=None,
         )
@@ -597,20 +869,32 @@ def derive_home_status(
     # CONFIRMED-LIVE schedule read-back — anything less keeps the record-scoped "up to date"; and
     # "delivered to SpacesEDU" only when the record's SFTP axis says it genuinely shipped — a
     # local-only run says where the files actually went. A clean delivery-only latest counts as a
-    # fresh sync (its sftp_ok is the delivery), but its tiles come from the newest BUILD record —
-    # or no tiles at all, never zeros.
+    # fresh sync (its sftp_ok is the delivery), but its COUNTS come from the newest BUILD record —
+    # or no number at all, never zeros.
     counts_record = _counts_source(records, latest)
     when = friendly_timestamp(timestamp, now=now)
+    detail = (
+        f"Last sync delivered to SpacesEDU {when}."
+        if sftp_delivered(latest)
+        else f"Last sync completed {when} — files were written to your output folder."
+    )
+    # 0038 S7: the one number slim Home keeps after the tile row retires — a size-plausibility
+    # check the verdict cannot give. It appends to EITHER delivery phrasing and drops out
+    # entirely when there is nothing honest to count (see ``size_clause``).
+    #
+    # ``expected_sis_type`` is read off the ``AppConfig`` this function ALREADY holds rather than
+    # taken as a second injected parameter: unlike ``output_entities`` (a YAML read this module
+    # may not do) the district id needs no I/O, so there is no supply to forget and the guard
+    # cannot be bypassed from the view. It is applied to the record ``_counts_source`` RETURNED,
+    # not to ``records[0]`` — the delivery-only fallback walks back to an older successful BUILD,
+    # which can be a different district again.
+    clause = size_clause(counts_record, output_entities, expected_sis_type=app_config.sis_type)
     return HomeStatus(
         verdict=Verdict.HEALTHY,
         headline=(
             "Your roster is syncing" if _schedule_confirmed_live(schedule_status) else "Your roster is up to date"
         ),
-        detail=(
-            f"Last sync delivered to SpacesEDU {when}."
-            if sftp_delivered(latest)
-            else f"Last sync completed {when} — files were written to your output folder."
-        ),
+        detail=f"{detail} {clause}" if clause else detail,
         fix=None,
         metrics=_build_metrics(latest, now=now, counts_record=counts_record) if counts_record is not None else None,
     )

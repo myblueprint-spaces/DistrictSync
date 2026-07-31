@@ -41,6 +41,9 @@ from src.config.app_config import AppConfig
 from src.ui_flet.home_status import (
     _MYBLUEPRINT_ENTITIES,
     _ROSTERING_ENTITIES,
+    EMPTY_FRESH_START_HEADLINE,
+    EMPTY_NO_AUTO_SYNC_DETAIL,
+    EMPTY_NO_RUNS_HEADLINE,
     LatestReason,
     _as_int,
     _data_errors_total,
@@ -49,6 +52,7 @@ from src.ui_flet.home_status import (
     _schedule_confirmed_missing,
     _schedule_is_live,
     classify_latest_reason,
+    has_earlier_run_history,
     is_delivery_only,
     is_stale,
     sftp_delivered,
@@ -144,6 +148,21 @@ _SOURCE_LABELS: dict[str, str] = {
 
 _SOURCE_FALLBACK = "—"
 
+# Run History's OWN upgrader lead — deliberately not shared with Home's. The two surfaces
+# single-source the RULE and the headlines (``home_status``); the lead sentences stay
+# per-surface because this one speaks about the LEDGER printed directly beneath it ("runs"),
+# where Home speaks about the sync.
+#
+# It says "New runs", not "New NIGHTLY syncs". This arm is gated on the store's birth stamp
+# ALONE — nothing about a schedule — so a manual-only install with a stamped-but-empty store
+# (reachable through the store's quarantine-recreate path, and staged verbatim by QA row 1o)
+# reads it. Naming a nightly there is the same over-claim ``home_status._expects_a_nightly``
+# gates on the Home side; the nightly is named ONLY by the append below, which requires a
+# CONFIRMED-LIVE read-back.
+_FRESH_START_LEAD = (
+    "New runs will appear here from now on. If you used an earlier version, its run history isn't carried over."
+)
+
 
 def derive_history_banner(
     records: list[dict] | None,
@@ -185,41 +204,43 @@ def derive_history_banner(
     paused = sync_window_paused(app_config, now=now) and not _schedule_confirmed_missing(schedule_status)
 
     # Rule: no runs yet (empty but readable). The store is fresh for EVERY install after this
-    # update (no backfill), so an established install is told the history starts fresh rather
-    # than the false "No sync has run yet"; a genuine first run keeps the calm waiting copy.
-    # Slice 5 (D4a) re-based the discriminator on the durable ``has_completed_setup()`` fact so a
-    # completed manual-only upgrader gets the honest fresh-start copy; newcomer-vs-upgrader remain
-    # indistinguishable, so fresh-start is the chosen default (not a verified fact) — the copy is
-    # conditioned ("If you used an earlier version…"), never a flat claim of hidden history. The
-    # schedule reassurance derives from the LIVE read-back (``schedule_status``), never the flag.
+    # update (no backfill), so an UPGRADER is told the history starts fresh rather than that
+    # nothing exists; a genuine first run keeps the calm waiting copy.
+    #
+    # 0038 S7 part (i): the discriminator and both headlines are now SINGLE-SOURCED in
+    # ``home_status`` (``has_earlier_run_history`` / ``EMPTY_*``). They were duplicated here
+    # byte-for-byte, which meant Home could be corrected and this banner silently left behind —
+    # on exactly the state the two surfaces must agree about. ``has_completed_setup()`` is no
+    # longer a disjunct: the wizard flips it on save, so it made every brand-new install an
+    # "upgrader". The schedule reassurance still derives from the LIVE/MISSING read-back
+    # (``schedule_status``), never the config flag.
     if not records:
         # Rule: seasonal pause (empty store) — outside an enabled window no run is expected, so an
         # empty store is calm, not a missed run. Beats the fresh-start / first-run empty sub-states
         # (mirrors Home's empty-store paused branch — the two surfaces stay identical).
         if paused:
             return _paused_banner(app_config, now=now)
-        if app_config.has_completed_setup() or store_created_at:
-            fresh = (
-                "New nightly syncs will appear here from now on. "
-                "If you used an earlier version, its run history isn't carried over."
-            )
+        upgrade = has_earlier_run_history(store_created_at=store_created_at)
+        if app_config.has_completed_setup() and _schedule_confirmed_missing(schedule_status):
+            # Honest (finding #1b): a completed install with NO nightly schedule won't sync on its
+            # own — the SAME sentence Home shows, from the same constant, rather than implying
+            # automation. Only on a CONFIRMED MISSING read-back (never an unconfirmed None/UNKNOWN).
+            detail = EMPTY_NO_AUTO_SYNC_DETAIL
+        elif upgrade:
+            detail = _FRESH_START_LEAD
             if _schedule_is_live(schedule_status):
-                detail = fresh + f" Scheduled for {schedule_status.next_run_display} each night."  # type: ignore[union-attr]
-            elif app_config.has_completed_setup() and _schedule_confirmed_missing(schedule_status):
-                # Honest (finding #1b): a completed install with NO nightly schedule won't sync on its
-                # own — mirror Home's plain copy rather than implying automation. Only on a CONFIRMED
-                # MISSING read-back (never an unconfirmed None/UNKNOWN).
-                detail = (
-                    "Your roster won't sync automatically until you add a nightly schedule — set one up "
-                    "in Settings whenever you're ready. Manual conversions from the Convert tab appear here too."
-                )
-            else:
-                detail = fresh
-            return HistoryBanner(verdict=Verdict.WARNING, headline="Run history starts fresh here", detail=detail)
+                detail += f" Scheduled for {schedule_status.next_run_display} each night."  # type: ignore[union-attr]
+        else:
+            # NAMES no nightly. This arm covers the install with no stamp, no confirmed
+            # schedule and (unlike the branch above) no confirmed ABSENCE either — which
+            # includes an admin who skipped the Schedule step. "Your nightly runs will appear
+            # here" told them about automation they declined; the same over-claim Home's
+            # ``_FIRST_SYNC_LEAD`` gate closes, in the surface one click away.
+            detail = "Runs will appear here once the first one completes."
         return HistoryBanner(
             verdict=Verdict.WARNING,
-            headline="No sync has run yet",
-            detail="Your nightly runs will appear here once the first one completes.",
+            headline=EMPTY_FRESH_START_HEADLINE if upgrade else EMPTY_NO_RUNS_HEADLINE,
+            detail=detail,
         )
 
     latest = records[0]
@@ -316,7 +337,11 @@ def _row_entity_counts(record: dict) -> dict[str, int]:
     """The per-run entity counts: 5 rostering always + 2 myBlueprint+ when non-zero.
 
     Reuses ``home_status``'s entity tuples + ``_as_int`` (defensive coercion) so a malformed count
-    never crashes the row and the column vocabulary matches Home's tiles exactly. A delivery-only
+    never crashes the row and the column vocabulary is single-sourced. **Those tuples exclude
+    ``StudentAttendance``**, so an attendance-only run renders five zeros HERE. Its real row count
+    reaches exactly ONE surface — Home's healthy ``size_clause`` — and only from the HEALTHY
+    branch, so a warning/failed attendance run shows its size nowhere. That is an OPEN defect,
+    tracked in ``docs/claugentic-ROADMAP.md`` — not a discharged one. A delivery-only
     record (deliver-from-disk, 0034 Slice 2) built nothing this run — its count keys are zeros by
     shape, so return ``{}`` and the table renders "—" cells, never a "0 Students" lie.
     """
