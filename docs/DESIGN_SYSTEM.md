@@ -53,17 +53,21 @@ brand mark** (it signifies DistrictSync — "roster sync for SpacesEDU").
    disambiguator for user-dropped YAMLs, which appends the raw config id to EVERY member of a
    colliding group. Build picker rows through it, never from `district_name` directly.)
 
-9. **A scoped list must always offer its own escape (0038 S5).** Where a district list is
-   shortened by the stored identity, a text-tier "Show all districts — we're only showing yours
-   to keep the list short." row sits at its foot, inverting to "Showing all districts · Show only
-   mine" when on. It is a COURTESY, never an unlock (rule 7 applies to its wording); it is
-   **per-SURFACE, re-scoped on every mount** and never persisted (each screen owns its own
-   toggle — whether it should instead follow the admin across surfaces for a session is an
-   owner call tracked in `docs/claugentic-ROADMAP.md`); and it renders whenever a shorter list
-   EXISTS — including while it is switched on, or the admin is stranded in the long list.
-   Build it through `components.list_scope_row(...)`, never by hand: that factory is where the
-   render rule lives. Copy is single-sourced at `mapping_catalog.SHOW_ALL_LABEL` /
-   `SHOWING_ALL_LABEL`.
+9. **A scoped list carries no per-surface escape — the escape is at the INPUT (2026-08-04).**
+   Superseded rule: 0038 S5 put a text-tier "Show all districts" row at the foot of each
+   scoped district list, and the owner retired it from all four pickers (wizard District step ·
+   Settings folders card · Convert · Mapping) so an admin's district lists stay scoped to their
+   own district everywhere. `components.list_scope_row` and the
+   `mapping_catalog.SHOW_ALL_LABEL` / `SHOWING_ALL_LABEL` copy are **deleted, not deprecated** —
+   do not re-add a widening control to a picker.
+
+   What has NOT changed, and must not: **nothing is withheld.** Every mapping still ships in the
+   executable; an admin whose address matches no district still sees all of them (the filter
+   fails OPEN in every direction); the saved district and the working pick still ride every
+   list; and the one deliberate escape is clearing the stored address in Settings → "Who looks
+   after this sync" → blank → Save, which widens every list on the next mount. Rule 7 still
+   binds anything written about the scoping: it is list scoping, never access control, so never
+   word it as an unlock, a permission, or a verification.
 
 ## Tokens — single source: `src/ui_flet/tokens.py`
 Never inline a hex or a px size in a screen or a factory arg; add a token, then reference it.
@@ -105,6 +109,9 @@ Never inline a hex or a px size in a screen or a factory arg; add a token, then 
 | `status_pill(label, status)` | a compact status marker | toned per `Verdict`; icon + text (never colour-alone) |
 | `FileChip` · `run_table` · `ErrorCard` | file chip · run table · never-crash error surface | unchanged intent |
 
+*(`list_scope_row` — the 0038 S5 "Show all districts" row — was **deleted** on 2026-08-04 with the
+rule it served; see rule 9. `section_label` retired at S7 with slim Home's tile row.)*
+
 **The one-primary rule is a review gate:** a screen with two `primary_button`s is a bug — demote the
 weaker one to `secondary_button`. (Settings is a stack of independent SECTIONS, each with at most one
 filled action — folders, schedule, delivery; a new section rides those rather than adding a fourth.)
@@ -118,6 +125,15 @@ gradient uses `color_on_action` / `color_on_action_muted` — both AA-gated agai
 endpoints, because a translucent white is a composite the contrast function cannot evaluate and would
 therefore be an ungated painted pair (the placeholder's old sub-line was exactly that, and went with
 its gradient).
+
+**The launch page is the ONE centred surface (2026-08-04).** Every screen behind the rail is
+left-anchored inside the ~960px reading cap, because the rail is the left edge they align to. The
+launch page has no rail, so `shell._gate_frame` centres its `GATE_WIDTH` column on both axes and the
+page's cards STRETCH to that width — one form, centred, with the field and the single filled primary
+running its full width. Two Flet 0.85.3 facts make that work and are recorded in
+`docs/FLET_1.0_CONVENTIONS.md`: a scrollable `Column` honours `alignment` (main axis) but NOT
+`horizontal_alignment`, so cross-axis centring comes from a `Row`; and a `TextField` with
+`max_length` reserves its counter's sub-text row even when `counter` is blanked.
 
 **The transition is CLOSED.** One product caller remains, by design. The only other reference is
 `components.build_design_demo`, the dev-only `DISTRICTSYNC_UI_DEMO` gallery, which exercises the

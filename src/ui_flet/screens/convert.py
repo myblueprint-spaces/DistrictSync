@@ -544,10 +544,6 @@ def build_convert(
     stands alone), just without the routing button.
     """
     cfg = AppConfig.load()
-    # 0038 S5: the district rows scoped to this admin. Per-SURFACE (flag 5) — re-scoped on
-    # every mount, never persisted; whether it should follow the admin across surfaces for a
-    # session is an owner call tracked in the ROADMAP.
-    scope = {"show_all": False}
     # The per-run pick, declared HERE (before the first catalog build) so the filter can carry
     # it. It starts empty — the prefill below is derived FROM the catalog, so it cannot also be
     # an input to it — and that first build loses nothing: `saved_sis` already carries the
@@ -555,12 +551,12 @@ def build_convert(
     selected: dict[str, str | None] = {"district": None}
 
     def _catalog():  # noqa: ANN202 - a FilteredCatalog; annotating adds an import for one line
-        # `picked_sis` is the LIVE per-run selection: narrowing back after a widen must not
-        # drop the district this run is set to convert.
+        # 0038 S5: the district rows scoped to this admin's stored address, unconditionally
+        # since 2026-08-04 (the per-surface show-all row retired). `picked_sis` is the LIVE
+        # per-run selection, so any re-derivation keeps the district this run is set to convert.
         return filtered_catalog(
             stored_identity_domain(cfg),
             saved_sis=cfg.sis_type,
-            show_all=scope["show_all"],
             picked_sis=selected["district"] or "",
         )
 
@@ -628,21 +624,6 @@ def build_convert(
         options=_district_options(catalog),
         width=340,
     )
-    # The show-all affordance sits under the dropdown in its own slot so toggling swaps the
-    # options IN PLACE — rebuilding the form would drop a typed input folder or a result card.
-    scope_slot = ft.Column(spacing=0, controls=[])
-
-    def _toggle_show_all() -> None:
-        scope["show_all"] = not scope["show_all"]
-        _refresh_scope()
-        page.update()
-
-    def _refresh_scope() -> None:
-        cat = _catalog()
-        district_dropdown.options = _district_options(cat)
-        scope_slot.controls = components.list_scope_row(
-            can_filter=cat.can_filter, show_all=scope["show_all"], on_toggle=_toggle_show_all
-        )
 
     # The amber saved-vs-picked heads-up (0035 W3b): visible ONLY when the per-run pick
     # differs from the saved district (pure `district_mismatch_note` decides + words it).
@@ -1241,7 +1222,6 @@ def build_convert(
 
     _refresh_district_note()
     _refresh_header()
-    _refresh_scope()
     _refresh_files()
     _refresh_convert_gate()
     _refresh_deliver_slot()
@@ -1257,7 +1237,6 @@ def build_convert(
             spacing=20,
             controls=[
                 district_dropdown,
-                scope_slot,
                 district_note,
                 input_field,
                 files_slot,

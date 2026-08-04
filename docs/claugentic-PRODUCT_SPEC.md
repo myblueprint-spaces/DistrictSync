@@ -293,15 +293,15 @@ The checkable projection of the Features above. All checks are `manual` — Dist
     "feature": "Launch identity",
     "flow": [
       "On a cleared scratch profile, answer the launch page with an address at sd48.bc.ca and press Get started",
-      "Look at the wizard's District dropdown, then press 'Show all districts', then press 'Showing all districts · Show only mine'",
-      "Finish setup, then open Settings > Folders & district, Convert, and Mapping",
-      "Separately: set the district to sd74myedbc, keep the sd48.bc.ca address, and reopen those three surfaces"
+      "Look at the wizard's District dropdown, then finish setup and open Settings > Folders & district, Convert, and Mapping",
+      "Blank the address in Settings > Who looks after this sync and press Save, then reopen those three surfaces",
+      "Separately: set the district to sd74myedbc, restore the sd48.bc.ca address, and reopen those three surfaces"
     ],
     "expect": [
       "every district list shows only SD48 - Sea to Sky School District, and the District step opens with it already selected",
       "the District step is still landed on and the selection is still changeable",
-      "the 'Show all districts' line reads as a courtesy about list length, never as an unlock, and reveals all eleven in one click",
-      "the row then offers the way back, and the scoping returns on the next launch (nothing about it is saved)",
+      "NO surface offers a 'Show all districts' row (retired 2026-08-04) — the scoping has no per-screen escape",
+      "with the address cleared, every one of those lists shows all eleven again (the escape is at the input)",
       "with a different saved district, every list carries BOTH the matched district and the saved one",
       "an unmatched address, no address, or an unreadable settings file all show the full list of eleven"
     ],
@@ -313,7 +313,7 @@ The checkable projection of the Features above. All checks are `manual` — Dist
     "feature": "Convert",
     "flow": [
       "On a set-up install, open Convert and note the district chip in the header",
-      "Change the district dropdown to a different district (press 'Show all districts' first if the list is scoped)",
+      "Change the district dropdown to a different district (if your list is scoped to one, blank the address in Settings > Who looks after this sync first)",
       "Press 'Change mapping'",
       "Return to Convert and set the dropdown back to the saved district"
     ],

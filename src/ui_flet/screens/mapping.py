@@ -181,17 +181,15 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
     # stored identity's domain. Replaces the pre-S5 DOUBLE `list_configs()` parse (the
     # summaries dict and the dropdown options each read the disk independently); the build is
     # session-memoised, so the switch selector no longer costs a second pass over 11 YAMLs.
-    # Per-SURFACE scope (flag 5) — re-scoped on every mount, never persisted (owner call in
-    # the ROADMAP).
-    scope = {"show_all": False}
-
+    # Scoped unconditionally to the stored address since 2026-08-04 (the per-surface show-all
+    # row retired) — an admin who needs another district's mapping clears that address in
+    # Settings, which is the one input this scoping has.
     def _catalog():  # noqa: ANN202 - a FilteredCatalog; annotating adds an import for one line
         return filtered_catalog(
             stored_identity_domain(app_config),
             saved_sis=persisted["sis"],
-            show_all=scope["show_all"],
-            # The un-applied selection rides too: narrowing back after a widen must not drop
-            # the row the dropdown is set to.
+            # The un-applied selection rides too, so a re-derived list can never drop the row
+            # the dropdown is set to.
             picked_sis=pending["sis"],
         )
 
@@ -348,26 +346,6 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
         on_select=_on_pick,
         border_color=tokens.color_border,
     )
-    scope_slot = ft.Column(spacing=0, controls=[])
-
-    def _toggle_show_all() -> None:
-        # Swap the options IN PLACE — re-rendering the card would discard the pending pick
-        # and any post-Apply banner the admin is still reading.
-        scope["show_all"] = not scope["show_all"]
-        _refresh_scope()
-        page.update()
-
-    def _refresh_scope() -> None:
-        cat = _catalog()
-        # Keep the summary lookup in step with what is offerable, so a pick made after a
-        # widen resolves from the build rather than costing a fresh parse.
-        summaries.update({s.sis_type: s for s in cat.summaries})
-        switch_dropdown.options = _options(cat)
-        scope_slot.controls = components.list_scope_row(
-            can_filter=cat.can_filter, show_all=scope["show_all"], on_toggle=_toggle_show_all
-        )
-
-    _refresh_scope()
     _refresh()  # paint the initial current card + pending summary (= current) + the gate (disabled)
 
     switch_card = components.card(
@@ -381,7 +359,6 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
                     color=tokens.color_muted,
                 ),
                 switch_dropdown,
-                scope_slot,
                 pending_summary_slot,
                 apply_btn,
                 applied_banner_slot,

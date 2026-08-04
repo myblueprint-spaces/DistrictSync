@@ -8,10 +8,16 @@ DECIDED by the plan, so it is stated as an assertion before any code can quietly
 **The two-tier rule under test** (plan 0038, Approach → "Filtering = one catalog-layer choke
 point with an unclaimed-config rule", as reconciled at the R3 delta gate):
 
-  (i)  no identity / no match / show-all  →  ALL configs, unclaimed included.
+  (i)  no identity / no match  →  ALL configs, unclaimed included.
   (ii) matched (≥1 config's resolved NON-EMPTY `district_domains` contains the domain, by
        EXACT case-normalised equality)  →  exactly the matching configs PLUS `saved_sis`,
        unconditionally.
+
+**The `show_all` tier retired on 2026-08-04** (owner decision — the per-surface "Show all
+districts" row is gone from all four pickers). Tier (ii) is therefore unconditional, and the
+only escape is at the INPUT: clearing the stored address in Settings empties `domain`, which
+lands the admin in tier (i). `TestThereIsNoWideningKnob` pins that there is no longer any
+argument that can widen a matched list, so the escape cannot silently grow back.
 
 The failure this rule exists to make unrepresentable is **a district disappearing on its own
 admin**. Every test below that asserts an absence is paired with a positive twin, because
@@ -27,8 +33,6 @@ from pathlib import Path
 import pytest
 
 from src.ui_flet.mapping_catalog import (
-    SHOW_ALL_LABEL,
-    SHOWING_ALL_LABEL,
     ConfigSummary,
     catalog,
     disambiguated_labels,
@@ -36,7 +40,6 @@ from src.ui_flet.mapping_catalog import (
     filtered_catalog,
     list_configs,
     reset_catalog_cache,
-    show_all_label,
 )
 from src.utils.paths import bundle_mappings_dir
 
@@ -122,13 +125,11 @@ def _ids(
     domain: str,
     *,
     saved_sis: str = "",
-    show_all: bool = False,
     picked_sis: str = "",
 ) -> list[str]:
     result = filtered_catalog(
         domain,
         saved_sis=saved_sis,
-        show_all=show_all,
         picked_sis=picked_sis,
         config_dir=directory,
     )
@@ -196,20 +197,17 @@ class TestTierOneShowsEverything:
         full list. A no-match is a first-class path, not an error path."""
         assert _ids(three_districts, "gmail.com") == ["myedbc", "sd48myedbc", "sd51myedbc"]
 
-    def test_show_all_shows_every_config_even_when_matched(self, three_districts: Path) -> None:
-        assert _ids(three_districts, "sd48.bc.ca", show_all=True) == ["myedbc", "sd48myedbc", "sd51myedbc"]
-
     def test_tier_one_states_return_the_WHOLE_catalog(self, three_districts: Path) -> None:
         """Asserted on the ROWS, which is the only thing a picker paints.
 
-        (There is deliberately no ``filtered`` field to interrogate: it had no production
-        reader and made ``(filtered=True, can_filter=False)`` representable. "Is this list
-        narrowed right now?" is ``can_filter and not show_all``, derived by whoever needs it.)
+        (There is deliberately no ``filtered`` companion field to interrogate, and since
+        2026-08-04 no ``can_filter`` either: both existed for the show-all row, and a boolean
+        whose only consumer is gone is a boolean that drifts.)
         """
         full = len(catalog(config_dir=three_districts))
-        for domain, show_all in (("", False), ("gmail.com", False), ("sd48.bc.ca", True)):
-            result = filtered_catalog(domain, saved_sis="", show_all=show_all, config_dir=three_districts)
-            assert len(result.summaries) == full, (domain, show_all)
+        for domain in ("", "   ", "gmail.com"):
+            result = filtered_catalog(domain, saved_sis="", config_dir=three_districts)
+            assert len(result.summaries) == full, domain
 
 
 # --------------------------------------------------------------------------- #
@@ -226,9 +224,10 @@ class TestTierTwoNarrows:
 
     def test_the_generic_tier_is_hidden_from_a_MATCHED_admin(self, three_districts: Path) -> None:
         """Flag 4, as reconciled at R3: the unclaimed rule's "always shown" is scoped to the
-        UNMATCHED / no-identity / show-all states. The generic base mapping is one more way
-        to ship a subtly wrong roster, so a matched admin does not see it — but one click on
-        "Show all districts" brings it back (pinned above)."""
+        UNMATCHED / no-identity states. The generic base mapping is one more way to ship a
+        subtly wrong roster, so a matched admin does not see it. Since 2026-08-04 that is
+        FINAL for the session — the way back is clearing the stored address in Settings
+        (`TestThereIsNoWideningKnob`), not a per-surface toggle."""
         assert "myedbc" not in _ids(three_districts, "sd48.bc.ca")
 
     def test_two_configs_sharing_one_domain_both_show(self, tmp_path: Path) -> None:
@@ -240,11 +239,43 @@ class TestTierTwoNarrows:
 
         assert _ids(tmp_path, "sd51.bc.ca") == ["sd51attendance", "sd51myedbc"]
 
-    def test_the_narrowed_state_offers_the_way_back(self, three_districts: Path) -> None:
-        result = filtered_catalog("sd48.bc.ca", saved_sis="", show_all=False, config_dir=three_districts)
 
-        assert len(result.summaries) == 1
-        assert result.can_filter is True, "a narrowed list must always carry its show-all row"
+# --------------------------------------------------------------------------- #
+# 3b. There is no widening knob — the escape is at the INPUT (2026-08-04)       #
+# --------------------------------------------------------------------------- #
+class TestThereIsNoWideningKnob:
+    """The show-all row is gone from all four pickers, so a matched list is final.
+
+    Two things have to stay true together, and each is worthless without the other: the
+    toggle must really be gone (or the removal was cosmetic), and clearing the stored
+    address must really widen the list (or a matched admin has NO way to reach another
+    district and the removal has trapped them).
+    """
+
+    def test_no_argument_can_widen_a_matched_list(self) -> None:
+        """Structural, not behavioural: a re-added ``show_all=`` parameter fails here even if
+        no caller passes it yet, which is the point — the row grew back once as a parameter."""
+        import inspect
+
+        params = set(inspect.signature(filtered_catalog).parameters)
+
+        assert params == {"domain", "saved_sis", "picked_sis", "config_dir"}, params
+
+    def test_clearing_the_stored_address_is_the_escape(self, three_districts: Path) -> None:
+        """The positive twin — and the reason the removal is not a trap.
+
+        The same catalog, the same install: matched → one district; the address cleared
+        (Settings → blank → Save, which empties the domain) → the whole list back.
+        """
+        assert _ids(three_districts, "sd48.bc.ca") == ["sd48myedbc"]
+        assert _ids(three_districts, "") == ["myedbc", "sd48myedbc", "sd51myedbc"]
+
+    def test_the_view_layer_no_longer_ships_a_scope_row(self) -> None:
+        """The factory retired with the rule. A screen cannot render a row that has no
+        factory, and `components` is the ONLY sanctioned source of controls."""
+        from src.ui_flet import components
+
+        assert not hasattr(components, "list_scope_row")
 
 
 # --------------------------------------------------------------------------- #
@@ -407,7 +438,7 @@ class TestDegradedConfigsOnlyWiden:
         _broken(tmp_path, "sd51myedbc")
 
         with caplog.at_level("WARNING"):
-            filtered_catalog("sd51.bc.ca", saved_sis="", show_all=False, config_dir=tmp_path)
+            filtered_catalog("sd51.bc.ca", saved_sis="", config_dir=tmp_path)
 
         assert "sd51myedbc" in caplog.text
         assert "sd51.bc.ca" not in caplog.text
@@ -419,9 +450,9 @@ class TestDegradedConfigsOnlyWiden:
 class TestOrderingAndDegenerateCatalogs:
     def test_the_visible_order_is_the_catalog_order(self, three_districts: Path) -> None:
         """Deterministic and STABLE across the two tiers: filtering removes rows, it never
-        reorders them, so a matched admin who presses "Show all districts" sees their own
-        district in the same relative position it already occupied."""
-        full = _ids(three_districts, "", show_all=True)
+        reorders them, so a scoped list reads as a shortened catalog rather than a re-sorted
+        one, and a district keeps its relative position on every surface."""
+        full = _ids(three_districts, "")
         narrowed = _ids(three_districts, "sd48.bc.ca", saved_sis="sd51myedbc")
 
         assert narrowed == [sis for sis in full if sis in set(narrowed)]
@@ -432,82 +463,17 @@ class TestOrderingAndDegenerateCatalogs:
         assert _ids(three_districts, "") == available_configs(three_districts)
 
     def test_an_empty_catalog_yields_an_empty_unfiltered_list(self, tmp_path: Path) -> None:
-        """Nothing to show is not a filter. `can_filter=False` keeps the show-all row (which
-        would claim "we're only showing yours") off a list that hides nothing."""
-        result = filtered_catalog("sd48.bc.ca", saved_sis="sd48myedbc", show_all=False, config_dir=tmp_path)
+        """Nothing to show is not a filter — and nothing is fabricated to fill it either."""
+        result = filtered_catalog("sd48.bc.ca", saved_sis="sd48myedbc", config_dir=tmp_path)
 
         assert result.summaries == ()
-        assert result.can_filter is False
 
     def test_a_single_config_catalog_is_never_narrowed(self, tmp_path: Path) -> None:
         _config(tmp_path, "sd48myedbc", "SD48 - Sea to Sky", ["sd48.bc.ca"])
 
-        result = filtered_catalog("sd48.bc.ca", saved_sis="", show_all=False, config_dir=tmp_path)
+        result = filtered_catalog("sd48.bc.ca", saved_sis="", config_dir=tmp_path)
 
         assert [s.sis_type for s in result.summaries] == ["sd48myedbc"]
-        assert result.can_filter is False, "the list did not get shorter, so nothing was filtered"
-
-
-# --------------------------------------------------------------------------- #
-# 8. can_filter — what drives the show-all row's VISIBILITY                     #
-# --------------------------------------------------------------------------- #
-class TestCanFilter:
-    def test_can_filter_is_false_without_an_identity(self, three_districts: Path) -> None:
-        assert filtered_catalog("", saved_sis="", show_all=False, config_dir=three_districts).can_filter is False
-
-    def test_can_filter_is_false_on_a_no_match(self, three_districts: Path) -> None:
-        result = filtered_catalog("gmail.com", saved_sis="", show_all=False, config_dir=three_districts)
-
-        assert result.can_filter is False
-
-    def test_can_filter_SURVIVES_show_all(self, three_districts: Path) -> None:
-        """The trap this field exists to avoid: keying the row's visibility on "is this list
-        narrowed right now?" would remove the toggle the moment it was switched on, stranding
-        the admin in the long list with no way back to their own short one."""
-        result = filtered_catalog("sd48.bc.ca", saved_sis="", show_all=True, config_dir=three_districts)
-
-        assert len(result.summaries) == 3, "show-all really did widen the list"
-        assert result.can_filter is True, "...and the row that offers the way back survives it"
-
-    def test_can_filter_is_false_when_the_match_set_is_everything(self, tmp_path: Path) -> None:
-        """A one-district catalog the admin matches hides nothing, so offering to "show all"
-        would be a courtesy about a list that is already complete."""
-        _config(tmp_path, "sd48myedbc", "SD48 - Sea to Sky", ["sd48.bc.ca"])
-
-        assert filtered_catalog("sd48.bc.ca", saved_sis="", show_all=False, config_dir=tmp_path).can_filter is False
-
-    def test_a_narrowed_list_ALWAYS_carries_the_way_back(self, three_districts: Path) -> None:
-        """The invariant the dropped ``filtered`` field used to half-express, stated directly
-        over the rows: whenever the returned list is shorter than the catalog, ``can_filter``
-        is True. A short list with no toggle is the one shape that traps someone."""
-        full = len(catalog(config_dir=three_districts))
-        for domain, saved in (("sd48.bc.ca", ""), ("sd48.bc.ca", "sd51myedbc"), ("gmail.com", ""), ("", "")):
-            result = filtered_catalog(domain, saved_sis=saved, show_all=False, config_dir=three_districts)
-            if len(result.summaries) < full:
-                assert result.can_filter, (domain, saved)
-
-
-# --------------------------------------------------------------------------- #
-# 9. The show-all copy — one wording, four surfaces                             #
-# --------------------------------------------------------------------------- #
-class TestShowAllCopy:
-    def test_the_off_state_is_worded_as_a_courtesy(self) -> None:
-        assert SHOW_ALL_LABEL == "Show all districts — we're only showing yours to keep the list short."
-
-    def test_the_on_state_inverts(self) -> None:
-        assert SHOWING_ALL_LABEL == "Showing all districts · Show only mine"
-
-    def test_show_all_label_picks_the_right_one(self) -> None:
-        assert show_all_label(show_all=False) == SHOW_ALL_LABEL
-        assert show_all_label(show_all=True) == SHOWING_ALL_LABEL
-
-    def test_the_copy_never_reads_as_an_unlock(self) -> None:
-        """Identification is never authentication: the row is a list-scope courtesy, so the
-        banned register (`docs/DESIGN_SYSTEM.md`) must be absent from both wordings."""
-        for label in (SHOW_ALL_LABEL, SHOWING_ALL_LABEL):
-            lowered = label.lower()
-            for banned in ("unlock", "access", "authorized", "verify", "sign in", "log in", "account"):
-                assert banned not in lowered, f"{banned!r} in {label!r}"
 
 
 # --------------------------------------------------------------------------- #
@@ -644,10 +610,9 @@ class TestFailOpen:
 
         monkeypatch.setattr(mc, "available_configs", _boom)
 
-        result = filtered_catalog("sd48.bc.ca", saved_sis="sd48myedbc", show_all=False, config_dir=tmp_path)
+        result = filtered_catalog("sd48.bc.ca", saved_sis="sd48myedbc", config_dir=tmp_path)
 
         assert result.summaries == ()
-        assert result.can_filter is False, "an unreadable catalog must never offer a show-all row"
 
     def test_a_matching_failure_degrades_to_the_FULL_list(self, monkeypatch, three_districts: Path, caplog) -> None:
         """A raise in the matching layer costs the admin a short list, never a district."""
@@ -659,10 +624,9 @@ class TestFailOpen:
         monkeypatch.setattr(mc, "resolve_domain", _boom)
 
         with caplog.at_level("DEBUG"):
-            result = filtered_catalog("sd48.bc.ca", saved_sis="", show_all=False, config_dir=three_districts)
+            result = filtered_catalog("sd48.bc.ca", saved_sis="", config_dir=three_districts)
 
         assert [s.sis_type for s in result.summaries] == ["myedbc", "sd48myedbc", "sd51myedbc"]
-        assert result.can_filter is False
         # This branch logs with `exc_info=True`, and the traceback it renders is the ONE place
         # on this path that has the domain in a live frame — so the PII bar is asserted right
         # where the temptation to "just include the value for diagnostics" lives.
@@ -689,15 +653,15 @@ class TestFailOpen:
 
         monkeypatch.setattr(mc, "list_configs", _once)
 
-        first = filtered_catalog("", saved_sis="", show_all=False, config_dir=three_districts)
-        second = filtered_catalog("", saved_sis="", show_all=False, config_dir=three_districts)
+        first = filtered_catalog("", saved_sis="", config_dir=three_districts)
+        second = filtered_catalog("", saved_sis="", config_dir=three_districts)
 
         assert first.summaries == (), "the transient failure really did degrade"
         assert len(second.summaries) == 3, "the raise was cached — every picker would stay empty"
 
     def test_the_failure_probe_is_not_vacuous(self, three_districts: Path) -> None:
         """Positive twin for both tests above — with nothing patched, the filter DOES narrow."""
-        result = filtered_catalog("sd48.bc.ca", saved_sis="", show_all=False, config_dir=three_districts)
+        result = filtered_catalog("sd48.bc.ca", saved_sis="", config_dir=three_districts)
 
         assert [s.sis_type for s in result.summaries] == ["sd48myedbc"]
 
@@ -726,7 +690,7 @@ class TestOneResolutionPath:
         monkeypatch.setattr(mc, "summarize_config", lambda sis, **kw: calls.append(sis) or real(sis, **kw))
 
         district_domain_index(config_dir=three_districts)
-        filtered_catalog("sd48.bc.ca", saved_sis="", show_all=False, config_dir=three_districts)
+        filtered_catalog("sd48.bc.ca", saved_sis="", config_dir=three_districts)
 
         assert len(calls) == 3, "the identity page and the pickers share ONE catalog build"
 
