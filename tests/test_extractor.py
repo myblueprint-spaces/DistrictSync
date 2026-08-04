@@ -392,3 +392,82 @@ class TestDiskBytesParity:
         mem = DataExtractor("").load_from_bytes({"staff.txt": content})["staff.txt"]
 
         pd.testing.assert_frame_equal(disk, mem)
+
+
+class TestFilenameCaseInsensitivity:
+    """A mapping spells a source file one way; districts drop it in whatever case they like.
+
+    MyEd BC extracts arrive by hand and by export jobs whose casing is not stable, and a
+    district config can only name the file once. Windows resolves the difference itself,
+    which is exactly why this went unnoticed: any comparison WE make in Python is
+    case-sensitive on every platform, and a case-sensitive filesystem gets it wrong at the
+    filesystem too.
+    """
+
+    def test_a_differently_cased_file_is_found(self, tmp_path):
+        (tmp_path / "students.txt").write_text("id,name\n1,A\n", encoding="utf-8")
+
+        data = DataExtractor(str(tmp_path)).load_data(["Students.txt"])
+
+        assert not data["Students.txt"].empty, "the mapping's spelling should resolve to the file on disk"
+        assert list(data.keys()) == ["Students.txt"], "the dict stays keyed by the CONFIGURED name"
+
+    def test_upper_case_on_disk_is_found_too(self, tmp_path):
+        (tmp_path / "STUDENTS.TXT").write_text("id,name\n1,A\n", encoding="utf-8")
+
+        assert not DataExtractor(str(tmp_path)).load_data(["Students.txt"])["Students.txt"].empty
+
+    def test_a_genuinely_absent_file_still_reports_missing(self, tmp_path):
+        """The positive twin — case-insensitivity must not invent a file that isn't there."""
+        (tmp_path / "Staff.txt").write_text("id\n1\n", encoding="utf-8")
+
+        data = DataExtractor(str(tmp_path)).load_data(["Students.txt"])
+
+        assert data["Students.txt"].empty
+
+    def test_an_AMBIGUOUS_case_collision_fails_loudly(self, tmp_path):
+        """Two files differing only in case: there is no defensible way to choose.
+
+        Only reachable on a case-sensitive filesystem, and the reason it raises instead of
+        picking one is the same reason the whole product fails loud on district data —
+        loading the wrong file converts the wrong roster, silently.
+        """
+        (tmp_path / "Students.txt").write_text("id\n1\n", encoding="utf-8")
+        (tmp_path / "students.txt").write_text("id\n2\n", encoding="utf-8")
+        # The ONLY reliable probe is whether the directory now holds two entries. A
+        # case-insensitive filesystem (Windows, default macOS) silently makes the second
+        # write an overwrite of the first, so the collision cannot be built there at all.
+        if len(list(tmp_path.iterdir())) < 2:  # pragma: no cover - platform-dependent
+            pytest.skip("case-insensitive filesystem: the second write replaced the first")
+
+        # The mapping must name NEITHER spelling exactly. With an exact match present the
+        # ambiguity does not exist — the exact file wins, which is the correct and safest
+        # precedence (see `test_an_exact_match_wins_over_case_variants`). Ambiguity is only
+        # real when we are choosing purely on case, and then there is nothing to choose by.
+        with pytest.raises(ExtractionError, match="match 'STUDENTS.TXT' when case is ignored"):
+            DataExtractor(str(tmp_path)).load_data(["STUDENTS.TXT"])
+
+    def test_an_exact_match_wins_over_case_variants(self, tmp_path):
+        """Precedence, pinned: an exactly-named file is never passed over for a variant.
+
+        Runs everywhere — on a case-insensitive filesystem the second write is simply an
+        overwrite, and the exact name still resolves, which is the same guarantee.
+        """
+        (tmp_path / "Students.txt").write_text("id\nexact\n", encoding="utf-8")
+        (tmp_path / "STUDENTS.TXT").write_text("id\nvariant\n", encoding="utf-8")
+
+        data = DataExtractor(str(tmp_path)).load_data(["Students.txt"])
+
+        assert not data["Students.txt"].empty
+
+    def test_an_exactly_matching_file_never_consults_the_index(self, tmp_path, monkeypatch):
+        """The common path is untouched: an exact hit does no directory listing at all."""
+        (tmp_path / "Students.txt").write_text("id\n1\n", encoding="utf-8")
+        extractor = DataExtractor(str(tmp_path))
+
+        def _boom(_name):  # noqa: ANN001, ANN202
+            raise AssertionError("case-insensitive resolution ran for an exact match")
+
+        monkeypatch.setattr(extractor, "_resolve_case_insensitively", _boom)
+
+        assert not extractor.load_data(["Students.txt"])["Students.txt"].empty

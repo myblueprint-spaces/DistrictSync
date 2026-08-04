@@ -403,6 +403,21 @@ def _build_identity_cards(
         border_color=tokens.color_border,
     )
 
+    # A PERSISTENT slot for the card's note, so a blur can repaint the note without
+    # rebuilding the card around a button that is mid-press (see `_on_blur`).
+    note_slot = ft.Column(spacing=0, controls=[])
+    shown_note = {"text": ""}
+
+    def _render_note() -> bool:
+        """Sync the note slot; ``True`` only if it actually CHANGED (see `_on_blur`)."""
+        if str(state["note"]) == shown_note["text"]:
+            return False
+        shown_note["text"] = str(state["note"])
+        note_slot.controls = (
+            [_card_note(str(state["note"]), failed=bool(state["note_failed"]))] if state["note"] else []
+        )
+        return True
+
     def _guard(work: Callable[[], None]) -> bool:
         """Run one handler's work; ``True`` on success, ``False`` after logging a failure.
 
@@ -496,7 +511,21 @@ def _build_identity_cards(
         _guard(work)
 
     def _on_blur(_e: ft.ControlEvent | None = None) -> None:
-        """Validate on BLUR only. An error after the third keystroke is an accusation."""
+        """Validate on BLUR only. An error after the third keystroke is an accusation.
+
+        **It must never call `_render()`** (v3.10.1). Clicking Save blurs the field first,
+        and `_render()` replaces `host.controls` — the card holding the button that is
+        mid-press. Flutter delivers a tap to the widget that received the DOWN; that widget
+        is gone, so the press is discarded and Save does nothing. The launch page shipped
+        the identical bug on its Continue button, and `identity._on_email_blur` carries the
+        full account with the measured click-hold table.
+
+        This card was fixed by inspection, not by measurement — the launch page is where the
+        bug was reproduced, and this is the same construction (blur → rebuild the card the
+        button lives in). Note the ONE behavioural difference that made it less visible: this
+        field is deliberately not autofocused, so an admin who never puts the caret in it
+        never triggers the blur at all.
+        """
 
         def work() -> None:
             typed = (field.value or "").strip()
@@ -515,7 +544,8 @@ def _build_identity_cards(
             state["note_failed"] = False
 
         _guard(work)
-        _render()
+        if _render_note():
+            page.update()
 
     def _dismiss(_e: ft.ControlEvent | None = None) -> None:
         """ "Don't ask again" — permanent, and recoverable only in Settings."""
@@ -630,8 +660,10 @@ def _build_identity_cards(
                     controls=[save_btn, components.text_button(IDENTITY_CARD_DISMISS_LABEL, _dismiss)],
                 ),
             ]
-        if state["note"]:
-            controls.append(_card_note(str(state["note"]), failed=bool(state["note_failed"])))
+        # The note rides a PERSISTENT slot rather than being appended conditionally, so a
+        # blur can repaint it without rebuilding this card mid-click (see `_on_blur`).
+        _render_note()
+        controls.append(note_slot)
         return components.card(content=ft.Column(spacing=tokens.space_lg, controls=controls))
 
     def _mismatch_card() -> ft.Control:

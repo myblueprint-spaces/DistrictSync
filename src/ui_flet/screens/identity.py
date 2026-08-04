@@ -296,7 +296,50 @@ def build_identity(
         border_color=tokens.color_border,
     )
 
+    # The inline error and the SD note live in PERSISTENT slots that survive a repaint, so a
+    # BLUR can update them without rebuilding the card. That is a correctness requirement,
+    # not tidiness — see `_on_email_blur`.
+    error_slot = ft.Column(spacing=0, controls=[])
+    note_slot = ft.Column(spacing=0, controls=[])
+    # What those slots are CURRENTLY showing. A blur repaints only on a real change — see
+    # `_on_email_blur` for why an unconditional repaint is a click-eater.
+    shown = {"error": "", "note": ""}
+
+    def _render_error() -> bool:
+        """Sync the error slot; ``True`` only if it actually CHANGED."""
+        if st.error == shown["error"]:
+            return False
+        shown["error"] = st.error
+        error_slot.controls = [_error_line(st.error)] if st.error else []
+        return True
+
+    def _render_note() -> bool:
+        """Sync the SD note slot; ``True`` only if it actually CHANGED."""
+        if st.note == shown["note"]:
+            return False
+        shown["note"] = st.note
+        note_slot.controls = [_muted(st.note)] if st.note else []
+        return True
+
+    def _sync_gate() -> bool:
+        """Sync Continue's enabled state to the field; ``True`` only if it FLIPPED.
+
+        Both the keystroke handler and the blur handler drive this. The blur needs it
+        because a value can arrive without a change event (an autofill, a paste that some
+        platforms deliver silently), and before v3.10.1 the blur's full repaint re-derived
+        the gate as a side effect — so removing that repaint would have left the button
+        disabled on exactly those paths. Returning the flip lets both callers repaint only
+        when there is something to see, which is what keeps a blur off the frame a click is
+        being pressed in.
+        """
+        want = not can_continue(email_field.value or "")
+        if continue_btn.disabled == want:
+            return False
+        continue_btn.disabled = want
+        return True
+
     def _paint() -> None:
+        """Rebuild the whole page. **Never call this from a BLUR handler** (see below)."""
         body.controls = [_hero(), _card()]
         page.update()
 
@@ -343,19 +386,65 @@ def build_identity(
         """Only the Continue GATE follows the keystrokes — the error never does."""
 
         def work() -> None:
-            continue_btn.disabled = not can_continue(email_field.value or "")
-            page.update()
+            if _sync_gate():
+                page.update()
 
         _guard(work)
 
     def _on_email_blur(_e: ft.ControlEvent | None = None) -> None:
+        """Validate on blur — and update the error IN PLACE, never by repainting.
+
+        **This handler must not rebuild the card, and that is a bug fix, not a preference.**
+        Clicking Continue blurs the field FIRST, so a `_paint()` here replaced the card —
+        and the button inside it — between the mouse DOWN and the mouse UP. Flutter delivers
+        a tap to the widget that received the press; that widget no longer existed, so the
+        press was discarded and Continue did nothing. Every time, for every admin, on the
+        first screen of the product (shipped in v3.9.0, fixed in v3.10.1).
+
+        It survived the tests because they invoke `on_click` directly, and it survived a
+        scripted click because a synthetic down+up lands in ONE frame — a human holds the
+        button for ~100ms, which is long enough for the rebuild. Pressing Enter always
+        worked, because `on_submit` fires without a blur first: that asymmetry is the
+        signature of this bug.
+
+        **Measured** (driving the real page through the Flet web transport, clicking with a
+        held mouse button rather than a synthetic instant one):
+
+        =========================  ==================  =================
+        click hold                 card rebuilt        leaf-only update
+        =========================  ==================  =================
+        80ms / 150ms / 300ms       CLICK EATEN         resolves
+        600ms / 1000ms             CLICK EATEN         CLICK EATEN
+        =========================  ==================  =================
+
+        The ≥600ms column is NOT this bug and is not ours: a control run — a 1s hold on the
+        escape link with nothing typed, so no blur, no handler and no repaint anywhere in
+        the path — loses the click identically. Long holds are lost somewhere in Flutter's
+        gesture handling regardless of what this page does. Real clicks are 60–150ms, and
+        that entire range was broken before this change and works after it.
+
+        The ``_render_*`` change-guards (repaint only when the text actually differs) are a
+        HARDENING, not the fix — the measurements above are unchanged with or without them.
+        They are kept because a blur on the path every admin takes (valid address → click)
+        should not be pushing frames at all, which keeps this handler far away from the
+        failure mode rather than merely outside it.
+
+        The rule for this page: a handler that fires from a POINTER-DOWN-adjacent event
+        (blur) never rebuilds the card and repaints only on a real state change; a handler
+        that fires from a COMPLETED click (`_resolve`, `_try_again`, `_not_listed`) may
+        repaint freely.
+        """
+
         def work() -> None:
             if not can_continue(email_field.value or ""):
                 st.error = ""  # an empty field is not yet a mistake
-                _paint()
-                return
-            _validate_now()
-            _paint()
+            else:
+                _validate_now()
+            # Both, then ONE update — and only if either actually changed.
+            changed = _render_error()
+            changed = _sync_gate() or changed
+            if changed:
+                page.update()
 
         _guard(work)
 
@@ -391,7 +480,12 @@ def build_identity(
         return st.sd_digits
 
     def _check_sd(_e: ft.ControlEvent | None = None) -> None:
-        """Resolve the typed district number (on blur/submit) into a calm inline note."""
+        """Resolve the typed district number (on blur/submit) into a calm inline note.
+
+        In place, not by repainting — the SAME rule as `_on_email_blur`, and the same live
+        consequence: this field sits directly above "Get started", so a repaint here ate
+        that click for anyone who typed a district number before pressing it.
+        """
 
         def work() -> None:
             digits = _read_sd()
@@ -401,7 +495,8 @@ def build_identity(
                 st.note = sd_resolved_note(friendly_district_name(hits[0]) or hits[0])
             else:
                 st.note = sd_unknown_note(digits)
-            _paint()
+            if _render_note():
+                page.update()
 
         _guard(work)
 
@@ -496,12 +591,11 @@ def build_identity(
     # The three page states                                              #
     # ----------------------------------------------------------------- #
     def _ask_controls() -> list[ft.Control]:
-        controls: list[ft.Control] = [email_field]
-        if st.error:
-            controls.append(_error_line(st.error))
-        continue_btn.disabled = not can_continue(email_field.value or "")
-        controls.append(continue_btn)
-        return controls
+        # The error rides in its persistent SLOT (empty when there is no error) rather than
+        # being appended conditionally — that is what lets a blur update it without a rebuild.
+        _render_error()
+        _sync_gate()
+        return [email_field, error_slot, continue_btn]
 
     def _matched_controls() -> list[ft.Control]:
         configs = st.configs
@@ -537,13 +631,13 @@ def build_identity(
         return controls
 
     def _no_match_controls() -> list[ft.Control]:
+        _render_note()  # the note rides its persistent slot — see `_check_sd`
         controls: list[ft.Control] = [
             ft.Text(NO_MATCH_HEADLINE, size=tokens.type_section, weight=ft.FontWeight.W_700, color=tokens.color_text),
             _muted(NO_MATCH_DETAIL),
             sd_field,
+            note_slot,
         ]
-        if st.note:
-            controls.append(_muted(st.note))
         controls.append(components.text_button(NOT_LISTED_LABEL, _not_listed))
         controls.append(
             components.primary_button(GET_STARTED_LABEL, _persist_and_enter, icon=ft.Icons.ARROW_FORWARD_ROUNDED)

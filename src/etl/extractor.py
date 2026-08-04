@@ -30,6 +30,51 @@ class DataExtractor:
 
     def __init__(self, input_path: str):
         self.input_path = Path(input_path)
+        # Lazily-built {lowercased filename: [real paths]} for case-insensitive resolution.
+        # None until first needed, so an extractor that never loads from disk never lists it.
+        self._ci_index: Optional[dict[str, list[Path]]] = None
+
+    def _resolve_case_insensitively(self, filename: str) -> Optional[Path]:
+        """Find ``filename`` on disk ignoring case. ``None`` when genuinely absent.
+
+        District extracts are hand-dropped by staff and by SIS export jobs whose casing is
+        not stable (``Students.txt`` vs ``students.txt`` vs ``STUDENTS.TXT``), while a
+        mapping can only spell it one way. Windows resolves that itself; a case-sensitive
+        filesystem does not, and neither does any string comparison in our own code — which
+        is where this actually bit (a district's file read as "missing" on a Windows box
+        because a picker compared names in Python).
+
+        **An EXACT match always wins** — this is only consulted when the configured name is
+        not on disk verbatim (the caller checks ``exists()`` first). So where a district has
+        both ``Students.txt`` and ``students.txt`` and the mapping names one of them, that
+        one is loaded and nothing is ambiguous.
+
+        **A case COLLISION fails loudly rather than guessing.** Ambiguity is real only when
+        we are choosing purely on case — the mapping names neither spelling exactly and
+        several variants exist. There is then no defensible way to pick one, and choosing
+        wrong ships a wrong roster, the highest-consequence failure this product has.
+        """
+        if self._ci_index is None:
+            index: dict[str, list[Path]] = {}
+            try:
+                for entry in self.input_path.iterdir():
+                    if entry.is_file():
+                        index.setdefault(entry.name.lower(), []).append(entry)
+            except OSError:
+                # An unreadable/absent input dir is the caller's existing "file not found"
+                # path, not a new failure mode — resolve nothing and let it report that.
+                index = {}
+            self._ci_index = index
+
+        matches = self._ci_index.get(filename.lower(), [])
+        if len(matches) > 1:
+            names = sorted(p.name for p in matches)
+            raise ExtractionError(
+                f"{len(matches)} files in {self.input_path} match '{filename}' when case is ignored "
+                f"({', '.join(names)}). Rename or remove all but one — loading the wrong one would "
+                f"convert the wrong data."
+            )
+        return matches[0] if matches else None
 
     def load_data(
         self,
@@ -50,9 +95,16 @@ class DataExtractor:
             logger.info(f"Attempting to load: {file_path}")
 
             if not file_path.exists():
-                logger.error(f"File not found: {file_path}")
-                data[filename] = pd.DataFrame()
-                continue
+                # Case-insensitive second look before declaring it absent (see
+                # `_resolve_case_insensitively`). The returned dict stays keyed by the
+                # CONFIGURED name — every downstream lookup uses the mapping's spelling.
+                resolved = self._resolve_case_insensitively(filename)
+                if resolved is None:
+                    logger.error(f"File not found: {file_path}")
+                    data[filename] = pd.DataFrame()
+                    continue
+                logger.info(f"Matched '{filename}' on disk as '{resolved.name}' (case-insensitive).")
+                file_path = resolved
 
             # Read the bytes once and dispatch to the shared bytes-core: disk and
             # in-memory uploads parse through exactly the same encoding/delimiter/

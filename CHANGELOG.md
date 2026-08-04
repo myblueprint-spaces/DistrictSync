@@ -9,6 +9,36 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.10.1] - 2026-08-04
+
+Fixes a bug that made the **Continue button on the launch page do nothing**, found by
+owner field-testing. Present since 3.9.0. **No CSV output changes.**
+
+### Fixed
+
+- **Clicking Continue on the launch page did nothing.** Clicking the button first
+  moved focus off the email field, and the resulting blur rebuilt the card — including
+  the button being pressed — between the mouse going down and coming back up. The
+  press was delivered to a control that no longer existed, so nothing happened, every
+  time. Pressing **Enter** always worked, because that path never blurs first.
+
+  Blur handlers now update the inline error and the district-number note in place, and
+  repaint only when the text actually changes, so a click is never disturbed.
+- **The same bug on Home's "who looks after this sync" card** — its Save button lost
+  clicks the same way, for the same reason. It was less visible only because that field
+  is not auto-focused, so an admin who never clicked into it never triggered it.
+- **The Continue button now re-checks its enabled state on blur**, not only on
+  keystrokes, so a value that arrives without a change event (some autofill and paste
+  paths) can no longer leave the button greyed out.
+
+### Notes for anyone reading the code
+
+The existing tests passed throughout, because they invoke `on_click` directly — which
+skips focus, blur, and the frame the rebuild happened in. A scripted browser click
+passed too, because a synthetic press and release land in one frame. Only a *held*
+click reproduced it. The regression test added here pins the structural invariant a
+unit test can hold: **a blur may not replace the controls its card is built from.**
+
 ## [3.10.0] - 2026-08-04
 
 A focused follow-up to 3.9.0's front door, driven by owner field-testing of that

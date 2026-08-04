@@ -799,3 +799,64 @@ class TestNothingToDeliverCopy:
         _title, body = nothing_to_deliver_copy("", config_dir=tmp_path)
         assert "this district" in body
         assert "  " not in body
+
+
+class TestFileChipsIgnoreFilenameCase:
+    """A district's `students.txt` must not be reported missing against `Students.txt`.
+
+    This is the comparison that actually bit a district: `_present_gde_files` lists real
+    names off disk and `_expected_files` returns the mapping's spelling, and the two were
+    compared with a plain `in`. Python string comparison is case-sensitive on EVERY
+    platform — including Windows, where the ETL itself would go on to load the file
+    perfectly well. So the screen an admin uses to decide whether their extract is
+    complete raised a false alarm about a file that was right there.
+    """
+
+    def _chip_text(self, controls) -> str:  # noqa: ANN001 - untyped Flet tree
+        out: list[str] = []
+
+        def walk(c) -> None:  # noqa: ANN001, ANN202
+            for attr in ("value", "label", "content"):
+                v = getattr(c, attr, None)
+                if isinstance(v, str):
+                    out.append(v)
+            for attr in ("controls", "content"):
+                child = getattr(c, attr, None)
+                if child is None:
+                    continue
+                for item in child if isinstance(child, list) else [child]:
+                    if hasattr(item, "_c"):
+                        walk(item)
+
+        for c in controls:
+            walk(c)
+        return "\n".join(out)
+
+    def _folder_with(self, tmp_path, names):  # noqa: ANN001, ANN202
+        for name in names:
+            (tmp_path / name).write_text("a,b\n1,2\n", encoding="utf-8")
+        return str(tmp_path)
+
+    def test_lower_case_files_are_not_reported_missing(self, tmp_path, monkeypatch) -> None:
+        from src.ui_flet.screens import convert as convert_screen
+
+        monkeypatch.setattr(convert_screen, "_expected_files", lambda _c: ["Students.txt", "Staff.txt"])
+        folder = self._folder_with(tmp_path, ["students.txt", "STAFF.TXT"])
+
+        text = self._chip_text(convert_screen._build_file_chips("myedbc", folder))
+
+        heading, _reassurance = missing_files_copy()
+        assert heading not in text, "a present file was reported missing purely because of its casing"
+
+    def test_a_genuinely_absent_file_IS_still_reported(self, tmp_path, monkeypatch) -> None:
+        """The positive twin — case-folding must not silence a real missing-file warning."""
+        from src.ui_flet.screens import convert as convert_screen
+
+        monkeypatch.setattr(convert_screen, "_expected_files", lambda _c: ["Students.txt", "Schedule.txt"])
+        folder = self._folder_with(tmp_path, ["students.txt"])
+
+        text = self._chip_text(convert_screen._build_file_chips("myedbc", folder))
+
+        heading, _reassurance = missing_files_copy()
+        assert heading in text
+        assert "Schedule.txt" in text, "the MAPPING's spelling is what an admin needs to see"

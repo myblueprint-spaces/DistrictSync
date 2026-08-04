@@ -959,3 +959,113 @@ def test_the_page_never_reads_the_real_user_profile(page: MagicMock, fixed_index
     build_identity(page, app_config=cfg, on_enter=lambda: None)
 
     assert cfg.identity_email == ""
+
+
+# --------------------------------------------------------------------------- #
+# 9. The blur must not rebuild the card (v3.10.1 regression)                    #
+# --------------------------------------------------------------------------- #
+class TestABlurNeverRebuildsTheCard:
+    """The launch page's Continue button did nothing for two releases. Pinned here.
+
+    **The bug.** Clicking Continue blurs the email field first. ``_on_email_blur`` called
+    ``_paint()``, which replaced ``body.controls`` — and with it the very button the mouse
+    was pressing. Flutter delivers a tap to the widget that received the pointer-down; that
+    widget no longer existed, so the press was discarded. Continue did nothing, for every
+    admin, on the first screen of the product. Pressing Enter always worked, because
+    ``on_submit`` fires with no blur first — that asymmetry is the bug's signature.
+
+    **Why the existing tests were green.** Every one of them calls ``on_click(None)``
+    directly, which is not a click: it skips focus, blur, the gesture arena and the frame
+    the rebuild happened in. A scripted browser click passed too, because a synthetic
+    down+up lands in a single frame. Only a HELD click reproduced it.
+
+    **So this pins the structural invariant instead of the gesture**, which is the part a
+    unit test can actually hold: a blur may not swap out the controls the card is built
+    from. The gesture-level proof lives in the measured hold table in
+    ``identity._on_email_blur``'s docstring, which a test cannot replay in-process.
+    """
+
+    def _card_controls(self, view):  # noqa: ANN001, ANN202 - untyped Flet tree
+        """The identity of the control list the Continue button lives in."""
+        return [c for c in _iter_controls(view) if isinstance(c, ft.Column) and self._holds_continue(c)][0].controls
+
+    def _holds_continue(self, column) -> bool:  # noqa: ANN001 - untyped Flet tree
+        return any(
+            isinstance(c, ft.FilledButton) and c.content == identity.CONTINUE_LABEL for c in (column.controls or [])
+        )
+
+    def test_a_blur_on_a_VALID_address_leaves_the_button_in_place(self, page: MagicMock, fixed_index) -> None:
+        """The path every admin takes: type a good address, then reach for Continue."""
+        view = build_identity(page, app_config=AppConfig(), on_enter=lambda: None)
+        field = _field(view, identity.EMAIL_LABEL)
+        button_before = _button(view, identity.CONTINUE_LABEL)
+        controls_before = self._card_controls(view)
+
+        field.value = "roster.admin@sd48.bc.ca"
+        field.on_change(None)
+        field.on_blur(None)
+
+        assert _button(view, identity.CONTINUE_LABEL) is button_before, (
+            "the blur replaced the Continue button — a click held across it is discarded"
+        )
+        assert self._card_controls(view) is controls_before, "the blur rebuilt the card the button lives in"
+
+    def test_a_blur_on_an_INVALID_address_also_leaves_the_button_in_place(self, page: MagicMock, fixed_index) -> None:
+        """The branch that DOES repaint still may not rebuild — it fills a persistent slot.
+
+        Asserted on the CONTROLS LIST, not on the button object. ``continue_btn`` is built
+        once and re-used across repaints, so its identity survives a full ``_paint()`` and
+        an identity check on it alone passes against the buggy code — a test that cannot
+        fail. The card's controls list is what the rebuild actually replaces.
+        """
+        view = build_identity(page, app_config=AppConfig(), on_enter=lambda: None)
+        field = _field(view, identity.EMAIL_LABEL)
+        controls_before = self._card_controls(view)
+
+        field.value = "notanemail"
+        field.on_change(None)
+        field.on_blur(None)
+
+        assert self._card_controls(view) is controls_before, "the invalid-address blur rebuilt the card"
+        assert identity.EMAIL_HINT in _all_text(view), "still the ask state"
+
+    def test_the_error_STILL_appears_on_blur(self, page: MagicMock, fixed_index) -> None:
+        """The positive twin, and the one that stops this suite going vacuous.
+
+        Every assertion above is satisfied by a blur handler that does nothing whatsoever.
+        This one fails unless the handler still does its job: a bad address, blurred, shows
+        the format error.
+        """
+        view = build_identity(page, app_config=AppConfig(), on_enter=lambda: None)
+        field = _field(view, identity.EMAIL_LABEL)
+
+        field.value = "notanemail"
+        field.on_change(None)
+        field.on_blur(None)
+
+        assert _error_texts(view), "the blur no longer reports a bad address at all"
+
+    def test_the_error_CLEARS_when_the_address_is_corrected(self, page: MagicMock, fixed_index) -> None:
+        """The other half of the slot's contract — a stale error is its own bug."""
+        view = build_identity(page, app_config=AppConfig(), on_enter=lambda: None)
+        field = _field(view, identity.EMAIL_LABEL)
+        field.value = "notanemail"
+        field.on_blur(None)
+        assert _error_texts(view)
+
+        field.value = "roster.admin@sd48.bc.ca"
+        field.on_blur(None)
+
+        assert not _error_texts(view), "the error survived a correction"
+
+    def test_the_district_number_blur_leaves_GET_STARTED_in_place(self, page: MagicMock, fixed_index) -> None:
+        """The same trap one screen along: the SD field sits directly above Get started."""
+        view = _page_at(page, "someone@nowhere.example.org")
+        sd_field = _field(view, identity.SD_LABEL)
+        button_before = _button(view, identity.GET_STARTED_LABEL)
+
+        sd_field.value = "48"
+        sd_field.on_blur(None)
+
+        assert _button(view, identity.GET_STARTED_LABEL) is button_before
+        assert "Sea to Sky" in _all_text(view), "the note still resolves the number (positive twin)"
