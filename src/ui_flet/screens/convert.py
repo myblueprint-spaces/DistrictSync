@@ -1400,7 +1400,13 @@ def _build_file_chips(config_name: str | None, input_dir: str) -> list[ft.Contro
         controls.append(ft.Text("Files found", size=13, weight=ft.FontWeight.W_700, color=tokens.color_text))
         controls.append(ft.Row(spacing=10, wrap=True, controls=[components.FileChip(name) for name in present]))
 
-    missing = [f for f in expected if f not in present]
+    # Case-INSENSITIVE, matching what the extractor actually does on disk. A district's
+    # `students.txt` against a mapping's `Students.txt` was reported here as missing while
+    # the ETL loaded it perfectly well — a false alarm on the screen an admin uses to decide
+    # whether their extract is complete. The MAPPING's spelling is what gets listed, since
+    # that is the name to fix if the file really is absent.
+    present_folded = {name.lower() for name in present}
+    missing = [f for f in expected if f.lower() not in present_folded]
     if missing:
         # Softened copy (0035 W3b): a missing source file is legitimate (per-entity
         # skip-on-empty), so the heading observes calmly and the muted reassurance line
