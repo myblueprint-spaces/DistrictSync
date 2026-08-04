@@ -44,10 +44,15 @@ class DataExtractor:
         is where this actually bit (a district's file read as "missing" on a Windows box
         because a picker compared names in Python).
 
-        **A case COLLISION fails loudly rather than guessing.** On a case-sensitive
-        filesystem ``Students.txt`` and ``students.txt`` can coexist, and there is no
-        defensible way to pick one: choosing wrong ships a wrong roster, which is the
-        highest-consequence failure this product has. Unresolvable ambiguity is an error.
+        **An EXACT match always wins** — this is only consulted when the configured name is
+        not on disk verbatim (the caller checks ``exists()`` first). So where a district has
+        both ``Students.txt`` and ``students.txt`` and the mapping names one of them, that
+        one is loaded and nothing is ambiguous.
+
+        **A case COLLISION fails loudly rather than guessing.** Ambiguity is real only when
+        we are choosing purely on case — the mapping names neither spelling exactly and
+        several variants exist. There is then no defensible way to pick one, and choosing
+        wrong ships a wrong roster, the highest-consequence failure this product has.
         """
         if self._ci_index is None:
             index: dict[str, list[Path]] = {}

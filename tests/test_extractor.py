@@ -436,13 +436,29 @@ class TestFilenameCaseInsensitivity:
         (tmp_path / "students.txt").write_text("id\n2\n", encoding="utf-8")
         # The ONLY reliable probe is whether the directory now holds two entries. A
         # case-insensitive filesystem (Windows, default macOS) silently makes the second
-        # write an overwrite of the first, so both paths exist, both read back fine, and
-        # nothing raises — the collision simply cannot be built there.
+        # write an overwrite of the first, so the collision cannot be built there at all.
         if len(list(tmp_path.iterdir())) < 2:  # pragma: no cover - platform-dependent
             pytest.skip("case-insensitive filesystem: the second write replaced the first")
 
-        with pytest.raises(ExtractionError, match="match 'Students.txt' when case is ignored"):
-            DataExtractor(str(tmp_path)).load_data(["Students.txt"])
+        # The mapping must name NEITHER spelling exactly. With an exact match present the
+        # ambiguity does not exist — the exact file wins, which is the correct and safest
+        # precedence (see `test_an_exact_match_wins_over_case_variants`). Ambiguity is only
+        # real when we are choosing purely on case, and then there is nothing to choose by.
+        with pytest.raises(ExtractionError, match="match 'STUDENTS.TXT' when case is ignored"):
+            DataExtractor(str(tmp_path)).load_data(["STUDENTS.TXT"])
+
+    def test_an_exact_match_wins_over_case_variants(self, tmp_path):
+        """Precedence, pinned: an exactly-named file is never passed over for a variant.
+
+        Runs everywhere — on a case-insensitive filesystem the second write is simply an
+        overwrite, and the exact name still resolves, which is the same guarantee.
+        """
+        (tmp_path / "Students.txt").write_text("id\nexact\n", encoding="utf-8")
+        (tmp_path / "STUDENTS.TXT").write_text("id\nvariant\n", encoding="utf-8")
+
+        data = DataExtractor(str(tmp_path)).load_data(["Students.txt"])
+
+        assert not data["Students.txt"].empty
 
     def test_an_exactly_matching_file_never_consults_the_index(self, tmp_path, monkeypatch):
         """The common path is untouched: an exact hit does no directory listing at all."""
