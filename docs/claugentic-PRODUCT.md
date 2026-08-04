@@ -417,14 +417,17 @@ descriptions above, which stay accurate until each slice lands.
 a first-run admin is asked for their work email. It resolves locally — by the email's **domain** —
 against per-district staff-domain lists carried in the bundled mapping YAMLs (public organizational
 facts, in the clear), and the only thing a match does is **scope the district
-lists** (wizard District step · Convert · Mapping) to that district's own mappings — the generic
-defaults and every other district stay one click away ("Show all districts") and appear in full
-whenever no match is on file. Four
+lists** (wizard District step · Settings · Convert · Mapping) to that district's own mappings.
+Every other district appears in full whenever no match is on file. Four
 rules make that honest and keep it honest:
 
-- **It never withholds anything.** Every mapping ships in the exe; "Show all districts" is a plain,
-  always-available list-scope control worded as a courtesy ("we're only showing yours to keep the
-  list short"), never an unlock. It lives at the foot of each filtered list and in Settings.
+- **It never withholds anything.** Every mapping ships in the exe, and an admin whose address
+  matches no district sees all of them. Scoping is presentation, not permission — the domains are
+  public, so typing one is not a claim anybody has checked. **(2026-08-04)** The per-surface "Show
+  all districts" row was retired at the owner's request, so a matched admin's lists stay scoped
+  everywhere; the escape moved to the INPUT — clearing the stored address in Settings widens every
+  list again. That is a deliberate narrowing of *visibility*, and it changes nothing about what the
+  product will convert for you.
 - **It never fails closed.** An unreadable allowlist, a no-match, a typo, an air-gapped machine —
   every one of them ends with the admin *inside* the app with the full list. A no-match is a
   first-class path, not an error path: no lockout, no attempt counter, no delay, no red. The

@@ -62,7 +62,7 @@ from src.ui_flet.identity_gate import (
 )
 from src.ui_flet.mapping_catalog import district_domain_index
 from src.utils.identity import extract_domain, normalize_email
-from src.utils.validators import IDENTITY_EMAIL_MAX_LEN, validate_identity_email
+from src.utils.validators import validate_identity_email
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,14 @@ EMAIL_LABEL = "Work email address"
 EMAIL_HINT = "name@yourdistrict.bc.ca"
 # Minimisation honesty: the DOMAIN is what we match on, but the WHOLE address is stored
 # and rendered — so "we use only the part after the @" would understate what is kept.
+#
+# **Not rendered on THIS page since 2026-08-04** (owner decision): the launch page asks for
+# an address and nothing else — no mechanism, no caveat, no character counter under a field
+# that has one thing to say. The constant stays here because this module owns the identity
+# COPY, and its live consumer is Home's one-time ask card (``screens/home.py``), where the
+# admin is being interrupted mid-product and the explanation is owed. Settings' own
+# ``IDENTITY_EXPLAINER`` carries the same fact on the surface that edits and clears it, so
+# the storage promise is still made twice in the product — just not in front of the door.
 EMAIL_HELPER = (
     "We match on the part after the @ — your district's email domain. "
     "The whole address is saved on this computer and nowhere else."
@@ -256,22 +264,35 @@ def build_identity(
     index = district_domain_index(config_dir=config_dir)
     st = _PageState()
 
-    body = ft.Column(spacing=tokens.space_xl)
+    # STRETCH so the hero and the form card are the SAME width — the frame
+    # (``shell._gate_frame``) owns that width and centres the pair in the window. Without it
+    # each card hugs its own content and the two sit ragged against the left edge.
+    body = ft.Column(spacing=tokens.space_xl, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
     email_field = ft.TextField(
         label=EMAIL_LABEL,
         hint_text=EMAIL_HINT,
-        helper=EMAIL_HELPER,
-        width=420,
+        # No helper, no counter, no length cap ON THE WIDGET (2026-08-04): see EMAIL_HELPER
+        # for the helper. `max_length` went with it because on 0.85.3 a TextField that has
+        # one reserves the sub-text row for its "0/254" counter, and a blank `counter=` does
+        # not collapse it — leaving a dead 24px band under the field on a page whose whole
+        # job is one input. The LENGTH RULE IS UNCHANGED: `validate_identity_email` is the
+        # boundary (CLAUDE.md: validate at boundaries) and still refuses anything over
+        # `IDENTITY_EMAIL_MAX_LEN` on blur/submit, with a message that never echoes the
+        # value. The widget cap was a convenience that silently truncated a paste; the
+        # validator says so out loud instead.
         autofocus=True,
-        max_length=IDENTITY_EMAIL_MAX_LEN,
         border_color=tokens.color_border,
     )
     sd_field = ft.TextField(
         label=SD_LABEL,
         hint_text=SD_HINT,
-        width=220,
+        # No explicit width — the card's column STRETCHES it to match the email field above.
+        # `max_length` stays here (unlike the email field): `sd_number_digits` takes the first
+        # digit RUN with no upper bound, and that value is persisted, so this is a real cap on
+        # what a paste can write to `config.json`, not a typing convenience.
         max_length=16,
+        counter=ft.Text(""),
         border_color=tokens.color_border,
     )
 
@@ -424,7 +445,7 @@ def build_identity(
         launch. The admin who wants to record a DIFFERENT address can retype it (the
         "try again" affordance) or set it later in Settings.
         """
-        _guard(lambda: log_resolve("show_all", 0, index))
+        _guard(lambda: log_resolve("unscoped", 0, index))
         on_enter()
 
     def _try_again(_e: ft.ControlEvent | None = None) -> None:
@@ -452,7 +473,7 @@ def build_identity(
         again next launch.
         """
 
-        _guard(lambda: log_resolve("show_all", 0, index))
+        _guard(lambda: log_resolve("unscoped", 0, index))
         on_enter()
 
     email_field.on_change = _on_email_change
@@ -487,7 +508,9 @@ def build_identity(
         names = [friendly_district_name(sis_type) or sis_type for sis_type in configs]
         if len(configs) == 1:
             controls: list[ft.Control] = [
-                components.district_chip(names[0]),
+                # In a Row so the pill keeps its intrinsic width — the card's column STRETCHES
+                # its children, and a full-width "pill" is a banner.
+                ft.Row(controls=[components.district_chip(names[0])]),
                 ft.Text(
                     matched_headline(names[0]),
                     size=tokens.type_section,
@@ -538,7 +561,16 @@ def build_identity(
         # The escape rides EVERY state — there is no page from which the person at the
         # console cannot leave without answering.
         controls.append(components.text_button(SKIP_LABEL, _skip))
-        return components.card(content=ft.Column(spacing=tokens.space_lg, controls=controls))
+        return components.card(
+            content=ft.Column(
+                spacing=tokens.space_lg,
+                # STRETCH: the field and the one filled primary run the full width of the
+                # card, which is what makes this read as a single centred form rather than a
+                # left-hugging stack of differently-sized controls.
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                controls=controls,
+            )
+        )
 
     body.controls = [_hero(), _card()]
     return body

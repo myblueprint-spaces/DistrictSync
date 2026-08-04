@@ -9,6 +9,59 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.10.0] - 2026-08-04
+
+A focused follow-up to 3.9.0's front door, driven by owner field-testing of that
+build. **No CSV output changes** — the SD74 golden and every district contract
+test pass untouched; everything here is UI.
+
+### Changed
+
+- **District lists stay scoped to your district.** 3.9.0 shipped the scoping with
+  a "Show all districts" row one click away on every list; that row is gone from
+  all four surfaces (the setup wizard's District step, Settings → Folders &
+  district, Convert, and Mapping). An admin whose address matches a district now
+  sees that district's options and no other district's.
+
+  What has *not* changed: nothing is withheld. Every mapping still ships inside
+  the executable, an address that matches no district still shows all of them, and
+  a broken or unclaimed mapping can still only ever *widen* a list — your own
+  district can never disappear from the surface that edits it. The way to see
+  every district again is to clear the stored address in **Settings → Who looks
+  after this sync** (blank the field, Save); every list widens on the next visit.
+
+  This narrows *visibility*, not access — the district domains it matches on are
+  public, so typing one has never been a claim anybody checked.
+- **The launch page is centred and asks one plain question.** It was the only
+  surface in the app without a navigation rail and was still pinned to the left
+  edge; it now sits in the middle of the window, the heading card and the form
+  card share one width, and the field and its button run that full width. The
+  explanation of how the email is matched, and the character counter under the
+  field, are both gone — it asks for a work email and nothing else. The promise
+  that the address stays on this computer is still made where it is being edited
+  (Settings) and where the app interrupts you to ask for it (Home).
+
+### Removed
+
+- The `Show all districts` / `Showing all districts · Show only mine` list-scope
+  row and its shared component, along with the internal `show_all` and
+  `can_filter` plumbing behind it. Removed rather than disabled, so it cannot
+  quietly return.
+
+### Known issues
+
+- **Some antivirus products flag the Windows exe as suspicious.** Bitdefender's
+  Advanced Threat Control blocked it during field-testing of 3.9.0. The exe is an
+  unsigned one-file PyInstaller build that unpacks itself into `%TEMP%` and, on
+  first launch, extracts and starts the Flet desktop client from
+  `%USERPROFILE%\.flet\` — behaviour that resembles what heuristic engines look
+  for. If the client executable is quarantined, DistrictSync will fail to open a
+  window on every later launch (the failure dialog names the log); deleting
+  `%USERPROFILE%\.flet\client\` lets it re-extract from the executable, offline.
+  **Your nightly scheduled sync is unaffected — it runs the command-line path and
+  never opens a window.** Code signing and a non-self-extracting installer are the
+  real fixes and are tracked in `docs/claugentic-ROADMAP.md`.
+
 ## [3.9.0] - 2026-07-31
 
 Phase 1 of the front-door programme (plan 0038, nine slices, PRs #67–#75). The

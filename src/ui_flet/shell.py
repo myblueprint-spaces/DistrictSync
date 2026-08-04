@@ -445,20 +445,43 @@ def build_app_body(
     return body
 
 
+# The launch form's width. Much narrower than a screen's ~960px reading cap: this is one
+# short form, and a form measured in feet is harder to read, not more generous. It is also
+# what the page's cards STRETCH to (``screens/identity.py``), so both cards match.
+GATE_WIDTH = 460
+
+
 def _gate_frame(view: ft.Control) -> ft.Control:
-    """Frame the launch page the way ``render_by_id`` frames a screen — inset, capped, scrollable.
+    """Frame the launch page: inset, narrow, CENTRED in the window, and still scrollable.
 
     The launch page mounts into the SAME root host as the app body, which carries no
-    padding of its own (the app body's ``content_host`` owns that inset). Narrower than a
-    screen's ~960px cap because this is one short form, and a form measured in feet is
-    harder to read, not more generous.
+    padding of its own (the app body's ``content_host`` owns that inset).
+
+    **Centred rather than left-anchored** (2026-08-04), which is the one place in the app
+    that is right: every surface BEHIND the rail is left-anchored against it, but this page
+    has no rail, so left-anchoring it just pinned a 460px form to the corner of a 1200px
+    window with nothing beside it. Both axes are set — ``horizontal_alignment`` on the
+    column centres the fixed-width child, and ``alignment`` centres the stack vertically
+    when it is shorter than the viewport. ``scroll`` stays on, so a tall state (the
+    no-match branch with its district-number field and note) still scrolls instead of
+    clipping.
     """
     return ft.Container(
         expand=True,
         padding=pad_sym(36, 28),
         bgcolor=tokens.color_content_wash,
         content=ft.Column(
-            controls=[ft.Container(content=view, width=760)],
+            controls=[
+                # The horizontal centring is done by a ROW, not by the column's
+                # `horizontal_alignment`: on Flet 0.85.3 a scrollable Column honours
+                # `alignment` (main axis) but NOT `horizontal_alignment` (cross axis), so the
+                # cross-axis centring has to come from a control whose MAIN axis is horizontal.
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    controls=[ft.Container(content=view, width=GATE_WIDTH)],
+                )
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
             scroll=ft.ScrollMode.AUTO,
             expand=True,
         ),

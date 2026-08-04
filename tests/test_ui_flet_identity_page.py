@@ -174,7 +174,9 @@ class TestPageStates:
         field.value = "adm"
         field.on_change(None)
 
-        assert "@" not in _all_text(view).replace(identity.EMAIL_HINT, "").replace(identity.EMAIL_HELPER, "")
+        # Only the HINT is discounted: since 2026-08-04 the page renders no helper, so
+        # discounting one too would be reaching past what is on screen.
+        assert "@" not in _all_text(view).replace(identity.EMAIL_HINT, "")
 
     def test_an_invalid_format_IS_shown_on_blur(self, page: MagicMock) -> None:
         """The positive twin of the test above — the error mechanism really does fire.
@@ -354,10 +356,18 @@ class TestTheRegister:
         Settings and echo on Help. Copy that says "we use only the part after the @"
         describes a data-minimising design we did not build, which is the most defensible-
         sounding kind of untrue.
-        """
-        from src.ui_flet.screens import setup
 
-        for where, text in (("the launch page", identity.EMAIL_HELPER), ("Settings", setup.IDENTITY_EXPLAINER)):
+        **The LAUNCH PAGE is no longer one of those surfaces** (2026-08-04): it renders no
+        helper at all, so it makes no claim to be honest or dishonest about. The rule binds
+        the two surfaces that DO explain — Home's one-time ask card (which renders
+        ``identity.EMAIL_HELPER``) and the Settings section. That is asserted below rather
+        than assumed, so this test cannot go on quietly checking a string nobody paints.
+        """
+        from src.ui_flet.screens import home, setup
+
+        assert home.identity_screen.EMAIL_HELPER is identity.EMAIL_HELPER, "Home is the helper's live consumer"
+
+        for where, text in (("Home's ask card", identity.EMAIL_HELPER), ("Settings", setup.IDENTITY_EXPLAINER)):
             assert "only the part after the @" not in text, f"{where} under-states what is stored"
             assert "whole address is saved" in text, f"{where} never says the whole address is kept"
 
@@ -628,7 +638,9 @@ class TestIdentityLogging:
         with caplog.at_level("INFO"):
             _button(view, identity.SKIP_LABEL).on_click(None)
 
-        assert "outcome=show_all matched_districts=0" in caplog.text
+        # "unscoped", not the retired "show_all" — the word named a UI row that no longer
+        # exists, and a log vocabulary that outlives its surface misleads whoever reads it.
+        assert "outcome=unscoped matched_districts=0" in caplog.text
 
     def test_the_gate_line_carries_a_bounded_reason(self, page: MagicMock, isolated_user_profile, caplog) -> None:
         from src.ui_flet import shell
