@@ -1,6 +1,6 @@
 # 0041 — Legit distribution: COM scheduler + onedir installer (+ signing)
 
-- **Status:** Approved 2026-08-05 (slices 1a–4; Slice 5 gated on a post-release owner go — see the resolved decisions). Implementing: Slice 1a.
+- **Status:** Approved 2026-08-05; amended same day (owner): **installer LAST and ADDITIVE** — the one-file exe stays published beside `DistrictSync-Setup.exe`. Order: 1a (LANDED, PR #79) → 1b → signing (when the account lands) → installer (2–3) → release truthing (4). Slice 1a: DONE.
 - **Roadmap item:** `docs/claugentic-ROADMAP.md` — the `[AV / DISTRIBUTION]` backlog entry (2026-08-04 Bitdefender ATC incident), its fixes (1), (2) and (3); overlaps the queued `0036 bigger bets — startup/installer spike`.
 - **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` (2026-06-15 XML / 2026-06-25 EncodedCommand + CLIXML / 2026-07-08 D4 read-back + D5 elevation / 2026-07-28 light-flavor + no-UPX / 2026-07-30 land gate / 2026-07-31 v3.9.0 override) · plan 0038 (house style) · `.claude/plans/0032-ui-ux-sweep-proposal.md` (installer spike detail)
 
@@ -141,6 +141,7 @@ Behaviour-equivalence over transport: every row 1–16 gets a COM-object pin wit
 3. **Headless zip: dropped** — all docs migrate to the installer; a portable/CLI artifact ships only if a district actually asks (owner-stated YAGNI). Slice-2's *interim* zip remains purely a release-pipeline bridge and dies at Slice 3.
 4. **TOCTOU trade: acknowledged** after plain-language explanation (recorded in the DECISIONS entry).
 5. **Signing: deferred for evaluation** — behavioural fixes land first; owner evaluates whether flagging stops before committing to recurring cost (no one-time license exists — 3-year hardware-token OV certs are the closest and trade money for CI pain). Slice 5 stays specced but starts only on an explicit owner go.
+6. **AMENDED same day — installer LAST, dual Windows artifacts** (see the dated DECISIONS entry): the one-file `DistrictSync-windows.exe` stays published (permalinks never break; decision 2's clean-break machinery retired unused; the headless population keeps a no-install artifact), `DistrictSync-Setup.exe` arrives beside it as the RECOMMENDED install, and the no-tag-between-1b-and-3 constraint is replaced by an acknowledged trade: the evaluation release ships the S1b elevated-child shape; for one-file users the row-15 mitigation is signing + the transient-location warning (Program Files ACLs never reach a portable exe), and the one-file variant permanently keeps the ~/.flet drop-and-execute + brick mode the installer variant removes.
 
 ## Decomposition (slices — each = one complete PR to main)
 
@@ -151,7 +152,7 @@ Behaviour-equivalence over transport: every row 1–16 gets a COM-object pin wit
 - [ ] **Slice 4 — release truthing + certification prep** · CHANGELOG, release-body rewrite, `docs/developer/release.md` permalink section, DECISIONS entries (rows 15, naming, D-0037-6 outcome), qa-checklist preamble count · lands complete because it is the paperwork slice the certification pass then walks.
 - [ ] **Slice 5 — signing (gated on the account existing)** · sign inner exe + `flet.exe` + installer, `signtool verify` asserts, conditional "not yet signed" copy retirement · lands complete because its steps execute and verify live in this PR — never dormant.
 
-**Ordering:** 1a → 1b (independent of packaging) ; 2 → 3 → 4 sequential; 5 whenever the account exists (ideally before 4 closes). **No release tag between 1b and 3** (interim-shape constraint). Certification pass (per decision 1) after the last landed slice, before the tag.
+**Ordering (amended 2026-08-05):** 1a (landed) → 1b; signing whenever the account exists; installer (2 → 3) LAST and ADDITIVE (the Windows job builds BOTH artifacts; release publishes `DistrictSync-windows.exe` + `DistrictSync-Setup.exe`); 4 rides each release as truthing. The former no-tag constraint is replaced by the acknowledged evaluation-release trade (DECISIONS 2026-08-05 later). Certification pass (per decision 1) before the next release tag.
 
 ## Review
 
