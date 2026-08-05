@@ -1,6 +1,6 @@
 # 0041 — Legit distribution: COM scheduler + onedir installer (+ signing)
 
-- **Status:** In Review (Round 1 incorporated — see ## Review)
+- **Status:** Approved 2026-08-05 (slices 1a–4; Slice 5 gated on a post-release owner go — see the resolved decisions). Implementing: Slice 1a.
 - **Roadmap item:** `docs/claugentic-ROADMAP.md` — the `[AV / DISTRIBUTION]` backlog entry (2026-08-04 Bitdefender ATC incident), its fixes (1), (2) and (3); overlaps the queued `0036 bigger bets — startup/installer spike`.
 - **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` (2026-06-15 XML / 2026-06-25 EncodedCommand + CLIXML / 2026-07-08 D4 read-back + D5 elevation / 2026-07-28 light-flavor + no-UPX / 2026-07-30 land gate / 2026-07-31 v3.9.0 override) · plan 0038 (house style) · `.claude/plans/0032-ui-ux-sweep-proposal.md` (installer spike detail)
 
@@ -134,13 +134,13 @@ Azure Artifact Signing steps for the **inner exe + bundled `flet.exe`** (before 
 
 Behaviour-equivalence over transport: every row 1–16 gets a COM-object pin with the same name/intent as the PS-text pin it replaces; absence pins for the retired transport land where retirement completes. Elevation outcome-ladder tests keep declined/timeout/no-result/different-account/ok-confirmed with the child now our exe; leak-closure sweeps verbatim; `--elevated-apply` refusal table + positive twin; row-13 both-ways retry pin. Smoke: resolver units; redesigned offline proof + negative twin; installed-copy smoke. Deterministic gates per slice (full suite, SD74 golden, 11/11 configs, tree, ruff/mypy/bandit, email scan, three-OS CI read + quoted). Live gates: the QA walk rows named above + non-admin-from-Program-Files + upgrade rows. **Certification (D-0037-6) + the Phase-2 ordering question** are owner decisions surfaced at approval (below), scheduled before this plan's release tag.
 
-## Owner decisions surfaced at approval
+## Owner decisions — RESOLVED 2026-08-05 (dated DECISIONS entry recorded)
 
-1. **D-0037-6's Phase-2 half** (Round-1 process blocker): the recorded decision says Phase 2 (mapping creator) lands before the next non-exception release. This plan's release would precede Phase 2. Choose: (a) sequence this release after Phase 2, or (b) a dated DECISIONS entry superseding the ordering for this release on AV-incident grounds, stating whether the certification pass runs once (Phase 1 + distribution now) with a second owed after Phase 2, or is being spent now.
-2. **Artifact naming**: dual-publish `DistrictSync-Setup.exe` + legacy `DistrictSync-windows.exe` (same bytes) for one cycle — approve, and set the retirement cycle.
-3. **The headless zip**: keep serving the no-admin/hand-registered population with `DistrictSync-windows.zip` (lifetime = their doc migration), or drop it at Slice 3.
-4. **Elevated-target TOCTOU trade** (row 15): acknowledge.
-5. **Signing account timing**: create the Azure Artifact Signing account during Slices 1–3 so Slice 5 lands verified before the tag (recommended), or ship v-next unsigned and sign in the following release.
+1. **D-0037-6's Phase-2 half: SUPERSEDED** — "mapping creator isn't critical." Certification pass runs before the 0041 tag, spent on Phase 1 + distribution; a fresh pass is owed for Phase 2 before the release that ships it.
+2. **Artifact naming: clean break** — `DistrictSync-Setup.exe`, NO legacy dual-publish; every partner-facing link updates ("we can update if we're formalising"). Old permalinks 404 by accepted decision. Linux/macOS names unchanged.
+3. **Headless zip: dropped** — all docs migrate to the installer; a portable/CLI artifact ships only if a district actually asks (owner-stated YAGNI). Slice-2's *interim* zip remains purely a release-pipeline bridge and dies at Slice 3.
+4. **TOCTOU trade: acknowledged** after plain-language explanation (recorded in the DECISIONS entry).
+5. **Signing: deferred for evaluation** — behavioural fixes land first; owner evaluates whether flagging stops before committing to recurring cost (no one-time license exists — 3-year hardware-token OV certs are the closest and trade money for CI pain). Slice 5 stays specced but starts only on an explicit owner go.
 
 ## Decomposition (slices — each = one complete PR to main)
 
@@ -161,4 +161,29 @@ Behaviour-equivalence over transport: every row 1–16 gets a COM-object pin wit
 
 ## Spec
 
-*(Per slice, after Review passes and the owner answers decisions 1–5.)*
+### Slice 1a — COM read + delete
+
+**In plain English:** the app stops launching PowerShell to *check* or *remove* the nightly schedule — the two operations that run most often (the schedule check fires on nearly every screen). It talks to Windows' Task Scheduler service directly instead, through the same interface PowerShell itself uses. Registering a schedule is untouched this slice (it keeps the proven path until 1b). "Done" means: no PowerShell process is created by any schedule *read* or *delete*, every current behaviour is re-pinned against the new mechanism, and the three-OS CI is green. What you're accepting: a new Windows-only dependency (`pywin32`); a hung Task Scheduler RPC now leaks a worker thread instead of killing a subprocess (logged, bounded, UI never wedges).
+
+**Files & changes:**
+- `src/scheduler/task_com.py` (new): `com_session()` context manager (`pythoncom.CoInitialize`/`CoUninitialize`); `connect()` → `Schedule.Service` via dynamic `win32com.client.Dispatch` (never `gencache`/`EnsureDispatch`); `canonical_message(hresult, excepinfo)` — the HRESULT table (`0x80070005`→"Access is denied.", `0x8007052E`/`SCHED_E_ACCOUNT_INFORMATION_NOT_SET`→"The user name or password is incorrect.", `0x80070002`/`SCHED_E_TASK_NOT_FOUND`→the definitive not-found, else the `excepinfo` description, secret-free); `read_task(name)` → the raw fields `ScheduleReadback` needs (invariant-ISO datetime serialisation, 1899-epoch nulling, 267011 mapping); `delete_task(name)` → `GetFolder("\\").DeleteTask`; `bounded(fn, timeout)` — daemon worker + join, `TimeoutResult` sentinel. All win32 imports lazy, inside functions, under `sys.platform` guards.
+- `src/scheduler/windows.py`: `read_schedule()` re-plumbed onto `task_com.read_task` via `bounded(…, 10s)` — tri-state classification now HRESULT-keyed; `delete_task()` onto `task_com.delete_task` (canonical messages keep the adapter's `"access is denied"` substring alive — row 13); `_build_read_script` + the read subprocess path retired; register paths untouched; `_MSG_NO_POWERSHELL`-analogue canonical message for pywin32-missing (row 10).
+- `src/scheduler/__init__.py`: no signature changes; the delete elevated-retry predicate untouched (pinned instead).
+- `requirements.txt`: `pywin32>=306 ; sys_platform == "win32"`.
+- `Makefile` + `.github/workflows/flet-pack.yml`: `--hidden-import win32com --hidden-import win32com.client --hidden-import pythoncom --hidden-import win32timezone` on the Windows row only.
+- `docs/claugentic-ARCHITECTURE_TREE.md`: `task_com.py` entry. CLAUDE.md: scheduler section line (read/delete on COM; register still PS until 1b — a NAMED transitional state, unusual but deliberate so the highest-frequency AV surface dies first).
+- `tests/test_schedulers.py`: `TestReadSchedule` re-authored against a mocked `win32com` task object (same fixture semantics: found/absent/access-denied/timeout/malformed/never-run/non-Windows/invalid-name); `TestWindowsDeleteTask` → COM asserts + the row-13 both-ways retry pin (in `test_scheduler_factory.py`); absence pin: `schtasks.exe` gone from `src/scheduler/` after the allowlist shrink; `gencache`/`EnsureDispatch` absence pin; register-path pins UNTOUCHED (they still assert PS — that is the point of the split).
+- `src/utils/helpers.py` (`system_binary`): `schtasks.exe` leaves the allowlist; its test rows flip to the rejection side.
+
+**In-scope standards dimensions:** `security` (allowlist shrink, no new secret surface), `reliability-resilience` (rows 5–6, 8, 10), `testing` (behavioural parity re-author, absence pins + twins), `maintainability-structure` (platform-private module).
+
+**Tests to add:** the re-authored read/delete pin set (rows 4–6, 8–10, 13 of the contract table); `task_com.canonical_message` table test incl. unmapped-HRESULT fallback and no-secret sweep; `bounded()` timeout → sentinel + WARN; lazy-import proof (importing `src.scheduler.windows` on non-Windows never imports `win32com` — a sys.modules assert that runs on Linux CI).
+
+**Acceptance criteria:**
+- ☐ No `powershell.exe` invocation reachable from `read_schedule`/`delete_task` (absence pin green).
+- ☐ Full suite + SD74 golden + 11/11 configs + tree + ruff/mypy/bandit + email scan green locally.
+- ☐ Three-OS CI green, read and quoted (Linux proves the lazy-import guard; the packed-exe smokes prove pywin32 froze correctly).
+- ☐ Live QA on this Windows box: with a task registered by v3.10.1, Home/Run History/Setup read it back correctly (LIVE, next-run shown); delete it un-elevated (retry ladder fires if denied); re-register via the untouched PS path still works.
+- ☐ ARCHITECTURE_TREE + CLAUDE.md updated; DECISIONS one-liner at land.
+
+*(Slices 1b–5: specced after 1a lands, per the one-slice-per-session rule.)*
