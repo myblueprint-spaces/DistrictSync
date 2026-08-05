@@ -101,6 +101,133 @@ READ_TIMEOUT_S = 10.0
 # "Robustness" gap); generous because a delete is a click-driven action, not a nav probe.
 DELETE_TIMEOUT_S = 30.0
 
+# Bound for a registration — the retired PS subprocess had NO bound (Setup could hang with
+# both buttons greyed); matches the elevation wait so the two register paths age together.
+REGISTER_TIMEOUT_S = 120.0
+
+# --- Registration constants (Slice 1b) ----------------------------------------------
+# Task Scheduler 2.0 enumeration values, spelled as named constants so the S4U ban and the
+# logon-type matrix are ASSERTABLE facts rather than magic numbers. TASK_LOGON_S4U (2) is
+# deliberately NOT defined: S4U runs logged-off with no network token, which silently
+# breaks the nightly SFTP egress — the exact regression class DECISIONS 2026-06-25 records.
+TASK_ACTION_EXEC = 0
+TASK_TRIGGER_DAILY = 2
+TASK_CREATE_OR_UPDATE = 6
+TASK_LOGON_PASSWORD = 1
+TASK_LOGON_INTERACTIVE_TOKEN = 3
+TASK_RUNLEVEL_LUA = 0
+TASK_RUNLEVEL_HIGHEST = 1
+TASK_INSTANCES_IGNORE_NEW = 2
+
+# The FIXED past StartBoundary date — parity with the retired XML/PS registrations
+# (DECISIONS 2026-06-15): a deterministic boundary that, beside StartWhenAvailable=False,
+# can never interact with catch-up semantics. A today-dated boundary at an already-past
+# time would lean on StartWhenAvailable to not fire immediately — reasoned, not defaulted.
+TRIGGER_BOUNDARY_DATE = "2024-01-01"
+
+
+@dataclass(frozen=True, repr=False)
+class RegisterParams:
+    """Everything one task registration needs — including, on the unattended path, the PASSWORD.
+
+    ``repr=False`` is load-bearing, not style: a default dataclass repr would hand the
+    password to any log/f-string/assert that formats the params object. The pin lives in
+    ``tests/test_scheduler_runas.py``. ``run_time`` is the validated ``"HH:mm"`` string;
+    ``password=None`` selects the interactive-token (logged-on-only) path.
+    """
+
+    task_name: str
+    exe: str
+    arguments: str
+    working_dir: str
+    run_time: str
+    user: str
+    password: str | None
+    run_highest: bool
+
+
+def apply_definition(service: Any, folder: Any, params: RegisterParams) -> None:
+    """Build + register one task definition against LIVE or FAKE COM objects.
+
+    The testable core (plan 0041 rows 1–2, 11–12): tests drive it with MagicMocks and
+    assert the exact settings/principal/trigger/action values; the apartment entry point
+    below drives it with the real service. Keeping it separate is what lets the contract
+    rows be pinned as COM-object asserts instead of retired script-text asserts.
+
+    Every value set here is explicit because **COM defaults differ on all five settings**
+    (row 1): a naive registration would get PT72H, battery-disallowed, parallel instances —
+    silently breaking laptop/UPS districts and the no-catch-up guarantee.
+    """
+    definition = service.NewTask(0)
+
+    settings = definition.Settings
+    settings.Enabled = True
+    settings.StartWhenAvailable = False  # the no-catch-up-run guarantee (2026-06-15)
+    settings.MultipleInstances = TASK_INSTANCES_IGNORE_NEW
+    settings.ExecutionTimeLimit = "PT2H"
+    settings.DisallowStartIfOnBatteries = False  # battery operation ENABLED (COM default disallows)
+    settings.StopIfGoingOnBatteries = False
+
+    trigger = definition.Triggers.Create(TASK_TRIGGER_DAILY)
+    # Invariant ISO-8601, composed by US — never a locale-formatted string (row 4). The
+    # validated "HH:mm" slots straight in; seconds fixed at 00.
+    trigger.StartBoundary = f"{TRIGGER_BOUNDARY_DATE}T{params.run_time}:00"
+    trigger.DaysInterval = 1
+
+    action = definition.Actions.Create(TASK_ACTION_EXEC)
+    action.Path = params.exe
+    action.Arguments = params.arguments
+    action.WorkingDirectory = params.working_dir
+
+    if params.password is not None:
+        # Unattended: explicit TASK_LOGON_PASSWORD — never parameter-set inference, never
+        # S4U (row 2; the 2026-06-25 regression class). run_highest is honoured HERE only.
+        definition.Principal.RunLevel = TASK_RUNLEVEL_HIGHEST if params.run_highest else TASK_RUNLEVEL_LUA
+        folder.RegisterTaskDefinition(
+            params.task_name,
+            definition,
+            TASK_CREATE_OR_UPDATE,
+            params.user,
+            params.password,
+            TASK_LOGON_PASSWORD,
+        )
+    else:
+        # Logged-on-only: interactive token, ALWAYS Limited — run_highest ignored (row 2).
+        definition.Principal.RunLevel = TASK_RUNLEVEL_LUA
+        folder.RegisterTaskDefinition(
+            params.task_name,
+            definition,
+            TASK_CREATE_OR_UPDATE,
+            params.user,
+            None,
+            TASK_LOGON_INTERACTIVE_TOKEN,
+        )
+
+
+def register_task_definition(params: RegisterParams) -> None:
+    """Create-or-replace one task at the root folder (row 12: works over a PS-registered task).
+
+    Raises :class:`TaskComError` (plain data) or ``ImportError`` (pywin32-less host). The
+    same COM-lifetime discipline as :func:`read_task` — and the SAME function serves the
+    direct path AND the elevated child (``src/scheduler/elevated_apply.py``), which is the
+    single-source property the retired PS ``_register_body`` sharing existed to protect,
+    now structural rather than textual.
+    """
+    import pythoncom  # noqa: PLC0415 - lazy: Windows-only
+
+    error: TaskComError | None = None
+    with _apartment() as service:
+        folder = None
+        try:
+            folder = service.GetFolder(ROOT_FOLDER)
+            apply_definition(service, folder, params)
+        except pythoncom.com_error as exc:
+            error = _as_task_com_error(exc)  # raised OUTSIDE the handler — see read_task
+        finally:
+            folder = service = None  # noqa: F841 - releases THIS frame's COM refs pre-teardown
+    if error is not None:
+        raise error
+
 
 class TaskComError(Exception):
     """A Task Scheduler failure as PLAIN data — the only error shape that leaves this module.

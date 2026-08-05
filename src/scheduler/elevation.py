@@ -27,17 +27,17 @@ ever running as administrator.
     (encrypting it would add nothing; panel-rejected). :func:`read_result` reads it
     defensively (missing / partial / unparseable → ``None``, never raises).
 
-  - **Launch + wait.** :func:`run_elevated_powershell` uses ``ShellExecuteExW`` with
-    ``lpVerb="runas"`` on the **absolute System32 WindowsPowerShell v1.0
-    powershell.exe path** — resolved through the shared
-    :func:`src.utils.helpers.system_binary` seam (elevation raises the stakes of a
-    CreateProcess search-order hijack — never a bare ``"powershell"``; ``icacls``
-    below is pinned the same way), ``SEE_MASK_NOCLOSEPROCESS`` + ``SW_HIDE``, then a
-    **bounded** ``WaitForSingleObject`` (never ``INFINITE``; on timeout the child is
-    terminated) and ``GetExitCodeProcess``; the handle is always closed. Outcomes:
-    ``LAUNCH_FAILED`` / ``DECLINED`` (``ERROR_CANCELLED`` 1223) / ``TIMEOUT`` /
-    ``COMPLETED(exit_code)``. UAC-success is only ever *confirmed* by the caller
-    reading the real task back — never assumed from an exit code.
+  - **Launch + wait.** :func:`run_elevated` uses ``ShellExecuteExW`` with
+    ``lpVerb="runas"`` on the CALLER'S binary — since plan 0041 S1b that is
+    **DistrictSync itself in ``--elevated-apply`` mode** (the caller passes an
+    absolute ``sys.executable``; the elevated-target trade is contract row 15,
+    owner-acknowledged). ``icacls`` below stays pinned to its absolute System32
+    path via :func:`src.utils.helpers.system_binary`. ``SEE_MASK_NOCLOSEPROCESS``
+    + ``SW_HIDE``, then a **bounded** ``WaitForSingleObject`` (never ``INFINITE``;
+    on timeout the child is terminated) and ``GetExitCodeProcess``; the handle is
+    always closed. Outcomes: ``LAUNCH_FAILED`` / ``DECLINED`` (``ERROR_CANCELLED``
+    1223) / ``TIMEOUT`` / ``COMPLETED(exit_code)``. UAC-success is only ever
+    *confirmed* by the caller reading the real task back — never from an exit code.
 
   - **Hygiene.** :func:`sweep_orphans` best-effort deletes stale handshake files at
     both app entry points, so a crash between write and cleanup can't leave a
@@ -104,7 +104,7 @@ class ElevationResult(Enum):
 
 @dataclass(frozen=True)
 class ElevationOutcome:
-    """The result of :func:`run_elevated_powershell` — a bounded state, never a raw error."""
+    """The result of :func:`run_elevated` — a bounded state, never a raw error."""
 
     result: ElevationResult
     exit_code: int | None = None
@@ -387,26 +387,28 @@ def _close_handle(handle: int) -> None:  # pragma: no cover - Windows-only ctype
     kernel32.CloseHandle(ctypes.c_void_p(handle))
 
 
-def run_elevated_powershell(encoded_command: str, *, timeout_s: float) -> ElevationOutcome:
-    """Run one ``powershell.exe -EncodedCommand <b64>`` elevated behind a single UAC prompt.
+def run_elevated(file: str, params: str, *, timeout_s: float) -> ElevationOutcome:
+    """Run one process elevated behind a single UAC prompt — bounded, never raises.
 
-    ``encoded_command`` is the UTF-16LE-base64 script blob (built by the caller); it
-    carries NO secret (the secret rides the DPAPI request file the script reads).
-    The launch is pinned to the absolute System32 powershell.exe, hidden, with a
-    bounded wait (never ``INFINITE``). Never raises — maps every path to a bounded
-    :class:`ElevationOutcome`.
+    Generalised from the retired ``run_elevated_powershell`` at plan 0041 S1b: the
+    elevated child is now the CALLER'S binary (DistrictSync itself in
+    ``--elevated-apply`` mode) rather than System32 PowerShell. ``params`` must carry
+    NO secret (the secret rides the DPAPI request file the child reads) — the argv of an
+    elevated process is visible to the user's other processes.
+
+    The elevated-target trade this generalisation makes (an exe in a user-writable
+    location until the installer/signing land) is plan 0041 contract row 15 — an
+    owner-acknowledged decision (DECISIONS 2026-08-05), not a drift: UAC is not a
+    Microsoft security boundary, and the consent dialog's publisher line is the
+    user-visible integrity signal once the exe is signed.
+
+    The launch is hidden, with a bounded wait (never ``INFINITE``). Maps every path to a
+    bounded :class:`ElevationOutcome`.
     """
     if sys.platform != "win32":
         return ElevationOutcome(ElevationResult.LAUNCH_FAILED, error="Elevation is only available on Windows.")
 
-    # Never a bare ``"powershell"``: elevation raises the stakes of a search-order hijack,
-    # so the elevated child is pinned to the in-box Windows PowerShell by absolute path
-    # via the shared ``helpers.system_binary`` seam (the same one ``scheduler.windows``
-    # uses — one source, so no call site can drift back to a bare name).
-    powershell = system_binary("powershell.exe")
-    params = f"-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded_command}"
-
-    handle, err = _shell_execute_runas(powershell, params)
+    handle, err = _shell_execute_runas(file, params)
     if not handle:
         if err == _ERROR_CANCELLED:
             return ElevationOutcome(ElevationResult.DECLINED)

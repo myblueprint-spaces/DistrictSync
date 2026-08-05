@@ -87,6 +87,7 @@ build-win:
 	  --hidden-import src.utils.version \
 	  --hidden-import src.scheduler.windows \
 	  --hidden-import src.scheduler.task_com \
+	  --hidden-import src.scheduler.elevated_apply \
 	  --hidden-import src.scheduler.linux \
 	  --hidden-import keyring.backends.Windows \
 	  --hidden-import win32com \

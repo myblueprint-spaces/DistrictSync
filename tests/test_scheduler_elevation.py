@@ -6,17 +6,17 @@ Two layers:
      ShellExecuteEx outcome mapping (via mocked ctypes seams — cross-platform), and the
      orphan sweep.
   2. ``src/scheduler/windows.py`` — the self-elevated register/delete flow with elevation
-     mocked: outcome→message mapping, read-back confirmation, the fixed child-bootstrap
-     script text (fail-closed different-account branch, entropy constant, never echoes the
-     password), and the load-bearing security proof that the password NEVER appears on
-     argv/env of any subprocess call or in the encoded bootstrap.
+     mocked (plan 0041 S1b: the elevated child is DistrictSync itself in --elevated-apply
+     mode): outcome-to-message mapping, read-back confirmation, the structural
+     single-source pin (both UAC sides call the same task_com function), and the
+     load-bearing proof that the password rides ONLY the DPAPI payload — never the
+     child's argv.
 
 No test triggers a real UAC prompt or registers/deletes a real task.
 """
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import sys
@@ -29,7 +29,6 @@ import pytest
 from src.scheduler import elevation, windows
 from src.scheduler.elevation import ElevationOutcome, ElevationResult
 from src.scheduler.windows import ScheduleReadback
-from src.utils import helpers
 
 WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="DPAPI is a Windows-only API")
 
@@ -132,25 +131,17 @@ class TestRequestResultProtocol:
 
 
 class TestElevationHelpers:
-    def test_powershell_resolves_through_the_shared_system_binary_seam(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Elevation resolves powershell.exe through the ONE shared helper, not a private copy.
-
-        ``src/utils/helpers.system_binary`` is the single source for every absolute
-        System32 invocation (``windows.py`` uses the same seam); a second local copy is
-        exactly how one call site drifts back to a hijackable bare name.
-        """
-        monkeypatch.setattr(elevation.sys, "platform", "win32")
+    def test_icacls_resolves_through_the_shared_system_binary_seam(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Elevation's remaining subprocess (icacls DACL) resolves through the ONE shared
+        helper — a second local copy is how a call site drifts back to a hijackable bare
+        name. (powershell.exe left this module entirely at plan 0041 S1b: the elevated
+        child is the caller's own exe, passed in by windows._run_elevated_child.)"""
         monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
-        captured: dict[str, str] = {}
+        from src.utils.helpers import system_binary
 
-        def _fake(file: str, params: str) -> tuple[int, int]:
-            captured["file"] = file
-            return (0, 1223)
-
-        monkeypatch.setattr(elevation, "_shell_execute_runas", _fake)
-        elevation.run_elevated_powershell("QUJD", timeout_s=1)
-        assert captured["file"] == helpers.system_binary("powershell.exe")
-        assert captured["file"] == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        assert system_binary("icacls.exe") == r"C:\Windows\System32\icacls.exe"
+        with pytest.raises(ValueError):
+            system_binary("powershell.exe")  # retired from the allowlist with its last caller
 
     def test_current_user_prefers_domain_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("USERDOMAIN", "CORP")
@@ -255,13 +246,13 @@ class TestRunElevatedOutcomeMapping:
     def test_declined_1223_is_declined(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._win(monkeypatch)
         monkeypatch.setattr(elevation, "_shell_execute_runas", lambda f, p: (0, 1223))
-        out = elevation.run_elevated_powershell("QUJD", timeout_s=1)
+        out = elevation.run_elevated("C:/app.exe", "--elevated-apply a b", timeout_s=1)
         assert out.result is ElevationResult.DECLINED
 
     def test_other_shellexec_error_is_launch_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._win(monkeypatch)
         monkeypatch.setattr(elevation, "_shell_execute_runas", lambda f, p: (0, 5))
-        out = elevation.run_elevated_powershell("QUJD", timeout_s=1)
+        out = elevation.run_elevated("C:/app.exe", "x", timeout_s=1)
         assert out.result is ElevationResult.LAUNCH_FAILED
 
     def test_timeout_terminates_and_is_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -272,7 +263,7 @@ class TestRunElevatedOutcomeMapping:
         closed: list[int] = []
         monkeypatch.setattr(elevation, "_terminate_process", lambda h: terminated.append(h))
         monkeypatch.setattr(elevation, "_close_handle", lambda h: closed.append(h))
-        out = elevation.run_elevated_powershell("QUJD", timeout_s=1)
+        out = elevation.run_elevated("C:/app.exe", "x", timeout_s=1)
         assert out.result is ElevationResult.TIMEOUT
         assert terminated == [1234]  # the hung child was terminated
         assert closed == [1234]  # the handle is always closed
@@ -284,17 +275,19 @@ class TestRunElevatedOutcomeMapping:
         monkeypatch.setattr(elevation, "_wait_for_process", lambda h, t: 0)
         monkeypatch.setattr(elevation, "_get_exit_code", lambda h: 7)
         monkeypatch.setattr(elevation, "_close_handle", lambda h: closed.append(h))
-        out = elevation.run_elevated_powershell("QUJD", timeout_s=1)
+        out = elevation.run_elevated("C:/app.exe", "x", timeout_s=1)
         assert out.result is ElevationResult.COMPLETED
         assert out.exit_code == 7
         assert closed == [1234]
 
     def test_non_windows_is_launch_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(elevation.sys, "platform", "linux")
-        out = elevation.run_elevated_powershell("QUJD", timeout_s=1)
+        out = elevation.run_elevated("C:/app.exe", "x", timeout_s=1)
         assert out.result is ElevationResult.LAUNCH_FAILED
 
-    def test_pins_absolute_system32_powershell_and_encoded_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_passes_file_and_params_through_verbatim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """run_elevated launches exactly what the caller resolved — the caller owns the
+        target-binary decision (plan 0041 row 15), this primitive only launches it."""
         self._win(monkeypatch)
         captured: dict[str, str] = {}
 
@@ -304,14 +297,9 @@ class TestRunElevatedOutcomeMapping:
             return (0, 1223)
 
         monkeypatch.setattr(elevation, "_shell_execute_runas", _fake)
-        elevation.run_elevated_powershell("ENCODEDBLOB", timeout_s=1)
-        # Absolute System32 WindowsPowerShell path (never a bare "powershell" — PATH-hijack).
-        assert "System32" in captured["file"]
-        assert "WindowsPowerShell" in captured["file"]
-        assert "powershell.exe" in captured["file"]
-        assert captured["file"] != "powershell"
-        assert "-EncodedCommand ENCODEDBLOB" in captured["params"]
-        assert "-NoProfile" in captured["params"]
+        elevation.run_elevated("C:/DistrictSync/DistrictSync.exe", '--elevated-apply "r.req" "r.res"', timeout_s=1)
+        assert captured["file"] == "C:/DistrictSync/DistrictSync.exe"
+        assert captured["params"] == '--elevated-apply "r.req" "r.res"'
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +308,15 @@ class TestRunElevatedOutcomeMapping:
 
 
 _SECRET = "P@ssw0rd-do-not-leak-42"
+
+
+def _patch_run_elevated(monkeypatch: pytest.MonkeyPatch, captured: dict, outcome: ElevationOutcome) -> None:
+    def _run(file: str, params: str, *, timeout_s: float) -> ElevationOutcome:
+        captured["file"] = file
+        captured["params"] = params
+        return outcome
+
+    monkeypatch.setattr("src.scheduler.elevation.run_elevated", _run)
 
 
 class TestRegisterElevatedFlow:
@@ -349,13 +346,9 @@ class TestRegisterElevatedFlow:
             captured["payload"] = payload
             return req
 
-        def _run(enc: str, *, timeout_s: float) -> ElevationOutcome:
-            captured["encoded"] = enc
-            return ElevationOutcome(ElevationResult.COMPLETED, exit_code=0)
-
         monkeypatch.setattr("src.scheduler.elevation.write_request", _write_request)
-        monkeypatch.setattr("src.scheduler.elevation.run_elevated_powershell", _run)
-        monkeypatch.setattr("src.scheduler.elevation.read_result", lambda p: {"ok": True, "message": "Registered."})
+        _patch_run_elevated(monkeypatch, captured, ElevationOutcome(ElevationResult.COMPLETED, exit_code=0))
+        monkeypatch.setattr("src.scheduler.elevation.read_result", lambda p: {"ok": True, "message": ""})
         confirm = MagicMock(return_value=ScheduleReadback(found=True))
         monkeypatch.setattr("src.scheduler.windows.read_schedule", confirm)
 
@@ -364,16 +357,30 @@ class TestRegisterElevatedFlow:
         assert ok is True
         confirm.assert_called_once()  # success is CONFIRMED via read-back, not assumed
         # The password rode the DPAPI payload (the sanctioned secure channel) ...
-        assert captured["payload"]["DSYNC_TASK_PW"] == _SECRET  # type: ignore[index]
-        # ... but NEVER the encoded bootstrap command the elevated child receives.
-        decoded = base64.b64decode(str(captured["encoded"])).decode("utf-16-le")
-        assert _SECRET not in decoded
-        assert "DSYNC_DIFFERENT_ACCOUNT" in decoded  # fail-closed branch present
-        # entropy is base64-embedded (uniform injection-proofing) — the raw string is NOT present.
-        assert base64.b64encode(elevation.DPAPI_ENTROPY_UTF8.encode()).decode() in decoded
-        assert elevation.DPAPI_ENTROPY_UTF8 not in decoded
-        assert "CurrentUser" in decoded and "LocalMachine" not in decoded
+        payload = captured["payload"]
+        assert payload["password"] == _SECRET  # type: ignore[index]
+        assert payload["op"] == "register"  # type: ignore[index]
+        # ... but NEVER the child argv (visible to every process on the box).
+        assert _SECRET not in str(captured["params"])
+        assert "--elevated-apply" in str(captured["params"])
+        assert str(req) in str(captured["params"])  # the request path rides argv (no secret)
         assert not req.exists()  # handshake file cleaned up in finally
+
+    def test_child_is_our_own_exe_never_powershell(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """S1b: the elevated child is sys.executable in --elevated-apply mode — the
+        encoded-PowerShell persistence signature is gone from the elevation path too."""
+        self._patch_win_nonelevated(monkeypatch)
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        captured: dict[str, object] = {}
+        monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
+        _patch_run_elevated(monkeypatch, captured, ElevationOutcome(ElevationResult.DECLINED))
+
+        self._register()
+
+        assert str(captured["file"]) == sys.executable
+        assert "powershell" not in str(captured["file"]).lower()
+        assert "-EncodedCommand" not in str(captured["params"])
 
     def test_no_result_confirms_via_readback_then_no_result(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -382,12 +389,8 @@ class TestRegisterElevatedFlow:
         req = tmp_path / "dsync_elev_abc.req"
         req.write_bytes(b"blob")
         monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
-        monkeypatch.setattr(
-            "src.scheduler.elevation.run_elevated_powershell",
-            lambda enc, *, timeout_s: ElevationOutcome(ElevationResult.COMPLETED, exit_code=0),
-        )
+        _patch_run_elevated(monkeypatch, {}, ElevationOutcome(ElevationResult.COMPLETED, exit_code=0))
         monkeypatch.setattr("src.scheduler.elevation.read_result", lambda p: None)  # child wrote nothing
-        # No result → the flow STILL tries a read-back (the child may have registered); unknown → no-result.
         confirm = MagicMock(return_value=ScheduleReadback(found=None))
         monkeypatch.setattr("src.scheduler.windows.read_schedule", confirm)
 
@@ -402,10 +405,7 @@ class TestRegisterElevatedFlow:
         req = tmp_path / "dsync_elev_abc.req"
         req.write_bytes(b"blob")
         monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
-        monkeypatch.setattr(
-            "src.scheduler.elevation.run_elevated_powershell",
-            lambda enc, *, timeout_s: ElevationOutcome(ElevationResult.COMPLETED, exit_code=0),
-        )
+        _patch_run_elevated(monkeypatch, {}, ElevationOutcome(ElevationResult.COMPLETED, exit_code=0))
         monkeypatch.setattr("src.scheduler.elevation.read_result", lambda p: None)
         monkeypatch.setattr("src.scheduler.windows.read_schedule", lambda name: ScheduleReadback(found=True))
         ok, _msg = self._register()
@@ -416,10 +416,7 @@ class TestRegisterElevatedFlow:
         req = tmp_path / "r.req"
         req.write_bytes(b"blob")
         monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
-        monkeypatch.setattr(
-            "src.scheduler.elevation.run_elevated_powershell",
-            lambda enc, *, timeout_s: ElevationOutcome(ElevationResult.DECLINED),
-        )
+        _patch_run_elevated(monkeypatch, {}, ElevationOutcome(ElevationResult.DECLINED))
         read_result = MagicMock()
         monkeypatch.setattr("src.scheduler.elevation.read_result", read_result)
 
@@ -437,10 +434,7 @@ class TestRegisterElevatedFlow:
         req.write_bytes(b"blob")
         read_result = MagicMock()
         monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
-        monkeypatch.setattr(
-            "src.scheduler.elevation.run_elevated_powershell",
-            lambda enc, *, timeout_s: ElevationOutcome(ElevationResult.TIMEOUT),
-        )
+        _patch_run_elevated(monkeypatch, {}, ElevationOutcome(ElevationResult.TIMEOUT))
         monkeypatch.setattr("src.scheduler.elevation.read_result", read_result)
         monkeypatch.setattr("src.scheduler.windows.read_schedule", lambda name: ScheduleReadback(found=True))
         ok, _msg = self._register()
@@ -452,10 +446,7 @@ class TestRegisterElevatedFlow:
         req = tmp_path / "r.req"
         req.write_bytes(b"blob")
         monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
-        monkeypatch.setattr(
-            "src.scheduler.elevation.run_elevated_powershell",
-            lambda enc, *, timeout_s: ElevationOutcome(ElevationResult.TIMEOUT),
-        )
+        _patch_run_elevated(monkeypatch, {}, ElevationOutcome(ElevationResult.TIMEOUT))
         monkeypatch.setattr("src.scheduler.windows.read_schedule", lambda name: ScheduleReadback(found=None))
         ok, msg = self._register()
         assert ok is False
@@ -468,10 +459,7 @@ class TestRegisterElevatedFlow:
         req = tmp_path / "r.req"
         req.write_bytes(b"blob")
         monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
-        monkeypatch.setattr(
-            "src.scheduler.elevation.run_elevated_powershell",
-            lambda enc, *, timeout_s: ElevationOutcome(ElevationResult.COMPLETED, exit_code=0),
-        )
+        _patch_run_elevated(monkeypatch, {}, ElevationOutcome(ElevationResult.COMPLETED, exit_code=0))
         monkeypatch.setattr(
             "src.scheduler.elevation.read_result",
             lambda p: {"ok": False, "message": "DSYNC_DIFFERENT_ACCOUNT"},
@@ -487,10 +475,7 @@ class TestRegisterElevatedFlow:
         req = tmp_path / "r.req"
         req.write_bytes(b"blob")
         monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
-        monkeypatch.setattr(
-            "src.scheduler.elevation.run_elevated_powershell",
-            lambda enc, *, timeout_s: ElevationOutcome(ElevationResult.COMPLETED, exit_code=1),
-        )
+        _patch_run_elevated(monkeypatch, {}, ElevationOutcome(ElevationResult.COMPLETED, exit_code=0))
         monkeypatch.setattr(
             "src.scheduler.elevation.read_result",
             lambda p: {"ok": False, "message": "The user name or password is incorrect."},
@@ -506,10 +491,7 @@ class TestRegisterElevatedFlow:
         req = tmp_path / "r.req"
         req.write_bytes(b"blob")
         monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
-        monkeypatch.setattr(
-            "src.scheduler.elevation.run_elevated_powershell",
-            lambda enc, *, timeout_s: ElevationOutcome(ElevationResult.COMPLETED, exit_code=1),
-        )
+        _patch_run_elevated(monkeypatch, {}, ElevationOutcome(ElevationResult.COMPLETED, exit_code=0))
         monkeypatch.setattr(
             "src.scheduler.elevation.read_result",
             lambda p: {"ok": False, "message": "boom DSYNC_TASK_PW=leak"},
@@ -523,105 +505,70 @@ class TestRegisterElevatedFlow:
         req = tmp_path / "r.req"
         req.write_bytes(b"blob")
         monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
-        monkeypatch.setattr(
-            "src.scheduler.elevation.run_elevated_powershell",
-            lambda enc, *, timeout_s: ElevationOutcome(ElevationResult.COMPLETED, exit_code=0),
-        )
+        _patch_run_elevated(monkeypatch, {}, ElevationOutcome(ElevationResult.COMPLETED, exit_code=0))
         monkeypatch.setattr("src.scheduler.elevation.read_result", lambda p: {"ok": True})
         monkeypatch.setattr("src.scheduler.windows.read_schedule", lambda name: ScheduleReadback(found=None))
         ok, msg = self._register()
         assert ok is False  # honest: child said ok, but read-back couldn't confirm
         assert msg == windows._MSG_ELEVATION_NO_RESULT
 
-    def test_password_never_in_any_subprocess_or_encoded_command(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_password_never_on_the_launch_argv(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """The ONE process this flow launches is the elevated child; its argv must carry
+        the handshake paths and nothing secret. (There is no subprocess.run anywhere in
+        the scheduler any more — that absence is pinned in test_schedulers.py.)"""
         self._patch_win_nonelevated(monkeypatch)
         req = tmp_path / "r.req"
         req.write_bytes(b"blob")
-        captured: dict[str, str] = {}
+        captured: dict[str, object] = {}
         monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
-
-        def _run(enc: str, *, timeout_s: float) -> ElevationOutcome:
-            captured["encoded"] = enc
-            return ElevationOutcome(ElevationResult.COMPLETED, exit_code=0)
-
-        monkeypatch.setattr("src.scheduler.elevation.run_elevated_powershell", _run)
+        _patch_run_elevated(monkeypatch, captured, ElevationOutcome(ElevationResult.COMPLETED, exit_code=0))
         monkeypatch.setattr("src.scheduler.elevation.read_result", lambda p: {"ok": True})
-
-        # Let the REAL read_schedule run, but mock ITS subprocess so we can inspect every call.
-        calls: list[tuple[list[str], dict]] = []
-
-        def _fake_run(argv, **kwargs):
-            calls.append((argv, kwargs))
-            return MagicMock(returncode=0, stdout="DSYNC_ABSENT", stderr="")
-
-        monkeypatch.setattr("src.scheduler.windows.subprocess.run", _fake_run)
+        monkeypatch.setattr("src.scheduler.windows.read_schedule", lambda name: ScheduleReadback(found=True))
 
         self._register()
 
-        # No subprocess call carried the secret (argv OR env), and DSYNC_TASK_PW is never
-        # in any child env of a subprocess call.
-        for argv, kwargs in calls:
-            assert _SECRET not in " ".join(str(a) for a in argv)
-            env = kwargs.get("env") or {}
-            assert _SECRET not in "".join(str(v) for v in env.values())
-            assert "DSYNC_TASK_PW" not in env
-        # And not in the encoded bootstrap the elevated child receives.
-        assert _SECRET not in base64.b64decode(captured["encoded"]).decode("utf-16-le")
+        assert _SECRET not in str(captured["file"])
+        assert _SECRET not in str(captured["params"])
 
 
 # ---------------------------------------------------------------------------
-# The fixed child-bootstrap script text (static assertions)
+# The structural single-source pin (replaces the retired script-text pin)
 # ---------------------------------------------------------------------------
 
 
-class TestElevatedRegisterScriptText:
-    def _script(self) -> str:
-        return windows._build_elevated_register_script(
-            has_password=True,
-            req_path=Path("C:/data/dsync_elev_aaa.req"),
-            res_path=Path("C:/data/dsync_elev_aaa.res"),
+class TestRegistrationSingleSource:
+    def test_direct_and_elevated_paths_call_the_same_function(self) -> None:
+        """The retired PS transport shared `_register_body` TEXT between the direct script
+        and the elevated bootstrap; the COM transport shares the FUNCTION. Pin: the
+        elevated child's register op resolves to the very same callable the direct path
+        calls — a fork would show up as two distinct functions here."""
+        import src.scheduler.elevated_apply as child
+        import src.scheduler.task_com as tc
+
+        # Both sides name task_com.register_task_definition — not a copy.
+        assert child._do_register.__module__ == "src.scheduler.elevated_apply"
+        src_text = Path(child.__file__).read_text(encoding="utf-8")
+        assert "task_com.register_task_definition(" in src_text
+        assert callable(tc.register_task_definition)
+
+    def test_elevated_child_command_shape(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Dev mode prefixes `-m src.main`; frozen mode is the bare exe. Both carry the
+        quoted handshake paths after --elevated-apply."""
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(
+            "src.scheduler.elevation.run_elevated",
+            lambda file, params, *, timeout_s: (
+                captured.update(file=file, params=params) or ElevationOutcome(ElevationResult.DECLINED)
+            ),
         )
-
-    def test_has_failclosed_currentuser_and_entropy(self) -> None:
-        script = self._script()
-        # Entropy is base64-embedded (uniform injection-proofing) — raw string absent, b64 present.
-        assert base64.b64encode(elevation.DPAPI_ENTROPY_UTF8.encode()).decode() in script
-        assert elevation.DPAPI_ENTROPY_UTF8 not in script
-        assert "DSYNC_DIFFERENT_ACCOUNT" in script  # fail-closed cross-SID branch
-        assert "CurrentUser" in script
-        assert "LocalMachine" not in script  # NEVER widened to machine scope
-
-    def test_never_echoes_password_in_result(self) -> None:
-        script = self._script()
-        # The password is referenced by Register-ScheduledTask -Password ...
-        assert "$env:DSYNC_TASK_PW" in script
-        # ... but never written to the result file.
-        for line in script.splitlines():
-            if "Write-DsyncResult" in line:
-                assert "DSYNC_TASK_PW" not in line
-
-    def test_paths_embedded_as_base64_not_interpolated(self) -> None:
-        script = self._script()
-        assert "dsync_elev_aaa.req" not in script  # base64-embedded, not raw-interpolated
-        assert "FromBase64String" in script
-
-    def test_result_write_is_atomic(self) -> None:
-        script = self._script()
-        assert "Move-Item" in script  # temp + rename atomic publish
-
-    def test_register_body_is_single_sourced(self) -> None:
-        # The elevated bootstrap runs the SAME register body as the direct script — no fork.
-        assert windows._register_body(True) in self._script()
-
-    def test_direct_script_unchanged_by_refactor(self) -> None:
-        # The direct (already-elevated) script is still the fixed program the existing tests pin.
-        direct = windows._build_register_script(has_password=True)
-        assert direct.startswith("$ErrorActionPreference")
-        assert "-LogonType Password" in direct
-        assert direct.endswith("  exit 1\n}\n")
-        assert windows._register_body(True) in direct
+        req, res = tmp_path / "a.req", tmp_path / "a.res"
+        windows._run_elevated_child(req, res)
+        params = str(captured["params"])
+        if Path(sys.executable).name.lower().startswith("python"):
+            assert params.startswith("-m src.main --elevated-apply ")
+        else:  # pragma: no cover - frozen-exe shape
+            assert params.startswith("--elevated-apply ")
+        assert f'"{req}"' in params and f'"{res}"' in params
 
 
 # ---------------------------------------------------------------------------
@@ -630,74 +577,80 @@ class TestElevatedRegisterScriptText:
 
 
 class TestDeleteTaskElevated:
-    def _mk(self, monkeypatch: pytest.MonkeyPatch, res: Path, outcome: ElevationOutcome, result: object) -> None:
-        monkeypatch.setattr("src.scheduler.elevation.new_result_path", lambda: res)
-        monkeypatch.setattr("src.scheduler.elevation.run_elevated_powershell", lambda enc, *, timeout_s: outcome)
+    def _mk(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        req: Path,
+        outcome: ElevationOutcome,
+        result: object,
+        captured: dict | None = None,
+    ) -> None:
+        def _write_request(payload: dict[str, object]) -> Path:
+            if captured is not None:
+                captured["payload"] = payload
+            return req
+
+        monkeypatch.setattr("src.scheduler.elevation.write_request", _write_request)
+        _patch_run_elevated(monkeypatch, captured if captured is not None else {}, outcome)
         monkeypatch.setattr("src.scheduler.elevation.read_result", lambda p: result)
 
     def test_ok_confirmed_removed_via_readback(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         # The child's self-reported ok is NOT trusted alone — removal is confirmed by a
         # read-back that finds the task gone (found=False).
-        self._mk(
-            monkeypatch, tmp_path / "d.res", ElevationOutcome(ElevationResult.COMPLETED, exit_code=0), {"ok": True}
-        )
-        confirm = MagicMock(return_value=ScheduleReadback(found=False))
-        monkeypatch.setattr("src.scheduler.windows.read_schedule", confirm)
-        ok, _msg = windows.delete_task_elevated("DistrictSync_Daily")
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        captured: dict[str, object] = {}
+        self._mk(monkeypatch, req, ElevationOutcome(ElevationResult.COMPLETED, exit_code=0), {"ok": True}, captured)
+        monkeypatch.setattr("src.scheduler.windows.read_schedule", lambda name: ScheduleReadback(found=False))
+        ok, msg = windows.delete_task_elevated("DistrictSync_Daily")
         assert ok is True
-        confirm.assert_called_once()
+        assert "removed" in msg.lower()
+        assert captured["payload"] == {"op": "delete", "task_name": "DistrictSync_Daily"}  # type: ignore[index]
 
     def test_ok_but_still_present_is_unconfirmed(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        self._mk(
-            monkeypatch, tmp_path / "d.res", ElevationOutcome(ElevationResult.COMPLETED, exit_code=0), {"ok": True}
-        )
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._mk(monkeypatch, req, ElevationOutcome(ElevationResult.COMPLETED, exit_code=0), {"ok": True})
         monkeypatch.setattr("src.scheduler.windows.read_schedule", lambda name: ScheduleReadback(found=True))
         ok, msg = windows.delete_task_elevated("DistrictSync_Daily")
-        assert ok is False  # child said ok but the task is still there → don't assert removal
+        assert ok is False
         assert msg == windows._MSG_ELEVATION_REMOVE_UNCONFIRMED
 
     def test_timeout_confirmed_removed(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        self._mk(monkeypatch, tmp_path / "d.res", ElevationOutcome(ElevationResult.TIMEOUT), None)
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._mk(monkeypatch, req, ElevationOutcome(ElevationResult.TIMEOUT), None)
         monkeypatch.setattr("src.scheduler.windows.read_schedule", lambda name: ScheduleReadback(found=False))
         ok, _msg = windows.delete_task_elevated("DistrictSync_Daily")
-        assert ok is True  # timed out but the read-back confirms it's gone
+        assert ok is True
 
     def test_no_result_unconfirmed(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        self._mk(monkeypatch, tmp_path / "d.res", ElevationOutcome(ElevationResult.COMPLETED, exit_code=0), None)
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._mk(monkeypatch, req, ElevationOutcome(ElevationResult.COMPLETED, exit_code=0), None)
         monkeypatch.setattr("src.scheduler.windows.read_schedule", lambda name: ScheduleReadback(found=None))
         ok, msg = windows.delete_task_elevated("DistrictSync_Daily")
         assert ok is False
         assert msg == windows._MSG_ELEVATION_REMOVE_UNCONFIRMED
 
     def test_declined(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        self._mk(monkeypatch, tmp_path / "d.res", ElevationOutcome(ElevationResult.DECLINED), None)
-        confirm = MagicMock()
-        monkeypatch.setattr("src.scheduler.windows.read_schedule", confirm)
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._mk(monkeypatch, req, ElevationOutcome(ElevationResult.DECLINED), None)
         ok, msg = windows.delete_task_elevated("DistrictSync_Daily")
         assert ok is False
         assert msg == windows._MSG_UAC_DECLINED
-        confirm.assert_not_called()  # a declined prompt is pre-consent — no read-back
 
-    def test_delete_script_is_injection_free(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        res = tmp_path / "d.res"
-        captured: dict[str, str] = {}
-        monkeypatch.setattr("src.scheduler.elevation.new_result_path", lambda: res)
-
-        def _run(enc: str, *, timeout_s: float) -> ElevationOutcome:
-            captured["enc"] = enc
-            return ElevationOutcome(ElevationResult.COMPLETED, exit_code=0)
-
-        monkeypatch.setattr("src.scheduler.elevation.run_elevated_powershell", _run)
-        monkeypatch.setattr("src.scheduler.elevation.read_result", lambda p: {"ok": True})
-        monkeypatch.setattr("src.scheduler.windows.read_schedule", lambda name: ScheduleReadback(found=False))
+    def test_handshake_cleaned_up_in_finally(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._mk(monkeypatch, req, ElevationOutcome(ElevationResult.DECLINED), None)
         windows.delete_task_elevated("DistrictSync_Daily")
-        decoded = base64.b64decode(captured["enc"]).decode("utf-16-le")
-        assert "DistrictSync_Daily" not in decoded  # base64-embedded, never interpolated
-        assert "Unregister-ScheduledTask" in decoded
+        assert not req.exists()
 
     def test_invalid_task_name_rejected_before_elevation(self, monkeypatch: pytest.MonkeyPatch) -> None:
         launched = MagicMock()
-        monkeypatch.setattr("src.scheduler.elevation.run_elevated_powershell", launched)
+        monkeypatch.setattr("src.scheduler.elevation.run_elevated", launched)
         with pytest.raises(ValueError):
-            windows.delete_task_elevated("bad;name|rm -rf")
+            windows.delete_task_elevated("bad;name|rm")
         launched.assert_not_called()

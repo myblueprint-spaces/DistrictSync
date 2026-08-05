@@ -409,6 +409,19 @@ def cli(argv: list[str] | None = None) -> int:
 def _cli(argv: list[str] | None) -> int:
     args_list = sys.argv[1:] if argv is None else list(argv)
 
+    # --elevated-apply: the ELEVATED schedule child (plan 0041 S1b) — dispatched FIRST,
+    # above every preamble side effect below, and that position is a SECURITY property,
+    # not tidiness: this branch runs under an elevated token, and the preamble performs
+    # best-effort filesystem work in user-writable places (legacy-profile migration, log
+    # sink creation, orphan sweeps) that an elevated process must not touch. The child
+    # reads one DPAPI request, applies one task_com operation, writes one result — see
+    # src/scheduler/elevated_apply.py for the full fail-closed ladder. Deliberately
+    # ABSENT from --help: it is an IPC mode with no human caller.
+    if args_list and args_list[0] == "--elevated-apply":
+        from src.scheduler.elevated_apply import run_elevated_apply
+
+        return run_elevated_apply(args_list[1:])
+
     # No arguments → launch the UI (e.g. double-clicked from Explorer).
     # The launcher configures its own logging sink (launcher.boot_logging).
     # NOTE: the console attach below is deliberately AFTER this branch — the

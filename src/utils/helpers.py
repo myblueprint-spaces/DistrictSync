@@ -26,11 +26,11 @@ import pandas as pd
 # unrecognized name is a programming error and fails loud (see :func:`system_binary`)
 # instead of silently degrading to a bare — and therefore hijackable — argv[0].
 _SYSTEM32_BINARIES: dict[str, tuple[str, ...]] = {
-    "powershell.exe": ("WindowsPowerShell", "v1.0", "powershell.exe"),
-    # schtasks.exe RETIRED from the allowlist at plan 0041 Slice 1a: delete_task moved to
-    # the in-process Task Scheduler COM API, which removed the last schtasks call. The
-    # allowlist shrinks rather than carries a dead entry — an unused allowance is attack
-    # surface waiting for a caller.
+    # powershell.exe (S1b) and schtasks.exe (S1a) both RETIRED from the allowlist at plan
+    # 0041: the scheduler drives the Task Scheduler COM API in-process and the elevated
+    # child is DistrictSync itself, so the LAST caller of each is gone. The allowlist
+    # shrinks rather than carries dead entries — an unused allowance is attack surface
+    # waiting for a caller.
     "icacls.exe": ("icacls.exe",),
 }
 
@@ -61,15 +61,14 @@ def system_binary(name: str) -> str:
 
     SINGLE SOURCE: every Windows-facing ``subprocess.run`` / ``ShellExecuteEx`` in this
     repo must resolve its executable through this helper — **never** a bare
-    ``"powershell"`` / ``"schtasks"`` / ``"icacls"``. Absent ``SafeProcessSearchMode``,
+    ``"icacls"``. Absent ``SafeProcessSearchMode``,
     ``CreateProcess`` resolves a bare image name through a search order that probes the
     **calling executable's directory and the current directory BEFORE System32**, so a
     binary planted in a group-writable district install folder (or in whatever directory
     the task scheduler happened to start us in) impersonates the real one. That matters
-    acutely here: the scheduler hands its PowerShell child the district Windows account
-    password in ``DSYNC_TASK_PW`` (``scheduler.windows._build_env``) and hands ``icacls``
-    the path of the DPAPI-sealed credential file. An absolute argv[0] removes the image
-    search entirely, so the process that receives those inputs is the real in-box binary.
+    acutely here: ``icacls`` is handed the path of the DPAPI-sealed credential file
+    (``scheduler.elevation``). An absolute argv[0] removes the image search entirely, so
+    the process that receives that input is the real in-box binary.
 
     ``%SystemRoot%`` is honored so a relocated / non-``C:`` Windows install still
     resolves; a missing, empty, or **non-absolute** value falls back to ``C:\\Windows``
@@ -78,12 +77,11 @@ def system_binary(name: str) -> str:
     well-formed Windows path — and a stable, assertable value — on any host.
 
     Args:
-        name: an allowlisted binary name (``powershell.exe`` / ``schtasks.exe`` /
-            ``icacls.exe``).
+        name: an allowlisted binary name (``icacls.exe`` — the sole survivor since
+            plan 0041 retired the scheduler's PowerShell/schtasks transports).
 
     Returns:
-        The absolute path to invoke, e.g.
-        ``C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe``.
+        The absolute path to invoke, e.g. ``C:\\Windows\\System32\\icacls.exe``.
 
     Raises:
         ValueError: ``name`` is not allowlisted — fail loud rather than fall back to a

@@ -1,245 +1,100 @@
 """Tests for src/scheduler/windows.py and src/scheduler/linux.py.
 
-All subprocess calls are mocked — no OS scheduler interaction needed.
-
-Windows registration uses PowerShell ``Register-ScheduledTask`` (the
-``ScheduledTasks`` module): a fixed script is handed to ``powershell.exe
--EncodedCommand`` (UTF-16LE-base64) and all dynamic values flow through the
-child process environment, so the REGISTER tests assert against the argv, the
-decoded script, and the child env. READ + DELETE moved to in-process COM at plan
-0041 Slice 1a — their tests inject ``TaskFacts``/``TaskComError`` at the
-``task_com.bounded`` seam instead (see ``TestReadSchedule`` / ``TestWindowsDeleteTask``
-and the absence pins in ``TestNoScheduleSubprocess``).
+The WINDOWS scheduler is in-process COM end to end since plan 0041 (S1a: read +
+delete; S1b: registration + the elevated self-child) — these tests inject
+``TaskFacts``/``TaskComError`` at the ``task_com.bounded`` seam and pin the
+transport's ABSENCE (``TestNoScheduleSubprocess``). The COM-object contract rows
+(settings quintet, logon matrix, password hygiene) live in
+``tests/test_scheduler_runas.py``; the elevated flow in
+``tests/test_scheduler_elevation.py``; the child mode in
+``tests/test_elevated_apply.py``. The Linux cron tests still mock ``_run``.
 """
 
-import base64
-import ntpath
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.utils.helpers import subprocess_no_window_flags
-
-# The absolute System32 paths argv[0] must carry once ``SYSTEMROOT`` is pinned to
-# ``C:\Windows`` — spelled out as literals (not via ``helpers.system_binary``) so these
-# assertions independently pin the expected value rather than restate the implementation.
-_ABS_POWERSHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+# -----------------------------------------------------------------------
+# _build_action_args — the task action's command line (transport-independent)
+# -----------------------------------------------------------------------
 
 
-def _argv(mock_run) -> list[str]:
-    """The argv list passed to the (mocked) subprocess.run."""
-    return mock_run.call_args[0][0]
+class TestBuildActionArgs:
+    """The action shape rows (plan 0041 row 11) — shared verbatim by PS-then-COM.
 
-
-def _creationflags(mock_run) -> int:
-    """The ``creationflags`` kwarg passed to subprocess.run (KeyError if the site dropped it).
-
-    Every Windows-facing subprocess.run must pass ``creationflags=subprocess_no_window_flags()``
-    so the windowed exe never flashes a console (e.g. the schedule read-back on a nav click).
-    Reading the kwarg directly makes a dropped flag a hard test failure — the regression guard.
+    These were previously asserted through the register subprocess's DSYNC_ARGS env;
+    with the transport gone they pin the BUILDER directly, which is where the behaviour
+    always lived (`_build_action_args` is reused unchanged by the COM path).
     """
-    return mock_run.call_args[1]["creationflags"]
 
+    def _args(self, exe=r"C:\DistrictSync\DistrictSync.exe", sftp=False):
+        from src.scheduler.windows import _build_action_args
 
-def _ps_script(mock_run) -> str:
-    """The PowerShell script, decoded from the ``-EncodedCommand`` argv value."""
-    argv = _argv(mock_run)
-    encoded = argv[argv.index("-EncodedCommand") + 1]
-    return base64.b64decode(encoded).decode("utf-16-le")
-
-
-def _child_env(mock_run) -> dict:
-    """The ``env=`` dict passed to subprocess.run."""
-    return mock_run.call_args[1]["env"]
-
-
-# -----------------------------------------------------------------------
-# Windows scheduler tests — _build_register_script (the fixed PS string)
-# -----------------------------------------------------------------------
-
-
-class TestBuildRegisterScript:
-    def test_password_variant_is_explicit_password_principal(self):
-        from src.scheduler.windows import _build_register_script
-
-        script = _build_register_script(has_password=True)
-        # Explicit stored-password principal — not parameter-set inference.
-        assert "New-ScheduledTaskPrincipal -UserId $env:DSYNC_USER -LogonType Password" in script
-        assert "-RunLevel $env:DSYNC_RUNLEVEL" in script
-        # The credential is stored via -User/-Password on Register-ScheduledTask.
-        assert "Register-ScheduledTask -TaskName $env:DSYNC_TASKNAME -InputObject $task" in script
-        assert "-User $env:DSYNC_USER -Password $env:DSYNC_TASK_PW -Force" in script
-        # S4U is never used.
-        assert "S4U" not in script
-
-    def test_no_password_variant_is_interactive_limited_not_s4u(self):
-        from src.scheduler.windows import _build_register_script
-
-        script = _build_register_script(has_password=False)
-        assert "New-ScheduledTaskPrincipal -UserId $env:DSYNC_USER -LogonType Interactive -RunLevel Limited" in script
-        # No credential parameters, no password reference, no S4U.
-        assert "-Password" not in script
-        assert "DSYNC_TASK_PW" not in script
-        assert "S4U" not in script
-
-    def test_settings_parity_with_prior_xml(self):
-        from src.scheduler.windows import _build_register_script
-
-        for has_pw in (True, False):
-            script = _build_register_script(has_password=has_pw)
-            assert "-MultipleInstances IgnoreNew" in script
-            assert "-ExecutionTimeLimit (New-TimeSpan -Hours 2)" in script
-            assert "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries" in script
-            assert "-StartWhenAvailable:$false" in script
-
-    def test_run_time_parsed_with_invariant_culture(self):
-        from src.scheduler.windows import _build_register_script
-
-        script = _build_register_script(has_password=True)
-        assert "[DateTime]::ParseExact($env:DSYNC_RUNTIME,'HH:mm'" in script
-        assert "[System.Globalization.CultureInfo]::InvariantCulture" in script
-
-    def test_script_references_env_not_literals(self):
-        from src.scheduler.windows import _build_register_script
-
-        script = _build_register_script(has_password=True)
-        # Action/trigger/settings all read from env, never an interpolated value.
-        assert "New-ScheduledTaskAction -Execute $env:DSYNC_EXE -Argument $env:DSYNC_ARGS" in script
-        assert "-WorkingDirectory $env:DSYNC_WORKDIR" in script
-        assert "New-ScheduledTaskTrigger -Daily -At $at" in script
-
-    def test_catch_emits_plain_text_not_write_error(self):
-        """The catch uses [Console]::Error.WriteLine — NOT Write-Error.
-
-        Write-Error to a redirected stderr is CLIXML-serialized by PowerShell
-        (a noisy ``#< CLIXML`` blob that echoes the whole script); the bare
-        [Console]::Error.WriteLine emits a clean plain-text one-liner.
-        """
-        from src.scheduler.windows import _build_register_script
-
-        for has_pw in (True, False):
-            script = _build_register_script(has_password=has_pw)
-            assert "[Console]::Error.WriteLine($_.Exception.Message)" in script
-            assert "Write-Error" not in script
-            # The success path is unchanged.
-            assert "Write-Output 'DSYNC_OK'" in script
-            assert "exit 1" in script
-
-
-# -----------------------------------------------------------------------
-# _clean_ps_stderr — de-CLIXML the PowerShell error surface
-# -----------------------------------------------------------------------
-
-
-# A real PowerShell 5.1 CLIXML stderr blob from a failed Register-ScheduledTask
-# (Write-Error to a redirected stderr). It echoes the whole failing script and
-# buries "Access is denied." inside <S S="Error"> nodes with _x000D_/_x000A_
-# line breaks. _clean_ps_stderr must return ONLY the human message.
-_REAL_CLIXML_STDERR = (
-    "#< CLIXML\r\n"
-    '<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
-    '<S S="Error">Register-ScheduledTask : Access is denied._x000D__x000A_</S>'
-    '<S S="Error">At line:9 char:3_x000D__x000A_</S>'
-    '<S S="Error">+   Register-ScheduledTask -TaskName $env:DSYNC_TASKNAME -InputObject $task -User _x000D__x000A_</S>'
-    '<S S="Error">+   $env:DSYNC_USER -Password $env:DSYNC_TASK_PW -Force | Out-Null_x000D__x000A_</S>'
-    '<S S="Error">+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~_x000D__x000A_</S>'
-    '<S S="Error">    + CategoryInfo          : PermissionDenied: (PS_ScheduledTask:Root/Microsoft/...) [Register-ScheduledTask], CimException_x000D__x000A_</S>'
-    '<S S="Error">    + FullyQualifiedErrorId : HRESULT 0x80070005,Register-ScheduledTask_x000D__x000A_</S>'
-    "</Objs>"
-)
-
-
-class TestCleanPsStderr:
-    def test_clixml_blob_yields_clean_access_denied_no_leak(self):
-        from src.scheduler.windows import _clean_ps_stderr
-
-        cleaned = _clean_ps_stderr(_REAL_CLIXML_STDERR)
-
-        # The human message survives ...
-        assert "Access is denied" in cleaned
-        # ... and the CLIXML noise / echoed script body / secret literal do not.
-        assert "CLIXML" not in cleaned
-        assert "<Objs" not in cleaned
-        assert "Register-ScheduledTask -TaskName" not in cleaned
-        assert "DSYNC_TASK_PW" not in cleaned
-        assert "_x000D_" not in cleaned
-
-    def test_clixml_strips_leading_positional_prefix(self):
-        from src.scheduler.windows import _clean_ps_stderr
-
-        cleaned = _clean_ps_stderr(_REAL_CLIXML_STDERR)
-        # The "Register-ScheduledTask : " positional prefix is stripped.
-        assert not cleaned.startswith("Register-ScheduledTask")
-
-    def test_plain_text_passes_through_stripped(self):
-        from src.scheduler.windows import _clean_ps_stderr
-
-        assert _clean_ps_stderr("  Access is denied.  ") == "Access is denied."
-
-    def test_clixml_without_error_node_is_safe_generic(self):
-        from src.scheduler.windows import _clean_ps_stderr
-
-        cleaned = _clean_ps_stderr("#< CLIXML\r\n<Objs></Objs>")
-        # No error node → a safe generic message, never the raw blob.
-        assert "CLIXML" not in cleaned
-        assert "<Objs" not in cleaned
-
-    def test_first_node_with_dsync_ref_is_dropped_not_echoed(self):
-        """Defense-in-depth: if the script body collapses into node 0, drop it.
-
-        Not a shape PS 5.1 emits (the message line is node 0; script echoes are
-        nodes 1+), but the CLIXML branch is untrusted — a first node still
-        carrying a ``DSYNC_*`` reference must yield the safe generic message,
-        never echo the variable name.
-        """
-        from src.scheduler.windows import _clean_ps_stderr
-
-        # Node 0 carries a DSYNC_ ref that SURVIVES the positional-prefix strip
-        # (it sits after the "<cmd> : " separator), so the guard — not the prefix
-        # regex — is what must drop it.
-        blob = (
-            "#< CLIXML\r\n"
-            '<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
-            '<S S="Error">Register-ScheduledTask : failed binding $env:DSYNC_TASK_PW</S></Objs>'
+        return _build_action_args(
+            Path(exe),
+            "myedbc",
+            Path(r"C:\data\in"),
+            Path(r"C:\data\out"),
+            sftp,
         )
-        cleaned = _clean_ps_stderr(blob)
-        assert "DSYNC_" not in cleaned
-        assert "$env" not in cleaned
 
-    def test_canonical_marker_still_matches_after_clean(self):
-        """register_task de-CLIXMLs before the marker match — Access is denied survives.
+    def test_frozen_exe_mode_bare_args_and_parent_workdir(self):
+        arguments, working_dir = self._args()
+        assert "-m src.main" not in arguments
+        assert arguments.startswith("--sis myedbc")
+        assert working_dir == Path(r"C:\DistrictSync")
 
-        Pinned to the already-elevated DIRECT path (``is_elevated -> True``) so the
-        password call exercises the ``subprocess.run`` CLIXML branch under test rather
-        than the D5 self-elevation path (covered in test_scheduler_elevation.py).
-        """
-        from pathlib import Path
+    def test_python_source_mode_uses_m_flag_and_project_root(self):
+        arguments, working_dir = self._args(exe=r"C:\Python313\python.exe")
+        assert arguments.startswith("-m src.main --sis myedbc")
+        assert (working_dir / "src" / "main.py").exists()  # the project root, really
 
+    def test_sftp_flag_appended_when_requested(self):
+        arguments, _ = self._args(sftp=True)
+        assert "--sftp" in arguments
+
+    def test_source_scheduled_always_labels_the_nightly_run(self):
+        """D2c: losing this silently relabels every nightly run 'cli' in Run History."""
+        for sftp in (False, True):
+            arguments, _ = self._args(sftp=sftp)
+            assert arguments.rstrip().endswith("--source scheduled")
+
+    def test_space_bearing_paths_are_quoted(self):
+        from src.scheduler.windows import _build_action_args
+
+        arguments, _ = _build_action_args(
+            Path(r"C:\DistrictSync\DistrictSync.exe"),
+            "myedbc",
+            Path(r"C:\My District Data\in"),
+            Path(r"C:\My District Data\out"),
+            False,
+        )
+        assert '"C:\\My District Data\\in"' in arguments
+        assert '"C:\\My District Data\\out"' in arguments
+
+    def test_validation_rejects_bad_inputs_before_any_com_call(self):
+        """Boundary validation still precedes every OS interaction (row 16)."""
         from src.scheduler.windows import register_task
 
-        with (
-            patch("src.scheduler.windows.is_elevated", return_value=True),
-            patch("src.scheduler.windows.subprocess.run") as mock_run,
-        ):
-            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr=_REAL_CLIXML_STDERR)
-            ok, msg = register_task(
-                task_name="DistrictSync_Daily",
-                exe_path=Path("C:/DistrictSync.exe"),
-                sis_type="myedbc",
-                input_dir=Path("C:/input"),
-                output_dir=Path("C:/output"),
-                run_time="03:00",
-                run_as_user="jane",
-                run_as_password="s3cr3t!",
-            )
-        assert ok is False
-        assert "Access is denied" in msg
-        # The cleaned message must not leak the script body or the secret literal.
-        assert "CLIXML" not in msg
-        assert "Register-ScheduledTask -TaskName" not in msg
-        assert "DSYNC_TASK_PW" not in msg
-        assert "s3cr3t!" not in msg
+        with patch("src.scheduler.windows.task_com.bounded") as mock_bounded:
+            for kwargs in (
+                {"task_name": "bad;name"},
+                {"sis_type": "not-a-config!"},
+                {"run_time": "25:99"},
+            ):
+                base = dict(
+                    task_name="DistrictSync_Daily",
+                    exe_path=Path("x.exe"),
+                    sis_type="myedbc",
+                    input_dir=Path("i"),
+                    output_dir=Path("o"),
+                    run_time="03:00",
+                )
+                base.update(kwargs)
+                with pytest.raises(ValueError):
+                    register_task(**base)
+            mock_bounded.assert_not_called()
 
 
 # -----------------------------------------------------------------------
@@ -286,359 +141,6 @@ class TestIsElevated:
 
         with patch.object(windows.sys, "platform", "linux"):
             assert windows.is_elevated() is False
-
-
-# -----------------------------------------------------------------------
-# Windows scheduler tests — register_task (subprocess mocked)
-# -----------------------------------------------------------------------
-
-
-class TestWindowsRegisterTask:
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_register_success(self, mock_run):
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-
-        ok, msg = register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-        )
-        assert ok is True
-        mock_run.assert_called_once()
-        # No-console flag: the windowed exe must not flash a console when registering.
-        assert _creationflags(mock_run) == subprocess_no_window_flags()
-        argv = _argv(mock_run)
-        # Fixed flags + an -EncodedCommand base64 blob (the script is not piped
-        # via stdin — observed live on this dev box (Win11, PS 5.1), a multi-line
-        # try/catch read line-by-line from stdin silently no-ops; -EncodedCommand
-        # parses the script as one unit so the fail-loud try/catch works).
-        # argv[0] is the ABSOLUTE System32 powershell.exe (never a bare name — see
-        # test_register_invokes_absolute_system32_powershell for the security rationale).
-        assert ntpath.isabs(argv[0])
-        assert argv[0].lower().endswith(r"\system32\windowspowershell\v1.0\powershell.exe")
-        assert argv[1:6] == [
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand",
-        ]
-        assert "input" not in mock_run.call_args[1]
-        # The decoded script is the fixed PowerShell program.
-        assert _ps_script(mock_run).startswith("$ErrorActionPreference")
-        # Legacy schtasks registration markers must be gone.
-        assert "schtasks" not in argv
-        assert "/XML" not in argv
-        assert "/TR" not in argv
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_register_invokes_absolute_system32_powershell(self, mock_run, monkeypatch):
-        """argv[0] is the ABSOLUTE System32 powershell.exe — never a bare ``powershell``.
-
-        A bare name is resolved by ``CreateProcess``'s search order, which — absent
-        ``SafeProcessSearchMode`` — probes the calling executable's directory and the
-        CURRENT directory BEFORE ``System32``. This child is handed the district Windows
-        account password via ``DSYNC_TASK_PW`` in its environment (``_build_env``), so a
-        planted ``powershell.exe`` in a group-writable install folder would receive the
-        credential. An absolute argv[0] removes the image search entirely.
-        """
-        from src.scheduler.windows import register_task
-
-        monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-
-        register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-        )
-
-        argv = _argv(mock_run)
-        assert argv[0] == _ABS_POWERSHELL
-        assert argv[0] != "powershell"
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_register_failure_passes_stderr_through(self, mock_run):
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Access is denied.")
-
-        ok, msg = register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-        )
-        assert ok is False
-        assert "Access is denied" in msg
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_register_success_requires_dsync_ok_sentinel(self, mock_run):
-        """returncode 0 without the DSYNC_OK sentinel is treated as failure."""
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="something else", stderr="")
-
-        ok, _ = register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-        )
-        assert ok is False
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_register_with_sftp_flag(self, mock_run):
-        """The action arguments (in DSYNC_ARGS) carry --sftp when requested."""
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-
-        register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-            sftp=True,
-        )
-        assert "--sftp" in _child_env(mock_run)["DSYNC_ARGS"]
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_registered_action_labels_runs_as_scheduled(self, mock_run):
-        """The action args carry ``--source scheduled`` (D2c) — the ONLY thing that
-        labels a nightly run as 'scheduled' in the run store (a scheduled task has no
-        per-action env). Losing it silently relabels every nightly run as 'cli' and
-        breaks Run History's manual-vs-scheduled distinction."""
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-
-        register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-        )
-        assert "--source scheduled" in _child_env(mock_run)["DSYNC_ARGS"]
-
-    @patch("src.scheduler.windows.is_elevated", return_value=True)
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_registered_action_labels_runs_as_scheduled_with_password(self, mock_run, _mock_elevated):
-        """The unattended (password/Highest) principal carries the same source label.
-
-        Pinned to the already-elevated DIRECT path (``is_elevated -> True``); the
-        non-elevated self-elevation path (D5) is covered in test_scheduler_elevation.py.
-        """
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-
-        register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-            run_as_password="secret-pw",
-        )
-        assert "--source scheduled" in _child_env(mock_run)["DSYNC_ARGS"]
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_run_time_passed_raw_string_in_env(self, mock_run):
-        """DSYNC_RUNTIME carries the raw 'HH:mm' string, not a (hour, minute) tuple."""
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-
-        register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="16:45",
-        )
-        assert _child_env(mock_run)["DSYNC_RUNTIME"] == "16:45"
-
-    def test_register_rejects_invalid_sis_type(self):
-        from src.scheduler.windows import register_task
-
-        with pytest.raises(ValueError, match="Invalid SIS type"):
-            register_task(
-                task_name="DistrictSync_Daily",
-                exe_path=Path("C:/DistrictSync.exe"),
-                sis_type="bad;type",
-                input_dir=Path("C:/input"),
-                output_dir=Path("C:/output"),
-                run_time="03:00",
-            )
-
-    def test_register_rejects_invalid_task_name(self):
-        from src.scheduler.windows import register_task
-
-        with pytest.raises(ValueError, match="Invalid task name"):
-            register_task(
-                task_name="task/../../etc",
-                exe_path=Path("C:/DistrictSync.exe"),
-                sis_type="myedbc",
-                input_dir=Path("C:/input"),
-                output_dir=Path("C:/output"),
-                run_time="03:00",
-            )
-
-    def test_register_rejects_invalid_time(self):
-        from src.scheduler.windows import register_task
-
-        with pytest.raises(ValueError):
-            register_task(
-                task_name="DistrictSync_Daily",
-                exe_path=Path("C:/DistrictSync.exe"),
-                sis_type="myedbc",
-                input_dir=Path("C:/input"),
-                output_dir=Path("C:/output"),
-                run_time="25:99",
-            )
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_validation_runs_before_subprocess(self, mock_run):
-        """Bad input must raise before any powershell call."""
-        from src.scheduler.windows import register_task
-
-        with pytest.raises(ValueError):
-            register_task(
-                task_name="DistrictSync_Daily",
-                exe_path=Path("C:/DistrictSync.exe"),
-                sis_type="bad;type",
-                input_dir=Path("C:/input"),
-                output_dir=Path("C:/output"),
-                run_time="03:00",
-            )
-        mock_run.assert_not_called()
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_frozen_exe_invoked_directly(self, mock_run):
-        """DistrictSync.exe is DSYNC_EXE; arguments carry no -m src.main; WD=exe parent."""
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-
-        register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-        )
-        env = _child_env(mock_run)
-        assert env["DSYNC_EXE"] == str(Path("C:/DistrictSync/DistrictSync.exe"))
-        assert "-m src.main" not in env["DSYNC_ARGS"]
-        assert env["DSYNC_WORKDIR"] == str(Path("C:/DistrictSync/DistrictSync.exe").parent)
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_python_source_mode_uses_m_flag(self, mock_run):
-        """Running from source via python.exe sets DSYNC_EXE=python, DSYNC_ARGS=-m src.main ...
-
-        Without -m, Python treats --sis as a script path and exits with
-        ERROR_FILE_NOT_FOUND (0x80070002). Working directory = project root.
-        """
-        from src.scheduler import windows
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-
-        register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/Python313/python.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-            sftp=True,
-        )
-        env = _child_env(mock_run)
-        assert env["DSYNC_EXE"] == str(Path("C:/Python313/python.exe"))
-        assert "-m src.main" in env["DSYNC_ARGS"]
-        assert "--sis myedbc" in env["DSYNC_ARGS"]
-        assert "--sftp" in env["DSYNC_ARGS"]
-        assert "cmd /c" not in env["DSYNC_ARGS"]
-        assert "cd /d" not in env["DSYNC_ARGS"]
-        expected_root = Path(windows.__file__).resolve().parents[2]
-        assert env["DSYNC_WORKDIR"] == str(expected_root)
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_space_bearing_path_is_quoted_in_args(self, mock_run):
-        """A space-bearing district path is wrapped in quotes inside DSYNC_ARGS."""
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-        in_dir = Path("C:/A & B/in dir")
-
-        register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=in_dir,
-            output_dir=Path("C:/out"),
-            run_time="03:00",
-        )
-        assert f'"{in_dir}"' in _child_env(mock_run)["DSYNC_ARGS"]
-
-    @patch("src.scheduler.windows.subprocess.run", side_effect=FileNotFoundError)
-    def test_missing_powershell_is_actionable(self, _mock_run):
-        """No powershell.exe → a distinct actionable message, no crash."""
-        from src.scheduler.windows import register_task
-
-        ok, msg = register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-        )
-        assert ok is False
-        assert "PowerShell not found" in msg
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_missing_scheduledtasks_module_is_actionable(self, mock_run):
-        """A cmdlet-not-found PS error maps to the ScheduledTasks-module message."""
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(
-            returncode=1,
-            stdout="",
-            stderr="Register-ScheduledTask : The term 'Register-ScheduledTask' is not "
-            "recognized as the name of a cmdlet, function, script file, or operable program.",
-        )
-
-        ok, msg = register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-        )
-        assert ok is False
-        assert "ScheduledTasks module not available" in msg
 
 
 class TestWindowsDeleteTask:
@@ -880,12 +382,49 @@ class TestNoScheduleSubprocess:
 
         return Path(w.__file__).read_text(encoding="utf-8")
 
-    def test_schtasks_left_the_allowlist(self):
-        """The allowlist SHRANK with its last caller — an unused allowance is surface."""
+    def test_schtasks_and_powershell_left_the_allowlist(self):
+        """The allowlist SHRANK with each last caller — an unused allowance is surface.
+
+        schtasks.exe went at S1a (delete → COM); powershell.exe at S1b (register + the
+        elevated child → COM/our own exe). icacls.exe remains elevation's one subprocess.
+        """
         from src.utils.helpers import system_binary
 
-        with pytest.raises(ValueError):
-            system_binary("schtasks.exe")
+        for retired in ("schtasks.exe", "powershell.exe"):
+            with pytest.raises(ValueError):
+                system_binary(retired)
+        assert system_binary("icacls.exe").lower().endswith("icacls.exe")
+
+    def test_windows_scheduler_imports_no_subprocess_machinery(self):
+        """S1b: `subprocess`, `base64` and `re` all left windows.py WITH the transport —
+        the scheduler spawns no child process at all (the elevated launch is
+        ShellExecuteExW inside elevation.py). AST-level so prose stays free."""
+        import ast
+
+        import src.scheduler.windows as w
+
+        tree = ast.parse(Path(w.__file__).read_text(encoding="utf-8"))
+        imported = {a.name for node in ast.walk(tree) if isinstance(node, ast.Import) for a in node.names} | {
+            node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module
+        }
+        assert "subprocess" not in imported
+        assert "base64" not in imported
+
+    def test_no_encoded_command_string_anywhere_in_the_scheduler(self):
+        """The `-EncodedCommand` literal — the AV-weighted signature this plan exists to
+        remove — appears in NO string constant in src/scheduler (docstrings exempt)."""
+        import ast
+
+        import src.scheduler as pkg
+
+        for path in Path(pkg.__file__).parent.glob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                # Prose in docstrings may NAME the retired flag; only an exact-token string
+                # constant (argv material) trips the pin.
+                is_literal = isinstance(node, ast.Constant) and isinstance(node.value, str)
+                if is_literal and node.value.strip() == "-EncodedCommand":
+                    raise AssertionError(f"{path.name}:{node.lineno}: -EncodedCommand literal")
 
     def test_no_code_invokes_schtasks(self):
         """No `system_binary("schtasks…")` call survives anywhere in src/ (prose may)."""
