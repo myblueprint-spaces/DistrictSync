@@ -28,14 +28,17 @@ class TestBuildActionArgs:
     always lived (`_build_action_args` is reused unchanged by the COM path).
     """
 
-    def _args(self, exe=r"C:\DistrictSync\DistrictSync.exe", sftp=False):
+    def _args(self, exe="C:/DistrictSync/DistrictSync.exe", sftp=False):
+        # Forward slashes ON PURPOSE: a raw C:\ backslash path parses as one giant
+        # filename on the POSIX CI legs (`.name` never matches "python", `.parent` is
+        # "."), which is a test artifact, not a behaviour — caught red on Linux CI.
         from src.scheduler.windows import _build_action_args
 
         return _build_action_args(
             Path(exe),
             "myedbc",
-            Path(r"C:\data\in"),
-            Path(r"C:\data\out"),
+            Path("C:/data/in"),
+            Path("C:/data/out"),
             sftp,
         )
 
@@ -43,10 +46,10 @@ class TestBuildActionArgs:
         arguments, working_dir = self._args()
         assert "-m src.main" not in arguments
         assert arguments.startswith("--sis myedbc")
-        assert working_dir == Path(r"C:\DistrictSync")
+        assert working_dir == Path("C:/DistrictSync")
 
     def test_python_source_mode_uses_m_flag_and_project_root(self):
-        arguments, working_dir = self._args(exe=r"C:\Python313\python.exe")
+        arguments, working_dir = self._args(exe="C:/Python313/python.exe")
         assert arguments.startswith("-m src.main --sis myedbc")
         assert (working_dir / "src" / "main.py").exists()  # the project root, really
 
@@ -61,17 +64,19 @@ class TestBuildActionArgs:
             assert arguments.rstrip().endswith("--source scheduled")
 
     def test_space_bearing_paths_are_quoted(self):
+        # Forward-slash inputs + separator-neutral asserts: the QUOTING is the behaviour
+        # under test; the path separator is the platform's (this runs on the POSIX CI legs).
         from src.scheduler.windows import _build_action_args
 
         arguments, _ = _build_action_args(
-            Path(r"C:\DistrictSync\DistrictSync.exe"),
+            Path("C:/DistrictSync/DistrictSync.exe"),
             "myedbc",
-            Path(r"C:\My District Data\in"),
-            Path(r"C:\My District Data\out"),
+            Path("C:/My District Data/in"),
+            Path("C:/My District Data/out"),
             False,
         )
-        assert '"C:\\My District Data\\in"' in arguments
-        assert '"C:\\My District Data\\out"' in arguments
+        assert '"' + str(Path("C:/My District Data/in")) + '"' in arguments
+        assert '"' + str(Path("C:/My District Data/out")) + '"' in arguments
 
     def test_validation_rejects_bad_inputs_before_any_com_call(self):
         """Boundary validation still precedes every OS interaction (row 16)."""
