@@ -358,11 +358,22 @@ def build_app_body(
     def render_by_id(dest_id: str) -> None:
         inner = screens[dest_id]()
         # Scrollable content so tall screens never clip; the reading column is capped at ~960px
-        # and LEFT-anchored (0032 Tier-1 #5) — a fixed width clamps DOWN to the viewport on a
-        # narrow window (Flutter enforces the parent constraint), so it never overflows. A screen
-        # that scrolls a wide region horizontally (Run History's table) does so INSIDE this cap.
+        # and CENTRED in the content area (owner decision 2026-08-05, superseding 0032 Tier-1
+        # #5's left-anchor: on a maximised window the column hugged the rail with a huge dead
+        # right margin). Centring comes from a ROW, not the column's `horizontal_alignment` —
+        # on Flet 0.85.3 a scrollable Column silently ignores its cross-axis alignment (the
+        # `_gate_frame` trap, recorded in docs/FLET_1.0_CONVENTIONS.md). A fixed width still
+        # clamps DOWN to the viewport on a narrow window (Flutter enforces the parent
+        # constraint), where centring a full-width child is a no-op — so narrow windows are
+        # byte-identical to before. A screen that scrolls a wide region horizontally (Run
+        # History's table) does so INSIDE this cap.
         content_host.content = ft.Column(
-            controls=[ft.Container(content=inner, width=960)],
+            controls=[
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    controls=[ft.Container(content=inner, width=960)],
+                )
+            ],
             scroll=ft.ScrollMode.AUTO,
             expand=True,
         )

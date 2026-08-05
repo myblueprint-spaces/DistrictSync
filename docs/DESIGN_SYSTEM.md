@@ -126,13 +126,16 @@ endpoints, because a translucent white is a composite the contrast function cann
 therefore be an ungated painted pair (the placeholder's old sub-line was exactly that, and went with
 its gradient).
 
-**The launch page is the ONE centred surface (2026-08-04).** Every screen behind the rail is
-left-anchored inside the ~960px reading cap, because the rail is the left edge they align to. The
-launch page has no rail, so `shell._gate_frame` centres its `GATE_WIDTH` column on both axes and the
-page's cards STRETCH to that width — one form, centred, with the field and the single filled primary
-running its full width. Two Flet 0.85.3 facts make that work and are recorded in
-`docs/FLET_1.0_CONVENTIONS.md`: a scrollable `Column` honours `alignment` (main axis) but NOT
-`horizontal_alignment`, so cross-axis centring comes from a `Row`; and a `TextField` with
+**Every surface centres its reading column (2026-08-05).** The launch page centres its
+`GATE_WIDTH` column on both axes (`shell._gate_frame`, 2026-08-04 — no rail, so nothing to anchor
+to), and since 2026-08-05 the app body's ~960px reading cap centres horizontally in the content
+area too (owner decision, superseding 0032 Tier-1 #5's left-anchor: on a maximised window the
+column hugged the rail and left a huge dead right margin). On a narrow window the cap clamps to
+the viewport and centring is a no-op, so small windows render exactly as before. The launch page's
+cards additionally STRETCH to their column width — one form, centred, with the field and the
+single filled primary running its full width. Two Flet 0.85.3 facts make all of this work and are
+recorded in `docs/FLET_1.0_CONVENTIONS.md`: a scrollable `Column` honours `alignment` (main axis)
+but NOT `horizontal_alignment`, so cross-axis centring comes from a `Row`; and a `TextField` with
 `max_length` reserves its counter's sub-text row even when `counter` is blanked.
 
 **The transition is CLOSED.** One product caller remains, by design. The only other reference is
