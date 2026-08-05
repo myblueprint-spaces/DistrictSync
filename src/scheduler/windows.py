@@ -1,93 +1,58 @@
-"""Windows Task Scheduler integration via PowerShell ``Register-ScheduledTask``.
+"""Windows Task Scheduler integration — in-process COM, zero child processes (plan 0041).
 
-Creates a daily scheduled task that runs the DistrictSync CLI at a
-specified time. No third-party dependencies — uses ``subprocess`` to drive
-``powershell.exe`` and the in-box ``ScheduledTasks`` module (Win8+/Server
-2012+), the modern Task Scheduler COM API. Registration has no command-length
-cap (unlike ``schtasks /TR``'s 261-char limit) and performs robust credential
-validation + "Log on as a batch job" grant for the unattended (stored-password)
-path.
+Creates a daily scheduled task that runs the DistrictSync CLI at a specified time.
+Every steady-state operation — register, read-back, delete — drives the Task Scheduler
+COM API through ``src/scheduler/task_com.py`` (the why, the wrapped-HRESULT trap, and
+the apartment-lifetime rules live there): **no ``powershell.exe``, no ``schtasks.exe``,
+no ``-EncodedCommand``, no console-flash risk** — the transport chain Bitdefender ATC
+flagged live on 2026-08-04 is gone end to end (S1a moved read/delete; S1b moved
+registration + the elevated child). The retired PS transport's hard-won lessons
+(the stdin no-op, CLIXML stderr, parameter-set S4U inference) are preserved in
+DECISIONS 2026-06-25 — consult git history for the scripts themselves.
 
 **Secure invocation contract:**
 
-  - A **fixed, auditable PowerShell script** (:func:`_build_register_script`) is
-    handed to ``powershell.exe -EncodedCommand <base64>`` (the script
-    UTF-16LE-base64-encoded by :func:`register_task`) — **no script file ever
-    touches disk**. ``-EncodedCommand`` is used rather than piping the script to
-    ``-Command -`` over stdin because, observed live on this dev box (Win11, PS
-    5.1), a multi-line ``try {…} catch {…}`` block read line-by-line from stdin
-    silently no-ops (exit 0, no output, registers nothing); ``-EncodedCommand``
-    parses the script as one unit, so the fail-loud ``try/catch`` works.
-    The script references **only** ``$env:DSYNC_*`` variables; it never
-    interpolates dynamic values into its own text, eliminating PowerShell
-    string-injection from district paths.
-  - All dynamic values (task name, user, run time, exe, args, working dir, and
-    — password path only — the password) are passed via the **child process
-    environment** (:func:`_build_env`), a **fresh copy** of ``os.environ``;
-    ``os.environ`` itself is never mutated. The password therefore never
-    appears on the command line / argv (a hardening win over the legacy
-    ``schtasks /RP <pw>`` model, which was visible to all users via the process
-    list) and is never logged. The script never echoes ``$env:DSYNC_TASK_PW``.
+  - Registration parameters travel as a ``task_com.RegisterParams`` (``repr=False`` —
+    the password can never leak through a formatted params object) into
+    ``RegisterTaskDefinition``: an in-process BSTR argument. The password appears on
+    NO argv, in NO process environment, in NO log, and in NO returned message.
+  - The logon type is an **explicit constant** — ``TASK_LOGON_PASSWORD`` (unattended)
+    or ``TASK_LOGON_INTERACTIVE_TOKEN`` + Limited (logged-on-only) — never
+    parameter-set inference, and ``TASK_LOGON_S4U`` is deliberately not even defined
+    (no network token → breaks SFTP egress; the 2026-06-25 regression class).
+    *run_highest* is honoured only WITH a password; without one the task is always
+    Limited.
+  - The settings quintet (no catch-up, IgnoreNew, PT2H, both battery flags) is set
+    explicitly in ``task_com.apply_definition`` — COM defaults differ on all five.
+  - Failure messages are the ``task_com`` HRESULT-keyed canonicals ("Access is
+    denied." / "The user name or password is incorrect." / Windows' own description
+    for unmapped statuses), so ``setup_errors.classify_schedule_error`` keeps matching
+    exactly the strings it always matched — now locale-independent.
 
-**Unattended path (password supplied):** the script forces
-``TASK_LOGON_PASSWORD`` **explicitly** via
-``New-ScheduledTaskPrincipal -LogonType Password -RunLevel Highest`` (or
-``-RunLevel Limited`` when *run_highest* is False), then
-``Register-ScheduledTask -InputObject $task -User -Password`` stores the
-credential. The explicit principal is the documented way to *force* the
-stored-password logon rather than rely on parameter-set inference (which can
-silently degrade to ``S4U``/``Interactive`` on some PowerShell 5.1 builds —
-the failure class the prior ``schtasks /XML`` regression taught). ``S4U`` is
-never used: it runs logged-off but has **no network token**, which would break
-the SFTP egress the daily run depends on.
+**Self-elevation (Plan 0029 D5; re-targeted at 0041 S1b):** the unattended
+(password / RunLevel Highest) registration genuinely requires an elevated caller.
+When the process is NOT already elevated, :func:`register_task` runs the operation
+behind ONE normal UAC prompt — the elevated child is **DistrictSync itself** in the
+dispatch-first ``--elevated-apply`` mode (``src/scheduler/elevated_apply.py``),
+executing the SAME ``task_com`` functions as the direct path: the single-source
+property the old PS ``_register_body`` text-sharing protected is now structural.
+The password crosses the elevation boundary ONLY inside a DPAPI-CurrentUser-sealed
+request file (never argv, any env, or a log); a cross-SID (different-admin) consent
+fails closed with the ``DSYNC_DIFFERENT_ACCOUNT`` sentinel. Success is CONFIRMED via
+:func:`read_schedule` — never assumed from the child's exit code.
+:func:`delete_task_elevated` rides the same child. :func:`is_elevated` lets the
+wizard tell an un-elevated "Access is denied" (run as administrator) apart from an
+elevated one (a credential / batch-logon-right problem).
 
-**Logged-on-only path (no password):** the principal is
-``-LogonType Interactive -RunLevel Limited`` and ``Register-ScheduledTask``
-runs without ``-User/-Password`` → an interactive-token task, matching the
-prior logged-on-only default. *run_highest* is **ignored** without a password
-(today's semantics), so ``run_highest=True`` + no password still yields
-``Limited``.
-
-**Self-elevation (Plan 0029, D5):** the unattended (password / RunLevel Highest)
-registration genuinely requires an elevated caller. When the process is NOT already
-elevated (``is_elevated()`` False), :func:`register_task` runs the SAME fixed
-:func:`_register_body` inside a child bootstrap behind ONE normal UAC prompt via
-``src/scheduler/elevation.py`` — replacing the old "quit and re-open as
-administrator" dead-end while the app itself stays non-admin. The password crosses the
-elevation boundary ONLY inside a DPAPI-CurrentUser-sealed request file (never argv, the
-parent env, or a log); a cross-SID (different-admin) consent makes the child's
-``Unprotect`` throw → it **fails closed** with the ``DSYNC_DIFFERENT_ACCOUNT`` sentinel.
-Success is CONFIRMED via :func:`read_schedule` — never assumed from the child's exit
-code. :func:`delete_task_elevated` removes an elevated-registered task the same way (no
-secret, so no DPAPI). Already-elevated / no-password / non-Windows callers keep the
-direct :func:`subprocess.run` path unchanged.
-
-**Readable errors:** the script's ``catch`` emits the bare exception message
-via ``[Console]::Error.WriteLine`` (not ``Write-Error``, which PowerShell
-CLIXML-serializes on a redirected stderr into a noisy ``#< CLIXML`` blob that
-echoes the whole script). :func:`_clean_ps_stderr` is a defensive Python
-fallback that decodes the human message out of any CLIXML that still arrives
-(extracting only the ``<S S="Error">`` text, never the echoed script body), so
-the caller and the Setup Wizard always get a clean one-liner. :func:`is_elevated`
-lets the wizard tell an un-elevated "Access is denied" (run as administrator)
-apart from an elevated one (a credential / batch-logon-right problem).
-
-``delete_task`` deliberately remains on ``schtasks.exe`` — it is name-only, has
-no command-length or credential surface, and is fully tested; migrating it would
-expand blast radius for no benefit (possible ROADMAP consistency follow-up).
-
-**Schedule read-back (Plan 0029, D4):** :func:`read_schedule` replaces the dead
-``query_task``. It combines ``Get-ScheduledTask`` (existence / action path) and
-``Get-ScheduledTaskInfo`` (NextRunTime / LastRunTime / LastTaskResult) via the SAME
-fixed-script + ``-EncodedCommand`` hardening as registration (name through
-:func:`validate_task_name` first, no dynamic interpolation, datetimes emitted
-culture-invariantly, a bounded ``subprocess`` timeout), returning a typed frozen
-:class:`ScheduleReadback`. It is deliberately **tri-state**: the cmdlet's specific
-task-not-found error → ``found=False`` (definitively absent); ANY other failure
-(PowerShell missing, timeout, access denied — e.g. an elevated-registered task
-unreadable by a filtered token) → ``found=None`` (query itself failed, never
-"absent"). The pure ``ui_flet.schedule_status`` module maps this to the honest
-LIVE / MISSING / UNKNOWN contract — only ``found=False`` may claim "not scheduled".
+**Schedule read-back (Plan 0029, D4; COM since 0041):** :func:`read_schedule` returns
+the typed frozen :class:`ScheduleReadback`. It is deliberately **tri-state**, now
+HRESULT-keyed: the definitive not-found status (``0x80070002``, unwrapped from
+``excepinfo`` — the outer ``hresult`` is just ``DISP_E_EXCEPTION``) → ``found=False``;
+ANY other failure (access denied — e.g. an elevated-registered task unreadable by a
+filtered token — RPC failure, a timed-out bounded worker, pywin32 missing) →
+``found=None`` (query itself failed, never "absent"). The pure
+``ui_flet.schedule_status`` module maps this to the honest LIVE / MISSING / UNKNOWN
+contract — only ``found=False`` may claim "not scheduled".
 
 Usage::
 
@@ -106,23 +71,21 @@ Usage::
 
 from __future__ import annotations
 
-import base64
 import contextlib
 import getpass
-import json
 import logging
 import os
-import re
-
-# subprocess is required to invoke powershell.exe / schtasks.exe.
-import subprocess  # nosec B404
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.scheduler import elevation
+# NOTE (plan 0041 S1b): `subprocess`, `base64`, `re`, `system_binary` and
+# `subprocess_no_window_flags` all left this module WITH the PowerShell transport —
+# the scheduler spawns no child process at all now (the elevated child is launched by
+# elevation.py's ShellExecuteExW, not subprocess). Pinned by the transport-absence
+# tests in tests/test_schedulers.py.
+from src.scheduler import elevation, task_com
 from src.scheduler.elevation import ElevationOutcome, ElevationResult
-from src.utils.helpers import subprocess_no_window_flags, system_binary
 from src.utils.validators import (
     validate_run_as_user,
     validate_run_time,
@@ -165,93 +128,19 @@ _DIFFERENT_ACCOUNT_SENTINEL = "DSYNC_DIFFERENT_ACCOUNT"
 # ``VALID_SOURCES`` value without importing the store into the scheduler layer.
 _SCHEDULED_SOURCE = "scheduled"
 
-# Canonical failure-message substrings returned by register_task (the message
-# contract the wizard's error classifier keys off — see Slice 2). Any change
-# here must be reflected in the classifier and its tests.
-_MSG_NO_POWERSHELL = "PowerShell not found"
-_MSG_NO_MODULE = "ScheduledTasks module not available"
-
-# A cmdlet-not-found PowerShell error (no ScheduledTasks module, pre-Win8)
-# surfaces one of these phrasings in stderr.
-_CMDLET_MISSING_MARKERS = (
-    "is not recognized as the name of a cmdlet",
-    "CommandNotFoundException",
-)
-
-# Marker that PowerShell CLIXML-serialized a stderr stream (the noisy
-# ``#< CLIXML … <Objs>…`` blob produced when ``Write-Error`` writes to a
-# redirected stderr). _clean_ps_stderr decodes the human message out of it.
-_CLIXML_MARKER = "#< CLIXML"
-
-# Bounded match for the human-readable error text inside a CLIXML <S> node.
-# Only the error message is extracted — never the echoed script body — so the
-# ``$env:DSYNC_TASK_PW`` literal and the rest of the program cannot leak out.
-_CLIXML_ERROR_NODE_RE = re.compile(r'<S\s+S="Error">(.*?)</S>', re.DOTALL)
+# The "PowerShell not found" / "ScheduledTasks module not available" canonical messages,
+# the CLIXML decoder and its regexes all RETIRED at plan 0041 S1b with their transport —
+# the COM analogue of an unavailable engine is task_com.MSG_COM_UNAVAILABLE (row 10).
 
 # --- Schedule read-back (D4) --------------------------------------------------
-# The read-back script tags its two success shapes on stdout so the Python parse is
-# unambiguous: an existing task emits ``DSYNC_FOUND:<json>``; a definitively-absent
-# task (the cmdlet's own ObjectNotFound error, caught in the script) emits ``DSYNC_ABSENT``.
-_READ_FOUND_PREFIX = "DSYNC_FOUND:"
-_READ_ABSENT_MARKER = "DSYNC_ABSENT"
-
-# Bounded timeout for the read-back subprocess — a hung PowerShell can never freeze the
-# UI probe; a timeout is classified as UNKNOWN (query failed), never MISSING.
-_READ_TIMEOUT_S = 10
+# In-process COM since plan 0041 Slice 1a (src/scheduler/task_com.py) — the DSYNC_FOUND /
+# DSYNC_ABSENT stdout protocol and the subprocess timeout retired with the PowerShell
+# transport; tri-state classification is HRESULT-keyed at the task_com boundary, and the
+# 10s bound lives at task_com.READ_TIMEOUT_S (same budget, same UNKNOWN-on-timeout rule).
 
 # Honest platform note surfaced when read-back is requested off Windows (Linux/macOS
 # schedule read-back is out of scope — the pure module renders this as UNKNOWN).
 _MSG_NOT_WINDOWS = "Schedule read-back is only available on Windows."
-
-
-def _clean_ps_stderr(text: str) -> str:
-    """Return a clean, human-readable one-liner from PowerShell stderr.
-
-    When ``Write-Error`` (the legacy ``catch``) writes to a redirected stderr,
-    PowerShell 5.1 serializes it as a CLIXML blob — ``#< CLIXML`` followed by an
-    ``<Objs>…</Objs>`` document whose **first** ``<S S="Error">`` node holds the
-    human message and whose **subsequent** ``<S S="Error">`` nodes **echo the
-    failing script** (the ``At line:N``, ``+   <code>``, ``CategoryInfo``,
-    ``FullyQualifiedErrorId`` lines), with literal ``_x000D_`` / ``_x000A_`` for
-    CR / LF. This is defensive: the script now emits plain text via
-    ``[Console]::Error.WriteLine``, but a CLIXML blob can still arrive from a
-    different cmdlet/host, so we decode it here too.
-
-    Security: only the **first** error node — the message line — is returned;
-    the later nodes that echo the script body (which contains the literal
-    ``$env:DSYNC_TASK_PW`` reference, not its value, plus the rest of the
-    program) are **never** returned. Parsing is a bounded regex over the error
-    nodes, not an XML parser fed untrusted input.
-
-    Non-CLIXML text is returned stripped, unchanged.
-    """
-    if _CLIXML_MARKER not in text:
-        return text.strip()
-
-    parts = _CLIXML_ERROR_NODE_RE.findall(text)
-    if not parts:
-        # CLIXML present but no error node we recognize — return a safe,
-        # generic message rather than echo the raw blob (which carries the
-        # script body). Fail loud without leaking.
-        return "PowerShell registration failed (error detail unavailable)."
-
-    # Only the FIRST error node is the message; the rest echo the script body.
-    decoded = parts[0]
-    # CLIXML encodes control chars as _x00NN_ entities; decode + drop the line
-    # breaks (the message node is a single logical line).
-    decoded = decoded.replace("_x000D_", "").replace("_x000A_", "")
-    # Strip the leading positional prefix PowerShell prepends to a piped error
-    # record (e.g. "Register-ScheduledTask : Access is denied." → "Access is
-    # denied."). Only strip when a "<cmd> : " prefix is actually present so a
-    # message that legitimately contains a colon is not truncated.
-    decoded = re.sub(r"^\S.*?\s:\s", "", decoded, count=1).strip()
-    # Defense-in-depth: if the first node still carries a DSYNC_* reference (the
-    # script body collapsed into node 0 — not a shape PS 5.1 emits, but the CLIXML
-    # branch is untrusted), drop it rather than echo it. The password VALUE never
-    # reaches stderr by construction; this guards even the variable name leaking.
-    if "DSYNC_" in decoded:
-        return "PowerShell registration failed (error detail unavailable)."
-    return decoded
 
 
 def current_run_as_user() -> str:
@@ -291,82 +180,6 @@ def is_elevated() -> bool:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
     except Exception:
         return False
-
-
-# The FIXED PowerShell preamble + task-setup body, shared by BOTH the direct
-# registration script and the self-elevated child bootstrap (D5) — single-sourced so
-# the elevated path can never fork a second, drifting copy of the registration logic.
-_PS_PREAMBLE = "$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\n"
-_PS_TASK_SETUP = (
-    "  $act = New-ScheduledTaskAction -Execute $env:DSYNC_EXE "
-    "-Argument $env:DSYNC_ARGS -WorkingDirectory $env:DSYNC_WORKDIR\n"
-    "  $at = [DateTime]::ParseExact($env:DSYNC_RUNTIME,'HH:mm',"
-    "[System.Globalization.CultureInfo]::InvariantCulture)\n"
-    "  $trg = New-ScheduledTaskTrigger -Daily -At $at\n"
-    "  $set = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew "
-    "-ExecutionTimeLimit (New-TimeSpan -Hours 2) "
-    "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
-    "-StartWhenAvailable:$false\n"
-)
-
-
-def _register_body(has_password: bool) -> str:
-    """The FIXED, inside-``try`` registration body (task setup + principal + register).
-
-    References ONLY ``$env:DSYNC_*`` — never interpolates a dynamic value into its own
-    text, so there is no PowerShell string-injection surface and it never echoes
-    ``$env:DSYNC_TASK_PW`` (it is passed to ``-Password`` but never written out).
-
-    Two variants:
-
-      - *has_password* True → unattended: an **explicit**
-        ``New-ScheduledTaskPrincipal -LogonType Password`` forces the
-        stored-credential (``TASK_LOGON_PASSWORD``) logon, then
-        ``Register-ScheduledTask -InputObject $task -User -Password`` stores it.
-        ``-RunLevel`` is chosen by ``$env:DSYNC_RUNLEVEL`` (``Highest`` / ``Limited``).
-      - *has_password* False → logged-on-only: ``-LogonType Interactive
-        -RunLevel Limited`` and ``Register-ScheduledTask`` with no
-        ``-User/-Password`` (interactive-token task; never ``S4U``).
-    """
-    if has_password:
-        principal_and_register = (
-            "  $prn = New-ScheduledTaskPrincipal -UserId $env:DSYNC_USER "
-            "-LogonType Password -RunLevel $env:DSYNC_RUNLEVEL\n"
-            "  $task = New-ScheduledTask -Action $act -Trigger $trg "
-            "-Settings $set -Principal $prn\n"
-            "  Register-ScheduledTask -TaskName $env:DSYNC_TASKNAME "
-            "-InputObject $task -User $env:DSYNC_USER "
-            "-Password $env:DSYNC_TASK_PW -Force | Out-Null\n"
-        )
-    else:
-        principal_and_register = (
-            "  $prn = New-ScheduledTaskPrincipal -UserId $env:DSYNC_USER "
-            "-LogonType Interactive -RunLevel Limited\n"
-            "  $task = New-ScheduledTask -Action $act -Trigger $trg "
-            "-Settings $set -Principal $prn\n"
-            "  Register-ScheduledTask -TaskName $env:DSYNC_TASKNAME "
-            "-InputObject $task -Force | Out-Null\n"
-        )
-    return _PS_TASK_SETUP + principal_and_register
-
-
-def _build_register_script(*, has_password: bool) -> str:
-    """Return the FIXED direct-registration script (used when already elevated / no password).
-
-    The run time is parsed with ``InvariantCulture`` so a non-en-US district locale
-    cannot break ``'HH:mm'`` parsing. ``-StartWhenAvailable:$false`` preserves the
-    no-catch-up-run guarantee; the battery flags / ``PT2H`` execution time limit /
-    ``IgnoreNew`` multiple-instances policy preserve parity with the prior XML
-    registration. ``$ProgressPreference = 'SilentlyContinue'`` suppresses the cmdlets'
-    progress stream so it cannot pollute the captured stderr the caller surfaces.
-
-    The catch writes the bare exception message to stderr via ``[Console]::Error.WriteLine``
-    — NOT ``Write-Error`` (which PowerShell CLIXML-serializes on a redirected stderr,
-    burying the human message under the echoed script + XML noise). ``exit 1`` keeps
-    the failure loud.
-    """
-    tail = "  Write-Output 'DSYNC_OK'\n} catch {\n  [Console]::Error.WriteLine($_.Exception.Message)\n  exit 1\n}\n"
-    return _PS_PREAMBLE + "try {\n" + _register_body(has_password) + tail
 
 
 def _build_action_args(
@@ -430,42 +243,6 @@ def _build_action_args(
     return " ".join(arg_parts), working_dir
 
 
-def _build_env(
-    *,
-    task_name: str,
-    user: str,
-    run_time: str,
-    exe_path: Path,
-    arguments: str,
-    working_dir: Path,
-    run_as_password: str | None,
-    run_highest: bool,
-) -> dict[str, str]:
-    """Build the child process environment for the PowerShell registration.
-
-    Returns a **fresh copy** of ``os.environ`` with the ``DSYNC_*`` keys added —
-    ``os.environ`` itself is never mutated, so the password never enters the
-    parent process environment. ``DSYNC_RUNTIME`` carries the **raw** ``"HH:mm"``
-    string (``validate_run_time`` returns a ``(hour, minute)`` tuple — the
-    string is what the PowerShell ``ParseExact`` expects, not the tuple).
-    ``DSYNC_TASK_PW`` is present only on the password path; ``DSYNC_RUNLEVEL``
-    is only meaningful there (the no-password script hardcodes ``Limited``).
-    """
-    env: dict[str, str] = {
-        **os.environ,
-        "DSYNC_TASKNAME": task_name,
-        "DSYNC_USER": user,
-        "DSYNC_RUNTIME": run_time,
-        "DSYNC_EXE": str(exe_path),
-        "DSYNC_ARGS": arguments,
-        "DSYNC_WORKDIR": str(working_dir),
-    }
-    if run_as_password:
-        env["DSYNC_TASK_PW"] = run_as_password
-        env["DSYNC_RUNLEVEL"] = "Highest" if run_highest else "Limited"
-    return env
-
-
 def register_task(
     task_name: str,
     exe_path: Path,
@@ -479,17 +256,13 @@ def register_task(
     run_as_password: str | None = None,
     run_highest: bool = True,
 ) -> tuple[bool, str]:
-    """Create or replace a Windows scheduled task via PowerShell.
+    """Create or replace a Windows scheduled task — in-process COM (plan 0041 S1b).
 
-    A fixed PowerShell script (the ``ScheduledTasks`` module) is passed to
-    ``powershell.exe -EncodedCommand`` (UTF-16LE-base64); all dynamic values —
-    including the password — are passed via the **child process environment**,
-    never on the command line and never interpolated into the script text. No
-    script file touches disk. ``-EncodedCommand`` (not ``-Command -``/stdin) is
-    used because, observed live on this dev box (Win11, PS 5.1), a multi-line
-    ``try/catch`` read line-by-line from stdin silently no-ops (exit 0, registers
-    nothing); ``-EncodedCommand`` parses the script as one unit so the fail-loud
-    ``try/catch`` works.
+    The retired transport handed a fixed PowerShell script to ``powershell.exe
+    -EncodedCommand``; registration now drives ``task_com.register_task_definition``
+    directly (the SAME function the elevated child runs — single source, structurally).
+    The password is an in-process argument to ``RegisterTaskDefinition``: never argv,
+    never any process environment, never logged, never in the returned message.
 
     Args:
         task_name: Name displayed in Task Scheduler (e.g. "DistrictSync_Daily").
@@ -505,27 +278,23 @@ def register_task(
                    password is supplied. Validated via
                    :func:`validate_run_as_user`.
         run_as_password: The ``run_as_user`` account's Windows password. When
-                   provided, the task is registered to run **whether the user
-                   is logged on or not** (explicit ``-LogonType Password``
-                   principal + ``Register-ScheduledTask -User -Password``).
-                   When omitted, the task runs only while the user is logged on
-                   (``-LogonType Interactive``) and no credential is stored —
-                   preserving backward compatibility for existing callers and
-                   dev-mode scheduling. The password is passed only via the
-                   child env var ``DSYNC_TASK_PW``; it is never logged, never on
-                   the command line, and never echoed by the script.
+                   provided, the task is registered to run **whether the user is
+                   logged on or not** (explicit ``TASK_LOGON_PASSWORD`` — never
+                   parameter-set inference, never S4U). When omitted, the task
+                   runs only while the user is logged on
+                   (``TASK_LOGON_INTERACTIVE_TOKEN``) and no credential is stored.
         run_highest: When True and a password is supplied, run with highest
-                   privileges (``-RunLevel Highest``). Ignored without a
-                   password (the logged-on-only path is always ``Limited``).
+                   privileges (``TASK_RUNLEVEL_HIGHEST``). Ignored without a
+                   password (the logged-on-only path is always Limited).
 
     Returns:
-        (success, message). On failure the *message* contains
-        ``"PowerShell not found"`` (no ``powershell.exe``),
-        ``"ScheduledTasks module not available"`` (no ScheduledTasks module),
-        or the raw PowerShell exception text passed through verbatim (so the
-        wizard classifier can match Windows' own "Access is denied" / "The user
-        name or password is incorrect" / logon-right wording). The password
-        value and the ``DSYNC_TASK_PW`` literal never appear in the message.
+        (success, message). Failure messages are the ``task_com`` canonical
+        strings — "Access is denied." / "The user name or password is
+        incorrect." / Windows' own description for unmapped statuses — so the
+        wizard classifier keeps matching exactly what it matched before. A
+        registration that TIMES OUT resolves through :func:`_confirm_registration`
+        (the worker cannot be cancelled and may still complete — a bare "failed"
+        over a task that now exists would be a lie; row 14).
     """
     # Validate all user-supplied values before touching the OS.
     task_name = validate_task_name(task_name)
@@ -542,10 +311,8 @@ def register_task(
 
     # Self-elevation (D5): an unattended (password / RunLevel Highest) registration
     # genuinely requires an elevated caller. When we are NOT already elevated, run the
-    # registration behind ONE normal UAC prompt via the elevation IPC primitive —
-    # replacing the old "quit and re-open as administrator" dead-end — while the app
-    # itself stays non-admin. Already-elevated callers, the no-password logged-on-only
-    # path, and non-Windows hosts keep the direct subprocess path below unchanged.
+    # registration behind ONE normal UAC prompt — the child is DistrictSync itself in
+    # --elevated-apply mode since S1b — while the app itself stays non-admin.
     if has_password and sys.platform == "win32" and not is_elevated():
         assert run_as_password is not None  # has_password == bool(run_as_password)  # nosec B101
         return _register_elevated(
@@ -559,104 +326,77 @@ def register_task(
             run_highest=run_highest,
         )
 
-    script = _build_register_script(has_password=has_password)
-    # PowerShell -EncodedCommand expects UTF-16LE-base64. The script is a fixed
-    # string referencing only $env:DSYNC_* — no dynamic value is ever encoded
-    # into it (those flow via the child env), so the encoded blob carries no
-    # secret and no untrusted input.
-    encoded_script = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    child_env = _build_env(
+    logger.info(f"Registering Windows scheduled task: {task_name} at {run_time}")
+    params = task_com.RegisterParams(
         task_name=task_name,
-        user=user,
-        run_time=run_time,
-        exe_path=exe_path,
+        exe=str(exe_path),
         arguments=arguments,
-        working_dir=working_dir,
-        run_as_password=run_as_password,
+        working_dir=str(working_dir),
+        run_time=run_time,
+        user=user,
+        password=run_as_password,
         run_highest=run_highest,
     )
-
-    logger.info(f"Registering Windows scheduled task: {task_name} at {run_time}")
-
     try:
-        # Inputs validated above; the encoded script is a fixed string referencing
-        # only $env:DSYNC_* (no untrusted-value interpolation); passed as a list
-        # with shell=False so nothing is re-parsed; the password reaches the child
-        # only via env, never argv. powershell.exe is resolved to its ABSOLUTE
-        # System32 path (system_binary) — never a bare name, whose CreateProcess
-        # search order probes the calling exe's dir + the CWD before System32 and
-        # would hand DSYNC_TASK_PW to a planted binary. Safe by construction.
-        result = subprocess.run(  # nosec B603
-            [
-                system_binary("powershell.exe"),
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-EncodedCommand",
-                encoded_script,
-            ],
-            env=child_env,
-            capture_output=True,
-            text=True,
-            creationflags=subprocess_no_window_flags(),  # no console flash in the windowed exe
+        task_com.bounded(
+            lambda: task_com.register_task_definition(params),
+            timeout_s=task_com.REGISTER_TIMEOUT_S,
+            label="register",
         )
-    except FileNotFoundError:
-        # powershell.exe absent from PATH — fail loud, never crash the caller.
-        logger.error(f"Failed to register task '{task_name}': {_MSG_NO_POWERSHELL}")
-        return False, _MSG_NO_POWERSHELL
+    except task_com.BoundedTimeout:
+        # The worker may still complete after the bound — the verdict comes from the
+        # real task, with the hedged elevation-timeout copy (same classifier branch).
+        return _confirm_registration(task_name, on_unconfirmed=_MSG_ELEVATION_TIMEOUT)
+    except ImportError:
+        logger.error(f"Failed to register task '{task_name}': {task_com.MSG_COM_UNAVAILABLE}")
+        return False, task_com.MSG_COM_UNAVAILABLE
+    except task_com.TaskComError as exc:
+        # Canonical, secret-free text (task_com never formats argv/env/password into
+        # messages) — surfaced as-is so the wizard classifier matches its known strings.
+        logger.error(f"Failed to register task '{task_name}': {exc.message}")
+        return False, exc.message
+    except Exception as exc:  # noqa: BLE001 - (ok, message) contract: classify, never propagate
+        logger.warning("Task registration failed unexpectedly: %s", type(exc).__name__)
+        return False, "The schedule operation failed."
 
-    stdout = (result.stdout or "").strip()
-    # _clean_ps_stderr strips any PowerShell CLIXML serialization down to the
-    # human error line BEFORE the marker match below, so canonical markers still
-    # match and the echoed script body (which contains the literal
-    # $env:DSYNC_TASK_PW reference) never reaches the caller. The script's catch
-    # already emits plain text via [Console]::Error.WriteLine; this is the
-    # defensive fallback for any CLIXML arriving from another cmdlet/host.
-    stderr = _clean_ps_stderr(result.stderr or "")
-    success = result.returncode == 0 and "DSYNC_OK" in stdout
-
-    if success:
-        logger.info(f"Task '{task_name}' registered successfully")
-        return True, stdout
-
-    # Map a missing ScheduledTasks module (pre-Win8) to a distinct, actionable
-    # message; otherwise surface the cleaned PowerShell exception text so the
-    # wizard classifier can match Windows' own credential/logon wording.
-    if any(marker in stderr for marker in _CMDLET_MISSING_MARKERS):
-        message = _MSG_NO_MODULE
-    else:
-        message = stderr or stdout or "PowerShell registration failed with no output."
-
-    # stderr is cleaned (de-CLIXML'd) but otherwise surfaced as-is. register_task
-    # never adds the password to the message or logs — the script never echoes
-    # $env:DSYNC_TASK_PW, the value is not in argv, and _clean_ps_stderr drops the
-    # echoed script body; tested on the failure path. (We do not re-scrub
-    # PowerShell's own exception text; the cmdlets are not known to echo the
-    # supplied -Password/-User, but that is not asserted as a guarantee.)
-    logger.error(f"Failed to register task '{task_name}': {message}")
-    return False, message
+    logger.info(f"Task '{task_name}' registered successfully")
+    return True, "Schedule registered."
 
 
 def delete_task(task_name: str) -> tuple[bool, str]:
-    """Remove a scheduled task by name.
+    """Remove a scheduled task by name. Never raises — ``(success, message)``.
 
-    Returns:
-        (success, message)
+    **In-process COM since plan 0041 Slice 1a** (``Folder.DeleteTask``), retiring the
+    last ``schtasks.exe`` call — after which ``schtasks.exe`` left the ``system_binary``
+    allowlist entirely. Two message contracts are LOAD-BEARING and pinned:
+
+    - an already-absent task (``0x80070002``) returns its canonical text "The system
+      cannot find the file specified." — the "cannot find" marker keeps
+      ``schedule_status.interpret_unregister`` idempotent-success-shaped, exactly as the
+      schtasks stderr did;
+    - access denied returns "Access is denied." — the substring the
+      ``WindowsTaskScheduler.delete`` adapter's elevated-retry predicate matches
+      (contract row 13). Mapped by HRESULT, never by locale text.
     """
     task_name = validate_task_name(task_name)
-    # task_name is validated; schtasks.exe is resolved to its ABSOLUTE System32 path
-    # (system_binary) so CreateProcess cannot substitute a binary planted in the calling
-    # exe's directory or the current directory — both probed before System32.
-    result = subprocess.run(  # nosec B603
-        [system_binary("schtasks.exe"), "/Delete", "/F", "/TN", task_name],
-        capture_output=True,
-        text=True,
-        creationflags=subprocess_no_window_flags(),  # no console flash in the windowed exe
-    )
-    success = result.returncode == 0
-    message = (result.stdout + result.stderr).strip()
-    return success, message
+    try:
+        task_com.bounded(
+            lambda: task_com.delete_task_by_name(task_name),
+            timeout_s=task_com.DELETE_TIMEOUT_S,
+            label="delete",
+        )
+    except task_com.BoundedTimeout:
+        # The worker may still complete — resolve the ambiguity by reading back, the
+        # same honesty rule the elevated path has always applied.
+        return _confirm_removal(task_name, on_unconfirmed="The schedule removal timed out.")
+    except ImportError:
+        return False, task_com.MSG_COM_UNAVAILABLE
+    except task_com.TaskComError as exc:
+        return False, exc.message
+    except Exception as exc:  # noqa: BLE001 - (ok, message) contract: classify, don't propagate
+        logger.warning("Schedule delete failed unexpectedly: %s", type(exc).__name__)
+        return False, "The schedule operation failed."
+    return True, "The scheduled task was removed."
 
 
 # --- Per-operation elevation (D5) --------------------------------------------
@@ -667,93 +407,24 @@ def delete_task(task_name: str) -> tuple[bool, str]:
 # env / logs); the elevated child FAILS CLOSED on a cross-SID unprotect. Success is
 # CONFIRMED by reading the real task back (read_schedule) — never assumed from an exit code.
 
-# The FIXED atomic-write helper the elevated child uses to publish its plaintext result
-# ({ok, message}) — temp file + Move-Item so the parent never observes a partial write.
-_PS_WRITE_RESULT_FN = (
-    "function Write-DsyncResult($okv, $msgv) {\n"
-    "  $o = [PSCustomObject]@{ ok = $okv; message = $msgv }\n"
-    "  $enc = New-Object System.Text.UTF8Encoding($false)\n"
-    "  $tmp = $resPath + '.tmp'\n"
-    "  [System.IO.File]::WriteAllText($tmp, ($o | ConvertTo-Json -Compress), $enc)\n"
-    "  Move-Item -LiteralPath $tmp -Destination $resPath -Force\n"
-    "}\n"
-)
 
+def _run_elevated_child(req_path: Path, res_path: Path) -> ElevationOutcome:
+    """Launch OUR OWN exe elevated in ``--elevated-apply`` mode (S1b — no PowerShell child).
 
-def _b64(value: str) -> str:
-    """UTF-8-base64 a string for injection-proof embedding in a FIXED PowerShell script.
+    The child is ``sys.executable``: the frozen DistrictSync.exe in production, the Python
+    interpreter (+ ``-m src.main``) in dev. Its argv carries ONLY the mode flag and the two
+    handshake paths — the payload (password included) rides the DPAPI-sealed request file,
+    exactly as before; the child runs ``src/scheduler/elevated_apply`` (dispatch-first,
+    minimal, fail-closed) which calls the SAME ``task_com`` functions as the direct path.
 
-    Base64 output is ``[A-Za-z0-9+/=]`` only, so a value that could otherwise break the
-    surrounding single-quoted PowerShell literal (a user-profile path with an apostrophe
-    or space, embedded because ShellExecuteEx cannot pass env to the elevated child)
-    can never inject. The handshake PATHS are ours (random names under user_data_dir,
-    not user-controlled); the task name is ``validate_task_name``-checked first — base64
-    is belt-and-suspenders on top of both.
+    Dev-mode note: ``-m src.main`` needs the project root as cwd; ShellExecuteEx inherits
+    the parent's cwd, which IS the project root when developing. The frozen exe (the only
+    shape districts run) has no cwd dependency.
     """
-    return base64.b64encode(value.encode("utf-8")).decode("ascii")
-
-
-def _build_elevated_register_script(*, has_password: bool, req_path: Path, res_path: Path) -> str:
-    """FIXED child bootstrap: DPAPI-unprotect the request → set env → run the SAME register body.
-
-    The request/result paths AND the single-sourced ``elevation.DPAPI_ENTROPY_UTF8`` are all
-    base64-embedded (ShellExecuteEx can't pass env — base64 is uniformly injection-proof). A DPAPI ``Unprotect``
-    failure — the cross-SID / different-admin case — writes the ``DSYNC_DIFFERENT_ACCOUNT``
-    sentinel and exits (**fail closed, CurrentUser scope only, never LocalMachine**). On
-    success it runs ``_register_body`` (single-sourced with the direct path) and writes a
-    plaintext ``{ok, message}`` result — it NEVER writes ``$env:DSYNC_TASK_PW``.
-    """
-    return (
-        _PS_PREAMBLE
-        + "Add-Type -AssemblyName System.Security\n"
-        + f"$reqPath = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{_b64(str(req_path))}'))\n"
-        + f"$resPath = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{_b64(str(res_path))}'))\n"
-        + f"$entropy = [System.Convert]::FromBase64String('{_b64(elevation.DPAPI_ENTROPY_UTF8)}')\n"
-        + _PS_WRITE_RESULT_FN
-        + "try {\n"
-        + "  $blob = [System.IO.File]::ReadAllBytes($reqPath)\n"
-        + "  $plain = [System.Security.Cryptography.ProtectedData]::Unprotect("
-        "$blob, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)\n"
-        + "  $payload = [System.Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json\n"
-        + "} catch {\n"
-        + f"  Write-DsyncResult $false '{_DIFFERENT_ACCOUNT_SENTINEL}'\n"
-        + "  exit 0\n"
-        + "}\n"
-        + "$env:DSYNC_TASKNAME = $payload.DSYNC_TASKNAME\n"
-        + "$env:DSYNC_USER = $payload.DSYNC_USER\n"
-        + "$env:DSYNC_RUNTIME = $payload.DSYNC_RUNTIME\n"
-        + "$env:DSYNC_EXE = $payload.DSYNC_EXE\n"
-        + "$env:DSYNC_ARGS = $payload.DSYNC_ARGS\n"
-        + "$env:DSYNC_WORKDIR = $payload.DSYNC_WORKDIR\n"
-        + "$env:DSYNC_TASK_PW = $payload.DSYNC_TASK_PW\n"
-        + "$env:DSYNC_RUNLEVEL = $payload.DSYNC_RUNLEVEL\n"
-        + "try {\n"
-        + _register_body(has_password)
-        + "  Write-DsyncResult $true 'Registered.'\n"
-        + "} catch {\n"
-        + "  Write-DsyncResult $false $_.Exception.Message\n"
-        + "}\n"
-    )
-
-
-def _build_elevated_delete_script(*, task_name: str, res_path: Path) -> str:
-    """FIXED child bootstrap for an elevated delete — no password / DPAPI (a delete carries no secret).
-
-    The validated task name is base64-embedded (injection-proof) and removed via
-    ``Unregister-ScheduledTask``; a plaintext ``{ok, message}`` result is written atomically.
-    """
-    return (
-        _PS_PREAMBLE
-        + f"$resPath = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{_b64(str(res_path))}'))\n"
-        + f"$taskName = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{_b64(task_name)}'))\n"
-        + _PS_WRITE_RESULT_FN
-        + "try {\n"
-        + "  Unregister-ScheduledTask -TaskName $taskName -Confirm:$false | Out-Null\n"
-        + "  Write-DsyncResult $true 'Removed.'\n"
-        + "} catch {\n"
-        + "  Write-DsyncResult $false $_.Exception.Message\n"
-        + "}\n"
-    )
+    exe = Path(sys.executable)
+    prefix = "-m src.main " if exe.name.lower().startswith("python") else ""
+    params = f'{prefix}--elevated-apply "{req_path}" "{res_path}"'
+    return elevation.run_elevated(str(exe), params, timeout_s=_ELEV_TIMEOUT_S)
 
 
 def _map_pre_consent_failure(outcome: ElevationOutcome) -> str | None:
@@ -771,14 +442,15 @@ def _map_pre_consent_failure(outcome: ElevationOutcome) -> str | None:
 
 
 def _sanitize_child_message(message: str) -> str:
-    """De-CLIXML + ``DSYNC_``-strip a child result message before it can surface.
+    """``DSYNC_``-strip a child result message before it can surface (defense-in-depth).
 
-    Mirrors the register_task stderr discipline: ``_clean_ps_stderr`` strips any CLIXML,
-    then any residual ``DSYNC_`` token (which a normal PowerShell exception never carries)
-    collapses to a safe generic line rather than risk echoing an env-var name. The
-    password VALUE never reaches the result by construction — this is defense-in-depth.
+    The child's messages are ``task_com`` canonicals or the fixed refusal strings — none
+    carries a ``DSYNC_`` token, so one appearing means something unexpected leaked into
+    the result and it collapses to a safe generic line rather than surface. (The CLIXML
+    decoding step retired with the PowerShell child at S1b.) The password VALUE never
+    reaches the result by construction; this guards even a sentinel/name leaking.
     """
-    cleaned = _clean_ps_stderr(message or "")
+    cleaned = (message or "").strip()
     if "DSYNC_" in cleaned:
         return "The schedule change failed (error detail unavailable)."
     return cleaned or "The schedule change failed with no detail."
@@ -840,19 +512,23 @@ def _register_elevated(
     """Register the unattended task behind ONE UAC prompt; confirm via read-back.
 
     The password rides ONLY the DPAPI-sealed request file — never argv (ShellExecuteEx
-    gets only the encoded bootstrap + base64 paths), never the parent env, never a log.
-    Success requires BOTH the child's ``ok`` AND a positive ``read_schedule`` confirmation;
-    the handshake files are deleted in ``finally``.
+    gets only ``--elevated-apply`` + the two handshake paths), never any process env,
+    never a log. The child is DistrictSync ITSELF (S1b — ``src/scheduler/elevated_apply``),
+    running the SAME ``task_com.register_task_definition`` the direct path calls: the
+    single-source property is structural now, not a shared script string. Success requires
+    BOTH the child's ``ok`` AND a positive ``read_schedule`` confirmation; the handshake
+    files are deleted in ``finally``.
     """
     payload: dict[str, object] = {
-        "DSYNC_TASKNAME": task_name,
-        "DSYNC_USER": user,
-        "DSYNC_RUNTIME": run_time,
-        "DSYNC_EXE": str(exe_path),
-        "DSYNC_ARGS": arguments,
-        "DSYNC_WORKDIR": str(working_dir),
-        "DSYNC_TASK_PW": run_as_password,
-        "DSYNC_RUNLEVEL": "Highest" if run_highest else "Limited",
+        "op": "register",
+        "task_name": task_name,
+        "user": user,
+        "run_time": run_time,
+        "exe": str(exe_path),
+        "arguments": arguments,
+        "working_dir": str(working_dir),
+        "password": run_as_password,
+        "run_highest": run_highest,
     }
     logger.info("Registering scheduled task '%s' via one-time elevation (UAC).", task_name)
     # req_path/res_path are None until write_request succeeds so the finally cleans the
@@ -863,9 +539,7 @@ def _register_elevated(
     try:
         req_path = elevation.write_request(payload)
         res_path = req_path.with_suffix(".res")
-        script = _build_elevated_register_script(has_password=True, req_path=req_path, res_path=res_path)
-        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-        outcome = elevation.run_elevated_powershell(encoded, timeout_s=_ELEV_TIMEOUT_S)
+        outcome = _run_elevated_child(req_path, res_path)
 
         fail = _map_pre_consent_failure(outcome)
         if fail is not None:
@@ -894,21 +568,22 @@ def _register_elevated(
 def delete_task_elevated(task_name: str) -> tuple[bool, str]:
     """Remove a scheduled task behind ONE UAC prompt, CONFIRMED against the real task.
 
-    Used when the plain ``schtasks`` :func:`delete_task` fails with access-denied because
-    the task was registered with ``RunLevel Highest``. No password / DPAPI is involved (a
-    delete carries no secret); the validated task name is base64-embedded (injection-proof)
-    in a FIXED bootstrap. Removal is only reported as success when ``read_schedule`` confirms
-    the task is gone (``found=False``) — the child's self-reported ``ok`` is never trusted on
-    its own (security F4); an unconfirmed removal returns ``_MSG_ELEVATION_REMOVE_UNCONFIRMED``.
+    Used when the plain COM :func:`delete_task` fails with access-denied because
+    the task was registered with ``RunLevel Highest``. The delete rides the SAME
+    ``--elevated-apply`` child + DPAPI request as registration (uniform handshake; no
+    secret in this payload, but sealing it costs nothing and keeps ONE request format).
+    Removal is only reported as success when ``read_schedule`` confirms the task is gone
+    (``found=False``) — the child's self-reported ``ok`` is never trusted on its own
+    (security F4); an unconfirmed removal returns ``_MSG_ELEVATION_REMOVE_UNCONFIRMED``.
     """
     task_name = validate_task_name(task_name)
+    req_path: Path | None = None
     res_path: Path | None = None
     try:
-        res_path = elevation.new_result_path()
-        script = _build_elevated_delete_script(task_name=task_name, res_path=res_path)
-        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        req_path = elevation.write_request({"op": "delete", "task_name": task_name})
+        res_path = req_path.with_suffix(".res")
         logger.info("Removing scheduled task '%s' via one-time elevation (UAC).", task_name)
-        outcome = elevation.run_elevated_powershell(encoded, timeout_s=_ELEV_TIMEOUT_S)
+        outcome = _run_elevated_child(req_path, res_path)
 
         fail = _map_pre_consent_failure(outcome)
         if fail is not None:
@@ -925,7 +600,7 @@ def delete_task_elevated(task_name: str) -> tuple[bool, str]:
         # The child reported ok — CONFIRM the task is actually gone before claiming removal.
         return _confirm_removal(task_name, on_unconfirmed=_MSG_ELEVATION_REMOVE_UNCONFIRMED)
     finally:
-        _cleanup_handshake(res_path)
+        _cleanup_handshake(req_path, res_path)
 
 
 @dataclass(frozen=True)
@@ -959,62 +634,22 @@ class ScheduleReadback:
     error: str | None = None
 
 
-def _build_read_script() -> str:
-    """Return the FIXED PowerShell read-back script (same hardening as registration).
-
-    A constant string referencing ONLY ``$env:DSYNC_TASKNAME`` — no dynamic value is
-    ever interpolated into the text, so there is no PowerShell string-injection surface.
-    ``Get-ScheduledTask`` supplies existence + the action's ``Execute`` path;
-    ``Get-ScheduledTaskInfo`` supplies ``NextRunTime`` / ``LastRunTime`` /
-    ``LastTaskResult``. Datetimes are emitted with ``InvariantCulture`` ISO round-trip
-    (``'o'``) so a non-en-US locale can't corrupt the parse. The never-run ``LastRunTime``
-    sentinel (year <= 1900) is nulled so it can't masquerade as a real prior run. The
-    ``catch`` distinguishes the cmdlet's ObjectNotFound (→ ``DSYNC_ABSENT``, a definitive
-    "not scheduled") from any other failure (→ plain-text stderr + ``exit 1`` → the caller
-    classifies UNKNOWN). ``$ProgressPreference`` is silenced so it can't pollute stderr.
-    """
-    return (
-        "$ErrorActionPreference = 'Stop'\n"
-        "$ProgressPreference = 'SilentlyContinue'\n"
-        "try {\n"
-        "  $task = Get-ScheduledTask -TaskName $env:DSYNC_TASKNAME\n"
-        "  $info = Get-ScheduledTaskInfo -TaskName $env:DSYNC_TASKNAME\n"
-        "  $inv = [System.Globalization.CultureInfo]::InvariantCulture\n"
-        "  $exec = $null\n"
-        "  if ($task.Actions -and @($task.Actions).Count -gt 0) { $exec = @($task.Actions)[0].Execute }\n"
-        "  $next = $null\n"
-        "  if ($info.NextRunTime) { $next = $info.NextRunTime.ToString('o', $inv) }\n"
-        "  $last = $null\n"
-        "  if ($info.LastRunTime -and $info.LastRunTime.Year -gt 1900) "
-        "{ $last = $info.LastRunTime.ToString('o', $inv) }\n"
-        "  $obj = [PSCustomObject]@{ found = $true; next_run = $next; last_run = $last; "
-        "last_result = $info.LastTaskResult; action_path = $exec }\n"
-        "  Write-Output ('DSYNC_FOUND:' + ($obj | ConvertTo-Json -Compress))\n"
-        "} catch {\n"
-        "  if ($_.CategoryInfo.Category -eq 'ObjectNotFound' -or "
-        "$_.FullyQualifiedErrorId -like 'CmdletizationQuery_NotFound*') {\n"
-        "    Write-Output 'DSYNC_ABSENT'\n"
-        "    exit 0\n"
-        "  }\n"
-        "  [Console]::Error.WriteLine($_.Exception.Message)\n"
-        "  exit 1\n"
-        "}\n"
-    )
-
-
 def read_schedule(task_name: str) -> ScheduleReadback:
     """Read the real Windows scheduled task, tri-state (D4). Never raises.
 
-    Runs the fixed :func:`_build_read_script` via ``powershell.exe -EncodedCommand``
-    (UTF-16LE-base64), passing only the validated task name through the child env
-    (``DSYNC_TASKNAME``) — never interpolated into the script, never on argv. The
-    subprocess is bounded by :data:`_READ_TIMEOUT_S`.
+    **In-process COM since plan 0041 Slice 1a** — no ``powershell.exe`` child, no
+    ``-EncodedCommand``, no console-flash risk: this probe fires on nearly every nav
+    click, which made the retired subprocess the product's highest-frequency AV surface.
+    The work runs on a bounded daemon worker (``task_com.bounded``, same 10s budget the
+    subprocess had) with its own COM apartment.
 
-    Classification:
-      - stdout ``DSYNC_ABSENT`` (rc 0) → ``found=False`` (definitively not scheduled).
-      - stdout ``DSYNC_FOUND:<json>`` (rc 0) → ``found=True`` + parsed fields.
-      - PowerShell missing / timeout / any other non-zero exit (access denied, no
-        ScheduledTasks module, unparseable output) → ``found=None`` (UNKNOWN).
+    Classification (HRESULT-keyed — never Windows' locale-dependent message text):
+      - the task reads back → ``found=True`` + facts (invariant-ISO datetimes, the
+        never-run 1899-epoch nulled, ``LastTaskResult`` unsigned).
+      - ``0x80070002`` (the definitive not-found; unwrapped from ``excepinfo`` — the
+        outer ``hresult`` is just ``DISP_E_EXCEPTION``) → ``found=False``.
+      - access denied, RPC failure, COM init failure, a timed-out worker, pywin32
+        missing from the build → ``found=None`` (UNKNOWN, never "absent").
       - non-Windows host → ``found=None`` with the platform note.
 
     Args:
@@ -1030,88 +665,30 @@ def read_schedule(task_name: str) -> ScheduleReadback:
     except ValueError:
         return ScheduleReadback(found=None, error="The scheduled task name is not valid.")
 
-    script = _build_read_script()
-    # Fixed script referencing only $env:DSYNC_TASKNAME — the encoded blob carries no
-    # secret and no untrusted interpolation (identical hardening to register_task).
-    encoded_script = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    child_env = {**os.environ, "DSYNC_TASKNAME": task_name}
-
     try:
-        # Inputs validated; fixed encoded script; list args + shell=False; read-only
-        # cmdlets. powershell.exe is resolved to its ABSOLUTE System32 path
-        # (system_binary) — this probe fires on every nav click, so a bare name would
-        # give a planted binary repeated execution under the interactive user.
-        result = subprocess.run(  # nosec B603
-            [
-                system_binary("powershell.exe"),
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-EncodedCommand",
-                encoded_script,
-            ],
-            env=child_env,
-            capture_output=True,
-            text=True,
-            timeout=_READ_TIMEOUT_S,
-            creationflags=subprocess_no_window_flags(),  # THE nav-click flasher — no console in the windowed exe
+        facts = task_com.bounded(
+            lambda: task_com.read_task(task_name),
+            timeout_s=task_com.READ_TIMEOUT_S,
+            label="read",
         )
-    except FileNotFoundError:
-        # No powershell.exe on PATH — the query couldn't run → UNKNOWN, never "absent".
-        return ScheduleReadback(found=None, error=_MSG_NO_POWERSHELL)
-    except subprocess.TimeoutExpired:
+    except task_com.BoundedTimeout:
         return ScheduleReadback(found=None, error="The schedule query timed out.")
+    except ImportError:
+        # pywin32 missing (a frozen build that failed to bundle it) → the query could
+        # not run → UNKNOWN, never "absent" (contract row 10).
+        return ScheduleReadback(found=None, error=task_com.MSG_COM_UNAVAILABLE)
+    except task_com.TaskComError as exc:
+        if exc.scode == task_com.HR_NOT_FOUND:
+            return ScheduleReadback(found=False)
+        return ScheduleReadback(found=None, error=exc.message)
+    except Exception as exc:  # noqa: BLE001 - the never-raises probe contract: classify, don't propagate
+        logger.warning("Schedule read-back failed unexpectedly: %s", type(exc).__name__)
+        return ScheduleReadback(found=None, error="The schedule query failed.")
 
-    stdout = (result.stdout or "").strip()
-    stderr = _clean_ps_stderr(result.stderr or "")
-
-    if result.returncode == 0 and _READ_ABSENT_MARKER in stdout:
-        return ScheduleReadback(found=False)
-    if result.returncode == 0 and _READ_FOUND_PREFIX in stdout:
-        return _parse_readback(stdout, stderr)
-
-    # Anything else — a non-zero exit (access denied, missing ScheduledTasks module),
-    # empty output, or an unexpected shape — is a FAILED query, not an absent task.
-    return ScheduleReadback(found=None, error=stderr or "The schedule query failed.")
-
-
-def _parse_readback(stdout: str, stderr: str) -> ScheduleReadback:
-    """Parse the ``DSYNC_FOUND:<json>`` success line into a ``ScheduleReadback``.
-
-    A malformed/non-dict payload degrades to UNKNOWN (``found=None``) rather than
-    asserting a shape we couldn't read — total, never raises.
-    """
-    line = next((ln for ln in stdout.splitlines() if ln.startswith(_READ_FOUND_PREFIX)), "")
-    payload = line[len(_READ_FOUND_PREFIX) :]
-    try:
-        data = json.loads(payload)
-    except (json.JSONDecodeError, ValueError):
-        return ScheduleReadback(found=None, error="Could not parse the schedule query result.")
-    if not isinstance(data, dict):
-        return ScheduleReadback(found=None, error="Could not parse the schedule query result.")
     return ScheduleReadback(
         found=True,
-        next_run=_opt_str_field(data.get("next_run")),
-        last_run=_opt_str_field(data.get("last_run")),
-        last_result=_opt_int_field(data.get("last_result")),
-        action_path=_opt_str_field(data.get("action_path")),
+        next_run=facts.next_run,
+        last_run=facts.last_run,
+        last_result=facts.last_result,
+        action_path=facts.action_path,
     )
-
-
-def _opt_str_field(value: object) -> str | None:
-    """A nullable text field from the JSON payload: blank/None → None; else stripped str."""
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _opt_int_field(value: object) -> int | None:
-    """A nullable int field (``LastTaskResult``): None / non-numeric → None."""
-    if not isinstance(value, (int, float, str)):
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None

@@ -1,29 +1,24 @@
-"""Tests for the Windows scheduler run-as / credential-handling behaviour.
+"""The Windows scheduler's credential handling — COM boundary (plan 0041 S1b).
 
-Covers the unattended-SFTP-schedule hardening against the PowerShell
-``Register-ScheduledTask`` registration model:
-  - the run-as password is passed to PowerShell ONLY via the child process
-    environment (``DSYNC_TASK_PW``) — never on argv, never in the (decoded)
-    script body, never logged, and never injected by ``register_task`` into the
-    message returned to the caller. NOTE: PowerShell's own error text is passed
-    through **unscrubbed** — the leak tests prove ``register_task`` does not
-    inject the secret (it never logs the child env / script and the value is not
-    in argv), NOT that PowerShell's exception text can never carry it.
-  - the child env is a FRESH copy of ``os.environ`` (``os.environ`` is never
-    mutated; ``DSYNC_TASK_PW`` does not leak into the parent process)
-  - password path → explicit ``-LogonType Password`` principal + ``Highest`` /
-    ``Limited`` run level; no-password path → ``Interactive`` / ``Limited``
-    (never ``S4U``), and ``run_highest`` stays ignored without a password
-  - current_run_as_user() resolution + fallback
-  - validate_run_as_user() accepts DOMAIN\\user / user, rejects bad input
+The unattended (stored-password) path's hygiene contract, re-pinned against the
+in-process transport that replaced ``powershell.exe -EncodedCommand``:
 
-The script is handed to ``powershell.exe -EncodedCommand`` (UTF-16LE-base64),
-so the "script body" is decoded from the argv blob rather than read from stdin.
+  - the password reaches Windows ONLY as the in-process argument to
+    ``Folder.RegisterTaskDefinition`` (via ``task_com.RegisterParams``) — there is no
+    child process, so "never on argv, never in a child env" is now STRUCTURAL; what
+    these tests pin is the remaining escape routes: ``os.environ`` stays untouched,
+    ``repr(params)`` hides the password (``repr=False``), and no log record on either
+    the success or failure path carries the value;
+  - password path → explicit ``TASK_LOGON_PASSWORD`` + Highest/Limited by
+    ``run_highest``; no-password path → ``TASK_LOGON_INTERACTIVE_TOKEN`` + Limited
+    (``run_highest`` ignored) — and the S4U logon value (2) is never passed anywhere;
+  - ``current_run_as_user()`` resolution + fallback and ``validate_run_as_user()``
+    are transport-independent and survive verbatim below.
 
-All subprocess calls are mocked — no OS scheduler interaction needed.
+The COM seam is ``task_com.apply_definition``'s (service, folder) pair — faked with
+MagicMocks, so these run identically on Windows dev hosts and Linux CI (no pywin32).
 """
 
-import base64
 import logging
 import os
 from pathlib import Path
@@ -31,357 +26,302 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.scheduler import task_com
+from src.scheduler.task_com import RegisterParams, apply_definition
+
 
 @pytest.fixture(autouse=True)
 def _already_elevated():
-    """Pin these run-as tests to the DIRECT (already-elevated) registration path.
-
-    Plan 0029 D5 added per-operation self-elevation: an unattended (password) register
-    from a NON-elevated process now runs behind a UAC prompt via ``ShellExecuteEx``
-    instead of the direct ``subprocess.run``. This whole file asserts the direct
-    ``Register-ScheduledTask`` mechanics (env/script/principal), which is exactly the
-    already-elevated (or in-elevated-child) path — so force ``is_elevated() -> True`` so
-    the branch is the one under test, on any host (Windows dev or Linux CI).
-    """
+    """Pin these tests to the DIRECT registration path (already-elevated), on any host."""
     with patch("src.scheduler.windows.is_elevated", return_value=True):
         yield
 
 
-def _argv(mock_run) -> list[str]:
-    return mock_run.call_args[0][0]
+def _fake_com():
+    """A (service, folder) MagicMock pair shaped like the live Task Scheduler objects."""
+    service = MagicMock(name="Schedule.Service")
+    folder = MagicMock(name="RootFolder")
+    return service, folder
 
 
-def _ps_script(mock_run) -> str:
-    """The PowerShell script, decoded from the ``-EncodedCommand`` argv value."""
-    argv = _argv(mock_run)
-    encoded = argv[argv.index("-EncodedCommand") + 1]
-    return base64.b64decode(encoded).decode("utf-16-le")
+def _params(password="s3cret!", run_highest=True, user="CORP\\jane"):
+    return RegisterParams(
+        task_name="DistrictSync_Daily",
+        exe=r"C:\DistrictSync\DistrictSync.exe",
+        arguments="--sis myedbc --source scheduled",
+        working_dir=r"C:\DistrictSync",
+        run_time="03:00",
+        user=user,
+        password=password,
+        run_highest=run_highest,
+    )
 
 
-def _child_env(mock_run) -> dict:
-    return mock_run.call_args[1]["env"]
+def _register_call(folder):
+    assert folder.RegisterTaskDefinition.call_count == 1
+    return folder.RegisterTaskDefinition.call_args[0]
 
 
-# -----------------------------------------------------------------------
-# register_task with a run-as password (unattended path)
-# -----------------------------------------------------------------------
+class TestPasswordReachesOnlyTheComArgument:
+    def test_password_is_the_fifth_register_argument(self):
+        service, folder = _fake_com()
+        apply_definition(service, folder, _params())
+        name, _definition, flags, user, password, logon = _register_call(folder)
+        assert name == "DistrictSync_Daily"
+        assert flags == task_com.TASK_CREATE_OR_UPDATE
+        assert user == "CORP\\jane"
+        assert password == "s3cret!"
+        assert logon == task_com.TASK_LOGON_PASSWORD
+
+    def test_os_environ_is_never_touched(self):
+        """The retired transport built a child env; nothing may mutate the parent's now."""
+        service, folder = _fake_com()
+        before = dict(os.environ)
+        apply_definition(service, folder, _params())
+        assert dict(os.environ) == before
+        assert not any("DSYNC" in k for k in os.environ)
+
+    def test_params_repr_hides_the_password(self):
+        """``repr=False`` is load-bearing: a default dataclass repr would hand the
+        password to any log/f-string that formats the params object."""
+        rendered = repr(_params(password="uniq-XYZZY-pw"))
+        assert "uniq-XYZZY-pw" not in rendered
+        assert "RegisterParams" in rendered
+
+    def test_no_password_registers_with_none_credential(self):
+        service, folder = _fake_com()
+        apply_definition(service, folder, _params(password=None))
+        _name, _d, _flags, _user, password, logon = _register_call(folder)
+        assert password is None
+        assert logon == task_com.TASK_LOGON_INTERACTIVE_TOKEN
 
 
-class TestRegisterTaskRunAs:
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_password_in_env_not_argv_or_script(self, mock_run):
-        """The password reaches PowerShell only via DSYNC_TASK_PW in the child env."""
+class TestLogonTypeMatrix:
+    def test_password_highest(self):
+        service, folder = _fake_com()
+        apply_definition(service, folder, _params(run_highest=True))
+        definition = folder.RegisterTaskDefinition.call_args[0][1]
+        assert definition.Principal.RunLevel == task_com.TASK_RUNLEVEL_HIGHEST
+
+    def test_password_limited(self):
+        service, folder = _fake_com()
+        apply_definition(service, folder, _params(run_highest=False))
+        definition = folder.RegisterTaskDefinition.call_args[0][1]
+        assert definition.Principal.RunLevel == task_com.TASK_RUNLEVEL_LUA
+
+    def test_run_highest_ignored_without_password(self):
+        """run_highest=True + no password must still register Limited (today's semantics)."""
+        service, folder = _fake_com()
+        apply_definition(service, folder, _params(password=None, run_highest=True))
+        definition = folder.RegisterTaskDefinition.call_args[0][1]
+        assert definition.Principal.RunLevel == task_com.TASK_RUNLEVEL_LUA
+        assert folder.RegisterTaskDefinition.call_args[0][5] == task_com.TASK_LOGON_INTERACTIVE_TOKEN
+
+    def test_s4u_is_unrepresentable(self):
+        """The S4U logon type (2) is not defined in task_com and never passed: it runs
+        logged-off with NO network token, silently breaking the SFTP egress — the exact
+        2026-06-25 regression class. Both halves pinned: no constant, no call value."""
+        assert not hasattr(task_com, "TASK_LOGON_S4U")
+        for pw, highest in ((None, True), ("pw", True), ("pw", False)):
+            service, folder = _fake_com()
+            apply_definition(service, folder, _params(password=pw, run_highest=highest))
+            assert folder.RegisterTaskDefinition.call_args[0][5] != 2
+
+
+class TestSettingsQuintetAndShape:
+    """Rows 1, 4, 11: COM defaults differ on ALL FIVE settings — each must be explicit."""
+
+    def test_all_five_settings_are_explicit(self):
+        service, folder = _fake_com()
+        apply_definition(service, folder, _params())
+        settings = folder.RegisterTaskDefinition.call_args[0][1].Settings
+        assert settings.StartWhenAvailable is False  # no catch-up run (2026-06-15)
+        assert settings.MultipleInstances == task_com.TASK_INSTANCES_IGNORE_NEW
+        assert settings.ExecutionTimeLimit == "PT2H"  # COM default is PT72H
+        assert settings.DisallowStartIfOnBatteries is False  # battery operation enabled
+        assert settings.StopIfGoingOnBatteries is False
+
+    def test_trigger_is_daily_at_the_fixed_past_boundary(self):
+        """Row 4: an invariant ISO boundary WE compose — deterministic + catch-up-inert."""
+        service, folder = _fake_com()
+        apply_definition(service, folder, _params())
+        definition = folder.RegisterTaskDefinition.call_args[0][1]
+        definition.Triggers.Create.assert_called_once_with(task_com.TASK_TRIGGER_DAILY)
+        trigger = definition.Triggers.Create.return_value
+        assert trigger.StartBoundary == "2024-01-01T03:00:00"
+        assert trigger.DaysInterval == 1
+
+    def test_action_carries_exe_args_workdir(self):
+        """Row 11: Execute/Arguments/WorkingDirectory — the read-back's action_path source."""
+        service, folder = _fake_com()
+        apply_definition(service, folder, _params())
+        definition = folder.RegisterTaskDefinition.call_args[0][1]
+        definition.Actions.Create.assert_called_once_with(task_com.TASK_ACTION_EXEC)
+        action = definition.Actions.Create.return_value
+        assert action.Path == r"C:\DistrictSync\DistrictSync.exe"
+        assert action.Arguments == "--sis myedbc --source scheduled"
+        assert action.WorkingDirectory == r"C:\DistrictSync"
+
+
+class TestRegisterTaskOrchestration:
+    """register_task's direct path over a mocked task_com boundary."""
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_success_returns_registered(self, mock_bounded):
         from src.scheduler.windows import register_task
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-        secret = "s3cr3t!"
-
-        ok, _ = register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-            run_as_user="CORP\\jane",
-            run_as_password=secret,
-        )
-
-        assert ok is True
-        # Password is nowhere in argv (incl. the base64 -EncodedCommand blob).
-        assert secret not in " ".join(_argv(mock_run))
-        # The decoded script references the env var but never the literal password.
-        script = _ps_script(mock_run)
-        assert "$env:DSYNC_TASK_PW" in script
-        assert secret not in script
-        # The child env carries the password and the resolved user.
-        env = _child_env(mock_run)
-        assert env["DSYNC_TASK_PW"] == secret
-        assert env["DSYNC_USER"] == "CORP\\jane"
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_password_bearing_child_is_the_absolute_system32_powershell(self, mock_run, monkeypatch):
-        """The process that RECEIVES the password in its env is pinned by absolute path.
-
-        This is the whole point of the run-as hardening: ``_build_env`` hands the child
-        ``DSYNC_TASK_PW``. Resolving argv[0] by bare name would let ``CreateProcess``'s
-        search order (calling-exe dir and CWD before ``System32``, absent
-        ``SafeProcessSearchMode``) substitute a planted ``powershell.exe`` — which would
-        then be handed the district Windows account password. Keeping the password off
-        argv is worth nothing if the *binary* can be swapped.
-        """
-        from src.scheduler.windows import register_task
-
-        monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-        secret = "s3cr3t!"
-
-        register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-            run_as_user="CORP\\jane",
-            run_as_password=secret,
-        )
-
-        argv = _argv(mock_run)
-        assert argv[0] == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-        assert argv[0] != "powershell"
-        # ... and the password is still env-only, never on argv (the pre-existing guarantee).
-        assert _child_env(mock_run)["DSYNC_TASK_PW"] == secret
-        assert secret not in " ".join(argv)
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_password_path_is_explicit_password_principal_highest(self, mock_run):
-        """Password + run_highest=True → explicit -LogonType Password, RunLevel Highest."""
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-
-        register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-            run_as_user="CORP\\jane",
-            run_as_password="s3cr3t!",
-            run_highest=True,
-        )
-
-        script = _ps_script(mock_run)
-        assert "-LogonType Password" in script
-        assert "-User $env:DSYNC_USER -Password $env:DSYNC_TASK_PW -Force" in script
-        assert "S4U" not in script
-        # Run level is driven by the env var, set to Highest.
-        assert "-RunLevel $env:DSYNC_RUNLEVEL" in script
-        assert _child_env(mock_run)["DSYNC_RUNLEVEL"] == "Highest"
-
-    @patch("src.scheduler.windows.current_run_as_user", return_value="WORKGROUP\\bob")
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_password_without_user_resolves_current_user(self, mock_run, _mock_user):
-        """When run_as_user is omitted, the current user is resolved into DSYNC_USER."""
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-
-        register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-            run_as_password="pw123",
-        )
-
-        assert _child_env(mock_run)["DSYNC_USER"] == "WORKGROUP\\bob"
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_run_highest_false_with_password_is_limited(self, mock_run):
-        """run_highest=False (with password) → RunLevel Limited via the env var."""
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-
-        register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-            run_as_user="jane",
-            run_as_password="pw123",
-            run_highest=False,
-        )
-
-        env = _child_env(mock_run)
-        assert env["DSYNC_RUNLEVEL"] == "Limited"
-        assert "-LogonType Password" in _ps_script(mock_run)
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_child_env_is_fresh_copy_os_environ_unchanged(self, mock_run):
-        """The child env is a fresh copy — os.environ never carries DSYNC_TASK_PW."""
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-        assert "DSYNC_TASK_PW" not in os.environ  # pre-condition
-
-        register_task(
-            task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync.exe"),
-            sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
-            run_time="03:00",
-            run_as_user="jane",
-            run_as_password="leaky-pw",
-        )
-
-        # The child env got the password ...
-        assert _child_env(mock_run)["DSYNC_TASK_PW"] == "leaky-pw"
-        # ... but os.environ is untouched (no DSYNC_* leaked into the parent).
-        assert "DSYNC_TASK_PW" not in os.environ
-        assert "DSYNC_TASKNAME" not in os.environ
-        assert "DSYNC_USER" not in os.environ
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_invalid_run_as_user_raises(self, mock_run):
-        """A shell-metacharacter user is rejected before any subprocess call."""
-        from src.scheduler.windows import register_task
-
-        with pytest.raises(ValueError, match="Invalid run-as user"):
-            register_task(
-                task_name="DistrictSync_Daily",
-                exe_path=Path("C:/DistrictSync.exe"),
-                sis_type="myedbc",
-                input_dir=Path("C:/input"),
-                output_dir=Path("C:/output"),
-                run_time="03:00",
-                run_as_user="jane && calc",
-                run_as_password="pw123",
-            )
-        mock_run.assert_not_called()
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_failure_surfaces_stderr_verbatim(self, mock_run):
-        """A non-zero PowerShell run (e.g. wrong password) returns the stderr text."""
-        from src.scheduler.windows import register_task
-
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="The user name or password is incorrect.")
-
+        mock_bounded.return_value = None
         ok, msg = register_task(
             task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync.exe"),
+            exe_path=Path(r"C:\DistrictSync\DistrictSync.exe"),
             sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
+            input_dir=Path(r"C:\data\in"),
+            output_dir=Path(r"C:\data\out"),
             run_time="03:00",
-            run_as_user="jane",
-            run_as_password="wrongpw",
+            run_as_password="pw",
+        )
+        assert ok is True
+        assert "registered" in msg.lower()
+        assert mock_bounded.call_args[1]["timeout_s"] == task_com.REGISTER_TIMEOUT_S
+
+    @patch("src.scheduler.windows._confirm_registration")
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_timeout_resolves_through_read_back(self, mock_bounded, mock_confirm):
+        """Row 14: the worker may still complete — never a bare 'failed' over a task
+        that may now exist; the hedged copy rides the same classifier branch."""
+        from src.scheduler.windows import register_task
+
+        mock_bounded.side_effect = task_com.BoundedTimeout("register")
+        mock_confirm.return_value = (True, "Schedule registered and confirmed.")
+        ok, _ = register_task(
+            task_name="DistrictSync_Daily",
+            exe_path=Path("x.exe"),
+            sis_type="myedbc",
+            input_dir=Path("i"),
+            output_dir=Path("o"),
+            run_time="03:00",
+        )
+        assert ok is True
+        mock_confirm.assert_called_once()
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_credential_failure_surfaces_the_canonical_message(self, mock_bounded):
+        """Live-confirmed 2026-08-05: a wrong password fails with exactly this text."""
+        from src.scheduler.windows import register_task
+
+        mock_bounded.side_effect = task_com.TaskComError(
+            task_com.HR_LOGON_FAILURE, "The user name or password is incorrect."
+        )
+        ok, msg = register_task(
+            task_name="DistrictSync_Daily",
+            exe_path=Path("x.exe"),
+            sis_type="myedbc",
+            input_dir=Path("i"),
+            output_dir=Path("o"),
+            run_time="03:00",
+            run_as_password="wrong",
         )
         assert ok is False
-        assert "password is incorrect" in msg
+        assert msg == "The user name or password is incorrect."
 
-
-# -----------------------------------------------------------------------
-# Backward compatibility — no password supplied (logged-on-only path)
-# -----------------------------------------------------------------------
-
-
-class TestRegisterTaskBackwardCompat:
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_no_password_is_interactive_limited_no_password_env(self, mock_run):
-        """Default call (no password) → Interactive/Limited principal, no DSYNC_TASK_PW."""
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_pywin32_missing_is_the_canonical_unavailable_message(self, mock_bounded):
         from src.scheduler.windows import register_task
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-
-        register_task(
+        mock_bounded.side_effect = ImportError("no win32com")
+        ok, msg = register_task(
             task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync.exe"),
+            exe_path=Path("x.exe"),
             sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
+            input_dir=Path("i"),
+            output_dir=Path("o"),
             run_time="03:00",
         )
+        assert ok is False
+        assert msg == task_com.MSG_COM_UNAVAILABLE
 
-        script = _ps_script(mock_run)
-        assert "-LogonType Interactive -RunLevel Limited" in script
-        assert "-Password" not in script
-        assert "S4U" not in script
-        # No password / run-level env vars on the no-password path.
-        env = _child_env(mock_run)
-        assert "DSYNC_TASK_PW" not in env
-        assert "DSYNC_RUNLEVEL" not in env
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_run_highest_true_without_password_still_limited(self, mock_run):
-        """run_highest=True with NO password stays Limited (run_highest ignored)."""
+    def test_invalid_run_as_user_raises_before_any_com_call(self):
         from src.scheduler.windows import register_task
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
+        with patch("src.scheduler.windows.task_com.bounded") as mock_bounded:
+            with pytest.raises(ValueError):
+                register_task(
+                    task_name="DistrictSync_Daily",
+                    exe_path=Path("x.exe"),
+                    sis_type="myedbc",
+                    input_dir=Path("i"),
+                    output_dir=Path("o"),
+                    run_time="03:00",
+                    run_as_user="jane && calc",
+                    run_as_password="pw",
+                )
+            mock_bounded.assert_not_called()
 
-        register_task(
+    @patch("src.scheduler.windows._register_elevated")
+    @patch("src.scheduler.windows.is_elevated", return_value=False)
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    def test_password_and_not_elevated_dispatches_to_the_elevated_path(self, _elev, mock_elevated):
+        from src.scheduler.windows import register_task
+
+        mock_elevated.return_value = (True, "Schedule registered and confirmed.")
+        ok, _ = register_task(
             task_name="DistrictSync_Daily",
-            exe_path=Path("C:/DistrictSync.exe"),
+            exe_path=Path("x.exe"),
             sis_type="myedbc",
-            input_dir=Path("C:/input"),
-            output_dir=Path("C:/output"),
+            input_dir=Path("i"),
+            output_dir=Path("o"),
             run_time="03:00",
-            run_highest=True,
+            run_as_password="pw",
         )
-
-        script = _ps_script(mock_run)
-        # The fixed no-password script hardcodes Limited; run_highest does nothing.
-        assert "-LogonType Interactive -RunLevel Limited" in script
-        assert "Highest" not in script
-        assert "DSYNC_RUNLEVEL" not in _child_env(mock_run)
-
-
-# -----------------------------------------------------------------------
-# Password / secret leak closure (success AND failure paths)
-# -----------------------------------------------------------------------
+        assert ok is True
+        mock_elevated.assert_called_once()
+        # The password rode the keyword call — and never any process environment.
+        assert mock_elevated.call_args[1]["run_as_password"] == "pw"
+        assert not any("DSYNC" in k for k in os.environ)
 
 
 class TestPasswordLeakClosure:
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_password_absent_from_logs_and_message_on_success(self, mock_run, caplog):
-        """On success neither the password value nor DSYNC_TASK_PW reaches logs/message."""
+    """The value must appear in NO log record on either path (caplog sweeps the root)."""
+
+    SECRET = "uniq-Vq7x-secret"  # noqa: S105 - a test marker, not a credential
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_success_path_never_logs_the_password(self, mock_bounded, caplog):
         from src.scheduler.windows import register_task
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_OK", stderr="")
-        secret = "SuperSecretPw!42"
-
-        with caplog.at_level(logging.DEBUG, logger="src.scheduler.windows"):
+        mock_bounded.return_value = None
+        with caplog.at_level(logging.DEBUG):
             ok, msg = register_task(
                 task_name="DistrictSync_Daily",
-                exe_path=Path("C:/DistrictSync.exe"),
+                exe_path=Path("x.exe"),
                 sis_type="myedbc",
-                input_dir=Path("C:/input"),
-                output_dir=Path("C:/output"),
+                input_dir=Path("i"),
+                output_dir=Path("o"),
                 run_time="03:00",
-                run_as_user="jane",
-                run_as_password=secret,
+                run_as_password=self.SECRET,
             )
-
         assert ok is True
-        assert secret not in caplog.text
-        assert "DSYNC_TASK_PW" not in caplog.text
-        assert secret not in msg
-        assert "DSYNC_TASK_PW" not in msg
+        assert self.SECRET not in caplog.text
+        assert self.SECRET not in msg
 
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_password_absent_from_logs_and_message_on_failure(self, mock_run, caplog):
-        """On a PS failure with a benign stderr, register_task adds neither the password value nor DSYNC_TASK_PW to the returned message or caplog (guards against logging child_env / the script)."""
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_failure_path_never_logs_the_password(self, mock_bounded, caplog):
         from src.scheduler.windows import register_task
 
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Access is denied.")
-        secret = "AnotherSecret#99"
-
-        with caplog.at_level(logging.DEBUG, logger="src.scheduler.windows"):
+        mock_bounded.side_effect = task_com.TaskComError(task_com.HR_ACCESS_DENIED, "Access is denied.")
+        with caplog.at_level(logging.DEBUG):
             ok, msg = register_task(
                 task_name="DistrictSync_Daily",
-                exe_path=Path("C:/DistrictSync.exe"),
+                exe_path=Path("x.exe"),
                 sis_type="myedbc",
-                input_dir=Path("C:/input"),
-                output_dir=Path("C:/output"),
+                input_dir=Path("i"),
+                output_dir=Path("o"),
                 run_time="03:00",
-                run_as_user="jane",
-                run_as_password=secret,
+                run_as_password=self.SECRET,
             )
-
         assert ok is False
-        assert "Access is denied" in msg
-        assert secret not in caplog.text
-        assert "DSYNC_TASK_PW" not in caplog.text
-        assert secret not in msg
-        assert "DSYNC_TASK_PW" not in msg
+        assert self.SECRET not in caplog.text
+        assert self.SECRET not in msg
 
 
 # -----------------------------------------------------------------------

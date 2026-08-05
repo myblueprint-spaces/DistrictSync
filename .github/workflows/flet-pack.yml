@@ -176,6 +176,7 @@ jobs:
             --hidden-import src.scheduler.linux \
             --hidden-import ${{ runner.os == 'Windows' && 'keyring.backends.Windows' || (runner.os == 'macOS' && 'keyring.backends.macOS' || 'keyring.backends.SecretService') }} \
             ${{ runner.os == 'Linux' && '--hidden-import keyring.backends.libsecret' || '' }} \
+            ${{ runner.os == 'Windows' && '--hidden-import src.scheduler.task_com --hidden-import src.scheduler.elevated_apply --hidden-import win32com --hidden-import win32com.client --hidden-import pythoncom --hidden-import win32timezone' || '' }} \
             --pyinstaller-build-args="--paths" --pyinstaller-build-args="." \
             --pyinstaller-build-args="--exclude-module" --pyinstaller-build-args="streamlit" \
             --pyinstaller-build-args="--exclude-module" --pyinstaller-build-args="src.ui"
