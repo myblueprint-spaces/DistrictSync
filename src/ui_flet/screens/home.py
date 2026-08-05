@@ -396,7 +396,9 @@ def _build_identity_cards(
     # exactly the priority this card's placement is meant to express.
     field = ft.TextField(
         label=identity_screen.EMAIL_LABEL,
-        hint_text=identity_screen.EMAIL_HINT,
+        # No placeholder — retired with the launch page's (2026-08-05): it presupposed a
+        # `.bc.ca` domain. This card keeps its HELPER, which explains what is stored;
+        # that is a different job from showing an example address.
         helper=identity_screen.EMAIL_HELPER,
         width=420,
         max_length=IDENTITY_EMAIL_MAX_LEN,

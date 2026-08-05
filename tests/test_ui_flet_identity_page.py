@@ -174,9 +174,10 @@ class TestPageStates:
         field.value = "adm"
         field.on_change(None)
 
-        # Only the HINT is discounted: since 2026-08-04 the page renders no helper, so
-        # discounting one too would be reaching past what is on screen.
-        assert "@" not in _all_text(view).replace(identity.EMAIL_HINT, "")
+        # Nothing is discounted any more: the page renders no helper (2026-08-04) and no
+        # placeholder (2026-08-05), so the assertion is now the plain, strongest form —
+        # an "@" anywhere on screen while typing means an error leaked.
+        assert "@" not in _all_text(view)
 
     def test_an_invalid_format_IS_shown_on_blur(self, page: MagicMock) -> None:
         """The positive twin of the test above — the error mechanism really does fire.
@@ -1027,7 +1028,9 @@ class TestABlurNeverRebuildsTheCard:
         field.on_blur(None)
 
         assert self._card_controls(view) is controls_before, "the invalid-address blur rebuilt the card"
-        assert identity.EMAIL_HINT in _all_text(view), "still the ask state"
+        # The ask state is identified by its LABEL now — the placeholder that used to mark
+        # it retired on 2026-08-05.
+        assert identity.EMAIL_LABEL in _all_text(view), "still the ask state"
 
     def test_the_error_STILL_appears_on_blur(self, page: MagicMock, fixed_index) -> None:
         """The positive twin, and the one that stops this suite going vacuous.

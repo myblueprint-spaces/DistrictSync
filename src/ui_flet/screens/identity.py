@@ -89,7 +89,12 @@ HERO_HEADLINE = "Who looks after this sync?"
 HERO_DETAIL = "Tell us their work email and we'll recognise your district."
 
 EMAIL_LABEL = "Work email address"
-EMAIL_HINT = "name@yourdistrict.bc.ca"
+# No placeholder, deliberately (owner, 2026-08-05). It read "name@yourdistrict.bc.ca",
+# which pre-supposes a `.bc.ca` domain — wrong for anyone whose district (or employer)
+# sits elsewhere, and a placeholder that shows the WRONG shape is worse than none: it
+# invites a correction the admin never needed to make. The label already says exactly
+# what to type, and every real district address is self-evident to the person who owns
+# it. If a placeholder ever returns it must be domain-agnostic.
 # Minimisation honesty: the DOMAIN is what we match on, but the WHOLE address is stored
 # and rendered — so "we use only the part after the @" would understate what is kept.
 #
@@ -271,7 +276,8 @@ def build_identity(
 
     email_field = ft.TextField(
         label=EMAIL_LABEL,
-        hint_text=EMAIL_HINT,
+        # No placeholder (2026-08-05): see the EMAIL_LABEL block for why a `.bc.ca` example
+        # was worse than none.
         # No helper, no counter, no length cap ON THE WIDGET (2026-08-04): see EMAIL_HELPER
         # for the helper. `max_length` went with it because on 0.85.3 a TextField that has
         # one reserves the sub-text row for its "0/254" counter, and a blank `counter=` does
