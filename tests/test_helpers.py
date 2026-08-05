@@ -231,18 +231,24 @@ class TestSystemBinary:
         monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
         assert system_binary("powershell.exe") == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
-    def test_schtasks_and_icacls_sit_directly_under_system32(self, monkeypatch):
+    def test_icacls_sits_directly_under_system32(self, monkeypatch):
         monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
-        assert system_binary("schtasks.exe") == r"C:\Windows\System32\schtasks.exe"
         assert system_binary("icacls.exe") == r"C:\Windows\System32\icacls.exe"
 
     def test_honors_systemroot_for_a_relocated_windows_install(self, monkeypatch):
         monkeypatch.setenv("SYSTEMROOT", r"D:\WinNT")
-        assert system_binary("schtasks.exe") == r"D:\WinNT\System32\schtasks.exe"
+        assert system_binary("icacls.exe") == r"D:\WinNT\System32\icacls.exe"
 
     def test_missing_systemroot_falls_back_to_c_windows(self, monkeypatch):
         monkeypatch.delenv("SYSTEMROOT", raising=False)
-        assert system_binary("schtasks.exe") == r"C:\Windows\System32\schtasks.exe"
+        assert system_binary("icacls.exe") == r"C:\Windows\System32\icacls.exe"
+
+    def test_schtasks_retired_from_the_allowlist(self):
+        """Plan 0041 Slice 1a: delete moved to the Task Scheduler COM API and the LAST
+        schtasks caller went with it — the allowlist shrank rather than carry a dead
+        allowance. An unrecognized name fails loud, same as any other."""
+        with pytest.raises(ValueError, match="schtasks.exe"):
+            system_binary("schtasks.exe")
 
     def test_empty_systemroot_falls_back_to_c_windows(self, monkeypatch):
         monkeypatch.setenv("SYSTEMROOT", "")

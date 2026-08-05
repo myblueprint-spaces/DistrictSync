@@ -5,16 +5,15 @@ All subprocess calls are mocked — no OS scheduler interaction needed.
 Windows registration uses PowerShell ``Register-ScheduledTask`` (the
 ``ScheduledTasks`` module): a fixed script is handed to ``powershell.exe
 -EncodedCommand`` (UTF-16LE-base64) and all dynamic values flow through the
-child process environment, so these tests assert against the argv, the decoded
-script, and the child env rather than a legacy ``schtasks`` command form.
-``delete_task`` stays on ``schtasks.exe`` (name-only) — its tests are unchanged.
-The dead ``query_task`` was replaced by the tri-state ``read_schedule`` (D4); its
-parse-fixture tests live in ``TestReadSchedule`` below.
+child process environment, so the REGISTER tests assert against the argv, the
+decoded script, and the child env. READ + DELETE moved to in-process COM at plan
+0041 Slice 1a — their tests inject ``TaskFacts``/``TaskComError`` at the
+``task_com.bounded`` seam instead (see ``TestReadSchedule`` / ``TestWindowsDeleteTask``
+and the absence pins in ``TestNoScheduleSubprocess``).
 """
 
 import base64
 import ntpath
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -26,7 +25,6 @@ from src.utils.helpers import subprocess_no_window_flags
 # ``C:\Windows`` — spelled out as literals (not via ``helpers.system_binary``) so these
 # assertions independently pin the expected value rather than restate the implementation.
 _ABS_POWERSHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-_ABS_SCHTASKS = r"C:\Windows\System32\schtasks.exe"
 
 
 def _argv(mock_run) -> list[str]:
@@ -644,177 +642,209 @@ class TestWindowsRegisterTask:
 
 
 class TestWindowsDeleteTask:
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_delete_success(self, mock_run):
+    """COM delete (plan 0041 Slice 1a) — behavioural parity with the retired schtasks pins.
+
+    The subprocess asserts (absolute System32 argv, no-window flag) retired WITH the
+    subprocess: there is no child process to pin. What replaces them: no-subprocess
+    absence pins (below, ``TestNoScheduleSubprocess``) and the two message contracts
+    consumers key on — the "cannot find" idempotency marker and the "access is denied"
+    elevated-retry substring (contract row 13).
+    """
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_delete_success(self, mock_bounded):
         from src.scheduler.windows import delete_task
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="SUCCESS", stderr="")
+        mock_bounded.return_value = None  # delete_task_by_name returns None on success
 
         ok, msg = delete_task("DistrictSync_Daily")
         assert ok is True
-        args = mock_run.call_args[0][0]
-        assert "/Delete" in args
-        # No-console flag on the schtasks delete too.
-        assert _creationflags(mock_run) == subprocess_no_window_flags()
+        assert msg  # a human-readable confirmation, never blank
 
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_delete_invokes_absolute_system32_schtasks(self, mock_run, monkeypatch):
-        """argv[0] is the ABSOLUTE System32 schtasks.exe — never a bare ``schtasks``.
-
-        Same CreateProcess search-order hazard as the PowerShell sites: a bare name
-        probes the calling exe's directory and the CWD before System32, so a planted
-        ``schtasks.exe`` would run with the user's rights on a *delete-my-schedule* click.
-        """
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_absent_task_keeps_the_cannot_find_marker(self, mock_bounded):
+        """The idempotency contract: `interpret_unregister` maps "cannot find" to
+        success-shaped ("there was no schedule to remove — nothing changed"). The COM
+        HR_NOT_FOUND canonical must keep that marker or deleting an already-gone task
+        starts presenting as a failure."""
+        from src.scheduler import task_com
         from src.scheduler.windows import delete_task
 
-        monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
-        mock_run.return_value = MagicMock(returncode=0, stdout="SUCCESS", stderr="")
-
-        delete_task("DistrictSync_Daily")
-
-        argv = _argv(mock_run)
-        assert argv[0] == _ABS_SCHTASKS
-        assert argv[0] != "schtasks"
-        assert ntpath.isabs(argv[0])
-        # The rest of the command form is unchanged.
-        assert argv[1:] == ["/Delete", "/F", "/TN", "DistrictSync_Daily"]
-
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_delete_failure(self, mock_run):
-        from src.scheduler.windows import delete_task
-
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Not found")
+        mock_bounded.side_effect = task_com.TaskComError(
+            task_com.HR_NOT_FOUND, "The system cannot find the file specified."
+        )
 
         ok, msg = delete_task("DistrictSync_Daily")
         assert ok is False
+        assert "cannot find" in msg.lower()
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_access_denied_keeps_the_adapter_retry_substring(self, mock_bounded):
+        """Contract row 13: `WindowsTaskScheduler.delete` retries elevated ONLY when the
+        failure message contains "access is denied". The COM canonical must preserve it,
+        or un-elevated admins permanently lose the ability to remove a Highest task."""
+        from src.scheduler import task_com
+        from src.scheduler.windows import delete_task
+
+        mock_bounded.side_effect = task_com.TaskComError(task_com.HR_ACCESS_DENIED, "Access is denied.")
+
+        ok, msg = delete_task("DistrictSync_Daily")
+        assert ok is False
+        assert "access is denied" in msg.lower()
+
+    @patch("src.scheduler.windows._confirm_removal")
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_timeout_resolves_through_read_back_never_a_bare_verdict(self, mock_bounded, mock_confirm):
+        """A timed-out COM worker may still complete the delete — the verdict comes from
+        reading the real task back, the same honesty rule the elevated path applies."""
+        from src.scheduler import task_com
+        from src.scheduler.windows import delete_task
+
+        mock_bounded.side_effect = task_com.BoundedTimeout("delete")
+        mock_confirm.return_value = (True, "Schedule removed and confirmed.")
+
+        ok, msg = delete_task("DistrictSync_Daily")
+        assert ok is True
+        mock_confirm.assert_called_once()
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_pywin32_missing_degrades_to_the_canonical_message(self, mock_bounded):
+        """Contract row 10: a frozen build without pywin32 fails readable, never raises."""
+        from src.scheduler import task_com
+        from src.scheduler.windows import delete_task
+
+        mock_bounded.side_effect = ImportError("No module named 'win32com'")
+
+        ok, msg = delete_task("DistrictSync_Daily")
+        assert ok is False
+        assert msg == task_com.MSG_COM_UNAVAILABLE
+
+    def test_invalid_task_name_raises_before_any_com_call(self):
+        from src.scheduler.windows import delete_task
+
+        with pytest.raises(ValueError):
+            delete_task("bad;name|rm -rf")
 
 
 class TestReadSchedule:
-    """D4 tri-state read-back parse fixtures — found / definitively-absent / query-failed.
+    """D4 tri-state read-back — found / definitively-absent / query-failed (COM since 0041).
 
-    The load-bearing contract: the cmdlet's task-not-found → ``found=False`` (MISSING),
-    but ANY other failure (denied, timeout, PowerShell missing, non-Windows) → ``found=None``
-    (UNKNOWN), never a false "absent". Datetimes ride the invariant ISO round-trip verbatim.
+    The load-bearing contract is UNCHANGED by the transport swap: the definitive
+    not-found → ``found=False`` (MISSING), but ANY other failure (denied, timeout,
+    pywin32 missing, non-Windows) → ``found=None`` (UNKNOWN), never a false "absent".
+    Classification is now HRESULT-keyed at the ``task_com`` boundary — these tests inject
+    ``TaskFacts`` / ``TaskComError`` where the retired fixtures injected subprocess stdout.
     """
 
-    _FOUND_JSON = (
-        'DSYNC_FOUND:{"found":true,"next_run":"2026-07-09T03:00:00.0000000",'
-        '"last_run":"2026-07-08T03:00:00.0000000","last_result":0,'
-        '"action_path":"C:\\\\Program Files\\\\DistrictSync\\\\DistrictSync.exe"}'
-    )
+    @staticmethod
+    def _facts(**overrides):
+        from src.scheduler.task_com import TaskFacts
+
+        base = dict(
+            next_run="2026-07-09T03:00:00",
+            last_run="2026-07-08T03:00:00",
+            last_result=0,
+            action_path=r"C:\Program Files\DistrictSync\DistrictSync.exe",
+        )
+        base.update(overrides)
+        return TaskFacts(**base)
 
     @patch("src.scheduler.windows.sys.platform", "win32")
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_found_task_parses_all_fields(self, mock_run):
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_found_task_parses_all_fields(self, mock_bounded):
         from src.scheduler.windows import read_schedule
 
-        mock_run.return_value = MagicMock(returncode=0, stdout=self._FOUND_JSON, stderr="")
+        mock_bounded.return_value = self._facts()
         rb = read_schedule("DistrictSync_Daily")
         assert rb.found is True
-        # Datetimes are passed through as the raw invariant ISO round-trip strings.
-        assert rb.next_run == "2026-07-09T03:00:00.0000000"
-        assert rb.last_run == "2026-07-08T03:00:00.0000000"
+        # Datetimes ride through as the naive-local ISO strings task_com emits.
+        assert rb.next_run == "2026-07-09T03:00:00"
+        assert rb.last_run == "2026-07-08T03:00:00"
         assert rb.last_result == 0
         assert rb.action_path.endswith("DistrictSync.exe")
 
     @patch("src.scheduler.windows.sys.platform", "win32")
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_the_read_script_references_only_the_env_name(self, mock_run):
-        # Same injection-free hardening as registration: no dynamic interpolation, name via env.
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_the_probe_is_bounded_by_the_read_timeout(self, mock_bounded):
+        """The 10s bound survived the transport swap — a hung Task Scheduler RPC can
+        never freeze the UI probe (it fires on nearly every nav click)."""
+        from src.scheduler import task_com
         from src.scheduler.windows import read_schedule
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_ABSENT", stderr="")
+        mock_bounded.return_value = self._facts()
         read_schedule("DistrictSync_Daily")
-        script = _ps_script(mock_run)
-        assert "$env:DSYNC_TASKNAME" in script
-        assert "DistrictSync_Daily" not in script  # the name is NEVER baked into the script text
-        assert mock_run.call_args[1]["env"]["DSYNC_TASKNAME"] == "DistrictSync_Daily"
-        # The read-back subprocess is bounded by a timeout (a hung PowerShell can't freeze the UI).
-        assert mock_run.call_args[1]["timeout"] == 10
-        # THE nav-click flasher: the read-back must pass the no-console flag (windowed exe).
-        assert _creationflags(mock_run) == subprocess_no_window_flags()
+        assert mock_bounded.call_args[1]["timeout_s"] == task_com.READ_TIMEOUT_S == 10.0
 
     @patch("src.scheduler.windows.sys.platform", "win32")
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_read_schedule_invokes_absolute_system32_powershell(self, mock_run, monkeypatch):
-        """The read-back probe pins argv[0] to the absolute System32 powershell.exe too.
-
-        This one fires on every nav click, so a bare name would hand a planted binary
-        repeated, unattended execution under the interactive user.
-        """
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_definitively_absent_is_found_false(self, mock_bounded):
+        """ONLY the unwrapped 0x80070002 may produce found=False (contract row 5)."""
+        from src.scheduler import task_com
         from src.scheduler.windows import read_schedule
 
-        monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_ABSENT", stderr="")
-
-        read_schedule("DistrictSync_Daily")
-
-        argv = _argv(mock_run)
-        assert argv[0] == _ABS_POWERSHELL
-        assert argv[0] != "powershell"
-
-    @patch("src.scheduler.windows.sys.platform", "win32")
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_definitively_absent_is_found_false(self, mock_run):
-        from src.scheduler.windows import read_schedule
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_ABSENT", stderr="")
+        mock_bounded.side_effect = task_com.TaskComError(
+            task_com.HR_NOT_FOUND, "The system cannot find the file specified."
+        )
         rb = read_schedule("NonExistent")
         assert rb.found is False  # MISSING — the only state that may claim "not scheduled"
 
     @patch("src.scheduler.windows.sys.platform", "win32")
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_access_denied_is_unknown_not_absent(self, mock_run):
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_access_denied_is_unknown_not_absent(self, mock_bounded):
+        from src.scheduler import task_com
         from src.scheduler.windows import read_schedule
 
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Access is denied.")
+        mock_bounded.side_effect = task_com.TaskComError(task_com.HR_ACCESS_DENIED, "Access is denied.")
         rb = read_schedule("DistrictSync_Daily")
         assert rb.found is None  # a failed query is NEVER reported as absent
-        assert rb.error
+        assert rb.error == "Access is denied."
 
     @patch("src.scheduler.windows.sys.platform", "win32")
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_timeout_is_unknown(self, mock_run):
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_timeout_is_unknown(self, mock_bounded):
+        from src.scheduler import task_com
         from src.scheduler.windows import read_schedule
 
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="powershell", timeout=10)
+        mock_bounded.side_effect = task_com.BoundedTimeout("read")
         rb = read_schedule("DistrictSync_Daily")
         assert rb.found is None
         assert "timed out" in (rb.error or "").lower()
 
     @patch("src.scheduler.windows.sys.platform", "win32")
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_powershell_missing_is_unknown(self, mock_run):
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_pywin32_missing_is_unknown(self, mock_bounded):
+        """Contract row 10: the COM analogue of the retired "PowerShell not found"."""
+        from src.scheduler import task_com
         from src.scheduler.windows import read_schedule
 
-        mock_run.side_effect = FileNotFoundError()
+        mock_bounded.side_effect = ImportError("No module named 'win32com'")
         rb = read_schedule("DistrictSync_Daily")
         assert rb.found is None
-        assert "PowerShell not found" in (rb.error or "")
+        assert rb.error == task_com.MSG_COM_UNAVAILABLE
 
     @patch("src.scheduler.windows.sys.platform", "win32")
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_malformed_json_degrades_to_unknown(self, mock_run):
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_an_unexpected_raise_is_unknown_never_propagated(self, mock_bounded):
+        """The never-raises probe contract holds even for a failure shape nobody mapped."""
         from src.scheduler.windows import read_schedule
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="DSYNC_FOUND:{not json", stderr="")
+        mock_bounded.side_effect = RuntimeError("marshalling exploded")
         rb = read_schedule("DistrictSync_Daily")
-        assert rb.found is None  # can't parse a shape → UNKNOWN, never a false claim
+        assert rb.found is None
+        assert rb.error  # readable, generic — never the raw exception repr
+        assert "marshalling" not in rb.error
 
     @patch("src.scheduler.windows.sys.platform", "win32")
-    @patch("src.scheduler.windows.subprocess.run")
-    def test_never_run_task_has_null_last_run(self, mock_run):
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_never_run_task_has_null_last_run(self, mock_bounded):
+        """task_com nulls the never-run epoch; the passthrough must not resurrect it."""
         from src.scheduler.windows import read_schedule
 
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout='DSYNC_FOUND:{"found":true,"next_run":"2026-07-09T03:00:00.0000000",'
-            '"last_run":null,"last_result":267011,"action_path":"C:\\\\x\\\\DistrictSync.exe"}',
-            stderr="",
-        )
+        mock_bounded.return_value = self._facts(last_run=None, last_result=267011)
         rb = read_schedule("DistrictSync_Daily")
         assert rb.found is True
-        assert rb.last_run is None  # the never-run sentinel is nulled in the script
+        assert rb.last_run is None
+        assert rb.last_result == 267011
 
     @patch("src.scheduler.windows.sys.platform", "linux")
     def test_non_windows_is_unknown_with_platform_note(self):
@@ -833,6 +863,82 @@ class TestReadSchedule:
         rb = read_schedule("bad;name|rm -rf")
         assert rb.found is None
         assert rb.error
+
+
+class TestNoScheduleSubprocess:
+    """Absence pins (plan 0041 Slice 1a): the read/delete transport is GONE, not dormant.
+
+    These are source-level pins because behaviour mocks can't prove a negative about
+    paths not taken. Register-path PowerShell is EXEMPT until Slice 1b — the pins scope
+    to what 1a retired, and 1b's sweep widens them to the whole module.
+    """
+
+    def _source(self) -> str:
+        from pathlib import Path
+
+        import src.scheduler.windows as w
+
+        return Path(w.__file__).read_text(encoding="utf-8")
+
+    def test_schtasks_left_the_allowlist(self):
+        """The allowlist SHRANK with its last caller — an unused allowance is surface."""
+        from src.utils.helpers import system_binary
+
+        with pytest.raises(ValueError):
+            system_binary("schtasks.exe")
+
+    def test_no_code_invokes_schtasks(self):
+        """No `system_binary("schtasks…")` call survives anywhere in src/ (prose may)."""
+        import re
+        from pathlib import Path
+
+        import src
+
+        src_root = Path(src.__file__).parent
+        pattern = re.compile(r"system_binary\(\s*['\"]schtasks", re.IGNORECASE)
+        hits = [p for p in src_root.rglob("*.py") if pattern.search(p.read_text(encoding="utf-8"))]
+        assert hits == []
+
+    def test_no_gencache_or_ensuredispatch_anywhere_in_the_scheduler(self):
+        """Dynamic Dispatch ONLY: gencache/EnsureDispatch/makepy write generated code to a
+        cache dir and import it at runtime — the frozen-exe failure that disqualified
+        comtypes AND an AV-shaped behaviour in a plan about removing AV-shaped behaviours.
+
+        Pinned at the AST level so the ban rationale in ``task_com``'s docstring (which
+        must NAME the banned calls to explain them) can never trip its own pin: prose is
+        invisible to ``ast``, code is not.
+        """
+        import ast
+        from pathlib import Path
+
+        import src.scheduler as pkg
+
+        banned = {"gencache", "EnsureDispatch", "makepy"}
+        for path in Path(pkg.__file__).parent.glob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and node.attr in banned:
+                    raise AssertionError(f"{path.name}:{node.lineno}: banned attribute {node.attr!r}")
+                if isinstance(node, ast.Name) and node.id in banned:
+                    raise AssertionError(f"{path.name}:{node.lineno}: banned name {node.id!r}")
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    names = [a.name for a in node.names] + [getattr(node, "module", "") or ""]
+                    hit = banned & {part for n in names for part in n.split(".")}
+                    if hit:
+                        raise AssertionError(f"{path.name}:{node.lineno}: banned import {sorted(hit)}")
+
+    def test_win32com_import_is_lazy_on_every_platform(self):
+        """Importing the scheduler must NOT import pywin32 — `scheduler/__init__` imports
+        `windows` at module level on every OS, so an eager win32com import breaks the
+        Linux and macOS CI legs outright. Run in a fresh interpreter so this dev box's
+        already-imported modules can't mask it (this row is the one that keeps the
+        Linux leg importable, and it runs THERE too)."""
+        import subprocess as sp
+        import sys
+
+        code = "import src.scheduler.windows, sys; raise SystemExit(1 if 'win32com' in sys.modules else 0)"
+        proc = sp.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+        assert proc.returncode == 0, proc.stderr
 
 
 # -----------------------------------------------------------------------

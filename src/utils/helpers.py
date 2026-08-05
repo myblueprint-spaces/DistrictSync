@@ -27,7 +27,10 @@ import pandas as pd
 # instead of silently degrading to a bare — and therefore hijackable — argv[0].
 _SYSTEM32_BINARIES: dict[str, tuple[str, ...]] = {
     "powershell.exe": ("WindowsPowerShell", "v1.0", "powershell.exe"),
-    "schtasks.exe": ("schtasks.exe",),
+    # schtasks.exe RETIRED from the allowlist at plan 0041 Slice 1a: delete_task moved to
+    # the in-process Task Scheduler COM API, which removed the last schtasks call. The
+    # allowlist shrinks rather than carries a dead entry — an unused allowance is attack
+    # surface waiting for a caller.
     "icacls.exe": ("icacls.exe",),
 }
 
