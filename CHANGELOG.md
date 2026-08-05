@@ -9,6 +9,83 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.11.0] - 2026-08-05
+
+The nightly-schedule machinery no longer runs PowerShell. **No CSV output changes** —
+the SD74 golden and every district contract test pass untouched; this release is
+internals plus three interface fixes.
+
+**Why it exists:** on 2026-08-04 Bitdefender's behaviour engine blocked DistrictSync
+on a district machine. What it saw was the app launching `powershell.exe` with a
+base64-encoded command, under an administrator prompt, to create a scheduled task —
+a sequence that is legitimate here and also exactly what malware does to make itself
+persistent. That whole sequence is gone.
+
+### Changed
+
+- **Scheduling talks to Windows directly.** Creating, reading, updating and removing
+  the nightly task now use the Windows Task Scheduler programming interface in-process
+  — the same one PowerShell's own commands drive — instead of launching PowerShell.
+  DistrictSync starts **no child programs at all** for scheduling now, and both
+  `powershell.exe` and `schtasks.exe` were removed from the list of Windows programs
+  the app is permitted to launch.
+
+  Every existing guarantee was carried across and re-checked: no catch-up run after a
+  server was off, tasks still run on battery, the two-hour run limit, the
+  stored-password logon that keeps the nightly working while you are logged off with
+  network access for delivery, and the honest "we could not confirm" state that never
+  claims a schedule is missing when the check itself failed.
+
+- **The administrator prompt now names DistrictSync** instead of Windows PowerShell,
+  because the app performs the privileged step itself. Your password still travels
+  only inside an encrypted file that only your Windows account can open, and a prompt
+  approved by a *different* administrator still safely refuses.
+
+- **Checking the schedule is quicker and quieter.** That check runs almost every time
+  you change screens; each one used to start a PowerShell process.
+
+### Fixed
+
+- **The window contents stay centred when you maximise.** They were centred within a
+  fixed-width column that stopped growing, so a maximised window left everything
+  hugging the left.
+- **The email box no longer suggests a `.bc.ca` address.** The example presupposed a
+  British Columbia domain, which is wrong for partners elsewhere; the field is now
+  empty and the label carries the instruction.
+
+### Known issues
+
+- **Antivirus may still flag the download.** This release removes the *scheduling*
+  behaviour that was flagged. The remaining pattern — a single-file program that
+  unpacks itself into a temporary folder on launch, and extracts the window component
+  into your user profile the first time it runs — is unchanged, and is what the coming
+  installer removes. If the window ever fails to open after an antivirus block, delete
+  `%USERPROFILE%\.flet\client\` and start the app again. **Your nightly scheduled sync
+  is unaffected either way — it runs the command-line path and never opens a window.**
+- **Keep the program somewhere permanent.** A single-file program registers the
+  scheduled task against wherever it currently sits, so a copy left in `Downloads` (or
+  anywhere a server's cleanup touches) can leave the nightly pointing at a file that is
+  no longer there. The app warns when it detects this. The installer will make it moot.
+- **Re-registering a schedule with the password box empty** reports that you should run
+  as administrator, when what it should say is "enter your Windows password to keep this
+  running unattended". Removing the schedule and creating it again with the password
+  works. Unchanged from earlier releases.
+
+### Notes for anyone reading the code
+
+Three facts about the Windows interface were established by probing a live Task
+Scheduler, because no documentation states them, and each would have been a silent
+field defect: the real error status hides behind a generic wrapper; the "never ran"
+placeholder date is `1999-11-30` and not the value the PowerShell commands report; and
+the returned times are local wall-clock stamped misleadingly as UTC. The project's
+continuous integration caught two further defects that the Windows development machine
+structurally could not see.
+
+**Not certified.** The audit and quality walk this project reserves before a release
+have not been run against this build (see `docs/claugentic-DECISIONS.md`, 2026-08-05).
+What *did* run: the full automated suite on three operating systems, and an owner walk
+of the real scheduling paths on a real machine.
+
 ## [3.10.1] - 2026-08-04
 
 Fixes a bug that made the **Continue button on the launch page do nothing**, found by
