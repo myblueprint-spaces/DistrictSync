@@ -137,6 +137,49 @@ global_config:
   academic_end_month_day: "06-30"
 ```
 
+### Scoping which grades get class rostering (`class_rostering_grades`)
+
+By default **every** grade is rostered: `homeroom_grades` get a homeroom class,
+and every remaining grade gets subject (timetable) classes from the schedule.
+A district licensed for only part of its grade range can opt into a scope:
+
+```yaml
+global_config:
+  # The COMPLETE set of grades that receive class rostering, in CEDS output
+  # codes (IT/PR/PK/TK/KG/01…13/PS/UG/Other) — NOT raw MyEd values like "K"/"3".
+  class_rostering_grades: ["07", "08", "09", "10", "11", "12"]
+  homeroom_grades: ["07", "08", "09"]   # must be a SUBSET of the list above
+```
+
+- **homeroom classes** still follow `homeroom_grades`;
+- **subject classes** are restricted to `class_rostering_grades − homeroom_grades`;
+- a **blended class** is kept only if at least one of its grades is in that
+  difference (so a blend spanning only unrostered grades — which could only ever
+  be delivered with a teacher and no students — is dropped);
+- a grade in **neither** set gets **no class and no enrollment at all**.
+
+`class_rostering_grades: "homeroom"` is shorthand for "roster exactly the
+homeroom grades" (an empty subject scope), so the grade list is written once and
+the two keys cannot drift. That is SD83's shape: K-8 class rostering, while
+grades 9-12 stay on `Students.csv` so their myBlueprint+ transcripts still work.
+
+Points worth stating to the district before you ship it:
+
+- **Students are NOT filtered by this key.** An unrostered grade still appears in
+  `Students.csv` (and in the course feeds) with **no enrollment rows** — that is
+  valid, intended output, and for SD83 it is the whole point.
+- **`Staff.csv` is never filtered** — a teacher of an unrostered grade still ships.
+- **Blank or unrecognised grades map to `UG`.** Today they land on the subject
+  side and get a class; under a scope they get **nothing** unless you list `"UG"`
+  explicitly. The run logs the count, but it is your call.
+- **The first run after adopting it will trip the >20% drop anomaly** on Classes
+  and Enrollments. That is the expected degradation, not a fault — say so in the
+  rollout note so nobody "fixes" it.
+- Getting it wrong fails **at config load, before any conversion runs**: a
+  non-CEDS code, an empty list, the sentinel over an empty `homeroom_grades`, or a
+  `homeroom_grades` that is not a subset are each rejected with a message naming
+  the offending values. Verify with `make validate-config`.
+
 ### School year naming convention (non-BC districts)
 
 The pipeline internally uses **end-year semantics**: ``school_year = 2026``
@@ -373,6 +416,6 @@ Then without `--dry-run` to verify the output CSVs, and with `--quality` to spot
 | `sd54myedbc` | `myedbc` | Bulkley Valley — lowercase filenames; Staff non-Enhanced; Emergency Contact + Class Info Enhanced; ATT--AM/PM/Daily excluded |
 | `sd60myedbc` | `myedbc` | Peace River North — Family `row_filters` (guardians-only); opt-in `cross_enrollment.collapse` home-school dedupe for dual-school students; ATT--AM/PM excluded |
 | `sd74myedbc` | `myedbc` | Student Course Selection, Staff Information, Parent Information, Class Info Enhanced |
-| `sd83myedbc` | `myedbc` | North Okanagan-Shuswap — full myBlueprint+ tier (7 entities); `homeroom_grades` through 08; `course_start_grade: 9`; Date of Birth withheld; standard file naming assumed (no real GDE samples yet) |
+| `sd83myedbc` | `myedbc` | North Okanagan-Shuswap — full myBlueprint+ tier (7 entities); `homeroom_grades` through 08; `class_rostering_grades: "homeroom"` (K-8 class rostering only; 9-12 stay on the roster for their transcripts); `course_start_grade: 9`; Date of Birth withheld; standard file naming assumed (no real GDE samples yet) |
 | `mbp_all` | `myedbc` | Tier override (full myBlueprint+) — enables CourseInfo + StudentCourses in addition to the 5 rostering CSVs |
 | `mbp_core` | `myedbc` | Tier override (minimal myBlueprint+) — enables only Students + CourseInfo + StudentCourses |

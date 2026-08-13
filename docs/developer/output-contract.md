@@ -243,6 +243,8 @@ The flag column gates the teacher part **only when it is both configured and act
 
 **Which classes exist:** homeroom classes are auto-generated for the configured `homeroom_grades`, subject classes come from the schedule, and blended classes (same teacher/time spanning 2+ grade levels) merge into one. `global_config.excluded_course_codes` drops bookkeeping sections (SD40 excludes `ATT--AM` / `ATT--PM`) before any of it. Homeroom-class creation is filtered to the active roster, so a homeroom with no active students is not emitted.
 
+**…unless the district scopes class rostering.** `global_config.class_rostering_grades` (opt-in; absent for every district but SD83) names the **complete** set of CEDS grades that receive class rostering, and `homeroom_grades` must be a subset of it. When it is set, homeroom classes still follow `homeroom_grades`, subject classes are restricted to `class_rostering_grades − homeroom_grades`, a blended class is emitted only if at least one of its grades falls in that difference, and a grade in neither set gets **no class and no enrollment at all**. `"homeroom"` is shorthand for "roster exactly the homeroom grades", which is SD83's shape: K-8 homerooms only, with grades 9-12 still on `Students.csv` (and in the myBlueprint+ course feeds) but carrying **no enrollment rows** — students with no class enrollments are valid output.
+
 ### 5. `Enrollments.csv`
 
 <!-- contract-table: Enrollments -->
@@ -480,7 +482,7 @@ This table is **hand-written and GATED AGAINST** the enforced contract by `tests
 | `sd54myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | No status column: withdraw-date-only active detection. |
 | `sd60myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | Family `row_filters`, cross-enrollment collapse, generated emails. |
 | `sd74myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | The frozen snapshot district. |
-| `sd83myedbc` | Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses | Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses | Full myBlueprint+ tier; extended homeroom grades (through 08), `course_start_grade: 9`, Date of Birth withheld. Standard MyEd BC file naming assumed pending real GDE samples. |
+| `sd83myedbc` | Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses | Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses | Full myBlueprint+ tier; extended homeroom grades (through 08), **`class_rostering_grades: "homeroom"`** (K-8 class rostering only — grades 9-12 are on `Students.csv` with no enrollment rows, so their transcripts still work), `course_start_grade: 9`, Date of Birth withheld. Standard MyEd BC file naming assumed pending real GDE samples. |
 | `sd51attendance` | StudentAttendance | StudentAttendance | Attendance-only tier — no roster anchor is a legitimate delivery here. |
 | `mbp_all` | Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses | Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses | Full myBlueprint+ tier. |
 | `mbp_core` | Students, CourseInfo, StudentCourses | Students, CourseInfo, StudentCourses | Minimal myBlueprint+ tier. |
