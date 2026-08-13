@@ -388,6 +388,17 @@ class TestJourney4UpgradeInPlace:
         values = json.loads(V38X_CONFIG_JSON)
         values.pop("setup_completed", None)
         values["schedule_registered"] = False
+        # The shared v3.8.x fixture points at C:\DistrictSync\input|output — REAL absolute
+        # paths outside this isolated profile. The Folders step stats the DISK
+        # (`validate_input_dir` requires the input dir to exist; `validate_output_dir` requires
+        # the output's PARENT to exist), so on a machine where DistrictSync is actually
+        # INSTALLED at the default location both validate, Folders is satisfied, and the
+        # resume lands on Delivery — failing this row for a reason that has nothing to do with
+        # what it pins. Re-point both at paths under the isolated profile that cannot exist, so
+        # Folders is unsatisfied on EVERY machine. Do not restore the shared values here.
+        unwritten = profile / "no-such-folder"
+        values["input_dir"] = str(unwritten / "input")
+        values["output_dir"] = str(unwritten / "output")
         (profile / "config.json").write_text(json.dumps(values), encoding="utf-8")
         # A REAL run in a REAL store — written through the app's own writer, so the band's
         # "your run history is safe" rests on the same artefact Run History reads.
