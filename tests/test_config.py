@@ -919,6 +919,215 @@ class TestCrossEnrollmentConfig:
 
 
 # -----------------------------------------------------------------------
+# class_rostering_grades — the opt-in CLASS-rostering scope (plan 0042, 1a)
+# -----------------------------------------------------------------------
+def _mapping_with(global_config: GlobalConfig) -> MappingConfig:
+    return MappingConfig(
+        version="1.10",
+        sis="test",
+        global_config=global_config,
+        mappings={
+            "Students": EntityConfig(
+                source_files={"student_demographic": "Demo.txt"},
+                field_map={"User ID": "Student Number"},
+            ),
+        },
+    )
+
+
+class TestClassRosteringGradesShape:
+    """Validator 3 — the value must be the sentinel or a non-empty CEDS list."""
+
+    def test_default_is_none(self):
+        assert GlobalConfig().class_rostering_grades is None
+
+    def test_sentinel_accepted(self):
+        cfg = GlobalConfig(homeroom_grades=["KG", "01"], class_rostering_grades="homeroom")
+        assert cfg.class_rostering_grades == "homeroom"
+
+    @pytest.mark.parametrize("spelling", ["Homeroom", "HOMEROOM", " homeroom "])
+    def test_sentinel_case_and_whitespace_normalised(self, spelling):
+        """A cosmetic spelling of an unambiguous sentinel must not fail a nightly
+        sync — it is normalised to the canonical form, and PINNED as normalised
+        so no consumer has to case-fold."""
+        cfg = GlobalConfig(homeroom_grades=["KG"], class_rostering_grades=spelling)
+        assert cfg.class_rostering_grades == "homeroom"
+
+    def test_ceds_list_accepted(self):
+        cfg = GlobalConfig(homeroom_grades=[], class_rostering_grades=["10", "11", "12"])
+        assert cfg.class_rostering_grades == ["10", "11", "12"]
+
+    def test_mixed_case_other_is_a_valid_ceds_code(self):
+        """ "Other" is the one mixed-case CEDS value — a case-normalising
+        validator would wrongly reject it."""
+        assert GlobalConfig(homeroom_grades=[], class_rostering_grades=["Other"]).class_rostering_grades == ["Other"]
+
+    @pytest.mark.parametrize("bad", ["09", "", "yes", "homerooms"])
+    def test_bare_grade_like_string_rejected(self, bad):
+        with pytest.raises(ValidationError, match="class_rostering_grades"):
+            GlobalConfig(class_rostering_grades=bad)
+
+    def test_empty_list_rejected_with_the_remove_the_key_remedy(self):
+        with pytest.raises(ValidationError, match="EMPTY list") as exc:
+            GlobalConfig(class_rostering_grades=[])
+        assert "Remove the key entirely" in str(exc.value)
+
+    @pytest.mark.parametrize("bad", [["K"], ["3"], ["kg"], ["KG", "nope"], [10]])
+    def test_non_ceds_entries_rejected_naming_the_vocabulary(self, bad):
+        """Raw MyEd values ("K", "3") and lower-case codes are NOT CEDS output
+        codes — the runtime compare is against the CONVERTED column."""
+        with pytest.raises(ValidationError, match="non-CEDS grade code") as exc:
+            GlobalConfig(homeroom_grades=[], class_rostering_grades=bad)
+        message = str(exc.value)
+        # The valid set is DERIVED, never restated — so it must be present in full.
+        for code in ("KG", "01", "12", "UG", "Other"):
+            assert code in message
+
+    @pytest.mark.parametrize("bad", [{"grades": ["10"]}, 10, True])
+    def test_wrong_type_rejected(self, bad):
+        with pytest.raises(ValidationError, match="class_rostering_grades"):
+            GlobalConfig(class_rostering_grades=bad)
+
+
+class TestClassRosteringGradesSubsetRule:
+    """Validators 1, 2 and 4 — the rules that only fire when the key is set."""
+
+    def test_subset_violation_raises_naming_both_sets(self):
+        with pytest.raises(ValidationError, match="SUBSET") as exc:
+            GlobalConfig(homeroom_grades=["KG", "01"], class_rostering_grades=["01", "02"])
+        message = str(exc.value)
+        assert "['KG']" in message, "the message must name the offending grade(s)"
+        assert "homeroom_grades=" in message and "class_rostering_grades=" in message
+
+    def test_subset_satisfied_accepted(self):
+        cfg = GlobalConfig(homeroom_grades=["KG", "01"], class_rostering_grades=["KG", "01", "07"])
+        assert cfg.class_rostering_grades == ["KG", "01", "07"]
+
+    def test_sentinel_with_empty_homeroom_grades_raises(self):
+        """Validator 2 — "roster exactly the homeroom grades" over an EMPTY
+        homeroom list means roster nobody."""
+        with pytest.raises(ValidationError, match="would roster nobody"):
+            GlobalConfig(homeroom_grades=[], class_rostering_grades="homeroom")
+
+    def test_list_form_with_empty_homeroom_grades_is_ACCEPTED(self):
+        """The twin of the row above — shape 2 ("no homerooms at all, timetable
+        rostering for 10-12") is legitimate and must NOT be swept up by it."""
+        cfg = GlobalConfig(homeroom_grades=[], class_rostering_grades=["10", "11", "12"])
+        assert cfg.homeroom_grades == []
+
+    def test_non_ceds_homeroom_grades_raise_when_the_key_is_set(self):
+        """Validator 4 — under the sentinel `homeroom_grades` BECOMES the
+        rostered set, so nothing else would ever validate it."""
+        with pytest.raises(ValidationError, match="homeroom_grades contains non-CEDS"):
+            GlobalConfig(homeroom_grades=["K", "1"], class_rostering_grades="homeroom")
+
+    def test_non_ceds_homeroom_grades_still_accepted_when_the_key_is_ABSENT(self):
+        """The positive twin: general `homeroom_grades` validation is a
+        pre-existing gap (roadmap), deliberately NOT closed here — so this
+        config must still load, or the change is wider than it claims."""
+        assert GlobalConfig(homeroom_grades=["K", "1"]).homeroom_grades == ["K", "1"]
+
+    def test_derived_empty_timetable_scope_does_not_raise(self):
+        """`class == homeroom` in LIST form is shape 1 spelled the long way —
+        an empty derived scope is legitimate, not an error."""
+        cfg = GlobalConfig(homeroom_grades=["KG", "01"], class_rostering_grades=["KG", "01"])
+        assert cfg.class_rostering_grades == ["KG", "01"]
+
+
+class TestClassRosteringGradesWiring:
+    def test_sentinel_roundtrips_via_to_raw_dict(self):
+        raw = _mapping_with(GlobalConfig(homeroom_grades=["KG"], class_rostering_grades="homeroom")).to_raw_dict()
+        assert raw["global_config"]["class_rostering_grades"] == "homeroom"
+
+    def test_list_roundtrips_via_to_raw_dict(self):
+        raw = _mapping_with(GlobalConfig(homeroom_grades=[], class_rostering_grades=["10", "12"])).to_raw_dict()
+        assert raw["global_config"]["class_rostering_grades"] == ["10", "12"]
+
+    def test_absent_roundtrips_as_None_not_empty_list(self):
+        """The ETL distinguishes "no scope" from "an empty scope" — collapsing
+        None to [] would suppress every subject class in every district."""
+        raw = _mapping_with(GlobalConfig()).to_raw_dict()
+        assert raw["global_config"]["class_rostering_grades"] is None
+
+    def test_to_raw_dict_carries_EVERY_global_config_field(self):
+        """Completeness, not a spot-check: `to_raw_dict`'s `global_raw` is a
+        hand-enumerated allowlist, so a key added to `GlobalConfig` but not to
+        it ships INERT — the ETL never sees it."""
+        raw = _mapping_with(GlobalConfig()).to_raw_dict()
+        assert set(raw["global_config"]) == set(GlobalConfig.model_fields)
+
+    def test_shipped_sd83_carries_the_key_through_to_raw_dict(self):
+        raw = load_config("sd83myedbc").to_raw_dict()
+        assert raw["global_config"]["class_rostering_grades"] == "homeroom"
+
+    def test_other_bundled_configs_do_not_set_it(self):
+        """The negative half of "11 configs are byte-identical" — stated as a
+        config fact so it cannot drift silently."""
+        for name in (
+            "myedbc",
+            "sd40myedbc",
+            "sd48myedbc",
+            "sd51myedbc",
+            "sd54myedbc",
+            "sd60myedbc",
+            "sd74myedbc",
+            "mbp_all",
+            "mbp_core",
+            "mbponly",
+            "sd51attendance",
+        ):
+            assert load_config(name).global_config.class_rostering_grades is None, name
+
+
+class TestClassRosteringGradesInheritance:
+    """`_base` deep-merge behaviour for the new key (lists REPLACE wholesale)."""
+
+    def test_child_inherits_the_parents_value(self, tmp_path, monkeypatch):
+        base = {
+            "version": "1.10",
+            "sis": "X",
+            "global_config": {
+                "homeroom_grades": ["KG", "01"],
+                "class_rostering_grades": "homeroom",
+                "academic_start_month_day": "08-25",
+                "academic_end_month_day": "07-25",
+            },
+            "mappings": {"Students": {"source_files": {"student_demographic": "D.txt"}, "field_map": {"User ID": "S"}}},
+        }
+        child = {"_base": "crgbase", "version": "1.10", "sis": "X", "district_name": "Child"}
+        (tmp_path / "crgbase_mapping.yaml").write_text(yaml.safe_dump(base), encoding="utf-8")
+        (tmp_path / "crgchild_mapping.yaml").write_text(yaml.safe_dump(child), encoding="utf-8")
+        monkeypatch.setattr("src.config.loader.user_mappings_dir", lambda: tmp_path)
+        monkeypatch.setattr("src.config.loader.bundle_mappings_dir", lambda: tmp_path)
+        assert load_config("crgchild").global_config.class_rostering_grades == "homeroom"
+
+    def test_child_can_override_to_null_and_get_the_default_back(self, tmp_path, monkeypatch):
+        base = {
+            "version": "1.10",
+            "sis": "X",
+            "global_config": {
+                "homeroom_grades": ["KG", "01"],
+                "class_rostering_grades": "homeroom",
+                "academic_start_month_day": "08-25",
+                "academic_end_month_day": "07-25",
+            },
+            "mappings": {"Students": {"source_files": {"student_demographic": "D.txt"}, "field_map": {"User ID": "S"}}},
+        }
+        child = {
+            "_base": "crgbase2",
+            "version": "1.10",
+            "sis": "X",
+            "district_name": "Child",
+            "global_config": {"class_rostering_grades": None},
+        }
+        (tmp_path / "crgbase2_mapping.yaml").write_text(yaml.safe_dump(base), encoding="utf-8")
+        (tmp_path / "crgchild2_mapping.yaml").write_text(yaml.safe_dump(child), encoding="utf-8")
+        monkeypatch.setattr("src.config.loader.user_mappings_dir", lambda: tmp_path)
+        monkeypatch.setattr("src.config.loader.bundle_mappings_dir", lambda: tmp_path)
+        assert load_config("crgchild2").global_config.class_rostering_grades is None
+
+
+# -----------------------------------------------------------------------
 # SD60 config — guardians-only Family + cross-enrollment collapse
 # -----------------------------------------------------------------------
 class TestSD60Config:

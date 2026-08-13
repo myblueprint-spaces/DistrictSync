@@ -22,9 +22,14 @@ import yaml
 from src.config.loader import (
     SUPPORTED_CONFIG_MAJOR,
     SUPPORTED_CONFIG_MINOR,
+    _parse_version,
     load_config,
 )
 from src.utils.paths import user_mappings_dir
+
+#: The shipped configs, read straight off disk (not via ``bundle_mappings_dir()``,
+#: whose frozen-exe branch other tests monkeypatch).
+BUNDLED_MAPPINGS_DIR = Path(__file__).resolve().parents[1] / "config" / "mappings"
 
 ALL_BUNDLED_CONFIGS = [
     "myedbc",
@@ -155,14 +160,53 @@ class TestBareScalarVersionRejected:
             load_config("vgate_barefloat")
         assert "quote it as a string" in str(excinfo.value)
 
-    def test_quoted_minor_ten_fires_the_newer_minor_warning(self, user_mappings, caplog):
-        # The exact value the float form would silently swallow: '1.10' > supported 1.9.
-        _write_user_config(user_mappings, "vgate_minorten", "1.10")
+    def test_quoted_minor_ten_parses_as_minor_ten_not_one(self):
+        """'1.10' must read as minor TEN — the exact fact the float form swallows.
+
+        Asserted on the parser rather than on the warning, because the warning
+        depends on where SUPPORTED_CONFIG_MINOR happens to sit (it reached 10
+        with `class_rostering_grades`, so '1.10' is now IN range and correctly
+        silent). The trailing-zero fact this class exists for is version-gate
+        independent, so it is now pinned that way.
+        """
+        assert _parse_version("1.10", Path("vgate_minorten_mapping.yaml")) == (1, 10)
+        # …and the float form the quoting rule exists to forbid really does lose it.
+        assert float("1.10") == 1.1
+
+    def test_quoted_two_digit_minor_above_supported_fires_the_newer_minor_warning(self, user_mappings, caplog):
+        """A TWO-DIGIT minor above the supported one still warns (bump-proof).
+
+        Symbolic in SUPPORTED_CONFIG_MINOR so a future bump cannot silently turn
+        this row green-by-inclusion, while staying two-digit — the shape whose
+        bare-float spelling would collapse.
+        """
+        newer = f"{SUPPORTED_CONFIG_MAJOR}.{SUPPORTED_CONFIG_MINOR + 10}"
+        _write_user_config(user_mappings, "vgate_minortwodigit", newer)
         with caplog.at_level(logging.DEBUG, logger=LOADER_LOGGER):
-            load_config("vgate_minorten")
+            load_config("vgate_minortwodigit")
         warnings = _version_records(caplog, logging.WARNING)
         assert len(warnings) == 1
-        assert "1.10" in warnings[0].getMessage()
+        assert newer in warnings[0].getMessage()
+
+
+class TestSD83DeclaresTheClassRosteringMinor:
+    """SD83 is the one bundled config that opts into `class_rostering_grades`.
+
+    Its declared version must be the QUOTED string '1.10' — the value the bare
+    YAML float would collapse to 1.1 — and it must load with no version warning
+    (pinned in aggregate by `test_all_bundled_configs_load_clean` too).
+    """
+
+    def test_sd83_version_is_the_quoted_string_one_ten(self):
+        raw = yaml.safe_load((BUNDLED_MAPPINGS_DIR / "sd83myedbc_mapping.yaml").read_text(encoding="utf-8"))
+        assert isinstance(raw["version"], str), "a bare YAML float would read as 1.1"
+        assert raw["version"] == "1.10"
+        assert _parse_version(raw["version"], Path("sd83myedbc_mapping.yaml")) == (1, 10)
+
+    def test_sd83_opts_into_class_rostering_grades(self):
+        """Positive pin: `GlobalConfig` does not forbid extras, so a typo'd key
+        would be silently dropped and SD83 would roster grades 9-12 anyway."""
+        assert load_config("sd83myedbc").global_config.class_rostering_grades == "homeroom"
 
 
 class TestInheritedVersion:

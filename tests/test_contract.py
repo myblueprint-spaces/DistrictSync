@@ -1144,3 +1144,49 @@ class TestDistrictQuirks:
         classes = _read_output(out, "Classes")
         name = classes[classes["Class ID"].astype(str).str.startswith("MT002_")]["Name"].iloc[0]
         assert name == "Liu Math 10 (A) 2026", name
+
+    # ---- SD83: class_rostering_grades: "homeroom" (K-8 SpacesEDU, 9-12 mbp+) ----
+
+    @pytest.mark.parametrize("district_output", ["sd83myedbc"], indirect=True)
+    def test_sd83_classes_are_EXACTLY_the_homeroom_grade_classes(self, district_output):
+        """`class_rostering_grades: "homeroom"` rosters ONLY the homeroom grades.
+
+        The fixture population is grades 3 / 10 / 12 at schools 100 / 200, so the
+        one rostered class is S001's grade-3 homeroom. Asserted as SET EQUALITY,
+        not a count: a subject class re-appearing under a different ID must fail.
+        """
+        _, out = district_output
+        class_ids = set(_read_output(out, "Classes")["Class ID"].dropna().astype(str))
+        assert class_ids == {"100_A1_2026"}, sorted(class_ids)
+
+    @pytest.mark.parametrize("district_output", ["sd83myedbc"], indirect=True)
+    def test_sd83_has_no_subject_or_blended_classes(self, district_output):
+        """Stated separately from the set equality above so a failure names the
+        cause. MT002 (grade 10) and MT003 (grade 12) are the sections that would
+        otherwise be rostered."""
+        _, out = district_output
+        for entity in ("Classes", "Enrollments"):
+            ids = set(_read_output(out, entity)["Class ID"].dropna().astype(str))
+            assert not [cid for cid in ids if cid.startswith("MT")], f"{entity}: {sorted(ids)}"
+            assert not [cid for cid in ids if cid.startswith("BLENDED_")], f"{entity}: {sorted(ids)}"
+
+    @pytest.mark.parametrize("district_output", ["sd83myedbc"], indirect=True)
+    def test_sd83_enrollments_reference_only_the_homeroom_class(self, district_output):
+        """Two-sided pairing: Enrollments is NON-EMPTY and every Class ID it
+        carries exists in Classes (`enrolled ⊆ classes` alone is satisfiable by
+        emptiness, which is why the non-empty half is asserted with it)."""
+        _, out = district_output
+        classes = set(_read_output(out, "Classes")["Class ID"].dropna().astype(str))
+        enrollments = _read_output(out, "Enrollments")
+        assert not enrollments.empty, "the homeroom enrollments themselves vanished"
+        assert set(enrollments["Class ID"].dropna().astype(str)) <= classes
+
+    @pytest.mark.parametrize("district_output", ["sd83myedbc"], indirect=True)
+    def test_sd83_students_and_transcripts_are_UNCHANGED_by_the_class_scope(self, district_output):
+        """The non-goal, proven: grades 9-12 stay on the roster (with no class
+        enrollments) precisely so their myBlueprint+ transcripts still work."""
+        _, out = district_output
+        assert set(_read_output(out, "Students")["User ID"]) == {"S001", "S002", "S003"}
+        transcripts = _read_output(out, "StudentCourses")
+        assert not transcripts.empty
+        assert {"S002", "S003"} <= set(transcripts["Student ID"])
