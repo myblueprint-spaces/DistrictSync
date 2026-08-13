@@ -17,7 +17,7 @@ import pandas as pd
 from src.etl.column_names import MASTER_TIMETABLE_ID, SCHOOL_NUMBER
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import ClassArtifacts, TransformContext
-from src.etl.transformers.grades import split_by_homeroom_grades
+from src.etl.transformers.grades import resolve_timetable_scope, split_by_homeroom_grades
 from src.etl.transformers.ids import normalize_id_series
 
 logger = logging.getLogger(__name__)
@@ -183,7 +183,13 @@ class EnrollmentTransformer(BaseTransformer):
         if schedule_df.empty:
             return None
 
-        non_homeroom = split_by_homeroom_grades(schedule_df, "grade", homeroom_grades, keep="subject")
+        non_homeroom = split_by_homeroom_grades(
+            schedule_df,
+            "grade",
+            homeroom_grades,
+            keep="subject",
+            timetable_scope=resolve_timetable_scope(context.global_config, homeroom_grades),
+        )
         if non_homeroom.empty:
             return None
 

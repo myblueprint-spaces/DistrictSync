@@ -41,7 +41,7 @@ from src.utils.paths import bundle_mappings_dir, user_mappings_dir
 logger = logging.getLogger(__name__)
 
 # Supported mapping-config format version (derived from the bundled configs,
-# which declare 1.0–1.9 today). Bump MINOR when the bundled configs start
+# which declare 1.0–1.10 today). Bump MINOR when the bundled configs start
 # using new same-major ETL-AFFECTING features; bump MAJOR only on a breaking
 # config-format change (and migrate every bundled config in the same release,
 # so the bundled set always loads clean against these constants).
@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 # perfectly compatible, training operators to ignore the one warning that
 # matters.
 SUPPORTED_CONFIG_MAJOR = 1
-SUPPORTED_CONFIG_MINOR = 9
+SUPPORTED_CONFIG_MINOR = 10
 
 
 def _search_dirs(explicit: Optional[Path]) -> list[Path]:

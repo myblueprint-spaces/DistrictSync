@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from typing import Any, Literal, Optional, Protocol, Union, cast
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,30 @@ ALLOWED_TRANSFORMS: frozenset[str] = frozenset(
         "normalize_iso_date",
     }
 )
+
+# -----------------------------------------------------------------------
+# `global_config.class_rostering_grades` sugar for "the rostered grades ARE
+# the homeroom grades" (an empty timetable scope). The config layer owns this
+# vocabulary — the field's own `Literal` annotation below has to spell it
+# anyway — and `src.etl.transformers.grades` imports it from here, keeping the
+# dependency direction etl -> config (same arrangement as ALLOWED_TRANSFORMS).
+# -----------------------------------------------------------------------
+CLASS_ROSTERING_HOMEROOM_SENTINEL = "homeroom"
+
+
+def _ceds_grade_codes() -> frozenset[str]:
+    """The valid CEDS grade-code vocabulary, for grade-list validation messages.
+
+    DEFERRED import, deliberately: ``src.etl.transformers.grades`` owns the CEDS
+    table (single source of truth — the valid set is never restated here), but
+    importing it at MODULE level would execute ``src/etl/transformers/__init__``
+    → ``base`` → ``src.config.models``, i.e. a genuine circular import while
+    this module is still initialising. By validation time every module is
+    loaded, so the deferred import is safe and free (``sys.modules`` hit).
+    """
+    from src.etl.transformers.grades import CEDS_GRADE_CODES
+
+    return CEDS_GRADE_CODES
 
 
 # -----------------------------------------------------------------------
@@ -517,6 +541,21 @@ class GlobalConfig(BaseModel):
     # Opt-in Students cross-enrollment collapse (see CrossEnrollmentConfig).
     # None/absent → disabled (default); every non-opted-in district is unaffected.
     cross_enrollment: Optional[CrossEnrollmentConfig] = None
+    # Opt-in CLASS-rostering scope: the COMPLETE set of grades that receive class
+    # rostering, in CEDS OUTPUT space ("KG", "01", ... — NOT raw MyEd values like
+    # "K"/"3"). `homeroom_grades` must be a SUBSET of it (validated below), which
+    # makes the derived scopes total:
+    #
+    #   homeroom scope  = homeroom_grades                     (homeroom classes + enrollments)
+    #   timetable scope = class_rostering_grades − homeroom_grades  (subject classes + enrollments)
+    #   grades in neither → NOTHING
+    #
+    # `"homeroom"` is sugar for "rostered == homeroom_grades" (empty timetable
+    # scope), so a district needn't restate its whole homeroom list and the two
+    # keys cannot drift. None/absent → today's behaviour: the timetable side is
+    # the unbounded complement of `homeroom_grades`, byte-identical output.
+    # Consumed by `src.etl.transformers.grades.resolve_timetable_scope`.
+    class_rostering_grades: Optional[Union[Literal["homeroom"], list[str]]] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -524,6 +563,93 @@ class GlobalConfig(BaseModel):
         if data is None:
             return {}
         return data
+
+    @field_validator("class_rostering_grades", mode="before")
+    @classmethod
+    def check_class_rostering_grades_shape(cls, value: Any) -> Any:
+        """Reject anything that is not the sentinel or a non-empty CEDS-code list.
+
+        Runs BEFORE the union coercion so the district author gets one actionable
+        message naming the valid vocabulary, not a two-branch Pydantic union
+        error. The sentinel is accepted case-insensitively and normalised (the
+        intent is unambiguous, and a cosmetic mismatch must not fail a nightly
+        sync); the GRADE CODES are matched EXACTLY, because the CEDS vocabulary
+        is case-significant ("Other" is mixed-case) and a listed-but-mistyped
+        code silently de-rosters a whole cohort.
+        """
+        if value is None:
+            return value
+        valid = _ceds_grade_codes()
+        remedy = (
+            f"Use the string '{CLASS_ROSTERING_HOMEROOM_SENTINEL}' (roster exactly the homeroom "
+            f"grades), or a non-empty list of CEDS grade codes: {sorted(valid)}."
+        )
+        if isinstance(value, str):
+            if value.strip().lower() == CLASS_ROSTERING_HOMEROOM_SENTINEL:
+                return CLASS_ROSTERING_HOMEROOM_SENTINEL
+            raise ValueError(f"class_rostering_grades got the bare string {value!r}. {remedy}")
+        if not isinstance(value, list):
+            raise ValueError(
+                f"class_rostering_grades must be a string or a list (got {type(value).__name__}). {remedy}"
+            )
+        if not value:
+            raise ValueError(
+                "class_rostering_grades is an EMPTY list, which would roster no classes at all. "
+                f"Remove the key entirely to keep the default (every non-homeroom grade). {remedy}"
+            )
+        unknown = [entry for entry in value if not isinstance(entry, str) or entry not in valid]
+        if unknown:
+            raise ValueError(f"class_rostering_grades contains non-CEDS grade code(s) {unknown!r}. {remedy}")
+        return value
+
+    @model_validator(mode="after")
+    def check_rostering_grade_scopes(self):
+        """Validate the grade-scope rules that only apply when scoping is opted into.
+
+        Two rules, both fail-loud at config LOAD (before any run), and both
+        scoped to ``class_rostering_grades`` being set so no other district is
+        affected:
+
+        1. ``homeroom_grades`` must itself be CEDS. Generally it is unvalidated
+           (a pre-existing gap → roadmap), but under the ``"homeroom"`` sentinel
+           it BECOMES the rostered set, so nothing else would check it.
+        2. ``homeroom_grades ⊆ class_rostering_grades`` — the subset rule the
+           whole design rests on. A district whose inherited `homeroom_grades`
+           is not a subset of its new list must state `homeroom_grades`
+           explicitly (including `[]`, which the LIST form legitimately allows).
+        """
+        if self.class_rostering_grades is None:
+            return self
+        valid = _ceds_grade_codes()
+        homeroom = set(self.homeroom_grades)
+        unknown = sorted(grade for grade in homeroom if grade not in valid)
+        if unknown:
+            raise ValueError(
+                f"homeroom_grades contains non-CEDS grade code(s) {unknown} — these must be CEDS "
+                f"codes whenever class_rostering_grades is set, because the two lists are compared "
+                f"against each other and against the CONVERTED grade column. "
+                f"Valid codes: {sorted(valid)}."
+            )
+        if self.class_rostering_grades == CLASS_ROSTERING_HOMEROOM_SENTINEL:
+            if not homeroom:
+                raise ValueError(
+                    f"class_rostering_grades: '{CLASS_ROSTERING_HOMEROOM_SENTINEL}' means "
+                    f"'roster exactly the homeroom grades', but homeroom_grades is EMPTY — that "
+                    f"would roster nobody. Set homeroom_grades, or list the grades to roster "
+                    f"explicitly in class_rostering_grades."
+                )
+            return self
+        rostered = set(self.class_rostering_grades)
+        missing = sorted(homeroom - rostered)
+        if missing:
+            raise ValueError(
+                f"homeroom_grades must be a SUBSET of class_rostering_grades, but {missing} "
+                f"is/are missing from it. homeroom_grades={sorted(homeroom)}, "
+                f"class_rostering_grades={sorted(rostered)}. Add the missing grade(s) to "
+                f"class_rostering_grades, or restate homeroom_grades (deep merge REPLACES lists, "
+                f"so an inherited homeroom list must be restated in full — `[]` is allowed)."
+            )
+        return self
 
     @model_validator(mode="after")
     def check_course_code_patterns(self):
@@ -763,6 +889,14 @@ class MappingConfig(BaseModel):
             "attendance": dict(self.global_config.attendance),
             "cross_enrollment": (
                 self.global_config.cross_enrollment.model_dump() if self.global_config.cross_enrollment else None
+            ),
+            # The sentinel passes through as the string; a list is copied. None
+            # (absent) must survive as None — the ETL distinguishes "not set"
+            # from an empty scope, so never collapse it to [].
+            "class_rostering_grades": (
+                list(self.global_config.class_rostering_grades)
+                if isinstance(self.global_config.class_rostering_grades, list)
+                else self.global_config.class_rostering_grades
             ),
         }
 
