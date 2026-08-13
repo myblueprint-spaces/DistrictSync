@@ -1,10 +1,13 @@
-# 0042 — `class_rostering_grades`: opt-in grade scoping for class rostering
+# 0042 — opt-in grade scoping: `class_rostering_grades` + `student_rostering_grades`
 
-- **Status:** Spec'd (Stage-3 gate returned CHANGES REQUIRED; all 7 applied — see Review § Disposition)
-- **Resumable from:** Stage 4 spec → Stage 5 approval
-- **Blockers:** none
-- **Flags:** kept `"homeroom"` as sugar for "rostered == homeroom_grades" so SD83 needn't restate 13 grade codes (owner may drop it; trivially removable).
-- **Disposition at close:** single slice — done or deferred per the workflow's lifecycle rule.
+- **Status:** **MIXED — read this before picking up work.** Slice 1a (`class_rostering_grades`) is spec'd and gated (Stage-3 returned CHANGES REQUIRED; all 7 applied — see Review § Disposition). Slice **1b (`student_rostering_grades`) was added 2026-08-13 at owner request and has NOT been through a Stage-3 gate** — it inherits none of 1a's review credit.
+- **Resumable from:** Stage 3 re-review **scoped to slice 1b** → Stage 4/5 approval for both. 1a's design is frozen; do not re-litigate its gated claims.
+- **Blockers:** none.
+- **Flags:**
+  - kept `"homeroom"` as sugar for "rostered == homeroom_grades" so SD83 needn't restate 13 grade codes (owner may drop it; trivially removable).
+  - **`student_rostering_grades` ships with NO config consumer.** SD83 must NOT set it (its 9-12 myBlueprint+ transcripts depend on 9-12 staying rostered), and no other shipped district has asked yet. Owner-requested for districts licensing a grade subset. Expect the `yagni-sentinel` lens to flag the absent consumer at re-review — that is a known, owner-accepted position, not an oversight.
+  - **Filename kept** as `0042-class-rostering-grades.md` despite the widened title — `docs/claugentic-DECISIONS.md`, the ROADMAP 0043 entry and five commit messages reference this path.
+- **Disposition at close:** two sequential slices — each done or deferred per the workflow's lifecycle rule.
 - **Roadmap item:** `docs/claugentic-ROADMAP.md` → Deferred tech work (0043 studentless-blend fix + the blended naming crash).
 - **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` (2026-08-13) · `docs/developer/output-contract.md` · commit `e187ac8` (the orphan-BLENDED fix this plan must not regress)
 
@@ -12,13 +15,18 @@
 
 `homeroom_grades` decides which grades get *homeroom* classes, and **every remaining grade automatically gets subject (timetable) classes and enrollments** — `classes.py:226` / `enrollments.py:186` call `split_by_homeroom_grades(..., keep="subject")`, which returns exactly the non-homeroom rows. There is no way to say "roster only these grades."
 
-Three district shapes need it, and none is expressible today:
+**The same gap exists one level up, for students themselves (owner, 2026-08-13).** There is **no config option for which grades of STUDENTS reach the output** — verified by reading, not assumed. Student inclusion is decided by enrollment status alone (`students.py:126` `_filter_active`, driven by `EnrollStatus.active_values`). The three grade-shaped keys that DO exist all scope something else: `homeroom_grades` *partitions* grades into homeroom vs timetable (`grades.py:64` — it never excludes a student, every grade lands on one side), `course_start_grade` drops *courses* by the grade encoded in the course code, and the generic `row_filters` mechanism (`{column, include: […]}`) is wired into **`Family` only** (`family.py:16` — `StudentTransformer.transform` never calls `apply_row_filters`). Districts will license SpacesEDU for a grade subset and must be able to send only those grades.
 
-| # | Need | `homeroom_grades` | `class_rostering_grades` |
-|---|---|---|---|
-| 1 | **SD83** — SpacesEDU for K-8, myBlueprint+ transcripts for 9-12 | K-08 | `"homeroom"` |
-| 2 | No homeroom rostering at all; timetable rostering for senior grades only | `[]` | `["10","11","12"]` |
-| 3 | Homeroom for 7-9, timetable for 10-12, K-6 excluded entirely | 07-09 | 07-12 |
+Four district shapes need this, and none is expressible today:
+
+| # | Need | `homeroom_grades` | `class_rostering_grades` | `student_rostering_grades` |
+|---|---|---|---|---|
+| 1 | **SD83** — SpacesEDU for K-8, myBlueprint+ transcripts for 9-12 | K-08 | `"homeroom"` | *unset* (9-12 MUST stay rostered) |
+| 2 | No homeroom rostering at all; timetable rostering for senior grades only | `[]` | `["10","11","12"]` | *unset* |
+| 3 | Homeroom for 7-9, timetable for 10-12, K-6 excluded entirely | 07-09 | 07-12 | *unset* |
+| 4 | **Licensed for K-8 only** — send nothing at all for 9-12 | K-07 | *unset* (inherits) | KG-08 |
+
+Shapes 1 and 4 are deliberately **opposite**: SD83 narrows classes while keeping students wide (transcripts need the 9-12 roster); a licensing district narrows students too. The two keys therefore stay independent axes — neither is derivable from the other.
 
 A third code path compounds it: **blended detection applies no grade filter at all** (`blended.py:57-93`). Because a homeroom-grade student never receives a subject enrollment (`enrollments.py:198`) while `_blended_teacher_enrollments` (`enrollments.py:229`) filters nothing, **a blend whose grades are all homeroom grades yields a class with a teacher and zero students.**
 
@@ -26,11 +34,13 @@ A third code path compounds it: **blended detection applies no grade filter at a
 
 ## Goals / Non-goals
 
-- **Goal:** `global_config.class_rostering_grades` — the complete set of grades that receive class rostering. Absent ⇒ today's behaviour.
-- **Goal:** absent key ⇒ **byte-identical output for the other 11 configs**. The SD74 golden must not move.
-- **Goal:** all three shapes above expressible in config alone.
-- **Non-goal:** changing `Students.csv`. Grades 9-12 MUST stay rostered — `StudentCourses` applies the zero-orphan filter against the active roster, so dropping them empties the myBlueprint+ transcripts SD83 asked for.
-- **Non-goal:** filtering `Staff.csv` (owner decision — staff stay unfiltered, as in every other config).
+- **Goal (1a):** `global_config.class_rostering_grades` — the complete set of grades that receive class rostering. Absent ⇒ today's behaviour.
+- **Goal (1b):** `global_config.student_rostering_grades` — the complete set of grades whose STUDENTS reach the output at all. Absent ⇒ today's behaviour (every grade).
+- **Goal:** absent keys ⇒ **byte-identical output**: 11 configs for 1a (SD83 *is* one of the 12 and is supposed to change), **all 12** for 1b (no shipped config sets it). The SD74 golden must not move.
+- **Goal:** all four shapes above expressible in config alone.
+- **Non-goal:** changing `Students.csv` **for SD83, or for any config that does not set `student_rostering_grades`**. (This was an unqualified non-goal before 1b; it is now scoped.) SD83's grades 9-12 MUST stay rostered — `StudentCourses` applies the zero-orphan filter against the active roster, so dropping them empties the myBlueprint+ transcripts SD83 asked for. Under 1b, narrowing `Students.csv` is the explicit, opt-in *purpose* — and a district that sets it while running myBlueprint+ **loses the excluded grades' transcripts by design**, which for a licensing district is the point.
+- **Non-goal:** filtering `Staff.csv` (owner decision — staff stay unfiltered, as in every other config). Unchanged by 1b: a teacher of an excluded grade still appears in `Staff.csv`.
+- **Non-goal (1b):** deriving either key from the other, or auto-widening one to match the other. Shapes 1 and 4 are opposite directions; both keys stay independently settable.
 - **Non-goal:** the general studentless-blend fix for the other six districts — partner-visible, rewrites the SD74 golden, **plan 0043**. This plan implements the identical rule **gated** on the key being set; 0043 deletes the gate.
 - **Non-goal:** validating `homeroom_grades` against the CEDS vocabulary generally (pre-existing gap → roadmap). Mitigated here for configs that set the new key, via the subset rule.
 
@@ -47,11 +57,41 @@ A third code path compounds it: **blended detection applies no grade filter at a
 
 **The subset rule is what makes this safe and total.** Because `homeroom_grades ⊆ rostered`, filtering to rostered and then to homeroom is the same as filtering to homeroom — so **the homeroom path needs no change whatsoever.** (This also permanently resolves the advisory panel's "two dead call sites" finding: those edits aren't dead, they're unnecessary.) A district whose inherited `homeroom_grades` isn't a subset of its new list gets a **loud validation error**, forcing it to state `homeroom_grades` explicitly — including `[]` for shape 2.
 
-**Three touch points:**
+**Student semantics (owner, 2026-08-13) — slice 1b.** `student_rostering_grades` is the *complete* set of grades whose students reach the output, and it is the **outermost bound**:
 
-1. `grades.split_by_homeroom_grades(..., keep="subject")` — gains an optional `timetable_scope`; when given, keeps `grade_ceds.isin(timetable_scope)` instead of `~isin(homeroom_grades)`. **The scope lands INSIDE the function that already does the CEDS conversion**, so there is exactly one conversion and no ordering hazard (see the defect table). The two callers (`classes.py:226`, `enrollments.py:186`) just pass it through.
-2. `blended._register_blends` — suppress a blend iff **none of its grades is in the timetable scope**, i.e. `blend_grades ∩ timetable_scope == ∅`, gated on the key being set.
-3. Config + wiring: the field, its validators, `to_raw_dict`, the version gate.
+- absent/`null` ⇒ **every grade** — today's behaviour exactly
+- set ⇒ only students whose CEDS grade is in the list reach `Students.csv`; the existing active-status filter still applies **on top** (the two are ANDed, neither replaces the other)
+- **the subset chain** (validated, fail-loud, each link checked only when both sides are configured): `homeroom_grades` ⊆ `class_rostering_grades` ⊆ `student_rostering_grades`
+
+**The absent-class-key rule (owner decision, 2026-08-13 — the one fork this revision had to settle).** When `student_rostering_grades` is set and `class_rostering_grades` is **absent**, the class scope **inherits the student list as its outer bound**: timetable scope = `student_rostering_grades − homeroom_grades`, a positive set rather than today's unbounded complement.
+
+*Why, and what the alternative cost.* Subject classes are built from the **schedule**, not the roster (`classes.py:226`), and only the *student* enrollment rows are roster-filtered — teacher rows are not (`enrollments.py:229`, and `Staff.csv` stays unfiltered by design). So leaving the two keys independent would build grade 9-12 subject classes with a teacher and **zero students** for a K-8 licensing district: precisely the studentless-class shape that is *this plan's own problem statement*. Inheriting the bound makes the subset chain **total** — no grade can be class-rostered without its students being sent — and costs almost nothing structurally, because the scope resolver already returns `set[str] | None`; it simply gains the student list as an input and computes a set where it would have returned `None`.
+
+| Both keys | Resulting homeroom scope | Resulting timetable scope | Note |
+|---|---|---|---|
+| neither set | `homeroom_grades` | complement of `homeroom_grades` | today's behaviour, byte-identical |
+| class only | `homeroom_grades` | `class − homeroom` | slice 1a; shapes 1-3 |
+| **student only** | `homeroom_grades` | **`student − homeroom`** | shape 4; the inherited bound |
+| both set | `homeroom_grades` | `class − homeroom` | chain validated; class ⊆ student |
+
+Worked shape 4: `student = KG-08`, `homeroom = KG-07` (base default), `class` absent ⇒ homeroom scope `KG-07`, timetable scope `{08}`, and grades 09-12 get **nothing at all** — no students, no classes, no enrollments, no family rows, no transcripts.
+
+**One key, five downstream filters — verified, not assumed.** `student_rostering_grades` needs no per-entity wiring because narrowing `Students.csv` narrows everything through the existing zero-orphan invariant: `context.active_student_ids` (published at `students.py:39`) is consumed by Classes homeroom (`classes.py:129`), Enrollments homeroom + subject (`enrollments.py:134`, `:199`), Family (`family.py:24`) and StudentCourses (`student_courses.py:115`). That is the whole cascade — a favourable structural fact, and the reason 1b is a small slice despite a wide blast radius.
+
+**The one sharp edge in that cascade: filtering to ZERO students.** `filter_to_active` is deliberately fail-safe — an EMPTY roster logs a WARNING and returns the frame **unchanged** rather than dropping every row (`base.py:281-283`, "never filter-to-empty"). So a `student_rostering_grades` that matches no student would leave all five consumers **unfiltered**, i.e. a mass-orphan delivery. **It is already caught, at the delivery boundary:** `run_transform` skips an empty frame (`pipeline.py:218-220` `if transformed.empty: continue`), so `Students` never enters `outputs`, so `check_delivery_integrity`'s anchor fault fires (`pipeline.py:305` `anchor not in outputs`) → `INCOMPLETE_ROSTER`, raised **before** `save_all`, exit 1, nothing written, previous output untouched. If nothing else produced rows either, the `NO_OUTPUT` fault fires instead (`:296`). **This is an asymmetry worth stating plainly: 1b's catastrophic case is covered by an existing floor, whereas 1a's (empty Classes+Enrollments) is deliberately not** — which is why the deferred delivery floor (see *NOT in this plan*) does not block 1b. Pin it with a test rather than trusting the reading.
+
+**Touch points — three for 1a, two for 1b:**
+
+1. *(1a)* `grades.split_by_homeroom_grades(..., keep="subject")` — gains an optional `timetable_scope`; when given, keeps `grade_ceds.isin(timetable_scope)` instead of `~isin(homeroom_grades)`. **The scope lands INSIDE the function that already does the CEDS conversion**, so there is exactly one conversion and no ordering hazard (see the defect table). The two callers (`classes.py:226`, `enrollments.py:186`) just pass it through.
+2. *(1a)* `blended._register_blends` — suppress a blend iff **none of its grades is in the timetable scope**, i.e. `blend_grades ∩ timetable_scope == ∅`, gated on the key being set.
+3. *(1a)* Config + wiring: the field, its validators, `to_raw_dict`, the version gate.
+4. *(1b)* `grades.filter_to_grade_scope(df, grade_col, scope) -> pd.DataFrame` — a **new sibling** in the module that already owns the grade vocabulary. It derives a temporary CEDS column, masks on it, and **drops it**, returning a copy. Deliberately NOT a third `keep=` flavor of `split_by_homeroom_grades`: that function's contract is the homeroom/subject *partition*, and this is an inclusion filter with no partition (adding a flavor whose `homeroom_grades` argument is meaningless is the permissive-parameter shape CLAUDE.md bans). The scope resolver from touch point 1 gains the student list and returns the student scope alongside the timetable scope.
+5. *(1b)* `students.py` — one call between `_collapse_cross_enrollment` (`:23`) and the `result["EnrollStatus"]` write (`:24`), plus an aggregate log line (counts only, PII rule).
+
+**Ordering inside `StudentTransformer` is load-bearing, both ways.**
+
+- **After** `_collapse_cross_enrollment`, not before: collapse leaves exactly ONE row per `User ID`, so exactly one grade decision is made per student. Filtering first could drop a cross-enrolled student's row at one school and keep the other, letting the school whose record happens to disagree decide inclusion. (Cross-enrollment is opt-in and off for every current district, so this is cheap insurance, not a live bug.)
+- **Before** `apply_field_map` (`:27`), and it must **NOT** rewrite the raw grade column in place. This is the plan's known `grade_to_ceds` non-idempotency trap (`KG`/`PK`/`IT`/`PR`/`PS` → `"UG"` — the CEDS *values* are not keys of `CEDS_MAPPING`) landing in a **new and worse** location: the Students `field_map` applies `grade_to_ceds` to that same raw column to produce the output `Grade` (`myedbc_mapping.yaml:117-119`), so an in-place rewrite — the shape `split_by_homeroom_grades(keep="homeroom")` legitimately uses at `grades.py:90` — would convert twice and ship every Kindergarten student as `Grade = "UG"`. Not a dropped class: **corrupted delivered data for the exact cohort the licensing districts care about.** Hence the derive-mask-drop contract above, and an acceptance criterion pinning a KG student's output `Grade == "KG"` with the key set.
 
 **Blend-rule derivation, checked against all three shapes.** The rule is keyed to the timetable scope because that is the set whose students receive subject enrollments — so "no grade in timetable scope" means **no student CAN be enrolled** via the subject path.
 
@@ -77,6 +117,15 @@ A third code path compounds it: **blended detection applies no grade filter at a
 
 **Alternatives rejected:** a boolean `homeroom_classes_only` (cannot express shapes 2 or 3); dropping `student_schedule` from a district's `source_files` (fails — `enrollments.py:33-35` returns empty when the schedule is empty, deleting homeroom enrollments too); suppressing classes with no student enrollments (silently changes six live districts; can't distinguish "legitimately empty" from "wrongly rostered"); pre-filtering the schedule in `blended.py` (see above).
 
+**Rejected for 1b specifically: wiring the existing `row_filters` into Students.** It is the closest existing mechanism — a declarative `{column, include: […]}` already validated, already `extra="forbid"`, already implemented at `base.py:373` — and enabling it for Students is a one-line call. Rejected on four counts, each verified:
+
+1. **Wrong grade space.** `row_filters` runs before `apply_field_map` and matches the **raw source value** (`base.py:404-406`), so a district would list MyEd BC's `"K"`/`"3"`/`"Kindergarten"` — every spelling its extract happens to use — while `homeroom_grades` and `class_rostering_grades` are CEDS (`IT/PR/PK/TK/KG/01…`). Two of the three grade keys in one config would then be in *different vocabularies*, and the subset chain could not be validated at all.
+2. **No subset validation is possible**, for the same reason — which is the owner's rule 3 and the main safety property of this design.
+3. **It cannot express the inherited class bound**, because it is a per-entity filter with no visibility of `homeroom_grades`.
+4. **It fails open on the dangerous side by construction:** a raw value the district didn't think to list is silently excluded, where a CEDS-validated list rejects an unknown code loudly at config load.
+
+`row_filters` stays as-is (Family only). This is a genuinely different axis, not a respelling of it.
+
 ### Advisory-panel defects and how this design answers them
 
 | Defect found at Stage 2b | Answer |
@@ -90,19 +139,22 @@ A third code path compounds it: **blended detection applies no grade filter at a
 
 ## Architecture & holistic fit
 
-- **Codebase fit.** Validation at the Pydantic boundary (`models.py`); the scope decision inside `grades.py`, the module that already owns the grade vocabulary and the homeroom/subject partition; one gated rule in `blended.py`. No new module, no new abstraction, no district names in code. The key joins the `global_config` opt-in family (`excluded_course_codes`, `cross_enrollment.collapse`, `course_start_grade`).
-- **Product fit.** Three real district shapes, one config key, no hand-edited CSVs — per CLAUDE.md's configurable-over-hardcoded mandate.
+- **Codebase fit.** Validation at the Pydantic boundary (`models.py`); both scope decisions inside `grades.py`, the module that already owns the grade vocabulary and the homeroom/subject partition; one gated rule in `blended.py`; one filter call in `students.py`, beside the active-status filter that is already there. No new module, no new abstraction, no district names in code. Both keys join the `global_config` opt-in family (`excluded_course_codes`, `cross_enrollment.collapse`, `course_start_grade`).
+- **Product fit.** Four real district shapes, two config keys, no hand-edited CSVs — per CLAUDE.md's configurable-over-hardcoded mandate.
 - **Quality dimensions to uphold:**
-  - `data-and-persistence` — the config→pipeline key contract (`to_raw_dict`), the versioned-schema gate, referential integrity (the `e187ac8` class of failure).
-  - `reliability-resilience` — fail-loud validation (subset rule, CEDS codes) + a floor against silent filter-to-empty delivery.
-  - `maintainability-structure` — one conversion, one suppression point, scope derived once.
-  - `testing` — the default-off proof needs a real positive twin (CLAUDE.md's no-vacuous-greens rule).
-  - *Not in scope:* `security` (no new boundary/input), `performance-efficiency` (one extra mask), privacy (no new PII surface).
-- **Future-proofing.** The rule is total over the three shapes and gated for 0043; 0043 deletes the gate rather than rewriting the rule.
+  - `data-and-persistence` — the config→pipeline key contract (`to_raw_dict`), the versioned-schema gate, referential integrity (the `e187ac8` class of failure). **1b adds a data-CORRECTNESS case, not just an integrity one:** the double-conversion `Grade = "UG"` corruption.
+  - `reliability-resilience` — fail-loud validation (subset chain, CEDS codes) + a floor against silent filter-to-empty delivery. 1b's filter-to-empty case is covered by the existing anchor floor; 1a's is not (deferred deliberately).
+  - `maintainability-structure` — one conversion per path, one suppression point, scope derived once, no third spelling of the grade→CEDS→mask idiom.
+  - `testing` — the default-off proof needs a real positive twin (CLAUDE.md's no-vacuous-greens rule), and **1b's negative is vacuous by construction** (no config sets the key), so its positive layer is mandatory rather than complementary.
+  - `privacy` — **newly relevant in 1b, at LIGHT weight:** the filter's log line reports counts only. A message naming which students were dropped by grade would be a PII leak into `etl_tool.log`, and grade is itself student data. Follows `filter_to_active`'s existing counts-only convention (`base.py:271-275`).
+  - *Not in scope:* `security` (no new boundary/input), `performance-efficiency` (one extra vectorised mask per run), `product-ux` (no UI surface — both keys are config-only).
+- **Future-proofing.** 1a's rule is total over shapes 1-3 and gated for 0043; 0043 deletes the gate rather than rewriting the rule. 1b's inherited-bound rule means a future third scope key would extend the same chain rather than add another axis.
 
 ## Affected files
 
-- `src/config/models.py` — `GlobalConfig.class_rostering_grades: Literal["homeroom"] | list[str] | None = None`; **add the key to `to_raw_dict`'s `global_raw` (`:750-767`)**; validators (below).
+**Slice 1a:**
+
+- `src/config/models.py` — `GlobalConfig.class_rostering_grades: Literal["homeroom"] | list[str] | None = None`; **add the key to `to_raw_dict`'s `global_raw` (`:750-767`)**; validators 1-5.
 - `src/config/loader.py:63` — `SUPPORTED_CONFIG_MINOR` 9 → 10 (ETL-affecting key).
 - `src/etl/transformers/grades.py` — `split_by_homeroom_grades` gains optional `timetable_scope`; a small resolver turning the config value + `homeroom_grades` into that scope (`None` ⇒ today's complement).
 - `src/etl/transformers/classes.py:226` · `src/etl/transformers/enrollments.py:186` — pass the scope through.
@@ -111,17 +163,38 @@ A third code path compounds it: **blended detection applies no grade filter at a
 - Tests: `test_config.py` · `test_config_version_gate.py` · `test_contract.py` (`TestDistrictQuirks`) · `test_transform_classes.py` · `test_transform_enrollments.py` · `test_blended_classes.py` · `test_zero_orphan_enrollments.py` · a differential test over the SD74 corpus.
 - Docs: `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/developer/adding-district.md` · **`docs/developer/output-contract.md:244`** (the sentence stating the CURRENT rule — "homeroom classes are auto-generated for the configured `homeroom_grades`, subject classes come from the schedule" — which is partner-facing and changes when the key is set; `:483`'s gated columns do NOT move, since SD83's entity set is unchanged — only its free-text Note) · `CLAUDE.md` — one dense clause each.
 
+**Slice 1b** (builds on 1a's resolver + validator machinery; do not start before 1a lands):
+
+- `src/config/models.py` — `GlobalConfig.student_rostering_grades: list[str] | None = None`; add to `to_raw_dict`'s `global_raw`; validators 6-8 (the chain extends validator 1's existing `model_validator`, it does not add a second one).
+- `src/config/loader.py:63` — `SUPPORTED_CONFIG_MINOR` 10 → **11** (a second ETL-affecting key ⇒ a second MINOR bump per the 2026-07-29 scope note). **No config's declared `version` moves** — no shipped config sets this key, so nothing declares `'1.11'`. That is honest, not an omission: the constant records what this build *understands*, and the gate's tests reference it symbolically (`test_config_version_gate.py:79,103,125,135`).
+- `src/etl/transformers/grades.py` — new `filter_to_grade_scope(df, grade_col, scope)` (derive temp CEDS column → mask → **drop it** → return a copy); the resolver gains the student list and the inherited-bound rule.
+- `src/etl/transformers/students.py:23-24` — one call, one aggregate count log.
+- Tests: `test_config.py` · `test_config_version_gate.py` · `test_transform_students.py` · `test_transform_family.py` · `test_zero_orphan_enrollments.py` · `test_pipeline_delivery_integrity.py` (the filter-to-empty → anchor-fault pin) · the SD74 differential, second injection.
+- Docs: `docs/developer/output-contract.md` — **two** sentences: `:244` again (the class rule now has an outer student bound) and the `Students.csv` section's "which students appear" rule, which currently says active-status only. `docs/developer/adding-district.md` · `CLAUDE.md` (the *Key Data Flow* **Students** bullet currently reads "Filtered to active via the config-driven predicate" — that becomes active **AND** optionally grade-scoped) · `docs/claugentic-ARCHITECTURE_TREE.md` if `grades.py`'s one-line description moves.
+
 **NOT in this plan — the delivery floor (owner decision, 2026-08-13).** The drafted floor ("`Students` non-empty while BOTH rostering entities are empty is a fault") **contradicts pinned, documented behaviour**: `tests/test_pipeline_delivery_integrity.py:236-237` (`test_anchor_alone_is_clean`) explicitly asserts that state CLEAN with the full rostering set configured, `:231-234` pins per-entity skip-on-empty as legitimate BY DESIGN, and `pipeline.py:279-285`/`:767-768` + CLAUDE.md's exit-code contract say the same. `active_entities()` scoping stops `mbponly`/`mbp_core`/`sd51attendance` but NOT the real false positive: any of the 8 rostering configs whose `student_schedule` is missing/empty **and** whose demographic frame yields no homeroom-grade rows hits it — one missing GDE away, since `enrollments.transform` (`enrollments.py:33-35`) returns empty for the whole entity on an empty schedule. Today that is a partial delivery at exit 0; under the floor it becomes exit **1 with nothing written at all** (the fault raises before `save_all`). It also has a second caller (`src/ui_flet/screens/convert.py:281`) requiring a new bounded `RunErrorCategory` (written into `history.db`), a new `ConvertStatus` + plain-language copy (`convert_result.py:140-184`), and an entry in the hand-listed faults at `tests/test_ui_flet_convert_result.py:199-202`. Owner dropped it here because **the validators already fail loud at config LOAD time, before any run** — the floor's only residual is "valid config, no student holds those grades", which the >20% anomaly already warns on for any district with a prior run. → ROADMAP item; `product-ux` is therefore NOT in scope for this plan.
 
 ### Validators (fail-loud, at the boundary)
 
-**Both lists are in CEDS OUTPUT space, not raw source space** — `myedbc_mapping.yaml:9` and `sd83myedbc_mapping.yaml:31` use `IT/PR/PK/TK/KG/01…`, and the runtime compare is against the CONVERTED column (`grades.py:91,93`). Stated explicitly because an implementer could otherwise reasonably build the subset check against raw MyEd values (`"K"`, `"3"`).
+**All three lists are in CEDS OUTPUT space, not raw source space** — `myedbc_mapping.yaml:9` and `sd83myedbc_mapping.yaml:31` use `IT/PR/PK/TK/KG/01…`, and the runtime compare is against the CONVERTED column (`grades.py:91,93`, and the same for 1b's new filter). Stated explicitly because an implementer could otherwise reasonably build the subset check against raw MyEd values (`"K"`, `"3"`). The valid set is `set(grades.CEDS_MAPPING.values())` = `{IT, PR, PK, TK, KG, 01…13, PS, UG, Other}` — note `"Other"` is the one **mixed-case** member, so a case-normalising validator must not reject it.
+
+**Slice 1a — validators 1-5:**
 
 1. **Subset rule** — `model_validator(mode="after")`: when the list form is used, `set(homeroom_grades) ⊆ set(class_rostering_grades)`, else raise naming both sets.
 2. **Sentinel guard** — `"homeroom"` with an EMPTY `homeroom_grades` means "roster nobody" → raise. **Scoped to the sentinel only**: the list form legitimately allows `homeroom_grades: []` (shape 2).
 3. **Shape** — non-empty list; entries must be CEDS codes (message derives the valid set from `grades.CEDS_MAPPING.values()`, never restated); reject bare strings that look like a grade (`"09"`), wrong types, `""`; decide + pin case handling for `"HOMEROOM"`.
 4. **`homeroom_grades` CEDS validation whenever the key is set** (Stage-3 gate, R5). The subset rule only mitigates an unvalidated `homeroom_grades` in the **list** form (a non-CEDS homeroom entry then either appears in `class_rostering_grades` — caught by validator 3 — or fails the subset check). Under the **sentinel**, rostered ≡ `homeroom_grades` and **nothing validates it** — which is exactly SD83's shipped shape. Validate `homeroom_grades` against the CEDS value set whenever `class_rostering_grades` is set; the machinery is already there. (General `homeroom_grades` validation stays a roadmap item.)
 5. **`keep="homeroom"` + `timetable_scope` must RAISE**, never silently ignore the argument — CLAUDE.md's "no permissive default on a safety-relevant parameter"; a filter argument accepted and dropped is exactly the defaulted-unsafe-call that rule bans.
+
+**Slice 1b — validators 6-8:**
+
+6. **Shape** — list of CEDS codes, reusing validator 3's derived vocabulary and message (one spelling, not two). **No sentinel form** — `"homeroom"` sugar is meaningless for students and must be rejected as a non-CEDS value rather than quietly accepted.
+7. **Empty list RAISES** — and this is an **asymmetry with validator 2 that must be deliberate, not copied.** `class_rostering_grades: []` is arguably "roster no classes"; `student_rostering_grades: []` means **"send no students"**, whose only possible outcome is the mass-orphan-then-fail path above (empty roster → `filter_to_active` no-ops → anchor fault → exit 1, nothing delivered). A config whose every run is guaranteed to fail must be rejected at load, not at 2am. Absent/`null` remains the way to say "all grades"; `[]` is never a valid way to say anything.
+8. **The subset chain** — `homeroom_grades ⊆ class_rostering_grades ⊆ student_rostering_grades`, each link checked only when both its sides are configured, in ONE `model_validator(mode="after")` alongside validator 1. Three specific cases the implementer must get right rather than relying on transitivity:
+   - **class absent, student set** ⇒ check `homeroom_grades ⊆ student_rostering_grades` **directly**; transitivity gives nothing when the middle term is missing, and this is precisely shape 4's configuration.
+   - **sentinel + student set** ⇒ rostered ≡ `homeroom_grades`, so the same direct check applies.
+   - the failure message must name **which link** broke and both offending sets — "not a subset" without saying of what is the message a district will be reading at 8am with a failed sync.
+   - Derived-scope emptiness is **legitimate and must NOT raise**: `student == homeroom` yields an empty timetable scope, which is simply shape 1 expressed via the student key.
 
 ## Research / grounding
 
@@ -135,6 +208,14 @@ A third code path compounds it: **blended detection applies no grade filter at a
   - `check_delivery_integrity` guards only the `Students` anchor and "no output at all" — empty Classes+Enrollments passes today.
   - `split_by_homeroom_grades(keep="subject")` derives a NEW `grade_ceds` column and preserves raw `grade` (`grades.py:92-93`) — which is why the scope belongs inside it.
   - **Gotcha (out of scope, roadmapped):** `blended.create_name` raises `KeyError: 'course code'` when ClassInformation lacks that column (`blended.py:303`).
+- **Findings added for slice 1b (2026-08-13; each read, not assumed):**
+  - **No existing student-grade option exists.** `GlobalConfig` (`models.py:466-519`) has exactly three grade-shaped keys — `homeroom_grades`, `course_start_grade`, and (via 1a) `class_rostering_grades`; none scopes student inclusion. Student inclusion is `_filter_active` alone (`students.py:126-140`).
+  - **`row_filters` is wired into Family ONLY** — `apply_row_filters` has exactly two references in `src/`: its definition (`base.py:373`) and `family.py:16`. `StudentTransformer.transform` never calls it.
+  - **`active_student_ids` has exactly five consumers** — `classes.py:129`, `enrollments.py:134`, `enrollments.py:199`, `family.py:24`, `student_courses.py:115`. No sixth; `Staff` has none.
+  - **`filter_to_active` fails SAFE on an empty roster** — `base.py:281-283` logs a WARNING and returns the frame unchanged ("never filter-to-empty"). This is what makes filter-to-zero-students dangerous rather than merely empty.
+  - **…and the existing delivery floor catches exactly that case.** `run_transform` drops empty frames from `outputs` (`pipeline.py:218-220`), and `check_delivery_integrity` tests `anchor not in outputs` (`pipeline.py:305`) → `INCOMPLETE_ROSTER`; total emptiness hits `NO_OUTPUT` (`:296`). Both raise before `save_all`.
+  - **The CEDS non-idempotency set is exactly `{KG, IT, PR, PK, PS}`** — read from `CEDS_MAPPING` (`grades.py:17-55`): these five are *values* that are not also *keys*. `01`-`13`, `TK`, `UG` and `Other` round-trip safely. Relevant because it decides which cohort an in-place rewrite would corrupt (Kindergarten and the early-years grades — i.e. the licensing districts' core population).
+  - **The Students `field_map` re-converts the raw grade column** — `myedbc_mapping.yaml:117-119` (`"Grade": {column: "Grade", transform: "grade_to_ceds"}`), which is why 1b's filter must not touch that column in place.
 
 ## Risks & mitigations
 
@@ -147,12 +228,17 @@ A third code path compounds it: **blended detection applies no grade filter at a
 | **Silent non-delivery** — a config that empties both rostering entities passes the anchor-only integrity check; previous good files are archived out of the SFTP glob; the run reports success | **Accepted for this plan, mitigated upstream:** all five validators fail LOUD at config load, before any run — so the residual is only "valid config, no student holds those grades", which the >20% anomaly warns on for any district with a prior run. The floor that would close the first-run case is deferred (see Affected files) because it contradicts a pinned contract. |
 | **`UG` cohort de-rostered** — a blank/unrecognised grade maps to `"UG"`; today it lands in the subject half and gets a class, under the list form it gets nothing unless `"UG"` is listed | **Accepted and documented**, not silent: log the count; name it in the DECISIONS line, the SD83 rollout note, and `adding-district.md` (a district wanting them must list `"UG"`). |
 | **First run trips the >20% anomaly** on Classes + Enrollments; Home paints it a warning | Expected degradation — call it out in the rollout note so nobody "fixes" it. |
-| **Partner acceptance unknown** — `Students.csv` will carry a whole 9-12 cohort with **zero** enrollment rows | **Owner/partner confirmation item.** Internal paths verified clean (`report.py:94-156` has no students→enrollments direction; the anchor rule holds), but SpacesEDU has rejected this repo's output before. Raise before SD83's first live delivery. |
+| ~~**Partner acceptance unknown**~~ — `Students.csv` carrying a 9-12 cohort with **zero** enrollment rows | **CLOSED (owner confirmation, 2026-08-13): students with no class enrollments and no course data are acceptable output.** Internal paths were already verified clean (`report.py:94-156` has no students→enrollments direction; the anchor rule holds). Record as a DECISIONS line at Land so it is not re-opened; the Stage-5 acceptance list no longer carries it as an open question. |
 | SD83 config unverified against real GDE extracts | Pre-existing for the whole SD83 config; flagged in DECISIONS. |
+| **(1b) In-place CEDS rewrite ships `Grade = "UG"` for every Kindergarten student** — the `students.py` filter using `split_by_homeroom_grades(keep="homeroom")`'s in-place shape, followed by the field_map's second `grade_to_ceds` | **HIGHEST-severity item in 1b — corrupted delivered data, not a dropped row, and silent.** Structural mitigation: `filter_to_grade_scope` derives a temp column and drops it; it takes no `keep=` argument and cannot rewrite in place. Pinned by an acceptance criterion asserting a KG student's output `Grade == "KG"` with the key set, and by the existing `["K","1","3"]` homeroom test. |
+| **(1b) One key silently narrows five entities** — Students, Family, Classes, Enrollments, StudentCourses | Intended (that is the licensing requirement), but must never be a surprise: the aggregate count log at the filter, the `>20%` anomaly on every affected entity, and an explicit `adding-district.md` note that the key removes the excluded grades' **guardians and transcripts** as well as their classes. |
+| **(1b) A district sets it while running myBlueprint+** and loses the excluded grades' transcripts | Documented as the designed consequence — for a licensing district it is the point, and it is the exact inverse of SD83's shape. Named in `adding-district.md` beside the SD83 note so the two shapes are read together. |
+| **(1b) Filter-to-zero-students** ⇒ empty roster ⇒ `filter_to_active` no-ops ⇒ every other entity unfiltered | **Already caught by an existing floor** (verified: `pipeline.py:218-220` + `:305` → `INCOMPLETE_ROSTER`, or `:296` → `NO_OUTPUT`; both raise before `save_all`, exit 1, previous output untouched). Belt-and-braces: validator 7 rejects `[]` at load, and a test pins the runtime path rather than trusting the reading. **This is the one place 1b is SAFER than 1a**, whose empty-Classes case is deliberately ungated. |
+| **(1b) `UG` cohort de-rostered entirely** — blank/unrecognised grades map to `"UG"`, so under 1b they leave `Students.csv` altogether unless `"UG"` is listed | **Strictly worse than 1a's version of this risk** (there, a UG student lost a class; here, they and their guardians vanish from the delivery). Same mitigation, raised in emphasis: log the count at the filter, and state in `adding-district.md` that a district must list `"UG"` unless it is certain every student has a clean grade value. Not silent, not blocked. |
 
 ## Test strategy
 
-**The negative, stated correctly:** the **11** configs that do not set the key are byte-identical — SD83 *is* one of the 12 and is *supposed* to change. The contract sweep asserts **shape only** (entity set, column order, BOM), so the single real content oracle is `tests/test_regression_sd74.py` (156 Classes rows, grades KG-12 + 5 blends). A red `EXPECTED_ENTITIES` row for sd83 is a **design error, never an edit**.
+**The negative, stated correctly:** for 1a, the **11** configs that do not set the key are byte-identical — SD83 *is* one of the 12 and is *supposed* to change. For 1b, **all 12** are byte-identical, because no shipped config sets `student_rostering_grades` — which makes 1b's negative easy and its **positive** the whole burden of proof (see below). The contract sweep asserts **shape only** (entity set, column order, BOM), so the single real content oracle is `tests/test_regression_sd74.py` (156 Classes rows, grades KG-12 + 5 blends). A red `EXPECTED_ENTITIES` row for sd83 is a **design error, never an edit**.
 
 **Positive twin — pinned by value, on the corpus that matters:**
 - **Differential over the SD74 corpus** (precedent `tests/test_pipeline_parity.py:267-277`): run `tests/snapshots/input/` twice, once with the sentinel injected. Assert exact set deltas — removed Class IDs are exactly the non-homeroom-grade + `BLENDED_` ids; `classes_on ⊂ classes_off`; every removed Class ID also removed from Enrollments; **`Students.csv` `assert_frame_equal`-identical**. Differential, so it survives 0043's golden regeneration.
@@ -166,6 +252,16 @@ A third code path compounds it: **blended detection applies no grade filter at a
 
 **Boundary + wiring:** `to_raw_dict` round-trip + completeness test · subset-rule violation raises · sentinel + empty `homeroom_grades` raises **while list + empty `homeroom_grades` is accepted** (shape 2) · non-CEDS entries raise · **non-CEDS `homeroom_grades` raises when the key is set** (validator 4 — the sentinel's only cover) · **`keep="homeroom"` + `timetable_scope` raises** (validator 5) · version gate pinned · `_base` inheritance (child inherits; child overrides to `null` — pin whichever deep-merge gives).
 
+### Slice 1b test strategy
+
+**The positive carries the whole proof** (no shipped config sets the key, so the 12-config sweep is structurally blind to 1b — exactly the vacuous-green shape CLAUDE.md names). Three layers:
+
+- **SD74 differential, second injection** — reuse 1a's harness (`tests/test_pipeline_parity.py:267-277` precedent): run `tests/snapshots/input/` with `student_rostering_grades` injected for a subset of the corpus's KG-12 range. Assert, as exact set deltas: `Students.csv` User IDs == exactly the in-scope grades' students; `Family.csv` shrinks to those students' guardians only; `Enrollments.csv` and `Classes.csv` shrink correspondingly; **`Staff.csv` `assert_frame_equal`-identical** (the non-goal, proven positively); and **zero orphans across every entity** — every student reference ⊆ the new `Students.csv` User ID set.
+- **The non-idempotency pin, stated as its own case** — a fixture including a Kindergarten student, key set to include `KG`: the student is KEPT **and** their output `Grade` is `"KG"`, not `"UG"`. Then the negative twin: with the key absent, the same fixture's output `Grade` is unchanged. Without both halves this test passes against the broken in-place implementation.
+- **The filter-to-empty → floor pin** (`test_pipeline_delivery_integrity.py`) — a valid CEDS list matching no student in the fixture: assert `DeliveryIntegrityError` with `INCOMPLETE_ROSTER`, that it raises **before** `save_all` (no files written, previous output untouched), and — the part that makes it non-vacuous — that the *other* entities were non-empty at the point of the check, i.e. the fault fired for the right reason rather than because everything was empty.
+
+**Unit + boundary (1b):** the inherited-bound rule (student set + class absent ⇒ grade 9-12 subject classes absent while grade 8's are present — shape 4 end to end) · student set + class set ⇒ class wins within the student bound · `filter_to_grade_scope` drops its temp column (assert the returned frame's columns are unchanged) · ordering: the filter runs after `_collapse_cross_enrollment` (a cross-enrolled fixture whose two rows disagree on grade resolves by the home-school row) · the active-status filter and the grade filter **compose** (an inactive in-scope student and an active out-of-scope student are both dropped) · validators 6-8 each raise with an actionable message, incl. **`[]` raises** and **the chain message names which link broke** · `to_raw_dict` round-trip + the completeness test now covering both keys · version gate pinned at 11 · `_base` inheritance of the new key.
+
 **Integrity:**
 - Two-sided pairing: a suppressed blend is absent from Classes **and** Enrollments, asserted together (`enrolled ⊆ classes` alone is satisfiable by emptiness).
 - Populated ClassInformation with `Primary Teacher = Y`: co-teacher **path 1** still emits K-8 homeroom teacher rows; **path 2** emits nothing for a suppressed blend. (The sweep is structurally blind here — SD83's fixture writes an empty ClassInformation.)
@@ -175,15 +271,31 @@ A third code path compounds it: **blended detection applies no grade filter at a
 
 ## Decomposition (slices)
 
-- [ ] **Slice 1** — the feature: config key + 5 validators + `to_raw_dict` wiring, version-gate bump (+ `loader.py:44` prose), scope resolver + `split_by_homeroom_grades` change, two call sites, `_blend_grades` extraction + gated blend suppression, SD83 config, tests, docs.
+- [ ] **Slice 1a** — `class_rostering_grades`: config key + validators 1-5 + `to_raw_dict` wiring, version-gate bump 9→10 (+ `loader.py:44` prose), scope resolver + `split_by_homeroom_grades` change, two call sites, `_blend_grades` extraction + gated blend suppression, SD83 config, tests, docs. **Gated at Stage 3; design frozen.**
+- [ ] **Slice 1b** — `student_rostering_grades`: config key + validators 6-8 (chain folded into 1a's `model_validator`) + `to_raw_dict`, version-gate bump 10→11, `filter_to_grade_scope` + the resolver's inherited-bound rule, one `students.py` call site + count log, tests, docs. **Needs a Stage-3 gate of its own before Stage 5.**
 
-**Why one slice:** splitting config from wiring lands a validated-but-inert key — the exact half-done state the workflow forbids, and the panel's highest-severity finding. With the delivery floor removed (owner, 2026-08-13) this is ~13 files, three touch points, one concept — the Stage-3 gate confirmed it "lands vertically complete without the floor, which guards a mis-configuration rather than the feature's vertical", and judged it not gold-plated: one key, one resolver, one masked filter, one gated `continue`.
+**Why two slices, sequential.** 1a was already judged session-sized and vertically complete at Stage 3; 1b adds a second config key, a fifth touch point, a new `grades.py` function and a three-layer positive test burden. Bundling them would re-open a gated design and push one session past the ≤1M-context rule. They are sequential rather than parallel because **1b consumes 1a's scope resolver and extends 1a's subset validator** — building both at once means two agents editing the same resolver signature and the same `model_validator`.
+
+**Each lands complete on its own.** 1a: SD83 ships its K-8-only classes; the key works end to end. 1b: the student key works end to end for any district that sets it — and *no district sets it*, which is the one honest wrinkle. 1b therefore lands a **capability without a consumer**, deliberately (owner-requested for the licensing shape, see Flags). That is not the forbidden half-done state — nothing is left dangling, no follow-up is implied, and the feature is fully tested — but it *is* the thing the `yagni-sentinel` lens exists to challenge, so the re-review must be told the owner has already ruled on it.
+
+**Version-bump sequencing:** 1a lands `SUPPORTED_CONFIG_MINOR = 10` with SD83 declaring `'1.10'`; 1b lands `11` with no config declaring it. If both slices land in the **same release**, that is two bumps in one version window — acceptable (the constant tracks the schema this build understands, not the release count), but the `loader.py:44` prose must be moved **twice**, once per slice, and not left stating "1.0–1.10" after 1b.
 
 ---
 
 ## Review  _(Stage 3 — plan-gate)_
 
-- **Verdict:** **CHANGES REQUIRED** (7 required changes + a split; the core design is sound)
+> **SCOPE OF THIS REVIEW: slice 1a only.** Everything below was written against the `class_rostering_grades` plan as it stood before `student_rostering_grades` was added (2026-08-13). Its verdict, its 7 required changes and their dispositions, and the Stage-2b panel all concern 1a. **Slice 1b has had no gate.** Do not read this section as covering it.
+>
+> **What a 1b re-review must cover** (so the gate is not scoped by guesswork):
+>
+> 1. The **inherited-bound rule** — is "absent `class_rostering_grades` inherits the student list" the right default, and does the resolver implement it without changing 1a's key-absent path? (Owner decided the semantics; the gate should check the *derivation*, not re-litigate the choice.)
+> 2. The **subset chain's three edge cases** (validator 8) — especially `class` absent + `student` set, where transitivity gives nothing.
+> 3. The **non-idempotency trap in `students.py`** — the highest-severity item in 1b. Verify the derive-mask-drop contract and that the test has both halves.
+> 4. The **five-consumer cascade claim** and the **filter-to-empty → anchor-floor claim** — both are cited as verified reads (see Research § findings for 1b); the gate should confirm them independently, since 1b's safety argument rests on them.
+> 5. **Whether 1b should land at all with no config consumer** — the `yagni-sentinel` position. Owner has ruled yes (licensing districts are expected); the gate may record dissent but should not treat it as an unexamined gap.
+> 6. **Slice sizing** — is 1b session-sized as scoped, and is the two-bump version sequencing acceptable?
+
+- **Verdict:** **CHANGES REQUIRED** (7 required changes + a split; the core design is sound) — *slice 1a*
 
 **Independently verified against the code — these load-bearing claims HOLD, do not re-open them:**
 - **The subset-rule simplification (item 1) is CORRECT.** Traced `_create_homeroom_classes` (`classes.py:102-185`) and `_homeroom_enrollments` (`enrollments.py:93-159`): the homeroom side is a pure grade-membership test on the demographic frame, the homeroom Class ID is `{school}_{homeroom}_{year}` (`classes.py:157-163` — no grade term), the enrollment merge key is `[school_number, homeroom]` (`enrollments.py:125`), and co-teacher path 1 matches by section letter (`enrollments.py:296-321`). **No path makes a homeroom-grade student's rostering depend on a grade outside `homeroom_grades`.** The "two dead call sites → unnecessary" disposition is right.
@@ -204,16 +316,18 @@ A third code path compounds it: **blended detection applies no grade filter at a
 
 ### Sizing / completeness check
 
-- **Slice 1 (as written) — SPLIT NEEDED.** It is ~20 files spanning config → three transformers → pipeline → **UI copy + run-store taxonomy** → 8-10 test modules → 4 docs, and it bundles an opt-in ETL feature with a cross-district delivery-**severity** change that carries its own Stage-5 trade-off. Split:
-  - **Slice 1a — the feature (vertically complete).** `GlobalConfig` field + validators + `to_raw_dict`; `SUPPORTED_CONFIG_MINOR` bump + SD83 `'1.10'`; the scope resolver + `split_by_homeroom_grades`; the two call sites; gated blend suppression; all ETL tests (three shapes, flag-OFF gate pin, two-sided pairing, SD74 differential, `TestDistrictQuirks`); docs. **Lands complete** — the feature works end to end without the floor, which guards a mis-configuration rather than the feature's vertical.
-  - **Slice 1b — the delivery floor.** The change-1 decision plus the change-2 surface (new category, Convert copy, both call sites, run-store value, tests). Legitimate alternatives: defer to a roadmap item, or fold into 0043 with the ungating. Do **not** land it as a bullet inside 1a.
-- After that split both slices are comfortably session-sized. **YAGNI:** with 1b removed, 1a is *not* gold-plated — one key, one resolver, one masked filter, one gated `continue`. The `"homeroom"` sentinel is defensible sugar (it makes the two keys structurally undriftable for the one shipped consumer); keep it.
+> **Label warning — the gate's names are NOT the plan's current slice names.** This section split the original single slice into a *feature* half and a *delivery-floor* half and called them "1a"/"1b". The floor half was then dropped to the ROADMAP (owner, 2026-08-13), and the surviving feature half is what the plan now calls **slice 1a**. The plan's **slice 1b is `student_rostering_grades`** — added later, unrelated to the floor. Below, the two halves are relabelled **F (feature)** and **FLOOR** to keep the historical reasoning readable without colliding.
+
+- **Original single slice — SPLIT NEEDED.** It is ~20 files spanning config → three transformers → pipeline → **UI copy + run-store taxonomy** → 8-10 test modules → 4 docs, and it bundles an opt-in ETL feature with a cross-district delivery-**severity** change that carries its own Stage-5 trade-off. Split:
+  - **Half F — the feature (vertically complete).** *(= the plan's current slice 1a.)* `GlobalConfig` field + validators + `to_raw_dict`; `SUPPORTED_CONFIG_MINOR` bump + SD83 `'1.10'`; the scope resolver + `split_by_homeroom_grades`; the two call sites; gated blend suppression; all ETL tests (three shapes, flag-OFF gate pin, two-sided pairing, SD74 differential, `TestDistrictQuirks`); docs. **Lands complete** — the feature works end to end without the floor, which guards a mis-configuration rather than the feature's vertical.
+  - **Half FLOOR — the delivery floor.** *(Dropped from this plan → ROADMAP; see the NOT-in-this-plan block.)* The change-1 decision plus the change-2 surface (new category, Convert copy, both call sites, run-store value, tests). Legitimate alternatives: defer to a roadmap item, or fold into 0043 with the ungating. Do **not** land it as a bullet inside the feature half.
+- After that split both halves are comfortably session-sized. **YAGNI:** with the floor removed, the feature half is *not* gold-plated — one key, one resolver, one masked filter, one gated `continue`. The `"homeroom"` sentinel is defensible sugar (it makes the two keys structurally undriftable for the one shipped consumer); keep it.
 - **Right path (Stage 0):** full pipeline confirmed correct — shared-contract change (config schema + output semantics + version gate), 8+ files, partner-visible output.
 
 ### Harness impact
 
-- **DECISIONS:** two dated lines at Land — (i) the owner's 2026-08-13 semantics (`class_rostering_grades` = the COMPLETE rostered set; `homeroom_grades` ⊆ it; timetable scope = the difference), (ii) a line **superseding** `DECISIONS.md:7`'s prescribed schedule-pre-filter fix, naming why (blend identity/naming via the per-MT-ID mode grade + the ClassInformation fallback universe).
-- **CLAUDE.md:** one dense clause under *Configuration-Driven Design* for the key + the new `SUPPORTED_CONFIG_MINOR`. If required change 1 lands as option (b), the **exit-code contract** line changes too.
+- **DECISIONS:** **five** dated lines at Land — (i) the owner's 2026-08-13 semantics (`class_rostering_grades` = the COMPLETE rostered set; `homeroom_grades` ⊆ it; timetable scope = the difference), (ii) a line **superseding** `DECISIONS.md:7`'s prescribed schedule-pre-filter fix, naming why (blend identity/naming via the per-MT-ID mode grade + the ClassInformation fallback universe), and — added with slice 1b — (iii) **students with no class enrollments and no course data are acceptable output** (owner, 2026-08-13; closes the partner-acceptance question this plan carried as open), (iv) the `student_rostering_grades` semantics: outermost bound, subset chain `homeroom ⊆ class ⊆ student`, **absent `class_rostering_grades` inherits the student list as its outer bound**, `[]` rejected while absent means all, (v) **`row_filters` was considered and rejected** for student grade scoping (wrong grade space ⇒ no subset validation possible) — without this line a future agent will reasonably ask why the existing mechanism wasn't reused.
+- **CLAUDE.md:** one dense clause under *Configuration-Driven Design* per key + the new `SUPPORTED_CONFIG_MINOR`. 1b also amends the *Key Data Flow* **Students** bullet ("Filtered to active via the config-driven predicate" → active **AND** optionally grade-scoped) — that line is currently the only place CLAUDE.md states what decides student inclusion, so leaving it would make the file wrong. If required change 1 lands as option (b), the **exit-code contract** line changes too.
 - **ROADMAP:** update the 0043 entry — it currently states the rule as `grades ⊆ homeroom_grades`, which is **not** the rule this plan implements (they coincide only under the key-absent default). Leaving it will mislead 0043's implementer. Add the R3 residuals (inactive-only and mode-masked studentless blends) there.
 - **No new STANDARD or agent required.** One `docs/claugentic-standards/CANDIDATES.md` candidate if the panel agrees: *a hand-listed "totality" test is only as total as its call list* (`tests/test_ui_flet_convert_result.py:190-205`) — the no-vacuous-greens family.
 
@@ -241,14 +355,14 @@ A third code path compounds it: **blended detection applies no grade filter at a
 
 ## Spec  _(Stage 4)_
 
-### Slice 1 — `class_rostering_grades`
+### Slice 1a — `class_rostering_grades`
 
 **In plain English (shown first at the approval gate):**
 
 - **What this builds.** One new setting in a district's mapping file that says *which grades get class rosters at all*. Districts that don't set it are completely unaffected. SD83 sets it to `"homeroom"` and gets K-8 homeroom classes only — no grade 9-12 timetable classes, no duplicate blended classes — while grades 9-12 stay on the student list so their myBlueprint+ transcripts still work. It also covers two shapes you named for later: "no homerooms, timetable rostering for grades 10-12 only", and "homerooms for 7-9, timetable for 10-12, K-6 excluded".
 - **What "done" means for you.** SD83 converts and produces `Classes.csv` containing only its K-8 homerooms; the other 11 configs produce byte-identical output to today, proven by the frozen SD74 regression; a mis-typed setting is rejected when the config loads, with a message naming what's wrong.
 - **What you're accepting.**
-  1. **`Students.csv` will contain grades 9-12 with no class enrolments at all.** Internally clean (verified), but **not yet confirmed with SpacesEDU** — worth asking before SD83's first live delivery.
+  1. **`Students.csv` will contain grades 9-12 with no class enrolments at all.** Internally clean (verified), and **confirmed acceptable by you on 2026-08-13** — students with no enrollments and no course data are valid output. Recorded in DECISIONS so it is not re-opened.
   2. **SD83's first run after this lands will show a warning**, because Classes and Enrollments drop >20% versus the previous run. Expected, not a fault.
   3. **Students with a blank or unrecognised grade** (mapped to `UG`) currently get a timetable class; under this setting they get nothing unless `"UG"` is listed. Logged, documented, not silent.
   4. **An older DistrictSync exe reading the new SD83 config will warn and then run anyway**, rostering 9-12. The version bump announces the mismatch; it does not prevent it.
@@ -278,3 +392,46 @@ A third code path compounds it: **blended detection applies no grade filter at a
 5. `to_raw_dict` carries the key (round-trip pinned) and the completeness test covers every non-presentation `GlobalConfig` field.
 6. All gates green: full suite, SD74 snapshot, tree-check, ruff, mypy, bandit, email scan, 12/12 configs.
 7. No new tech debt; ARCHITECTURE_TREE + DECISIONS + ROADMAP updated at Land.
+
+### Slice 1b — `student_rostering_grades`
+
+> **Spec drafted 2026-08-13, NOT yet gated.** Stage 3 must review this slice before Stage 5 approval — see the scope note at the head of the Review section for what that gate has to cover.
+
+**In plain English (shown first at the approval gate):**
+
+- **What this builds.** A second new setting saying *which grades of students you send at all*. A district licensed for K-8 sets `student_rostering_grades: [KG…08]` and grades 9-12 disappear from the delivery completely — no students, no guardians, no classes, no enrolments, no transcripts. Districts that don't set it are completely unaffected, and today no district sets it: this is the capability, ready for the first licensing district that needs it.
+- **How the two settings work together.** Student grades are the outer boundary. You cannot roster a class for a grade whose students you aren't sending — the tool rejects that config when it loads rather than producing classes with a teacher and no students. And if you set student grades but say nothing about class grades, class rostering automatically stays inside the student boundary.
+- **What "done" means for you.** A district config restricting grades produces output containing only those grades, in every one of the five files; all 12 shipped configs are byte-identical to today, proven by the frozen SD74 regression; a list that contradicts the class or homeroom settings is rejected when the config loads, with a message naming which rule broke.
+- **What you're accepting.**
+  1. **This setting removes guardians and transcripts too**, not just classes — the excluded grades' `Family.csv` rows and `StudentCourses.csv` rows go with them. For a licensing district that is the intent; it is the exact opposite of SD83's shape, so the two must not be confused when configuring a district.
+  2. **Students with a blank or unrecognised grade (`UG`) leave the delivery entirely** unless `"UG"` is listed — worse than the same risk in slice 1a, where they only lost a class. Logged with a count, documented in the district-setup guide, not silent.
+  3. **A first run after adopting the setting will show a warning** on every affected file (>20% drop). Expected, not a fault.
+  4. **A setting that matches no student fails the run** rather than delivering: nothing is written, the previous output is untouched, exit code 1. Deliberate — the alternative is a delivery of enrolments for students that aren't in `Students.csv`.
+  5. **The setting ships with no district using it.** Nothing changes for anyone until a district's config sets it.
+
+**Files & changes**
+
+| File | Change |
+|---|---|
+| `src/config/models.py` | `GlobalConfig.student_rostering_grades: list[str] \| None = None`; validators 6-8 (shape · `[]` raises · the subset chain, folded into validator 1's existing `model_validator`); add the key to `to_raw_dict`'s `global_raw` |
+| `src/config/loader.py` | `SUPPORTED_CONFIG_MINOR` 10 → 11; `:44` prose in lockstep (must not still read "1.0–1.10") |
+| `src/etl/transformers/grades.py` | new `filter_to_grade_scope(df, grade_col, scope) -> pd.DataFrame` — derive temp CEDS column, mask, **drop it**, return a copy; **no `keep=` argument, cannot rewrite in place**. The 1a resolver gains the student list + the inherited-bound rule |
+| `src/etl/transformers/students.py` | one call between `:23` and `:24` (after cross-enrollment collapse, before `apply_field_map`); one aggregate count log, **counts only** |
+| `config/mappings/*.yaml` | **none** — no shipped config sets this key |
+
+**In-scope standards dimensions:** `data-and-persistence` (config→pipeline contract, versioned schema, **and the double-conversion correctness case**) · `reliability-resilience` (fail-loud validation; filter-to-empty covered by the existing anchor floor) · `maintainability-structure` (no third spelling of grade→CEDS→mask) · `testing` (the negative is vacuous by construction, so the positive layer is mandatory) · `privacy` LIGHT (counts-only logging). **Out of scope:** `security`, `performance-efficiency`, `product-ux`.
+
+**Tests to add:** as enumerated in *Slice 1b test strategy* — the SD74 differential second injection (incl. `Staff.csv` identical + zero orphans across all entities), the KG non-idempotency pin **with both halves**, the filter-to-empty → `INCOMPLETE_ROSTER` floor pin (asserting other entities were non-empty so it fires for the right reason), the inherited-bound shape-4 end-to-end, filter/status composition, the temp-column-dropped assertion, the collapse-ordering case, validators 6-8, `to_raw_dict` round-trip + completeness over both keys, version gate at 11, `_base` inheritance.
+
+**Acceptance criteria**
+
+1. A config setting `student_rostering_grades` produces `Students.csv` containing **exactly** the listed grades' active students, and `Family.csv` / `Classes.csv` / `Enrollments.csv` / `StudentCourses.csv` contain **no reference to any excluded student** (zero-orphan holds under the narrowed roster).
+2. **A Kindergarten student's output `Grade` is `"KG"`, not `"UG"`, with the key set** — the double-conversion trap, pinned with its key-absent twin.
+3. All **12** configs are byte-identical; `tests/test_regression_sd74.py` passes **untouched**.
+4. `student_rostering_grades` set + `class_rostering_grades` absent ⇒ timetable scope is `student − homeroom`: grade 9-12 subject classes absent, in-scope non-homeroom grades' classes present.
+5. Validators 6-8 each raise with a message naming the offending values and, for the chain, **which link** broke; `[]` is rejected; absent still means all grades; an empty derived timetable scope does **not** raise.
+6. A key matching no student raises `DeliveryIntegrityError`/`INCOMPLETE_ROSTER` **before** `save_all` — nothing written, previous output untouched.
+7. `filter_to_grade_scope` leaves the frame's column set unchanged (temp column dropped) and never mutates the raw grade column.
+8. `to_raw_dict` carries **both** keys (round-trip pinned); the completeness test covers every non-presentation `GlobalConfig` field.
+9. All gates green: full suite, SD74 snapshot, tree-check, ruff, mypy, bandit, email scan, 12/12 configs.
+10. No new tech debt; DECISIONS lines (iii)-(v) + CLAUDE.md's *Key Data Flow* Students bullet + `output-contract.md`'s two sentences updated at Land.
