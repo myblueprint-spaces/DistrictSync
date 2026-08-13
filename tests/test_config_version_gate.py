@@ -7,7 +7,7 @@ Covers:
 - an unreadable version raises an actionable ValueError
 - the version gate applies to the RESOLVED config (a _base-inherited version counts)
 - user-dir files shadowing bundled configs are named in an INFO log line
-- all 11 bundled configs still load clean (no version warnings, no rejects)
+- all 12 bundled configs still load clean (no version warnings, no rejects)
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ ALL_BUNDLED_CONFIGS = [
     "sd54myedbc",
     "sd60myedbc",
     "sd74myedbc",
+    "sd83myedbc",
     "mbp_all",
     "mbp_core",
     "mbponly",

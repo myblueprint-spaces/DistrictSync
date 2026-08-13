@@ -36,7 +36,7 @@ Three things are pinned here, and each is a *partner-visible* contract:
    :data:`NO_BOM_ENTITIES` is the contract's own statement of the same rule, and
    a policy test pins the two together).
 
-Parametrized over ALL 11 bundled configs:
+Parametrized over ALL 12 bundled configs:
 
 * the 7 SpacesEDU rostering configs — myedbc (base), sd40myedbc (CSV files +
   headerless schedule + ATT--* exclusions), sd48myedbc, sd51myedbc (plain
@@ -45,6 +45,11 @@ Parametrized over ALL 11 bundled configs:
   (Family row_filters, cross-enrollment collapse, sanitized learn60 emails with
   derived admission-year, Home-school rostering), sd74myedbc;
 * sd51attendance — StudentAttendance ONLY, from the two HEADERLESS absence GDEs;
+* sd83myedbc — standard MyEd BC file naming (same shape as myedbc/mbp_all), all
+  7 entities enabled; REUSES ``_create_mbp_all_inputs`` since the input shape is
+  identical (its overrides — extended homeroom grades, a lower course-grade
+  floor, blanked Date of Birth — are business-logic differences, not fixture
+  ones);
 * the 3 myBlueprint+ tiers — mbp_all (all 7), mbp_core (Students + the two course
   CSVs), mbponly (the two course CSVs only, reusing the committed
   ``tests/snapshots/mbp_input/`` fixtures its own e2e test owns).
@@ -642,6 +647,10 @@ _DISTRICT_SETUP = {
     "sd60myedbc": _create_sd60_inputs,
     "sd74myedbc": _create_sd74_inputs,
     "sd51attendance": _create_sd51attendance_inputs,
+    # Same standard MyEd BC file shape + all 7 entities as mbp_all — sd83myedbc's
+    # overrides (homeroom grades, course-grade floor, blanked DOB) are
+    # business-logic differences the shared fixture already exercises correctly.
+    "sd83myedbc": _create_mbp_all_inputs,
     "mbp_all": _create_mbp_all_inputs,
     "mbp_core": _create_mbp_core_inputs,
     "mbponly": _create_mbponly_inputs,

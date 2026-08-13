@@ -1,0 +1,37 @@
+# SD83 - North Okanagan-Shuswap: inherits from standard MyEducation BC
+# mapping, with the myBlueprint+ course entities enabled and district-specific
+# grade overrides. Standard MyEd BC GDE file naming is assumed (no
+# source_files overrides here) — adjust once real GDE exports are available
+# (see docs/developer/adding-district.md, Steps 1-2).
+_base: myedbc
+version: '1.9'
+sis: MyEducationBC
+district_name: SD83 - North Okanagan-Shuswap School District
+
+global_config:
+  # Full myBlueprint+ tier: the 5 standard rostering entities plus CourseInfo +
+  # StudentCourses. Deep-merge REPLACES lists (see sd51myedbc's comment on
+  # this same key), so the full set must be restated here.
+  enabled_entities:
+    - Students
+    - Staff
+    - Family
+    - Classes
+    - Enrollments
+    - CourseInfo
+    - StudentCourses
+  # Adds grade 8 to the base K-7 homeroom set (self-contained homerooms
+  # through grade 8; base default stops at 07). Restated in full for the same
+  # deep-merge-replaces-lists reason as enabled_entities above.
+  homeroom_grades: ["IT", "PR", "PK", "TK", "KG", "01", "02", "03", "04", "05", "06", "07", "08"]
+  # CourseInfo + StudentCourses include grades 9-12 (base default is 10-12).
+  course_start_grade: 9
+
+mappings:
+  Students:
+    field_map:
+      # Date of Birth withheld from the output. The column stays in
+      # Students.csv (contract-required) but every row is blank rather than
+      # the source value.
+      "Date of Birth":
+        value: ""

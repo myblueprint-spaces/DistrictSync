@@ -373,5 +373,6 @@ Then without `--dry-run` to verify the output CSVs, and with `--quality` to spot
 | `sd54myedbc` | `myedbc` | Bulkley Valley — lowercase filenames; Staff non-Enhanced; Emergency Contact + Class Info Enhanced; ATT--AM/PM/Daily excluded |
 | `sd60myedbc` | `myedbc` | Peace River North — Family `row_filters` (guardians-only); opt-in `cross_enrollment.collapse` home-school dedupe for dual-school students; ATT--AM/PM excluded |
 | `sd74myedbc` | `myedbc` | Student Course Selection, Staff Information, Parent Information, Class Info Enhanced |
+| `sd83myedbc` | `myedbc` | North Okanagan-Shuswap — full myBlueprint+ tier (7 entities); `homeroom_grades` through 08; `course_start_grade: 9`; Date of Birth withheld; standard file naming assumed (no real GDE samples yet) |
 | `mbp_all` | `myedbc` | Tier override (full myBlueprint+) — enables CourseInfo + StudentCourses in addition to the 5 rostering CSVs |
 | `mbp_core` | `myedbc` | Tier override (minimal myBlueprint+) — enables only Students + CourseInfo + StudentCourses |

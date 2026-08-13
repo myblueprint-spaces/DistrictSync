@@ -480,6 +480,7 @@ This table is **hand-written and GATED AGAINST** the enforced contract by `tests
 | `sd54myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | No status column: withdraw-date-only active detection. |
 | `sd60myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | Family `row_filters`, cross-enrollment collapse, generated emails. |
 | `sd74myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | The frozen snapshot district. |
+| `sd83myedbc` | Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses | Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses | Full myBlueprint+ tier; extended homeroom grades (through 08), `course_start_grade: 9`, Date of Birth withheld. Standard MyEd BC file naming assumed pending real GDE samples. |
 | `sd51attendance` | StudentAttendance | StudentAttendance | Attendance-only tier — no roster anchor is a legitimate delivery here. |
 | `mbp_all` | Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses | Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses | Full myBlueprint+ tier. |
 | `mbp_core` | Students, CourseInfo, StudentCourses | Students, CourseInfo, StudentCourses | Minimal myBlueprint+ tier. |

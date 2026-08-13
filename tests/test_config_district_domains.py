@@ -46,7 +46,10 @@ SHIPPED_DOMAINS: dict[str, str] = {
 }
 
 # Configs that deliberately carry NO domains — "unclaimed", shown in every state.
-UNCLAIMED_CONFIGS: frozenset[str] = frozenset({"myedbc", "mbp_all", "mbp_core", "mbponly"})
+# sd83myedbc is unclaimed for a different reason than the base/mbp_* tiers below:
+# its real public staff domain hasn't been provided yet. Move it into
+# SHIPPED_DOMAINS once a verified domain is on hand (see docs/developer/adding-district.md).
+UNCLAIMED_CONFIGS: frozenset[str] = frozenset({"myedbc", "mbp_all", "mbp_core", "mbponly", "sd83myedbc"})
 
 # The one config that inherits its list rather than declaring it.
 INHERITING_CONFIG = "sd51attendance"
@@ -138,6 +141,8 @@ def test_unclaimed_configs_carry_no_domains(sis, resolved):
     district's domain would claim all eleven. The `mbp_*` tiers are cross-district
     product tiers with no single owner, so they stay unclaimed too — which under the
     fail-open rule means "shown in every unmatched / no-identity / show-all state".
+    `sd83myedbc` is unclaimed for a THIRD reason (not a cross-district tier, just a real
+    district whose domain hasn't been supplied yet) — same test, same fail-open outcome.
     """
     assert resolved[sis] == []
 

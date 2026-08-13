@@ -19,7 +19,7 @@ test edit**.
 
 Dependency direction (deliberate, per the ROADMAP fold guidance): unit and e2e
 modules import THIS module. Nothing imports ``test_contract`` — that module
-imports the conftest-registered ``ci_flet_pack_smoke`` and drives an 11-config
+imports the conftest-registered ``ci_flet_pack_smoke`` and drives a 12-config
 pipeline sweep, so importing it from a unit test would invert the dependency and
 drag both into every unit run.
 
@@ -138,6 +138,7 @@ EXPECTED_ENTITIES: dict[str, frozenset[str]] = {
     "sd60myedbc": ROSTERING_ENTITIES,
     "sd74myedbc": ROSTERING_ENTITIES,
     "sd51attendance": frozenset({"StudentAttendance"}),
+    "sd83myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
     "mbp_all": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
     "mbp_core": frozenset({"Students", "CourseInfo", "StudentCourses"}),
     "mbponly": frozenset({"CourseInfo", "StudentCourses"}),

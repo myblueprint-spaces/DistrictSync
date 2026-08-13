@@ -55,6 +55,7 @@ Use `--sis` to select a district-specific mapping:
 | `sd54myedbc` | SD54 (Bulkley Valley) |
 | `sd60myedbc` | SD60 (Peace River North) |
 | `sd74myedbc` | SD74 (Gold Trail) |
+| `sd83myedbc` | SD83 (North Okanagan-Shuswap) — full myBlueprint+ tier |
 
 For districts feeding **myBlueprint+** course data, three tier configs select which CSVs to emit (all inherit `_base: myedbc`):
 
