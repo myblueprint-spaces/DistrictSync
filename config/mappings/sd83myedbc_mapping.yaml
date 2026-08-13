@@ -7,6 +7,11 @@ _base: myedbc
 version: '1.9'
 sis: MyEducationBC
 district_name: SD83 - North Okanagan-Shuswap School District
+# The district's PUBLIC staff email domain. Scopes which district rows this
+# district's admins see in the pickers (plan 0038 S4a/S5) — presentation
+# metadata, not access control and not personal data; structurally invisible
+# to the ETL.
+district_domains: ["sd83.bc.ca"]
 
 global_config:
   # Full myBlueprint+ tier: the 5 standard rostering entities plus CourseInfo +
