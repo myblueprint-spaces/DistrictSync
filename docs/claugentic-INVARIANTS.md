@@ -65,3 +65,34 @@ change "simplified" it. Consult this before changing the named subsystem.
 - **Only a definitively-absent schedule read-back (`found=False`) may claim "not scheduled"; a query failure (`found=None`) is UNKNOWN and NEVER falls back to asserting "scheduled" from the config `schedule_registered` flag.** _(Plan 0029 Slice 5, 2026-07-08 · `src/ui_flet/schedule_status.py` + `src/scheduler/windows.py`.)_ The Event-141 honesty fix: a deleted task must not masquerade as scheduled off a stale boolean, and an elevated-registered task unreadable by a filtered token must not be reported as missing. A displayed next-run comes ONLY from the OS `NextRunTime`, never the config `schedule_time` (hint-as-truth — closed structurally by removing the `hint_time` param). The fired-but-no-record contradiction triggers on a record GAP only (a real `last_run` newer than the newest record), never a benign non-zero `LastTaskResult` (exit-3 writes a legitimate record). Do not reintroduce a config-boolean fallback on UNKNOWN.
 
 - **The elevation password crosses the UAC boundary ONLY inside a DPAPI CurrentUser-scoped sealed file — never argv, never env, never a log — and registration success is CONFIRMED by read-back, never assumed from a child exit code.** _(Plan 0029 Slice 6, 2026-07-08 · `src/scheduler/elevation.py` + `src/scheduler/windows.py`.)_ CurrentUser scope IS the confidentiality boundary: consent under a different admin SID cannot decrypt → the child fails closed (`DSYNC_DIFFERENT_ACCOUNT`). NEVER widen to LocalMachine (any box account could decrypt — downgrades a domain credential). The elevated child runs the ABSOLUTE System32 powershell.exe (PATH-hijack), under a bounded wait (never INFINITE), and its message passes `_clean_ps_stderr` + the `DSYNC_`-strip before surfacing. `read_schedule` confirms register (`found=True`) and delete (`found=False`); a timeout/no-result resolves via the same read-back or hedges honestly. Do not pass the password on argv/env; do not widen DPAPI scope; do not trust the exit code.
+
+---
+
+- **A rostering gate keys on the RESOLVED scope, never on the PRESENCE of the config key that used to be its only source.** _(Plan 0042 slice 1b, 2026-08-13 · `src/etl/transformers/blended.py` + `src/etl/transformers/grades.py`.)_
+  `grades.resolve_timetable_scope` returns `set[str] | None`, and TWO different
+  config keys can now produce a positive set: `class_rostering_grades` directly,
+  or `student_rostering_grades` via the inherited bound (`student − homeroom`,
+  applied when the class key is ABSENT). Every consumer must therefore branch on
+  `timetable_scope is not None` — never on `global_config.get("class_rostering_grades")`
+  and never on truthiness (an EMPTY set is a real scope: "roster no timetable
+  classes at all").
+  **What breaks otherwise, concretely.** A gate keyed to the class key's presence
+  is silently dead on exactly the path the inherited bound was introduced to make
+  safe: blended detection is deliberately unscoped, `_emit_missing_blended_classes`
+  emits any blend the subject path missed, and `_blended_teacher_enrollments`
+  emits teacher rows with no roster filter — so a blend in an unlicensed grade
+  survives as a `BLENDED_` class with a teacher and **zero students**, for grades
+  the district is not sending. It raises **no** quality warning (the class IS in
+  `Classes.csv`, so the orphan check sees nothing) and no anomaly beyond the
+  expected first-run drop, and it is byte-shaped like the partner-ingest rejection
+  commit `e187ac8` fixed. The suppression must also stay BEFORE the first
+  `result.*` write in `_register_blends` (`class_map`/`teacher_map` are populated
+  before the grade range is known), or the suppression itself creates the orphans.
+  **Proof-it-holds:** `tests/test_student_rostering_grades.py::TestSD74StudentScopeDifferential`
+  pins both sides — an out-of-scope blend absent from `Classes.csv` AND
+  `Enrollments.csv` together, and a surviving blend that still carries students —
+  on a run where the class key is absent. Re-keying the gate to the key's presence
+  turns both red.
+  **The general rule, worth carrying to the next scope key:** a feature flag's
+  presence check and its resolved value stop being interchangeable the moment a
+  second input can produce the value.

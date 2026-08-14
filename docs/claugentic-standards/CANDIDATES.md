@@ -328,3 +328,28 @@ every non-`str` container is an absorbed gap wearing a pin's clothes.
 Incident: plan 0038 S4a — both live-reproduced by the panel through the real control tree; the
 purge would have destroyed exactly the upgrading population's `config.corrupt-*.json` snapshots.
 Beneficiary roles: `implementer`, `lens-reviewer` (reliability).
+
+
+---
+
+## design — "A flag's PRESENCE check and its RESOLVED value are not interchangeable"  [staged 2026-08-13, plan 0042 slice 1b]
+
+- Once a derived value can come from **more than one input**, every gate keyed to the *presence
+  of the original input* is **silently dead on the new path** — and it is dead exactly where the
+  new path was introduced to make something safe, which is the worst possible place. The rule is
+  to gate on the **resolved value** (`scope is not None`), never on `config.get("the_key")`, and
+  never on truthiness when an empty value is itself meaningful.
+- The tell that a codebase is one refactor from this defect: a resolver that already returns
+  `T | None` while its consumers re-read the config key instead of the resolver's return.
+- It is a **design** rule, not a test-hygiene one — but it needs a test on the SECOND path, because
+  the first path makes presence and value coincide, so every existing test stays green.
+
+Incident: plan 0042 slice 1b's inherited class bound. `resolve_timetable_scope` gained a second
+source (`student_rostering_grades − homeroom_grades`, used when `class_rostering_grades` is absent).
+A blend-suppression gate written the obvious way — `if global_config.get("class_rostering_grades")`
+— would have left studentless `BLENDED_` classes (a teacher, zero students) alive for grades a
+district is not licensed to send, raising no quality warning and no anomaly, on precisely the path
+the bound exists to make total. Slice 1a's code happened to spell the gate correctly; nothing
+pinned it, and nothing had told anyone the spelling was load-bearing. Now recorded in
+`docs/claugentic-INVARIANTS.md` and pinned two-sided over the SD74 corpus.
+Beneficiary roles: `implementer-architect`, `plan-reviewer`, `architect-reviewer`.
