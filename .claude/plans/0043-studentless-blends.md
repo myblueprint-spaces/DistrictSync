@@ -514,3 +514,88 @@ if not (enrollable & rostered):
 
 ### In-scope standards dimensions & target bar
 `api-and-contracts` (versioning rule written, not inferred) · `data-and-persistence` (row-set change, referential integrity) · `reliability-resilience` (suppression cannot orphan; guard fails loud-then-degrades with a log) · `testing` (no vacuous greens; every absence has a positive twin; the golden diff is the oracle) · `maintainability-structure` (one spelling, locked by a positive-count pin) · `observability-ops` (one warning per run, PII-free counts) · `performance-efficiency` (one extra `groupby` over the largest frame, no per-blend rescan). **Bar: meet fully.** Out: `product-ux`, `security`.
+
+---
+
+## Verify  _(Stage 7 — 2026-08-14)_
+
+**Verdict: PASS.** Four independent passes over `origin/main...HEAD`: an architect audit across the
+seven in-scope dimensions, a claims audit, `/simplify` (reuse · simplification · efficiency ·
+altitude), and `/code-review`. **No Critical and no Important correctness findings.** Six findings
+applied in `f3662fc`; the SD74 golden is untouched by that commit.
+
+### Re-derived independently (not taken from this document's prose)
+
+| Claim | How it was checked | Result |
+|---|---|---|
+| Golden delta is exactly the two rows | `git diff` + row counts | Classes 156→155, Enrollments 340→339; Students/Staff/Family 0 changed |
+| No studentless class survives | direct scan of the golden | **0** of 155 (was 1 of 156); 4 blends survive |
+| Zero orphans | Class-ID and User-ID set differences | 0 by class, 0 by user |
+| Row-set identity | 500 randomised frames incl. `NaN`/`""`/`pd.NA`/whitespace | gate map == subject split on every one; the `dropna` variant diverged on **252/500** |
+| The `dropna` regression is caught | mutation (re-inject `.dropna()`) | **4 tests red**, incl. the end-to-end acceptance pair |
+| Strictly subtractive | randomised end-to-end differential, baseline + 6 perturbations, vs an emulation of the old behaviour | 0 rows added, 0 student enrollments removed, 0 non-`BLENDED_` rows removed |
+| Gate no more aggressive than mode gating | `mode_keys ⊆ enrollable_keys`, `_blend_grades ⊆ _enrollable_grades` | hold by construction |
+| Performance | synthetic 300k rows / 8k sections | new map **218 ms**; pre-existing `_build_grade_map` **944 ms** (60% of `detect()`) |
+
+### The six Stage-7 findings
+
+1. **The DRY pin did not inspect the module its own docstring named as the risk** — a hand-rolled
+   complement in `blended.py` passed green. Widened to count across both modules; mutation-verified.
+   Staged as a harness lesson in `CANDIDATES.md` (structural pins must enumerate their blast radius).
+2. **`resolve_course_code_column` was a THIRD spelling** of the alias precedence, in a module that
+   does not own it. Hoisted to `course_codes.py`; both existing filters consume it. Differential-
+   tested byte-identical across 240 input shapes, incl. the explicit-`column`-absent fall-through.
+3. **The row-set-identity PREMISE was recorded nowhere** though the re-gate required it. Now in
+   `INVARIANTS.md` — and the first draft of that paragraph *was itself wrong* (see below).
+4. **The missing-course-code warning fired on runs with zero blends.** Moved after the loop, gated
+   on `count`, with an absence test whose positive twin is the existing warns-exactly-ONCE row.
+5. **`ceds_grade_series` gained a do-not-optimise note** — a `.map()` LUT is ~12x faster and
+   silently diverges on Categorical and mixed bool/int columns (measured).
+6. **ROADMAP:** `_build_grade_map`'s `mode()` is 60% of `detect()`; a `groupby().size()` rewrite
+   matched it in 124 ms (7.6x), gated on asserting `mode()`'s tie-break equivalence first.
+
+### The over-claim pattern recurred TWICE more, and neither was caught by me
+
+This plan documents four over-claims caught during drafting. Stage 7 found two more, both of the
+same shape — **a claim about a file's contents, asserted without opening that file**:
+
+- **`ARCHITECTURE_TREE:182`.** The plan claimed the tree said *"`TestShapeDefaultUnchanged` is a
+  gate-CLOSED pin plan 0043 deliberately flips."* That text has never been in the tree — it is a
+  `ROADMAP` sentence. It was restated **five times**, including in a disposition table marked
+  "APPLIED", and survived the Stage-3 gate and the re-gate. Damage: none, by luck.
+- **My own `INVARIANTS.md` paragraph**, written in Stage 7 *to fix* an under-recorded premise,
+  asserted "no district config overrides `source_files` at all". **Four do**, and sd60/sd74 never
+  read the base `StudentSchedule.txt` at all. The conclusion held (all 15 configs point Classes and
+  Enrollments at the same file — since verified by enumeration) but the stated reason was false, in
+  the one paragraph whose entire purpose is letting a future reader check the hazard. Caught by the
+  code reviewer, not by me.
+
+**The lesson is not "be more careful."** It is that this failure mode is invisible to re-reading
+one's own prose and is caught only by an independent pass that re-opens the file. Two of the six
+Stage-7 findings were of exactly this kind, and both came from delegated review.
+
+### Harness findings
+
+- **`flet-verify.yml`'s path filter has a real gap.** Its own comment says it must see anything the
+  CLI smokes exercise — *"the CLI smokes convert real GDE fixtures through a bundled mapping"* —
+  and it lists `config/mappings/**` and `src/config/**` but **not `src/etl/**`**. This slice is a
+  live example: an ETL-only change those smokes do exercise, with the three-OS gate blind to it. It
+  had to be dispatched by hand to satisfy the land gate. **Owner call** (adding it costs a 3-OS
+  build on every ETL PR): either add `src/etl/**`, or record that ETL PRs need a manual dispatch.
+- **`CLAUDE.md` names three `.claude/agents/` roles** (`plan-reviewer`, `implementer-architect`,
+  `architect-reviewer`) that do **not** exist in the installed `claugentic-dev-harness` marketplace
+  clone, whose roles are `finding-verifier`/`honesty-reviewer`/`implementer`/`lens-reviewer`/
+  `product-designer`/`retrospect-harvester`/`runtime-qa`/`synthesizer-gate`/`yagni-sentinel`.
+  Stage 7 ran with `general-purpose` agents briefed from the standards docs instead. Reconcile the
+  names, or the next session silently substitutes again.
+
+### Land
+
+PR **#82**. CI read and quoted, not assumed:
+
+```
+test  pass  7m52s                                          (ubuntu-latest, the PR gate)
+pack / pack (ubuntu-22.04, light, :)                success
+pack / pack (macos-latest, light, :)                success
+pack / pack (windows-latest, light, ;, --require-close)  success
+```
