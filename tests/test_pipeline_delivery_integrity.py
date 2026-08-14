@@ -430,6 +430,138 @@ class TestRosterAnchorVanishedFailsLoud:
 
 
 # --------------------------------------------------------------------------- #
+# The same floor, reached from a CONFIG mistake: a grade scope no student holds  #
+# --------------------------------------------------------------------------- #
+class TestStudentRosteringGradesMatchingNobodyFailsLoud:
+    """`global_config.student_rostering_grades` (plan 0042 slice 1b) narrows the
+    roster. A VALID list that happens to match no student in this run's export
+    empties ``Students`` — and ``filter_to_active`` then correctly no-ops on the
+    empty roster, so every other entity would ship UNFILTERED. That is the
+    mass-orphan delivery this floor already catches; pinned here rather than
+    trusted, because it is the whole reason slice 1b needs no floor of its own.
+
+    Deliberately NOT a new fault: the existing ``INCOMPLETE_ROSTER`` branch is
+    exactly right, and ``Staff`` — never roster-filtered — is the witness that
+    the fault fired for the RIGHT reason (other entities were non-empty), rather
+    than because the run produced nothing at all (``NO_OUTPUT``).
+    """
+
+    SIS = "srg_nobody"
+
+    @staticmethod
+    def _write_config() -> None:
+        """A `_base: myedbc` district scoped to a grade its export does not carry.
+
+        The demographic fixture is grades 10 + 12; the scope is K-08 (a superset
+        of base `myedbc`'s homeroom_grades, so the subset chain is satisfied and
+        the config is genuinely VALID — the fault has to be caught at RUN time).
+        """
+        import yaml as _yaml
+
+        from src.utils.paths import user_mappings_dir
+
+        (user_mappings_dir() / f"{TestStudentRosteringGradesMatchingNobodyFailsLoud.SIS}_mapping.yaml").write_text(
+            _yaml.safe_dump(
+                {
+                    "_base": "myedbc",
+                    "version": "1.11",
+                    "sis": "MyEducationBC",
+                    "district_name": "Grade-scoped test district",
+                    "global_config": {
+                        "student_rostering_grades": [
+                            "IT",
+                            "PR",
+                            "PK",
+                            "TK",
+                            "KG",
+                            "01",
+                            "02",
+                            "03",
+                            "04",
+                            "05",
+                            "06",
+                            "07",
+                            "08",
+                        ]
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_the_config_itself_is_VALID_so_the_floor_is_what_catches_it(self) -> None:
+        """The positive twin: load-time validation passes, which is precisely why
+        a runtime floor is still required."""
+        from src.config.loader import load_config
+
+        self._write_config()
+        assert load_config(self.SIS).global_config.student_rostering_grades is not None
+
+    def test_run_raises_INCOMPLETE_ROSTER_rather_than_delivering(self, gde_input: Path, gde_output: Path) -> None:
+        self._write_config()
+        with pytest.raises(RuntimeError, match=_ANCHOR) as excinfo:
+            run_pipeline(self.SIS, str(gde_input), str(gde_output))
+        assert excinfo.value.category == RunErrorCategory.INCOMPLETE_ROSTER.value
+
+    def test_nothing_is_written_and_nothing_is_archived(self, gde_input: Path, gde_output: Path) -> None:
+        """The refusal precedes BOTH ``save_all`` and ``archive_stale_outputs``,
+        so a previous good delivery is neither overwritten nor moved out of the
+        SFTP glob."""
+        run_pipeline("myedbc", str(gde_input), str(gde_output))
+        good = _snapshot(gde_output)
+        assert good, "the baseline run must really have written files"
+
+        self._write_config()
+        with pytest.raises(RuntimeError):
+            run_pipeline(self.SIS, str(gde_input), str(gde_output))
+
+        assert _snapshot(gde_output) == good
+        assert _archive_dirs(gde_output) == []
+
+    def test_the_OTHER_entities_were_non_empty_at_the_gate(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Non-vacuity: the fault must fire because the ANCHOR vanished while
+        real output existed, not because everything was empty. ``Staff`` is the
+        witness — it is never roster-filtered, so this branch is deterministic.
+        """
+        self._write_config()
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"), pytest.raises(RuntimeError):
+            run_pipeline(self.SIS, str(gde_input), str(gde_output))
+
+        payload = _last_run_log(caplog)
+        assert payload["status"] == "failed"
+        assert payload["error_category"] == RunErrorCategory.INCOMPLETE_ROSTER.value
+        assert payload[_ANCHOR] == 0
+        assert payload["Staff"] > 0
+
+    def test_a_scope_that_DOES_match_delivers_normally(self, gde_input: Path, gde_output: Path) -> None:
+        """The positive twin for the whole class: the key is not simply fatal —
+        a scope covering the export's grades ships, narrowed."""
+        import yaml as _yaml
+
+        from src.utils.paths import user_mappings_dir
+
+        (user_mappings_dir() / "srg_matching_mapping.yaml").write_text(
+            _yaml.safe_dump(
+                {
+                    "_base": "myedbc",
+                    "version": "1.11",
+                    "sis": "MyEducationBC",
+                    "district_name": "Grade-scoped test district (matching)",
+                    "global_config": {"homeroom_grades": [], "student_rostering_grades": ["10"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = run_pipeline("srg_matching", str(gde_input), str(gde_output))
+
+        assert result.entity_counts.get(_ANCHOR, 0) == 1  # the grade-10 student only
+        students = pd.read_csv(gde_output / f"{_ANCHOR}.csv", dtype=str)
+        assert set(students["Grade"]) == {"10"}
+
+
+# --------------------------------------------------------------------------- #
 # Regression fence — legitimate partial runs MUST stay exit 0                   #
 # --------------------------------------------------------------------------- #
 class TestLegitimatePartialRunsStayGreen:

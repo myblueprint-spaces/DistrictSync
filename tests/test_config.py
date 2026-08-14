@@ -4,7 +4,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from src.config.loader import _deep_merge, load_config
+from src.config.loader import _deep_merge, available_configs, load_config
 from src.config.models import (
     CrossEnrollmentConfig,
     EmailDerivedDate,
@@ -1125,6 +1125,317 @@ class TestClassRosteringGradesInheritance:
         monkeypatch.setattr("src.config.loader.user_mappings_dir", lambda: tmp_path)
         monkeypatch.setattr("src.config.loader.bundle_mappings_dir", lambda: tmp_path)
         assert load_config("crgchild2").global_config.class_rostering_grades is None
+
+
+# -----------------------------------------------------------------------
+# student_rostering_grades — the opt-in STUDENT-rostering scope (plan 0042, 1b)
+# -----------------------------------------------------------------------
+class TestStudentRosteringGradesShape:
+    """Validator 6 — a non-empty list of CEDS codes, and NO sentinel form."""
+
+    def test_default_is_none(self):
+        assert GlobalConfig().student_rostering_grades is None
+
+    def test_ceds_list_accepted(self):
+        assert GlobalConfig(homeroom_grades=[], student_rostering_grades=["KG", "01"]).student_rostering_grades == [
+            "KG",
+            "01",
+        ]
+
+    def test_mixed_case_other_is_a_valid_ceds_code(self):
+        assert GlobalConfig(homeroom_grades=[], student_rostering_grades=["Other"]).student_rostering_grades == [
+            "Other"
+        ]
+
+    def test_the_homeroom_SENTINEL_is_rejected_for_students(self):
+        """ "Roster exactly the homeroom grades" is meaningless for STUDENTS, so
+        the sugar must be refused rather than quietly accepted."""
+        with pytest.raises(ValidationError, match="student_rostering_grades") as exc:
+            GlobalConfig(student_rostering_grades="homeroom")
+        assert "no 'homeroom' shortcut for students" in str(exc.value)
+
+    @pytest.mark.parametrize("bad", ["09", "", "yes"])
+    def test_bare_grade_like_string_rejected(self, bad):
+        with pytest.raises(ValidationError, match="student_rostering_grades"):
+            GlobalConfig(student_rostering_grades=bad)
+
+    @pytest.mark.parametrize("bad", [["K"], ["3"], ["kg"], ["KG", "nope"], [10]])
+    def test_non_ceds_entries_rejected_naming_the_vocabulary(self, bad):
+        with pytest.raises(ValidationError, match="non-CEDS grade code") as exc:
+            GlobalConfig(homeroom_grades=[], student_rostering_grades=bad)
+        message = str(exc.value)
+        for code in ("KG", "01", "12", "UG", "Other"):
+            assert code in message
+
+    @pytest.mark.parametrize("bad", [{"grades": ["10"]}, 10, True])
+    def test_wrong_type_rejected(self, bad):
+        with pytest.raises(ValidationError, match="student_rostering_grades"):
+            GlobalConfig(student_rostering_grades=bad)
+
+    def test_empty_list_rejected_because_it_can_only_end_in_a_failed_RUN(self):
+        """Validator 6 owns the `[]` rule for BOTH new keys (one spelling). Here
+        it is a SAFETY decision: "send no students" ends at the delivery floor
+        every night, so it belongs at load time."""
+        with pytest.raises(ValidationError, match="EMPTY list") as exc:
+            GlobalConfig(student_rostering_grades=[])
+        message = str(exc.value)
+        assert "send no students" in message
+        assert "Remove the key entirely" in message
+
+    def test_BOTH_new_keys_reject_an_empty_list(self):
+        """The two new keys are SYMMETRIC on `[]` — recorded because a reader
+        told otherwise might "restore symmetry" by legalising
+        `class_rostering_grades: []`, which with `homeroom_grades: []` emits no
+        Classes and no Enrollments at all and is NOT caught by the anchor floor."""
+        for kwargs in ({"class_rostering_grades": []}, {"student_rostering_grades": []}):
+            with pytest.raises(ValidationError, match="EMPTY list"):
+                GlobalConfig(**kwargs)
+
+    def test_homeroom_grades_EMPTY_stays_legal(self):
+        """The real asymmetry: `homeroom_grades: []` means "no homeroom classes"
+        (shape 2) and must keep loading."""
+        assert GlobalConfig(homeroom_grades=[], student_rostering_grades=["10", "11", "12"]).homeroom_grades == []
+
+
+class TestStudentRosteringGradesSubsetChain:
+    """Validator 8 — homeroom ⊆ class ⊆ student, each link when both sides exist."""
+
+    def test_homeroom_not_inside_student_raises_naming_THAT_link(self):
+        with pytest.raises(ValidationError, match="SUBSET") as exc:
+            GlobalConfig(homeroom_grades=["KG", "01"], student_rostering_grades=["10", "11", "12"])
+        message = str(exc.value)
+        assert "homeroom_grades must be a SUBSET of student_rostering_grades" in message
+        assert "'01'" in message and "'KG'" in message
+        assert "homeroom_grades=" in message and "student_rostering_grades=" in message
+
+    def test_class_not_inside_student_raises_naming_THAT_link(self):
+        with pytest.raises(ValidationError, match="SUBSET") as exc:
+            GlobalConfig(
+                homeroom_grades=["KG"],
+                class_rostering_grades=["KG", "08"],
+                student_rostering_grades=["KG"],
+            )
+        assert "class_rostering_grades must be a SUBSET of student_rostering_grades" in str(exc.value)
+
+    def test_the_class_absent_link_is_checked_DIRECTLY(self):
+        """Shape 4's exact configuration: with the middle term missing,
+        transitivity gives nothing, so homeroom ⊆ student is the link that has
+        to be checked on its own."""
+        cfg = GlobalConfig(homeroom_grades=["KG", "01"], student_rostering_grades=["KG", "01", "02"])
+        assert cfg.class_rostering_grades is None
+        with pytest.raises(ValidationError, match="homeroom_grades must be a SUBSET of student_rostering_grades"):
+            GlobalConfig(homeroom_grades=["KG", "01"], student_rostering_grades=["KG"])
+
+    def test_the_sentinel_plus_a_student_list_checks_the_same_direct_link(self):
+        """Under the sentinel, rostered ≡ homeroom_grades — so the chain reduces
+        to homeroom ⊆ student and must still fire."""
+        with pytest.raises(ValidationError, match="homeroom_grades must be a SUBSET of student_rostering_grades"):
+            GlobalConfig(
+                homeroom_grades=["KG", "01"],
+                class_rostering_grades="homeroom",
+                student_rostering_grades=["KG"],
+            )
+        assert GlobalConfig(
+            homeroom_grades=["KG", "01"],
+            class_rostering_grades="homeroom",
+            student_rostering_grades=["KG", "01", "08"],
+        ).student_rostering_grades == ["KG", "01", "08"]
+
+    def test_a_derived_EMPTY_timetable_scope_does_not_raise(self):
+        """`student == homeroom` is shape 1 expressed via the student key — an
+        empty derived scope is legitimate, not an error."""
+        cfg = GlobalConfig(homeroom_grades=["KG", "01"], student_rostering_grades=["KG", "01"])
+        assert cfg.student_rostering_grades == ["KG", "01"]
+
+    def test_non_ceds_homeroom_grades_raise_when_only_the_STUDENT_key_is_set(self):
+        """The chain compares homeroom_grades against a CEDS list, so it has to
+        be CEDS itself here too — otherwise the district gets a subset error
+        about a code that was never valid."""
+        with pytest.raises(ValidationError, match="homeroom_grades contains non-CEDS"):
+            GlobalConfig(homeroom_grades=["K", "1"], student_rostering_grades=["KG", "01"])
+
+    def test_non_ceds_homeroom_grades_still_accepted_when_NEITHER_key_is_set(self):
+        """The pre-existing gap stays exactly as wide as it was (roadmap)."""
+        assert GlobalConfig(homeroom_grades=["K", "1"]).homeroom_grades == ["K", "1"]
+
+
+class TestInheritedHomeroomForcingFunction:
+    """`_deep_merge` replaces lists WHOLESALE, so base `myedbc`'s twelve
+    homeroom codes ride into every child config — which means a student list
+    that does not contain them all fails validator 8 out of the box. Fail-loud
+    and fixable, but it must be pinned BOTH ways or the first district to try
+    the senior-grades shape reads the error as a bug."""
+
+    BASE_HOMEROOM = ["IT", "PR", "PK", "TK", "KG", "01", "02", "03", "04", "05", "06", "07"]
+    SENIOR = ["08", "09", "10", "11", "12"]
+
+    def test_a_senior_grades_only_list_fails_naming_homeroom_grades_as_the_fix(self):
+        with pytest.raises(ValidationError, match="SUBSET") as exc:
+            GlobalConfig(homeroom_grades=self.BASE_HOMEROOM, student_rostering_grades=self.SENIOR)
+        message = str(exc.value)
+        assert "homeroom_grades" in message
+        assert "restate homeroom_grades" in message, "the district must be told WHICH key to edit"
+        assert "deep merge REPLACES lists" in message
+
+    def test_the_same_shape_is_accepted_once_homeroom_grades_is_restated_empty(self):
+        cfg = GlobalConfig(homeroom_grades=[], student_rostering_grades=self.SENIOR)
+        assert cfg.student_rostering_grades == self.SENIOR
+
+    def test_the_K8_shape_never_hits_it_because_it_is_a_superset(self):
+        cfg = GlobalConfig(
+            homeroom_grades=self.BASE_HOMEROOM,
+            student_rostering_grades=[*self.BASE_HOMEROOM, "08"],
+        )
+        assert cfg.student_rostering_grades[-1] == "08"
+
+
+class TestStudentRosteringGradesRequiresTheStudentsEntity:
+    """Validator 9 — the key is SILENTLY INERT without the Students entity."""
+
+    @staticmethod
+    def _config(enabled: list[str]) -> MappingConfig:
+        return MappingConfig(
+            version="1.10",
+            sis="test",
+            global_config=GlobalConfig(
+                homeroom_grades=[],
+                student_rostering_grades=["KG"],
+                enabled_entities=enabled,
+            ),
+            mappings={
+                "Students": EntityConfig(
+                    source_files={"student_demographic": "Demo.txt"},
+                    field_map={"User ID": "Student Number"},
+                ),
+                "StudentCourses": EntityConfig(
+                    source_files={"course_history": "Hist.txt"},
+                    field_map={"Student ID": {"value": ""}},
+                ),
+            },
+        )
+
+    def test_rejected_when_students_is_not_an_enabled_entity(self):
+        with pytest.raises(ValidationError, match="student_rostering_grades") as exc:
+            self._config(["StudentCourses"])
+        message = str(exc.value)
+        assert "does not produce the 'Students' entity" in message
+        assert "StudentCourses" in message, "the message must show what this config DOES produce"
+
+    def test_accepted_when_students_is_enabled(self):
+        assert self._config(["Students", "StudentCourses"]).global_config.student_rostering_grades == ["KG"]
+
+    def test_accepted_when_enabled_entities_is_empty_meaning_ALL(self):
+        assert self._config([]).global_config.student_rostering_grades == ["KG"]
+
+    def test_a_students_less_tier_stays_legal_WITHOUT_the_key(self):
+        """Only the contradiction is rejected — `mbponly` and `sd51attendance`
+        are shipped, supported shapes."""
+        assert load_config("mbponly").global_config.student_rostering_grades is None
+        assert "Students" not in load_config("mbponly").active_entities()
+
+    def test_a_district_config_INHERITING_mbponly_is_rejected_if_it_sets_the_key(self, tmp_path, monkeypatch):
+        """The positive twin over the REAL shipped tier, through the real load
+        path — a hand-built model cannot prove the validator bites the config a
+        district would actually write."""
+        child = {
+            "_base": "mbponly",
+            "version": "1.10",
+            "sis": "MyEducationBC",
+            "district_name": "Course-only district",
+            # A superset of base myedbc's homeroom_grades, so the subset chain is
+            # satisfied and validator 9 is unambiguously what fires.
+            "global_config": {
+                "student_rostering_grades": [
+                    "IT",
+                    "PR",
+                    "PK",
+                    "TK",
+                    "KG",
+                    "01",
+                    "02",
+                    "03",
+                    "04",
+                    "05",
+                    "06",
+                    "07",
+                    "08",
+                ]
+            },
+        }
+        (tmp_path / "srgmbponly_mapping.yaml").write_text(yaml.safe_dump(child), encoding="utf-8")
+        monkeypatch.setattr("src.config.loader.user_mappings_dir", lambda: tmp_path)
+        with pytest.raises(ValueError, match="does not produce the 'Students' entity"):
+            load_config("srgmbponly")
+
+
+class TestStudentRosteringGradesWiring:
+    def test_list_roundtrips_via_to_raw_dict(self):
+        raw = _mapping_with(GlobalConfig(homeroom_grades=[], student_rostering_grades=["KG", "08"])).to_raw_dict()
+        assert raw["global_config"]["student_rostering_grades"] == ["KG", "08"]
+
+    def test_absent_roundtrips_as_None_not_empty_list(self):
+        """The ETL distinguishes "no scope" from a scope — collapsing None to []
+        would empty Students.csv for every district."""
+        raw = _mapping_with(GlobalConfig()).to_raw_dict()
+        assert raw["global_config"]["student_rostering_grades"] is None
+
+    def test_NO_bundled_config_sets_it(self):
+        """The whole 12-config negative, stated as a config fact: this key ships
+        with no consumer (deliberate — the capability precedes the first
+        licensing district), which is exactly why the positive test layer in
+        tests/test_student_rostering_grades.py is mandatory rather than
+        complementary."""
+        for name in available_configs():
+            assert load_config(name).global_config.student_rostering_grades is None, name
+
+
+class TestStudentRosteringGradesInheritance:
+    """`_base` deep-merge for the new key (non-dict values REPLACE wholesale)."""
+
+    BASE = {
+        "version": "1.10",
+        "sis": "X",
+        "global_config": {
+            "homeroom_grades": ["KG", "01"],
+            "student_rostering_grades": ["KG", "01", "08"],
+            "academic_start_month_day": "08-25",
+            "academic_end_month_day": "07-25",
+        },
+        "mappings": {"Students": {"source_files": {"student_demographic": "D.txt"}, "field_map": {"User ID": "S"}}},
+    }
+
+    def _write(self, tmp_path, monkeypatch, child: dict, base_name: str, child_name: str):
+        (tmp_path / f"{base_name}_mapping.yaml").write_text(yaml.safe_dump(self.BASE), encoding="utf-8")
+        (tmp_path / f"{child_name}_mapping.yaml").write_text(yaml.safe_dump(child), encoding="utf-8")
+        monkeypatch.setattr("src.config.loader.user_mappings_dir", lambda: tmp_path)
+        monkeypatch.setattr("src.config.loader.bundle_mappings_dir", lambda: tmp_path)
+
+    def test_child_inherits_the_parents_value(self, tmp_path, monkeypatch):
+        child = {"_base": "srgbase", "version": "1.10", "sis": "X", "district_name": "Child"}
+        self._write(tmp_path, monkeypatch, child, "srgbase", "srgchild")
+        assert load_config("srgchild").global_config.student_rostering_grades == ["KG", "01", "08"]
+
+    def test_a_child_LIST_replaces_the_inherited_one_wholesale(self, tmp_path, monkeypatch):
+        child = {
+            "_base": "srgbase2",
+            "version": "1.10",
+            "sis": "X",
+            "district_name": "Child",
+            "global_config": {"student_rostering_grades": ["KG", "01"]},
+        }
+        self._write(tmp_path, monkeypatch, child, "srgbase2", "srgchild2")
+        assert load_config("srgchild2").global_config.student_rostering_grades == ["KG", "01"]
+
+    def test_a_child_NULL_clears_the_inherited_list_back_to_all_grades(self, tmp_path, monkeypatch):
+        child = {
+            "_base": "srgbase3",
+            "version": "1.10",
+            "sis": "X",
+            "district_name": "Child",
+            "global_config": {"student_rostering_grades": None},
+        }
+        self._write(tmp_path, monkeypatch, child, "srgbase3", "srgchild3")
+        assert load_config("srgchild3").global_config.student_rostering_grades is None
 
 
 # -----------------------------------------------------------------------

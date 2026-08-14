@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -90,7 +91,7 @@ class TestInRangeSilent:
         assert _version_records(caplog, logging.WARNING) == []
 
     def test_lower_minor_than_supported_is_silent(self, user_mappings, caplog):
-        # Bundled configs span 1.0-1.9 — older minors within the major stay clean.
+        # Bundled configs span 1.0-1.10 — older minors within the major stay clean.
         _write_user_config(user_mappings, "vgate_oldminor", "1.2")
         with caplog.at_level(logging.DEBUG, logger=LOADER_LOGGER):
             load_config("vgate_oldminor")
@@ -207,6 +208,48 @@ class TestSD83DeclaresTheClassRosteringMinor:
         """Positive pin: `GlobalConfig` does not forbid extras, so a typo'd key
         would be silently dropped and SD83 would roster grades 9-12 anyway."""
         assert load_config("sd83myedbc").global_config.class_rostering_grades == "homeroom"
+
+
+class TestDeclaredRangeVersusSupported:
+    """The constant and the prose beside it legitimately DIVERGE (plan 0042 1b).
+
+    `SUPPORTED_CONFIG_MINOR` tracks what THIS BUILD understands; `loader.py`'s
+    comment tracks what the BUNDLED CONFIGS DECLARE. Minor 11 added
+    `student_rostering_grades`, which no shipped config sets — so nothing
+    declares '1.11' and the declared range is still 1.0–1.10. Both facts are
+    pinned so nobody "fixes" the apparent lag, and so the first consumer config
+    has to move BOTH together.
+    """
+
+    LOADER_SOURCE = Path(__file__).resolve().parents[1] / "src" / "config" / "loader.py"
+
+    @staticmethod
+    def _declared_versions() -> list[tuple[int, int]]:
+        versions = []
+        for sis in ALL_BUNDLED_CONFIGS:
+            raw = yaml.safe_load((BUNDLED_MAPPINGS_DIR / f"{sis}_mapping.yaml").read_text(encoding="utf-8"))
+            declared = raw.get("version")
+            if declared is not None:
+                versions.append(_parse_version(declared, Path(f"{sis}_mapping.yaml")))
+        return versions
+
+    def test_the_supported_minor_is_AHEAD_of_every_declared_version(self):
+        """Deliberate: the bump is forward-looking, so it changes no observable
+        behaviour today (the gate only warns on a minor ABOVE the supported one)."""
+        highest = max(self._declared_versions())
+        assert highest == (SUPPORTED_CONFIG_MAJOR, 10)
+        assert highest < (SUPPORTED_CONFIG_MAJOR, SUPPORTED_CONFIG_MINOR)
+
+    def test_the_loader_prose_matches_the_range_the_bundled_configs_DECLARE(self):
+        """A literal copied out of the data it describes needs a parity test:
+        the comment says '1.0–1.10', and that must stay the real declared range
+        rather than drifting to the constant."""
+        source = self.LOADER_SOURCE.read_text(encoding="utf-8")
+        match = re.search(r"which declare (\d+)\.(\d+)[–-](\d+)\.(\d+) today", source)
+        assert match, "the declared-range prose beside SUPPORTED_CONFIG_MINOR has moved or been reworded"
+        lowest, highest = min(self._declared_versions()), max(self._declared_versions())
+        assert (int(match.group(1)), int(match.group(2))) == lowest
+        assert (int(match.group(3)), int(match.group(4))) == highest
 
 
 class TestInheritedVersion:

@@ -676,3 +676,58 @@ def raw_data_with_blended(
         "EmergencyContactInformation.txt": emergency_contact_df,
         "ClassInformationEnh.txt": class_info_enh_df,
     }
+
+
+# ---------------------------------------------------------------------------
+# The frozen SD74 snapshot corpus, as a RE-RUNNABLE transform (plan 0042).
+#
+# Both grade-scope slices prove their "every other config is byte-identical"
+# negative with a DIFFERENTIAL over this corpus — the same inputs run twice,
+# once with a scope key injected — so the runner lives here rather than in
+# either slice's module: a second copy would be the fourth spelling of one
+# idiom, and the two differentials would drift apart silently.
+# ---------------------------------------------------------------------------
+_SNAPSHOT_DIR = Path(__file__).resolve().parent / "snapshots"
+
+
+@pytest.fixture(scope="session")
+def sd74_frozen_corpus(tmp_path_factory):
+    """``(shipped_global_config, run)`` over the frozen SD74 snapshot inputs.
+
+    ``run(**overrides)`` transforms a FRESH copy of the extracted frames under
+    the shipped ``global_config`` plus ``overrides``, and returns the
+    :class:`~src.etl.pipeline.TransformOutputs`. Uses ``run_transform`` (no file
+    writes, no run record, no anomaly check), so nothing outside the process is
+    touched and the runs cannot influence each other.
+
+    Session-scoped because extraction is the expensive part and every consumer
+    is read-only; the per-run ``.copy()`` is what makes that safe.
+    """
+    from unittest.mock import patch
+
+    from src.config.loader import load_config
+    from src.etl.extractor import DataExtractor
+    from src.etl.pipeline import extract_required_files, run_transform
+
+    empty_user_dir = tmp_path_factory.mktemp("sd74_frozen_empty_user_mappings")
+    with (
+        patch("src.config.loader.bundle_mappings_dir", return_value=_SNAPSHOT_DIR / "config"),
+        patch("src.config.loader.user_mappings_dir", return_value=empty_user_dir),
+    ):
+        config = load_config("sd74myedbc")
+
+    raw = config.to_raw_dict()
+    mappings = raw["mappings"]
+    file_headers: dict[str, list[str]] = {}
+    for entity_cfg in mappings.values():
+        for filename, header_list in entity_cfg.get("headers", {}).items():
+            file_headers[filename] = header_list
+    extracted = DataExtractor(str(_SNAPSHOT_DIR / "input")).load_data(
+        extract_required_files(config), file_headers=file_headers
+    )
+
+    def run(**overrides):
+        global_config = {**raw["global_config"], **overrides}
+        return run_transform({name: frame.copy() for name, frame in extracted.items()}, mappings, global_config)
+
+    return raw["global_config"], run

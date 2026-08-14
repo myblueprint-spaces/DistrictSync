@@ -15,22 +15,12 @@ Plan 0042, slice 1a. Three layers:
    construction, so it survives plan 0043's regeneration of the golden.
 """
 
-from pathlib import Path
-from unittest.mock import patch
-
 import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from src.config.loader import load_config
-from src.etl.extractor import DataExtractor
-from src.etl.pipeline import extract_required_files, run_transform
 from src.etl.transformer import DataTransformer
 from src.etl.transformers.grades import resolve_timetable_scope, split_by_homeroom_grades
-
-SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
-SNAPSHOT_INPUT_DIR = SNAPSHOT_DIR / "input"
-FROZEN_CONFIG_DIR = SNAPSHOT_DIR / "config"
 
 
 # ---------------------------------------------------------------------------
@@ -516,36 +506,15 @@ class TestCoTeacherPathsUnderTheSentinel:
 # 3. The SD74 differential — the positive twin for "11 configs unchanged"
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="module")
-def sd74_off_and_on(tmp_path_factory):
+def sd74_off_and_on(sd74_frozen_corpus):
     """Run the frozen SD74 corpus twice: as shipped, and with the sentinel.
 
-    Uses ``run_transform`` (no file writes, no run record) so nothing outside
-    the process is touched, and re-copies the extracted frames per run so the
-    two runs cannot influence each other.
+    The corpus runner itself is the shared ``sd74_frozen_corpus`` fixture
+    (``tests/conftest.py``) — slice 1b differentials the same corpus against
+    ``student_rostering_grades``, and one runner is what keeps the two honest.
     """
-    empty_user_dir = tmp_path_factory.mktemp("crg_empty_user_mappings")
-    with (
-        patch("src.config.loader.bundle_mappings_dir", return_value=FROZEN_CONFIG_DIR),
-        patch("src.config.loader.user_mappings_dir", return_value=empty_user_dir),
-    ):
-        config = load_config("sd74myedbc")
-
-    raw = config.to_raw_dict()
-    mappings = raw["mappings"]
-    file_headers: dict[str, list[str]] = {}
-    for entity_cfg in mappings.values():
-        for filename, header_list in entity_cfg.get("headers", {}).items():
-            file_headers[filename] = header_list
-    extracted = DataExtractor(str(SNAPSHOT_INPUT_DIR)).load_data(
-        extract_required_files(config), file_headers=file_headers
-    )
-
-    def _run(global_config):
-        return run_transform({name: frame.copy() for name, frame in extracted.items()}, mappings, global_config)
-
-    off = _run(dict(raw["global_config"]))
-    on = _run({**raw["global_config"], "class_rostering_grades": "homeroom"})
-    return raw["global_config"], off, on
+    global_config, run = sd74_frozen_corpus
+    return global_config, run(), run(class_rostering_grades="homeroom")
 
 
 class TestSD74SentinelDifferential:
