@@ -1,0 +1,55 @@
+# SD83 - North Okanagan-Shuswap: inherits from standard MyEducation BC
+# mapping, with the myBlueprint+ course entities enabled and district-specific
+# grade overrides. Standard MyEd BC GDE file naming is assumed (no
+# source_files overrides here) — adjust once real GDE exports are available
+# (see docs/developer/adding-district.md, Steps 1-2).
+_base: myedbc
+# Quoted deliberately: PyYAML collapses a bare 1.10 to the float 1.1, which the
+# version gate would silently read as minor 1 (see src/config/loader.py).
+version: '1.10'
+sis: MyEducationBC
+district_name: SD83 - North Okanagan-Shuswap School District
+# The district's PUBLIC staff email domain. Scopes which district rows this
+# district's admins see in the pickers (plan 0038 S4a/S5) — presentation
+# metadata, not access control and not personal data; structurally invisible
+# to the ETL.
+district_domains: ["sd83.bc.ca"]
+
+global_config:
+  # Full myBlueprint+ tier: the 5 standard rostering entities plus CourseInfo +
+  # StudentCourses. Deep-merge REPLACES lists (see sd51myedbc's comment on
+  # this same key), so the full set must be restated here.
+  enabled_entities:
+    - Students
+    - Staff
+    - Family
+    - Classes
+    - Enrollments
+    - CourseInfo
+    - StudentCourses
+  # Adds grade 8 to the base K-7 homeroom set (self-contained homerooms
+  # through grade 8; base default stops at 07). Restated in full for the same
+  # deep-merge-replaces-lists reason as enabled_entities above.
+  homeroom_grades: ["IT", "PR", "PK", "TK", "KG", "01", "02", "03", "04", "05", "06", "07", "08"]
+  # SpacesEDU is licensed for K-8 here, so the grades that get CLASS rostering
+  # are EXACTLY the homeroom grades above: no grade 9-12 timetable classes and
+  # no blended classes spanning only 9-12. `"homeroom"` is the sugar for
+  # "rostered == homeroom_grades", so the list above is stated once and the two
+  # keys cannot drift.
+  #
+  # Grades 9-12 deliberately STAY on the roster: Students.csv keeps them (with
+  # no class enrollments — confirmed acceptable output, DECISIONS 2026-08-13),
+  # because StudentCourses filters against the active roster and dropping them
+  # would empty the myBlueprint+ transcripts this district asked for.
+  class_rostering_grades: "homeroom"
+  # CourseInfo + StudentCourses include grades 9-12 (base default is 10-12).
+  course_start_grade: 9
+
+mappings:
+  Students:
+    field_map:
+      # Date of Birth withheld from the output. The column stays in
+      # Students.csv (contract-required) but every row is blank rather than
+      # the source value.
+      "Date of Birth":
+        value: ""

@@ -137,6 +137,123 @@ global_config:
   academic_end_month_day: "06-30"
 ```
 
+### Scoping which grades get class rostering (`class_rostering_grades`)
+
+By default **every** grade is rostered: `homeroom_grades` get a homeroom class,
+and every remaining grade gets subject (timetable) classes from the schedule.
+A district licensed for only part of its grade range can opt into a scope:
+
+```yaml
+global_config:
+  # The COMPLETE set of grades that receive class rostering, in CEDS output
+  # codes (IT/PR/PK/TK/KG/01…13/PS/UG/Other) — NOT raw MyEd values like "K"/"3".
+  class_rostering_grades: ["07", "08", "09", "10", "11", "12"]
+  homeroom_grades: ["07", "08", "09"]   # must be a SUBSET of the list above
+```
+
+- **homeroom classes** still follow `homeroom_grades`;
+- **subject classes** are restricted to `class_rostering_grades − homeroom_grades`;
+- a **blended class** is kept only if at least one of its grades is in that
+  difference (so a blend spanning only unrostered grades — which could only ever
+  be delivered with a teacher and no students — is dropped);
+- a grade in **neither** set gets **no class and no enrollment at all**.
+
+`class_rostering_grades: "homeroom"` is shorthand for "roster exactly the
+homeroom grades" (an empty subject scope), so the grade list is written once and
+the two keys cannot drift. That is SD83's shape: K-8 class rostering, while
+grades 9-12 stay on `Students.csv` so their myBlueprint+ transcripts still work.
+
+Points worth stating to the district before you ship it:
+
+- **Students are NOT filtered by this key.** An unrostered grade still appears in
+  `Students.csv` (and in the course feeds) with **no enrollment rows** — that is
+  valid, intended output, and for SD83 it is the whole point.
+- **`Staff.csv` is never filtered** — a teacher of an unrostered grade still ships.
+- **Blank or unrecognised grades map to `UG`.** Today they land on the subject
+  side and get a class; under a scope they get **nothing** unless you list `"UG"`
+  explicitly. The run logs the count, but it is your call.
+- **The first run after adopting it will trip the >20% drop anomaly** on Classes
+  and Enrollments. That is the expected degradation, not a fault — say so in the
+  rollout note so nobody "fixes" it.
+- Getting it wrong fails **at config load, before any conversion runs**: a
+  non-CEDS code, an empty list, the sentinel over an empty `homeroom_grades`, or a
+  `homeroom_grades` that is not a subset are each rejected with a message naming
+  the offending values. Verify with `make validate-config`.
+
+### Scoping which grades of STUDENTS you send (`student_rostering_grades`)
+
+`class_rostering_grades` above scopes *classes*; this key scopes the **students
+themselves**. It is the outer boundary of the whole delivery — for a district
+licensed for only part of its grade range, this is the key that matters.
+
+```yaml
+version: '1.11'          # QUOTED — see the version note below
+global_config:
+  # The COMPLETE set of grades whose students are sent, in CEDS output codes.
+  student_rostering_grades: ["IT", "PR", "PK", "TK", "KG", "01", "02", "03",
+                             "04", "05", "06", "07", "08"]
+```
+
+**No shipped district sets this today** — it exists for the first licensing
+district that needs it. What it does:
+
+- only students whose grade is listed reach `Students.csv`; the active-status
+  filter still applies **on top** (the two are ANDed);
+- **the excluded grades lose their guardians and their transcripts too**, not
+  just their classes — `Family.csv` rows and `StudentCourses.csv` rows go with
+  the students, because every student-bearing feed is filtered against the
+  delivered roster. For a licensing district that is the point; it is the exact
+  **opposite** of SD83's shape above, where 9-12 deliberately stay on the roster
+  so their myBlueprint+ transcripts keep working. Read the two together and be
+  sure which one you want;
+- if you set this and say nothing about `class_rostering_grades`, class rostering
+  automatically stays **inside** this boundary (subject classes for
+  `student_rostering_grades − homeroom_grades`, and no blended class outside it),
+  so you can never produce a class with a teacher and no students;
+- `Staff.csv` is still never filtered — a teacher of an excluded grade ships.
+
+Three things that will bite you if nobody says them first:
+
+- **You almost certainly have to restate `homeroom_grades`.** Config inheritance
+  REPLACES lists rather than merging them, so your config inherits base
+  `myedbc`'s twelve homeroom codes (`IT`…`07`) whether you mention them or not —
+  and the validated rule is `homeroom_grades` ⊆ `class_rostering_grades` ⊆
+  `student_rostering_grades`. A K-8 list happens to contain all twelve, so it
+  passes. The **mirror shape — SpacesEDU for grades 9-12 only — does not**, and
+  fails at config load until you also state which homerooms you want:
+
+  ```yaml
+  global_config:
+    homeroom_grades: []                                   # no homeroom classes
+    student_rostering_grades: ["09", "10", "11", "12"]
+  ```
+
+  The error names both lists and which one to edit, so it is a five-second fix —
+  but only if you were expecting it.
+
+- **Declare `version: '1.11'`, quoted.** This key needs format version 1.11.
+  Quote it: bare YAML `1.11` is read as the number 1.11 and rejected. An OLDER
+  DistrictSync exe reading your config will log a warning and then **run anyway**
+  — which for this key means delivering the grades you excluded. The version
+  declaration makes the mismatch visible; it does not prevent it. If a district
+  server runs a pinned older exe, upgrade it before shipping this config.
+
+- **Blank or unrecognised grades map to `UG` and leave the delivery entirely.**
+  Worse than under `class_rostering_grades`, where such a student only lost a
+  class. List `"UG"` unless you are certain every student has a clean grade
+  value. The run logs the kept/total count so you can check.
+
+Also worth knowing: `CourseInfo.csv` is a course CATALOG, not student data, so it
+is **not** narrowed — a K-8 district running myBlueprint+ will ship a catalog
+containing courses no delivered student takes. Harmless, but expect the question.
+And the first run after adopting the key trips the >20% drop anomaly on every
+affected file — expected degradation, not a fault.
+
+A list that matches **no** student in that night's export does not deliver a
+broken roster: the run fails with nothing written and the previous output
+untouched (exit code 1). That is deliberate — the alternative is shipping
+enrolments for students who are not in `Students.csv`.
+
 ### School year naming convention (non-BC districts)
 
 The pipeline internally uses **end-year semantics**: ``school_year = 2026``
@@ -373,5 +490,6 @@ Then without `--dry-run` to verify the output CSVs, and with `--quality` to spot
 | `sd54myedbc` | `myedbc` | Bulkley Valley — lowercase filenames; Staff non-Enhanced; Emergency Contact + Class Info Enhanced; ATT--AM/PM/Daily excluded |
 | `sd60myedbc` | `myedbc` | Peace River North — Family `row_filters` (guardians-only); opt-in `cross_enrollment.collapse` home-school dedupe for dual-school students; ATT--AM/PM excluded |
 | `sd74myedbc` | `myedbc` | Student Course Selection, Staff Information, Parent Information, Class Info Enhanced |
+| `sd83myedbc` | `myedbc` | North Okanagan-Shuswap — full myBlueprint+ tier (7 entities); `homeroom_grades` through 08; `class_rostering_grades: "homeroom"` (K-8 class rostering only; 9-12 stay on the roster for their transcripts); `course_start_grade: 9`; Date of Birth withheld; standard file naming assumed (no real GDE samples yet) |
 | `mbp_all` | `myedbc` | Tier override (full myBlueprint+) — enables CourseInfo + StudentCourses in addition to the 5 rostering CSVs |
 | `mbp_core` | `myedbc` | Tier override (minimal myBlueprint+) — enables only Students + CourseInfo + StudentCourses |

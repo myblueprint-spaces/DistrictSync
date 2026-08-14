@@ -149,16 +149,16 @@ def _raw_data(demographic: pd.DataFrame) -> dict[str, pd.DataFrame]:
     }
 
 
-def _run_full(base_mapping, demographic):
+def _run_full(base_mapping, demographic, **overrides):
     """Run Students -> Classes -> Enrollments on one shared transformer/context.
 
     Returns (students_df, classes_df, enrollments_df). Students runs first so
     its published active set is visible to Classes/Enrollments — matching the
-    pipeline's entity order.
+    pipeline's entity order. ``overrides`` are merged into ``global_config``.
     """
     t = DataTransformer()
     t.set_school_year(2025, "08-25", "07-25")
-    gc = _global_config(base_mapping)
+    gc = _global_config(base_mapping, **overrides)
     raw = _raw_data(demographic)
 
     students = t.transform(demographic, base_mapping["mappings"]["Students"], "Students", raw, gc)
@@ -324,3 +324,32 @@ class TestEmptyRosterGuard:
         student_ids = set(enrollments[enrollments["Role"] == "student"]["User ID"].astype(str))
         assert "S012" in student_ids
         assert any("active_student_ids empty" in r.message for r in caplog.records)
+
+
+class TestZeroOrphanUnderClassRosteringScope:
+    """The invariant must survive `class_rostering_grades` narrowing the classes.
+
+    A grade-scoped run drops whole classes; the danger is dropping a CLASS while
+    keeping an enrollment that references it (the mirror image of the student
+    orphan this module guards). Asserted in BOTH directions, with the non-empty
+    half stated so neither can pass by emptiness.
+    """
+
+    def test_sentinel_keeps_homeroom_rostering_orphan_free(self, base_mapping):
+        students, classes, enrollments = _run_full(base_mapping, _demographic(), class_rostering_grades="homeroom")
+        assert not classes.empty and not enrollments.empty
+        # No student-role row references a non-rostered student…
+        roster = set(students["User ID"].astype(str))
+        student_rows = enrollments[enrollments["Role"] == "student"]
+        assert student_rows[~student_rows["User ID"].astype(str).isin(roster)].empty
+        # …and no row of ANY role references a Class ID that was not emitted.
+        assert set(enrollments["Class ID"].astype(str)) <= set(classes["Class ID"].astype(str))
+
+    def test_the_subject_side_really_was_dropped(self, base_mapping):
+        """The positive twin: without the key the same fixture DOES roster the
+        grade 10/12 sections, so the row above is not clean by vacuity."""
+        _s_off, classes_off, enrollments_off = _run_full(base_mapping, _demographic())
+        _s_on, classes_on, enrollments_on = _run_full(base_mapping, _demographic(), class_rostering_grades="homeroom")
+        assert any(cid.startswith("MT") for cid in classes_off["Class ID"].astype(str))
+        assert not any(cid.startswith("MT") for cid in classes_on["Class ID"].astype(str))
+        assert set(enrollments_on["Class ID"]) < set(enrollments_off["Class ID"])

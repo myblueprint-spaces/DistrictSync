@@ -25,7 +25,7 @@ from src.etl.column_names import (
 )
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.course_codes import filter_excluded_course_codes
-from src.etl.transformers.grades import grade_to_ceds
+from src.etl.transformers.grades import grade_to_ceds, resolve_timetable_scope
 from src.etl.transformers.ids import normalize_id_series
 from src.etl.transformers.naming import truncate_name
 from src.etl.transformers.sources import get_source_file, normalize_source_config
@@ -190,16 +190,62 @@ class BlendedClassDetector:
         course_title_map: dict[str, str],
         context: TransformContext,
     ) -> BlendedDetection:
-        """Validate each multi-section session and collect it into the returned maps."""
+        """Validate each multi-section session and collect it into the returned maps.
+
+        When a timetable scope is in force (see
+        :func:`~src.etl.transformers.grades.resolve_timetable_scope`; ``None``
+        means none is, and nothing is suppressed), a blend whose grades all fall
+        OUTSIDE that scope is SUPPRESSED: none of its grades receives subject
+        enrollments, so the class could only ever be emitted with a teacher and
+        zero students.
+
+        **Suppression happens BEFORE the first ``result.*`` write, and that
+        ordering is load-bearing.** ``class_map``/``teacher_map`` are populated
+        before the grade range is known, so skipping later would leave the class
+        referenced by ``assign_class_ids`` and the co-teacher path while
+        ``_emit_missing_blended_classes`` (which iterates ``metadata``) omitted
+        it — orphan Class IDs in Enrollments.csv, the exact partner-ingest
+        rejection commit ``e187ac8`` fixed.
+
+        The rule is NECESSARY, not sufficient: ``mtid_to_grade`` holds each
+        section's MODE grade, so a section whose mode is out of scope but which
+        carries minority in-scope students is suppressed too — those students are
+        NOT orphaned (they land in the plain per-MT-ID class, consistently on
+        both the Classes and Enrollments sides, precisely because suppression
+        precedes the ``class_map`` write). A SURVIVING blend can still end up
+        studentless if its in-scope students are all inactive; that residual is
+        plan 0043, not this rule.
+
+        The suppression rule itself is keyed to the RESOLVED scope, never to
+        which config key produced it — the scope is the set that actually
+        receives subject enrollments, and that is the whole basis of the rule.
+        """
         teacher_positions = self._teacher_positions(working, teacher_id_col)
         result = BlendedDetection.empty()
+        homeroom_grades = context.global_config.get("homeroom_grades", [])
+        timetable_scope = resolve_timetable_scope(context.global_config, homeroom_grades)
 
         count = 0
+        suppressed = 0
         for session_key, group in working.groupby("session_key"):
             if len(group) <= 1:
                 continue
 
             if not self.validate(group, mtid_to_grade):
+                continue
+
+            # `validate` already required 2+ resolvable CEDS grades, so this set
+            # is never empty — the rule can never suppress on "grades unknown".
+            blend_grades = self._blend_grades(group, mtid_to_grade)
+            if timetable_scope is not None and not (blend_grades & timetable_scope):
+                suppressed += 1
+                logger.info(
+                    "[Blended Classes] Suppressed blend for session '%s': none of its grades %s "
+                    "is inside the timetable rostering scope %s",
+                    session_key,
+                    sorted(blend_grades),
+                    sorted(timetable_scope),
+                )
                 continue
 
             blended_id = f"BLENDED_{session_key}_{context.school_year}"
@@ -222,6 +268,11 @@ class BlendedClassDetector:
             count += 1
 
         logger.info(f"[Blended Classes] Detection completed: {count} blended classes identified")
+        if suppressed:
+            logger.info(
+                "[Blended Classes] %d blend(s) suppressed as outside the timetable rostering scope",
+                suppressed,
+            )
         return result
 
     @staticmethod
@@ -256,24 +307,35 @@ class BlendedClassDetector:
     # ------------------------------------------------------------------
     # Blend qualification + naming
     # ------------------------------------------------------------------
-    def validate(self, session_group: pd.DataFrame, mtid_to_grade: dict[str, str]) -> bool:
-        """A valid blend requires 2+ unique sections with 2+ distinct CEDS grades."""
-        unique_mt_ids = session_group[MASTER_TIMETABLE_ID].unique()
-        if len(unique_mt_ids) <= 1:
-            return False
-        grades = set()
-        for mt_id in unique_mt_ids:
-            grade = mtid_to_grade.get(mt_id)
-            if grade:
-                grades.add(grade_to_ceds(grade))
-        return len(grades) >= 2
+    @staticmethod
+    def _blend_grades(session_group: pd.DataFrame, mtid_to_grade: dict[str, str]) -> set[str]:
+        """The distinct CEDS grades a candidate blend spans (THE single spelling).
 
-    def get_grade_range(self, session_group: pd.DataFrame, mtid_to_grade: dict[str, str]) -> str:
-        grades = set()
+        One derivation consumed by all three sites that need it —
+        :meth:`validate` (2+ grades qualifies a blend), :meth:`get_grade_range`
+        (the displayed range) and the timetable-scope suppression check in
+        :meth:`_register_blends` (keyed to the RESOLVED scope, never to which
+        config key produced it). MT IDs absent from ``mtid_to_grade``,
+        and blank grades, contribute nothing.
+
+        NOTE these are per-section MODE grades (see :meth:`_build_grade_map`) —
+        the set says what the section is MOSTLY, not who is in it.
+        """
+        grades: set[str] = set()
         for mt_id in session_group[MASTER_TIMETABLE_ID].unique():
             grade = mtid_to_grade.get(mt_id)
             if grade:
                 grades.add(grade_to_ceds(grade))
+        return grades
+
+    def validate(self, session_group: pd.DataFrame, mtid_to_grade: dict[str, str]) -> bool:
+        """A valid blend requires 2+ unique sections with 2+ distinct CEDS grades."""
+        if len(session_group[MASTER_TIMETABLE_ID].unique()) <= 1:
+            return False
+        return len(self._blend_grades(session_group, mtid_to_grade)) >= 2
+
+    def get_grade_range(self, session_group: pd.DataFrame, mtid_to_grade: dict[str, str]) -> str:
+        grades = self._blend_grades(session_group, mtid_to_grade)
         if not grades:
             return ""
         try:

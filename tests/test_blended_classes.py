@@ -1,8 +1,12 @@
 """Tests for blended class detection, validation, naming, and grade range."""
 
+import inspect
+
 import pandas as pd
 
+import src.etl.transformers.blended as blended_module
 from src.etl.transformer import DataTransformer
+from src.etl.transformers.blended import BlendedClassDetector
 
 
 class TestValidateBlendedClass:
@@ -308,3 +312,155 @@ class TestDetectBlendedClasses:
         for teachers in self.transformer.blended_teacher_map.values():
             assert "" not in teachers
             assert "nan" not in [str(t).lower() for t in teachers]
+
+
+# ---------------------------------------------------------------------------
+# class_rostering_grades — blend suppression (plan 0042, slice 1a)
+# ---------------------------------------------------------------------------
+_MAPPING = {
+    "source_files": {
+        "student_schedule": "StudentSchedule.txt",
+        "course_info": "CourseInformation.txt",
+        "class_info": "ClassInformationEnh.txt",
+    },
+    "field_map": {"Name": {"teacher last name": "Teacher Name"}},
+}
+_ENROLLMENTS_FIELD_MAP = {"mappings": {"Enrollments": {"field_map": {"User ID": {"staff_id_col": "Teacher ID"}}}}}
+#: Base MyEd BC homeroom grades — the blend fixture's 01/02/03 sit entirely inside it.
+_HOMEROOM_KG_TO_07 = ["IT", "PR", "PK", "TK", "KG", "01", "02", "03", "04", "05", "06", "07"]
+
+
+class TestBlendSuppressionByRosteringScope:
+    """A blend none of whose grades is on the timetable side is not registered.
+
+    Each case asserts across ALL THREE maps together: `_register_blends` writes
+    `class_map` and `teacher_map` BEFORE the grade range is known, so a
+    suppression placed after them would leave two maps populated while
+    `metadata` was skipped — orphan Class IDs in Enrollments.csv, the exact
+    partner-ingest rejection commit e187ac8 fixed.
+    """
+
+    def setup_method(self):
+        self.transformer = DataTransformer()
+        self.transformer.set_school_year(2025, "08-25", "07-25")
+
+    def _detect(self, class_info_enh_df, blended_schedule_df, blended_course_info_df, **global_overrides):
+        raw_data = {
+            "StudentSchedule.txt": blended_schedule_df,
+            "CourseInformation.txt": blended_course_info_df,
+            "ClassInformationEnh.txt": class_info_enh_df,
+        }
+        self.transformer._detect_blended_classes(
+            class_info_enh_df, _MAPPING, raw_data, {**_ENROLLMENTS_FIELD_MAP, **global_overrides}
+        )
+        return (
+            self.transformer.blended_class_map,
+            self.transformer.blended_class_metadata,
+            self.transformer.blended_teacher_map,
+        )
+
+    def test_flag_OFF_an_all_homeroom_blend_is_STILL_registered(
+        self, class_info_enh_df, blended_schedule_df, blended_course_info_df
+    ):
+        """THE gate pin. The fixture's 01/02/03 blend is wholly inside the base
+        homeroom grades — i.e. the studentless-blend shape plan 0043 will remove
+        for everyone. With no scope in force it must still be produced, or this
+        change silently altered the six live districts. Kept as a UNIT test
+        because 0043 deletes the golden that currently implies it.
+        """
+        class_map, metadata, teacher_map = self._detect(
+            class_info_enh_df, blended_schedule_df, blended_course_info_df, homeroom_grades=_HOMEROOM_KG_TO_07
+        )
+        assert {"MT100", "MT101", "MT102"} <= set(class_map)
+        blended_id = class_map["MT100"]
+        assert blended_id in metadata
+        assert blended_id in teacher_map
+
+    def test_sentinel_suppresses_the_blend_from_all_three_maps(
+        self, class_info_enh_df, blended_schedule_df, blended_course_info_df
+    ):
+        class_map, metadata, teacher_map = self._detect(
+            class_info_enh_df,
+            blended_schedule_df,
+            blended_course_info_df,
+            homeroom_grades=_HOMEROOM_KG_TO_07,
+            class_rostering_grades="homeroom",
+        )
+        assert class_map == {}
+        assert metadata == {}
+        assert teacher_map == {}
+
+    def test_a_list_excluding_every_blend_grade_suppresses_it(
+        self, class_info_enh_df, blended_schedule_df, blended_course_info_df
+    ):
+        class_map, metadata, teacher_map = self._detect(
+            class_info_enh_df,
+            blended_schedule_df,
+            blended_course_info_df,
+            homeroom_grades=[],
+            class_rostering_grades=["10", "11", "12"],
+        )
+        assert (class_map, metadata, teacher_map) == ({}, {}, {})
+
+    def test_a_blend_with_ONE_in_scope_grade_survives(
+        self, class_info_enh_df, blended_schedule_df, blended_course_info_df
+    ):
+        """Necessary-not-sufficient, from the other side: partial overlap keeps
+        the blend, because those grades DO receive subject enrollments."""
+        class_map, metadata, teacher_map = self._detect(
+            class_info_enh_df,
+            blended_schedule_df,
+            blended_course_info_df,
+            homeroom_grades=["01"],
+            class_rostering_grades=["01", "02", "03"],
+        )
+        assert {"MT100", "MT101", "MT102"} <= set(class_map)
+        blended_id = class_map["MT100"]
+        assert blended_id in metadata and blended_id in teacher_map
+
+
+class TestBlendGradesIsSingleSourced:
+    """`_blend_grades` is THE spelling of the MT-ID → CEDS grade-set derivation."""
+
+    def setup_method(self):
+        self.detector = BlendedClassDetector()
+        self.group = pd.DataFrame({"master timetable id": ["MT1", "MT2"]})
+        self.grade_map = {"MT1": "1", "MT2": "2"}
+
+    def test_it_derives_the_ceds_grade_set(self):
+        assert self.detector._blend_grades(self.group, self.grade_map) == {"01", "02"}
+
+    def test_validate_consumes_it(self, monkeypatch):
+        monkeypatch.setattr(BlendedClassDetector, "_blend_grades", staticmethod(lambda *_: {"01"}))
+        assert self.detector.validate(self.group, self.grade_map) is False
+
+    def test_get_grade_range_consumes_it(self, monkeypatch):
+        monkeypatch.setattr(BlendedClassDetector, "_blend_grades", staticmethod(lambda *_: {"07", "08"}))
+        assert self.detector.get_grade_range(self.group, self.grade_map) == "07/08"
+
+    def test_register_blends_consumes_it(
+        self, monkeypatch, class_info_enh_df, blended_schedule_df, blended_course_info_df
+    ):
+        """The suppression check reads the SAME helper: forcing it to report a
+        grade set outside the scope suppresses a blend that would otherwise
+        survive on its real grades."""
+        transformer = DataTransformer()
+        transformer.set_school_year(2025, "08-25", "07-25")
+        monkeypatch.setattr(BlendedClassDetector, "_blend_grades", staticmethod(lambda *_: {"12"}))
+        transformer._detect_blended_classes(
+            class_info_enh_df,
+            _MAPPING,
+            {
+                "StudentSchedule.txt": blended_schedule_df,
+                "CourseInformation.txt": blended_course_info_df,
+                "ClassInformationEnh.txt": class_info_enh_df,
+            },
+            {**_ENROLLMENTS_FIELD_MAP, "homeroom_grades": ["01"], "class_rostering_grades": ["01", "02", "03"]},
+        )
+        assert transformer.blended_class_map == {}
+
+    def test_no_FOURTH_spelling_of_the_conversion_exists_in_the_module(self):
+        """Structural: `grade_to_ceds` is called in exactly one place in this
+        module — inside `_blend_grades`. A new call site is a new spelling."""
+        source = inspect.getsource(blended_module)
+        assert source.count("grade_to_ceds(") == 1

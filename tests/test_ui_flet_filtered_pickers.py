@@ -282,13 +282,13 @@ class TestWizardDistrictStep:
         dropdown = _dropdown(build_setup(page), "District")
 
         assert _keys(dropdown) == available_configs()
-        assert len(_keys(dropdown)) == 11
+        assert len(_keys(dropdown)) == 12
         assert dropdown.value is None
 
     def test_no_identity_at_all_sees_every_district(self, page: MagicMock, monkeypatch, isolated_user_profile) -> None:
         _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type="", identity_email=""))
 
-        assert len(_keys(_dropdown(build_setup(page), "District"))) == 11
+        assert len(_keys(_dropdown(build_setup(page), "District"))) == 12
 
     def test_the_wizard_step_offers_no_way_to_widen_the_list(
         self, page: MagicMock, monkeypatch, isolated_user_profile
@@ -313,7 +313,7 @@ class TestWizardDistrictStep:
         _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type="", identity_email=UNMATCHED))
         root = build_setup(page)
 
-        assert len(_keys(_dropdown(root, "District"))) == 11
+        assert len(_keys(_dropdown(root, "District"))) == 12
         _assert_no_widen_affordance(root, "the unmatched wizard District step")
 
 
@@ -333,7 +333,7 @@ class TestSettingsFoldersCard:
     ) -> None:
         _pin_config(monkeypatch, _cfg(identity_email=UNMATCHED))
 
-        assert len(_keys(_dropdown(build_setup(page), "District"))) == 11
+        assert len(_keys(_dropdown(build_setup(page), "District"))) == 12
 
     def test_the_saved_district_survives_a_match_that_EXCLUDES_it(
         self, page: MagicMock, monkeypatch, isolated_user_profile
@@ -503,7 +503,7 @@ class TestConvertScreen:
         _pin_config(monkeypatch, _cfg(identity_email=UNMATCHED))
         tree = build_convert(page)
 
-        assert len(_keys(_dropdown(tree, "District"))) == 11
+        assert len(_keys(_dropdown(tree, "District"))) == 12
         _assert_no_widen_affordance(tree, "unmatched Convert")
 
 
@@ -547,7 +547,7 @@ class TestMappingScreen:
 
         # The positive twin: without it a counter that saw NOTHING (a renamed seam, a patch
         # that missed) passes the uniqueness check trivially — `[] == set([])`.
-        assert len(parsed) == 11, f"the parse counter saw nothing like a full catalog: {parsed}"
+        assert len(parsed) == 12, f"the parse counter saw nothing like a full catalog: {parsed}"
         assert len(parsed) == len(set(parsed)), f"a config was parsed more than once: {parsed}"
 
     def test_mapping_offers_no_way_to_widen_the_list(self, page: MagicMock, monkeypatch, isolated_user_profile) -> None:
@@ -564,7 +564,7 @@ class TestMappingScreen:
         _assert_no_widen_affordance(tree, "Mapping")
 
         unfiltered = build_mapping(page, app_config=_cfg(identity_email=UNMATCHED))
-        assert len(_keys(_dropdown(unfiltered, "Roster mapping"))) == 11
+        assert len(_keys(_dropdown(unfiltered, "Roster mapping"))) == 12
         _assert_no_widen_affordance(unfiltered, "unmatched Mapping")
 
     def test_an_APPLIED_mapping_survives_in_its_own_picker(
@@ -694,7 +694,7 @@ class TestTheScreensNeverFailClosed:
 
         dropdown = _dropdown(build_convert(page), "District")
 
-        assert len(_keys(dropdown)) == 11
+        assert len(_keys(dropdown)) == 12
         assert dropdown.value == "sd48myedbc"
 
     def test_an_unreadable_profile_scopes_nothing(self, page: MagicMock, monkeypatch, isolated_user_profile) -> None:
@@ -704,4 +704,4 @@ class TestTheScreensNeverFailClosed:
 
         _pin_config(monkeypatch, _cfg(load_state=ConfigLoadState.UNREADABLE))
 
-        assert len(_keys(_dropdown(build_convert(page), "District"))) == 11
+        assert len(_keys(_dropdown(build_convert(page), "District"))) == 12

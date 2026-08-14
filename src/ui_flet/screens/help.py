@@ -49,7 +49,7 @@ from src.utils.version import app_version
 HELP_CENTRE_URL = "https://help.spacesedu.com/en-ca/article/mx56qo"
 # The canonical support contact — the footer of every Streamlit page + main.py's CLI failure
 # message. Exact mixed-case `myBlueprint` (the drift-guard test pins the case).
-SUPPORT_EMAIL = "support@myBlueprint.ca"
+SUPPORT_EMAIL = "hello@spacesedu.com"
 
 
 def _greeting_header(app_config: AppConfig) -> ft.Control:

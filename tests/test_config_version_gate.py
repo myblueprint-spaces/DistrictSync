@@ -7,12 +7,13 @@ Covers:
 - an unreadable version raises an actionable ValueError
 - the version gate applies to the RESOLVED config (a _base-inherited version counts)
 - user-dir files shadowing bundled configs are named in an INFO log line
-- all 11 bundled configs still load clean (no version warnings, no rejects)
+- all 12 bundled configs still load clean (no version warnings, no rejects)
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -22,9 +23,14 @@ import yaml
 from src.config.loader import (
     SUPPORTED_CONFIG_MAJOR,
     SUPPORTED_CONFIG_MINOR,
+    _parse_version,
     load_config,
 )
 from src.utils.paths import user_mappings_dir
+
+#: The shipped configs, read straight off disk (not via ``bundle_mappings_dir()``,
+#: whose frozen-exe branch other tests monkeypatch).
+BUNDLED_MAPPINGS_DIR = Path(__file__).resolve().parents[1] / "config" / "mappings"
 
 ALL_BUNDLED_CONFIGS = [
     "myedbc",
@@ -34,6 +40,7 @@ ALL_BUNDLED_CONFIGS = [
     "sd54myedbc",
     "sd60myedbc",
     "sd74myedbc",
+    "sd83myedbc",
     "mbp_all",
     "mbp_core",
     "mbponly",
@@ -84,7 +91,7 @@ class TestInRangeSilent:
         assert _version_records(caplog, logging.WARNING) == []
 
     def test_lower_minor_than_supported_is_silent(self, user_mappings, caplog):
-        # Bundled configs span 1.0-1.9 — older minors within the major stay clean.
+        # Bundled configs span 1.0-1.10 — older minors within the major stay clean.
         _write_user_config(user_mappings, "vgate_oldminor", "1.2")
         with caplog.at_level(logging.DEBUG, logger=LOADER_LOGGER):
             load_config("vgate_oldminor")
@@ -154,14 +161,95 @@ class TestBareScalarVersionRejected:
             load_config("vgate_barefloat")
         assert "quote it as a string" in str(excinfo.value)
 
-    def test_quoted_minor_ten_fires_the_newer_minor_warning(self, user_mappings, caplog):
-        # The exact value the float form would silently swallow: '1.10' > supported 1.9.
-        _write_user_config(user_mappings, "vgate_minorten", "1.10")
+    def test_quoted_minor_ten_parses_as_minor_ten_not_one(self):
+        """'1.10' must read as minor TEN — the exact fact the float form swallows.
+
+        Asserted on the parser rather than on the warning, because the warning
+        depends on where SUPPORTED_CONFIG_MINOR happens to sit (it reached 10
+        with `class_rostering_grades`, so '1.10' is now IN range and correctly
+        silent). The trailing-zero fact this class exists for is version-gate
+        independent, so it is now pinned that way.
+        """
+        assert _parse_version("1.10", Path("vgate_minorten_mapping.yaml")) == (1, 10)
+        # …and the float form the quoting rule exists to forbid really does lose it.
+        assert float("1.10") == 1.1
+
+    def test_quoted_two_digit_minor_above_supported_fires_the_newer_minor_warning(self, user_mappings, caplog):
+        """A TWO-DIGIT minor above the supported one still warns (bump-proof).
+
+        Symbolic in SUPPORTED_CONFIG_MINOR so a future bump cannot silently turn
+        this row green-by-inclusion, while staying two-digit — the shape whose
+        bare-float spelling would collapse.
+        """
+        newer = f"{SUPPORTED_CONFIG_MAJOR}.{SUPPORTED_CONFIG_MINOR + 10}"
+        _write_user_config(user_mappings, "vgate_minortwodigit", newer)
         with caplog.at_level(logging.DEBUG, logger=LOADER_LOGGER):
-            load_config("vgate_minorten")
+            load_config("vgate_minortwodigit")
         warnings = _version_records(caplog, logging.WARNING)
         assert len(warnings) == 1
-        assert "1.10" in warnings[0].getMessage()
+        assert newer in warnings[0].getMessage()
+
+
+class TestSD83DeclaresTheClassRosteringMinor:
+    """SD83 is the one bundled config that opts into `class_rostering_grades`.
+
+    Its declared version must be the QUOTED string '1.10' — the value the bare
+    YAML float would collapse to 1.1 — and it must load with no version warning
+    (pinned in aggregate by `test_all_bundled_configs_load_clean` too).
+    """
+
+    def test_sd83_version_is_the_quoted_string_one_ten(self):
+        raw = yaml.safe_load((BUNDLED_MAPPINGS_DIR / "sd83myedbc_mapping.yaml").read_text(encoding="utf-8"))
+        assert isinstance(raw["version"], str), "a bare YAML float would read as 1.1"
+        assert raw["version"] == "1.10"
+        assert _parse_version(raw["version"], Path("sd83myedbc_mapping.yaml")) == (1, 10)
+
+    def test_sd83_opts_into_class_rostering_grades(self):
+        """Positive pin: `GlobalConfig` does not forbid extras, so a typo'd key
+        would be silently dropped and SD83 would roster grades 9-12 anyway."""
+        assert load_config("sd83myedbc").global_config.class_rostering_grades == "homeroom"
+
+
+class TestDeclaredRangeVersusSupported:
+    """The constant and the prose beside it legitimately DIVERGE (plan 0042 1b).
+
+    `SUPPORTED_CONFIG_MINOR` tracks what THIS BUILD understands; `loader.py`'s
+    comment tracks what the BUNDLED CONFIGS DECLARE. Minor 11 added
+    `student_rostering_grades`, which no shipped config sets — so nothing
+    declares '1.11' and the declared range is still 1.0–1.10. Both facts are
+    pinned so nobody "fixes" the apparent lag, and so the first consumer config
+    has to move BOTH together.
+    """
+
+    LOADER_SOURCE = Path(__file__).resolve().parents[1] / "src" / "config" / "loader.py"
+
+    @staticmethod
+    def _declared_versions() -> list[tuple[int, int]]:
+        versions = []
+        for sis in ALL_BUNDLED_CONFIGS:
+            raw = yaml.safe_load((BUNDLED_MAPPINGS_DIR / f"{sis}_mapping.yaml").read_text(encoding="utf-8"))
+            declared = raw.get("version")
+            if declared is not None:
+                versions.append(_parse_version(declared, Path(f"{sis}_mapping.yaml")))
+        return versions
+
+    def test_the_supported_minor_is_AHEAD_of_every_declared_version(self):
+        """Deliberate: the bump is forward-looking, so it changes no observable
+        behaviour today (the gate only warns on a minor ABOVE the supported one)."""
+        highest = max(self._declared_versions())
+        assert highest == (SUPPORTED_CONFIG_MAJOR, 10)
+        assert highest < (SUPPORTED_CONFIG_MAJOR, SUPPORTED_CONFIG_MINOR)
+
+    def test_the_loader_prose_matches_the_range_the_bundled_configs_DECLARE(self):
+        """A literal copied out of the data it describes needs a parity test:
+        the comment says '1.0–1.10', and that must stay the real declared range
+        rather than drifting to the constant."""
+        source = self.LOADER_SOURCE.read_text(encoding="utf-8")
+        match = re.search(r"which declare (\d+)\.(\d+)[–-](\d+)\.(\d+) today", source)
+        assert match, "the declared-range prose beside SUPPORTED_CONFIG_MINOR has moved or been reworded"
+        lowest, highest = min(self._declared_versions()), max(self._declared_versions())
+        assert (int(match.group(1)), int(match.group(2))) == lowest
+        assert (int(match.group(3)), int(match.group(4))) == highest
 
 
 class TestInheritedVersion:

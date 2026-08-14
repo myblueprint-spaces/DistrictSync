@@ -43,6 +43,7 @@ SHIPPED_DOMAINS: dict[str, str] = {
     "sd54.bc.ca": "sd54myedbc",
     "prn.bc.ca": "sd60myedbc",  # the STAFF domain, NOT the generated student domain
     "sd74.bc.ca": "sd74myedbc",
+    "sd83.bc.ca": "sd83myedbc",
 }
 
 # Configs that deliberately carry NO domains — "unclaimed", shown in every state.
@@ -135,7 +136,7 @@ def test_unclaimed_configs_carry_no_domains(sis, resolved):
     """The base and the myBlueprint+ tiers stay UNCLAIMED — and the base especially.
 
     A domain on the base ``myedbc`` would deep-merge into EVERY descendant config, so one
-    district's domain would claim all eleven. The `mbp_*` tiers are cross-district
+    district's domain would claim all twelve. The `mbp_*` tiers are cross-district
     product tiers with no single owner, so they stay unclaimed too — which under the
     fail-open rule means "shown in every unmatched / no-identity / show-all state".
     """

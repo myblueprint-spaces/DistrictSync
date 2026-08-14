@@ -17,7 +17,7 @@ from src.etl.column_names import (
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.blended import BlendedClassDetector, BlendedDetection
 from src.etl.transformers.context import ClassArtifacts, TransformContext
-from src.etl.transformers.grades import split_by_homeroom_grades
+from src.etl.transformers.grades import resolve_timetable_scope, split_by_homeroom_grades
 from src.etl.transformers.ids import normalize_id_series
 
 logger = logging.getLogger(__name__)
@@ -223,7 +223,13 @@ class ClassTransformer(BaseTransformer):
         if schedule_df.empty:
             return
 
-        non_homeroom_df = split_by_homeroom_grades(schedule_df, "grade", homeroom_grades, keep="subject")
+        non_homeroom_df = split_by_homeroom_grades(
+            schedule_df,
+            "grade",
+            homeroom_grades,
+            keep="subject",
+            timetable_scope=resolve_timetable_scope(context.global_config, homeroom_grades),
+        )
         if non_homeroom_df.empty:
             return
 

@@ -569,7 +569,10 @@ def _cli(argv: list[str] | None) -> int:
         raise
     except Exception as e:
         print(f"\nError: {e}")
-        print("Check etl_tool.log for details. Contact support@myBlueprint.ca for help.")
+        # Kept as a literal rather than importing help.SUPPORT_EMAIL: the CLI must not
+        # depend on the Flet UI layer (it would pull flet into every headless run).
+        # Second spelling of the same address — keep in step with that constant.
+        print("Check etl_tool.log for details. Contact hello@spacesedu.com for help.")
         return 1
 
     # Exit code 3: SFTP was requested and attempted but delivery failed.
