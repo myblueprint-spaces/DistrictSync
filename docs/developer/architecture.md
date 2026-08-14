@@ -119,7 +119,7 @@ class TransformContext:
 | `family.py` | Emergency contact extraction, deduplication by student |
 | `classes.py` | Homeroom generation, subject class join, blended class integration |
 | `enrollments.py` | Student + teacher rows from schedule + demographic data |
-| `blended.py` | `BlendedClassDetector` — same teacher/time with 2+ grade levels merged into one class. Falls back to deduplicated schedule for non-enhanced ClassInfo. See [How Classes Work](../partner/how-classes-work.md). |
+| `blended.py` | `BlendedClassDetector` — same teacher/time with 2+ grade levels merged into one class, unless none of its pupils' grades receives subject rostering (that blend could only ship with a teacher and zero students). Falls back to deduplicated schedule for non-enhanced ClassInfo. See [How Classes Work](../partner/how-classes-work.md). |
 
 ### Facade
 

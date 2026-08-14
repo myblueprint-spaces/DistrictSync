@@ -14,6 +14,7 @@ from hypothesis import given, settings  # noqa: E402
 from hypothesis import strategies as st  # noqa: E402
 
 from src.etl.transformers.base import BaseTransformer
+from src.etl.transformers.grades import CEDS_GRADE_CODES, grade_to_ceds
 from src.utils.validators import validate_run_time, validate_sis_type, validate_task_name
 
 # ---------------------------------------------------------------------------
@@ -120,6 +121,32 @@ class TestGradeMappingPropertyBased:
         for val in [None, float("nan"), pd.NA, "", "  "]:
             result = BaseTransformer.grade_to_ceds(val)
             assert isinstance(result, str), f"Expected str for val={val!r}"
+
+    @given(grade=st.text())
+    @settings(max_examples=500)
+    def test_grade_to_ceds_only_ever_returns_a_CEDS_OUTPUT_code(self, grade):
+        """RANGE CONTAINMENT: every value `grade_to_ceds` can return is a member
+        of `CEDS_GRADE_CODES` (plan 0043, slice 1).
+
+        This was a harmless curiosity while `CEDS_GRADE_CODES` only validated
+        config; it is load-bearing now that `timetable_rostered_grades` MASKS on
+        it. If the fallback literal "UG" ever stopped being a table value — say
+        the "UGRADED"/"UNGRADED"/"UG" rows were tidied away as duplicates — the
+        set would lose "UG" while `grade_to_ceds` kept returning it, and every
+        unknown-grade row would be silently dropped from subject rostering with
+        a green golden. The coupling is invisible from either side, so it is
+        pinned here rather than commented.
+        """
+        assert grade_to_ceds(grade) in CEDS_GRADE_CODES
+
+    def test_grade_to_ceds_range_holds_for_null_like_values_too(self):
+        """The null-like inputs the property strategy cannot generate — and the
+        realistic ones: a blank cell in a real CSV reads as NaN, and NaN is the
+        input that takes the "UG" fallback in production."""
+        import pandas as pd
+
+        for val in [None, float("nan"), pd.NA, "", "  ", "definitely not a grade"]:
+            assert grade_to_ceds(val) in CEDS_GRADE_CODES, f"out-of-range CEDS code for val={val!r}"
 
     def test_grade_to_ceds_case_insensitive(self):
         """Grade lookup is case-insensitive — 'k' and 'K' both map to 'KG'.

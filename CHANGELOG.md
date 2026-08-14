@@ -9,6 +9,40 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Changed
+
+- **Empty duplicate classes are no longer sent.** DistrictSync could send SpacesEDU a
+  blended class that had a teacher and no students at all. It happened when one teacher
+  ran two split-grade sections at the same period and *every* pupil involved was in a
+  grade that gets rostered through their homeroom — so the blended class it created
+  could never contain anybody. Those pupils were, and still are, correctly rostered in
+  their homeroom classes; the blended class beside them was a duplicate with nobody in
+  it. It is no longer produced, and neither is its teacher enrollment row.
+
+  This rule already applied to districts that had opted into grade-scoped class
+  rostering. It now applies to every district.
+
+  A blend that mixes a homeroom grade with a timetabled grade is **unaffected** — it
+  still ships and still carries its timetabled pupils. Class names are unchanged.
+
+  **What districts should expect on the first run after upgrading.** Class and
+  enrollment counts drop by the number of these empty classes, once. That may trip
+  DistrictSync's own anomaly check (it warns on a >20% drop), which shows up in three
+  places:
+
+  - **Convert** (manual run) — the run stops and asks an administrator to acknowledge
+    the anomaly **before anything is written**. This is existing behaviour working
+    correctly, but it means a manual conversion will pause until someone ticks the box.
+  - **Home** — the nightly run's health verdict shows a WARNING once.
+  - **Run History** — that run is listed with the anomaly as its reason.
+
+  Scheduled runs still complete and still deliver; only the verdict wording changes.
+  Exit codes are unchanged.
+
+  Output contract `1.1.0` (row-set change, MINOR — no column, order, filename or
+  encoding changed, and nothing the partner had confirmed is affected). See
+  `docs/developer/output-contract.md` and `docs/partner/how-classes-work.md`.
+
 ## [3.11.0] - 2026-08-05
 
 The nightly-schedule machinery no longer runs PowerShell. **No CSV output changes** —

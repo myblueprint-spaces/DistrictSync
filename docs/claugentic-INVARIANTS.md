@@ -76,6 +76,15 @@ change "simplified" it. Consult this before changing the named subsystem.
   `timetable_scope is not None` — never on `global_config.get("class_rostering_grades")`
   and never on truthiness (an EMPTY set is a real scope: "roster no timetable
   classes at all").
+  **Amended 2026-08-14 (plan 0043):** the `None` branch no longer means "nothing
+  is suppressed" — it means "no scope was CONFIGURED", and the effective rostered
+  set is then DERIVED (`CEDS − homeroom`). Both readings now live in exactly one
+  place, `grades.timetable_rostered_grades`; the blend gate is unconditional and
+  consumes that. So the rule binds harder, not less: do not re-derive the
+  complement at a call site, and do not reintroduce an `is not None` guard around
+  the gate itself. The resolver's `None` survives for ONE remaining reader — the
+  suppression log, which must not print a 24-code "configured scope" a district
+  never configured.
   **What breaks otherwise, concretely.** A gate keyed to the class key's presence
   is silently dead on exactly the path the inherited bound was introduced to make
   safe: blended detection is deliberately unscoped, `_emit_missing_blended_classes`
@@ -96,3 +105,34 @@ change "simplified" it. Consult this before changing the named subsystem.
   **The general rule, worth carrying to the next scope key:** a feature flag's
   presence check and its resolved value stop being interchangeable the moment a
   second input can produce the value.
+
+---
+
+- **The blend-suppression gate must derive its grades from the SAME ROWS, with the SAME null handling, as `split_by_homeroom_grades(keep="subject")` — "row-set identity".** _(Plan 0043 slice 2, 2026-08-14 · `src/etl/transformers/blended.py` + `src/etl/transformers/grades.py`.)_
+  Since 0043 a blend is suppressed when NONE of its enrollable grades is in
+  `grades.timetable_rostered_grades(...)`. Sharing that grade VOCABULARY is
+  necessary but **not** sufficient: the gate and the subject mask must also be
+  looking at the same rows. `BlendedClassDetector._build_enrollable_grade_map`
+  therefore takes every schedule row of each section — **no `dropna()`, no
+  `if grade:`** — and converts through `grades.ceds_grade_series`, the very
+  function the subject split uses.
+  **What breaks otherwise, concretely.** The natural implementation builds the
+  map beside `_build_grade_map`, inheriting its `.dropna()`. But a blank/NaN
+  grade converts to `"UG"`, `"UG"` is not a homeroom grade, so that row SURVIVES
+  the subject filter and is a real student. A `dropna`-built map cannot see it:
+  a blend of `MT1` (rows `"03"`, `"03"`, NaN) + `MT2` (`"04"`) under the default
+  KG–07 homerooms yields `enrollable = {"03","04"}` ⇒ suppressed ⇒ that pupil
+  falls back to `MT1_<year>` via `assign_class_ids`. `Classes.csv` **GROWS**, a
+  live Class ID is **RE-ASSIGNED**, and a blend that HAD a student was dropped —
+  the exact opposite of the "strictly subtractive" property the per-row design
+  was chosen for, and invisible from either call site. The same applies to any
+  future consumer that asks "which pupils would be rostered here?".
+  **Proof-it-holds:** `tests/test_class_rostering_grades.py::TestRowSetIdentityUnderBlankGrades`
+  (the blank-grade blend survives, no per-section class appears, the pupil's only
+  enrollment is the blended one — paired with the differential twin that the same
+  blend minus that one row IS suppressed) +
+  `tests/test_blended_classes.py::TestEnrollableGradeMapIsRowSetIdentical`.
+  Injecting `.dropna()` into the builder turns both red.
+  **The general rule:** two filters that must agree need to share their ROW SET
+  and their NULL POLICY, not merely their value vocabulary — a shared constant
+  is not a shared decision.

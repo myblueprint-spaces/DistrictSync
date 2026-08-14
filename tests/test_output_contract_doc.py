@@ -474,3 +474,46 @@ def test_expected_outputs_table_enabled_column_matches_the_real_config(sis):
         f"{ORDER_AUTHORITY} -> expected-outputs['{sis}'] enabled column says {sorted(documented)}, "
         f"the config enables {sorted(active)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Front matter <-> changelog (plan 0043)
+# ---------------------------------------------------------------------------
+_CONTRACT_VERSION_RE = re.compile(r"^\|\s*\*\*contract_version\*\*\s*\|\s*`(?P<version>[^`]+)`\s*\|\s*$", re.M)
+_CHANGELOG_ROW_RE = re.compile(r"^\|\s*(?P<version>\d+\.\d+\.\d+)\s*\|\s*(?P<date>\d{4}-\d{2}-\d{2})\s*\|", re.M)
+
+
+def _changelog_rows() -> list[tuple[str, str]]:
+    return [(m.group("version"), m.group("date")) for m in _CHANGELOG_ROW_RE.finditer(_doc_text())]
+
+
+def test_the_declared_contract_version_is_the_newest_changelog_row():
+    """`contract_version`, `emitted_by` and the changelog had ZERO test references
+    until plan 0043 — the one part of this document with a version discipline was
+    the only part nothing checked.
+
+    The failure this catches is specific and quiet: someone states a new fact in
+    the tables, bumps the front-matter version, and forgets the changelog row (or
+    the reverse). Either way a reader can no longer tell WHICH statement a version
+    number refers to, which is the whole point of versioning the document.
+    """
+    declared = _CONTRACT_VERSION_RE.search(_doc_text())
+    assert declared, f"{ORDER_AUTHORITY}: no `contract_version` front-matter row found"
+    rows = _changelog_rows()
+    assert rows, f"{ORDER_AUTHORITY}: the changelog table has no version rows"
+    assert declared.group("version") == rows[0][0], (
+        f"{ORDER_AUTHORITY}: front matter declares contract_version "
+        f"{declared.group('version')!r} but the newest changelog row is {rows[0][0]!r} "
+        f"({rows[0][1]}) — bump both or neither"
+    )
+
+
+def test_the_changelog_is_newest_first_and_carries_no_duplicate_version():
+    """The positive twin: the row above is only meaningful if 'newest' really is
+    the first row. Asserted on the DATES rather than on the version strings, so a
+    mis-ordered pair cannot satisfy it by accident."""
+    rows = _changelog_rows()
+    dates = [date for _version, date in rows]
+    assert dates == sorted(dates, reverse=True), f"{ORDER_AUTHORITY}: changelog rows are not newest-first: {dates}"
+    versions = [version for version, _date in rows]
+    assert len(set(versions)) == len(versions), f"{ORDER_AUTHORITY}: duplicate changelog version: {versions}"

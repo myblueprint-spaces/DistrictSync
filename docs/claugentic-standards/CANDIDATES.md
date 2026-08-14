@@ -353,3 +353,37 @@ the bound exists to make total. Slice 1a's code happened to spell the gate corre
 pinned it, and nothing had told anyone the spelling was load-bearing. Now recorded in
 `docs/claugentic-INVARIANTS.md` and pinned two-sided over the SD74 corpus.
 Beneficiary roles: `implementer-architect`, `plan-reviewer`, `architect-reviewer`.
+
+---
+
+## testing/design — "Two filters that must agree need a shared ROW SET and NULL POLICY, not a shared constant"  [staged 2026-08-14, plan 0043 slice 2]
+
+- Hoisting a shared vocabulary (a set of valid codes, an enum, an allowlist) into one module makes
+  two call sites agree about **which values** count. It does **nothing** to make them agree about
+  **which rows** they look at, or what they do with the blanks. A reviewer who sees the DRY hoist
+  will read the disagreement as impossible; it is not.
+- The tell: two functions that must partition the same population, where one is written as a
+  sibling of a nearby *aggregate* (a mode, a max, a first-non-null) that legitimately drops nulls.
+  The `dropna()` gets inherited by proximity, and the two row sets diverge on exactly the rows
+  nobody has a fixture for.
+- Sub-rule for **derived vocabularies**: a set promoted from a validation-only role (loud config
+  error) to an output-determining MASK (silently dropped rows) needs a **range-containment
+  property** binding it to its producer. `CEDS_GRADE_CODES` is safe to mask on only because
+  `grade_to_ceds`'s fallback literal happens to also be a table VALUE — an invisible coupling
+  whose breakage is a green suite.
+- The test that catches it is a **differential**: the same input with and without the one row the
+  divergence hinges on. A single-sided assertion passes under both implementations.
+
+Incident: plan 0043's blend-suppression gate. Suppressing a blend "when none of its grades receives
+subject rostering" required a per-section grade map. Built as a sibling of `_build_grade_map` — the
+natural place, three lines away — it inherits that map's `.dropna()`. But a blank grade converts to
+`"UG"`, `"UG"` is not a homeroom grade, so that row SURVIVES the subject filter and is a real
+student: the gate would suppress a blend that HAS a pupil, re-key them to a per-section class and
+GROW `Classes.csv` — the precise opposite of the "strictly subtractive" property the design was
+chosen for. **The plan's own full-suite simulation carried the bug**, so its measured "9 reds,
+strictly subtractive" evidence attested to an implementation that must not ship; no shipped fixture
+has a blank grade, so nothing was red. Caught by re-reading the null path, not by a test.
+Second lesson from the same slice: a **simulated/monkeypatched flip measurement cannot see tests
+that inspect module SOURCE or AST** (this repo has three), so those must be enumerated by hand
+before a red count is quoted as complete.
+Beneficiary roles: `implementer-architect`, `plan-reviewer`, `architect-reviewer`.
