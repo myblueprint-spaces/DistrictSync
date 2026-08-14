@@ -130,7 +130,7 @@ If something isn't working as expected:
 
 1. Check the **Home** screen first — it names the problem in plain language when something needs attention.
 2. Check [Troubleshooting](troubleshooting.md) and the [FAQ](faq.md) for common issues.
-3. Open **Help** in the app, or email support@myBlueprint.ca — include the version number shown on the Help screen.
+3. Open **Help** in the app, or email hello@spacesedu.com — include the version number shown on the Help screen.
 
 ---
 
@@ -146,7 +146,7 @@ This section is for the reviewer only — it is not part of the article and shou
 - **The 5-step wizard order and content.** The article lists File Paths → District → Schedule → SFTP → Review, with SFTP requiring a password at that step and a plain "Validate & Continue" button. The real wizard order is **District → Folders → Delivery → Schedule → Finish**, Delivery and Schedule are both explicitly skippable ("set up later"), and the schedule step includes an optional seasonal-pause feature the old article doesn't mention at all.
 - **"Mapping Editor allows non-standard filename adjustments without YAML editing."** There is no mapping editor. The Mapping screen only lets you review the active configuration and switch to a different pre-built one — it explicitly does not edit YAML or filenames. Creating or adjusting a mapping is done by the SpacesEDU/DistrictSync team, not in the app.
 - **Logs at `~/.districtsync/etl_tool.log`.** Same path issue as above — it's now in the per-user app-data folder, and there is now also a separate `history.db` that the Run History screen reads from (the article doesn't mention Run History as a screen at all, or the run-history database).
-- **Support contact `hello@spacesedu.com`.** The app's own Help screen and every in-app support path uses `support@myBlueprint.ca`. (`hello@spacesedu.com` is still a legitimate published address, just not the one the product surfaces to an admin who clicks "Email support" in-app — worth the reviewer's judgment call on which to lead with.)
+- ~~**Support contact.**~~ **RESOLVED, and the app changed rather than the article** (owner decision 2026-08-13): `hello@spacesedu.com` — the address this article already used — is the correct contact. The app previously surfaced a different one, so `SUPPORT_EMAIL` (the Help screen, Home's "we don't have a mapping for your district yet" card) and the CLI's crash hint were all re-pointed to match. **No change needed here** — this row is kept only so a reviewer comparing the two versions doesn't re-open it.
 - **Three output tiers listed as "myedbc / mbp_all / mbp_core," with mbp_core described as 3 files exactly.** Still broadly right, but the article doesn't mention that individual districts (e.g. `sd40myedbc`, `sd48myedbc`, `sd51myedbc`, `sd54myedbc`, `sd60myedbc`, `sd74myedbc`, `sd83myedbc`) are separate configurations layered on the same 5/7-file tiers, and doesn't mention the six-screen navigation (Home, Convert, Run History, Setup, Mapping, Help) that replaced whatever page structure the Streamlit UI had.
 
 **Stale but harmless** — still broadly true, just dated or under-specified:

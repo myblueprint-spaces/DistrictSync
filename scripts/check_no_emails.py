@@ -73,11 +73,15 @@ from pathlib import Path
 # Tier 1 — real, published organisational addresses. Exact literals.           #
 # --------------------------------------------------------------------------- #
 PUBLISHED_ADDRESSES: dict[str, str] = {
-    # The product's published support address — src/ui_flet/screens/help.py's
-    # SUPPORT_EMAIL, src/main.py's failure hint, docs/index.md, and the plan/decision log.
-    "support@myblueprint.ca": "SpacesEDU / myBlueprint published support address",
-    # README's published partner-enquiry address.
-    "hello@spacesedu.com": "SpacesEDU published partner-contact address",
+    # The FORMER support address. No longer surfaced by the product (owner decision
+    # 2026-08-13 re-pointed SUPPORT_EMAIL to the SpacesEDU address below); still
+    # allowlisted because it remains a legitimate published myBlueprint address and
+    # is quoted in the plan/decision log and in this scanner's own tests.
+    "support@myblueprint.ca": "myBlueprint published support address (former product contact)",
+    # The product's published support + partner-enquiry address — src/ui_flet/screens/help.py's
+    # SUPPORT_EMAIL (and via it Home's not-listed card), src/main.py's failure hint,
+    # docs/index.md, README.md, and the partner docs.
+    "hello@spacesedu.com": "SpacesEDU published support / partner-contact address",
     # pyproject.toml's `authors` package metadata — the maintainer's own work address,
     # published deliberately as part of packaging metadata.
     "shan.peiris@myblueprint.ca": "pyproject.toml package-author metadata (maintainer's own)",

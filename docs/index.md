@@ -118,7 +118,7 @@ Partners can always get the latest version from the [Releases page](https://gith
 
 <div style="background:#fff;border:1px solid #DBEAFE;border-radius:0.6rem;padding:1rem 1.2rem">
 <strong>🏫 SpacesEDU</strong><br>
-<a href="https://www.spacesEDU.com">spacesEDU.com</a> · <a href="mailto:support@myBlueprint.ca">support@myBlueprint.ca</a>
+<a href="https://www.spacesEDU.com">spacesEDU.com</a> · <a href="mailto:hello@spacesedu.com">hello@spacesedu.com</a>
 </div>
 
 </div>

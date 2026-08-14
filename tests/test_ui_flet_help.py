@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -33,13 +34,37 @@ def test_help_centre_url_is_the_exact_canonical_article() -> None:
     assert HELP_CENTRE_URL == "https://help.spacesedu.com/en-ca/article/mx56qo"
 
 
-def test_support_email_is_the_exact_mixed_case_canonical_contact() -> None:
-    """The canonical support contact with its EXACT mixed-case ``myBlueprint`` preserved.
+def test_support_email_is_the_exact_canonical_contact() -> None:
+    """The canonical published support contact, pinned EXACTLY.
 
-    A lowercase drift (``myblueprint``) would be real drift a case-insensitive check hides —
-    the source uses mixed-case, so the constant (and this guard) must too.
+    Owner decision 2026-08-13: the product's support contact is the SpacesEDU
+    address, not the myBlueprint one it used to carry. Exact ``==`` because this
+    string is what an admin clicks in-app — a silent re-point sends them nowhere.
+
+    The address is all-lowercase, so unlike the previous constant there is no
+    mixed-case trap to guard here; the exactness guard remains because the same
+    address is spelled a SECOND time in ``src/main.py``'s CLI failure hint (which
+    cannot import this module without pulling flet into every headless run), and
+    the two must not drift.
     """
-    assert SUPPORT_EMAIL == "support@myBlueprint.ca"
+    assert SUPPORT_EMAIL == "hello@spacesedu.com"
+
+
+def test_the_cli_failure_hint_names_the_SAME_support_address() -> None:
+    """``src/main.py``'s failure hint must not drift from ``SUPPORT_EMAIL``.
+
+    The CLI deliberately spells the address as a literal instead of importing this
+    module — importing it would pull the whole Flet UI layer into every headless
+    scheduled run. That leaves two spellings of one fact, so this is the parity test
+    tying them back together (CLAUDE.md: a literal copied out of its source needs a
+    parity test). Without it, re-pointing the support address in the UI would leave
+    every CLI crash pointing an admin at the old contact.
+    """
+    main_source = (Path(__file__).resolve().parents[1] / "src" / "main.py").read_text(encoding="utf-8")
+    assert SUPPORT_EMAIL in main_source, (
+        f"src/main.py's failure hint no longer names {SUPPORT_EMAIL} — the CLI and the Help "
+        f"screen would send admins to different addresses."
+    )
 
 
 # --------------------------------------------------------------------------- #
