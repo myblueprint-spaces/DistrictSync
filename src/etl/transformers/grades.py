@@ -26,7 +26,13 @@ import pandas as pd
 
 # The config layer owns the `class_rostering_grades` vocabulary (it declares the
 # key and validates it), exactly as it owns ALLOWED_TRANSFORMS — so the sentinel
-# is imported from there rather than respelled. Direction stays etl -> config.
+# is imported from there rather than respelled. The two modules CO-OWN this
+# vocabulary and the pair is a cycle broken by lazy binding: the sentinel is
+# bound here at module level, while `models` binds CEDS_GRADE_CODES back from
+# this module lazily inside `_ceds_grade_codes()` (a module-level import there
+# would run `src.etl.transformers.__init__` → `base.py` → `models`, while
+# `models` is still initialising). If a later slice wants layering purity, the
+# clean move is a neutral grade-vocabulary module both layers import.
 from src.config.models import CLASS_ROSTERING_HOMEROOM_SENTINEL
 
 # CEDS grade-level code table (single source of truth; keys are the upper-cased,

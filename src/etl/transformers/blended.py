@@ -313,8 +313,9 @@ class BlendedClassDetector:
 
         One derivation consumed by all three sites that need it —
         :meth:`validate` (2+ grades qualifies a blend), :meth:`get_grade_range`
-        (the displayed range) and the ``class_rostering_grades`` suppression
-        check in :meth:`_register_blends`. MT IDs absent from ``mtid_to_grade``,
+        (the displayed range) and the timetable-scope suppression check in
+        :meth:`_register_blends` (keyed to the RESOLVED scope, never to which
+        config key produced it). MT IDs absent from ``mtid_to_grade``,
         and blank grades, contribute nothing.
 
         NOTE these are per-section MODE grades (see :meth:`_build_grade_map`) —
