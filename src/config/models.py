@@ -57,6 +57,36 @@ def _ceds_grade_codes() -> frozenset[str]:
     return CEDS_GRADE_CODES
 
 
+def _require_ceds_grade_list(
+    field: str,
+    value: list,
+    *,
+    valid: frozenset[str],
+    empty_consequence: str,
+    absent_meaning: str,
+    remedy: str,
+) -> list:
+    """THE single spelling of "a non-empty list of CEDS grade codes" (SSOT).
+
+    Shared by ``class_rostering_grades`` and ``student_rostering_grades`` so the
+    two opt-in grade-scope keys cannot grow divergent messages for the same
+    mistake — only the CONSEQUENCE clauses differ, and those are passed in.
+    Codes are matched EXACTLY: the CEDS vocabulary is case-significant
+    (``"Other"`` is its one mixed-case member) and a listed-but-mistyped code
+    silently de-scopes a whole cohort, so a case-folding compare would be the
+    dangerous direction.
+    """
+    if not value:
+        raise ValueError(
+            f"{field} is an EMPTY list, which would {empty_consequence}. "
+            f"Remove the key entirely to keep the default ({absent_meaning}). {remedy}"
+        )
+    unknown = [entry for entry in value if not isinstance(entry, str) or entry not in valid]
+    if unknown:
+        raise ValueError(f"{field} contains non-CEDS grade code(s) {unknown!r}. {remedy}")
+    return value
+
+
 # -----------------------------------------------------------------------
 # Structural protocols for the field-apply Strategy. The config layer
 # depends on these ABSTRACTIONS only — never on the ETL classes — so the
@@ -556,6 +586,27 @@ class GlobalConfig(BaseModel):
     # the unbounded complement of `homeroom_grades`, byte-identical output.
     # Consumed by `src.etl.transformers.grades.resolve_timetable_scope`.
     class_rostering_grades: Optional[Union[Literal["homeroom"], list[str]]] = None
+    # Opt-in STUDENT-rostering scope: the COMPLETE set of grades whose students
+    # reach the output at all, in CEDS OUTPUT space (same vocabulary as above).
+    # It is the OUTERMOST bound — narrowing it narrows Students.csv, and through
+    # the existing zero-orphan roster (`context.active_student_ids`) it narrows
+    # Family, Classes, Enrollments and StudentCourses with it:
+    #
+    #   validated chain: homeroom_grades ⊆ class_rostering_grades ⊆ student_rostering_grades
+    #
+    # There is NO `"homeroom"` sentinel here (it is meaningless for students) and
+    # `[]` is REJECTED — "send no students" can only end in the delivery-integrity
+    # floor, so it is refused at load rather than at 2am. None/absent → every
+    # grade, i.e. today's behaviour, byte-identical output.
+    #
+    # When this is set and `class_rostering_grades` is ABSENT, the class scope
+    # INHERITS this list as its outer bound (timetable scope =
+    # `student_rostering_grades − homeroom_grades`) — otherwise subject/blended
+    # classes would be built for grades whose students are not being sent, i.e. a
+    # class with a teacher and zero students. Consumed by
+    # `src.etl.transformers.grades.resolve_student_scope` (and, for that
+    # inherited bound, `resolve_timetable_scope`).
+    student_rostering_grades: Optional[list[str]] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -592,33 +643,94 @@ class GlobalConfig(BaseModel):
             raise ValueError(
                 f"class_rostering_grades must be a string or a list (got {type(value).__name__}). {remedy}"
             )
-        if not value:
-            raise ValueError(
-                "class_rostering_grades is an EMPTY list, which would roster no classes at all. "
-                f"Remove the key entirely to keep the default (every non-homeroom grade). {remedy}"
-            )
-        unknown = [entry for entry in value if not isinstance(entry, str) or entry not in valid]
-        if unknown:
-            raise ValueError(f"class_rostering_grades contains non-CEDS grade code(s) {unknown!r}. {remedy}")
-        return value
+        return _require_ceds_grade_list(
+            "class_rostering_grades",
+            value,
+            valid=valid,
+            empty_consequence="roster no classes at all",
+            absent_meaning="every non-homeroom grade",
+            remedy=remedy,
+        )
+
+    @field_validator("student_rostering_grades", mode="before")
+    @classmethod
+    def check_student_rostering_grades_shape(cls, value: Any) -> Any:
+        """Validator 6 — a non-empty list of CEDS codes, and NO sentinel form.
+
+        Shares :func:`_require_ceds_grade_list` with ``class_rostering_grades``
+        so the "non-empty list of CEDS codes" rule (and its message) has ONE
+        spelling. The two differences are deliberate and are the whole reason
+        this validator exists separately:
+
+        - **No ``"homeroom"`` sugar.** "Roster exactly the homeroom grades" is
+          meaningless for STUDENTS (a student's grade is not a class), so the
+          string form is rejected outright rather than quietly accepted.
+        - **The ``[]`` rejection is a SAFETY decision here, not just a shape
+          one.** ``student_rostering_grades: []`` means "send no students",
+          whose only possible outcome is an empty roster →
+          ``filter_to_active`` correctly no-ops → the ``Students`` anchor is
+          absent from ``outputs`` → ``check_delivery_integrity`` raises
+          ``INCOMPLETE_ROSTER`` before any write. A config whose every run is
+          guaranteed to fail belongs on the load-time floor, not at 2am.
+          (``class_rostering_grades: []`` is likewise rejected, above — the two
+          new keys are symmetric on ``[]``. The real asymmetry is with
+          ``homeroom_grades: []``, which is LEGAL: "no homeroom classes".)
+        """
+        if value is None:
+            return value
+        valid = _ceds_grade_codes()
+        remedy = (
+            f"Use a non-empty list of CEDS grade codes: {sorted(valid)}. There is no "
+            f"'{CLASS_ROSTERING_HOMEROOM_SENTINEL}' shortcut for students — remove the key "
+            f"entirely to send every grade."
+        )
+        if not isinstance(value, list):
+            raise ValueError(f"student_rostering_grades must be a list (got {type(value).__name__}). {remedy}")
+        return _require_ceds_grade_list(
+            "student_rostering_grades",
+            value,
+            valid=valid,
+            empty_consequence="send no students at all (every run would then fail at the delivery gate)",
+            absent_meaning="every grade",
+            remedy=remedy,
+        )
 
     @model_validator(mode="after")
     def check_rostering_grade_scopes(self):
         """Validate the grade-scope rules that only apply when scoping is opted into.
 
-        Two rules, both fail-loud at config LOAD (before any run), and both
-        scoped to ``class_rostering_grades`` being set so no other district is
-        affected:
+        All of it fail-loud at config LOAD (before any run) and all of it gated
+        on at least one of the two opt-in scope keys being set, so no other
+        district is affected:
 
         1. ``homeroom_grades`` must itself be CEDS. Generally it is unvalidated
            (a pre-existing gap → roadmap), but under the ``"homeroom"`` sentinel
-           it BECOMES the rostered set, so nothing else would check it.
-        2. ``homeroom_grades ⊆ class_rostering_grades`` — the subset rule the
-           whole design rests on. A district whose inherited `homeroom_grades`
-           is not a subset of its new list must state `homeroom_grades`
-           explicitly (including `[]`, which the LIST form legitimately allows).
+           it BECOMES the rostered set, and under the chain below it is compared
+           against the other lists — so nothing else would check it.
+        2. The sentinel over an EMPTY ``homeroom_grades`` means "roster nobody".
+        3. **The subset chain**
+           ``homeroom_grades ⊆ class_rostering_grades ⊆ student_rostering_grades``,
+           each link checked only when both its sides are configured. The links
+           are checked INDIVIDUALLY rather than leaning on transitivity, because
+           the middle term is optional: with ``class_rostering_grades`` absent
+           and ``student_rostering_grades`` set (shape 4 — a district licensed
+           for K-8), transitivity gives nothing and ``homeroom_grades ⊆
+           student_rostering_grades`` is the link that matters.
+
+        ``homeroom_grades`` defaults to ``[]`` (never ``None``), so it is always
+        "configured" for chain purposes — ``∅ ⊆ anything`` holds harmlessly.
+
+        A district whose INHERITED ``homeroom_grades`` is not a subset of a new
+        list must restate ``homeroom_grades`` explicitly (``[]`` included, which
+        the list form legitimately allows) — ``_deep_merge`` replaces lists
+        wholesale, so base ``myedbc``'s twelve homeroom codes are inherited in
+        full unless overridden. Every message therefore names BOTH offending
+        sets and says which one to edit.
+
+        A derived EMPTY scope is legitimate and must NOT raise:
+        ``student == homeroom`` simply yields an empty timetable scope.
         """
-        if self.class_rostering_grades is None:
+        if self.class_rostering_grades is None and self.student_rostering_grades is None:
             return self
         valid = _ceds_grade_codes()
         homeroom = set(self.homeroom_grades)
@@ -626,10 +738,13 @@ class GlobalConfig(BaseModel):
         if unknown:
             raise ValueError(
                 f"homeroom_grades contains non-CEDS grade code(s) {unknown} — these must be CEDS "
-                f"codes whenever class_rostering_grades is set, because the two lists are compared "
-                f"against each other and against the CONVERTED grade column. "
+                f"codes whenever class_rostering_grades or student_rostering_grades is set, because "
+                f"the lists are compared against each other and against the CONVERTED grade column. "
                 f"Valid codes: {sorted(valid)}."
             )
+
+        students = set(self.student_rostering_grades) if self.student_rostering_grades is not None else None
+        rostered: Optional[set[str]]
         if self.class_rostering_grades == CLASS_ROSTERING_HOMEROOM_SENTINEL:
             if not homeroom:
                 raise ValueError(
@@ -638,18 +753,62 @@ class GlobalConfig(BaseModel):
                     f"would roster nobody. Set homeroom_grades, or list the grades to roster "
                     f"explicitly in class_rostering_grades."
                 )
-            return self
-        rostered = set(self.class_rostering_grades)
-        missing = sorted(homeroom - rostered)
-        if missing:
-            raise ValueError(
-                f"homeroom_grades must be a SUBSET of class_rostering_grades, but {missing} "
-                f"is/are missing from it. homeroom_grades={sorted(homeroom)}, "
-                f"class_rostering_grades={sorted(rostered)}. Add the missing grade(s) to "
-                f"class_rostering_grades, or restate homeroom_grades (deep merge REPLACES lists, "
-                f"so an inherited homeroom list must be restated in full — `[]` is allowed)."
+            # Under the sentinel the rostered set IS homeroom_grades, so the
+            # homeroom→class link is satisfied by definition and the class→student
+            # link reduces to the homeroom→student link checked below.
+            rostered = None
+        elif self.class_rostering_grades is not None:
+            rostered = set(self.class_rostering_grades)
+        else:
+            rostered = None
+
+        if rostered is not None:
+            self._require_grade_subset(
+                inner_name="homeroom_grades",
+                inner=homeroom,
+                outer_name="class_rostering_grades",
+                outer=rostered,
             )
+        if students is not None:
+            self._require_grade_subset(
+                inner_name="homeroom_grades",
+                inner=homeroom,
+                outer_name="student_rostering_grades",
+                outer=students,
+            )
+            if rostered is not None:
+                self._require_grade_subset(
+                    inner_name="class_rostering_grades",
+                    inner=rostered,
+                    outer_name="student_rostering_grades",
+                    outer=students,
+                )
         return self
+
+    @staticmethod
+    def _require_grade_subset(*, inner_name: str, inner: set[str], outer_name: str, outer: set[str]) -> None:
+        """One link of the subset chain, with the message a district reads at 8am.
+
+        Names WHICH link broke, both sets in full, and the two ways to fix it —
+        including the deep-merge trap (an inherited ``homeroom_grades`` is
+        replaced wholesale, never merged), which is the single most likely cause
+        of a link failing on a config that looks right.
+        """
+        missing = sorted(inner - outer)
+        if not missing:
+            return
+        raise ValueError(
+            # ASCII only in the raised text: this message reaches a Windows console
+            # (cp1252) via the CLI's error path, where a subset glyph would raise
+            # UnicodeEncodeError INSTEAD of showing the district what to fix.
+            f"{inner_name} must be a SUBSET of {outer_name} (the grade-scope subset chain is "
+            f"homeroom_grades inside class_rostering_grades inside student_rostering_grades), "
+            f"but {missing} "
+            f"is/are missing from it. {inner_name}={sorted(inner)}, {outer_name}={sorted(outer)}. "
+            f"Add the missing grade(s) to {outer_name}, or restate {inner_name} (deep merge "
+            f"REPLACES lists, so an inherited list must be restated in full — `[]` is allowed for "
+            f"homeroom_grades)."
+        )
 
     @model_validator(mode="after")
     def check_course_code_patterns(self):
@@ -837,6 +996,38 @@ class MappingConfig(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def check_student_scope_requires_the_students_entity(self):
+        """Validator 9 — ``student_rostering_grades`` needs the ``Students`` entity.
+
+        Without it the key is SILENTLY INERT, which is the one failure mode this
+        opt-in exclusion key cannot afford. The narrowing works entirely through
+        the roster set: ``StudentTransformer`` is the only publisher of
+        ``context.active_student_ids`` (``students.py``), and
+        ``BaseTransformer.filter_to_active`` deliberately fails SAFE on an empty
+        roster (it must never filter-to-empty). So on a Students-less tier
+        (``mbponly`` today, any future myBlueprint+-only tier) a config could
+        declare a grade restriction while ``StudentCourses`` shipped every
+        student's transcript.
+
+        This rejects only the CONTRADICTION — a grade restriction on a config
+        that cannot apply one. Students-less tiers themselves stay entirely
+        legal. Entity-conditional global check, same shape as
+        ``check_dates_required_for_classes``.
+        """
+        if self.global_config.student_rostering_grades is None:
+            return self
+        if "Students" in self.active_entities():
+            return self
+        raise ValueError(
+            "global_config.student_rostering_grades restricts which grades of STUDENTS are sent, "
+            "but this config does not produce the 'Students' entity (enabled_entities="
+            f"{sorted(self.active_entities())}). The restriction is applied through the active "
+            "roster, which only the Students entity publishes, so it would silently apply to "
+            "NOTHING — course/attendance feeds would still carry every student. Enable 'Students' "
+            "in enabled_entities, or remove student_rostering_grades."
+        )
+
     def get_entity(self, name: str) -> Optional[EntityConfig]:
         return self.mappings.get(name)
 
@@ -897,6 +1088,14 @@ class MappingConfig(BaseModel):
                 list(self.global_config.class_rostering_grades)
                 if isinstance(self.global_config.class_rostering_grades, list)
                 else self.global_config.class_rostering_grades
+            ),
+            # Same None-preserving rule as above: absent means "every grade",
+            # an empty list is rejected at validation, so None must never be
+            # collapsed to [] (that would read as "send nobody").
+            "student_rostering_grades": (
+                list(self.global_config.student_rostering_grades)
+                if self.global_config.student_rostering_grades is not None
+                else None
             ),
         }
 

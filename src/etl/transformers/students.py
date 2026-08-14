@@ -7,6 +7,7 @@ import pandas as pd
 
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
+from src.etl.transformers.grades import filter_to_grade_scope, resolve_student_scope
 from src.etl.transformers.ids import normalize_id_series
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ class StudentTransformer(BaseTransformer):
         self._determine_enrollment_status(working, field_map)
         working = self._filter_active(working, field_map)
         working = self._collapse_cross_enrollment(working, field_map, context)
+        working = self._filter_to_rostered_grades(working, field_map, context)
         result["EnrollStatus"] = working["EnrollStatus"]
         self._generate_emails(working, result, field_map, context)
 
@@ -108,6 +110,49 @@ class StudentTransformer(BaseTransformer):
         if before != after:
             logger.info(f"[Students] cross_enrollment collapsed {before - after} duplicate rows to home school")
         return working
+
+    def _filter_to_rostered_grades(
+        self, working: pd.DataFrame, field_map: dict[str, Any], context: TransformContext
+    ) -> pd.DataFrame:
+        """Keep only students whose CEDS grade is in ``student_rostering_grades``.
+
+        Opt-in (``global_config.student_rostering_grades``; absent → every grade,
+        so every district without the key is byte-identical). It composes WITH
+        the active-status filter rather than replacing it: an inactive in-scope
+        student and an active out-of-scope student are both dropped.
+
+        **Placed after** ``_collapse_cross_enrollment`` (one row per ``User ID``
+        by then, so exactly one grade decision is made per student, taken from
+        the HOME-school row) **and before** ``apply_field_map``, which converts
+        the raw grade column to the output ``Grade``. It must therefore never
+        rewrite that column: ``grade_to_ceds`` is not idempotent, so a converted
+        value converted again ships Kindergarten as ``"UG"``.
+        :func:`~src.etl.transformers.grades.filter_to_grade_scope` derives a
+        temporary column and drops it, which is why that function — not
+        ``split_by_homeroom_grades(keep="homeroom")`` — is the one used here.
+
+        Fail-loud (Configurable Columns + validate-at-boundary): the grade column
+        resolves through the shared ``resolve_column`` seam, and an unresolvable
+        one RAISES. Keeping everyone would deliver the PII of students the
+        district is not licensed to send, and "column absent" is reachable in
+        ordinary config (a field mapped to a fixed ``{value: ""}``, or a
+        bare-string entry, both of which ``resolve_column`` resolves to its
+        default).
+
+        Logs the kept/total COUNT only — a per-student or per-grade breakdown
+        would put student data in ``etl_tool.log`` (grade is itself student
+        data); the configured scope is config, not PII, so it is named.
+        """
+        scope = resolve_student_scope(context.global_config or {})
+        if scope is None:
+            return working
+        grade_col = self.resolve_column(field_map, "Grade", "grade")
+        total = len(working)
+        filtered = filter_to_grade_scope(working, grade_col, scope, caller="Students")
+        logger.info(
+            f"[Students] student_rostering_grades kept {len(filtered)}/{total} students (scope: {sorted(scope)})"
+        )
+        return filtered
 
     def _determine_enrollment_status(self, working: pd.DataFrame, field_map: dict[str, Any]) -> None:
         """Set the 'EnrollStatus' column in-place via the shared base predicate.

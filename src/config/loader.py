@@ -59,8 +59,16 @@ logger = logging.getLogger(__name__)
 # 1.0, so the bump would fire a newer-minor WARNING on configs that are
 # perfectly compatible, training operators to ignore the one warning that
 # matters.
+#
+# The prose above tracks what the BUNDLED CONFIGS DECLARE; the constant below
+# tracks what THIS BUILD UNDERSTANDS. They legitimately diverge: 1.11 added
+# `student_rostering_grades` (plan 0042 slice 1b), which no shipped config sets,
+# so nothing declares '1.11' and the declared range is still 1.0–1.10. Do NOT
+# "fix" the apparent lag — the first district config that sets the key declares
+# quoted `version: '1.11'` and moves the prose with it.
+# (Pinned by tests/test_config_version_gate.py::TestDeclaredRangeVersusSupported.)
 SUPPORTED_CONFIG_MAJOR = 1
-SUPPORTED_CONFIG_MINOR = 10
+SUPPORTED_CONFIG_MINOR = 11
 
 
 def _search_dirs(explicit: Optional[Path]) -> list[Path]:

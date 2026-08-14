@@ -7,16 +7,27 @@ column to CEDS, then partition rows by ``homeroom_grades`` membership — was
 previously duplicated across four call sites in Classes and Enrollments; it is
 hoisted into :func:`split_by_homeroom_grades`.
 
-This module also owns the OPT-IN class-rostering scope
-(``global_config.class_rostering_grades``): :func:`resolve_timetable_scope`
-turns the config value plus ``homeroom_grades`` into the set of CEDS grades
-that receive SUBJECT (timetable) rostering, and :func:`split_by_homeroom_grades`
-applies it. The scope lives HERE, inside the one function that performs the
-grade→CEDS conversion, because ``grade_to_ceds`` is NOT idempotent (``KG``,
-``IT``, ``PR``, ``PK``, ``PS`` are CEDS values that are not also keys of
-:data:`CEDS_MAPPING`, so re-converting them yields ``"UG"``) — an external
-filter applied on the wrong side of a conversion would silently de-roster
-Kindergarten.
+This module also owns the two OPT-IN rostering scopes, because both are
+expressed in the CEDS vocabulary above:
+
+- ``global_config.class_rostering_grades`` → :func:`resolve_timetable_scope`,
+  the set of CEDS grades that receive SUBJECT (timetable) rostering, applied by
+  :func:`split_by_homeroom_grades`;
+- ``global_config.student_rostering_grades`` → :func:`resolve_student_scope`,
+  the OUTERMOST bound (which grades of students reach the output at all),
+  applied by :func:`filter_to_grade_scope` from ``StudentTransformer``. When it
+  is set and ``class_rostering_grades`` is ABSENT, the timetable scope INHERITS
+  it (``student − homeroom``) rather than staying the unbounded complement — so
+  no grade can be class-rostered without its students being sent.
+
+Each scope is applied by the function that performs its OWN grade→CEDS
+conversion, and neither ever rewrites a raw grade column that is converted again
+downstream, because ``grade_to_ceds`` is NOT idempotent (``KG``, ``IT``, ``PR``,
+``PK``, ``PS`` are CEDS values that are not also keys of :data:`CEDS_MAPPING`,
+so re-converting them yields ``"UG"``). A filter applied on the wrong side of a
+conversion would silently de-roster Kindergarten — or, worse for the Students
+path where the field_map converts the same raw column again, SHIP every
+Kindergarten student as ``Grade = "UG"``.
 """
 
 from collections.abc import Mapping, Sequence
@@ -92,6 +103,36 @@ def grade_to_ceds(grade_value: Any) -> str:
     return CEDS_MAPPING.get(original, "UG")
 
 
+def resolve_student_scope(global_config: Mapping[str, Any]) -> Optional[set[str]]:
+    """The CEDS grades whose STUDENTS reach the output at all, or None.
+
+    ``None`` means NO scope is in force — today's behaviour exactly: every grade
+    is sent, and the active-status filter alone decides inclusion. Any returned
+    SET is a positive, bounded scope; the config boundary rejects an empty list
+    (``student_rostering_grades: []`` = "send nobody", which could only ever end
+    at the delivery floor), so a returned set is never empty.
+
+    THE single reading of the key: :class:`StudentTransformer` consumes it to
+    filter the roster, and :func:`resolve_timetable_scope` consumes it for the
+    inherited class bound, so the two can never disagree about what was
+    configured.
+
+    Fail-loud on a string, for the same reason as the timetable resolver: this
+    also serves raw-dict callers, and ``set("09")`` would silently scope to
+    ``{"0", "9"}``.
+    """
+    configured = global_config.get("student_rostering_grades")
+    if configured is None:
+        return None
+    if isinstance(configured, str):
+        raise ValueError(
+            f"global_config.student_rostering_grades must be a list of CEDS grade codes "
+            f"(got the bare string {configured!r}). There is no "
+            f"{CLASS_ROSTERING_HOMEROOM_SENTINEL!r} shortcut for students."
+        )
+    return set(configured)
+
+
 def resolve_timetable_scope(
     global_config: Mapping[str, Any],
     homeroom_grades: Sequence[str],
@@ -102,17 +143,27 @@ def resolve_timetable_scope(
     timetable side is the unbounded complement of ``homeroom_grades``. Any
     returned SET is a positive, bounded scope, and an EMPTY set is meaningful
     ("roster no timetable classes at all"), so every consumer must branch on
-    ``is None``, never on truthiness and never on which config key produced it.
+    ``is None``, **never on truthiness and never on whether a particular config
+    key is present** — since slice 1b, TWO keys can produce a positive scope
+    (see the inherited bound below), so a presence check on
+    ``class_rostering_grades`` is silently dead on the path the bound adds.
 
-    Two configured forms (validated at the config boundary — see
+    Three configured forms (all validated at the config boundary — see
     ``GlobalConfig.check_rostering_grade_scopes``):
 
     - the ``"homeroom"`` sentinel ⇒ rostered ≡ ``homeroom_grades`` ⇒ the
       timetable scope is EMPTY;
-    - a list of CEDS codes ⇒ the timetable scope is that list MINUS
-      ``homeroom_grades`` (the config boundary guarantees
+    - a ``class_rostering_grades`` list of CEDS codes ⇒ the timetable scope is
+      that list MINUS ``homeroom_grades`` (the config boundary guarantees
       ``homeroom_grades ⊆ class_rostering_grades``, which is why the homeroom
-      path needs no scoping of its own).
+      path needs no scoping of its own). It WINS over the inherited bound, and
+      the chain guarantees it lies inside the student bound;
+    - **the INHERITED bound** — ``class_rostering_grades`` absent while
+      ``student_rostering_grades`` is set ⇒ the timetable scope is
+      ``student_rostering_grades − homeroom_grades``, a positive set where the
+      unbounded complement would otherwise be. Without it, subject and blended
+      classes would be built for grades whose students are not being sent, i.e.
+      a class with a teacher and zero students.
 
     ``homeroom_grades`` is passed in rather than re-read so the scope is
     always derived from the SAME list the caller partitions on.
@@ -124,7 +175,10 @@ def resolve_timetable_scope(
     """
     configured = global_config.get("class_rostering_grades")
     if configured is None:
-        return None
+        students = resolve_student_scope(global_config)
+        if students is None:
+            return None
+        return students - set(homeroom_grades)
     if isinstance(configured, str):
         if configured != CLASS_ROSTERING_HOMEROOM_SENTINEL:
             raise ValueError(
@@ -184,3 +238,66 @@ def split_by_homeroom_grades(
     if timetable_scope is None:
         return df[~df["grade_ceds"].isin(homeroom_grades)].copy()  # type: ignore[return-value]
     return df[df["grade_ceds"].isin(timetable_scope)].copy()  # type: ignore[return-value]
+
+
+#: The derived column :func:`filter_to_grade_scope` masks on. Deliberately NOT
+#: ``grade_ceds`` — that name is a real, KEPT output of
+#: :func:`split_by_homeroom_grades` (see ``keep="subject"``), so reusing it here
+#: would mean dropping a caller's genuine column on the way out. A collision is
+#: additionally REFUSED rather than tolerated (see the function), because a
+#: silent overwrite-then-drop is exactly the kind of data loss this module's
+#: non-idempotency rules exist to prevent.
+_SCOPE_CEDS_COLUMN = "__districtsync_grade_scope_ceds__"
+
+
+def filter_to_grade_scope(
+    df: pd.DataFrame,
+    grade_col: str,
+    scope: set[str],
+    *,
+    caller: str,
+) -> pd.DataFrame:
+    """Keep the rows whose CEDS grade is IN ``scope`` — an inclusion filter.
+
+    Deliberately NOT a third ``keep=`` flavor of
+    :func:`split_by_homeroom_grades`: that function's contract is the
+    homeroom/subject PARTITION, and this is an inclusion filter with no
+    partition and no ``homeroom_grades`` argument to give meaning to.
+
+    **Derive → mask → drop, and never in place.** The CEDS value is computed
+    into a private temporary column (:data:`_SCOPE_CEDS_COLUMN`), used for the
+    mask, and dropped again, so the returned frame's column set is IDENTICAL to
+    the input's and ``grade_col`` still holds its RAW value. That is
+    load-bearing for the Students path: the Students ``field_map`` converts that
+    same raw column with ``grade_to_ceds`` to produce the output ``Grade``, and
+    ``grade_to_ceds`` is not idempotent — an in-place rewrite here would ship
+    every Kindergarten student as ``Grade = "UG"``. The function takes no
+    ``keep=`` argument precisely so it CANNOT be asked to rewrite in place.
+
+    Returns a COPY, so the caller owns it and the caller's frame is untouched.
+
+    Fail-loud, both ways (this is an EXCLUSION guarantee — keeping everyone
+    because a column moved would deliver students the district is not licensed
+    to send):
+
+    - ``grade_col`` absent ⇒ ``KeyError`` naming the column and the available
+      ones (the ``apply_row_filters`` message shape), matching
+      :func:`split_by_homeroom_grades`'s documented ``KeyError`` contract;
+    - the temporary column name already present ⇒ ``ValueError`` rather than a
+      silent overwrite-and-drop of a real source column.
+    """
+    if grade_col not in df.columns:
+        raise KeyError(
+            f"[{caller}] grade column '{grade_col}' not found in source columns, so the "
+            f"student_rostering_grades scope cannot be applied. Available: {sorted(df.columns)}"
+        )
+    if _SCOPE_CEDS_COLUMN in df.columns:
+        raise ValueError(
+            f"[{caller}] the source frame already carries the reserved column "
+            f"'{_SCOPE_CEDS_COLUMN}' — rename it; the grade-scope filter needs the name for its "
+            f"own derived value and would otherwise drop yours."
+        )
+    working = df.copy()
+    working[_SCOPE_CEDS_COLUMN] = working[grade_col].apply(grade_to_ceds)
+    kept = working[working[_SCOPE_CEDS_COLUMN].isin(scope)]
+    return kept.drop(columns=_SCOPE_CEDS_COLUMN)  # type: ignore[return-value]
