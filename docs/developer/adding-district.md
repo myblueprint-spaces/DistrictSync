@@ -225,7 +225,7 @@ Three things that will bite you if nobody says them first:
   ```yaml
   global_config:
     homeroom_grades: []                                   # no homeroom classes
-    student_rostering_grades: ["08", "09", "10", "11", "12"]
+    student_rostering_grades: ["09", "10", "11", "12"]
   ```
 
   The error names both lists and which one to edit, so it is a five-second fix —
