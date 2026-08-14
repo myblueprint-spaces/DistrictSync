@@ -25,7 +25,7 @@ from src.etl.column_names import (
     SCHOOL_NUMBER,
 )
 from src.etl.transformers.context import TransformContext
-from src.etl.transformers.course_codes import filter_excluded_course_codes
+from src.etl.transformers.course_codes import filter_excluded_course_codes, resolve_course_code_column
 from src.etl.transformers.grades import (
     ceds_grade_series,
     grade_to_ceds,
@@ -253,10 +253,14 @@ class BlendedClassDetector:
         rule, so no district's blend set changes for a reason other than
         "nobody could ever be in it".
 
-        The course-code column is resolved ONCE here (see
-        :meth:`resolve_course_code_column`) and threaded into
-        :meth:`create_name`, so its absence is warned about once per detection
-        rather than once per surviving blend.
+        The course-code column is resolved ONCE here (via the shared
+        :func:`~src.etl.transformers.course_codes.resolve_course_code_column`,
+        which owns the alias precedence for every consumer) and threaded into
+        :meth:`create_name`. Its absence is warned about ONCE, after the loop
+        and only when at least one blend was actually named: resolving per blend
+        would have emitted 411 identical warnings on SD40's FY2026 run, and
+        warning before the loop would have claimed degraded names on a district
+        that produced no blended classes at all.
         """
         teacher_positions = self._teacher_positions(working, teacher_id_col)
         result = BlendedDetection.empty()
@@ -264,14 +268,7 @@ class BlendedClassDetector:
         timetable_scope = resolve_timetable_scope(context.global_config, homeroom_grades)
         rostered = timetable_rostered_grades(homeroom_grades, timetable_scope=timetable_scope)
 
-        course_code_col = self.resolve_course_code_column(working)
-        if course_code_col is None:
-            logger.warning(
-                "Missing '%s' (and its '%s' fallback) in the blended-detection frame; "
-                "blended class names will omit their course titles.",
-                COURSE_CODE,
-                DISTRICT_COURSE_CODE,
-            )
+        course_code_col = resolve_course_code_column(working)
 
         count = 0
         suppressed = 0
@@ -329,6 +326,19 @@ class BlendedClassDetector:
             count += 1
 
         logger.info(f"[Blended Classes] Detection completed: {count} blended classes identified")
+        # Warned HERE, not before the loop: the column is resolved once (so a
+        # 411-blend district gets one warning, not 411), but a warning about
+        # names is only true if names were built. A district with no blended
+        # sessions at all has nothing degraded to report, and this line lands in
+        # the log partners are asked to send to support.
+        if count and course_code_col is None:
+            logger.warning(
+                "Missing '%s' (and its '%s' fallback) in the blended-detection frame; "
+                "the %d blended class name(s) above omit their course titles.",
+                COURSE_CODE,
+                DISTRICT_COURSE_CODE,
+                count,
+            )
         if suppressed:
             logger.info(
                 "[Blended Classes] %d blend(s) suppressed: no grade in them receives subject "
@@ -424,30 +434,6 @@ class BlendedClassDetector:
         except ValueError:
             return "/".join(sorted(grades))
 
-    @staticmethod
-    def resolve_course_code_column(working: pd.DataFrame) -> Optional[str]:
-        """Which column names the course code in this frame, or None for neither.
-
-        ClassInformation spells it ``course code``; the deduplicated-schedule
-        FALLBACK frame (:meth:`_resolve_working_frame`, which is SD40's real
-        shape — its ClassInformation has no Master Timetable ID) spells it
-        ``district course code``. The two share a value space: the subject path
-        already renames one onto the other before joining the same course-title
-        source (``classes.py``'s ``_merge_course_and_staff``), which is why the
-        title map keyed by ``course code`` can be looked up with either.
-
-        Public because it is :meth:`create_name`'s companion — every caller of
-        that method must resolve the column first, including the DataTransformer
-        facade — and a staticmethod because the answer depends on the frame
-        alone. Resolved ONCE per detection by :meth:`_register_blends`, never
-        inside the per-blend naming call: SD40's FY2026 run produced 411 blends,
-        so a guard that warned there would emit 411 identical warnings.
-        """
-        for column in (COURSE_CODE, DISTRICT_COURSE_CODE):
-            if column in working.columns:
-                return column
-        return None
-
     def create_name(
         self,
         session_group: pd.DataFrame,
@@ -461,9 +447,10 @@ class BlendedClassDetector:
         """Build the blend's display name from the parts the frame actually has.
 
         ``course_code_col`` is the resolved course-code column (see
-        :meth:`resolve_course_code_column`), or ``None`` when the frame carries
-        neither spelling — in which case the course segment is SKIPPED, exactly
-        as the teacher segment below is skipped when its column is absent.
+        :func:`~src.etl.transformers.course_codes.resolve_course_code_column`),
+        or ``None`` when the frame carries neither spelling — in which case the
+        course segment is SKIPPED, exactly as the teacher segment below is
+        skipped when its column is absent.
 
         Skipping is deliberately NOT the ``"Unknown Course"`` substitution the
         per-code ``.get`` default performs: that default answers "this code has

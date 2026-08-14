@@ -15,6 +15,7 @@ from src.etl.transformers import sources as _sources
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.blended import BlendedClassDetector
 from src.etl.transformers.context import ClassArtifacts, TransformContext
+from src.etl.transformers.course_codes import resolve_course_code_column
 from src.etl.transformers.registry import get_transformer
 
 
@@ -184,9 +185,9 @@ class DataTransformer:
 
         `create_name` requires the column to be resolved by its caller (the
         detector resolves it once per detection, not once per blend). This shim
-        has only the one group in hand, so it resolves from that — same
-        function, same answer for a frame that carries the column, and the
-        skip-the-segment degradation when it does not.
+        has only the one group in hand, so it resolves from that — the SAME
+        shared resolver, so the same answer for a frame that carries the column,
+        and the skip-the-segment degradation when it does not.
         """
         return self._blended_detector.create_name(
             session_group,
@@ -194,7 +195,7 @@ class DataTransformer:
             grade_str,
             course_code_to_title_map,
             self._context,
-            course_code_col=self._blended_detector.resolve_course_code_column(session_group),
+            course_code_col=resolve_course_code_column(session_group),
         )
 
     def _detect_blended_classes(

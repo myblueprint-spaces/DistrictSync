@@ -141,6 +141,16 @@ def ceds_grade_series(grades: "pd.Series[Any]") -> "pd.Series[str]":
     So the two sides of that invariant — the subject mask here, and blended
     detection's enrollable-grade map — call THIS function rather than spelling
     ``.apply(grade_to_ceds)`` (and its null handling) twice.
+
+    **Do not "optimise" this into a `.map()` lookup without an equivalence
+    table.** It is a Python call per row (~140-240 ms on a large district's
+    schedule, four call sites per run), so a unique-value LUT + ``.map()`` looks
+    free and measures ~12x faster — but it DIVERGES on real dtypes: it raises on
+    a Categorical grade column, and on a mixed bool/int column ``True`` and
+    ``1`` collide as dict keys (measured: ``"01"`` where this returns ``"UG"``).
+    The fully-vectorised ``.str.strip().str.upper().map(...)`` form is barely
+    faster (the accessors are per-element too) and diverges the same way. The
+    cost is well under 1% of a run; the divergence would be silent wrong grades.
     """
     return grades.apply(grade_to_ceds)
 

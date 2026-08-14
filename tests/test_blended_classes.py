@@ -637,15 +637,24 @@ class TestTheEffectiveRosteredSetIsSingleSourced:
     `split_by_homeroom_grades` masks on, and a second hand-rolled
     "CEDS_GRADE_CODES minus homeroom_grades" at either call site is how the two
     silently diverge. It lives in the blended suite rather than the grades one
-    because this module is where that second spelling would be written.
+    because this module is where that second spelling would be written — so it
+    COUNTS OVER BOTH modules, not over `grades` alone. An earlier version
+    inspected `grades` only, which left the very site this sentence names as the
+    risk passing green.
     """
 
-    def test_the_complement_is_spelled_exactly_once_in_grades(self):
-        source = inspect.getsource(grades_module)
-        assert source.count("set(CEDS_GRADE_CODES)") == 1, (
+    #: Both halves of the pair the invariant binds — the module that owns the
+    #: derivation, and the module most likely to re-spell it.
+    MODULES = (grades_module, blended_module)
+
+    def test_the_complement_is_spelled_exactly_once_ACROSS_BOTH_MODULES(self):
+        spellings = {
+            module.__name__: inspect.getsource(module).count("set(CEDS_GRADE_CODES)") for module in self.MODULES
+        }
+        assert sum(spellings.values()) == 1, (
             "the CEDS complement must be derived in exactly one place "
             "(grades.timetable_rostered_grades) — a second spelling is the DRY breach "
-            "this pin exists to catch, and re-spelling the one site differently defeats it"
+            f"this pin exists to catch, and re-spelling the one site differently defeats it: {spellings}"
         )
 
     def test_the_subject_split_consumes_the_helper(self, monkeypatch):
@@ -743,3 +752,42 @@ class TestCourseCodeColumnGuard:
         assert sorted(meta["Name"] for meta in metadata.values()) == ["Cole (01/02) 2025", "Diaz (03/04) 2025"]
         missing_column_warnings = [r for r in caplog.records if "district course code" in r.getMessage()]
         assert len(missing_column_warnings) == 1, f"expected exactly one warning, got {len(missing_column_warnings)}"
+
+    def test_no_blends_means_NO_warning_about_names_that_were_never_built(self, caplog):
+        """The absence row, and its positive twin is the test directly above —
+        the SAME missing columns, differing only in whether any blend was named.
+
+        The warning says blended class names omit their course titles. On a
+        district with no multi-section same-teacher sessions there are no
+        blended class names, so the sentence is not true of anything; it landed
+        in the log partners are asked to send to support. Resolved once, warned
+        once, and only when there is something to warn about.
+        """
+        class_info = pd.DataFrame(
+            {
+                "school number": ["400", "400"],
+                "teacher id": ["T030", "T031"],
+                "teacher name": ["Cole", "Diaz"],
+                # One section each: no teacher runs two sections at one slot,
+                # so `validate` qualifies nothing and no name is ever built.
+                "master timetable id": ["MT200", "MT202"],
+                "term": ["1", "1"],
+                "semester": ["1", "1"],
+                "day": ["1", "1"],
+                "period": ["1", "2"],
+            }
+        )
+        schedule = pd.DataFrame(
+            {
+                "school number": ["400", "400"],
+                "master timetable id": ["MT200", "MT202"],
+                "grade": ["1", "3"],
+            }
+        )
+        course_info = pd.DataFrame({"school number": ["400"], "course code": ["ENG01"], "title": ["English 1"]})
+
+        with caplog.at_level(logging.WARNING, logger=blended_module.logger.name):
+            metadata = self._detect(class_info, schedule, course_info)
+
+        assert metadata == {}, "precondition: this frame must produce no blends, or the twin proves nothing"
+        assert [r for r in caplog.records if "district course code" in r.getMessage()] == []

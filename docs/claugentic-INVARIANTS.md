@@ -133,6 +133,25 @@ change "simplified" it. Consult this before changing the named subsystem.
   blend minus that one row IS suppressed) +
   `tests/test_blended_classes.py::TestEnrollableGradeMapIsRowSetIdentical`.
   Injecting `.dropna()` into the builder turns both red.
+  **The standing PREMISE the invariant rests on — one file, two readers.** "Same
+  rows" is only meaningful because the gate and the subject split read the SAME
+  schedule. The gate runs inside blended detection, which is invoked with the
+  **Classes** entity's `student_schedule` (`classes.py`), while the subject split
+  that must agree with it runs on the **Enrollments** entity's
+  (`enrollments.py`). Today those are one file **in every shipped config** —
+  checked, not assumed: four districts DO override `student_schedule`
+  (`sd40myedbc` → `SD-40_StudentSchedule.csv`, `sd54myedbc` → lowercase,
+  `sd60myedbc` and `sd74myedbc` → `StudentCourseSelection*` — they never read
+  the base's `StudentSchedule.txt` at all), and each points **both** entities at
+  the same file. So the guarantee rests on that per-config agreement, NOT on the
+  base default and NOT on the absence of overrides.
+  **If a config ever points them at different files the invariant is broken even
+  with the code unchanged** — a blend
+  suppressed on the Classes-side rows while Enrollments-side rows are
+  timetable-side re-keys those students to `MT#_<year>` with no matching Classes
+  row, i.e. the orphan Class IDs commit `e187ac8` was written to stop. Whoever
+  first splits those two source files owns re-establishing this.
   **The general rule:** two filters that must agree need to share their ROW SET
   and their NULL POLICY, not merely their value vocabulary — a shared constant
-  is not a shared decision.
+  is not a shared decision, and neither is a shared column name when the rows
+  behind it can come from different files.
