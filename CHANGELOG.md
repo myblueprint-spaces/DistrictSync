@@ -9,6 +9,40 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.12.0] - 2026-08-17
+
+Adds SD83 (North Okanagan-Shuswap) as an eighth district config, plus two new
+opt-in `global_config` keys that let a district license a grade subset for
+class- and student-level rostering. Also fixes a studentless duplicate-class
+bug that could affect every district. **No output change for any district
+that doesn't set the new keys** — SD83 is the only shipped config that does.
+
+**Released ahead of the certification pass by owner decision (2026-08-17).**
+The audit + product-gap + QA-checklist walk that `docs/claugentic-DECISIONS.md`
+(D-0037-6) reserves has **not** run against this build — the third consecutive
+release to skip it; see that decision log for what this release is and is not
+evidence of.
+
+### Added
+
+- **SD83 (North Okanagan-Shuswap) district config.** New `sd83myedbc` mapping opts
+  into the full myBlueprint+ tier (rostering plus CourseInfo/StudentCourses),
+  extends self-contained homeroom classes through grade 8, and starts
+  course/transcript data at grade 9. Date of Birth is withheld from the output
+  (the column stays, every value is blank). Standard MyEd BC file naming is
+  assumed for now, pending real GDE samples from the district.
+- **Opt-in grade-scoped rostering.** Two new district-config settings let a
+  config restrict rostering to a licensed subset of grades:
+  `class_rostering_grades` bounds which grades get class rostering (homeroom,
+  timetable, and blended classes together); `student_rostering_grades` is the
+  outer bound — which grades' students reach the output at all, narrowing
+  Students, Family, Classes, Enrollments, and StudentCourses together. Both are
+  absent by default, so every existing district's output is unchanged. SD83 is
+  the first config to use one of them (`class_rostering_grades: "homeroom"`,
+  shorthand for "classes only for the grades that get a homeroom" — grades 9-12
+  still appear in `Students.csv` so their myBlueprint+ transcripts work, just
+  without class enrollments).
+
 ### Changed
 
 - **Empty duplicate classes are no longer sent.** DistrictSync could send SpacesEDU a
