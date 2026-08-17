@@ -8,6 +8,18 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
+    groups:
+      # The flet family is EXACT-pinned in lockstep across four places
+      # (requirements.txt: flet + flet-desktop · pyproject.toml flet-ui extra ·
+      # requirements-dev.txt: flet-web + flet-cli), gated by test_flet_pin.
+      # Ungrouped, dependabot bumps ONE pin per PR, which cannot even pip-install
+      # ("ResolutionImpossible") and burns two of the five PR slots every week.
+      # Grouped, the upgrade arrives as one honest PR to schedule or close —
+      # crossing a Flet beta-API boundary is a code slice, not a merge.
+      flet:
+        patterns:
+          - "flet"
+          - "flet-*"
 
   - package-ecosystem: "github-actions"
     directory: "/"
