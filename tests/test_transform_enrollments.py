@@ -26,10 +26,36 @@ class TestClassArtifactsHandoff:
         with pytest.raises(ValueError, match="ClassTransformer must run before"):
             self.transformer.transform(student_schedule_df, enrollments_mapping, "Enrollments", raw_data, global_config)
 
-    def test_empty_schedule_short_circuits_before_assertion(self, enrollments_mapping, global_config):
-        """No schedule data → empty result (legacy early return), even with no artifacts."""
+    def test_empty_schedule_still_asserts_classes_ordering(self, enrollments_mapping, global_config):
+        """No schedule data no longer bypasses the Classes-ordering assertion.
+
+        Previously an empty student_schedule short-circuited `transform` before
+        the `class_artifacts is None` check was ever reached (the early return
+        fixed 2026-08-17 — see test_empty_schedule_short_circuits_before_assertion's
+        old docstring, which called that behavior "legacy"). Now the assertion
+        fires unconditionally, exactly like the populated-schedule case above,
+        because homeroom and ClassInformation co-teacher enrollments both need
+        the artifacts bundle regardless of schedule presence.
+        """
         empty = pd.DataFrame()
-        result = self.transformer.transform(empty, enrollments_mapping, "Enrollments", {}, global_config)
+        with pytest.raises(ValueError, match="ClassTransformer must run before"):
+            self.transformer.transform(empty, enrollments_mapping, "Enrollments", {}, global_config)
+
+    def test_classes_then_enrollments_with_nothing_at_all_still_empty(
+        self, classes_mapping, enrollments_mapping, global_config
+    ):
+        """Classes run first (publishing an all-empty ClassArtifacts bundle),
+        then Enrollments with no schedule, no demographic, and no class info at
+        all: must still degrade to an empty DataFrame — the fix must not
+        introduce a crash or phantom rows in the fully-empty case."""
+        empty_raw_data = {
+            "StudentDemographicInformation.txt": pd.DataFrame(),
+            "StudentSchedule.txt": pd.DataFrame(),
+            "ClassInformationEnh.txt": pd.DataFrame(),
+        }
+        empty = pd.DataFrame()
+        self.transformer.transform(empty, classes_mapping, "Classes", empty_raw_data, global_config)
+        result = self.transformer.transform(empty, enrollments_mapping, "Enrollments", empty_raw_data, global_config)
         assert result.empty
 
     def test_classes_publishes_one_artifact_bundle(self, student_schedule_df, classes_mapping, global_config, raw_data):
@@ -148,6 +174,31 @@ class TestEnrollmentsTransform:
         if not result.empty:
             assert "School ID" in result.columns
             assert "school number" not in result.columns
+
+    def test_homeroom_enrollments_survive_missing_schedule(
+        self, classes_mapping, enrollments_mapping, global_config, raw_data
+    ):
+        """THE bug fix: a district whose StudentSchedule.txt is empty/absent
+        (e.g. a class_rostering_grades: "homeroom" config where the schedule
+        contributes nothing functionally useful) must still get homeroom
+        enrollments — they never depended on schedule data. Regression pin for
+        the early-return bug fixed 2026-08-17 (previously this returned zero
+        enrollments entirely)."""
+        raw_data_no_schedule = {**raw_data, "StudentSchedule.txt": pd.DataFrame()}
+        empty = pd.DataFrame()
+        self.transformer.transform(empty, classes_mapping, "Classes", raw_data_no_schedule, global_config)
+        result = self.transformer.transform(
+            empty, enrollments_mapping, "Enrollments", raw_data_no_schedule, global_config
+        )
+
+        assert not result.empty
+        student_rows = result[result["Role"] == "student"]
+        # Same fixture shape as test_homeroom_student_enrollments: S001/S002/S006
+        # are in grades K/3/1 at school 100, homeroom A1.
+        homeroom_rows = student_rows[student_rows["Class ID"].astype(str).str.contains("_A1_")]
+        assert {"S001", "S002", "S006"}.issubset(set(homeroom_rows["User ID"].astype(str)))
+        # No subject/schedule-derived rows leaked in — there was no schedule to build them from.
+        assert result[result["Class ID"].astype(str).str.startswith("MT")].empty
 
 
 class TestEnrollmentsBlended:
@@ -337,6 +388,52 @@ class TestClassInfoCoTeacherEnrollments:
         assert not result.empty
         dupes = result.duplicated(subset=["Class ID", "User ID", "Role"])
         assert dupes.sum() == 0
+
+    def test_coteacher_survives_missing_schedule(
+        self,
+        student_demographic_df,
+        staff_info_df,
+        course_info_df,
+        emergency_contact_df,
+        classes_mapping,
+        enrollments_mapping,
+        global_config,
+    ):
+        """ClassInformation co-teacher rows must appear even when
+        StudentSchedule.txt is empty/absent — this path never depended on
+        schedule data (fixed 2026-08-17)."""
+        class_info_df = pd.DataFrame(
+            {
+                "school number": ["100"],
+                "course code": ["MADST01"],
+                "teacher id": ["T099"],
+                "primary teacher": ["Y"],
+                "section letter": ["A1"],
+                "semester": ["FY"],
+                "term": ["1"],
+                "day": [""],
+                "period": [""],
+                "master timetable id": [""],
+            }
+        )
+        raw_data = {
+            "StudentDemographicInformation.txt": student_demographic_df,
+            "StudentSchedule.txt": pd.DataFrame(),  # previously fatal to the whole entity
+            "StaffInformationEnhanced.txt": staff_info_df,
+            "CourseInformation.txt": course_info_df,
+            "EmergencyContactInformation.txt": emergency_contact_df,
+            "ClassInformationEnh.txt": class_info_df,
+        }
+
+        empty = pd.DataFrame()
+        self.transformer.transform(empty, classes_mapping, "Classes", raw_data, global_config)
+        result = self.transformer.transform(empty, enrollments_mapping, "Enrollments", raw_data, global_config)
+
+        assert not result.empty
+        teacher_rows = result[(result["Role"] == "teacher") & (result["User ID"] == "T099")]
+        assert not teacher_rows.empty
+        matching = teacher_rows[teacher_rows["Class ID"] == "100_A1_2025"]
+        assert not matching.empty, f"Expected T099 on 100_A1_2025, got Class IDs: {teacher_rows['Class ID'].tolist()}"
 
 
 class TestEnrollmentsExcludedCourseCodes:
