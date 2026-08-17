@@ -7,18 +7,33 @@ column to CEDS, then partition rows by ``homeroom_grades`` membership — was
 previously duplicated across four call sites in Classes and Enrollments; it is
 hoisted into :func:`split_by_homeroom_grades`.
 
-This module also owns the two OPT-IN rostering scopes, because both are
-expressed in the CEDS vocabulary above:
+This module also owns the grade-SCOPE vocabulary, because every scope question
+is asked in the CEDS space above. FOUR things live here, and only two of them
+are configured:
 
 - ``global_config.class_rostering_grades`` → :func:`resolve_timetable_scope`,
-  the set of CEDS grades that receive SUBJECT (timetable) rostering, applied by
-  :func:`split_by_homeroom_grades`;
+  what a district CONFIGURED for SUBJECT (timetable) rostering (``None`` = it
+  configured none);
 - ``global_config.student_rostering_grades`` → :func:`resolve_student_scope`,
   the OUTERMOST bound (which grades of students reach the output at all),
   applied by :func:`filter_to_grade_scope` from ``StudentTransformer``. When it
   is set and ``class_rostering_grades`` is ABSENT, the timetable scope INHERITS
   it (``student − homeroom``) rather than staying the unbounded complement — so
-  no grade can be class-rostered without its students being sent.
+  no grade can be class-rostered without its students being sent;
+- :func:`timetable_rostered_grades` — the DERIVED set that EFFECTIVELY receives
+  subject rostering: the configured scope when there is one, else the
+  complement ``CEDS − homeroom``. Never configured, THE single spelling of that
+  complement, and applied by :func:`split_by_homeroom_grades`;
+- :data:`CEDS_GRADE_CODES` — the OUTPUT vocabulary that complement is taken
+  over. It is both the config-boundary valid set AND, since the derivation
+  above, an output-determining mask — which is why ``grade_to_ceds``'s fallback
+  must stay a VALUE of :data:`CEDS_MAPPING` (see the comment there).
+
+Every column-level conversion in the pipeline goes through
+:func:`ceds_grade_series` — one spelling, one null policy — because blended
+detection's suppression gate must classify EXACTLY the rows
+:func:`split_by_homeroom_grades` classifies (the ROW-SET IDENTITY invariant; see
+that function).
 
 Each scope is applied by the function that performs its OWN grade→CEDS
 conversion, and neither ever rewrites a raw grade column that is converted again
@@ -99,8 +114,45 @@ CEDS_GRADE_CODES: frozenset[str] = frozenset(CEDS_MAPPING.values())
 
 def grade_to_ceds(grade_value: Any) -> str:
     """Map a raw source grade value to its CEDS code ('UG' when unknown)."""
+    # WHY the fallback literal must stay a VALUE of CEDS_MAPPING (it is, via the
+    # "UGRADED"/"UNGRADED"/"UG" rows): since `timetable_rostered_grades`, the
+    # subject side MASKS on CEDS_GRADE_CODES — which is derived from those
+    # values. A fallback outside that set would be dropped by every subject-side
+    # filter, silently de-rostering every unknown-grade row with a green golden.
+    # Deleting those three rows as a tidy-up is exactly that breakage; the
+    # range-containment property test in tests/test_property_based.py is the pin.
     original = str(grade_value).strip().upper() if pd.notna(grade_value) else ""
     return CEDS_MAPPING.get(original, "UG")
+
+
+def ceds_grade_series(grades: "pd.Series[Any]") -> "pd.Series[str]":
+    """Row-for-row CEDS derivation over a raw grade column — the ONE spelling.
+
+    Every row in, every row out, index preserved: a blank/NaN grade is KEPT and
+    becomes ``"UG"`` (see :func:`grade_to_ceds`), never dropped. That is not a
+    convenience — it is the ROW-SET IDENTITY invariant. ``"UG"`` is not a
+    homeroom grade, so a blank-grade schedule row is TIMETABLE-side and is a
+    real student in a subject/blended class. Any consumer that derived its
+    grades from a `dropna`-ed frame instead would disagree with
+    :func:`split_by_homeroom_grades` about which rows exist, and a blend-level
+    consumer would then suppress a class that HAS a student — growing
+    ``Classes.csv`` and re-assigning a live Class ID.
+
+    So the two sides of that invariant — the subject mask here, and blended
+    detection's enrollable-grade map — call THIS function rather than spelling
+    ``.apply(grade_to_ceds)`` (and its null handling) twice.
+
+    **Do not "optimise" this into a `.map()` lookup without an equivalence
+    table.** It is a Python call per row (~140-240 ms on a large district's
+    schedule, four call sites per run), so a unique-value LUT + ``.map()`` looks
+    free and measures ~12x faster — but it DIVERGES on real dtypes: it raises on
+    a Categorical grade column, and on a mixed bool/int column ``True`` and
+    ``1`` collide as dict keys (measured: ``"01"`` where this returns ``"UG"``).
+    The fully-vectorised ``.str.strip().str.upper().map(...)`` form is barely
+    faster (the accessors are per-element too) and diverges the same way. The
+    cost is well under 1% of a run; the divergence would be silent wrong grades.
+    """
+    return grades.apply(grade_to_ceds)
 
 
 def resolve_student_scope(global_config: Mapping[str, Any]) -> Optional[set[str]]:
@@ -137,7 +189,13 @@ def resolve_timetable_scope(
     global_config: Mapping[str, Any],
     homeroom_grades: Sequence[str],
 ) -> Optional[set[str]]:
-    """The CEDS grades that receive SUBJECT (timetable) rostering, or None.
+    """The CEDS grades a district CONFIGURED for subject rostering, or None.
+
+    Deliberately worded apart from :func:`timetable_rostered_grades`, whose
+    first line was near-verbatim identical: this one reports CONFIGURATION,
+    that one reports what EFFECTIVELY happens. Calling the wrong one at a mask
+    site silently restores the gated behaviour, so the two must read differently
+    at a glance.
 
     ``None`` means NO scope is in force — today's behaviour exactly: the
     timetable side is the unbounded complement of ``homeroom_grades``. Any
@@ -189,6 +247,52 @@ def resolve_timetable_scope(
     return set(configured) - set(homeroom_grades)
 
 
+def timetable_rostered_grades(
+    homeroom_grades: Sequence[str],
+    *,
+    timetable_scope: Optional[set[str]],
+) -> set[str]:
+    """The CEDS grades that EFFECTIVELY receive subject (timetable) rostering.
+
+    Derived, never configured — there is no ``timetable_rostered_grades`` config
+    key. Contrast :func:`resolve_timetable_scope`, which reports what a district
+    CONFIGURED (``None`` = it configured none); this reports what the pipeline
+    then DOES, which for an unconfigured district is the complement of
+    ``homeroom_grades`` over the whole CEDS output vocabulary.
+
+    THE single spelling of that complement. Masking on it is equivalent to the
+    ``~isin(homeroom_grades)`` it replaces ONLY because every value
+    :func:`grade_to_ceds` can return is a member of :data:`CEDS_GRADE_CODES` —
+    its ``"UG"`` fallback included (see the comment there). That range
+    containment is an incidental property of the table, so it is PINNED by a
+    property test rather than assumed.
+
+    It unifies the grade VOCABULARY only. It does NOT make two callers agree
+    about which ROWS they apply it to: a caller deriving grades from a different
+    row set, or with different null handling, still disagrees with
+    :func:`split_by_homeroom_grades` while sharing this set. That is why its two
+    consumers — the subject mask and ``blended``'s suppression gate — ALSO share
+    :func:`ceds_grade_series` (the ROW-SET IDENTITY invariant).
+
+    Two consumers, and they must agree: :func:`split_by_homeroom_grades` masks
+    the subject side on it, and ``BlendedClassDetector._register_blends``
+    suppresses a blend none of whose enrollable grades is in it. A blend whose
+    grades are all homeroom grades could only ever be emitted with a teacher and
+    zero students, which is why that gate is unconditional rather than keyed to
+    whether a district configured a scope.
+
+    Keyword-only with NO default: both arguments are collections of CEDS codes,
+    ``global_config.get`` returns ``Any``, and a swapped pair would type-check
+    silently — so the unsafe call is made unrepresentable rather than defaulted.
+
+    Returns a FRESH set on both branches, so the caller may mutate the result
+    and the configured scope object is never handed back.
+    """
+    if timetable_scope is not None:
+        return set(timetable_scope)
+    return set(CEDS_GRADE_CODES) - set(homeroom_grades)
+
+
 def split_by_homeroom_grades(
     df: pd.DataFrame,
     grade_col: str,
@@ -209,11 +313,12 @@ def split_by_homeroom_grades(
       (a filtered view — callers copy when they need to mutate).
     - ``keep="subject"`` (schedule frames): derive a NEW ``grade_ceds`` column
       (the raw grade column is preserved — the Classes Grade output re-derives
-      from it) and return a COPY of the rows whose CEDS grade is NOT in
-      ``homeroom_grades`` — or, when ``timetable_scope`` is given, the rows
-      whose CEDS grade IS in that scope (a positive bound; see
-      :func:`resolve_timetable_scope`). An EMPTY scope keeps nothing, which is
-      the ``"homeroom"`` sentinel's whole point.
+      from it) and return a COPY of the rows whose CEDS grade is in
+      :func:`timetable_rostered_grades` — ONE positive mask for both cases:
+      the configured ``timetable_scope`` when there is one, else the complement
+      of ``homeroom_grades`` (equivalent to the ``~isin`` this replaces, since
+      every CEDS value is in :data:`CEDS_GRADE_CODES`). An EMPTY scope keeps
+      nothing, which is the ``"homeroom"`` sentinel's whole point.
 
     ``timetable_scope`` is only meaningful for ``keep="subject"``: the
     ``homeroom_grades ⊆ class_rostering_grades`` subset rule makes the homeroom
@@ -232,12 +337,11 @@ def split_by_homeroom_grades(
                 "validated SUBSET of class_rostering_grades). Passing one here would be silently "
                 "ignored — drop the argument, or use keep='subject'."
             )
-        df[grade_col] = df[grade_col].apply(grade_to_ceds)
+        df[grade_col] = ceds_grade_series(df[grade_col])
         return df[df[grade_col].isin(homeroom_grades)]  # type: ignore[return-value]
-    df["grade_ceds"] = df[grade_col].apply(grade_to_ceds)
-    if timetable_scope is None:
-        return df[~df["grade_ceds"].isin(homeroom_grades)].copy()  # type: ignore[return-value]
-    return df[df["grade_ceds"].isin(timetable_scope)].copy()  # type: ignore[return-value]
+    df["grade_ceds"] = ceds_grade_series(df[grade_col])
+    rostered = timetable_rostered_grades(homeroom_grades, timetable_scope=timetable_scope)
+    return df[df["grade_ceds"].isin(rostered)].copy()  # type: ignore[return-value]
 
 
 #: The derived column :func:`filter_to_grade_scope` masks on. Deliberately NOT
@@ -298,6 +402,6 @@ def filter_to_grade_scope(
             f"own derived value and would otherwise drop yours."
         )
     working = df.copy()
-    working[_SCOPE_CEDS_COLUMN] = working[grade_col].apply(grade_to_ceds)
+    working[_SCOPE_CEDS_COLUMN] = ceds_grade_series(working[grade_col])
     kept = working[working[_SCOPE_CEDS_COLUMN].isin(scope)]
     return kept.drop(columns=_SCOPE_CEDS_COLUMN)  # type: ignore[return-value]

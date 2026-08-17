@@ -353,3 +353,70 @@ the bound exists to make total. Slice 1a's code happened to spell the gate corre
 pinned it, and nothing had told anyone the spelling was load-bearing. Now recorded in
 `docs/claugentic-INVARIANTS.md` and pinned two-sided over the SD74 corpus.
 Beneficiary roles: `implementer-architect`, `plan-reviewer`, `architect-reviewer`.
+
+---
+
+## testing/design — "Two filters that must agree need a shared ROW SET and NULL POLICY, not a shared constant"  [staged 2026-08-14, plan 0043 slice 2]
+
+- Hoisting a shared vocabulary (a set of valid codes, an enum, an allowlist) into one module makes
+  two call sites agree about **which values** count. It does **nothing** to make them agree about
+  **which rows** they look at, or what they do with the blanks. A reviewer who sees the DRY hoist
+  will read the disagreement as impossible; it is not.
+- The tell: two functions that must partition the same population, where one is written as a
+  sibling of a nearby *aggregate* (a mode, a max, a first-non-null) that legitimately drops nulls.
+  The `dropna()` gets inherited by proximity, and the two row sets diverge on exactly the rows
+  nobody has a fixture for.
+- Sub-rule for **derived vocabularies**: a set promoted from a validation-only role (loud config
+  error) to an output-determining MASK (silently dropped rows) needs a **range-containment
+  property** binding it to its producer. `CEDS_GRADE_CODES` is safe to mask on only because
+  `grade_to_ceds`'s fallback literal happens to also be a table VALUE — an invisible coupling
+  whose breakage is a green suite.
+- The test that catches it is a **differential**: the same input with and without the one row the
+  divergence hinges on. A single-sided assertion passes under both implementations.
+
+Incident: plan 0043's blend-suppression gate. Suppressing a blend "when none of its grades receives
+subject rostering" required a per-section grade map. Built as a sibling of `_build_grade_map` — the
+natural place, three lines away — it inherits that map's `.dropna()`. But a blank grade converts to
+`"UG"`, `"UG"` is not a homeroom grade, so that row SURVIVES the subject filter and is a real
+student: the gate would suppress a blend that HAS a pupil, re-key them to a per-section class and
+GROW `Classes.csv` — the precise opposite of the "strictly subtractive" property the design was
+chosen for. **The plan's own full-suite simulation carried the bug**, so its measured "9 reds,
+strictly subtractive" evidence attested to an implementation that must not ship; no shipped fixture
+has a blank grade, so nothing was red. Caught by re-reading the null path, not by a test.
+Second lesson from the same slice: a **simulated/monkeypatched flip measurement cannot see tests
+that inspect module SOURCE or AST** (this repo has three), so those must be enumerated by hand
+before a red count is quoted as complete.
+Beneficiary roles: `implementer-architect`, `plan-reviewer`, `architect-reviewer`.
+
+---
+
+## verification — "A structural pin must inspect the module it names as the risk"  [staged 2026-08-14, plan 0043 Stage 7]
+
+- This repo leans on **positive-count source pins** (`source.count("<spelling>") == 1`) to lock a
+  DRY decision that no type or test can otherwise express. They work — but only over the modules
+  they actually read, and that set is invisible from the assertion.
+- 0043 shipped a pin whose docstring said *"it lives in the blended suite rather than the grades
+  one **because this module is where that second spelling would be written**"* — and then inspected
+  `grades` only. The one site the sentence named as THE risk passed green. The pin looked like a
+  lock and was a decoration for the case it existed to catch.
+- **The rule:** a source/AST pin must enumerate every module in its stated blast radius, and the
+  enumeration belongs in a named constant (`MODULES = (...)`) so the gap is visible at the
+  assertion rather than inferable only from prose. Report the per-module counts in the failure
+  message; a bare `2 != 1` does not say WHERE.
+- **Every such pin needs its own mutation check**, and it is cheap: add the forbidden spelling to
+  the module in question, confirm red, revert. 0043's widened pin was verified this way. Note the
+  first attempt at that mutation failed with `NameError` instead of the assertion, because the
+  module did not import the constant yet — a mutation that dies on import proves nothing, so the
+  probe must be made faithful (add the import too) before the red is believed.
+- Generalisation: this is the *"no vacuous greens"* rule applied to the pins themselves. A test
+  that inspects source is exempt from the usual signal that it is wired up — it never touches the
+  behaviour, so it cannot fail for the ordinary reasons — which makes it the test class most
+  likely to be silently scoped wrong.
+
+Incident: found in the Stage-7 audit of 0043, in a pin the same plan had introduced two commits
+earlier *specifically* to lock the row-set-identity invariant. Related, same slice: the plan's
+prose asserted a fact about `ARCHITECTURE_TREE`'s contents that had never been true (the sentence
+lived in `ROADMAP`), and it was restated five times — including in a disposition table marked
+"APPLIED" — without anyone re-opening the file. Both are the same failure: **a claim about a
+file's contents, made without reading that file.** The pin is the mechanised version of it.
+Beneficiary roles: `implementer-architect`, `plan-reviewer`, `architect-reviewer`.

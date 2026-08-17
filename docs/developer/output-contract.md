@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **contract_version** | `1.0.0` |
-| **emitted_by** | DistrictSync >= v3.8.1 |
+| **contract_version** | `1.1.0` |
+| **emitted_by** | DistrictSync >= v3.12.0 |
 | **published_reference** | SpacesEDU *Advanced CSV* v1.0 (2025-07-23) — [Google Doc `1BePvuk5rg-YjUUvdwjb3X3Z0JWEUc5AtVjDfR3nub0U`](https://docs.google.com/document/d/1BePvuk5rg-YjUUvdwjb3X3Z0JWEUc5AtVjDfR3nub0U) |
 | **status** | Maintained mirror. **Confirmation is recorded PER ROW — there is no doc-wide confirmation stamp.** |
 | **mechanical mirror** | `tests/contract_schema.py` (the data) · `tests/test_contract.py` (the sweep) · `tests/test_output_contract_doc.py` (this doc ↔ that data) |
@@ -12,9 +12,12 @@
 
 | contract_version | Date | Change |
 |---|---|---|
+| 1.1.0 | 2026-08-14 | **Rows removed from `Classes.csv` and `Enrollments.csv`.** A blended class none of whose pupils would ever receive a subject enrollment — every one of them is rostered through their homeroom instead — is no longer emitted. It carried a teacher and zero students; the pupils were, and remain, correctly rostered in their homeroom classes. Applies to **every** district (previously only to a district that had opted into `class_rostering_grades`). No column, order, filename or encoding changed, and no owner-**confirmed** row is invalidated — every `Classes.csv` row is `pending owner confirmation` — so this is MINOR under the row-set rule below and needs no importer re-confirmation. Districts should expect a one-off drop in class/enrollment counts on the first run after upgrade, which the anomaly check may flag. |
 | 1.0.0 | 2026-07-29 | First publication. Documents the 8 emitted entities as of DistrictSync v3.8.0/v3.8.1, the per-entity BOM rule, the delivery envelope, the attendance knobs, and the myBlueprint+ course feeds as internal spec. No emitted bytes changed by this document. |
 
 > `contract_version` versions **this document's statement of the contract**, not the app. Bump MINOR for an additive, backward-compatible statement (a new entity, a new documented knob); bump MAJOR when an emitted column set, column order, filename, or encoding changes — which by the trust chain below requires importer re-confirmation *before* merge.
+>
+> **Row-set changes** (owner ruling, 2026-08-14). A change to **which rows** an entity emits is **MINOR** plus a changelog row when it invalidates no owner-**CONFIRMED** row; it is **MAJOR**, and requires importer re-confirmation before merge, when it does. This tier exists because the rule above covers columns, order, filename and encoding only — it said nothing about row membership, so the first change to exercise the gap would otherwise have authored the rule that graded it.
 
 ---
 
@@ -243,11 +246,15 @@ A district may narrow the source rows with `row_filters` before mapping — SD60
 
 The flag column gates the teacher part **only when it is both configured and actually present in the row**: in that case the teacher name is included only if the flag reads `y`. If no flag column is configured *or* the configured one is absent from the row, the teacher name is used **unconditionally** — the absent-column case falls into the same unconditional branch, which is why SD60 (no primary-teacher flag in its schedule) still gets teacher names. Empty parts are omitted (no doubled spaces, no stray parentheses). Example: `Liu Math 10 (A) 2026`.
 
-**Which classes exist:** homeroom classes are auto-generated for the configured `homeroom_grades`, subject classes come from the schedule, and blended classes (same teacher/time spanning 2+ grade levels) merge into one. `global_config.excluded_course_codes` drops bookkeeping sections (SD40 excludes `ATT--AM` / `ATT--PM`) before any of it. Homeroom-class creation is filtered to the active roster, so a homeroom with no active students is not emitted.
+**Which classes exist:** homeroom classes are auto-generated for the configured `homeroom_grades`, subject classes come from the schedule, and blended classes (same teacher/time spanning 2+ grade levels) merge into one — **unless none of the blend's pupils would receive a subject enrollment at all**, in which case the blended class is not emitted (see the grade-scope rule below). `global_config.excluded_course_codes` drops bookkeeping sections (SD40 excludes `ATT--AM` / `ATT--PM`) before any of it. Homeroom-class creation is filtered to the active roster, so a homeroom with no active students is not emitted.
 
-**…unless the district scopes class rostering.** `global_config.class_rostering_grades` (opt-in; absent for every district but SD83) names the **complete** set of CEDS grades that receive class rostering, and `homeroom_grades` must be a subset of it. When it is set, homeroom classes still follow `homeroom_grades`, subject classes are restricted to `class_rostering_grades − homeroom_grades`, a blended class is emitted only if at least one of its grades falls in that difference, and a grade in neither set gets **no class and no enrollment at all**. `"homeroom"` is shorthand for "roster exactly the homeroom grades", which is SD83's shape: K-8 homerooms only, with grades 9-12 still on `Students.csv` (and in the myBlueprint+ course feeds) but carrying **no enrollment rows** — students with no class enrollments are valid output.
+**The grade-scope rule for blended classes** (every district, since contract 1.1.0 / DistrictSync v3.12.0). Grades split into a homeroom side (`homeroom_grades`) and a timetable side (everything else, or the configured scope when a district set one). A blended class is emitted only when **at least one of its pupils' grades is on the timetable side**; a blend all of whose schedule rows sit on the homeroom side is dropped, together with its teacher enrollment row. Nothing is lost: those pupils are rostered through their homeroom classes, which is why the blend could only ever have shipped with a teacher and zero students.
 
-**…and class rostering can never reach outside the student scope.** When a district sets `global_config.student_rostering_grades` (see `Students.csv` above) but says nothing about `class_rostering_grades`, the class scope INHERITS the student list as its outer bound: subject classes are restricted to `student_rostering_grades − homeroom_grades`, and a blended class outside that difference is dropped rather than emitted with a teacher and no students. So no grade is ever class-rostered without its students being delivered.
+Read as a grade-scope rule, not as a promise about occupancy. It is **necessary, not sufficient** — it asks whether a pupil's GRADE receives subject rostering, not whether that pupil is active. A blend whose timetable-side pupils have all withdrawn is still emitted with a teacher and no students, and a blend's grade test is per-pupil-row while its displayed *name* is built from each section's most-common grade, so a surviving blend's name can name grades other than its occupants'. Both are known residuals, tracked on the roadmap.
+
+**When the district scopes class rostering.** `global_config.class_rostering_grades` (opt-in; absent for every district but SD83) names the **complete** set of CEDS grades that receive class rostering, and `homeroom_grades` must be a subset of it. When it is set, the timetable side above becomes a NARROWER set — `class_rostering_grades − homeroom_grades` instead of "every other grade" — so homeroom classes still follow `homeroom_grades`, subject classes are restricted to that difference, and a grade in neither set gets **no class and no enrollment at all**. `"homeroom"` is shorthand for "roster exactly the homeroom grades", which is SD83's shape: K-8 homerooms only, with grades 9-12 still on `Students.csv` (and in the myBlueprint+ course feeds) but carrying **no enrollment rows** — students with no class enrollments are valid output.
+
+**…and class rostering can never reach outside the student scope.** When a district sets `global_config.student_rostering_grades` (see `Students.csv` above) but says nothing about `class_rostering_grades`, the class scope INHERITS the student list as its outer bound: the timetable side becomes `student_rostering_grades − homeroom_grades`. So no grade is ever class-rostered without its students being delivered.
 
 ### 5. `Enrollments.csv`
 

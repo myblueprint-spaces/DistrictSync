@@ -14,20 +14,43 @@ from src.etl.column_names import COURSE_CODE, DISTRICT_COURSE_CODE
 from src.etl.transformers.ids import normalize_id_series
 
 
+def resolve_course_code_column(df: pd.DataFrame) -> Optional[str]:
+    """Which column names the course code in this frame, or None for neither.
+
+    THE single spelling of the alias precedence: ``course code`` first, then
+    ``district course code``. ClassInformation uses the former; the
+    deduplicated-schedule fallback frame (SD40's real shape — its
+    ClassInformation carries no Master Timetable ID) uses the latter. The two
+    share a value space, because ``classes.py``'s ``_merge_course_and_staff``
+    renames one onto the other before joining the same course-title source —
+    which is why a title map keyed by ``course code`` can be looked up with
+    either.
+
+    It lives here rather than beside any one consumer because the precedence is
+    a property of MyEd BC exports, not of the entity reading them: a district
+    exporting a third spelling must be a ONE-file change. Both filters below
+    consume it, as does blended detection's name builder.
+    """
+    for col in (COURSE_CODE, DISTRICT_COURSE_CODE):
+        if col in df.columns:
+            return col
+    return None
+
+
 def filter_excluded_course_codes(df: pd.DataFrame, excluded_codes: list[str]) -> pd.DataFrame:
     """Drop rows whose course code matches an entry in excluded_codes.
 
-    Checks `course code` first, then `district course code`. Match is
+    Resolves the column via :func:`resolve_course_code_column`. Match is
     case-insensitive and whitespace-trimmed. Returns df unchanged when
     excluded_codes is empty or neither column is present.
     """
     if not excluded_codes or df.empty:
         return df
     exclusion_set = {str(c).strip().upper() for c in excluded_codes}
-    for col in (COURSE_CODE, DISTRICT_COURSE_CODE):
-        if col in df.columns:
-            values = normalize_id_series(df[col]).str.upper()
-            return df[~values.isin(exclusion_set)].copy()  # type: ignore[return-value]
+    col = resolve_course_code_column(df)
+    if col:
+        values = normalize_id_series(df[col]).str.upper()
+        return df[~values.isin(exclusion_set)].copy()  # type: ignore[return-value]
     return df
 
 
@@ -39,20 +62,20 @@ def filter_excluded_course_code_patterns(
     """Drop rows whose course code matches any regex in `patterns`.
 
     Patterns are combined into a single case-insensitive alternation
-    and applied to the trimmed string value. When `column` is None,
-    checks `course code` then `district course code` (first found
-    wins), matching `filter_excluded_course_codes`. Patterns are
+    and applied to the trimmed string value. When `column` is None, the
+    alias precedence is resolved by :func:`resolve_course_code_column`;
+    an EXPLICIT `column` is used as given and never falls back to the
+    alias (an unfound one leaves df unchanged, as before). Patterns are
     expected to be pre-validated at config load time.
     """
     if not patterns or df.empty:
         return df
     combined = "|".join(f"(?:{p})" for p in patterns)
-    candidate_cols = [column] if column else [COURSE_CODE, DISTRICT_COURSE_CODE]
-    for col in candidate_cols:
-        if col and col in df.columns:
-            values = normalize_id_series(df[col])
-            matches = values.str.contains(combined, regex=True, case=False, na=False)
-            return df[~matches].copy()  # type: ignore[return-value]
+    col = column if column else resolve_course_code_column(df)
+    if col and col in df.columns:
+        values = normalize_id_series(df[col])
+        matches = values.str.contains(combined, regex=True, case=False, na=False)
+        return df[~matches].copy()  # type: ignore[return-value]
     return df
 
 

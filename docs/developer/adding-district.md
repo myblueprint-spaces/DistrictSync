@@ -153,10 +153,23 @@ global_config:
 
 - **homeroom classes** still follow `homeroom_grades`;
 - **subject classes** are restricted to `class_rostering_grades − homeroom_grades`;
-- a **blended class** is kept only if at least one of its grades is in that
-  difference (so a blend spanning only unrostered grades — which could only ever
-  be delivered with a teacher and no students — is dropped);
+- the **blend rule below** narrows with them: a blended class is kept only if at
+  least one of its pupils' grades is in that difference;
 - a grade in **neither** set gets **no class and no enrollment at all**.
+
+**The blend rule is general, not conditional on this key.** For EVERY district,
+scoped or not, a blended class is emitted only when at least one of its pupils'
+grades is on the timetable side — the configured scope when there is one, else
+"every grade that is not a homeroom grade". A blend all of whose schedule rows
+sit on the homeroom side could only ever be delivered with a teacher and no
+students (each of those pupils is rostered through their homeroom instead), so
+it is dropped, together with its teacher enrollment row. Setting
+`class_rostering_grades` does not turn the rule ON; it makes the timetable side
+narrower. Two things it deliberately does NOT do: it does not check whether
+those pupils are ACTIVE (a blend whose in-scope pupils have all withdrawn still
+ships studentless), and it does not change a blend's NAME, which is still built
+from each section's most-common grade — so a surviving blend can name grades
+other than its occupants'. Both are tracked residuals.
 
 `class_rostering_grades: "homeroom"` is shorthand for "roster exactly the
 homeroom grades" (an empty subject scope), so the grade list is written once and
@@ -207,9 +220,10 @@ district that needs it. What it does:
   so their myBlueprint+ transcripts keep working. Read the two together and be
   sure which one you want;
 - if you set this and say nothing about `class_rostering_grades`, class rostering
-  automatically stays **inside** this boundary (subject classes for
-  `student_rostering_grades − homeroom_grades`, and no blended class outside it),
-  so you can never produce a class with a teacher and no students;
+  automatically stays **inside** this boundary — the timetable side becomes
+  `student_rostering_grades − homeroom_grades`, which narrows the general blend
+  rule above with it — so you can never class-roster a grade whose students you
+  are not delivering;
 - `Staff.csv` is still never filtered — a teacher of an excluded grade ships.
 
 Three things that will bite you if nobody says them first:

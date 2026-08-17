@@ -20,7 +20,12 @@ import pytest
 from pandas.testing import assert_frame_equal
 
 from src.etl.transformer import DataTransformer
-from src.etl.transformers.grades import resolve_timetable_scope, split_by_homeroom_grades
+from src.etl.transformers.grades import (
+    CEDS_GRADE_CODES,
+    resolve_timetable_scope,
+    split_by_homeroom_grades,
+    timetable_rostered_grades,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +65,51 @@ class TestResolveTimetableScope:
         """
         with pytest.raises(ValueError, match="class_rostering_grades"):
             resolve_timetable_scope({"class_rostering_grades": "09"}, ["KG"])
+
+
+# ---------------------------------------------------------------------------
+# 1a. Unit — the DERIVED rostered set (plan 0043, slice 1)
+# ---------------------------------------------------------------------------
+class TestTimetableRosteredGrades:
+    """What EFFECTIVELY receives subject rostering, as opposed to what was
+    CONFIGURED. The pair sits here rather than in its own module because the
+    two functions answer adjacent questions with near-identical shapes, and
+    reading them side by side is how a caller picks the right one."""
+
+    HOMEROOM = ["KG", "01", "02", "03"]
+
+    def test_no_configured_scope_yields_the_CEDS_complement(self):
+        """The unbounded complement, spelled once and bounded by the CEDS output
+        vocabulary — this is what `split_by_homeroom_grades` used to express as
+        `~isin(homeroom_grades)`."""
+        rostered = timetable_rostered_grades(self.HOMEROOM, timetable_scope=None)
+        assert rostered == set(CEDS_GRADE_CODES) - set(self.HOMEROOM)
+        assert "04" in rostered and "12" in rostered and "UG" in rostered
+        assert not (rostered & set(self.HOMEROOM))
+
+    def test_an_EMPTY_scope_is_not_the_complement(self):
+        """The `is None` / falsiness trap, from the consuming side: an empty
+        configured scope rosters NOTHING, while no scope at all rosters the
+        whole complement. A truthiness check here would silently re-roster
+        every timetable grade for the `"homeroom"` sentinel's districts."""
+        assert timetable_rostered_grades(self.HOMEROOM, timetable_scope=set()) == set()
+
+    def test_a_configured_scope_is_returned_as_a_FRESH_set(self):
+        """Both branches return a new set: the caller's configured scope must
+        never be aliased into a mask a later caller could mutate."""
+        configured = {"10", "11"}
+        rostered = timetable_rostered_grades(self.HOMEROOM, timetable_scope=configured)
+        assert rostered == configured
+        assert rostered is not configured
+        rostered.add("12")
+        assert configured == {"10", "11"}
+
+    def test_the_scope_cannot_be_passed_POSITIONALLY(self):
+        """Both arguments are collections of CEDS codes and `global_config.get`
+        returns `Any`, so a swapped pair would type-check silently. Keyword-only
+        with no default makes the unsafe call unrepresentable."""
+        with pytest.raises(TypeError):
+            timetable_rostered_grades(self.HOMEROOM, {"10"})  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +332,15 @@ def _subject_ids(ids: set[str]) -> set[str]:
 
 
 class TestShapeDefaultUnchanged:
-    """The gate itself: with the key absent NOTHING changes, blends included."""
+    """The gate itself: with the key absent, the SCOPE machinery changes nothing.
+
+    Still true after plan 0043 ungated blend suppression, and for a reason worth
+    stating: every blend in THIS corpus carries at least one pupil on the
+    timetable side, so the now-unconditional rule has nothing to take. The
+    default path is no longer "nothing is ever suppressed" — a blend all of
+    whose SCHEDULE ROWS are homeroom grades goes for every district
+    (`TestRowSetIdentityUnderBlankGrades` below, and the SD74 golden).
+    """
 
     def test_every_blend_and_every_subject_class_is_present(
         self, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
@@ -296,18 +354,25 @@ class TestShapeDefaultUnchanged:
         assert _subject_ids(ids) == {"MTE_2026"}, sorted(ids)
         assert _class_ids(enrollments) <= ids, "zero-orphan"
 
-    def test_an_ALL_HOMEROOM_blend_is_still_registered(
+    def test_the_MODE_masked_blend_survives_on_its_ONE_timetable_side_pupil(
         self, corpus_raw_data, classes_mapping, enrollments_mapping, global_config
     ):
-        """Blend "D" (05/06) is entirely inside the base homeroom grades, so it
-        is exactly the studentless blend plan 0043 will remove. Until then it
-        MUST still be produced — this is the only proof the suppression rule
-        does not fire on the six live districts, and 0043 deletes the golden
-        that currently implies it.
+        """Blend "D" is named (05/06) — both MODE grades are base homeroom
+        grades — but MTD1 also carries one grade-10 pupil, who IS timetable-side.
+        The suppression rule reads schedule ROWS, not section modes, so the
+        blend survives and that pupil rides it.
+
+        This is precisely the case a mode-gated rule would have got wrong: it
+        would have suppressed a blend that has a student, re-keyed them to
+        `MTD1_2026` and GROWN Classes.csv. Pinned here as the default-path twin
+        of `TestRowSetIdentityUnderBlankGrades`.
         """
-        classes, _ = _run_shape(corpus_raw_data, classes_mapping, enrollments_mapping, global_config)
+        classes, enrollments = _run_shape(corpus_raw_data, classes_mapping, enrollments_mapping, global_config)
         blends = _blended_ids(_class_ids(classes))
-        assert any("T013" in cid for cid in blends), f"the all-homeroom 05/06 blend vanished: {sorted(blends)}"
+        survivor = {cid for cid in blends if "T013" in cid}
+        assert survivor, f"the 05/06 blend with a grade-10 pupil vanished: {sorted(blends)}"
+        assert "MTD1_2026" not in _class_ids(classes), "the pupil was re-keyed to a per-section class"
+        assert set(enrollments[enrollments["User ID"] == _MODE_MASKED_STUDENT]["Class ID"]) == survivor
 
 
 class TestShape1SentinelHomeroomOnly:
@@ -356,12 +421,13 @@ class TestShape2NoHomeroomsSeniorTimetableOnly:
         classes, _ = _run_shape(corpus_raw_data, classes_mapping, enrollments_mapping, global_config, **self.OVERRIDES)
         ids = _class_ids(classes)
         assert not any(cid.startswith("300_HR") for cid in ids), "a homeroom class was created for an empty list"
-        # MTB2 / MTC1 / MTC2 are absorbed into the two surviving blends, so the
-        # PLAIN subject classes are the suppressed-blend fallback (MTD1, kept for
-        # its grade-10 pupil) plus the standalone grade-12 section.
-        assert _subject_ids(ids) == {"MTD1_2026", "MTE_2026"}, sorted(ids)
+        # MTB2 / MTC1 / MTC2 ride the two 10-11 blends, and MTD1 rides blend D —
+        # which survives on its grade-10 pupil since plan 0043 gates on schedule
+        # ROWS rather than section modes. So the standalone grade-12 section is
+        # the ONE plain subject class.
+        assert _subject_ids(ids) == {"MTE_2026"}, sorted(ids)
         # Nothing at all for the wholly unrostered sections.
-        assert not {"MTA1_2026", "MTA2_2026", "MTD2_2026", "MTF_2026"} & ids
+        assert not {"MTA1_2026", "MTA2_2026", "MTD1_2026", "MTD2_2026", "MTF_2026"} & ids
 
     def test_a_ten_eleven_blend_survives(self, corpus_raw_data, classes_mapping, enrollments_mapping, global_config):
         classes, _ = _run_shape(corpus_raw_data, classes_mapping, enrollments_mapping, global_config, **self.OVERRIDES)
@@ -390,11 +456,11 @@ class TestShape3SplitHomeroomAndTimetable:
     def test_subject_classes_only_for_ten_to_twelve(self, shape3):
         classes, _ = shape3
         subject = classes[classes["Class ID"].str.startswith("MT")]
-        # MTB2 (10), MTC1 (10) and MTC2 (11) are absorbed into the surviving
-        # blends, so the plain subject classes are MTD1 (the suppressed-blend
-        # fallback, grade 10) and MTE (12) — all inside 10-12, none below.
-        assert set(subject["Class ID"]) == {"MTD1_2026", "MTE_2026"}
-        assert set(subject["Grade"]) == {"10", "12"}
+        # MTB2 (10), MTC1 (10), MTC2 (11) and MTD1 (its grade-10 minority pupil)
+        # are all absorbed into surviving blends, so MTE (12) is the only plain
+        # subject class — inside 10-12, none below.
+        assert set(subject["Class ID"]) == {"MTE_2026"}
+        assert set(subject["Grade"]) == {"12"}
         assert set(subject["Grade"]) <= {"10", "11", "12"}
 
     def test_the_grade_eleven_section_is_rostered_inside_its_blend(self, shape3):
@@ -421,23 +487,220 @@ class TestShape3SplitHomeroomAndTimetable:
         enrolled = set(enrollments[enrollments["Class ID"] == blend_id]["User ID"])
         assert "S_MTB2_0" in enrolled, "the grade-10 pupil lost their blended enrollment"
 
-    def test_the_wholly_unrostered_blends_are_suppressed(self, shape3):
+    def test_the_wholly_unrostered_blend_is_suppressed(self, shape3):
+        """The 07/08 blend has no pupil on the timetable side at all (both
+        grades are homeroom grades here), so it goes.
+
+        Blend D used to be asserted here too — it no longer belongs: under
+        per-row gating it carries a rostered pupil and survives, which is the
+        subject of the row below.
+        """
         classes, _ = shape3
         blends = _blended_ids(_class_ids(classes))
         assert not any("T010" in cid for cid in blends), "the 07/08 blend (both homeroom) survived"
-        assert not any("T013" in cid for cid in blends), "the 05/06 blend (unrostered) survived"
+        assert blends, "the positive twin: some blend must survive, or this passes by emptiness"
 
-    def test_mode_masked_section_falls_back_to_its_plain_class_with_no_orphan(self, shape3):
-        """The R3(i) fork, named and pinned: MTD1's MODE grade is 06 (out of
-        scope) so its blend is suppressed — but its minority grade-10 pupil is
-        NOT orphaned. They land in the plain per-section class instead, which
-        both Classes and Enrollments resolve identically because suppression
-        happens BEFORE the `class_map` write.
+    def test_mode_masked_section_RIDES_its_blend_with_no_orphan(self, shape3):
+        """The R3(i) fork, re-pointed by plan 0043: MTD1's MODE grade is 06 (out
+        of scope), but its minority grade-10 pupil IS in scope — and the
+        suppression rule reads schedule ROWS. So the blend survives, the pupil
+        rides it, and there is no per-section fallback class.
+
+        **Documented incoherence, accepted deliberately.** `get_grade_range`
+        still reads the MODE map, so this blend ships named "(05/06)" while its
+        ONE enrolled pupil is grade 10 — and `Classes.csv`'s `Grade` cell is
+        empty for blends, making the name the only grade signal. Naming was left
+        on modes so no district's blend NAMES change with this release; the
+        residual is tracked on the roadmap.
         """
         classes, enrollments = shape3
-        assert "MTD1_2026" in _class_ids(classes), "the mode-masked section lost its plain class"
+        survivor = {cid for cid in _blended_ids(_class_ids(classes)) if "T013" in cid}
+        assert survivor, "the mode-masked blend was suppressed despite carrying a rostered pupil"
+        assert "MTD1_2026" not in _class_ids(classes), "the pupil was re-keyed to a per-section class"
         minority = enrollments[enrollments["User ID"] == _MODE_MASKED_STUDENT]
-        assert set(minority["Class ID"]) == {"MTD1_2026"}
+        assert set(minority["Class ID"]) == survivor
+        blend_row = classes[classes["Class ID"] == survivor.copy().pop()]
+        assert "(05/06)" in blend_row["Name"].iloc[0], "the accepted MODE-named / per-row-gated wrinkle"
+        assert _class_ids(enrollments) <= _class_ids(classes), "orphan Class IDs in Enrollments"
+
+
+# ---------------------------------------------------------------------------
+# 2a. ROW-SET IDENTITY — the acceptance test for plan 0043 slice 2
+# ---------------------------------------------------------------------------
+#
+# One teacher (T020), two sections at one slot, ALL of whose declared grades are
+# homeroom grades — except for a single pupil whose grade cell is BLANK. A blank
+# converts to "UG", "UG" is not a homeroom grade, so that pupil IS timetable-side
+# and the blend genuinely has a student.
+_BLANK_PUPIL = "S_MTZ1_BLANK"
+_BLANK_SESSIONS = [("MTZ1", "HR-3B"), ("MTZ2", "HR-4B")]
+
+
+def _blank_grade_corpus(*, with_blank_pupil: bool) -> dict[str, pd.DataFrame]:
+    """The two-section corpus, with and without the one blank-grade row."""
+    pupils = [("S_MTZ1_A", "MTZ1", "03"), ("S_MTZ1_B", "MTZ1", "03"), ("S_MTZ2_A", "MTZ2", "04")]
+    if with_blank_pupil:
+        pupils.insert(2, (_BLANK_PUPIL, "MTZ1", None))
+
+    schedule = pd.DataFrame(
+        [
+            {
+                "student number": student,
+                "student id": student,
+                "school number": "300",
+                "school year": "2025/2026",
+                "grade": grade,
+                "master timetable id": mt_id,
+                "teacher id": "T020",
+                "section letter": "A",
+                "district course code": dict(_BLANK_SESSIONS)[mt_id],
+                "primary teacher": "Y",
+                "teacher name": "Zhang",
+                "period": "9",
+            }
+            for student, mt_id, grade in pupils
+        ]
+    )
+    demographic = pd.DataFrame(
+        {
+            "student number": [student for student, *_ in pupils],
+            "legal first name": ["First"] * len(pupils),
+            "legal surname": ["Last"] * len(pupils),
+            "date of birth": ["2015-01-15"] * len(pupils),
+            "grade": [grade for *_rest, grade in pupils],
+            "school number": ["300"] * len(pupils),
+            # The blank-grade pupil has no homeroom either — their ONLY possible
+            # class is the blend, which is what makes the assertions sharp.
+            "homeroom": [f"HR{grade}" if grade else "" for *_rest, grade in pupils],
+            "previous school number": [""] * len(pupils),
+            "usual first name": [""] * len(pupils),
+            "usual surname": [""] * len(pupils),
+            "student email address": [""] * len(pupils),
+            "enrolment status": ["Active"] * len(pupils),
+            "teacher name": ["Zhang"] * len(pupils),
+            "teacher id": ["T020"] * len(pupils),
+        }
+    )
+    class_info = pd.DataFrame(
+        [
+            {
+                "school number": "300",
+                "teacher id": "T020",
+                "master timetable id": mt_id,
+                "course code": course,
+                "term": "1",
+                "semester": "1",
+                "day": "1",
+                "period": "9",
+            }
+            for mt_id, course in _BLANK_SESSIONS
+        ]
+    )
+    return {
+        "StudentDemographicInformation.txt": demographic,
+        "StudentSchedule.txt": schedule,
+        "StaffInformationEnhanced.txt": pd.DataFrame(
+            {
+                "teacher id": ["T020"],
+                "first name": ["Zoe"],
+                "last name": ["Zhang"],
+                "email address": ["zhang@school.ca"],
+                "teaching staff": ["Y"],
+                "school number": ["300"],
+            }
+        ),
+        "CourseInformation.txt": pd.DataFrame(
+            {
+                "school number": ["300"] * len(_BLANK_SESSIONS),
+                "course code": [course for _mt, course in _BLANK_SESSIONS],
+                "title": [f"Course {course}" for _mt, course in _BLANK_SESSIONS],
+            }
+        ),
+        "EmergencyContactInformation.txt": pd.DataFrame(),
+        "ClassInformationEnh.txt": class_info,
+    }
+
+
+def _run_students_classes_enrollments(raw_data, students_mapping, classes_mapping, enrollments_mapping, global_config):
+    """Students FIRST, so `active_student_ids` is genuinely populated.
+
+    `filter_to_active` fails SAFE on an empty roster (it keeps everyone), so a
+    run that skipped Students would prove the blend carries a *row*, not a live
+    STUDENT — and a live student is the whole claim.
+    """
+    transformer = DataTransformer()
+    transformer.set_school_year(2026, "08-25", "07-25")
+    students = transformer.transform(
+        raw_data["StudentDemographicInformation.txt"], students_mapping, "Students", raw_data, global_config
+    )
+    classes = transformer.transform(
+        raw_data["StudentSchedule.txt"], classes_mapping, "Classes", raw_data, global_config
+    )
+    enrollments = transformer.transform(
+        raw_data["StudentSchedule.txt"], enrollments_mapping, "Enrollments", raw_data, global_config
+    )
+    return students, classes, enrollments
+
+
+class TestRowSetIdentityUnderBlankGrades:
+    """The blend-suppression gate must partition the SAME ROWS, by the SAME
+    derivation, as `split_by_homeroom_grades(keep="subject")` (plan 0043).
+
+    The natural implementation — building the per-row map beside
+    `_build_grade_map`, inheriting its `.dropna()` — passes every other test in
+    this file and breaks exactly here: the blank-grade pupil survives the
+    subject filter but is invisible to the gate, so the blend is suppressed, the
+    pupil falls back to `MTZ1_2026`, `Classes.csv` GROWS and a live Class ID is
+    re-assigned. That is the opposite of what this change promises, so this pair
+    is the acceptance criterion, not a nice-to-have.
+
+    Default (unscoped) config throughout — the shape every shipped district runs.
+    """
+
+    def test_the_blend_SURVIVES_and_keeps_the_blank_grade_pupil(
+        self, students_mapping, classes_mapping, enrollments_mapping, global_config
+    ):
+        students, classes, enrollments = _run_students_classes_enrollments(
+            _blank_grade_corpus(with_blank_pupil=True),
+            students_mapping,
+            classes_mapping,
+            enrollments_mapping,
+            global_config,
+        )
+        assert _BLANK_PUPIL in set(students["User ID"]), "the blank-grade pupil must be an ACTIVE student"
+        assert not enrollments.empty
+
+        blends = _blended_ids(_class_ids(classes))
+        survivor = {cid for cid in blends if "T020" in cid}
+        assert survivor, f"the blend carrying a live student was suppressed: {sorted(_class_ids(classes))}"
+        blend_id = survivor.pop()
+
+        # No per-section fallback class, and no Class ID re-assignment: the
+        # blank-grade pupil's ONLY enrollment is the blended one.
+        assert not {"MTZ1_2026", "MTZ2_2026"} & _class_ids(classes), sorted(_class_ids(classes))
+        assert set(enrollments[enrollments["User ID"] == _BLANK_PUPIL]["Class ID"]) == {blend_id}
+        assert _class_ids(enrollments) <= _class_ids(classes), "orphan Class IDs in Enrollments"
+
+    def test_WITHOUT_that_one_row_the_very_same_blend_is_suppressed(
+        self, students_mapping, classes_mapping, enrollments_mapping, global_config
+    ):
+        """The differential twin. Identical corpus minus the blank-grade row:
+        now every pupil really is homeroom-side, the blend really is studentless
+        and it goes — together with its teacher row, and WITHOUT leaving a
+        per-section class behind (nothing was on the timetable side to key one).
+        """
+        students, classes, enrollments = _run_students_classes_enrollments(
+            _blank_grade_corpus(with_blank_pupil=False),
+            students_mapping,
+            classes_mapping,
+            enrollments_mapping,
+            global_config,
+        )
+        assert len(students) == 3
+        assert not enrollments.empty, "the homeroom enrollments must still exist"
+        assert _blended_ids(_class_ids(classes)) == set()
+        assert _blended_ids(_class_ids(enrollments)) == set()
+        assert not _subject_ids(_class_ids(classes)), sorted(_class_ids(classes))
         assert _class_ids(enrollments) <= _class_ids(classes), "orphan Class IDs in Enrollments"
 
 

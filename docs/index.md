@@ -70,7 +70,7 @@ A district with non-standard file naming AND the myBlueprint+ tier composes the 
 
 - **Active student filtering** — Active and PreReg students exported; Inactive and other statuses excluded
 - **CEDS grade mapping** — BC grade codes (K, 1–12) mapped to CEDS standard format
-- **Blended class detection** — same teacher/time/multi-grade sections merged automatically
+- **Blended class detection** — same teacher/time/multi-grade sections merged automatically, unless every pupil involved is rostered through their homeroom instead (that blend would carry a teacher and no students)
 - **Homeroom generation** — elementary homeroom classes auto-generated from demographics
 - **District config inheritance** — district-specific overrides layer on top of the base MyEdBC config
 - **Automated scheduling** — runs daily via Windows Task Scheduler or cron

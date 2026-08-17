@@ -46,7 +46,11 @@ Students with `Enrolment Status = Active` or `PreReg` are included. Students wit
 
 **Q: What does "blended class" mean?**
 
-A blended class is detected when the same teacher teaches multiple sections at the same time slot but with students from different grade levels. DistrictSync automatically merges these into a single class record for SpacesEDU. The class is named after the teacher, course titles, and grade range (e.g., "Reed - Science 3 / Science 4 (03/04) 2025"). See [How Classes Work](how-classes-work.md) for full details on class types.
+A blended class is detected when the same teacher teaches multiple sections at the same time slot but with students from different grade levels. DistrictSync automatically merges these into a single class record for SpacesEDU. The class is named after the teacher, course titles, and grade range (e.g., "Reed - Science 7 / Science 8 (07/08) 2025"). See [How Classes Work](how-classes-work.md) for full details on class types.
+
+**Q: Why did my class and enrollment counts drop after upgrading to v3.12.0?**
+
+Because DistrictSync no longer sends blended classes that could never have had a student in them. Students in a `homeroom_grades` grade are rostered through their homeroom, so a blended class whose students are *all* in homeroom grades was arriving with a teacher and nobody else. Those students are still rostered — in their homeroom classes, exactly as before. Each such case removes one row from `Classes.csv` and one teacher row from `Enrollments.csv`. A blend that mixes a homeroom grade with a non-homeroom grade is unaffected. The one-off drop may trip the anomaly check on your first run; see [How Classes Work](how-classes-work.md#blended-classes-that-are-not-emitted).
 
 **Q: Why does the grade show as "01" instead of "1"?**
 

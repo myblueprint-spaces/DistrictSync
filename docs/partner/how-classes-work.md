@@ -29,17 +29,29 @@ Grades not listed in `homeroom_grades` do not get homeroom classes.
 
 Detected automatically when the **same teacher** teaches **multiple course sections** at the **same time slot** (same period, day, and semester) with students from **two or more grade levels**.
 
-This is common in small or rural schools where, for example, a teacher runs a combined Grade 1/2 class. Instead of creating separate class records that would split the roster in SpacesEDU, DistrictSync merges them into a single blended class.
+This is common in small or rural schools where, for example, a teacher runs a combined Grade 7/8 class. Instead of creating separate class records that would split the roster in SpacesEDU, DistrictSync merges them into a single blended class.
 
 **How detection works:**
 
 1. Class sections are grouped by teacher + time slot (school, teacher ID, semester, day, period)
 2. Each group is checked for multiple unique Master Timetable IDs
 3. If those sections have students from 2+ different grade levels, the group is identified as a blended class
-4. All original sections are mapped to a single blended class ID
-5. The blended class name includes the teacher, course titles, and grade range (e.g., "Reed - Science 3 / Science 4 (03/04) 2025")
+4. **The group is dropped if none of its students would be enrolled in it** — see *Blended classes that are not emitted* below
+5. All remaining sections are mapped to a single blended class ID
+6. The blended class name includes the teacher, course titles, and grade range (e.g., "Reed - Science 7 / Science 8 (07/08) 2025")
 
-**Grade assignment:** Each section's grade is determined by the most common grade among its enrolled students (from the Student Schedule data).
+**Grade assignment:** Each section's grade is determined by the most common grade among its enrolled students (from the Student Schedule data). Note that the *name* uses that most-common grade, while step 4 looks at **every** student's grade — so on rare occasions a blended class's name can list grades other than those of the students actually in it.
+
+#### Blended classes that are not emitted
+
+Students in a `homeroom_grades` grade are rostered through their **homeroom** class, not through their timetable. So if a teacher runs two sections at the same period and *every* student involved is in a homeroom grade, the blended class that would be created for them can never contain anybody — every one of those students is already in their homeroom class instead.
+
+DistrictSync does not emit that class. Nothing is lost: the students are rostered exactly as before, in their homerooms. You will see one fewer `BLENDED_` row in `Classes.csv` and one fewer teacher row in `Enrollments.csv` for each such case.
+
+A blended class that mixes a homeroom grade with a non-homeroom grade (say Grade 7 and Grade 8, where `homeroom_grades` stops at Grade 7) **is** emitted, and carries its Grade 8 students.
+
+!!! note "First run after upgrading to v3.12.0"
+    This rule used to apply only to districts that had opted into grade-scoped class rostering; from v3.12.0 it applies to every district. On your first run after upgrading, class and enrollment counts may drop by more than usual, and DistrictSync's built-in anomaly check may flag it. That drop is this change. If you run a conversion manually from the Convert page, you will be asked to acknowledge the anomaly before the files are written.
 
 ---
 

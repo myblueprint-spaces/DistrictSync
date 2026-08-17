@@ -76,6 +76,15 @@ change "simplified" it. Consult this before changing the named subsystem.
   `timetable_scope is not None` — never on `global_config.get("class_rostering_grades")`
   and never on truthiness (an EMPTY set is a real scope: "roster no timetable
   classes at all").
+  **Amended 2026-08-14 (plan 0043):** the `None` branch no longer means "nothing
+  is suppressed" — it means "no scope was CONFIGURED", and the effective rostered
+  set is then DERIVED (`CEDS − homeroom`). Both readings now live in exactly one
+  place, `grades.timetable_rostered_grades`; the blend gate is unconditional and
+  consumes that. So the rule binds harder, not less: do not re-derive the
+  complement at a call site, and do not reintroduce an `is not None` guard around
+  the gate itself. The resolver's `None` survives for ONE remaining reader — the
+  suppression log, which must not print a 24-code "configured scope" a district
+  never configured.
   **What breaks otherwise, concretely.** A gate keyed to the class key's presence
   is silently dead on exactly the path the inherited bound was introduced to make
   safe: blended detection is deliberately unscoped, `_emit_missing_blended_classes`
@@ -96,3 +105,53 @@ change "simplified" it. Consult this before changing the named subsystem.
   **The general rule, worth carrying to the next scope key:** a feature flag's
   presence check and its resolved value stop being interchangeable the moment a
   second input can produce the value.
+
+---
+
+- **The blend-suppression gate must derive its grades from the SAME ROWS, with the SAME null handling, as `split_by_homeroom_grades(keep="subject")` — "row-set identity".** _(Plan 0043 slice 2, 2026-08-14 · `src/etl/transformers/blended.py` + `src/etl/transformers/grades.py`.)_
+  Since 0043 a blend is suppressed when NONE of its enrollable grades is in
+  `grades.timetable_rostered_grades(...)`. Sharing that grade VOCABULARY is
+  necessary but **not** sufficient: the gate and the subject mask must also be
+  looking at the same rows. `BlendedClassDetector._build_enrollable_grade_map`
+  therefore takes every schedule row of each section — **no `dropna()`, no
+  `if grade:`** — and converts through `grades.ceds_grade_series`, the very
+  function the subject split uses.
+  **What breaks otherwise, concretely.** The natural implementation builds the
+  map beside `_build_grade_map`, inheriting its `.dropna()`. But a blank/NaN
+  grade converts to `"UG"`, `"UG"` is not a homeroom grade, so that row SURVIVES
+  the subject filter and is a real student. A `dropna`-built map cannot see it:
+  a blend of `MT1` (rows `"03"`, `"03"`, NaN) + `MT2` (`"04"`) under the default
+  KG–07 homerooms yields `enrollable = {"03","04"}` ⇒ suppressed ⇒ that pupil
+  falls back to `MT1_<year>` via `assign_class_ids`. `Classes.csv` **GROWS**, a
+  live Class ID is **RE-ASSIGNED**, and a blend that HAD a student was dropped —
+  the exact opposite of the "strictly subtractive" property the per-row design
+  was chosen for, and invisible from either call site. The same applies to any
+  future consumer that asks "which pupils would be rostered here?".
+  **Proof-it-holds:** `tests/test_class_rostering_grades.py::TestRowSetIdentityUnderBlankGrades`
+  (the blank-grade blend survives, no per-section class appears, the pupil's only
+  enrollment is the blended one — paired with the differential twin that the same
+  blend minus that one row IS suppressed) +
+  `tests/test_blended_classes.py::TestEnrollableGradeMapIsRowSetIdentical`.
+  Injecting `.dropna()` into the builder turns both red.
+  **The standing PREMISE the invariant rests on — one file, two readers.** "Same
+  rows" is only meaningful because the gate and the subject split read the SAME
+  schedule. The gate runs inside blended detection, which is invoked with the
+  **Classes** entity's `student_schedule` (`classes.py`), while the subject split
+  that must agree with it runs on the **Enrollments** entity's
+  (`enrollments.py`). Today those are one file **in every shipped config** —
+  checked, not assumed: four districts DO override `student_schedule`
+  (`sd40myedbc` → `SD-40_StudentSchedule.csv`, `sd54myedbc` → lowercase,
+  `sd60myedbc` and `sd74myedbc` → `StudentCourseSelection*` — they never read
+  the base's `StudentSchedule.txt` at all), and each points **both** entities at
+  the same file. So the guarantee rests on that per-config agreement, NOT on the
+  base default and NOT on the absence of overrides.
+  **If a config ever points them at different files the invariant is broken even
+  with the code unchanged** — a blend
+  suppressed on the Classes-side rows while Enrollments-side rows are
+  timetable-side re-keys those students to `MT#_<year>` with no matching Classes
+  row, i.e. the orphan Class IDs commit `e187ac8` was written to stop. Whoever
+  first splits those two source files owns re-establishing this.
+  **The general rule:** two filters that must agree need to share their ROW SET
+  and their NULL POLICY, not merely their value vocabulary — a shared constant
+  is not a shared decision, and neither is a shared column name when the rows
+  behind it can come from different files.
