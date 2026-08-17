@@ -1714,20 +1714,22 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         active_color=tokens.color_status_healthy,
     )
     window_start_field = ft.TextField(
-        label="Season starts (MM-DD)",
+        label="Sync starts (MM-DD)",
         value=cfg.sync_window_start or prefill_start,
         width=190,
         border_color=tokens.color_border,
         disabled=not bool(cfg.sync_window_enabled),
         helper="About two weeks before school starts.",
+        helper_max_lines=3,
     )
     window_end_field = ft.TextField(
-        label="Season ends (MM-DD)",
+        label="Sync ends (MM-DD)",
         value=cfg.sync_window_end or prefill_end,
         width=190,
         border_color=tokens.color_border,
         disabled=not bool(cfg.sync_window_enabled),
         helper="Early summer — the sync pauses until next school year.",
+        helper_max_lines=3,
     )
     window_error_slot = ft.Column(spacing=0, controls=[])
 

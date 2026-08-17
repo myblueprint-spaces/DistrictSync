@@ -1485,8 +1485,8 @@ def test_settings_renders_seasonal_window_fields(stub_page, monkeypatch):
     MM-DD fields + heading) on the pinned flet, without falling to ErrorCard."""
     tree = _settings_tree(stub_page, monkeypatch)
     assert _switch_by_label(tree, "Only sync during the school year") is not None
-    assert _textfield_by_label(tree, "Season starts (MM-DD)") is not None
-    assert _textfield_by_label(tree, "Season ends (MM-DD)") is not None
+    assert _textfield_by_label(tree, "Sync starts (MM-DD)") is not None
+    assert _textfield_by_label(tree, "Sync ends (MM-DD)") is not None
     assert _has_text(tree, "Seasonal pause")
 
 
@@ -1494,8 +1494,8 @@ def test_window_fields_prefill_from_the_district_calendar(stub_page, monkeypatch
     """B: an unset window pre-fills from the district's academic calendar (myedbc 08-25 →
     start 08-11 / end 07-06), so the admin starts from a sensible window, never blanks."""
     tree = _settings_tree(stub_page, monkeypatch)  # sis_type=myedbc, no window saved
-    assert _textfield_by_label(tree, "Season starts (MM-DD)").value == "08-11"
-    assert _textfield_by_label(tree, "Season ends (MM-DD)").value == "07-06"
+    assert _textfield_by_label(tree, "Sync starts (MM-DD)").value == "08-11"
+    assert _textfield_by_label(tree, "Sync ends (MM-DD)").value == "07-06"
 
 
 def test_window_only_settings_change_does_not_reregister(tmp_path, stub_page, monkeypatch):
@@ -1540,7 +1540,7 @@ def test_invalid_window_edit_shows_inline_error_and_persists_nothing(tmp_path, s
 
     tree = build_setup(stub_page)
     toggle = _switch_by_label(tree, "Only sync during the school year")
-    start = _textfield_by_label(tree, "Season starts (MM-DD)")
+    start = _textfield_by_label(tree, "Sync starts (MM-DD)")
     toggle.value = True
     start.value = "13-40"  # not a real month-day
     start.on_change(None)
@@ -1584,7 +1584,7 @@ def test_wizard_window_regate_recovers_stranded_schedule_step(tmp_path, stub_pag
     assert _footer_forward(tree).disabled is False
 
     # Drive an INVALID end -> the gate closes, nothing persists (cfg keeps the last valid bounds).
-    end_field = _textfield_by_label(tree, "Season ends (MM-DD)")
+    end_field = _textfield_by_label(tree, "Sync ends (MM-DD)")
     assert end_field is not None
     end_field.value = "13-99"
     end_field.on_change(None)
