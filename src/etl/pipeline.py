@@ -29,6 +29,7 @@ from src.config.models import filter_enabled_entities
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader
 from src.etl.transformer import DataTransformer
+from src.etl.transformers.grades import resolve_timetable_scope
 from src.history.store import VALID_SOURCES, write_run_record
 from src.quality.report import DataQualityReport
 from src.sftp.uploader import SFTPUploader
@@ -100,6 +101,19 @@ def extract_required_files(config) -> list[str]:
     excluded. ``school_year_sources`` are only included when also referenced
     by an enabled entity — when they aren't, ``determine_school_year``
     falls back to the calendar-date heuristic in BaseTransformer.
+
+    This is the list ``extractor.load_data`` actually reads — NOT merely an
+    advisory "what does the UI expect" set (see ``advisory_expected_files``
+    for that). It must stay grade-scope-AGNOSTIC: a district whose resolved
+    timetable scope is empty (``class_rostering_grades: "homeroom"``) still
+    gets no harm from opportunistically loading a present ``StudentSchedule.txt``
+    — it may still carry a usable ``school_year_sources`` value, and the
+    schedule-derived subject/blended paths already self-guard on an empty
+    frame. Narrowing this list once made the pipeline silently STOP loading a
+    present, harmless, occasionally load-bearing file (caught via the SD83
+    contract test's school-year assertion drifting from the fixture's real
+    ``StudentSchedule.txt`` to the date-fallback heuristic) — don't repeat
+    that mistake here.
     """
     active = config.active_entities()
 
@@ -108,6 +122,43 @@ def extract_required_files(config) -> list[str]:
         if entity_name not in active:
             continue
         files.update(entity_cfg.source_files.values())
+    return list(files)
+
+
+def advisory_expected_files(config) -> list[str]:
+    """The UI-facing "your district's extracts usually include" file list.
+
+    Same base set as :func:`extract_required_files`, MINUS the
+    ``student_schedule``/``class_info`` source-file roles when the district's
+    resolved timetable scope is EMPTY (``class_rostering_grades: "homeroom"``,
+    or an explicit list equal to ``homeroom_grades``) — for a fully
+    homeroom-scoped config those two files feed no surviving class or
+    enrollment (every blend is unconditionally suppressed and no subject
+    class is ever built), so flagging them as "usually included" is actively
+    misleading rather than merely optional.
+
+    Deliberately SEPARATE from :func:`extract_required_files`: this function
+    is advisory-only (it decides what a chip on the Convert screen says, never
+    what the extractor reads), so it is free to narrow past the safe,
+    scope-agnostic set that function must keep. Branches on ``is None`` per
+    ``grades.resolve_timetable_scope``'s own contract — never on truthiness —
+    so an unscoped config (the default) is byte-identical to
+    ``extract_required_files``.
+    """
+    active = config.active_entities()
+    raw_global_config = config.to_raw_dict().get("global_config", {})
+    homeroom_grades = raw_global_config.get("homeroom_grades", [])
+    timetable_scope = resolve_timetable_scope(raw_global_config, homeroom_grades)
+    inert_roles = {"student_schedule", "class_info"} if timetable_scope is not None and not timetable_scope else set()
+
+    files: set[str] = set()
+    for entity_name, entity_cfg in config.mappings.items():
+        if entity_name not in active:
+            continue
+        for role, filename in entity_cfg.source_files.items():
+            if role in inert_roles:
+                continue
+            files.add(filename)
     return list(files)
 
 

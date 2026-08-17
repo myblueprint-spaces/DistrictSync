@@ -103,6 +103,81 @@ class TestExtractRequiredFiles:
             "StudentCourseSelection.txt",
         }
 
+    def test_sd83_scoped_district_still_LOADS_schedule_and_class_info_if_present(self):
+        """`extract_required_files` — the list `extractor.load_data` actually reads —
+        must stay grade-scope-AGNOSTIC even for a fully homeroom-scoped district like
+        SD83 (`class_rostering_grades: "homeroom"`). Opportunistically loading a
+        present StudentSchedule.txt/ClassInformationEnh.txt is harmless (the
+        schedule-derived paths already self-guard on an empty frame) and can still be
+        load-bearing — the SD74 golden and the SD83 contract test both derive their
+        school year from a schedule file's `school_year_sources` value, which requires
+        the file to actually be loaded regardless of grade scope. This is the
+        regression this exact test caught: an earlier draft of this fix narrowed
+        THIS function instead of the new UI-only `advisory_expected_files`, which
+        silently stopped the pipeline from loading a present, real schedule file for
+        SD83 and broke school-year determination."""
+        from src.config.loader import load_config
+
+        cfg = load_config("sd83myedbc")
+        files = set(extract_required_files(cfg))
+        assert "StudentSchedule.txt" in files
+        assert "ClassInformationEnh.txt" in files
+
+
+class TestAdvisoryExpectedFiles:
+    """The Convert screen's "usually include" chip list — UI-only, never the
+    extractor's actual load list (see TestExtractRequiredFiles's SD83 regression
+    test for why those two functions must stay separate)."""
+
+    def test_sd83_homeroom_only_scope_drops_schedule_and_class_info(self):
+        """SD83's `class_rostering_grades: "homeroom"` resolves the timetable scope to
+        EMPTY — no subject class or blend is ever built — so StudentSchedule.txt and
+        ClassInformationEnh.txt feed nothing and must not be listed as expected. This
+        is the exact real-world case reported live during the D-0037-6 QA walk: the
+        Convert screen's "usually include" chips flagged both files even though SD83's
+        actual district export never has them."""
+        from src.config.loader import load_config
+        from src.etl.pipeline import advisory_expected_files
+
+        cfg = load_config("sd83myedbc")
+        files = set(advisory_expected_files(cfg))
+        assert "StudentSchedule.txt" not in files
+        assert "ClassInformationEnh.txt" not in files
+        # Every other source file SD83's full myBlueprint+ tier declares stays expected.
+        assert files == {
+            "StudentDemographicInformation.txt",
+            "StaffInformationEnhanced.txt",
+            "EmergencyContactInformation.txt",
+            "CourseInformation.txt",
+            "StudentCourseHistory.txt",
+            "StudentCourseSelection.txt",
+        }
+
+    def test_unscoped_config_still_expects_schedule_and_class_info(self):
+        """A district with no class_rostering_grades key (the byte-identical default,
+        e.g. sd74myedbc, which overrides both filenames) still expects its schedule
+        and class-info files — the exclusion must only fire on an EXPLICITLY-resolved
+        empty scope, never on the unscoped None default."""
+        from src.config.loader import load_config
+        from src.etl.pipeline import advisory_expected_files
+
+        cfg = load_config("sd74myedbc")
+        files = set(advisory_expected_files(cfg))
+        assert "studentcourseselection.txt" in files  # SD74's student_schedule override
+        assert "ClassInfoEnhanced.txt" in files  # SD74's class_info override
+
+    def test_byte_identical_to_extract_required_files_when_unscoped(self):
+        """The unscoped default (no class_rostering_grades key) must produce the
+        EXACT same set as extract_required_files — advisory narrowing is opt-in via
+        an explicitly-resolved empty scope only, never a silent behavior change for
+        the eleven districts that don't set the key."""
+        from src.config.loader import load_config
+        from src.etl.pipeline import advisory_expected_files
+
+        for sis in ("myedbc", "sd40myedbc", "sd48myedbc", "sd51myedbc", "sd54myedbc", "sd60myedbc", "sd74myedbc"):
+            cfg = load_config(sis)
+            assert set(advisory_expected_files(cfg)) == set(extract_required_files(cfg)), sis
+
 
 # -----------------------------------------------------------------------
 # _check_anomalies

@@ -109,11 +109,11 @@ from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader
 from src.etl.pipeline import (
     RunErrorCategory,
+    advisory_expected_files,
     build_run_record,
     check_delivery_integrity,
     compute_anomalies,
     configured_entity_order,
-    extract_required_files,
     run_transform,
 )
 from src.history.store import write_run_record
@@ -1388,7 +1388,7 @@ def _build_file_chips(config_name: str | None, input_dir: str) -> list[ft.Contro
     """FileChips for the GDE files found in the folder + a missing-file warning.
 
     Lists the resolved GDE files present in the picked folder and, from
-    ``extract_required_files``, any expected-but-absent file (a plain amber chip +
+    ``advisory_expected_files``, any expected-but-absent file (a plain amber chip +
     a one-line warning). A bad config / folder degrades to an empty list, never a
     crash.
     """
@@ -1439,9 +1439,12 @@ def _present_gde_files(input_dir: str) -> list[str]:  # pragma: no cover - Flet 
 
 
 def _expected_files(config_name: str) -> list[str]:  # pragma: no cover - Flet view glue
-    """The config's required source files (empty on any config error — never crashes)."""
+    """The config's advisory "usually include" source files (empty on any config
+    error — never crashes). Deliberately NOT ``extract_required_files`` — that one
+    is what the extractor actually loads and must stay grade-scope-agnostic; this
+    is UI-only and narrows further for a fully homeroom-scoped district."""
     try:
-        return extract_required_files(load_config(config_name))
+        return advisory_expected_files(load_config(config_name))
     except Exception:  # noqa: BLE001 - a config error degrades to "no expectation", never a crash
         return []
 
