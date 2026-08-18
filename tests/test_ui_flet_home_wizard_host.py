@@ -787,3 +787,117 @@ class TestTheScheduleBadgeCallbackReachesTheHostedWizard:
         tree = _home(page, _unfinished(), monkeypatch)
 
         assert DISTRICT_STEP_TITLE in _texts(tree)
+
+
+# --------------------------------------------------------------------------- #
+# The way back to the launch page (QA 2026-08-18)                              #
+# --------------------------------------------------------------------------- #
+class TestRestartingWithADifferentAddress:
+    """The launch page was strictly one-way, and the wizard is the whole of first-run.
+
+    ``needs_identity`` renders that page only while no usable address is stored, so answering
+    it closes the door; the one surface that can reopen it — Settings' identity section — sits
+    on the far side of the wizard. An admin who mistyped, or who answered on someone else's
+    behalf, had no correction for the entire first run. These pin the correction, and pin that
+    it is a CORRECTION and not an erasure.
+    """
+
+    def test_the_link_is_offered_while_the_wizard_is_hosted(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        view = _home(
+            page,
+            _unfinished(identity_email="admin@sd48.bc.ca"),
+            monkeypatch,
+            on_restart_identity=lambda: None,
+        )
+
+        assert _button(view, home_screen.RESTART_IDENTITY_LABEL) is not None
+
+    def test_no_callback_means_NO_LINK_rather_than_a_dead_one(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The positive twin above proves the affordance exists; this proves it is not painted
+        where it could not work (the Setup rail item's own mount, and every direct build)."""
+        view = _home(page, _unfinished(identity_email="admin@sd48.bc.ca"), monkeypatch)
+
+        assert home_screen.RESTART_IDENTITY_LABEL not in _labels(view)
+
+    def test_pressing_it_clears_the_address_and_re_mounts_the_launch_page(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _unfinished(identity_email="admin@sd48.bc.ca", identity_sd_number="48")
+        writes: list[dict] = []
+        monkeypatch.setattr(AppConfig, "identity_save", lambda _self, **kw: writes.append(kw) or True)
+        restarted: list[bool] = []
+
+        view = _home(page, cfg, monkeypatch, on_restart_identity=lambda: restarted.append(True))
+        _button(view, home_screen.RESTART_IDENTITY_LABEL).on_click(None)
+
+        # BOTH identity fields go — the SD number was collected in the same breath as the
+        # address and must not outlive the answer it belonged to.
+        assert writes == [{"identity_email": "", "identity_sd_number": ""}]
+        assert restarted == [True], "the launch page was not re-mounted"
+
+    def test_it_is_a_CORRECTION_not_an_ERASURE(self, page: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``identity_clear`` also unlinks the ``config.corrupt-*.json`` settings-recovery
+        copies. "I typed the wrong address" is not a request to destroy those — the same
+        distinction the not-listed card's dismiss makes. Pinned as a NEGATIVE on the erasure
+        path plus a positive on the write that should happen."""
+        cleared: list[bool] = []
+        monkeypatch.setattr(AppConfig, "identity_clear", lambda _self: cleared.append(True))
+        saved: list[dict] = []
+        monkeypatch.setattr(AppConfig, "identity_save", lambda _self, **kw: saved.append(kw) or True)
+
+        view = _home(
+            page,
+            _unfinished(identity_email="admin@sd48.bc.ca"),
+            monkeypatch,
+            on_restart_identity=lambda: None,
+        )
+        _button(view, home_screen.RESTART_IDENTITY_LABEL).on_click(None)
+
+        assert cleared == [], "the restart must never run the quarantine purge"
+        assert saved, "...but it must still clear the address"
+
+    def test_a_REFUSED_write_keeps_the_admin_put_and_says_so(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Order is load-bearing: clear first, re-mount second. Re-mounting on a refused write
+        would show a launch page the gate bounces straight back out of — a loop between a
+        wizard and a page that cannot remember anything."""
+        monkeypatch.setattr(AppConfig, "identity_save", lambda _self, **_kw: False)
+        restarted: list[bool] = []
+
+        view = _home(
+            page,
+            _unfinished(identity_email="admin@sd48.bc.ca"),
+            monkeypatch,
+            on_restart_identity=lambda: restarted.append(True),
+        )
+        _button(view, home_screen.RESTART_IDENTITY_LABEL).on_click(None)
+
+        assert restarted == [], "a refused write must not re-mount the launch page"
+        assert setup_screen.IDENTITY_REFUSED_NOTE in _texts(view)
+
+    def test_a_RAISING_write_is_treated_as_a_refusal_not_a_crash(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Identity is advisory — it may never trap the admin mid-wizard."""
+
+        def _boom(_self: AppConfig, **_kw: object) -> bool:
+            raise OSError("the profile is read-only")
+
+        monkeypatch.setattr(AppConfig, "identity_save", _boom)
+        restarted: list[bool] = []
+
+        view = _home(
+            page,
+            _unfinished(identity_email="admin@sd48.bc.ca"),
+            monkeypatch,
+            on_restart_identity=lambda: restarted.append(True),
+        )
+        _button(view, home_screen.RESTART_IDENTITY_LABEL).on_click(None)  # must not raise
+
+        assert restarted == []
+        assert setup_screen.IDENTITY_REFUSED_NOTE in _texts(view)

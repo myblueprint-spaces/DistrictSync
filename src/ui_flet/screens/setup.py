@@ -87,6 +87,7 @@ from src.ui_flet.schedule_status import (
     interpret_unregister,
     is_transient_location,
 )
+from src.ui_flet.screens.identity import NOT_LISTED_NOTE_TAIL as UNMATCHED_DISTRICT_NOTE
 from src.ui_flet.screens.identity import log_resolve, matched_headline
 from src.ui_flet.setup_errors import classify_schedule_error
 from src.ui_flet.setup_flow import (
@@ -461,6 +462,7 @@ def _mount_wizard(
         "schedule_skipped": False,
         "schedule_status": None,  # latest ScheduleStatus from the section's read-back
         "window_valid": True,  # the seasonal-window gate (B): enabled+invalid closes Continue
+        "schedule_busy": False,  # a register/unregister is in flight (its UAC prompt is up)
         "delivery": DeliveryFact.STORED_CRED_PRESENT if _stored_delivery_present(cfg) else DeliveryFact.NONE,
         "delivery_host": cfg.sftp_host,
         "delivery_user": cfg.sftp_username,
@@ -477,6 +479,7 @@ def _mount_wizard(
             schedule_skipped=bool(ws["schedule_skipped"]),
             delivery=ws["delivery"],  # type: ignore[arg-type]
             window_valid=bool(ws["window_valid"]),
+            schedule_busy=bool(ws["schedule_busy"]),
         )
 
     # Resume: land on the first step real state says is unsatisfied (no stored cursor).
@@ -637,6 +640,25 @@ def _mount_wizard(
 
     def _on_sched_status(status: ScheduleStatus) -> None:
         ws["schedule_status"] = status
+        if status.state is ScheduleState.LIVE:
+            # A CONFIRMED-live task un-defers the step (QA, 2026-08-18). ``schedule_skipped`` was
+            # write-once: deferring the step latched it, and nothing ever cleared it — so an
+            # admin who deferred and then came BACK and scheduled successfully still met a finish
+            # line that said the nightly sync was not set up, because ``_finish_body`` reads
+            # ``(not schedule_skipped) and status is LIVE``. Clearing it here keeps the defer a
+            # statement about the admin's INTENT and lets the read-back overrule it, which is the
+            # direction this flow already trusts everywhere else (D8: never trust the config flag
+            # for live-ness — trust the probe). Only LIVE clears it: UNKNOWN/MISSING leave the
+            # defer standing, so a failed or removed registration can never silently un-skip.
+            ws["schedule_skipped"] = False
+        _refresh_footer()
+
+    def _on_schedule_busy(busy: bool) -> None:
+        # The Schedule step's second transient gate (the first is the seasonal window): while a
+        # register/unregister is in flight the forward button closes, so Continue cannot abandon
+        # a registration whose UAC prompt is still on screen. Advance-only — never persisted, and
+        # never reaching ``derive_flow``.
+        ws["schedule_busy"] = busy
         _refresh_footer()
 
     def _on_delivery(fact: DeliveryFact, host: str, username: str) -> None:
@@ -735,6 +757,7 @@ def _mount_wizard(
             on_status=_on_sched_status,
             on_schedule_changed=on_schedule_changed,
             on_window_valid=_on_window_valid,
+            on_busy=_on_schedule_busy,
         )
         return card
 
@@ -988,7 +1011,10 @@ IDENTITY_CLEARED_COPIES_LEFT_NOTE = (
     "Removed from your settings. We couldn't remove {n} older {copies} — they're still in your settings folder."
 )
 IDENTITY_SEVERAL_NOTE = "That email matches more than one setup — you'll choose the right one under Folders & district."
-IDENTITY_NO_MATCH_NOTE = "We don't have a district on file for that address yet — no problem. Nothing else has changed."
+IDENTITY_NO_MATCH_NOTE = (
+    "We don't have a district on file for that address yet — no problem. Nothing else has changed. "
+    + UNMATCHED_DISTRICT_NOTE
+)
 IDENTITY_REFUSED_NOTE = "We couldn't save that just now. Your other settings are untouched."
 
 
@@ -1237,6 +1263,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     on_status: Callable[[ScheduleStatus], None] | None = None,
     on_schedule_changed: Callable[[], None] | None = None,
     on_window_valid: Callable[[bool], None] | None = None,
+    on_busy: Callable[[bool], None] | None = None,
 ) -> tuple[ft.Control, _ScheduleHandle]:
     """The scheduler section — run time + (where supported) run-as password → register (Slice 5/6).
 
@@ -1247,7 +1274,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     baseline, so the next Save is change-gated off reality rather than a refreshed guess.)
     ``on_schedule_changed`` (when given — the shell's badge re-probe, 0032 T1 #8) fires after a
     CONFIRMED register OR unregister success; advisory and exception-suppressed, so it can never
-    break the result paint. The register/unregister flow is UNCHANGED from Slice 5/6 (off-thread,
+    break the result paint. ``on_busy`` (when given — the wizard's Continue gate) brackets the
+    off-thread register/unregister with ``True``/``False``; it is raised in the SAME place the
+    section disables its own buttons and cleared in the SAME place it re-enables them, so the
+    wizard footer can never disagree with the section about whether a UAC prompt is pending. The register/unregister flow is UNCHANGED from Slice 5/6 (off-thread,
     elevation-aware, save-after-success). Platform dispatch goes through the ONE
     ``get_scheduler()`` factory (W4a T2.3): affordances gate on the scheduler's honest
     capability flags, never on ``sys.platform`` here.
@@ -1382,6 +1412,34 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     def _elevated_now() -> bool:
         return scheduler.is_elevated()  # always False where elevation has no meaning (cron)
 
+    def _set_busy(busy: bool) -> None:
+        """Tell the wizard footer a register/unregister is (no longer) in flight. Advisory.
+
+        Exception-suppressed for the same reason ``on_schedule_changed`` is: this drives a
+        Continue gate, and a raise from the wizard's callback must never strand the section's
+        own result paint. Called ONLY where the section toggles its own buttons, so the two
+        cannot drift apart.
+        """
+        if on_busy is None:
+            return
+        with contextlib.suppress(Exception):
+            on_busy(busy)
+
+    def _dispatch(work: Callable[[], None]) -> None:
+        """Run ``work`` off the UI thread with the busy flag RAISED, clearing it if dispatch fails.
+
+        ``page.run_thread`` handing the worker off is what makes the flag safe to leave set —
+        the worker's own result handler lowers it. A raise HERE means no worker ever runs, so
+        the flag would latch and disable Continue for the rest of the wizard; clearing it on
+        that path is what keeps the gate from outliving the thing it is gating.
+        """
+        _set_busy(True)
+        try:
+            page.run_thread(work)
+        except Exception:
+            _set_busy(False)
+            raise
+
     def _register(_e: ft.ControlEvent | None = None, *, force_blank_password: bool = False) -> bool:
         """Start the off-thread register; True iff a register was actually DISPATCHED.
 
@@ -1448,6 +1506,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             ]
 
         async def _apply_result(ok: bool, msg: str) -> None:
+            _set_busy(False)
             register_btn.disabled = not can_register_schedule(cfg.is_complete(), run_time_field.value or "")
             unregister_btn.disabled = False
             if ok and password:
@@ -1513,11 +1572,12 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             )
         ]
         page.update()
-        page.run_thread(_work)
+        _dispatch(_work)
         return True
 
     def _unregister(_e: ft.ControlEvent | None = None) -> None:
         async def _apply_unregister(ok: bool, msg: str) -> None:
+            _set_busy(False)
             register_btn.disabled = not can_register_schedule(cfg.is_complete(), run_time_field.value or "")
             unregister_btn.disabled = False
             if not ok and msg == _WORKER_ERROR_UNREGISTER:
@@ -1569,7 +1629,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         unregister_btn.disabled = True
         result_slot.controls = [_inflight_row("Removing the nightly sync…")]
         page.update()
-        page.run_thread(_work)
+        _dispatch(_work)
 
     def _persist_run_time_if_edited() -> bool:
         """0034 S3-b: persist a valid run-time edit as plain config (no register involved).

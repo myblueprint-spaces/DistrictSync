@@ -192,7 +192,7 @@ class TestTheLaunchGate:
         self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         built: list[AppConfig] = []
-        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg: built.append(cfg) or ft.Text("body"))
+        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg, **_kw: built.append(cfg) or ft.Text("body"))
 
         shell.main(page)
 
@@ -302,7 +302,7 @@ class TestTheLaunchGate:
             isolated_user_profile, setup_completed=True, input_dir="/in", output_dir="/out", sis_type="myedbc"
         )
         seen: list[AppConfig] = []
-        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg: seen.append(cfg) or ft.Text("body"))
+        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg, **_kw: seen.append(cfg) or ft.Text("body"))
 
         shell.main(page)
 
@@ -614,7 +614,7 @@ class TestTheSetupBadgeDuringFirstRun:
 class TestEnteringTheApp:
     def _drive_to_entry(self, page: MagicMock, monkeypatch: pytest.MonkeyPatch, address: str) -> list[AppConfig]:
         seen: list[AppConfig] = []
-        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg: seen.append(cfg) or ft.Text("body"))
+        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg, **_kw: seen.append(cfg) or ft.Text("body"))
 
         shell.main(page)
 
@@ -659,7 +659,7 @@ class TestEnteringTheApp:
     ) -> None:
         """A double-click on Get started must not stack a second app body on the host."""
         seen: list[AppConfig] = []
-        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg: seen.append(cfg) or ft.Text("body"))
+        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg, **_kw: seen.append(cfg) or ft.Text("body"))
 
         shell.main(page)
         root = _added_root(page)
@@ -676,7 +676,7 @@ class TestEnteringTheApp:
     ) -> None:
         """G7 (flag 1): the person at the console who is not the admin is never trapped."""
         seen: list[AppConfig] = []
-        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg: seen.append(cfg) or ft.Text("body"))
+        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg, **_kw: seen.append(cfg) or ft.Text("body"))
 
         shell.main(page)
         root = _added_root(page)
@@ -700,7 +700,7 @@ class TestTheIdentityFloor:
 
         monkeypatch.setattr(shell.identity, "build_identity", _boom)
         seen: list[AppConfig] = []
-        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg: seen.append(cfg) or ft.Text("body"))
+        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg, **_kw: seen.append(cfg) or ft.Text("body"))
 
         shell.main(page)
 
@@ -714,7 +714,7 @@ class TestTheIdentityFloor:
 
         monkeypatch.setattr(shell, "needs_identity", _boom)
         seen: list[AppConfig] = []
-        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg: seen.append(cfg) or ft.Text("body"))
+        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg, **_kw: seen.append(cfg) or ft.Text("body"))
 
         shell.main(page)
 
@@ -726,7 +726,7 @@ class TestTheIdentityFloor:
         """The handler-level half of the floor: a raise mid-answer opens the app anyway."""
         monkeypatch.setattr(shell.identity, "matched_state", MagicMock(side_effect=RuntimeError("resolution exploded")))
         seen: list[AppConfig] = []
-        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg: seen.append(cfg) or ft.Text("body"))
+        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg, **_kw: seen.append(cfg) or ft.Text("body"))
 
         shell.main(page)
         root = _added_root(page)
@@ -747,7 +747,7 @@ class TestTheIdentityFloor:
         app-body failures must stay loud.
         """
 
-        def _boom(_page: ft.Page, _cfg: AppConfig) -> ft.Control:
+        def _boom(_page: ft.Page, _cfg: AppConfig, **_kw: object) -> ft.Control:
             raise RuntimeError("the app body exploded")
 
         monkeypatch.setattr(shell, "build_app_body", _boom)
@@ -773,7 +773,7 @@ class TestTheIdentityFloor:
     ) -> None:
         """The same boundary on the other exit — the escape enters without persisting."""
 
-        def _boom(_page: ft.Page, _cfg: AppConfig) -> ft.Control:
+        def _boom(_page: ft.Page, _cfg: AppConfig, **_kw: object) -> ft.Control:
             raise RuntimeError("the app body exploded")
 
         monkeypatch.setattr(shell, "build_app_body", _boom)
@@ -797,7 +797,7 @@ class TestTheIdentityFloor:
         """
         attempts: list[int] = []
 
-        def _flaky(_page: ft.Page, cfg: AppConfig) -> ft.Control:
+        def _flaky(_page: ft.Page, cfg: AppConfig, **_kw: object) -> ft.Control:
             attempts.append(1)
             if len(attempts) == 1:
                 raise RuntimeError("a transient failure")
@@ -822,7 +822,7 @@ class TestTheIdentityFloor:
         stopped showing the launch page at all.
         """
         seen: list[AppConfig] = []
-        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg: seen.append(cfg) or ft.Text("body"))
+        monkeypatch.setattr(shell, "build_app_body", lambda p, cfg, **_kw: seen.append(cfg) or ft.Text("body"))
 
         shell.main(page)
         root = _added_root(page)
@@ -830,3 +830,95 @@ class TestTheIdentityFloor:
         _button_labelled(root, shell.identity.CONTINUE_LABEL).on_click(None)
 
         assert seen == [], "resolution alone must not enter the app — the admin confirms"
+
+
+# --------------------------------------------------------------------------- #
+# The gate is no longer one-way (QA 2026-08-18)                                #
+# --------------------------------------------------------------------------- #
+class TestRestartingTheIdentityGate:
+    """``needs_identity`` is false the moment an address is stored, so answering the launch
+    page used to close it permanently — and the only surface that can change the answer is
+    on the far side of the wizard. The shell now hands the app body a way back.
+
+    Asserted through the STRUCTURAL launch-page helpers, never a headline (S4b deliberately
+    gave Home's identity card the launch page's wording).
+    """
+
+    def _boot_into_the_wizard(
+        self, page: MagicMock, monkeypatch: pytest.MonkeyPatch, profile: Path
+    ) -> dict[str, object]:
+        """Boot an install with an address stored but setup unfinished — past the gate, in
+        the wizard — capturing the restart callback the shell hands the app body."""
+        _write_config(profile, identity_email="admin@sd48.bc.ca")
+        captured: dict[str, object] = {"builds": 0}
+
+        def _body(_p: ft.Page, _cfg: AppConfig, **kw: object) -> ft.Control:
+            captured["restart"] = kw.get("on_restart_identity")
+            captured["builds"] = int(captured["builds"]) + 1  # type: ignore[arg-type]
+            return ft.Text("body")
+
+        monkeypatch.setattr(shell, "build_app_body", _body)
+        shell.main(page)
+        return captured
+
+    def test_the_shell_hands_the_app_body_a_restart_callback(
+        self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The positive twin for the round trip below — an unwired callback restarts nothing."""
+        captured = self._boot_into_the_wizard(page, monkeypatch, isolated_user_profile)
+
+        assert callable(captured["restart"])
+        assert not _shows_launch_page(page), "a stored address must not re-show the gate at boot"
+
+    def test_the_restart_re_mounts_the_launch_page_without_a_second_page_add(
+        self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The one root host is swapped, never re-added — the boot invariant is unchanged.
+
+        (``_shows_launch_page`` calls ``_added_root``, which asserts the single ``page.add``
+        itself, so the invariant is checked on the same line as the outcome.)
+        """
+        captured = self._boot_into_the_wizard(page, monkeypatch, isolated_user_profile)
+
+        # The wizard host clears the address before calling back; mirror that here, since the
+        # shell deliberately does NOT do the write (the caller holds the AppConfig).
+        _write_config(isolated_user_profile, identity_email="")
+        captured["restart"]()  # type: ignore[operator]
+
+        assert _shows_launch_page(page)
+
+    def test_the_entry_latch_is_RE_ARMED_so_the_launch_page_can_enter_again(
+        self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``_enter_app`` is idempotent by design (a double entry stacks a second rail). That
+        latch has to come back UP when the gate is re-shown, or the re-mounted launch page is
+        a dead end with every affordance a silent no-op — the exact trap the latch's own
+        docstring warns about on the failure path."""
+        captured = self._boot_into_the_wizard(page, monkeypatch, isolated_user_profile)
+        assert captured["builds"] == 1
+
+        _write_config(isolated_user_profile, identity_email="")
+        captured["restart"]()  # type: ignore[operator]
+
+        root = _added_root(page)
+        field = next(c for c in _iter_controls(root) if isinstance(c, ft.TextField))
+        field.value = "someone.else@sd48.bc.ca"
+        _button_labelled(root, shell.identity.CONTINUE_LABEL).on_click(None)
+        _button_labelled(_added_root(page), shell.identity.GET_STARTED_LABEL).on_click(None)
+
+        assert captured["builds"] == 2, "the re-mounted launch page could not enter the app"
+
+    def test_a_RAISING_re_mount_leaves_the_admin_in_the_app(
+        self, page: MagicMock, isolated_user_profile: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Failing to go back must never blank the host — the admin stays where they were."""
+        captured = self._boot_into_the_wizard(page, monkeypatch, isolated_user_profile)
+
+        def _boom(*_a: object, **_kw: object) -> ft.Control:
+            raise RuntimeError("the launch page exploded")
+
+        monkeypatch.setattr(shell.identity, "build_identity", _boom)
+        captured["restart"]()  # type: ignore[operator]  # must not raise
+
+        assert not _shows_launch_page(page)
+        assert _texts(_added_root(page)) == ["body"], "the app body was torn down by a failed restart"

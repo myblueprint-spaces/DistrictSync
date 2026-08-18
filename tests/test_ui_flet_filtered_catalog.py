@@ -402,7 +402,9 @@ class TestMatchingIsExact:
         by_id = {s.sis_type: s for s in catalog(config_dir=tmp_path)}
         assert by_id["loud"].loaded_ok is False
         assert by_id["loud"].district_domains is None
-        assert _ids(tmp_path, "sd48.bc.ca") == ["loud", "myedbc"]
+        # `myedbc` leads every picker (`mapping_catalog._PINNED_FIRST`); "loud" claims nobody,
+        # so the admin it meant to claim still sees BOTH rows.
+        assert _ids(tmp_path, "sd48.bc.ca") == ["myedbc", "loud"]
 
 
 # --------------------------------------------------------------------------- #
@@ -724,11 +726,17 @@ class TestAgainstTheShippedCatalog:
             assert _ids(bundle, domain) == ids, domain
 
     def test_an_unknown_domain_sees_all_eleven(self) -> None:
+        """Fail-open: an unplaceable admin sees the WHOLE catalog. The SET is the property here.
+
+        Compared as a set, not a sequence: picker ORDER is `mapping_catalog._PINNED_FIRST`'s
+        business (and pinned there), while what this test defends is that no district is
+        withheld from someone we could not place.
+        """
         from src.config.loader import available_configs
 
         bundle = bundle_mappings_dir()
 
-        assert _ids(bundle, "someone.example.com") == available_configs(bundle)
+        assert sorted(_ids(bundle, "someone.example.com")) == sorted(available_configs(bundle))
 
     def test_a_matched_admin_never_sees_a_myblueprint_tier_they_did_not_choose(self) -> None:
         bundle = bundle_mappings_dir()

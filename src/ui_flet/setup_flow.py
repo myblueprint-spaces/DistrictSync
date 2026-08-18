@@ -124,6 +124,13 @@ class FlowInputs:
             Schedule step's Continue gate — the "Enter can't bypass a disabled button" guarantee,
             extended to the window. It does NOT affect resume/satisfaction (an invalid window is
             transient — never persisted, since the section only saves a valid one).
+        schedule_busy: a register/unregister is IN FLIGHT on the Schedule step (the view sets it
+            around the off-thread call, which on Windows blocks on the UAC prompt). Like
+            ``window_valid`` it closes the Schedule step's Continue gate and NOTHING else —
+            advancing mid-flight abandoned a registration the admin had just authorised and
+            latched ``schedule_skipped`` against a task that then went live (QA, 2026-08-18).
+            Transient by construction: it is never persisted, and a crashed worker clears it in
+            the same ``finally`` that clears the spinner.
     """
 
     folders_valid: bool
@@ -132,6 +139,7 @@ class FlowInputs:
     schedule_skipped: bool = False
     delivery: DeliveryFact = DeliveryFact.NONE
     window_valid: bool = True
+    schedule_busy: bool = False
 
 
 @dataclass(frozen=True)
@@ -197,10 +205,14 @@ def can_advance(step: SetupStep, inputs: FlowInputs) -> bool:
 
     FOLDERS / DISTRICT advance only when their own value is valid (Enter can never bypass the
     gate a disabled Next button enforces — same guarantee as ``setup_gates``). SCHEDULE is
-    skippable BUT additionally gated on ``window_valid`` — an enabled-but-invalid seasonal window
-    blocks Continue (the window lives on the Schedule step). DELIVERY is skippable, so advancing is
-    always allowed. FINISH advances (confirms) only when the finish line is reachable
-    (``derive_flow(...).can_finish``).
+    skippable BUT additionally gated on TWO transient view facts — ``window_valid`` (an
+    enabled-but-invalid seasonal window blocks Continue; the window lives on the Schedule step)
+    and ``schedule_busy`` (a register/unregister is in flight). DELIVERY is skippable, so
+    advancing is always allowed. FINISH advances (confirms) only when the finish line is
+    reachable (``derive_flow(...).can_finish``).
+
+    Both Schedule gates are ADVANCE-only: neither reaches ``derive_flow``, so neither can change
+    where a reopened wizard resumes or which steps count as satisfied.
     """
     if step is SetupStep.FOLDERS:
         return inputs.folders_valid
@@ -208,8 +220,9 @@ def can_advance(step: SetupStep, inputs: FlowInputs) -> bool:
         return inputs.district_chosen
     if step is SetupStep.SCHEDULE:
         # Skippable, but a visibly-enabled invalid window can't be advanced past (the window is
-        # not a task arg — this only blocks Continue, never the register flow).
-        return inputs.window_valid
+        # not a task arg — this only blocks Continue, never the register flow), and neither can
+        # an in-flight register/unregister (whose UAC prompt is still on screen).
+        return inputs.window_valid and not inputs.schedule_busy
     if step in _SKIPPABLE_STEPS:
         return True
     return derive_flow(inputs).can_finish

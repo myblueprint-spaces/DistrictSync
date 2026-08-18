@@ -767,7 +767,13 @@ def HealthVerdictBanner(  # noqa: N802 - a view-factory named like a component
         tight=True,
         expand=True,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        controls=[disc, ft.Column(spacing=2, controls=lines)],
+        # The text column is a FLEX child (``expand=True``) deliberately: a Row hands its
+        # non-flex children UNBOUNDED main-axis constraints, so an intrinsically-sized Column
+        # lets a long headline/detail run straight past the tinted container instead of
+        # wrapping inside it. Every banner in the app inherits this, which is why the fix is
+        # here and not at the call sites that happened to overflow first (the SFTP "Test
+        # connection" note and the wizard's finish summary — QA, 2026-08-18).
+        controls=[disc, ft.Column(spacing=2, expand=True, controls=lines)],
     )
     row_controls: list[ft.Control] = [left_group]
     if trailing is not None:

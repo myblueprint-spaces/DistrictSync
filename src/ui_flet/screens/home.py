@@ -93,6 +93,7 @@ from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.screens import identity as identity_screen
 from src.ui_flet.screens import setup as setup_screen
 from src.ui_flet.screens.help import SUPPORT_EMAIL
+from src.ui_flet.screens.identity import NOT_LISTED_NOTE_TAIL as UNMATCHED_DISTRICT_NOTE
 from src.ui_flet.verdict import Verdict
 from src.utils.identity import extract_domain, normalize_email
 from src.utils.validators import IDENTITY_EMAIL_MAX_LEN, validate_identity_email
@@ -301,10 +302,29 @@ MISMATCH_CHANGE_LABEL = "Change district"
 # would assert work nobody has been told about. (`identity_gate.unmapped_sd_number` calls
 # the opposite error — claiming to be "building" a mapping that already ships — a plain
 # untruth; this is the same error pointed the other way.)
+# The way BACK to the launch page, on the ONE surface that had none (QA 2026-08-18).
+#
+# The launch page was strictly one-way: it renders only while `needs_identity` holds, and
+# answering it stores an address that makes the predicate false from then on. The only surface
+# that can change or clear that answer is the Settings scroll — which is on the far side of the
+# wizard. An admin who mistyped, or who realises they answered for someone else, therefore had
+# no correction for the whole of first-run. This is that correction, and it is text-tier
+# deliberately: the wizard's own Continue is the screen's single filled primary, and this must
+# read as an escape hatch, not as a step.
+RESTART_IDENTITY_LABEL = "Start over with a different address"
+# The write is `identity_save`, NEVER `identity_clear` — the same distinction the not-listed
+# card's dismiss makes. `identity_clear`'s quarantine purge deletes the `config.corrupt-*.json`
+# settings-recovery copies, which is an ERASURE; "I typed the wrong address" is not a request to
+# destroy anything. Both identity fields go, because the SD number was collected in the same
+# breath as the address and would otherwise outlive the answer it belonged to.
+RESTART_IDENTITY_FIELDS: dict[str, str] = {"identity_email": "", "identity_sd_number": ""}
+
 NOT_LISTED_HEADLINE = "We don't have a mapping for SD{digits} yet"
-NOT_LISTED_DETAIL = (
-    "Email support with a sample MyEd BC extract and we'll set it up. In the meantime you can explore the app."
-)
+# IMPORTED, not re-typed (QA 2026-08-18): this card and the launch page answer the same
+# question, and they said different things before. The address it names is the same one the
+# button below it opens and the line beside it copies — help.py's house pattern, because a bare
+# mailto is a dead click on a locked-down district server.
+NOT_LISTED_DETAIL = UNMATCHED_DISTRICT_NOTE
 NOT_LISTED_EMAIL_LABEL = f"Email {SUPPORT_EMAIL}"
 NOT_LISTED_COPY_TOOLTIP = "Copy email address"
 NOT_LISTED_DISMISS_LABEL = "Don't show this again"
@@ -774,12 +794,61 @@ def _identity_cards(
         return None
 
 
+def _restart_identity_controls(
+    page: ft.Page,
+    app_config: AppConfig,
+    on_restart_identity: Callable[[], None] | None,
+) -> list[ft.Control]:  # pragma: no cover - Flet view glue
+    """The "start over with a different address" link, or nothing at all.
+
+    Returns a LIST so the caller can splat it: with no callback wired (the Setup rail item's
+    own mount, and every test that builds Home directly) there is no affordance rather than a
+    dead one — a link that cannot go anywhere is worse than no link on the surface whose whole
+    job is getting someone unstuck.
+
+    The click order is load-bearing: **clear first, re-mount second**. ``needs_identity`` is
+    what decides whether the launch page renders, and it reads the stored address — so
+    re-mounting before the write lands would show a page the gate would bounce straight back
+    out of. A REFUSED write (unreadable settings) therefore leaves the admin exactly where they
+    were, with the calm note Settings already uses for this, rather than in a loop between a
+    wizard and a launch page that cannot remember anything.
+    """
+    if on_restart_identity is None:
+        return []
+
+    note = ft.Text("", size=tokens.type_body, color=tokens.color_status_failed, visible=False)
+
+    def _restart(_e: ft.ControlEvent | None = None) -> None:
+        try:
+            saved = app_config.identity_save(**RESTART_IDENTITY_FIELDS)
+        except Exception:  # noqa: BLE001 - identity is advisory; it may never trap the admin mid-wizard
+            logger.warning("Could not clear the stored address for a restart.", exc_info=True)
+            saved = False
+        if not saved:
+            note.value = setup_screen.IDENTITY_REFUSED_NOTE
+            note.visible = True
+            page.update()
+            return
+        on_restart_identity()
+
+    # ONE control, not two: the note sits UNDER the link rather than beside it, so a refusal
+    # never squeezes the welcome band it shares a row with.
+    return [
+        ft.Column(
+            spacing=tokens.space_xs,
+            horizontal_alignment=ft.CrossAxisAlignment.END,
+            controls=[components.text_button(RESTART_IDENTITY_LABEL, _restart), note],
+        )
+    ]
+
+
 def _wizard_host(
     page: ft.Page,
     app_config: AppConfig,
     on_navigate: Callable[[str], None],
     *,
     on_schedule_changed: Callable[[], None] | None,
+    on_restart_identity: Callable[[], None] | None = None,
 ) -> ft.Control:
     """Branch (a): Home IS the setup wizard until the finish line is reached (0038 S6).
 
@@ -834,7 +903,14 @@ def _wizard_host(
                 # title ramp — and the step COUNT, which is why this line carries none.
                 # (The gradient hero this replaces retired with the first-run module; the
                 # gradient's one home is the launch page.)
-                ft.Text(line, size=tokens.type_emphasis, color=tokens.color_muted),
+                ft.Row(
+                    spacing=tokens.space_md,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Text(line, size=tokens.type_emphasis, color=tokens.color_muted, expand=True),
+                        *_restart_identity_controls(page, app_config, on_restart_identity),
+                    ],
+                ),
                 setup_screen.build_setup(
                     page,
                     on_schedule_changed=on_schedule_changed,
@@ -995,6 +1071,7 @@ def build_home(
     on_navigate: Callable[[str], None],
     on_refresh: Callable[[], None] | None = None,
     on_schedule_changed: Callable[[], None] | None = None,
+    on_restart_identity: Callable[[], None] | None = None,
 ) -> ft.Control:
     """Build the three-way Home surface. ``on_navigate(dest_id)`` is injected by the shell.
 
@@ -1010,10 +1087,18 @@ def build_home(
     branches for the leaves-it-open Watcher; branch (a) has no status to refresh.
     ``on_schedule_changed`` (also shell-owned) is forwarded to the hosted wizard so
     registering the nightly task from HERE re-probes the rail's Setup badge, exactly as it
-    does from the Setup rail item.
+    does from the Setup rail item. ``on_restart_identity`` (QA 2026-08-18) is likewise
+    branch-(a)-only: it re-mounts the launch page, and the dashboard branches have Settings
+    for that.
     """
     if nav.needs_setup(app_config):
-        return _wizard_host(page, app_config, on_navigate, on_schedule_changed=on_schedule_changed)
+        return _wizard_host(
+            page,
+            app_config,
+            on_navigate,
+            on_schedule_changed=on_schedule_changed,
+            on_restart_identity=on_restart_identity,
+        )
 
     try:
         return _dashboard(page, app_config, on_navigate, on_refresh)

@@ -97,6 +97,7 @@ the atomic close.
 from __future__ import annotations
 
 import contextlib
+import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -171,6 +172,15 @@ _GDE_SUFFIXES: tuple[str, ...] = (".csv", ".txt")
 # flag never blocks the close). A plain module-level bool: the ETL is single-flight
 # (the JobRunner's state machine), so no lock is needed for this reassurance read.
 _WRITE_IN_FLIGHT: bool = False
+
+
+# Convert had NO logger at all until QA 2026-08-18: every failure path here is deliberately
+# PRIVACY-BOUNDED on screen (a fixed category card, never the raw exception — which may carry a
+# path or a column name), and with nothing writing the other half to disk a crash left literally
+# no trace to diagnose. An admin's output CSV held open in Excel surfaced as a calm card and an
+# empty log. The screen's own "Open log folder" affordance promises this file has the detail;
+# these calls are what make that true.
+logger = logging.getLogger(__name__)
 
 
 def is_write_in_flight() -> bool:
@@ -352,6 +362,9 @@ def convert_job(
                 manifest=DataLoader.output_filenames(outputs),
             )
         except Exception:  # noqa: BLE001 - exit-3: a failed delivery is a RESULT, not on_error
+            # A RESULT on screen, but still a failure worth a trace: this is the branch where
+            # the roster was built and NOT delivered, and "why not" is only answerable here.
+            logger.error("Delivery failed after a successful build (district %r).", config_name, exc_info=True)
             built_not_delivered = ConvertResult(
                 status=ConvertStatus.BUILT_NOT_DELIVERED,
                 entity_counts=entity_counts,
@@ -439,6 +452,7 @@ def deliver_job(sis_type: str) -> ConvertResult:
             remote_path=cfg.sftp_remote_path,
         ).upload_csvs(Path(output_dir_value), sis_type=district, manifest=manifest)
     except Exception:  # noqa: BLE001 - exit-3 shape: a failed delivery is a RESULT, not on_error
+        logger.error("Delivery-only run failed (district %r).", district, exc_info=True)
         failed = ConvertResult(status=ConvertStatus.BUILT_NOT_DELIVERED, sftp_attempted=True, sftp_ok=False)
         _record_manual_run(failed, sis_type=sis_type, elapsed=time.monotonic() - t0, delivery_only=True)
         return failed
@@ -755,10 +769,15 @@ def build_convert(
             _render_result(result, identity)
             page.update()
 
-        def _on_error(_exc: BaseException) -> None:
+        def _on_error(exc: BaseException) -> None:
             # Privacy: the raw exception (may carry a path / column) is NEVER surfaced —
             # fixed category copy only (the raw error belongs to the log). The copy ends
             # with a concrete next step (0035 W3b — no dead-end failures).
+            #
+            # "Belongs to the log" was aspirational until QA 2026-08-18 — nothing wrote it
+            # there. The split is the whole point: the CARD stays category-only, and the
+            # TRACE goes to the file the card's own "Open log folder" button opens.
+            logger.error("Convert failed for district %r.", identity.district, exc_info=exc)
             _set_running(False)
             result_slot.controls = [components.ErrorCard(*convert_error_copy())]
             rendered["value"] = None
@@ -804,9 +823,11 @@ def build_convert(
             _render_result(result, run_identity(district, input_field.value))
             page.update()
 
-        def _on_error(_exc: BaseException) -> None:
+        def _on_error(exc: BaseException) -> None:
             # Privacy: the raw exception is NEVER surfaced — fixed category copy only,
-            # ending with a concrete next step (0035 W3b — no dead-end failures).
+            # ending with a concrete next step (0035 W3b — no dead-end failures). The trace
+            # goes to the log (QA 2026-08-18), same split as the convert path above.
+            logger.error("Delivery failed for district %r.", district, exc_info=exc)
             _set_running(False)
             result_slot.controls = [components.ErrorCard(*deliver_error_copy())]
             rendered["value"] = None
@@ -1297,6 +1318,10 @@ def _sftp_credential_present(cfg: AppConfig) -> bool:  # pragma: no cover - Flet
         )
         return bool(uploader.get_stored_password())
     except Exception:  # noqa: BLE001 - any construction/keyring failure → treat as no credential
+        # WARN, not ERROR: the fallback is defined and safe ("no credential"). But it is also
+        # INVISIBLE — the screen simply offers no delivery — so an unreadable keyring would
+        # otherwise look identical to one that was never set up.
+        logger.warning("Could not read the stored delivery credential; treating it as absent.", exc_info=True)
         return False
 
 
@@ -1446,6 +1471,10 @@ def _expected_files(config_name: str) -> list[str]:  # pragma: no cover - Flet v
     try:
         return advisory_expected_files(load_config(config_name))
     except Exception:  # noqa: BLE001 - a config error degrades to "no expectation", never a crash
+        logger.warning(
+            "Could not read the district mapping %r; the expected-files chips are omitted.",
+            config_name,
+        )
         return []
 
 

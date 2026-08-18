@@ -1161,7 +1161,14 @@ class TestWizardStepsRender:
         live = ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="3:00 AM")
 
         def _stub_schedule(
-            page, config, *, on_status=None, on_registered=None, on_schedule_changed=None, on_window_valid=None
+            page,
+            config,
+            *,
+            on_status=None,
+            on_registered=None,
+            on_schedule_changed=None,
+            on_window_valid=None,
+            on_busy=None,
         ):
             if on_status is not None:
                 on_status(live)  # deliver a LIVE read-back the moment the Schedule step builds
@@ -1182,6 +1189,107 @@ class TestWizardStepsRender:
         _button_by_content(tree, "Continue").on_click(None)  # schedule addressed (LIVE) → Finish
 
         assert _has_text_containing(tree, "Tonight at 3:00 AM")  # LIVE next-run consumed by the finish body
+
+
+class TestScheduleStepMidFlight:
+    """QA 2026-08-18 — the two halves of "Continue during the UAC prompt breaks the schedule".
+
+    (a) the forward button must CLOSE while a register is in flight, so Continue cannot abandon
+        a registration the admin has just authorised;
+    (b) ``schedule_skipped`` must not be write-once — an admin who deferred the step and then
+        came back and scheduled successfully met a finish line still claiming the nightly sync
+        was not set up, because the defer latched and nothing ever cleared it.
+
+    Driven through the real wizard tree with a stub section that hands the test its callbacks,
+    so the wiring (does the wizard actually PASS ``on_busy``? does it act on a LIVE status?) is
+    what is under test — not a re-run of the pure gate.
+    """
+
+    def _wizard_on_schedule_step(self, tmp_path, stub_page, monkeypatch):
+        """Build the wizard, stub the schedule section, and advance to the Schedule step.
+
+        Returns ``(tree, hooks)`` where ``hooks`` carries the section's ``on_status`` /
+        ``on_busy`` callbacks for the test to fire.
+        """
+        import src.ui_flet.screens.setup as setup_mod
+
+        hooks: dict = {}
+
+        def _stub_schedule(
+            page, config, *, on_status=None, on_schedule_changed=None, on_window_valid=None, on_busy=None
+        ):
+            hooks["on_status"] = on_status
+            hooks["on_busy"] = on_busy
+            return ft.Text("schedule"), setup_mod._ScheduleHandle(
+                trigger_register=lambda: ReconcileOutcome.NONE,
+                run_time_value=lambda: "03:00",
+                persist_run_time=lambda: False,
+            )
+
+        monkeypatch.setattr(setup_mod, "_build_schedule_section", _stub_schedule)
+
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        cfg = AppConfig(input_dir=str(in_dir), output_dir=str(tmp_path / "out"), sis_type="myedbc")
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda _cls: cfg))
+        tree = build_setup(stub_page)  # folders + district satisfied → Delivery (F1 order)
+
+        _button_by_content(tree, "Set up later").on_click(None)  # defer delivery → Schedule
+        assert _has_text(tree, "Step 4 of 5")
+        return tree, hooks
+
+    def test_the_wizard_passes_on_busy_to_the_schedule_section(self, tmp_path, stub_page, monkeypatch):
+        """The positive twin for the gate test below — an unwired callback gates nothing."""
+        _tree, hooks = self._wizard_on_schedule_step(tmp_path, stub_page, monkeypatch)
+
+        assert callable(hooks["on_busy"])
+
+    def test_forward_is_DISABLED_while_a_register_is_in_flight(self, tmp_path, stub_page, monkeypatch):
+        tree, hooks = self._wizard_on_schedule_step(tmp_path, stub_page, monkeypatch)
+
+        # Open before the register starts (the positive twin — a permanently-disabled button
+        # would satisfy the assertion below for the wrong reason).
+        assert _button_by_content(tree, "Set up later").disabled is False
+
+        hooks["on_busy"](True)  # the UAC prompt is now on screen
+        assert _button_by_content(tree, "Set up later").disabled is True
+
+        hooks["on_busy"](False)  # the register landed
+        assert _button_by_content(tree, "Set up later").disabled is False
+
+    def test_a_LIVE_readback_un_defers_a_previously_skipped_schedule(self, tmp_path, stub_page, monkeypatch):
+        """The bug QA actually saw: defer → come back → schedule → finish still says "not scheduled"."""
+        from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+        tree, hooks = self._wizard_on_schedule_step(tmp_path, stub_page, monkeypatch)
+
+        _button_by_content(tree, "Set up later").on_click(None)  # defer the schedule → Finish
+        assert _has_text(tree, "You're set up — nightly sync not scheduled yet")
+
+        # Back to Schedule, where the register now succeeds and the read-back reports LIVE.
+        _button_by_content(tree, "Back").on_click(None)
+        assert _has_text(tree, "Step 4 of 5")
+        hooks["on_status"](ScheduleStatus(state=ScheduleState.LIVE, headline="", detail="", next_run_display="3:00 AM"))
+
+        _button_by_content(tree, "Continue").on_click(None)  # the step is addressed now, not deferred
+        assert _has_text_containing(tree, "Tonight at 3:00 AM")
+        assert not _has_text(tree, "You're set up — nightly sync not scheduled yet")
+
+    def test_a_MISSING_readback_leaves_the_defer_STANDING(self, tmp_path, stub_page, monkeypatch):
+        """Only LIVE un-defers. A failed or removed registration must never silently un-skip."""
+        from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+
+        tree, hooks = self._wizard_on_schedule_step(tmp_path, stub_page, monkeypatch)
+
+        _button_by_content(tree, "Set up later").on_click(None)  # defer → Finish
+        _button_by_content(tree, "Back").on_click(None)
+        hooks["on_status"](ScheduleStatus(state=ScheduleState.MISSING, headline="", detail="", next_run_display=None))
+
+        # The defer still stands, so the step still counts as addressed and the button reads
+        # "Continue" — the label itself is the visible half of the invariant.
+        assert _button_by_content(tree, "Continue") is not None
+        _button_by_content(tree, "Continue").on_click(None)
+        assert _has_text(tree, "You're set up — nightly sync not scheduled yet")
 
 
 def test_settings_save_reconciles_reregistration_when_scheduled(tmp_path, stub_page, monkeypatch):
@@ -2683,6 +2791,56 @@ def _convert_with_result(tmp_path, monkeypatch, *, sis_type, csv_names, result):
     asyncio.run(coro(*args))
     captured.clear()
     return tree, page, tree.controls[-1]
+
+
+def test_a_convert_crash_is_LOGGED_while_the_card_stays_category_only(tmp_path, monkeypatch, caplog):
+    """QA 2026-08-18: Convert had no logger, so a crash left no trace to diagnose.
+
+    The privacy split is the whole design and BOTH halves are asserted here, because either
+    one alone is the bug: the CARD must never carry the raw exception (it can hold a path or
+    a column name), and the LOG must, or the card's own "Open log folder" button points at a
+    file with nothing in it. An admin's output CSV held open in Excel is exactly this shape —
+    a `PermissionError` naming the locked path.
+    """
+    import logging
+
+    import src.ui_flet.screens.convert as convert_mod
+
+    _deliver_ready_cfg(tmp_path, monkeypatch, sis_type="sd74myedbc", csv_names=_ROSTERING_CSVS)
+    monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+
+    secret = str(tmp_path / "out" / "Students.csv")
+
+    def _locked(*_a, **_kw):
+        # No ``!r``: a repr would escape the Windows backslashes and the assertions below
+        # would be comparing two different spellings of the same path.
+        raise PermissionError(f"[Errno 13] Permission denied: {secret}")
+
+    monkeypatch.setattr(convert_mod, "convert_job", _locked)
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_convert(page)
+
+    with caplog.at_level(logging.ERROR, logger="src.ui_flet.screens.convert"):
+        _button_by_content(tree, "Convert now").on_click(None)
+        assert len(captured) == 1, "the failure must marshal exactly one callback"
+        coro, args = captured[0]
+        asyncio.run(coro(*args))
+
+    # The LOG half — a real record, with the traceback attached.
+    records = [r for r in caplog.records if r.name == "src.ui_flet.screens.convert"]
+    assert records, "a convert crash wrote nothing to the log"
+    assert records[0].exc_info is not None, "the record carries no traceback"
+    assert secret in caplog.text, "the log must hold the detail the card withholds"
+
+    # The SCREEN half — the calm category card, and NOT one word of the raw exception.
+    on_screen = " ".join(
+        c.value for c in _iter_controls(tree.controls[-1]) if isinstance(getattr(c, "value", None), str)
+    )
+    assert secret not in on_screen
+    assert "Permission denied" not in on_screen
+    assert on_screen, "the failure rendered nothing at all"
 
 
 def _deliver_buttons(node):

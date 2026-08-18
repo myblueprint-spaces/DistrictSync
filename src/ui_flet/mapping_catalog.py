@@ -207,13 +207,45 @@ def _source_file_count(cfg, produced: set[str]) -> int:  # type: ignore[no-untyp
     return len(filenames)
 
 
+# The config ids pinned to the TOP of every district picker, in this order. Everything else
+# keeps ``available_configs`` order (alphabetical by id).
+#
+# ``myedbc`` is the generic MyEducationBC mapping — the row an admin whose district we cannot
+# place is most likely to want, and the one the product documents as the starting point.
+# Alphabetical order buried it FOURTH, behind the three ``mbp_*`` myBlueprint+ tiers, which are
+# the rows fewest admins want (QA, 2026-08-18).
+#
+# **Pinned HERE and not in ``available_configs``** deliberately: that function is the ETL/CLI's
+# enumeration (``--sis`` validation, ``make validate-config``, the pinned 12-config count) and
+# its alphabetical order is depended on there. This is presentation ordering, so it belongs in
+# the UI catalog with the rest of the picker rules.
+_PINNED_FIRST: tuple[str, ...] = ("myedbc",)
+
+
+def _pinned_order(sis_types: Sequence[str]) -> list[str]:
+    """``sis_types`` reordered so any ``_PINNED_FIRST`` id leads, the rest keeping their order.
+
+    Pure and TOTAL: a pinned id that is not present is simply absent (no phantom row), and an
+    id that is present but unpinned can never be dropped — the result is a permutation of the
+    input, which is what keeps this from ever hiding a district.
+    """
+    present = [sis for sis in _PINNED_FIRST if sis in sis_types]
+    return present + [sis for sis in sis_types if sis not in present]
+
+
 def list_configs(*, config_dir: Path | None = None) -> list[ConfigSummary]:
-    """Summarize every discoverable district config, in ``available_configs`` order.
+    """Summarize every discoverable district config — ``_PINNED_FIRST``, then ``available_configs`` order.
 
     One ``ConfigSummary`` per enumerated SIS id — some possibly degraded (a broken config is
     listed, never omitted or crashed on). ``config_dir`` is the test seam.
+
+    This is the ONE place picker ORDER is decided, and every district list inherits it:
+    ``catalog`` memoises this, ``_matched_subset`` preserves the order it is given, and all
+    four pickers render through ``filtered_catalog``. Ordering never changes the row SET.
     """
-    return [summarize_config(sis_type, config_dir=config_dir) for sis_type in available_configs(config_dir)]
+    return [
+        summarize_config(sis_type, config_dir=config_dir) for sis_type in _pinned_order(available_configs(config_dir))
+    ]
 
 
 # --------------------------------------------------------------------------- #

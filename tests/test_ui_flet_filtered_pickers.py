@@ -274,14 +274,16 @@ class TestWizardDistrictStep:
         self, page: MagicMock, monkeypatch, isolated_user_profile
     ) -> None:
         """The positive twin for both tests above: without a match the step is exactly what it
-        was before this slice — eleven options and an explicit "Choose your district"."""
+        was before this slice — every district and an explicit "Choose your district"."""
         from src.config.loader import available_configs
 
         _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type="", identity_email=UNMATCHED))
 
         dropdown = _dropdown(build_setup(page), "District")
 
-        assert _keys(dropdown) == available_configs()
+        # The SET is the fail-open property; the ORDER is the picker pin (`_PINNED_FIRST`).
+        assert sorted(_keys(dropdown)) == sorted(available_configs())
+        assert _keys(dropdown)[0] == "myedbc", "the generic MyEducationBC mapping leads the picker"
         assert len(_keys(dropdown)) == 12
         assert dropdown.value is None
 
