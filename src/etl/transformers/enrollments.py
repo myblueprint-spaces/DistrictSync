@@ -30,13 +30,10 @@ class EnrollmentTransformer(BaseTransformer):
         field_map = mapping.get("field_map", {})
         homeroom_grades = context.global_config.get("homeroom_grades", [])
 
-        schedule_df = self.get_source_file(context, normalized_sources, "student_schedule")
-        if schedule_df.empty:
-            return pd.DataFrame()
-        schedule_df = self.normalize_columns(schedule_df)
-
-        # Ordering assertion for the Classes → Enrollments handoff: there is
-        # schedule data to enroll, so the class artifacts MUST already exist.
+        # Ordering assertion for the Classes → Enrollments handoff: ALL THREE
+        # enrollment sources below (homeroom / subject / ClassInformation
+        # co-teacher) read the class artifacts bundle, so this must fire
+        # UNCONDITIONALLY — not only when a schedule happens to be present.
         artifacts = context.class_artifacts
         if artifacts is None:
             raise ValueError(
@@ -46,6 +43,15 @@ class EnrollmentTransformer(BaseTransformer):
                 "consume). Fix the mapping config so 'Classes' is enabled and precedes "
                 "'Enrollments' in entity_order/enabled_entities."
             )
+
+        # student_schedule is fetched and normalized UNCONDITIONALLY. Only
+        # _subject_enrollments needs it (and self-guards on an empty frame
+        # before touching any schedule-only column) — homeroom and
+        # ClassInformation co-teacher enrollments never depended on schedule
+        # data and must not be suppressed just because a district's
+        # StudentSchedule.txt is empty or was never supplied.
+        schedule_df = self.get_source_file(context, normalized_sources, "student_schedule")
+        schedule_df = self.normalize_columns(schedule_df)
 
         user_id_config = field_map.get("User ID", {})
         student_id_col = user_id_config.get("student_id_col", "student number").lower()

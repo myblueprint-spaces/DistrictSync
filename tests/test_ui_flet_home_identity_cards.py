@@ -881,13 +881,21 @@ class TestTheRegister:
         nobody outside this machine knows about. It says what is true of US instead.
         (Pinned so the plan's original sketch literal cannot come back silently.)
         """
+        from src.ui_flet.screens.help import SUPPORT_EMAIL
+
         headline = home.NOT_LISTED_HEADLINE.lower()
 
         for claim in ("building", "we're working", "in progress", "underway"):
             assert claim not in headline, f"the not-listed headline asserts vendor work: {home.NOT_LISTED_HEADLINE!r}"
         assert "don't have a mapping" in headline
         # ...and the ACTION still lives on the card, so the correction did not remove the path.
-        assert "email support" in home.NOT_LISTED_DETAIL.lower()
+        # The detail names the support ADDRESS directly now (owner copy, QA 2026-08-18); the
+        # button and the copyable line beside it open/copy that same address.
+        assert SUPPORT_EMAIL.lower() in home.NOT_LISTED_DETAIL.lower()
+        # The detail must not assert vendor work either — the headline is not the only place
+        # this card could over-promise.
+        for claim in ("building", "we're working", "in progress", "underway"):
+            assert claim not in home.NOT_LISTED_DETAIL.lower()
 
     @pytest.mark.parametrize(
         ("address", "state"),

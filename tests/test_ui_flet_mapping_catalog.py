@@ -347,13 +347,39 @@ def test_empty_district_name_falls_back_to_raw_id(tmp_path: Path) -> None:
 # list_configs — enumeration order + degraded inclusion                          #
 # --------------------------------------------------------------------------- #
 def test_list_configs_enumerates_all_ids_in_order(bundle_dir: Path) -> None:
-    """``list_configs`` returns one summary per ``available_configs`` id, in ``available_configs`` order."""
+    """One summary per ``available_configs`` id — ``_PINNED_FIRST`` leading, the rest alphabetical.
+
+    The ORDER is presentation (which row a picker shows first); the SET is the safety property
+    (a district that vanishes from every picker is unreachable). Both are asserted, separately,
+    so a future pin can move a row without anyone being able to drop one.
+    """
     from src.config.loader import available_configs
 
     summaries = list_configs(config_dir=bundle_dir)
-    assert [s.sis_type for s in summaries] == available_configs(bundle_dir)
+    ids = [s.sis_type for s in summaries]
+    enumerated = available_configs(bundle_dir)
+
+    # The SET is a permutation of what `available_configs` enumerates — nothing added, nothing lost.
+    assert sorted(ids) == sorted(enumerated)
+    # The ORDER: the generic MyEducationBC mapping leads (QA, 2026-08-18), then the rest keep
+    # `available_configs`' alphabetical order.
+    assert ids[0] == "myedbc"
+    assert ids[1:] == [sis for sis in enumerated if sis != "myedbc"]
     # Every bundled config is loadable.
     assert all(s.loaded_ok for s in summaries)
+
+
+def test_a_pin_for_an_absent_config_is_simply_ignored() -> None:
+    """``_pinned_order`` is a PERMUTATION — it can never invent a row or drop one.
+
+    The positive twin of the ordering pin above: pinning an id the directory does not contain
+    must not put a phantom district into what is structurally an allowlist.
+    """
+    from src.ui_flet.mapping_catalog import _pinned_order
+
+    assert _pinned_order(["b", "a"]) == ["b", "a"]  # no pinned id present → order untouched
+    assert _pinned_order(["a", "myedbc", "b"]) == ["myedbc", "a", "b"]
+    assert sorted(_pinned_order(["a", "myedbc", "b"])) == ["a", "b", "myedbc"]
 
 
 def test_bundled_catalog_renders_no_two_identical_labels(bundle_dir: Path) -> None:

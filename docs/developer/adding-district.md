@@ -176,6 +176,17 @@ homeroom grades" (an empty subject scope), so the grade list is written once and
 the two keys cannot drift. That is SD83's shape: K-8 class rostering, while
 grades 9-12 stay on `Students.csv` so their myBlueprint+ transcripts still work.
 
+**`StudentSchedule.txt` and `ClassInformationEnh.txt` are genuinely optional
+under this shorthand** (fixed 2026-08-17). With the subject scope empty, neither
+file contributes any surviving class or enrollment — every blend gets
+unconditionally suppressed and no timetable class is ever built. Before the fix,
+omitting `StudentSchedule.txt` would also have deleted the district's K-8
+**homeroom** enrollments, since `EnrollmentTransformer` used to gate its entire
+output on that file being non-empty; homeroom enrollments never actually read
+schedule data, so that was always a bug, not a rule to design around. A district
+can still supply both files if it has them — the 9-12 rows are simply ignored —
+but it no longer has to.
+
 Points worth stating to the district before you ship it:
 
 - **Students are NOT filtered by this key.** An unrostered grade still appears in

@@ -258,6 +258,8 @@ def bind_window_lifecycle(page: ft.Page) -> None:
 def build_app_body(
     page: ft.Page,
     app_cfg: AppConfig,  # noqa: ARG001 - the persist-then-enter seam; see the docstring
+    *,
+    on_restart_identity: Callable[[], None] | None = None,
 ) -> ft.Control:
     """The rail + content host + screen map: the whole app, minus the window lifecycle.
 
@@ -274,6 +276,14 @@ def build_app_body(
     exactly that. Every SCREEN below re-reads ``AppConfig`` per mount (D1) regardless, which
     is what actually makes the first paint correctly scoped; dropping the parameter would
     delete the one point where the ORDER is checkable without weakening it in the code.
+
+    ``on_restart_identity`` (QA 2026-08-18) is the way BACK to the launch page. Until it
+    existed the gate was strictly one-way: answering it stores an address, which makes
+    ``needs_identity`` false forever after, and the only surface that can edit or clear the
+    answer is the Settings scroll — which an admin part-way through the wizard has not reached
+    yet. So a mistyped or wrong-person address was unfixable for the whole of first-run. Only
+    the wizard-hosting Home branch renders it; ``None`` (the default, and what every test and
+    the Setup rail item pass) renders no affordance rather than a dead one.
     """
     model = nav.nav_model()
     screens = build_screens(model.destinations)
@@ -317,6 +327,7 @@ def build_app_body(
         on_navigate=lambda dest: select_by_id(dest),
         on_refresh=lambda: select_by_id("home"),
         on_schedule_changed=_on_schedule_changed,
+        on_restart_identity=on_restart_identity,
     )
     # Swap the `convert` placeholder for the real manual-convert surface (IA-5a).
     screens["convert"] = functools.partial(build_convert, page, on_navigate=lambda dest: select_by_id(dest))
@@ -618,10 +629,49 @@ def main(page: ft.Page) -> None:
         nonlocal entered
         if entered:
             return
-        body = build_app_body(page, AppConfig.load() if app_config is None else app_config)
+        body = build_app_body(
+            page, AppConfig.load() if app_config is None else app_config, on_restart_identity=_restart
+        )
         entered = True
         root_host.content = body
         page.update()
+
+    def _show_gate(app_config: AppConfig) -> None:
+        """Mount the launch page into the root host and RE-ARM the entry latch.
+
+        The one place the gate is mounted — boot and restart both come through here, so the
+        two can never drift into different launch pages. The latch is lowered only AFTER
+        ``build_identity`` returns: a raise leaves the currently-mounted content and the latch
+        exactly as they were, which is what makes the restart caller's floor a no-op rather
+        than a half-swapped screen.
+        """
+        nonlocal entered
+        gate = _gate_frame(
+            identity.build_identity(
+                page,
+                app_config=app_config,
+                on_enter=_enter_app,  # no argument -> a FRESH AppConfig.load() (persist-then-enter)
+            )
+        )
+        root_host.content = gate
+        entered = False
+        page.update()
+
+    def _restart() -> None:
+        """Return to the launch page from inside the app (QA 2026-08-18).
+
+        Home's wizard branch has ALREADY cleared the stored address by the time this runs —
+        the clear is the caller's business because the caller is the one holding the
+        ``AppConfig`` and the one that must stay put if the write is refused. This only
+        re-mounts the page, from a FRESH load so the field it renders reflects the write.
+
+        Floored rather than raising: failing to go back must leave the admin in the wizard
+        they were already in, never on a blank host.
+        """
+        try:
+            _show_gate(AppConfig.load())
+        except Exception:  # noqa: BLE001 - the floor: a broken re-mount leaves the app as it was
+            logger.warning("Could not return to the launch page; staying in the app.", exc_info=True)
 
     try:
         show_gate = needs_identity(app_cfg)
@@ -635,14 +685,7 @@ def main(page: ft.Page) -> None:
         return
 
     try:
-        root_host.content = _gate_frame(
-            identity.build_identity(
-                page,
-                app_config=app_cfg,
-                on_enter=_enter_app,  # no argument -> a FRESH AppConfig.load() (persist-then-enter)
-            )
-        )
-        page.update()
+        _show_gate(app_cfg)
     except Exception:  # noqa: BLE001 - the floor: a broken launch page opens the app unfiltered
         logger.warning("The launch page could not be built; opening DistrictSync as usual.", exc_info=True)
         _enter_app(app_cfg)

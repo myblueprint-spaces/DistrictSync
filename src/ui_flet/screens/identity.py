@@ -61,6 +61,7 @@ from src.ui_flet.identity_gate import (
     sd_number_digits,
 )
 from src.ui_flet.mapping_catalog import district_domain_index
+from src.ui_flet.screens.help import SUPPORT_EMAIL
 from src.utils.identity import extract_domain, normalize_email
 from src.utils.validators import validate_identity_email
 
@@ -119,20 +120,31 @@ CORRECTION_LABEL = "That's not my district"
 SEVERAL_HEADLINE = "Your district has more than one setup."
 SEVERAL_DETAIL = "You'll choose the right one in a moment."
 
+# The ONE unmatched-district message (owner copy, QA 2026-08-18), single-sourced here because
+# this module owns the identity COPY and FIVE surfaces say this same thing: the launch page's
+# no-match detail, its unknown-SD note, its not-listed note, Home's durable not-listed card and
+# Settings' no-match note. They diverged before — one promised a mapping build, one promised an
+# email, one promised nothing — which is three different answers to "so what happens now?".
+#
+# What it does NOT say, deliberately: it does not tell anyone to "choose the closest district"
+# (picking a district that is not yours is the highest-consequence wrong click in this product —
+# a wrong mapping ships a wrong roster), and it does not claim a mapping is being built. It says
+# the true thing: the shipped configurations may well work, and there is a person to write to if
+# they don't. That is why it is phrased around ERRORS the admin might hit rather than around a
+# vendor commitment nobody has made — the same honesty rule `unmapped_sd_number` follows.
+NOT_LISTED_NOTE_TAIL = (
+    "If one of the default configurations doesn't match your input data, we may need to set up "
+    f"a custom mapping for you. Contact {SUPPORT_EMAIL} with the details if you encounter errors."
+)
+
 NO_MATCH_HEADLINE = "We don't have a district on file for that address yet — no problem."
 NO_MATCH_DETAIL = (
     "You can carry on and choose your district in a moment. "
-    "If you know your district number, tell us and we'll look for it."
+    "If you know your district number, tell us and we'll look for it. " + NOT_LISTED_NOTE_TAIL
 )
 SD_LABEL = "District number (optional)"
 SD_HINT = "e.g. 48"
 NOT_LISTED_LABEL = "My district isn't listed yet"
-# NOT "choose the closest district" — picking a district that is not yours is the
-# highest-consequence wrong click in this product (a wrong mapping ships a wrong roster).
-NOT_LISTED_NOTE_TAIL = (
-    "We'll need to build a mapping for your district — Help has our support address, "
-    "and we'll ask for a sample extract."
-)
 
 
 class Stage(str, Enum):
@@ -179,15 +191,17 @@ def sd_resolved_note(district: str) -> str:
 
 
 def sd_unknown_note(digits: str) -> str:
-    return f"We don't have a mapping for SD{digits} yet."
+    """The SD lookup missed. Names the gap, then the way through it (never a dead end)."""
+    return f"We don't have a mapping for SD{digits} yet. {NOT_LISTED_NOTE_TAIL}"
 
 
 def not_listed_note(digits: str) -> str:
     """Honest about what "noted" means TODAY: it is written to this computer's settings.
 
     It does not promise an email, a ticket, or a build — S4b adds the durable Home card
-    that offers the support path, and Phase 2 adds "Build my mapping". Until then the
-    admin is pointed at Help, which is true right now.
+    that offers the support path, and Phase 2 adds "Build my mapping". Until then the admin
+    gets the shared unmatched-district note, which points at a real address and at the
+    default configurations that may already work.
     """
     subject = f"SD{digits}" if digits else "that"
     return f"Thanks — we've made a note of {subject}. {NOT_LISTED_NOTE_TAIL}"

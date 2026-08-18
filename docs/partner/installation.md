@@ -152,8 +152,8 @@ year on its own, with nothing to renew or re-enter.
 
 | Field | Example | Notes |
 |-------|---------|-------|
-| Season starts | `08-11` | Month-day. Usually ~2 weeks before school starts, so rosters are in place for day one |
-| Season ends | `07-06` | Month-day. Usually ~1 week after school ends, giving your SIS time to finish updating |
+| Sync starts | `08-11` | Month-day. Usually ~2 weeks before school starts, so rosters are in place for day one |
+| Sync ends | `07-06` | Month-day. Usually ~1 week after school ends, giving your SIS time to finish updating |
 
 The dates are pre-filled from your district's school calendar — adjust them if your year differs.
 The window wraps the new year (Aug → Jul), which is expected.

@@ -287,6 +287,44 @@ class TestWindowAdvanceGate:
         assert derive_flow(_inputs(window_valid=False)).resume_step is derive_flow(_inputs()).resume_step
 
 
+class TestScheduleBusyAdvanceGate:
+    """QA 2026-08-18: Continue must not abandon a register whose UAC prompt is still on screen.
+
+    The second transient gate on the Schedule step, shaped exactly like the seasonal window:
+    ADVANCE-only, defaulting open, and invisible to resume/satisfaction. The failure it closes
+    is not cosmetic — advancing mid-flight latched ``schedule_skipped`` against a task that then
+    went live, and the finish line said the nightly sync was not set up.
+    """
+
+    def test_schedule_blocks_while_a_register_is_in_flight(self):
+        assert can_advance(SetupStep.SCHEDULE, _inputs(schedule_busy=True)) is False
+
+    def test_schedule_advances_once_the_register_lands(self):
+        assert can_advance(SetupStep.SCHEDULE, _inputs(schedule_busy=False)) is True
+
+    def test_busy_defaults_false_so_the_gate_starts_OPEN(self):
+        # The positive twin: a gate that defaulted closed would strand every wizard on Schedule.
+        assert _inputs().schedule_busy is False
+        assert can_advance(SetupStep.SCHEDULE, _inputs()) is True
+
+    def test_delivery_is_never_affected_by_a_busy_schedule(self):
+        assert can_advance(SetupStep.DELIVERY, _inputs(schedule_busy=True)) is True
+
+    def test_busy_does_not_affect_resume_or_finish(self):
+        """Transient by construction — it is never persisted, so it must not move the flow."""
+        ready = dict(folders_valid=True, district_chosen=True, schedule_skipped=True, delivery=DeliveryFact.SKIPPED)
+        assert derive_flow(_inputs(**ready)).can_finish is True
+        assert derive_flow(_inputs(**ready, schedule_busy=True)).can_finish is True
+        assert derive_flow(_inputs(schedule_busy=True)).resume_step is derive_flow(_inputs()).resume_step
+
+    def test_the_window_and_busy_gates_compose(self):
+        """Either one alone closes Continue; both open is the only advanceable state."""
+        assert can_advance(SetupStep.SCHEDULE, _inputs(window_valid=False, schedule_busy=False)) is False
+        assert can_advance(SetupStep.SCHEDULE, _inputs(window_valid=True, schedule_busy=True)) is False
+        assert can_advance(SetupStep.SCHEDULE, _inputs(window_valid=False, schedule_busy=True)) is False
+        assert can_advance(SetupStep.SCHEDULE, _inputs(window_valid=True, schedule_busy=False)) is True
+
+
 class TestWindowRegateStrandRecovery:
     """FIX 3: enable the window -> drive an INVALID end (``window_valid`` goes False, nothing
     persisted) -> Back -> Forward. Because the Schedule section rebuilds from cfg (the last VALID

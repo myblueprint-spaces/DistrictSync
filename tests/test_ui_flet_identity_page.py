@@ -279,6 +279,8 @@ class TestPageStates:
         assert _button(view, identity.GET_STARTED_LABEL) is not None
 
     def test_not_listed_notes_the_number_and_points_somewhere_real(self, page: MagicMock, fixed_index) -> None:
+        from src.ui_flet.screens.help import SUPPORT_EMAIL
+
         view = _page_at(page, "admin@gmail.com")
         _field(view, identity.SD_LABEL).value = "99"
 
@@ -286,7 +288,10 @@ class TestPageStates:
 
         text = _all_text(view)
         assert "we've made a note of SD99" in text
-        assert "Help" in text, "a not-listed district must still be told where to go"
+        # "Somewhere real" is now the support ADDRESS itself rather than a pointer at the Help
+        # tab (owner copy, QA 2026-08-18) — asserted as the route, not as the old wording, so a
+        # future rephrase fails only if it removes the way out.
+        assert SUPPORT_EMAIL in text, "a not-listed district must still be told where to go"
 
     @pytest.mark.parametrize(
         ("address", "state"),
@@ -380,14 +385,55 @@ class TestTheRegister:
         A wrong mapping ships a wrong roster — real students, to a real partner. An admin
         whose district has no mapping must be routed to support for one, never nudged into
         someone else's config as a stopgap.
+
+        The negative is the point of this test; the positive twin beside it is what stops the
+        negative passing on a page that says nothing at all.
         """
+        from src.ui_flet.screens.help import SUPPORT_EMAIL
+
         view = _page_at(page, "admin@gmail.com")
         _field(view, identity.SD_LABEL).value = "99"
         _button(view, identity.NOT_LISTED_LABEL).on_click(None)
 
         text = _all_text(view).lower()
         assert "closest district" not in text
-        assert "build a mapping" in text, "the honest route (ask support for a mapping) is missing"
+        assert "custom mapping" in text, "the honest route (ask support for a mapping) is missing"
+        assert SUPPORT_EMAIL.lower() in text, "...and it must name a real address to ask at"
+
+    def test_every_unmatched_district_surface_says_the_SAME_thing(self) -> None:
+        """The five surfaces that answer "we can't place you" must not diverge again.
+
+        Before the QA 2026-08-18 copy pass they gave three different answers to "so what
+        happens now?" — one promised a mapping build, one promised an email, one promised
+        nothing. They are single-sourced on ``identity.NOT_LISTED_NOTE_TAIL`` now, and this
+        asserts the WIRING (each surface actually contains it), which is the half a shared
+        constant does not give you for free.
+        """
+        from src.ui_flet.screens import home
+        from src.ui_flet.screens import setup as setup_screen
+
+        note = identity.NOT_LISTED_NOTE_TAIL
+        assert note, "the shared note must not be empty — every assertion below would pass"
+
+        surfaces = {
+            "launch no-match detail": identity.NO_MATCH_DETAIL,
+            "launch unknown-SD note": identity.sd_unknown_note("99"),
+            "launch not-listed note": identity.not_listed_note("99"),
+            "Home not-listed card": home.NOT_LISTED_DETAIL,
+            "Settings no-match note": setup_screen.IDENTITY_NO_MATCH_NOTE,
+        }
+        for where, text in surfaces.items():
+            assert note in text, f"{where} no longer carries the shared unmatched-district note"
+
+    def test_the_shared_note_names_a_real_address_and_promises_no_vendor_work(self) -> None:
+        """The two honesty properties of the shared note, asserted once at the source."""
+        from src.ui_flet.screens.help import SUPPORT_EMAIL
+
+        note = identity.NOT_LISTED_NOTE_TAIL
+
+        assert SUPPORT_EMAIL in note
+        for claim in ("we're building", "building the mapping", "in progress", "underway"):
+            assert claim not in note.lower(), f"the shared note asserts vendor work: {note!r}"
 
     @pytest.mark.parametrize("address", ["", "admin@sd48.bc.ca", "admin@gmail.com"])
     def test_no_password_field_no_spinner_no_lock_glyph(self, page: MagicMock, fixed_index, address: str) -> None:

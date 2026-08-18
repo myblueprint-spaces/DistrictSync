@@ -340,14 +340,26 @@ class TestRunTransformAllSourcesEmptySkip:
     def test_empty_primary_non_attendance_entity_still_skipped(self) -> None:
         """Empty-primary net (Item 1 risk): a non-attendance multi-source entity
         (Enrollments) with an empty schedule (its primary) but a populated
-        demographic secondary now reaches `transform`, which returns empty on an
-        empty schedule → the `transformed.empty` guard still skips it. No crash,
-        no Enrollments file."""
+        demographic secondary now reaches `transform`.
+
+        Classes must be enabled ahead of Enrollments here — since the
+        2026-08-17 fix removed EnrollmentTransformer's early return on an
+        empty schedule, the Classes -> Enrollments ordering assertion now
+        fires unconditionally (previously it was only reached when the
+        schedule was non-empty, so a Classes-less mapping with an empty
+        schedule used to skip silently instead of failing loud). With Classes
+        enabled, the one demographic student (grade 10, not a homeroom grade
+        under the base myedbc config) means Classes itself publishes an
+        all-empty artifact bundle and is skipped at the pipeline level
+        (`transformed.empty`) — so Enrollments still legitimately produces
+        nothing, just for the pipeline's ordinary skip-on-empty reason rather
+        than the old pre-assertion short-circuit. No crash, no Enrollments file.
+        """
         from src.config.loader import load_config
 
         raw = load_config("myedbc").to_raw_dict()
         mappings, global_config = raw["mappings"], raw["global_config"]
-        global_config["enabled_entities"] = ["Enrollments"]
+        global_config["enabled_entities"] = ["Classes", "Enrollments"]
 
         raw_data = {
             "StudentSchedule.txt": pd.DataFrame(),  # empty primary (schedule)
