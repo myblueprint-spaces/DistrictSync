@@ -17,7 +17,7 @@ ruff>=0.15
 mypy>=1.0
 pandas-stubs>=2.0
 types-paramiko>=5.0.0.20260617
-types-PyYAML>=6.0.12.20250915
+types-PyYAML>=6.0.12.20260815
 
 # Security scanning (used in CI)
 bandit>=1.7
