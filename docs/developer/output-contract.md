@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **contract_version** | `1.1.0` |
-| **emitted_by** | DistrictSync >= v3.12.0 |
+| **contract_version** | `1.2.0` |
+| **emitted_by** | DistrictSync >= v3.13.0 |
 | **published_reference** | SpacesEDU *Advanced CSV* v1.0 (2025-07-23) — [Google Doc `1BePvuk5rg-YjUUvdwjb3X3Z0JWEUc5AtVjDfR3nub0U`](https://docs.google.com/document/d/1BePvuk5rg-YjUUvdwjb3X3Z0JWEUc5AtVjDfR3nub0U) |
 | **status** | Maintained mirror. **Confirmation is recorded PER ROW — there is no doc-wide confirmation stamp.** |
 | **mechanical mirror** | `tests/contract_schema.py` (the data) · `tests/test_contract.py` (the sweep) · `tests/test_output_contract_doc.py` (this doc ↔ that data) |
@@ -12,6 +12,7 @@
 
 | contract_version | Date | Change |
 |---|---|---|
+| 1.2.0 | 2026-08-18 | **Rows added to `Enrollments.csv` for districts with no student timetable.** A district whose export has an empty or absent `StudentSchedule.txt` was emitting a completely EMPTY `Enrollments.csv` — homeroom rows and `ClassInformationEnh.txt` co-teacher rows included, neither of which is derived from the timetable. All three enrollment kinds are now built regardless of whether a timetable is present. Districts whose export DOES carry a timetable are unaffected (the SD74 golden is byte-identical). No column, order, filename or encoding changed, and no owner-**confirmed** row is invalidated — every `Enrollments.csv` row is `pending owner confirmation`, and the two confirmed semantics (`EnrollStatus`, `SchoolCode`) are untouched — so this is MINOR under the row-set rule below and needs no importer re-confirmation. |
 | 1.1.0 | 2026-08-14 | **Rows removed from `Classes.csv` and `Enrollments.csv`.** A blended class none of whose pupils would ever receive a subject enrollment — every one of them is rostered through their homeroom instead — is no longer emitted. It carried a teacher and zero students; the pupils were, and remain, correctly rostered in their homeroom classes. Applies to **every** district (previously only to a district that had opted into `class_rostering_grades`). No column, order, filename or encoding changed, and no owner-**confirmed** row is invalidated — every `Classes.csv` row is `pending owner confirmation` — so this is MINOR under the row-set rule below and needs no importer re-confirmation. Districts should expect a one-off drop in class/enrollment counts on the first run after upgrade, which the anomaly check may flag. |
 | 1.0.0 | 2026-07-29 | First publication. Documents the 8 emitted entities as of DistrictSync v3.8.0/v3.8.1, the per-entity BOM rule, the delivery envelope, the attendance knobs, and the myBlueprint+ course feeds as internal spec. No emitted bytes changed by this document. |
 

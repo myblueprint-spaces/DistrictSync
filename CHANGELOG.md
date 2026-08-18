@@ -9,6 +9,86 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.13.0] - 2026-08-18
+
+Fixes a rostering bug that silently emptied `Enrollments.csv` for any district
+whose export has no student timetable, plus five interface fixes found by a
+hands-on walkthrough of the built program. **Output changes only for districts
+with an empty or absent `StudentSchedule.txt`** — for everyone else the CSVs are
+byte-identical.
+
+**This release ran the certification pass.** The audit, product-gap review and
+26-row manual QA walkthrough that `docs/claugentic-DECISIONS.md` (D-0037-6)
+reserves were all completed against this build — the first release since 3.8.x
+to do so, after three consecutive releases shipped ahead of it.
+
+### Fixed
+
+- **Homeroom enrollments no longer disappear when there is no student timetable.**
+  If a district's export had an empty or missing `StudentSchedule.txt`,
+  DistrictSync produced a completely empty `Enrollments.csv` — including the
+  homeroom rows, which do not come from the timetable at all and should always
+  have shipped. Districts rostering by homeroom only (SD83 is the first) were
+  getting classes with no students in them. Co-teacher rows from
+  `ClassInformationEnh.txt` were dropped by the same fault. All three kinds of
+  enrollment are now built regardless of whether a timetable is present.
+
+  Districts whose export *does* include a timetable are unaffected — the SD74
+  reference output is byte-identical.
+
+- **Convert no longer asks homeroom-only districts for files they don't need.**
+  A district that rosters by homeroom only was warned that `StudentSchedule.txt`
+  and `ClassInformationEnh.txt` were missing from its input folder, when neither
+  contributes anything to its output. The files are still read when present.
+
+- **Long messages stay inside their box.** Text in a status band ran past the
+  coloured panel instead of wrapping onto a second line — most visibly on the
+  delivery "Test connection" result and the "You're set up" summary. Every
+  status band in the program wraps correctly now.
+
+- **Continuing past the schedule step no longer breaks the schedule.** Pressing
+  Continue while Windows was still asking permission abandoned the request
+  half-finished. Worse, the step stayed marked "set up later" permanently — so
+  going back and scheduling successfully still ended with a summary claiming the
+  nightly sync was not set up. Continue is now unavailable until the permission
+  prompt is answered, and a schedule confirmed as live clears the "later" mark.
+
+- **The sync window fields say what they mean.** Renamed to "Sync starts (MM-DD)"
+  and "Sync ends (MM-DD)", and their explanatory captions are no longer cut off
+  mid-sentence. Under the old "Season starts/ends" labels an administrator could
+  reasonably type the *shutdown* dates into fields that meant the *active*
+  period, turning the nightly sync off for months with no warning.
+
+- **A failed conversion now leaves a diagnostic trail.** The Convert screen
+  deliberately shows a plain-language message rather than the raw error, but
+  nothing was writing the technical detail to the log file either — so the
+  screen's own "Open log folder" button led to a file with nothing useful in it.
+  A conversion that fails because an output CSV is open in Excel is the case that
+  exposed this.
+
+### Added
+
+- **Start over with a different address, part-way through setup.** The opening
+  question ("who looks after this sync?") could only be answered once: after
+  that, the only place to change the address was in Settings, which you cannot
+  reach until setup is finished. A "Start over with a different address" link now
+  sits above the setup steps and returns you to that first question. It clears
+  the stored address and district number and nothing else — your other settings,
+  including any recovery copies, are untouched.
+
+### Changed
+
+- **MyEducationBC is spelled as one word and listed first.** The general-purpose
+  mapping was buried fourth in every district list, behind three myBlueprint+
+  options that far fewer districts want.
+
+- **Clearer message when we don't recognise your district.** Every place the
+  program says it cannot match your email or district number now gives the same
+  answer: try one of the default configurations, and contact
+  `hello@spacesedu.com` if your data doesn't fit it. Previously three different
+  screens gave three different answers, one of which implied a custom mapping was
+  already being built.
+
 ## [3.12.0] - 2026-08-17
 
 Adds SD83 (North Okanagan-Shuswap) as an eighth district config, plus two new
