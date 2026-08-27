@@ -2,14 +2,26 @@
 
 ## Prerequisites
 
-- Python 3.9+ (3.11 recommended for builds)
+- Python 3.13 — the single supported version (`requires-python = ">=3.13"` in `pyproject.toml`; CI runs 3.13 only, see `.github/workflows/ci.yml`)
 - Git
+
+!!! warning "Don't develop on an older interpreter"
+    An older Python appears to work but silently weakens your local gates: for example
+    `tests/test_cli_entry.py` imports `tomllib` (stdlib only in 3.11+), so on 3.10 the
+    module fails at collection and the tempting workaround (`--ignore`) drops the entire
+    CLI exit-code contract from every local run while CI still enforces it. Install 3.13 —
+    do not cap dependencies or add compatibility shims (see the note in `requirements-dev.txt`).
 
 ## Clone and install
 
 ```bash
 git clone https://github.com/myblueprint-spaces/DistrictSync.git
 cd DistrictSync
+
+# Create and activate a virtual environment on Python 3.13
+py -3.13 -m venv .venv           # Windows   (Linux/macOS: python3.13 -m venv .venv)
+.venv\Scripts\activate           # Windows   (Linux/macOS: source .venv/bin/activate)
+
 pip install -r requirements.txt -r requirements-dev.txt
 ```
 

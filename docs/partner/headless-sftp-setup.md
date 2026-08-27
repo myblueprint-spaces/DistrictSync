@@ -135,7 +135,7 @@ Containers need three things to make `keyring` work:
 ### Dockerfile
 
 ```dockerfile
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 # System deps: libsecret for the keyring backend, plus dbus for the session.
 RUN apt-get update && apt-get install -y --no-install-recommends \

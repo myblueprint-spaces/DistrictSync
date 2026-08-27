@@ -94,7 +94,7 @@ git push origin --tags
 
 GitHub Actions then:
 
-1. Runs the full test suite (Python 3.9, 3.11, 3.13) + lint + format check + type check + security scan (bandit) + config validation
+1. Runs the full test suite (Python 3.13 — the single supported version) + lint + format check + type check + security scan (bandit) + config validation
 2. Builds platform executables — Windows `.exe`, Linux binary, macOS binary — in parallel
 3. Creates a GitHub Release with all three files attached and download links in the release notes
 
