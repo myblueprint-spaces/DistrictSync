@@ -1,7 +1,7 @@
 # 0044 — District self-service config editor (Phase 2, re-scoped)
 
-- **Status:** Reviewed — Stage-3 PASS (round 3, 2026-08-27; five binding spec-stage corrections applied to this file)
-- **Resumable from:** Stage 4 — per-slice Spec, then the owner approval gate before any implementation
+- **Status:** Spec'd (S1) — Stage-3 PASS round 3; five flags owner-ratified 2026-08-27; S1 spec written
+- **Resumable from:** Stage 5 — the owner approval gate on the S1 spec (no implementation before it)
 - **Blockers:** none
 - **Flags:**
   - `#3+R2-1 activation scope: ALL THREE sis_type writers gated for user-authored configs (wizard creator flow · Mapping Apply · Settings folders-card Save); Convert has no writer and stays explicit-manual` — reviewable at the spec gate.
@@ -790,4 +790,102 @@ persistence · version emission · advisory-writer shape) go to the owner at Sta
 ---
 
 ## Spec  _(per slice, after Review passes — Stage 4)_
-_Not yet written — Stage 4 follows the Stage-3 review._
+
+_Owner ratified all five flagged adjudications 2026-08-27. Specs are written
+just-in-time per slice; S1 below awaits the owner approval gate._
+
+### Slice 1 — authoring core + domain table + loader seam + user-dir domains floor
+
+- **In plain English (the approval gate):** this slice builds the ENGINE, no UI. After
+  it lands, a support engineer (or a later slice) can call one Python function with a
+  district's facts — SD number, name, domains, starting config, grade choices, entity
+  choices, filename renames — and get a small, valid YAML in the app-data `mappings/`
+  folder that the existing app and CLI can already run (`--sis sd93custom` works
+  immediately). It also makes one safety floor live: a bad domain row in a USER-dir
+  config warns and drops instead of killing that district's nightly sync (bundled
+  configs keep the loud CI-gated failure). **What "done" means:** the headless
+  create→validate→write→run→delete lifecycle works end-to-end against the real bundled
+  base, with the emission rules (minimal overlay, no `version`, chain-companion
+  homeroom rule, rename propagation incl. `school_year_sources`) all pinned by tests.
+  **What you're accepting:** a new authoring layer whose configs no CI gate ever
+  validates (the load-back-before-write check is its substitute); the vendored BC
+  domain table (placeholder-quality, SD78 artifact dropped) shipping inside the exe;
+  and no user-visible change whatsoever in this slice.
+- **Files & changes:**
+  - `src/config/bc_district_domains.py` (NEW): `DOMAINS_BY_SD: Mapping[int, tuple[str, ...]]`
+    (63 rows — the owner CSV minus SD78's `sd48.bc.ca` grouping artifact; provenance
+    comment states source, date, placeholder quality, and the drop) ·
+    `domains_for(sd_number: int) -> tuple[str, ...]` (TOTAL; unknown → `()`) ·
+    `presumptive_domain(sd_number: int) -> str` (`sd<num>.bc.ca`). Data-as-code; no
+    PyInstaller change.
+  - `src/config/models.py`: one small public predicate
+    `is_valid_district_domain(value: object) -> bool` wrapping `_DISTRICT_DOMAIN_RE`
+    (single source for the loader pre-screen and, later, the form validation; the
+    model validator itself is unchanged).
+  - `src/config/loader.py`:
+    `resolve_config_path(sis_type: str, *, search_dirs: Sequence[Path] | None = None) -> ResolvedConfigPath | None`
+    — a named tuple `(path, origin)` with `origin: Literal["user", "bundled"]`; with
+    `search_dirs=None` the real pair `[user_mappings_dir(), bundle_mappings_dir()]` is
+    used and origin falls out of which dir won; the test seam takes a two-dir sequence
+    whose FIRST element is by contract the user dir — that contract is what makes
+    origin tests non-vacuous (review #9). `load_config` gains the user-dir domains
+    floor: after `_resolve_inheritance`, when the winning path's origin is `user`,
+    invalid `district_domains` entries are DROPPED with ONE counts-only WARN that
+    names the consequence ("this district will show in every picker state until the
+    row is fixed") and NEVER echoes a value (the model validator's own PII rule);
+    bundled configs are untouched — the raise stands. Plus
+    `validate_overlay(raw: dict, *, search_dirs=None) -> MappingConfig` — resolves
+    `_base` against the standard search dirs, version-gates, and validates, reusing
+    the exact `load_config` internals; the authoring load-back calls this BEFORE any
+    file exists.
+  - `src/config/authoring.py` (NEW, COUNTED — does file I/O):
+    `ALLOWED_BASES = ("myedbc", "mbp_all", "mbp_core", "mbponly")` (a widened list is
+    a reviewed line, never a parameter) · frozen `OverlaySpec` dataclass (sd_number ·
+    district_name · district_domains · base · optional enabled_entities · the three
+    optional grade fields (`class_rostering_grades` accepts the `"homeroom"`
+    sentinel) · `source_file_renames: Mapping[str, str]` keyed by ORIGINAL base
+    filename) · `derive_sis_id(sd_number) -> str` (`sd<num>custom`, through
+    `validate_sis_type`) · `build_overlay(spec, *, resolved_base: MappingConfig) -> dict`
+    (PURE: minimal emission — emits `sis`, `_base`, `district_name`,
+    `district_domains`; omits any value equal to the resolved base; chain-companion
+    rule; rename propagation to every entity role AND `school_year_sources`, with the
+    no-divergence invariant enforced at emission) · `write_overlay(spec) -> Path`
+    (build → `validate_overlay` load-back → `yaml.safe_dump(sort_keys=False)` →
+    atomic tmp + `os.replace` into `user_mappings_dir()`; a failed load-back writes
+    NOTHING) · `delete_overlay(sis_id) -> bool` (user-dir only — refuses any path
+    outside `user_mappings_dir()`).
+  - `docs/claugentic-ARCHITECTURE_TREE.md`: entries for the three new modules (the
+    pre-commit tree gate enforces same-change updates).
+- **In-scope standards dimensions:** `security` (never-echo WARN; domain/id validation
+  at every boundary; delete refuses to leave the user dir) · `data-and-persistence`
+  (atomic write; load-back before commit; no torn or invalid YAML can reach disk) ·
+  `reliability-resilience` (the WARN-and-drop floor fails OPEN — a bad presentation
+  row can never kill a nightly; INVARIANTS entry ii records why the direction may
+  never invert) · `maintainability-structure` (pure build separated from I/O write;
+  single-source domain regex) · `testing` (no vacuous greens — the "writes NOTHING on
+  failed load-back" assertion gets a positive write twin).
+- **Tests to add:** `tests/test_config_authoring.py` (emission goldens: full overlay ·
+  all-defaults overlay emits only identity keys + `_base` + `sis` · chain-companion ·
+  `"homeroom"` sentinel · rename propagation incl. `school_year_sources` +
+  no-divergence · no `version` emitted with the inherited-version load pin ·
+  round-trip through real `load_config` against the real bundled base for each of the
+  four `ALLOWED_BASES` · atomic-write crash sim · failed-load-back-writes-nothing +
+  positive twin · `derive_sis_id` charset · delete refusal outside user dir);
+  `tests/test_bc_district_domains.py` (total lookup · SD63 multi-domain · SD78
+  artifact pinned ABSENT · presumptive fallback · every vendored domain passes BOTH
+  `is_valid_district_domain` and the model validator — the existing two-regex parity
+  convention); loader additions in the existing config test files
+  (`resolve_config_path` origin via the two-dir seam — non-vacuous · user-dir
+  WARN-and-drop with counts-only log assertion + bundled raise unchanged ·
+  `validate_overlay` failure shapes). Full suite + SD74 golden byte-identical.
+- **Acceptance criteria:** (1) `write_overlay` for a synthetic SD93 produces a file
+  the real `load_config("sd93custom")` loads and `python -m src.main --sis sd93custom
+  --dry-run` (under `DISTRICTSYNC_DATA_DIR`) runs; (2) an all-defaults spec emits an
+  overlay whose resolved config is byte-equal (via `to_raw_dict`) to its base except
+  `sis`/`district_name`/`district_domains`; (3) a user-dir config with one bad domain
+  row loads with a WARN and an empty/reduced domain list — the same row in a bundled
+  config still raises; (4) no existing test flips; SD74 golden byte-identical; all
+  gates green (ruff/format, mypy, bandit, tree-check, email scan, 12-config pin).
+
+### Slices 2–7
+_Spec'd just-in-time, each after the prior slice lands (S2 next)._
