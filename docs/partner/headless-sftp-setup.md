@@ -115,8 +115,10 @@ DistrictSync --sis myedbc \
 
 The CLI reads the saved host/port/user/remote path from `config.json` in
 DistrictSync's per-user data folder (on Linux, `~/.local/share/DistrictSync`),
-retrieves the password from the OS keyring, zips the output CSVs to
-`districtsync_<sis>_<YYYY-MM-DD>.zip`, and uploads.
+retrieves the password from the OS keyring, zips the rostering CSVs to
+`districtsync_<sis>_<YYYY-MM-DD>.zip`, and uploads that zip plus any
+`StudentAttendance.csv` / `CourseInfo.csv` / `StudentCourses.csv` as
+standalone files.
 
 ---
 
