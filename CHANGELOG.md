@@ -9,6 +9,31 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Fixed
+
+- **myBlueprint+ transcript data was silently never imported.** `CourseInfo.csv`
+  and `StudentCourses.csv` were delivered inside the rostering zip, and SpacesEDU
+  imports nothing from `StudentCourses.csv` when it arrives that way — **without
+  raising an error**, so the delivery looked healthy in DistrictSync and in the
+  run history while no course data ever landed. Both files are now uploaded as
+  standalone CSVs into the same remote folder as the zip, alongside
+  `StudentAttendance.csv`, which already worked this way. Confirmed against the
+  live importer in both shapes on 2026-08-27.
+
+  **Affects myBlueprint+ districts only**, on any version up to and including
+  v3.13.0. The five rostering CSVs (`Students`, `Staff`, `Family`, `Classes`,
+  `Enrollments`) still ship together in `districtsync_<district>_<date>.zip` under
+  the unchanged name, so **districts that produce only rostering CSVs see no
+  change at all**. Affected districts should expect their first delivery after
+  upgrading to import a full course history that had never arrived before.
+
+### Changed
+
+- **A course-only configuration (`mbponly`) now delivers two standalone files and
+  no zip**, since the archive is built only when a run produces at least one
+  rostering CSV. Output CSVs themselves — columns, order, filenames and encodings
+  — are untouched; only the delivery envelope changed (output contract `2.0.0`).
+
 ## [3.13.0] - 2026-08-18
 
 Fixes a rostering bug that silently emptied `Enrollments.csv` for any district

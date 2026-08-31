@@ -71,6 +71,34 @@ LISTING_DENIED_NOTE = (
 
 
 # ---------------------------------------------------------------------------
+# Delivery envelope — the feeds that ship OUTSIDE the rostering zip
+# ---------------------------------------------------------------------------
+
+# SpacesEDU ingests these three as individual files rather than as members of the
+# Advanced-CSV bundle, so each is put on its own into the same remote directory:
+#   - StudentAttendance.csv — the attendance importer identifies this feed BY NAME
+#     (a 2026-06-19 delivery was rejected with "Unexpected file: StudentAttendance.csv"),
+#     and it must not pollute the rostering bundle.
+#   - CourseInfo.csv / StudentCourses.csv — the myBlueprint+ course feeds, a separate
+#     product tier ingested as standalone CSVs (owner decision 2026-08-26).
+# Everything else — the five SpacesEDU rostering CSVs — zips together as before.
+#
+# The names are re-spelled here rather than derived from ``DataLoader.csv_filename``:
+# importing the ETL loader into the delivery layer would drag pandas into the import
+# graph of every module that touches SFTP, including the Flet Setup screen on the app's
+# boot path (the same layer-isolation reasoning that keeps ``ui_flet/sftp_copy.py`` free
+# of this module). ``tests/test_sftp_uploader.TestStandaloneFeedNames`` pins this set
+# against the loader's entity→filename rule so the two cannot drift.
+STANDALONE_CSV_FILENAMES: frozenset[str] = frozenset(
+    {
+        "StudentAttendance.csv",
+        "CourseInfo.csv",
+        "StudentCourses.csv",
+    }
+)
+
+
+# ---------------------------------------------------------------------------
 # Zip naming (lives here — the uploader is its only production consumer)
 # ---------------------------------------------------------------------------
 
@@ -475,13 +503,14 @@ class SFTPUploader:
         REQUIRED (keyword-only) precisely so a future caller cannot silently fall back
         to "whatever is in the folder" — the defect this closes.
 
-        ``StudentAttendance.csv``, when manifested, is SpacesEDU's attendance feed
-        and must arrive as a **standalone file outside the rostering zip** (their
-        nightly check looks for it by name, and it must not pollute the advanced
-        -CSV bundle). It is therefore excluded from the zip and uploaded with its
-        own ``sftp.put`` to the same remote directory. Every other district has
-        no such file today, so ``zip_files == csv_files`` and behaviour is
-        byte-identical to the all-csvs-in-one-zip path.
+        **Three feeds arrive standalone, outside the rostering zip** — the ones
+        SpacesEDU ingests as individual files: ``StudentAttendance.csv`` (their
+        nightly check looks for it by name) and the two myBlueprint+ course feeds,
+        ``CourseInfo.csv`` and ``StudentCourses.csv``. Each manifested one is
+        excluded from the zip and uploaded with its own ``sftp.put`` into the same
+        remote directory; see :data:`STANDALONE_CSV_FILENAMES`. A district emitting
+        only the five rostering CSVs therefore sees ``zip_files == csv_files`` and
+        the unchanged single-zip delivery.
 
         Args:
             output_dir: Local directory containing the generated CSV files.
@@ -497,9 +526,9 @@ class SFTPUploader:
                 *output_dir* outside this set are NOT uploaded.
 
         Returns:
-            List of CSV filenames delivered — the zipped rostering CSVs plus any
-            standalone ``StudentAttendance.csv``. Always non-empty on return (an empty
-            manifest / missing files raise rather than returning ``[]``).
+            List of CSV filenames delivered — the zipped rostering CSVs plus every
+            standalone feed. Always non-empty on return (an empty manifest / missing
+            files raise rather than returning ``[]``).
 
         Raises:
             RuntimeError: If *manifest* is empty, if none of the manifested files are
@@ -538,14 +567,16 @@ class SFTPUploader:
             logger.error(f"SFTP delivery aborted: manifested file(s) missing from {output_dir.name}: {missing}")
             raise RuntimeError(f"Cannot deliver — file(s) this run produced are missing from disk: {missing}")
 
-        # SpacesEDU's attendance feed ships standalone, outside the rostering zip.
-        attendance_files = [f for f in csv_files if f.name == "StudentAttendance.csv"]
-        zip_files = [f for f in csv_files if f.name != "StudentAttendance.csv"]
+        # The attendance + myBlueprint+ course feeds ship standalone (see
+        # STANDALONE_CSV_FILENAMES); the rostering CSVs zip together.
+        standalone_files = [f for f in csv_files if f.name in STANDALONE_CSV_FILENAMES]
+        zip_files = [f for f in csv_files if f.name not in STANDALONE_CSV_FILENAMES]
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Build the rostering zip ONCE, outside the retry (local + deterministic) —
-            # and only when there are rostering CSVs, so the attendance-only edge never
-            # delivers an empty archive (the attendance file is still sent below).
+            # and only when there are rostering CSVs, so a standalone-only run (an
+            # attendance district, or a course-only myBlueprint+ config) never delivers
+            # an empty archive; its files are still sent below.
             zip_path: Path | None = None
             if zip_files:
                 zip_path = Path(tmpdir) / zip_name
@@ -574,16 +605,16 @@ class SFTPUploader:
                         logger.info(f"Uploaded {zip_name} ({zip_size:,} bytes)")
                         delivered.extend(f.name for f in zip_files)
 
-                    # Deliver each StudentAttendance.csv standalone (same logging
-                    # style + failure semantics as the zip put, so a failed put
-                    # propagates and preserves the pipeline's exit-code-3 contract).
-                    for att_file in attendance_files:
-                        att_size = att_file.stat().st_size
-                        remote_att = f"{self.remote_path.rstrip('/')}/{att_file.name}"
-                        logger.info(f"Uploading {att_file.name} -> {remote_att} ({att_size:,} bytes)")
-                        sftp.put(str(att_file), remote_att)
-                        logger.info(f"Uploaded {att_file.name} ({att_size:,} bytes)")
-                        delivered.append(att_file.name)
+                    # Deliver each standalone feed with its own put (same logging style +
+                    # failure semantics as the zip put, so a failed put propagates and
+                    # preserves the pipeline's exit-code-3 contract).
+                    for standalone_file in standalone_files:
+                        file_size = standalone_file.stat().st_size
+                        remote_standalone = f"{self.remote_path.rstrip('/')}/{standalone_file.name}"
+                        logger.info(f"Uploading {standalone_file.name} -> {remote_standalone} ({file_size:,} bytes)")
+                        sftp.put(str(standalone_file), remote_standalone)
+                        logger.info(f"Uploaded {standalone_file.name} ({file_size:,} bytes)")
+                        delivered.append(standalone_file.name)
 
                     sftp.close()
                     return delivered

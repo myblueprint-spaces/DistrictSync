@@ -68,7 +68,7 @@ _Last reconciled on `feat/pre-partner-completion` @ b772054 (2026-07-20)._
 
 ## src/sftp/
 
-- `src/sftp/uploader.py` — `SFTPUploader`: paramiko SSHClient to an `ALLOWED_SFTP_HOSTS` host; keyring passwords (`KEYRING_SERVICE`); zips **rostering** CSVs into `districtsync_<sis>_YYYY-MM-DD.zip`, `StudentAttendance.csv` standalone; `test_connection` (auth IS the test — typed pw → `connect()` only, D6; listing-denied → `(True, LISTING_DENIED_NOTE)`, missing path → fail), `upload_csvs()` (fail-loud on empty dir), `get_stored_password()`.
+- `src/sftp/uploader.py` — `SFTPUploader`: paramiko SSHClient to an `ALLOWED_SFTP_HOSTS` host; keyring passwords (`KEYRING_SERVICE`); zips **rostering** CSVs into `districtsync_<sis>_YYYY-MM-DD.zip`, `STANDALONE_CSV_FILENAMES` (attendance + 2 myB+ feeds) outside it; `test_connection` (auth IS the test, D6; listing-denied → `(True, LISTING_DENIED_NOTE)`, missing path → fail), `upload_csvs()` (fail-loud on empty dir), `get_stored_password()`.
 
 ---
 
