@@ -74,7 +74,7 @@ No. The schedule is optional. You can use the **Convert** surface in the desktop
 
 **Q: How are files uploaded via SFTP?**
 
-All enabled output CSVs (5 for standard rostering, up to 7 with myBlueprint+) are zipped into a single dated file (e.g., `districtsync_2026-04-08.zip`) and uploaded as one file. This applies to both scheduled runs and ad-hoc uploads from the Convert page.
+The five rostering CSVs (`Students`, `Staff`, `Family`, `Classes`, `Enrollments`) are zipped into a single dated file (e.g., `districtsync_2026-04-08.zip`) and uploaded. The three feeds SpacesEDU ingests individually — `StudentAttendance.csv` and the myBlueprint+ files `CourseInfo.csv` and `StudentCourses.csv` — are uploaded as standalone CSVs into the same folder, not inside the zip. If your configuration produces none of the rostering CSVs (a course-only or attendance-only setup), no zip is created at all. This applies to both scheduled runs and ad-hoc uploads from the Convert page.
 
 **Q: Can I change the schedule or SFTP settings after setup?**
 

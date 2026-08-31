@@ -151,9 +151,9 @@ python -m pytest tests/test_benchmarks.py -v --benchmark-only
 
 ---
 
-## CI matrix
+## CI
 
-CI runs on Python 3.9, 3.11, and 3.13 on `ubuntu-latest` (see `.github/workflows/ci.yml`). All tests must pass on all three versions before a PR can be merged.
+CI runs on Python 3.13 on `ubuntu-latest` (see `.github/workflows/ci.yml`) — the single supported version, matching `requires-python = ">=3.13"` in `pyproject.toml`. There is no multi-version matrix. All tests must pass on it before a PR can be merged, so run your local suite on 3.13 too — parts of the suite (e.g. `tests/test_cli_entry.py`, which imports the 3.11+ stdlib `tomllib`) cannot even be collected on older interpreters, making a local run on an old Python quietly weaker than the merge gate.
 
 CI also runs the following quality gates on each push:
 

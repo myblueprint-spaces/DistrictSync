@@ -62,12 +62,20 @@ _NO_DOC_WIDE_STAMP_SENTENCE = "there is no doc-wide confirmation stamp"
 #:   3. Students.SchoolCode          (owner, 2026-07-27)
 #:   4. attendance date format — the ISO default row      (owner, 2026-07-30, Q1a)
 #:   5. attendance date format — the base config comment  (owner, 2026-07-30, Q1a)
-#: Rows 4-5 sit in the attendance-knob table, which is NOT one of the anchored
-#: per-entity tables, so ``test_the_confirmed_stamp_appears_on_exactly_the_two_owner_confirmed_columns``
+#:   6. delivery envelope — CourseInfo/StudentCourses ship standalone
+#:                                                        (owner, 2026-08-27, contract 2.0.0)
+#: Rows 4-6 sit in the attendance-knob and delivery-envelope tables, NEITHER of
+#: which is one of the anchored per-entity tables, so
+#: ``test_the_confirmed_stamp_appears_on_exactly_the_two_owner_confirmed_columns``
 #: (which parses only those) stays at the two Students columns. This count is the
-#: doc-WIDE sweep and is the only place rows 4-5 are visible — raise it only with
+#: doc-WIDE sweep and is the only place rows 4-6 are visible — raise it only with
 #: an owner confirmation behind it, never to make an edit pass.
-_EXPECTED_STAMP_COUNT = 5
+#:
+#: Row 6 was raised for an owner import check against the live importer with the
+#: two course CSVs delivered OUTSIDE the rostering zip — the merge gate the
+#: delivery-envelope re-confirmation trigger sets. It confirms that one row only:
+#: the other envelope rows stayed `pending owner confirmation`.
+_EXPECTED_STAMP_COUNT = 6
 
 #: The open owner questions, held VERBATIM. Marker-only matching (e.g.
 #: `"**Q1 — " in text`) let the question BODY be rewritten while the test stayed
