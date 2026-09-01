@@ -258,3 +258,84 @@ class TestMissingFieldWarningThreshold:
         report = DataQualityReport().analyze(outputs)
         assert report.entities["Students"].missing_fields["Email"] == 2
         assert report.entities["Students"].warnings == []
+
+
+class TestDeclaredBlankFields:
+    """`declared_blank_fields` + the missing-field skip (2026-08-31 noise fix).
+
+    A `{value: ""}` field mapping is the config declaring an output column carries no data by
+    design (a withheld DOB, "Literacy Test Completed") — blankness there is not a finding, and
+    flagging it buried the real warnings. ONLY the missing-field check consults this; the
+    duplicate/orphan/grade checks are pinned untouched below.
+    """
+
+    RAW = {
+        "mappings": {
+            "Students": {
+                "field_map": {
+                    "First Name": "legal first name",  # direct mapping — never declared blank
+                    "Grade": {"column": "grade", "transform": "grade_to_ceds"},
+                    "Date of Birth": {"value": ""},  # declared blank
+                    "Literacy Test Completed": {"value": ""},  # declared blank
+                    "EnrollStatus": {"value": "Active"},  # fixed but NON-blank — not declared
+                }
+            },
+            "Staff": {"field_map": {"Email": "email"}},  # nothing declared → entity absent
+        }
+    }
+
+    def test_derivation_collects_only_fixed_blank_entries(self):
+        from src.quality.report import declared_blank_fields
+
+        declared = declared_blank_fields(self.RAW)
+        assert declared == {"Students": frozenset({"Date of Birth", "Literacy Test Completed"})}
+
+    def test_derivation_matches_the_real_bundled_config(self):
+        # Guard against `to_raw_dict` shape drift: the REAL sd83 config declares its withheld
+        # DOB plus the base's two always-blank Students columns and CourseInfo's descriptor set.
+        from src.config.loader import load_config
+        from src.quality.report import declared_blank_fields
+
+        declared = declared_blank_fields(load_config("sd83myedbc").to_raw_dict())
+        assert declared["Students"] == frozenset({"Date of Birth", "Community Hours", "Literacy Test Completed"})
+        assert "IntegrationId" in declared["CourseInfo"]
+
+    def test_derivation_is_total_over_malformed_shapes(self):
+        from src.quality.report import declared_blank_fields
+
+        assert declared_blank_fields({}) == {}
+        assert declared_blank_fields({"mappings": "not-a-dict"}) == {}
+        assert declared_blank_fields({"mappings": {"Students": {"field_map": None}}}) == {}
+
+    def test_declared_blank_column_is_not_reported_missing(self):
+        outputs = {
+            "Students": pd.DataFrame(
+                {
+                    "User ID": ["S1", "S2", "S3"],
+                    "Date of Birth": ["", "", ""],  # declared blank — 100% empty by design
+                    "Email": ["", "", "a@b.com"],  # NOT declared — the real signal survives
+                }
+            ),
+        }
+        declared = {"Students": frozenset({"Date of Birth"})}
+        report = DataQualityReport().analyze(outputs, declared_blank=declared)
+        entity = report.entities["Students"]
+        assert "Date of Birth" not in entity.missing_fields
+        assert not any("Date of Birth" in w for w in entity.warnings)
+        # Positive twin: the mechanism still fires for an undeclared column in the SAME frame.
+        assert entity.missing_fields["Email"] == 2
+        assert any(w.startswith("Email:") for w in entity.warnings)
+        assert "Date of Birth" not in report.to_text()
+
+    def test_declared_blank_never_touches_the_duplicate_check(self):
+        outputs = {
+            "Students": pd.DataFrame({"User ID": ["S1", "S1"], "Date of Birth": ["", ""]}),
+        }
+        declared = {"Students": frozenset({"Date of Birth"})}
+        report = DataQualityReport().analyze(outputs, declared_blank=declared)
+        assert report.entities["Students"].duplicate_count == 2
+
+    def test_omitted_declared_blank_keeps_previous_behavior(self):
+        outputs = {"Students": pd.DataFrame({"User ID": ["S1"], "Date of Birth": [""]})}
+        report = DataQualityReport().analyze(outputs)
+        assert "Date of Birth" in report.entities["Students"].missing_fields

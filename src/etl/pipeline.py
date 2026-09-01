@@ -31,7 +31,7 @@ from src.etl.loader import DataLoader
 from src.etl.transformer import DataTransformer
 from src.etl.transformers.grades import resolve_timetable_scope
 from src.history.store import VALID_SOURCES, write_run_record
-from src.quality.report import DataQualityReport
+from src.quality.report import DataQualityReport, declared_blank_fields
 from src.sftp.uploader import SFTPUploader
 
 logger = logging.getLogger(__name__)
@@ -866,9 +866,10 @@ def run_pipeline(
         if diff:
             _print_diff(outputs, output_path)
 
-        # Quality report
+        # Quality report — columns the config declares fixed-blank ({value: ""}) skip the
+        # missing-field check (blank by design is not a finding; see quality/report.py).
         if quality:
-            report = DataQualityReport().analyze(outputs)
+            report = DataQualityReport().analyze(outputs, declared_blank=declared_blank_fields(raw))
             print(report.to_text())
 
         logger.info("ETL process completed successfully.")

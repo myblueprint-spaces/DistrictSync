@@ -118,7 +118,7 @@ from src.etl.pipeline import (
     run_transform,
 )
 from src.history.store import write_run_record
-from src.quality.report import DataQualityReport
+from src.quality.report import DataQualityReport, declared_blank_fields
 from src.sftp.uploader import SFTPUploader
 from src.ui_flet import components, tokens
 from src.ui_flet.convert_output import (
@@ -336,7 +336,9 @@ def convert_job(
     # them without deleting anything; best-effort — never fails a committed build.
     loader.archive_stale_outputs(set(outputs))
 
-    quality_text = DataQualityReport().analyze(outputs).to_text()
+    # Columns the config declares fixed-blank ({value: ""}) skip the missing-field check —
+    # blank by design is not a finding (see quality/report.py; same rule as run_pipeline).
+    quality_text = DataQualityReport().analyze(outputs, declared_blank=declared_blank_fields(raw)).to_text()
     entity_counts = {name: len(df) for name, df in outputs.items()}
     errors_total = _data_errors_total(data_errors)
 
