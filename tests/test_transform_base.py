@@ -317,6 +317,32 @@ class TestEarlyGradeExclusionPattern:
         assert BaseTransformer.early_grade_exclusion_pattern(1) is None
 
 
+class TestCourseGrade:
+    """`course_grade` reads the SAME positional convention as the exclusion pattern above
+    (grade = the 6th-7th characters as a two-digit number) — keep the two agreeing."""
+
+    def test_senior_grades(self):
+        from src.etl.transformers.course_codes import course_grade
+
+        assert course_grade("MEN--10") == 10
+        assert course_grade("MADST12") == 12
+
+    def test_single_digit_grades(self):
+        from src.etl.transformers.course_codes import course_grade
+
+        assert course_grade("MSC--09") == 9
+        assert course_grade("MADGE09---EX1-010") == 9  # longer codes read the same positions
+
+    def test_unreadable_grades_return_none(self):
+        from src.etl.transformers.course_codes import course_grade
+
+        assert course_grade("MAT10") is None  # too short — positions 6-7 don't exist
+        assert course_grade("YPA--1C") is None  # letter suffix, not a two-digit grade
+        assert course_grade("XSIEP-K") is None  # kindergarten letter code
+        assert course_grade("") is None
+        assert course_grade(None) is None
+
+
 class TestEffectiveCourseCodePatterns:
     def test_appends_derived_early_grade_pattern(self):
         gc = {"excluded_course_code_patterns": [r"^X"], "course_start_grade": 8}

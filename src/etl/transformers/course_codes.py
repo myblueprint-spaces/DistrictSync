@@ -79,6 +79,22 @@ def filter_excluded_course_code_patterns(
     return df
 
 
+def course_grade(code: Any) -> Optional[int]:
+    """The grade level a MyEd BC course code encodes, or ``None`` when it doesn't.
+
+    Same positional convention as :func:`early_grade_exclusion_pattern` (the ONE other
+    consumer of this fact — keep them agreeing): the grade is the 6th-7th characters of the
+    code as a two-digit number ("0X" for single-digit grades, "10"-"12" for senior). A code
+    too short, or whose 6th-7th characters aren't both digits (letter suffixes like "1C"/"2A",
+    K codes), returns ``None`` — callers must treat that as "grade unknown", never as a grade.
+    """
+    text = "" if code is None else str(code)
+    digits = text[5:7]
+    if len(digits) == 2 and digits.isdigit():
+        return int(digits)
+    return None
+
+
 def early_grade_exclusion_pattern(start_grade: Any) -> Optional[str]:
     """Regex that drops MyEd BC course codes for grades below `start_grade`.
 
