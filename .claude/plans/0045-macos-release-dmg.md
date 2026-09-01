@@ -1,6 +1,6 @@
 # 0045 — macOS release ships a `.dmg` of the `.app` (the bare binary stays for headless)
 
-- **Status:** Draft
+- **Status:** Implemented — CI-verified 2026-09-01; awaiting the owner's real-Mac check (AC 7)
 - **Roadmap item:** none yet — field-reported by a district on 2026-08-31 (see Problem); a ROADMAP entry lands with the slice for the deferred items below.
 - **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` (2026-06-29 PLAT-3 offline-embed evidence · 2026-07-28 light flavor) · `.claude/plans/0041-legit-distribution-com-scheduler-onedir-installer.md` (§B distribution shape; "Linux/macOS artifacts unchanged" — this plan supersedes that row for macOS only) · `docs/FLET_1.0_CONVENTIONS.md:117,160` (macOS embed verified)
 
@@ -215,3 +215,37 @@ def mounted_app_problems(mount: Path, name: str) -> list[str]:
 5. No in-repo reference to the macOS download is stale.
 6. Local gates green; a three-OS `flet-verify.yml` dispatch read and quoted before merge (2026-07-30 land gate).
 7. Owner confirms on a real Mac: mount -> drag -> launch -> Gatekeeper cleared -> Setup wizard paints.
+
+---
+
+## Verification record  _(Stage 7)_
+
+**Local gates, 2026-09-01:** 4321 passed / 41 skipped, coverage 95.46% (gate 80) · ruff check + format clean at CI scope · mypy `src/ --exclude src/ui_flet` clean (52 files) · bandit `-c pyproject.toml` clean · no-plaintext-email scan clean (324 files) · architecture-tree OK (95 files) · 19/19 configs validate.
+
+**Three-OS `flet-verify` dispatch — [run 33526796672](https://github.com/myblueprint-spaces/DistrictSync/actions/runs/33526796672), all three jobs `success`** (read and quoted per the 2026-07-30 land gate; a local Windows green is not evidence for any of this). macOS job `99919598006`, quoted:
+
+```
+created: .../dist/DistrictSync-macos.dmg
+dmg size: 100241091 bytes (100.2 MB)
+hdiutil: verify: checksum of "dist/DistrictSync-macos.dmg" is VALID
+lrwxr-xr-x  1 runner staff  13 Applications -> /Applications
+drwxr-xr-x  3 runner staff  96 DistrictSync.app
+dmg-assert: PASS — /Users/runner/work/_temp/dmg-mnt carries an executable DistrictSync.app + /Applications symlink
+artifact: /Users/runner/work/_temp/dmg-mnt/DistrictSync.app/Contents/MacOS/DistrictSync
+offline-embed: PASS (attempt 1)
+embed: PASS  |  close: PASS
+```
+
+**Against the acceptance criteria:**
+
+1. ✅ DMG produced, verifies, mounts, bundle executable — quoted above.
+2. ✅ **The onefile `.app` launches.** `offline-embed: PASS` against the mounted bundle, with `~/.flet` moved aside and `FLET_CLIENT_URL` unreachable. This is the first evidence in the repo's history that the macOS bundle runs at all, and it settles the plan's standing risk (PyInstaller's "clashes with macOS's security") in the POSITIVE direction — for `pyinstaller 6.x` on `macos-latest`. It does not license removing the `<7` pin.
+3. ✅ Artifact is exactly the DMG + bare binary: `DistrictSync-macos-latest` = 196 922 909 bytes = 100 241 091 (DMG) + ~96.7 MB (binary). A bundled `.app` would have added ~100 MB more.
+4. ⏳ Not yet exercised — no tag has been cut on this branch.
+5. ✅ No stale in-repo reference (`grep DistrictSync-macos` over all `*.md`).
+6. ✅ Local gates + the three-OS dispatch, above.
+7. ⏳ **Owner's real-Mac check outstanding** — mount → drag → launch → Gatekeeper → Setup wizard paints. CI proves the bundle EXECUTES; it cannot prove the Finder experience, which is what the district actually reported.
+
+**One new signal, not a regression in the shipped artifact:** the mounted-`.app` smoke leaves one orphaned `flet` view process at teardown where the bare binary left zero. Non-gating (the close axis is Windows-only), but a genuine difference introduced by changing which artifact is smoked — filed in ROADMAP with the comparison quoted and the mechanism explicitly marked as un-diagnosed.
+
+**Also confirmed incidentally:** the CLI smokes (`--artifact binary`) passed unchanged on all three OSes, so the bare binary's contract is intact on the artifact we kept for headless Macs.
