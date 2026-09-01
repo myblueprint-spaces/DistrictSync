@@ -1176,6 +1176,7 @@ class TestWizardStepsRender:
                 trigger_register=lambda: ReconcileOutcome.NONE,
                 run_time_value=lambda: "03:00",
                 persist_run_time=lambda: False,
+                is_busy=lambda: False,
             )
 
         monkeypatch.setattr(setup_mod, "_build_schedule_section", _stub_schedule)
@@ -1224,6 +1225,7 @@ class TestScheduleStepMidFlight:
                 trigger_register=lambda: ReconcileOutcome.NONE,
                 run_time_value=lambda: "03:00",
                 persist_run_time=lambda: False,
+                is_busy=lambda: False,
             )
 
         monkeypatch.setattr(setup_mod, "_build_schedule_section", _stub_schedule)

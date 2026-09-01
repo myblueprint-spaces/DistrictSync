@@ -673,10 +673,18 @@ _FOLDERS_SAVED_INTERRUPTED = "Saved — confirm the schedule choice above."
 _FOLDERS_SAVED_BLOCKED = (
     "Saved — the nightly schedule wasn't updated. Fix the run time in the Daily schedule section, then save again."
 )
+_FOLDERS_SAVED_IN_FLIGHT = (
+    "Saved — the nightly schedule is still applying an earlier change and doesn't include this yet. "
+    "Save again once it finishes."
+)
 _SFTP_RECONCILE_DISPATCHED = " Updating the nightly schedule to deliver too…"
 _SFTP_RECONCILE_INTERRUPTED = " Confirm the schedule choice above to update the nightly sync."
 _SFTP_RECONCILE_BLOCKED = (
     " The nightly schedule wasn't updated — fix the run time in the Daily schedule section, then save again."
+)
+_SFTP_RECONCILE_IN_FLIGHT = (
+    " The nightly schedule is still applying an earlier change and doesn't include delivery yet — "
+    "save again once it finishes."
 )
 
 
@@ -687,15 +695,21 @@ class ReconcileOutcome(Enum):
     new settings). ``INTERRUPTED`` — the downgrade-choice dialog was shown INSTEAD and nothing was
     registered (the admin must confirm first). ``BLOCKED`` — a re-register was needed but the
     register flow early-returned WITHOUT dispatching (its own gate refused — e.g. a malformed run
-    time, whose inline error the schedule section paints). ``NONE`` — no reconcile action (no
-    registered task, or no task-baked field changed). The two Settings Save sites paint their
-    schedule note from this, so an optimistic "updating…" note is never shown when the reconcile
-    merely opened a dialog / hit a gate and returned.
+    time, whose inline error the schedule section paints). ``IN_FLIGHT`` — a register/unregister
+    dispatched EARLIER is still applying, so the reconcile must not decide anything from the
+    current config (2026-08-31, live install: a delivery Save landed during a registration's UAC
+    window, read ``schedule_registered=False`` → "no task", and the in-flight registration then
+    confirmed with its pre-delivery args — the nightly ran without ``--sftp`` while the UI said
+    delivery was on). ``NONE`` — no reconcile action (no registered task, or no task-baked field
+    changed). The two Settings Save sites paint their schedule note from this, so an optimistic
+    "updating…" note is never shown when the reconcile merely opened a dialog / hit a gate /
+    found an apply already in progress and returned.
     """
 
     DISPATCHED = "dispatched"
     INTERRUPTED = "interrupted"
     BLOCKED = "blocked"
+    IN_FLIGHT = "in_flight"
     NONE = "none"
 
 
@@ -705,9 +719,10 @@ def folders_save_note(outcome: ReconcileOutcome) -> str:
     ``DISPATCHED`` → the "updating the nightly schedule to match" note; ``INTERRUPTED`` → an honest
     "confirm the schedule choice above" (the dialog is open, nothing is updating yet); ``BLOCKED``
     → an honest "the schedule wasn't updated — fix the run time" (the register flow refused to
-    dispatch and painted its inline error); ``NONE`` (or any unexpected value) → a plain "Saved."
-    The "Saved" prefix is always truthful — the folders + district persisted regardless of the
-    schedule reconcile.
+    dispatch and painted its inline error); ``IN_FLIGHT`` → an honest "still applying an earlier
+    change — save again once it finishes" (the just-saved fields are NOT in the task being
+    applied); ``NONE`` (or any unexpected value) → a plain "Saved." The "Saved" prefix is always
+    truthful — the folders + district persisted regardless of the schedule reconcile.
     """
     if outcome is ReconcileOutcome.DISPATCHED:
         return _FOLDERS_SAVED_DISPATCHED
@@ -715,6 +730,8 @@ def folders_save_note(outcome: ReconcileOutcome) -> str:
         return _FOLDERS_SAVED_INTERRUPTED
     if outcome is ReconcileOutcome.BLOCKED:
         return _FOLDERS_SAVED_BLOCKED
+    if outcome is ReconcileOutcome.IN_FLIGHT:
+        return _FOLDERS_SAVED_IN_FLIGHT
     return _FOLDERS_SAVED
 
 
@@ -724,8 +741,10 @@ def sftp_reconcile_suffix(outcome: ReconcileOutcome) -> str:
     ``DISPATCHED`` → the "updating the nightly schedule to deliver too" clause; ``INTERRUPTED`` →
     an honest "confirm the schedule choice above" prompt (the dialog is open, nothing dispatched);
     ``BLOCKED`` → an honest "the schedule wasn't updated — fix the run time" (the register flow
-    refused to dispatch); ``NONE`` (or any unexpected value) → empty (no live task to update, so
-    the base stored-note stands alone). Leading space so it appends cleanly to the base sentence.
+    refused to dispatch); ``IN_FLIGHT`` → an honest "still applying an earlier change — save again
+    once it finishes" (the task being applied was dispatched BEFORE this save and carries no
+    ``--sftp``); ``NONE`` (or any unexpected value) → empty (no live task to update, so the base
+    stored-note stands alone). Leading space so it appends cleanly to the base sentence.
     """
     if outcome is ReconcileOutcome.DISPATCHED:
         return _SFTP_RECONCILE_DISPATCHED
@@ -733,6 +752,8 @@ def sftp_reconcile_suffix(outcome: ReconcileOutcome) -> str:
         return _SFTP_RECONCILE_INTERRUPTED
     if outcome is ReconcileOutcome.BLOCKED:
         return _SFTP_RECONCILE_BLOCKED
+    if outcome is ReconcileOutcome.IN_FLIGHT:
+        return _SFTP_RECONCILE_IN_FLIGHT
     return ""
 
 

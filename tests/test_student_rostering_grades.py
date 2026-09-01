@@ -1,6 +1,7 @@
 """`global_config.student_rostering_grades` — the opt-in STUDENT-rostering scope.
 
-Plan 0042, slice 1b. **No shipped config sets this key**, so the 12-config
+Plan 0042, slice 1b. Shipped consumers exist since 2026-08-31 (sd27/sd38, the
+phase-2 8-12 scopes — pinned in test_config.py), but the contract
 sweep is structurally blind to it and the "every config is byte-identical"
 negative is vacuous by construction — the POSITIVE layer below carries the whole
 proof (CLAUDE.md, no vacuous greens). Four layers:

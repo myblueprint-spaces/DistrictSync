@@ -14,7 +14,9 @@ from src.etl.transformer import DataTransformer
 # The numeric early-grade exclusion is derived from course_start_grade
 # (default 10) by the transformer, not listed as a literal pattern.
 MYEDBC_PATTERNS = [r"^.{5}-K", r"^X", r"^ATT"]
-MYEDBC_FLAVORS = ["HUB", "HOL", "DL", "---"]
+# Mirrors the base config: "---" is NOT a flavor (padding — stripped
+# unconditionally by the cleaning layer; owner decision 2026-08-31).
+MYEDBC_FLAVORS = ["HUB", "HOL", "DL"]
 
 STUDENT_COURSES_FIELD_MAP = {
     "Student ID": {"value": ""},
@@ -523,13 +525,16 @@ class TestSelectionPass:
         result = _run(transformer, sc_mapping, myedbc_global_config, selection=selection, info=course_info_df)
         assert result.empty
 
-    def test_selection_title_uses_raw_code_not_cleaned(self, transformer, sc_mapping, myedbc_global_config):
-        """PowerShell selection-pass title lookup uses the raw course code, not the cleaned one."""
+    def test_selection_title_resolves_through_the_lookup_chain(self, transformer, sc_mapping, myedbc_global_config):
+        """The selection title uses the SAME exact-then-prefix chain as the history pass
+        (2026-08-31 — the legacy raw-code exact-only lookup shipped nameless rows). A
+        flavored selection still gets its variant's title: the cleaned code's 7-char
+        prefix reaches the same catalog entry the old raw lookup found."""
         info = pd.DataFrame(
             {
                 "course code": ["MAT10HUB"],
                 "school number": ["6262013"],
-                "title": ["Math 10 HUB (raw lookup)"],
+                "title": ["Math 10 HUB"],
                 "credit value": [4],
             }
         )
@@ -544,9 +549,58 @@ class TestSelectionPass:
             ]
         )
         result = _run(transformer, sc_mapping, myedbc_global_config, selection=selection, info=info)
-        # Code is flavor-truncated, but title comes from the raw-code lookup
         assert result.iloc[0]["Course Code"] == "MAT10HU"
-        assert result.iloc[0]["Course Name"] == "Math 10 HUB (raw lookup)"
+        assert result.iloc[0]["Course Name"] == "Math 10 HUB"
+
+    def test_selection_title_found_for_padded_catalog_code(self, transformer, sc_mapping, myedbc_global_config):
+        """The live nameless-rows shape: the catalog carries the padded code, the
+        selection carries the clean one — the exact tier (both sides stripped) hits."""
+        info = pd.DataFrame(
+            {
+                "course code": ["FLTST12---"],
+                "school number": ["6262013"],
+                "title": ["French Literature 12"],
+                "credit value": [4],
+            }
+        )
+        selection = _selection(
+            [
+                {
+                    "student number": "S001",
+                    "school number": "6262013",
+                    "course code": "FLTST12",
+                    "dl start date": "15-Sep-2025",
+                }
+            ]
+        )
+        result = _run(transformer, sc_mapping, myedbc_global_config, selection=selection, info=info)
+        assert result.iloc[0]["Course Name"] == "French Literature 12"
+        assert result.iloc[0]["Potential Credits Earned"] == 4
+
+    def test_selection_title_found_via_prefix_when_school_differs(self, transformer, sc_mapping, myedbc_global_config):
+        """The other live nameless-rows shape: the course is cataloged at a DIFFERENT
+        school — the school-agnostic 7-char prefix tier still names it (the history
+        pass has always resolved this way; the selection pass now matches it)."""
+        info = pd.DataFrame(
+            {
+                "course code": ["MCLC-12---ITT"],
+                "school number": ["9990001"],  # not the student's school
+                "title": ["Career-Life Connections 12"],
+                "credit value": [4],
+            }
+        )
+        selection = _selection(
+            [
+                {
+                    "student number": "S001",
+                    "school number": "6262013",
+                    "course code": "MCLC-12---ITT",
+                    "dl start date": "15-Sep-2025",
+                }
+            ]
+        )
+        result = _run(transformer, sc_mapping, myedbc_global_config, selection=selection, info=info)
+        assert result.iloc[0]["Course Name"] == "Career-Life Connections 12"
 
 
 class TestOutputShape:
@@ -925,11 +979,15 @@ class TestRegressionScenario:
         assert s002_codes_and_marks == sorted([("ENG12", ""), ("ENG11", "")])
 
 
-class TestNonNumericMarkDataError:
-    """A non-blank, non-"W", non-numeric Final Mark (letter grades, "Pass") is
-    scored as not-passing (legacy-PowerShell parity — scoring unchanged) but is
-    now RECORDED as a data error so an alpha-marks district sees "Completed
-    with N data errors" instead of silently nulled credits.
+class TestNonNumericMarkTriage:
+    """Non-numeric Final Mark triage (2026-08-31 rework, owner-decided).
+
+    Recognized letter/status marks (BC letter grades, the K-9 proficiency scale, admin
+    statuses) are a legitimate data SHAPE: scored not-passing (legacy parity) but NEVER a
+    per-row data error — SD83's real history carries ~22k of them and the old rule buried
+    every run under "data warnings". SG/TS (Standing Granted / Transfer Standing) GRANT
+    credit per the BC transcript legend, gated to grade-10+ course codes. Only a value that
+    reads as neither a number nor a letter/status code stays a data error.
     """
 
     def _history_row(self, mark, student="S001", code="MAT10"):
@@ -956,39 +1014,127 @@ class TestNonNumericMarkDataError:
         _run(transformer, sc_mapping, myedbc_global_config, history=history)
         assert transformer.data_errors == []
 
-    def test_letter_and_pass_marks_record_data_errors_with_unchanged_output(
+    def test_letter_marks_are_not_data_errors_and_scoring_is_unchanged(
         self, transformer, sc_mapping, myedbc_global_config, course_info_df, caplog
     ):
         history = _history(
             [
                 self._history_row("A"),
-                self._history_row("Pass", code="ENG12"),
-                self._history_row("85", code="ENG11"),
+                self._history_row("PRF", code="ENG12"),  # proficiency scale
+                self._history_row("Pass", code="ENG11"),
+                self._history_row("85", code="MAT10HUB"),
             ]
         )
-        with caplog.at_level("ERROR"):
+        with caplog.at_level("INFO"):
             result = _run(transformer, sc_mapping, myedbc_global_config, history=history, info=course_info_df)
 
-        # Output unchanged: all three rows emitted; alpha marks pass through
-        # not-passing (null credits — NaN once pandas coerces the mixed column),
-        # the numeric pass keeps its credits.
-        assert len(result) == 3
+        # Scoring unchanged: recognized letter marks stay not-passing (null credits — NaN once
+        # pandas coerces the mixed column); the numeric pass keeps its credits.
+        assert len(result) == 4
         alpha = result[result["Final Mark"] == "A"].iloc[0]
         assert pd.isna(alpha["Credits Earned"])
         numeric = result[result["Final Mark"] == "85"].iloc[0]
         assert numeric["Credits Earned"] == 4
 
+        # The rework: a recognized mark shape is NOT a data error…
+        assert transformer.data_errors == []
+        # …but the fact is still logged, once, counts-only (never the marks themselves).
+        assert any("3 history row(s) carry a letter or status mark" in r.message for r in caplog.records)
+        assert not any("'A'" in r.message for r in caplog.records)
+
+    def test_unrecognizable_mark_still_records_a_data_error(
+        self, transformer, sc_mapping, myedbc_global_config, course_info_df, caplog
+    ):
+        # The positive twin: the data-error tripwire still fires for a value that reads as
+        # neither a number nor a letter/status code (data landed in the wrong column).
+        history = _history(
+            [
+                self._history_row("N/A"),
+                self._history_row("85", code="ENG12"),
+            ]
+        )
+        with caplog.at_level("ERROR"):
+            _run(transformer, sc_mapping, myedbc_global_config, history=history, info=course_info_df)
+
         errors = transformer.data_errors
         assert len(errors) == 1
         assert errors[0]["entity"] == "StudentCourses"
         assert errors[0]["field"] == "Final Mark"
-        assert errors[0]["failed_rows"] == 2
+        assert errors[0]["failed_rows"] == 1
         # A final mark is an education record — the diagnostic carries its SHAPE,
         # never the mark itself (same log-safety seam as the base transformer).
-        assert "'A'" not in errors[0]["sample"]
-        assert errors[0]["sample"].startswith("str(1 char, letters)")
-        assert any("non-numeric Final Mark" in r.message for r in caplog.records)
-        assert not any("'A'" in r.message for r in caplog.records)
+        assert "N/A" not in errors[0]["sample"]
+        assert any("unrecognizable Final Mark" in r.message for r in caplog.records)
+        assert not any("N/A" in r.message for r in caplog.records)
+
+
+class TestStandingGrantedCredits:
+    """SG / TS grant course credit (BC transcript legend, verified 2026-08-31): SG = Standing
+    Granted (school adjudication), TS = Transfer Standing (records from another institution).
+    Gated to courses whose MyEd BC code reads as grade 10+ — grade 9 and below are non-credit
+    in BC, and an unreadable grade stays not-passing (the conservative direction).
+    """
+
+    def _history_row(self, mark, code, student="S001"):
+        return {
+            "student number": student,
+            "school number": "6262013",
+            "course code": code,
+            "full course code": code,
+            "section": "",
+            "final mark": mark,
+            "dl start date": "15-Sep-2024",
+            "dl completion date": "30-Jan-2025",
+        }
+
+    @pytest.mark.parametrize("mark", ["SG", "TS", "sg", "ts"])
+    def test_standing_on_grade_10_course_earns_credits(self, transformer, sc_mapping, myedbc_global_config, mark):
+        # "MEN--10" reads grade 10 at code positions 6-7; no CourseInfo entry → the existing
+        # pass-only fallback of 4 credits applies, proving the row scored as a PASS.
+        history = _history([self._history_row(mark, "MEN--10")])
+        result = _run(transformer, sc_mapping, myedbc_global_config, history=history)
+        row = result.iloc[0]
+        assert row["Credits Earned"] == 4
+        assert row["Potential Credits Earned"] == 4
+
+    def test_standing_on_grade_9_course_stays_non_credit(self, transformer, sc_mapping):
+        # course_start_grade 9 (SD83's setting) keeps grade-9 codes in the transcript; the
+        # SG row survives filtering but earns nothing — grade 9 is non-credit (owner rule).
+        global_config = {
+            "excluded_course_code_patterns": MYEDBC_PATTERNS,
+            "excluded_course_flavors": MYEDBC_FLAVORS,
+            "course_start_grade": 9,
+        }
+        history = _history([self._history_row("SG", "MSC--09")])
+        result = _run(transformer, sc_mapping, global_config, history=history)
+        assert pd.isna(result.iloc[0]["Credits Earned"])
+        # And it is a recognized shape — never a data error.
+        assert transformer.data_errors == []
+
+    def test_standing_on_unreadable_grade_stays_non_credit(self, transformer, sc_mapping, myedbc_global_config):
+        # "MAT10" is a 5-char test code — positions 6-7 don't exist, so the grade is
+        # unreadable and credit must NOT be granted (never guess a credential).
+        history = _history([self._history_row("SG", "MAT10")])
+        result = _run(transformer, sc_mapping, myedbc_global_config, history=history)
+        assert pd.isna(result.iloc[0]["Credits Earned"])
+
+    def test_standing_pass_suppresses_the_matching_selection_row(self, transformer, sc_mapping, myedbc_global_config):
+        # has_passed now flows from a standing grant too: a selection row for the same course
+        # is excluded exactly as it would be after a numeric pass.
+        history = _history([self._history_row("SG", "MEN--10")])
+        selection = _selection(
+            [
+                {
+                    "student number": "S001",
+                    "school number": "6262013",
+                    "course code": "MEN--10",
+                    "dl start date": "01-Feb-2025",
+                }
+            ]
+        )
+        result = _run(transformer, sc_mapping, myedbc_global_config, history=history, selection=selection)
+        assert len(result) == 1
+        assert result.iloc[0]["Final Mark"] == "SG"
 
 
 class TestConfigDrivenSourceColumns:
@@ -1189,3 +1335,85 @@ class TestStudentCoursesActiveFiltering:
             result = _run(transformer, sc_mapping, myedbc_global_config, history=self._history())
         assert set(result["Student ID"]) == {"S001", "S999"}
         assert any("[StudentCourses]" in r.message and "active_student_ids empty" in r.message for r in caplog.records)
+
+
+class TestHyphenPaddingAndModuleCourses:
+    """ "---" is padding, not a flavor (owner decision 2026-08-31, from live data).
+
+    The old rule truncated any code containing "---" to 7 chars, which collapsed
+    MyEd BC's distinct ADST module courses (MADGE09---EX1 / EX2 / …, each with its
+    own catalog title) into ONE code — thousands of duplicate transcript rows —
+    and left trailing-padded codes (MAPPR12---) unmatched against the catalog.
+    Now: trailing hyphen runs are stripped unconditionally; internal runs (and the
+    module suffixes after them) survive.
+    """
+
+    def _history_row(self, full_code, section, student="S001"):
+        return {
+            "student number": student,
+            "school number": "6262013",
+            "course code": full_code.split("---")[0],
+            "full course code": full_code,
+            "section": section,
+            "final mark": "PRF",
+            "dl start date": "",
+            "dl completion date": "",
+        }
+
+    def test_module_courses_stay_distinct(self, transformer, sc_mapping):
+        # The live SD sample shape: one student, two exploratory modules of MADGE09 —
+        # grade-9 codes, so the district runs course_start_grade 9 (the SD83/SD69
+        # setting; the default grade-10 floor would drop them before cleaning).
+        global_config = {
+            "excluded_course_code_patterns": MYEDBC_PATTERNS,
+            "excluded_course_flavors": MYEDBC_FLAVORS,
+            "course_start_grade": 9,
+        }
+        history = _history(
+            [
+                self._history_row("MADGE09---EX1-010", "010"),
+                self._history_row("MADGE09---EX2-011", "011"),
+            ]
+        )
+        result = _run(transformer, sc_mapping, global_config, history=history)
+        codes = sorted(result["Course Code"])
+        assert codes == ["MADGE09---EX1", "MADGE09---EX2"]
+
+    def test_trailing_padding_stripped_from_history_codes(self, transformer, sc_mapping, myedbc_global_config):
+        history = _history([self._history_row("MAPPR12---", "")])
+        result = _run(transformer, sc_mapping, myedbc_global_config, history=history)
+        assert list(result["Course Code"]) == ["MAPPR12"]
+
+    def test_padded_catalog_code_exact_matches_stripped_history_code(
+        self, transformer, sc_mapping, myedbc_global_config
+    ):
+        # The catalog carries the padded shape (MAPPR12---); history cleaning yields
+        # MAPPR12 — the lookup strips the catalog key the same way, so this is an
+        # EXACT match (title + credits), not a 7-char-prefix accident.
+        info = pd.DataFrame(
+            {
+                "course code": ["MAPPR12---"],
+                "school number": ["6262013"],
+                "title": ["Apprenticeship Mathematics 12"],
+                "credit value": [4],
+            }
+        )
+        history = _history(
+            [
+                {
+                    "student number": "S001",
+                    "school number": "6262013",
+                    "course code": "MAPPR12",
+                    "full course code": "MAPPR12---",
+                    "section": "",
+                    "final mark": "85",
+                    "dl start date": "15-Sep-2024",
+                    "dl completion date": "30-Jan-2025",
+                }
+            ]
+        )
+        result = _run(transformer, sc_mapping, myedbc_global_config, history=history, info=info)
+        row = result.iloc[0]
+        assert row["Course Code"] == "MAPPR12"
+        assert row["Course Name"] == "Apprenticeship Mathematics 12"
+        assert row["Credits Earned"] == 4

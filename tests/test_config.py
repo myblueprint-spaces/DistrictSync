@@ -575,7 +575,9 @@ class TestMyBlueprintPlusGlobalConfig:
             "^X",
             "^ATT",
         ]
-        assert cfg.global_config.excluded_course_flavors == ["HUB", "HOL", "DL", "---"]
+        # "---" is deliberately absent: a hyphen run is MyEd BC PADDING, stripped
+        # unconditionally by the cleaning layer — never a flavor (owner, 2026-08-31).
+        assert cfg.global_config.excluded_course_flavors == ["HUB", "HOL", "DL"]
         assert cfg.global_config.course_start_grade == 10
 
     def test_yaml_load_with_new_fields(self, tmp_path):
@@ -1379,14 +1381,20 @@ class TestStudentRosteringGradesWiring:
         raw = _mapping_with(GlobalConfig()).to_raw_dict()
         assert raw["global_config"]["student_rostering_grades"] is None
 
-    def test_NO_bundled_config_sets_it(self):
-        """The whole 12-config negative, stated as a config fact: this key ships
-        with no consumer (deliberate — the capability precedes the first
-        licensing district), which is exactly why the positive test layer in
-        tests/test_student_rostering_grades.py is mandatory rather than
-        complementary."""
-        for name in available_configs():
-            assert load_config(name).global_config.student_rostering_grades is None, name
+    def test_exactly_the_two_grade_scoped_districts_set_it(self):
+        """The key's shipped consumers, stated as a config fact (2026-08-31): the
+        phase-2 8-12 districts sd27/sd38 are the FIRST licensing districts (they
+        also declare version '1.11' — the declared-range parity in
+        tests/test_config_version_gate.py moved with them). Every other bundled
+        config still resolves to None, so the byte-identical default is pinned in
+        both directions; the positive behaviour layer stays
+        tests/test_student_rostering_grades.py."""
+        setters = {
+            name for name in available_configs() if load_config(name).global_config.student_rostering_grades is not None
+        }
+        assert setters == {"sd27myedbc", "sd38myedbc"}
+        for name in setters:
+            assert load_config(name).global_config.student_rostering_grades == ["08", "09", "10", "11", "12"], name
 
 
 class TestStudentRosteringGradesInheritance:

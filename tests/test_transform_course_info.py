@@ -44,7 +44,7 @@ def course_info_mapping():
 def myedbc_global_config():
     return {
         "excluded_course_code_patterns": MYEDBC_PATTERNS,
-        "excluded_course_flavors": ["HUB", "HOL", "DL", "---"],
+        "excluded_course_flavors": ["HUB", "HOL", "DL"],
     }
 
 
@@ -318,7 +318,10 @@ class TestCourseInfoEntityIntegration:
             r"^X",
             r"^ATT",
         ]
-        assert cfg.global_config.excluded_course_flavors == ["HUB", "HOL", "DL", "---"]
+        # "---" is deliberately ABSENT: a hyphen run is MyEd BC padding, not a
+        # flavor (owner, 2026-08-31) — treating it as one collapsed distinct
+        # MADGE09---EXn module courses into one code.
+        assert cfg.global_config.excluded_course_flavors == ["HUB", "HOL", "DL"]
         assert cfg.global_config.course_start_grade == 10
 
     def test_mbp_all_enables_courseinfo(self):
@@ -332,3 +335,47 @@ class TestCourseInfoEntityIntegration:
 
         cfg = load_config("mbp_core")
         assert "CourseInfo" in cfg.global_config.enabled_entities
+
+
+class TestTrailingHyphenPadding:
+    """CourseInfo strips MyEd BC's trailing hyphen padding from output codes
+    (2026-08-31 — live data shipped `MAPPR12---`-style codes into the catalog CSV,
+    which also broke exact-match lookups against the identically-stripped
+    StudentCourses codes)."""
+
+    def setup_method(self):
+        self.transformer = DataTransformer()
+        self.transformer.set_school_year(2025, "08-25", "07-25")
+
+    def _run(self, df, course_info_mapping, myedbc_global_config):
+        raw_data = {"CourseInformation.txt": df}
+        return self.transformer.transform(df, course_info_mapping, "CourseInfo", raw_data, myedbc_global_config)
+
+    def test_padding_stripped_and_internal_runs_kept(self, course_info_mapping, myedbc_global_config):
+        df = pd.DataFrame(
+            {
+                "course code": ["MAPPR12---", "MBI--11---", "MADIT10--ELC"],
+                "school number": ["6262013"] * 3,
+                "title": ["Apprenticeship Mathematics 12", "Biology 11", "ADST ICT"],
+                "grade level": ["12", "11", "10"],
+                "credit value": ["4", "4", "4"],
+            }
+        )
+        result = self._run(df, course_info_mapping, myedbc_global_config)
+        assert sorted(result["Course Code"]) == ["MADIT10--ELC", "MAPPR12", "MBI--11"]
+
+    def test_padded_and_unpadded_same_course_dedupe(self, course_info_mapping, myedbc_global_config):
+        # The strip runs BEFORE the (Course Code, School ID) dedup, so a padded and
+        # an unpadded row of the same course collapse instead of shipping twice.
+        df = pd.DataFrame(
+            {
+                "course code": ["MAPPR12---", "MAPPR12"],
+                "school number": ["6262013", "6262013"],
+                "title": ["Apprenticeship Mathematics 12", "Apprenticeship Mathematics 12"],
+                "grade level": ["12", "12"],
+                "credit value": ["4", "4"],
+            }
+        )
+        result = self._run(df, course_info_mapping, myedbc_global_config)
+        assert list(result["Course Code"]) == ["MAPPR12"]
+        assert len(result) == 1

@@ -23,6 +23,7 @@ when the row is a pass.
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import Any, Optional
 
@@ -31,9 +32,28 @@ import pandas as pd
 from src.etl.column_names import SCHOOL_NUMBER
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
+from src.etl.transformers.course_codes import course_grade, strip_trailing_hyphens
 from src.utils.helpers import describe_value_for_log as _describe_value
 
 logger = logging.getLogger(__name__)
+
+# A recognized letter/status mark: 1-4 letters plus an optional +/- (BC letter grades A..C-,
+# the K-9 proficiency scale EMG/DEV/PRF/EXT, and the Ministry standing codes SG/TS/RM/AEG plus
+# MyEd BC's administrative statuses). These are a legitimate BC data SHAPE, not a data error —
+# per-row-counting them buried a district in tens of thousands of "data warnings" for marks
+# their transcripts are SUPPOSED to carry (2026-08-31, live SD83 data). Anything outside
+# numeric ∪ this shape (mojibake, a date or name landed in the mark column) STAYS a data error.
+_RECOGNIZED_MARK_RE = re.compile(r"[A-Z]{1,4}[+-]?")  # applied via fullmatch — both ends anchored
+
+# Standing codes that GRANT COURSE CREDIT per the BC transcript legend (gov.bc.ca, verified
+# 2026-08-31): SG = Standing Granted ("credit was granted on the basis of adjudication by the
+# school"), TS = Transfer Standing ("granted … on the basis of an examination of records from
+# an institution other than a school"). Scored as passing ONLY for grade-10+ courses
+# (course_grade >= _CREDIT_GRANT_MIN_GRADE): grade 9 and below are non-credit in BC, and a
+# code whose grade can't be read stays not-passing — the conservative direction (owner rule,
+# 2026-08-31). Every other non-numeric mark keeps the legacy not-passing scoring.
+_STANDING_GRANTS_CREDIT = frozenset({"SG", "TS"})
+_CREDIT_GRANT_MIN_GRADE = 10
 
 
 class StudentCoursesTransformer(BaseTransformer):
@@ -174,7 +194,10 @@ class StudentCoursesTransformer(BaseTransformer):
         if info_df.empty:
             return exact, prefix
         for record in info_df.to_dict("records"):
-            code = self._str(record.get(cols["course_code"]))
+            # Strip MyEd BC's trailing hyphen padding so catalog keys line up with
+            # the (identically stripped) history/selection codes — a padded
+            # MAPPR12--- and a cleaned MAPPR12 are the same course (2026-08-31).
+            code = strip_trailing_hyphens(self._str(record.get(cols["course_code"])))
             if not code:
                 continue
             school = self._str(record.get(SCHOOL_NUMBER))
@@ -204,7 +227,9 @@ class StudentCoursesTransformer(BaseTransformer):
             return
         filtered = self.filter_excluded_course_code_patterns(history_df, patterns, column=cols["course_code"])
 
-        non_numeric_marks = 0
+        letter_marks = 0  # recognized letter/status marks scored not-passing (a data SHAPE, not an error)
+        standing_credits = 0  # SG/TS grade-10+ rows scored as passing (credits granted)
+        unrecognized_marks = 0  # neither numeric nor a recognized shape — a genuine data error
         first_sample = ""
         for record in filtered.to_dict("records"):
             mark_str = self._str(record.get(cols["final_mark"]))
@@ -224,17 +249,23 @@ class StudentCoursesTransformer(BaseTransformer):
             iso_completion = self.normalize_iso_date(raw_completion)
 
             cleaned = self._derive_history_code(course_code, full_code, section, flavors)
-            is_pass = self._parse_mark_passing(mark_str)
-            # A non-blank, non-"W", non-numeric mark (letter grades, "Pass") is
-            # scored as not-passing for legacy-PowerShell parity — record it as
-            # a data error so an alpha-marks district sees "Completed with N
-            # data errors" instead of silently nulled credits.
+            is_pass = self._parse_mark_passing(mark_str) or self._standing_grants_credit(mark_str, cleaned)
+            # Non-numeric mark triage (2026-08-31 rework): SG/TS on a grade-10+ course scored as
+            # PASSING above (the BC legend says both grant credit); every other recognized
+            # letter/status mark (proficiency scale, letter grades, admin statuses) keeps the
+            # legacy not-passing scoring but is a legitimate data SHAPE — counted for ONE info
+            # log, never a per-row data error. Only an unrecognizable value stays a data error.
             if mark_str and self._parse_mark_numeric(mark_str) is None:
-                non_numeric_marks += 1
-                if not first_sample:
-                    # A final mark is an education record — same log-safety seam
-                    # as the base transformer: shape, never the mark itself.
-                    first_sample = f"{_describe_value(mark_str)}: non-numeric mark scored as not-passing"
+                if is_pass:
+                    standing_credits += 1
+                elif self._is_recognized_mark_shape(mark_str):
+                    letter_marks += 1
+                else:
+                    unrecognized_marks += 1
+                    if not first_sample:
+                        # A final mark is an education record — same log-safety seam
+                        # as the base transformer: shape, never the mark itself.
+                        first_sample = f"{_describe_value(mark_str)}: unrecognizable mark scored as not-passing"
             start_date = self._parse_date(raw_start)
             is_in_progress = not raw_completion
 
@@ -257,13 +288,24 @@ class StudentCoursesTransformer(BaseTransformer):
                 }
             )
 
-        if non_numeric_marks:
+        if standing_credits:
+            logger.info(
+                f"[StudentCourses] {standing_credits} history row(s) carry a Standing Granted / Transfer "
+                f"Standing mark on a grade-10+ course — scored as passing (credits granted)."
+            )
+        if letter_marks:
+            logger.info(
+                f"[StudentCourses] {letter_marks} history row(s) carry a letter or status mark "
+                f"(proficiency scale, letter grades, admin statuses) — scored as not-passing; "
+                f"credits not earned. A recognized BC mark shape, not a data error."
+            )
+        if unrecognized_marks:
             logger.error(
-                f"[StudentCourses] {non_numeric_marks} history row(s) carry a non-numeric Final Mark "
-                f"(scored as not-passing; credits not earned) — sample {first_sample}"
+                f"[StudentCourses] {unrecognized_marks} history row(s) carry an unrecognizable Final Mark "
+                f"(neither a number nor a letter/status code; scored as not-passing) — sample {first_sample}"
             )
             self._record_data_error(
-                context, "StudentCourses", "Final Mark", failed_rows=non_numeric_marks, sample=first_sample
+                context, "StudentCourses", "Final Mark", failed_rows=unrecognized_marks, sample=first_sample
             )
 
     @staticmethod
@@ -338,12 +380,14 @@ class StudentCoursesTransformer(BaseTransformer):
             if not self._should_include_selection(sch_lookup, student_id, cleaned, sel_start):
                 continue
 
-            # Title lookup uses raw code (matches PowerShell selection-pass behavior).
-            title_entry = info_exact.get((course_code, school_number))
-            title = title_entry["title"] if title_entry else ""
-
-            # Potential credits use the full lookup chain (exact/prefix/fallback) on cleaned code.
-            _, _, potential = self._lookup_credits(
+            # Title AND potential credits use the same two-tier lookup chain the history
+            # pass uses — exact on the CLEANED code at this school, then the 7-char
+            # prefix table (2026-08-31, live-data fix). The legacy PowerShell parity
+            # (raw-code, exact-only, same-school title lookup) shipped NAMELESS rows for
+            # exactly the selections whose course is cataloged under a padded code or at
+            # another school — while the potential-credits call on the next line was
+            # already resolving the right entry and discarding its title.
+            title, _, potential = self._lookup_credits(
                 cleaned, school_number, is_pass=False, info_exact=info_exact, info_prefix=info_prefix
             )
 
@@ -430,12 +474,35 @@ class StudentCoursesTransformer(BaseTransformer):
 
     @classmethod
     def _parse_mark_passing(cls, mark_str: str) -> bool:
-        """Passing = numeric mark >= 50. Non-numeric marks (letter grades,
-        "Pass") score as not-passing — legacy-PowerShell parity; the history
-        pass records those as data errors rather than changing the scoring.
+        """Passing = numeric mark >= 50 (legacy-PowerShell parity for numeric marks).
+
+        Non-numeric marks score as not-passing HERE; the ONE exception is layered on top by
+        ``_standing_grants_credit`` (SG/TS on a grade-10+ course — see the history pass), so
+        this stays the single numeric rule.
         """
         value = cls._parse_mark_numeric(mark_str)
         return value is not None and value >= 50
+
+    @staticmethod
+    def _standing_grants_credit(mark_str: str, cleaned_code: str) -> bool:
+        """SG/TS grants credit — but only on a course whose code READS as grade 10+.
+
+        Both codes grant credit per the BC transcript legend (see ``_STANDING_GRANTS_CREDIT``).
+        Grade 9 and below are non-credit courses, and a code whose grade can't be parsed stays
+        not-passing — granting credit only where the grade is legible is the conservative
+        direction (a wrongly-withheld credit is visible on a transcript; a wrongly-GRANTED one
+        is a false credential).
+        """
+        if mark_str.strip().upper() not in _STANDING_GRANTS_CREDIT:
+            return False
+        grade = course_grade(cleaned_code)
+        return grade is not None and grade >= _CREDIT_GRANT_MIN_GRADE
+
+    @staticmethod
+    def _is_recognized_mark_shape(mark_str: str) -> bool:
+        """Whether a non-numeric mark reads as a legitimate BC letter/status code (see
+        ``_RECOGNIZED_MARK_RE``) rather than as data landed in the wrong column."""
+        return _RECOGNIZED_MARK_RE.fullmatch(mark_str.strip().upper()) is not None
 
     @classmethod
     def _parse_date(cls, raw: str) -> Optional[datetime]:

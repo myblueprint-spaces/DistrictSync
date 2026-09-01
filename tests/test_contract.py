@@ -200,12 +200,15 @@ def _write_base_schedule(path: Path, filename: str, section_col: str = "Section 
 
 
 def _write_family(path: Path, filename: str, last_name_col: str = "Last Name") -> None:
+    # Contacts for BOTH population halves: S001 (grade 3) and S002 (grade 10) —
+    # the 8-12-scoped districts (sd27/sd38) roster-filter S001's contact away,
+    # so the S002 row is what keeps their Family.csv non-empty in the sweep.
     pd.DataFrame(
         {
-            "Student Number": ["S001"],
-            "First Name": ["John"],
-            last_name_col: ["Smith"],
-            "Email Address": ["john@mail.com"],
+            "Student Number": ["S001", "S002"],
+            "First Name": ["John", "Mei"],
+            last_name_col: ["Smith", "Wong"],
+            "Email Address": ["john@mail.com", "mei@mail.com"],
         }
     ).to_csv(path / filename, index=False)
 
@@ -651,6 +654,18 @@ _DISTRICT_SETUP = {
     # overrides (homeroom grades, course-grade floor, blanked DOB) are
     # business-logic differences the shared fixture already exercises correctly.
     "sd83myedbc": _create_mbp_all_inputs,
+    # Phase-2 migration districts (2026-08-31): standard MyEd BC file shape.
+    # The six full-tier configs ride the mbp_all fixture (sd27/sd38's 8-12
+    # student scope keeps S002/S003 and drops the grade-3 S001 — the shared
+    # family fixture carries an S002 row so Family stays non-empty for them);
+    # sd10 is the mbp_core shape (Students + the two course feeds).
+    "sd27myedbc": _create_mbp_all_inputs,
+    "sd38myedbc": _create_mbp_all_inputs,
+    "sd67myedbc": _create_mbp_all_inputs,
+    "sd69myedbc": _create_mbp_all_inputs,
+    "sd71myedbc": _create_mbp_all_inputs,
+    "sd75myedbc": _create_mbp_all_inputs,
+    "sd10myedbc": _create_mbp_core_inputs,
     "mbp_all": _create_mbp_all_inputs,
     "mbp_core": _create_mbp_core_inputs,
     "mbponly": _create_mbponly_inputs,

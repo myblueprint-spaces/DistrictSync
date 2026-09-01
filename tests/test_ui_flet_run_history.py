@@ -300,6 +300,18 @@ class TestBannerLatestRules:
         banner = _banner(_record(data_errors={"total": 3}))
         assert banner.verdict is Verdict.WARNING
         assert banner.headline == "Recent runs completed with data warnings"
+        # The fixture's record IS delivered (sftp_ok=True) — the delivery claim is earned here.
+        assert banner.detail == "Some records had field problems and were skipped — the runs still delivered."
+
+    def test_data_warnings_no_sftp_never_claims_delivery(self) -> None:
+        # 2026-08-31 live-install mislabel: a run with data warnings and NO SFTP attempt read
+        # "the runs still delivered" while nothing was ever uploaded. The detail must follow the
+        # record's SFTP axis exactly like the clean branch does.
+        banner = _banner(_record(data_errors={"total": 3}, sftp_attempted=False, sftp_ok=False))
+        assert banner.verdict is Verdict.WARNING
+        assert banner.headline == "Recent runs completed with data warnings"
+        assert banner.detail == "Some records had field problems and were skipped — the runs still completed."
+        assert "delivered" not in banner.detail
 
     def test_clean_delivered_is_healthy(self) -> None:
         banner = _banner(_record())
@@ -463,6 +475,14 @@ class TestToRunRowFields:
     def test_single_data_warning_singular_label(self) -> None:
         row = to_run_row(_record(data_errors={"total": 1}), now=_NOW)
         assert row.status_label == "Delivered · 1 data warning"
+
+    def test_data_warnings_no_sftp_reads_completed(self) -> None:
+        # The row-label twin of the banner's no-SFTP honesty rule (2026-08-31 mislabel): a run
+        # that never attempted delivery must not open its label with "Delivered".
+        row = to_run_row(_record(data_errors={"total": 2}, sftp_attempted=False, sftp_ok=False), now=_NOW)
+        assert row.status_label == "Completed · 2 data warnings"
+        assert row.status_verdict is Verdict.WARNING
+        assert row.sftp is SftpDelivery.NOT_ATTEMPTED
 
     def test_myblueprint_counts_present_when_nonzero(self) -> None:
         row = to_run_row(_record(CourseInfo=15, StudentCourses=200), now=_NOW)

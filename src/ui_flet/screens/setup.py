@@ -120,6 +120,7 @@ from src.ui_flet.setup_flow import (
     schedule_reconcile,
     sftp_reconcile_suffix,
     step_number,
+    task_args_changed,
     task_args_from_persisted,
     task_args_to_persisted,
 )
@@ -387,11 +388,17 @@ class _ScheduleHandle:
     registered).
     ``persist_run_time`` is the S3-b seam: persist a valid run-time edit as plain config when
     no schedule is registered (invalid → the section's inline error, nothing persisted).
+    ``is_busy`` reports whether a register/unregister dispatched EARLIER is still applying
+    (its UAC prompt/worker is in flight) — the reconcile must return ``IN_FLIGHT`` then,
+    because ``schedule_registered`` and the durable record describe the PRE-dispatch world
+    (2026-08-31 race: a delivery Save during a registration's UAC window read "no task",
+    and the registration then confirmed with its pre-delivery args).
     """
 
     trigger_register: Callable[[], ReconcileOutcome]
     run_time_value: Callable[[], str]
     persist_run_time: Callable[[], bool]
+    is_busy: Callable[[], bool]
 
 
 # --------------------------------------------------------------------------- #
@@ -926,6 +933,14 @@ def _mount_settings(  # pragma: no cover - Flet view glue
     schedule_card, sched_handle = _build_schedule_section(page, cfg, on_schedule_changed=on_schedule_changed)
 
     def _reconcile() -> ReconcileOutcome:
+        # 2026-08-31 race guard: while a register/unregister dispatched earlier is still
+        # applying (UAC prompt up, worker running), ``schedule_registered`` and the durable
+        # record describe the PRE-dispatch world — deciding from them here concluded "no task"
+        # for a delivery Save landing mid-registration, and the registration then confirmed
+        # with its pre-delivery args (the nightly ran without --sftp while delivery read ON).
+        # Refuse to decide; the Save note tells the admin to save again once it finishes.
+        if sched_handle.is_busy():
+            return ReconcileOutcome.IN_FLIGHT
         pending = TaskArgs.of(
             input_dir=cfg.input_dir,
             output_dir=cfg.output_dir,
@@ -1412,14 +1427,21 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     def _elevated_now() -> bool:
         return scheduler.is_elevated()  # always False where elevation has no meaning (cron)
 
+    # The section's own in-flight fact (2026-08-31): recorded UNCONDITIONALLY in _set_busy —
+    # the same single place the buttons toggle — and exposed via the handle so the Settings
+    # reconcile can refuse to decide anything while an apply dispatched earlier is still
+    # running. A dict, not a bare bool, so the closures share one mutable cell.
+    _flight = {"busy": False}
+
     def _set_busy(busy: bool) -> None:
-        """Tell the wizard footer a register/unregister is (no longer) in flight. Advisory.
+        """Record the in-flight fact + tell the wizard footer (advisory) it changed.
 
         Exception-suppressed for the same reason ``on_schedule_changed`` is: this drives a
         Continue gate, and a raise from the wizard's callback must never strand the section's
-        own result paint. Called ONLY where the section toggles its own buttons, so the two
-        cannot drift apart.
+        own result paint. Called ONLY where the section toggles its own buttons, so the
+        buttons, the handle's ``is_busy`` and the wizard gate cannot drift apart.
         """
+        _flight["busy"] = busy
         if on_busy is None:
             return
         with contextlib.suppress(Exception):
@@ -1492,6 +1514,23 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             cfg.schedule_unattended = bool(password)
             cfg.schedule_task_args = task_args_to_persisted(registered_args)
             cfg.save()
+            # 2026-08-31 race guard, confirm-side: the args were captured at CLICK time — if a
+            # Save changed the config while this apply was in flight (a delivery Save during the
+            # UAC window), the task just registered is ALREADY stale. Say so in the success note
+            # rather than letting a green "scheduled" banner stand over a task that will not
+            # deliver; the IN_FLIGHT save note has already told that Save to come back.
+            current_args = TaskArgs.of(
+                input_dir=cfg.input_dir,
+                output_dir=cfg.output_dir,
+                sis_type=cfg.sis_type,
+                sftp_enabled=cfg.sftp_enabled,
+                run_time=run_time,
+            )
+            if task_args_changed(registered_args, current_args):
+                detail = (
+                    f"{detail} Some settings changed while this was being set up, so tonight's "
+                    "task doesn't include them yet — save your settings again to update it."
+                )
             if on_schedule_changed is not None:
                 # 0032 T1 #8: a confirmed register invalidates the boot-time rail badge —
                 # let the shell re-probe. Advisory: never let it break the result paint.
@@ -1865,6 +1904,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         trigger_register=_trigger_register_reconciled,
         run_time_value=lambda: run_time_field.value or "",
         persist_run_time=_persist_run_time_if_edited,
+        is_busy=lambda: bool(_flight["busy"]),
     )
     return card, handle
 

@@ -20,6 +20,10 @@ from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
 
 SD62_PATTERNS = [r"^.{5}-K", r"^.{5}0\d", r"^X", r"^ATT"]
+# Function-level fixture: arbitrary flavor substrings (incl. "---") to pin the
+# generic matching mechanics. The SHIPPED base config no longer lists "---" —
+# a hyphen run is PADDING, stripped unconditionally (owner, 2026-08-31); see
+# TestStripTrailingHyphens below and test_transform_course_info's config pin.
 SD62_FLAVORS = ["HUB", "HOL", "DL", "---"]
 
 
@@ -315,6 +319,32 @@ class TestEarlyGradeExclusionPattern:
 
     def test_one_or_below_returns_none(self):
         assert BaseTransformer.early_grade_exclusion_pattern(1) is None
+
+
+class TestCourseGrade:
+    """`course_grade` reads the SAME positional convention as the exclusion pattern above
+    (grade = the 6th-7th characters as a two-digit number) — keep the two agreeing."""
+
+    def test_senior_grades(self):
+        from src.etl.transformers.course_codes import course_grade
+
+        assert course_grade("MEN--10") == 10
+        assert course_grade("MADST12") == 12
+
+    def test_single_digit_grades(self):
+        from src.etl.transformers.course_codes import course_grade
+
+        assert course_grade("MSC--09") == 9
+        assert course_grade("MADGE09---EX1-010") == 9  # longer codes read the same positions
+
+    def test_unreadable_grades_return_none(self):
+        from src.etl.transformers.course_codes import course_grade
+
+        assert course_grade("MAT10") is None  # too short — positions 6-7 don't exist
+        assert course_grade("YPA--1C") is None  # letter suffix, not a two-digit grade
+        assert course_grade("XSIEP-K") is None  # kindergarten letter code
+        assert course_grade("") is None
+        assert course_grade(None) is None
 
 
 class TestEffectiveCourseCodePatterns:
@@ -833,3 +863,40 @@ class TestActiveStatusPathLogging:
         with caplog.at_level(logging.INFO, logger="src.etl.transformers.base"):
             _status(df)
         assert any("via withdraw-date column 'withdraw date'" in r.message for r in caplog.records)
+
+
+class TestStripTrailingHyphens:
+    """`strip_trailing_hyphens` — MyEd BC's fixed-width padding removal (2026-08-31).
+
+    TRAILING hyphen runs are padding and go; INTERNAL runs are positional (they
+    keep the grade digits at characters 6-7 — `course_grade` reads them) and must
+    never be touched. This is what replaced "---" as a flavor: the flavor rule
+    truncated `MADGE09---EX1`/`EX2`/… (distinct ADST module courses) to one code.
+    """
+
+    def test_trailing_padding_stripped(self):
+        from src.etl.transformers.course_codes import strip_trailing_hyphens
+
+        assert strip_trailing_hyphens("MAPPR12---") == "MAPPR12"
+        assert strip_trailing_hyphens("MASK-11---") == "MASK-11"
+        assert strip_trailing_hyphens("MBI--11-") == "MBI--11"  # any run length
+
+    def test_internal_runs_untouched(self):
+        from src.etl.transformers.course_codes import strip_trailing_hyphens
+
+        assert strip_trailing_hyphens("MSC--09") == "MSC--09"
+        assert strip_trailing_hyphens("MADGE09---EX1") == "MADGE09---EX1"
+
+    def test_total_over_degenerate_input(self):
+        from src.etl.transformers.course_codes import strip_trailing_hyphens
+
+        assert strip_trailing_hyphens("---") == ""
+        assert strip_trailing_hyphens("") == ""
+        assert strip_trailing_hyphens(None) == ""
+        assert strip_trailing_hyphens(np.nan) == ""
+
+    def test_flavor_cleaning_strips_padding_even_with_no_flavors(self):
+        # The strip is unconditional in the cleaning layer — a district with an
+        # empty flavor list still gets padding-free codes.
+        assert BaseTransformer.clean_course_code_flavor("MAPPR12---", []) == "MAPPR12"
+        assert BaseTransformer.clean_course_code_flavor("MADGE09---EX1", ["HUB", "HOL", "DL"]) == "MADGE09---EX1"

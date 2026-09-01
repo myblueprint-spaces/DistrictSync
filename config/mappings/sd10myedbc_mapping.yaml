@@ -1,0 +1,29 @@
+# SD10 - Arrow Lakes: inherits from standard MyEducation BC mapping, on the
+# minimal myBlueprint+ tier (Students + the two course feeds — the mbp_core
+# shape) with generated student emails (phase-2 migration; K-12 students and
+# 10-12 HS course feeds are the base defaults). Standard MyEd BC GDE file
+# naming is assumed (no source_files overrides here) — adjust once real GDE
+# exports are available (see docs/developer/adding-district.md, Steps 1-2).
+_base: myedbc
+sis: MyEducationBC
+district_name: SD10 - Arrow Lakes School District
+# The district's PUBLIC staff email domain (presentation metadata — see
+# sd27myedbc's comment on this same key).
+district_domains: ["sd10.bc.ca"]
+
+global_config:
+  # Minimal myBlueprint+ tier: no class/enrollment/family/staff rostering —
+  # only the student roster plus the course catalog and transcripts. Deep-merge
+  # REPLACES lists, so the exact set is stated here.
+  enabled_entities:
+    - Students
+    - CourseInfo
+    - StudentCourses
+
+mappings:
+  Students:
+    field_map:
+      # The GDE carries no usable student email — generate one from the
+      # student number (the sd51/sd74 pattern).
+      "Email Address":
+        format: "{student number}@sd10.bc.ca"

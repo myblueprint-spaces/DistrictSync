@@ -41,7 +41,7 @@ from src.utils.paths import bundle_mappings_dir, user_mappings_dir
 logger = logging.getLogger(__name__)
 
 # Supported mapping-config format version (derived from the bundled configs,
-# which declare 1.0–1.10 today). Bump MINOR when the bundled configs start
+# which declare 1.0–1.11 today). Bump MINOR when the bundled configs start
 # using new same-major ETL-AFFECTING features; bump MAJOR only on a breaking
 # config-format change (and migrate every bundled config in the same release,
 # so the bundled set always loads clean against these constants).
@@ -61,11 +61,12 @@ logger = logging.getLogger(__name__)
 # matters.
 #
 # The prose above tracks what the BUNDLED CONFIGS DECLARE; the constant below
-# tracks what THIS BUILD UNDERSTANDS. They legitimately diverge: 1.11 added
-# `student_rostering_grades` (plan 0042 slice 1b), which no shipped config sets,
-# so nothing declares '1.11' and the declared range is still 1.0–1.10. Do NOT
-# "fix" the apparent lag — the first district config that sets the key declares
-# quoted `version: '1.11'` and moves the prose with it.
+# tracks what THIS BUILD UNDERSTANDS. They MAY legitimately diverge (a
+# forward-looking minor bump lands before its first consumer config): 1.11
+# added `student_rostering_grades` (plan 0042 slice 1b) ahead of any consumer,
+# and the ranges converged on 2026-08-31 when the first licensing districts
+# (sd27/sd38, the phase-2 8-12 scopes) declared quoted `version: '1.11'` and
+# moved this prose with them, exactly as the convention prescribes.
 # (Pinned by tests/test_config_version_gate.py::TestDeclaredRangeVersusSupported.)
 SUPPORTED_CONFIG_MAJOR = 1
 SUPPORTED_CONFIG_MINOR = 11

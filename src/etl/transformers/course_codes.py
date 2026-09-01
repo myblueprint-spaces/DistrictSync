@@ -79,6 +79,22 @@ def filter_excluded_course_code_patterns(
     return df
 
 
+def course_grade(code: Any) -> Optional[int]:
+    """The grade level a MyEd BC course code encodes, or ``None`` when it doesn't.
+
+    Same positional convention as :func:`early_grade_exclusion_pattern` (the ONE other
+    consumer of this fact — keep them agreeing): the grade is the 6th-7th characters of the
+    code as a two-digit number ("0X" for single-digit grades, "10"-"12" for senior). A code
+    too short, or whose 6th-7th characters aren't both digits (letter suffixes like "1C"/"2A",
+    K codes), returns ``None`` — callers must treat that as "grade unknown", never as a grade.
+    """
+    text = "" if code is None else str(code)
+    digits = text[5:7]
+    if len(digits) == 2 and digits.isdigit():
+        return int(digits)
+    return None
+
+
 def early_grade_exclusion_pattern(start_grade: Any) -> Optional[str]:
     """Regex that drops MyEd BC course codes for grades below `start_grade`.
 
@@ -113,22 +129,42 @@ def effective_course_code_patterns(global_config: dict) -> list[str]:
     return patterns
 
 
+def strip_trailing_hyphens(code: Any) -> str:
+    """Remove MyEd BC's trailing all-hyphen padding from a course code (pure, TOTAL).
+
+    MyEd BC pads course codes to a fixed width with hyphens — TRAILING runs
+    (``MAPPR12---`` → ``MAPPR12``) are pure padding, while INTERNAL runs are
+    positional (they keep the grade digits at characters 6-7, e.g. ``MSC--09``
+    — see :func:`course_grade`) and must never be touched. Owner decision
+    2026-08-31: padding is NOT a "flavor" — treating ``---`` as one truncated
+    ``MADGE09---EX1``/``EX2``/… (genuinely different ADST module courses) to
+    one collapsed code and shipped trailing-padded codes in CourseInfo.csv.
+    NaN/None → ``""``.
+    """
+    if code is None or (isinstance(code, float) and pd.isna(code)):
+        return ""
+    return str(code).rstrip("-")
+
+
 def clean_course_code_flavor(code: Any, flavors: list[str]) -> str:
-    """Truncate course code to first 7 chars if it contains any flavor substring.
+    """Truncate course code to first 7 chars if it contains any flavor substring,
+    then strip trailing hyphen padding (always — see :func:`strip_trailing_hyphens`).
 
     Mirrors the PowerShell Get-CleanedCourseCode helper. Matching is
     case-insensitive substring (e.g., "DL" matches "MATH-DL01" -> "MATH-DL").
-    Returns the original code as a string when no flavor matches, or ""
-    for NaN/None inputs.
+    Returns the (padding-stripped) original code when no flavor matches, or ""
+    for NaN/None inputs. ``---`` must NOT be configured as a flavor — it is
+    fixed-width padding, not a course variant (owner decision 2026-08-31; the
+    base config dropped it).
     """
     if code is None or (isinstance(code, float) and pd.isna(code)):
         return ""
     code_str = str(code)
     if not code_str or not flavors:
-        return code_str
+        return strip_trailing_hyphens(code_str)
     upper = code_str.upper()
     for flavor in flavors:
         f = str(flavor).strip().upper()
         if f and f in upper:
-            return code_str[:7]
-    return code_str
+            return strip_trailing_hyphens(code_str[:7])
+    return strip_trailing_hyphens(code_str)

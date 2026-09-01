@@ -1,0 +1,32 @@
+# SD75 - Mission: inherits from standard MyEducation BC mapping, with the
+# full myBlueprint+ tier enabled (phase-2 migration; K-12 students, 10-12
+# HS course feeds — both are the base defaults, so only the entity tier is
+# stated). Standard MyEd BC GDE file naming is assumed (no source_files
+# overrides here) — adjust once real GDE exports are available (see
+# docs/developer/adding-district.md, Steps 1-2).
+#
+# NOTE (2026-08-31): SD75 reported "selecting the sd75myedbc configuration"
+# BEFORE this file shipped — almost certainly a user-dir config the retired
+# v2.x Mapping Editor wrote (it saved `<id>myedbc_mapping.yaml` into the
+# per-user mappings folder). A user-dir file with this same id SHADOWS this
+# bundled one (the loader searches the user dir first and logs the shadow) —
+# have the district remove their local copy when they upgrade.
+_base: myedbc
+sis: MyEducationBC
+district_name: SD75 - Mission School District
+# The district's PUBLIC staff email domain (presentation metadata — see
+# sd27myedbc's comment on this same key). Mission's staff domain is mpsd.ca,
+# NOT sd75.bc.ca (owner-supplied BC district domains sheet, 2026-08-27).
+district_domains: ["mpsd.ca"]
+
+global_config:
+  # Full myBlueprint+ tier. Deep-merge REPLACES lists (see sd51myedbc's
+  # comment on this same key), so the full set must be restated here.
+  enabled_entities:
+    - Students
+    - Staff
+    - Family
+    - Classes
+    - Enrollments
+    - CourseInfo
+    - StudentCourses

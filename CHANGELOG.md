@@ -9,6 +9,22 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Added
+
+- **Seven phase-2 migration district configurations ship in the program:**
+  SD10 (Arrow Lakes — Students + course feeds, generated student emails),
+  SD27 (Cariboo-Chilcotin) and SD38 (Richmond) — full myBlueprint+ tier scoped
+  to grades 8-12, SD67 (Okanagan Skaha), SD69 (Qualicum — course feeds from
+  grade 9), SD71 (Comox Valley), and SD75 (Mission) — full myBlueprint+ tier.
+  All assume standard MyEd BC file naming until real extracts are checked.
+  SD27/SD38 are the first configurations to scope the student roster by grade
+  (`student_rostering_grades`): students outside grades 8-12 don't reach any
+  output CSV for those districts. Note for SD75: a district that created its
+  own `sd75myedbc` mapping with the retired v2.x Mapping Editor still has that
+  file in its per-user mappings folder, and it takes precedence over the new
+  built-in one (the log names the shadowing file) — remove the local copy to
+  use the shipped configuration.
+
 ### Fixed
 
 - **myBlueprint+ transcript data was silently never imported.** `CourseInfo.csv`
@@ -27,7 +43,68 @@ Per-release download links and auto-generated commit notes live on the
   change at all**. Affected districts should expect their first delivery after
   upgrading to import a full course history that had never arrived before.
 
+- **Runs that never attempted a delivery no longer read as "Delivered".** A run
+  that completed with data warnings but had no SFTP delivery configured into the
+  nightly task showed "Delivered · N data warnings" in Run History and "the sync
+  still delivered" on Home. Both now say "Completed" and that the files were
+  written to the output folder — "Delivered" appears only when an upload
+  actually succeeded.
+
+- **Saving delivery settings while the nightly schedule was still being set up
+  silently produced a task without delivery.** If you saved SFTP credentials in
+  the short window while a schedule registration was still applying (its Windows
+  permission prompt up), the save concluded there was no task to update, and the
+  registration then completed without `--sftp` — the nightly built the roster
+  but never uploaded it, while Settings showed delivery on. Both save notes now
+  say the change isn't included yet and to save again once the schedule
+  finishes, and a completed registration warns when settings changed while it
+  was applying.
+
+- **The data quality report no longer flags deliberately-blank columns.**
+  Columns a district's configuration fixes to blank (a withheld Date of Birth,
+  "Literacy Test Completed", CourseInfo's unused descriptor columns) were listed
+  as "missing/empty" with 100%-missing warnings on every run, burying the real
+  findings. Blank-by-design columns are now excluded from the missing-field
+  check; duplicate and orphan checks are unchanged.
+
+- **Course selections no longer ship without a course name.** Rows sourced from
+  `StudentCourseSelection` looked their course's name up with a raw-code,
+  exact-only, same-school match — so a course cataloged under a padded code or
+  at a different school came through nameless (about a quarter of the real
+  sample's transcript rows). The selection pass now resolves names through the
+  same exact-then-7-character-prefix chain the history pass has always used;
+  a name stays blank only when the course truly has no catalog entry.
+
+- **BC letter and status marks are no longer counted as per-row data errors.**
+  A district whose course history carries proficiency-scale marks (`PRF`, `DEV`,
+  `EXT`, `EMG`), letter grades, or administrative statuses saw every such row
+  counted as a "data warning" — tens of thousands per run on real data. These
+  are recognized BC mark shapes now: logged once as counts, never flagged as
+  errors. Only a value that reads as neither a number nor a letter/status code
+  (data landed in the wrong column) still counts as a data error.
+
 ### Changed
+
+- **Hyphen runs in course codes are treated as MyEd BC's fixed-width padding,
+  not as a course "flavor".** Two visible fixes on real data: (1) distinct
+  module courses that share a base code (`MADGE09---EX1`, `---EX2`, … — each a
+  different ADST course in the catalog) are no longer collapsed into one
+  transcript code, which removed thousands of duplicate `StudentCourses.csv`
+  rows; (2) trailing padding is stripped everywhere (`MAPPR12---` →
+  `MAPPR12`), so `CourseInfo.csv` carries clean codes, padded and unpadded
+  rows of the same course de-duplicate, and transcript rows exact-match the
+  catalog instead of relying on the 7-character-prefix fallback. Internal
+  hyphen runs (`MSC--09`) are positional and are never touched. The `HUB` /
+  `HOL` / `DL` delivery-mode flavors still truncate exactly as before.
+
+- **Standing Granted (`SG`) and Transfer Standing (`TS`) marks now earn course
+  credits on grade-10+ courses.** Both codes grant credit per the BC transcript
+  legend; previously every non-numeric mark scored as not-passing, so `SG`/`TS`
+  rows shipped with empty `Credits Earned` in `StudentCourses.csv`. Grade 9 and
+  below stay non-credit, and a course code whose grade can't be read stays
+  not-passing. Affects myBlueprint+ districts whose history carries these codes;
+  a course selection matching an `SG`/`TS` history row is now deduplicated the
+  same way as after a numeric pass.
 
 - **A course-only configuration (`mbponly`) now delivers two standalone files and
   no zip**, since the archive is built only when a run produces at least one

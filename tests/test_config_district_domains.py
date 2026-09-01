@@ -5,9 +5,10 @@ Three concerns, deliberately together because they only make sense as one contra
 1. **the key** — top-level, presentation-only, structurally unable to reach the ETL;
 2. **the validator** — a pasted email address must fail `make validate-config` LOUDLY,
    in CI, before it can put a real person's address in a public repository;
-3. **the six shipped rows** — the values ship LIT in S3 (plan 0038, flag 3), so unlike
-   the retired hashed-allowlist design this batch CAN be tested end to end: each shipped
-   domain is asserted to resolve to exactly its own district.
+3. **the shipped rows** (six at S3; fourteen since the 2026-08-31 phase-2 batch) — the
+   values ship LIT in S3 (plan 0038, flag 3), so unlike the retired hashed-allowlist
+   design this batch CAN be tested end to end: each shipped domain is asserted to
+   resolve to exactly its own district.
 
 The matching rule these feed is `mapping_catalog.filtered_catalog` (LIVE since S5, with its
 own truth table in `test_ui_flet_filtered_catalog.py`); what is pinned HERE is the DATA layer
@@ -37,12 +38,19 @@ from src.utils.validators import _IDENTITY_DOMAIN_RE
 # (same district, two tiers) — pinned separately below so the inheritance is deliberate
 # rather than incidental.
 SHIPPED_DOMAINS: dict[str, str] = {
+    "sd10.bc.ca": "sd10myedbc",
+    "sd27.bc.ca": "sd27myedbc",
+    "sd38.bc.ca": "sd38myedbc",
     "sd40.bc.ca": "sd40myedbc",
     "sd48.bc.ca": "sd48myedbc",
     "sd51.bc.ca": "sd51myedbc",
     "sd54.bc.ca": "sd54myedbc",
     "prn.bc.ca": "sd60myedbc",  # the STAFF domain, NOT the generated student domain
+    "sd67.bc.ca": "sd67myedbc",
+    "sd69.bc.ca": "sd69myedbc",
+    "sd71.bc.ca": "sd71myedbc",
     "sd74.bc.ca": "sd74myedbc",
+    "mpsd.ca": "sd75myedbc",  # Mission's STAFF domain, NOT sd75.bc.ca (owner sheet, 2026-08-27)
     "sd83.bc.ca": "sd83myedbc",
 }
 
@@ -136,7 +144,7 @@ def test_unclaimed_configs_carry_no_domains(sis, resolved):
     """The base and the myBlueprint+ tiers stay UNCLAIMED — and the base especially.
 
     A domain on the base ``myedbc`` would deep-merge into EVERY descendant config, so one
-    district's domain would claim all twelve. The `mbp_*` tiers are cross-district
+    district's domain would claim all nineteen. The `mbp_*` tiers are cross-district
     product tiers with no single owner, so they stay unclaimed too — which under the
     fail-open rule means "shown in every unmatched / no-identity / show-all state".
     """
