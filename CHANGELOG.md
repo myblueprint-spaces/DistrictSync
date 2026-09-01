@@ -27,7 +27,48 @@ Per-release download links and auto-generated commit notes live on the
   change at all**. Affected districts should expect their first delivery after
   upgrading to import a full course history that had never arrived before.
 
+- **Runs that never attempted a delivery no longer read as "Delivered".** A run
+  that completed with data warnings but had no SFTP delivery configured into the
+  nightly task showed "Delivered · N data warnings" in Run History and "the sync
+  still delivered" on Home. Both now say "Completed" and that the files were
+  written to the output folder — "Delivered" appears only when an upload
+  actually succeeded.
+
+- **Saving delivery settings while the nightly schedule was still being set up
+  silently produced a task without delivery.** If you saved SFTP credentials in
+  the short window while a schedule registration was still applying (its Windows
+  permission prompt up), the save concluded there was no task to update, and the
+  registration then completed without `--sftp` — the nightly built the roster
+  but never uploaded it, while Settings showed delivery on. Both save notes now
+  say the change isn't included yet and to save again once the schedule
+  finishes, and a completed registration warns when settings changed while it
+  was applying.
+
+- **The data quality report no longer flags deliberately-blank columns.**
+  Columns a district's configuration fixes to blank (a withheld Date of Birth,
+  "Literacy Test Completed", CourseInfo's unused descriptor columns) were listed
+  as "missing/empty" with 100%-missing warnings on every run, burying the real
+  findings. Blank-by-design columns are now excluded from the missing-field
+  check; duplicate and orphan checks are unchanged.
+
+- **BC letter and status marks are no longer counted as per-row data errors.**
+  A district whose course history carries proficiency-scale marks (`PRF`, `DEV`,
+  `EXT`, `EMG`), letter grades, or administrative statuses saw every such row
+  counted as a "data warning" — tens of thousands per run on real data. These
+  are recognized BC mark shapes now: logged once as counts, never flagged as
+  errors. Only a value that reads as neither a number nor a letter/status code
+  (data landed in the wrong column) still counts as a data error.
+
 ### Changed
+
+- **Standing Granted (`SG`) and Transfer Standing (`TS`) marks now earn course
+  credits on grade-10+ courses.** Both codes grant credit per the BC transcript
+  legend; previously every non-numeric mark scored as not-passing, so `SG`/`TS`
+  rows shipped with empty `Credits Earned` in `StudentCourses.csv`. Grade 9 and
+  below stay non-credit, and a course code whose grade can't be read stays
+  not-passing. Affects myBlueprint+ districts whose history carries these codes;
+  a course selection matching an `SG`/`TS` history row is now deduplicated the
+  same way as after a numeric pass.
 
 - **A course-only configuration (`mbponly`) now delivers two standalone files and
   no zip**, since the archive is built only when a run produces at least one

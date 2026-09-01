@@ -26,7 +26,7 @@ _Last reconciled on `feat/pre-partner-completion` @ b772054 (2026-07-20)._
 - `src/etl/transformers/base.py` — `BaseTransformer` ABC: CEDS grade mapping, `ALLOWED_TRANSFORMS` (defensive reference; canonical set lives in config.models), `apply_field_map()` (thin typed dispatch over `ConfiguredField.apply` — row-resilient, fail-loud), `assign_class_ids()`, excluded-course + `apply_row_filters()`, `filter_to_active()` (zero-orphan), `generate_student_email` (opt-in `sanitize`), date helpers (empty-on-unparseable).
 - `src/etl/transformers/grades.py` — Grade vocabulary: CEDS table + `grade_to_ceds` + `CEDS_GRADE_CODES` (config valid set AND an output mask, so the `"UG"` fallback must stay a table VALUE); `ceds_grade_series` = the ONE column derivation, blanks KEPT as `"UG"` (row-set identity); `resolve_timetable_scope`/`resolve_student_scope` = CONFIGURED, `timetable_rostered_grades` = DERIVED.
 - `src/etl/transformers/dates.py` — Flexible GDE date parsing/formatting: the SINGLE `INPUT_DATE_FORMATS` grid, friendly-token→strftime translation, withdraw-date classification, pure school-year determination (today is always a parameter — `datetime.now()` stays in base.py, the test seam).
-- `src/etl/transformers/course_codes.py` — Course-code exclusion + cleaning: `resolve_course_code_column` = THE alias precedence (`course code` → `district course code`; both filters here AND blended naming consume it, so a third spelling is a one-file change), exact-code + regex-pattern row filters, early-grade floor pattern, effective-patterns composer, SD62 flavor truncation; shared by Classes/Enrollments/blended/CourseInfo/StudentCourses.
+- `src/etl/transformers/course_codes.py` — Course-code exclusion + cleaning: `resolve_course_code_column` = THE alias precedence (`course code` → `district course code`; both filters here AND blended naming consume it, so a third spelling is a one-file change), exact-code + regex-pattern row filters, early-grade floor pattern + `course_grade` (the ONE grade-at-positions-6-7 reader — keep the two agreeing), effective-patterns composer, SD62 flavor truncation; shared by Classes/Enrollments/blended/CourseInfo/StudentCourses.
 - `src/etl/transformers/emails.py` — Student email template interpolation (`generate_student_email` with opt-in `sanitize`); the derived-dates machinery stays with its consumer `StudentTransformer._generate_emails`.
 - `src/etl/transformers/ids.py` — Shared ID/join-key normalization: `normalize_id_series` (the single `astype(str).str.strip()` spelling for every cross-frame join/filter) + `clean_invalid_ids`.
 - `src/etl/transformers/naming.py` — Class-name construction: word-boundary `truncate_name` (100-char Advanced CSV limit) + `generate_class_name`; imported by BaseTransformer, BlendedClassDetector, and the DataTransformer facade.
@@ -62,7 +62,7 @@ _Last reconciled on `feat/pre-partner-completion` @ b772054 (2026-07-20)._
 
 ## src/quality/
 
-- `src/quality/report.py` — `DataQualityReport` / `EntityReport`: checks missing/empty fields (warns at >50% threshold), entity-specific duplicate detection, orphaned enrollments (class or user not found in outputs), and grade distribution anomalies.
+- `src/quality/report.py` — `DataQualityReport` / `EntityReport`: checks missing/empty fields (warns at >50% threshold; `declared_blank_fields`-derived `{value: ""}` columns skip THIS check only — blank-by-design is not a finding), entity-specific duplicate detection, orphaned enrollments (class or user not found in outputs), and grade distribution anomalies.
 
 ---
 

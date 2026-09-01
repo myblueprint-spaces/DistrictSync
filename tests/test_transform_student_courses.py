@@ -1064,9 +1064,7 @@ class TestStandingGrantedCredits:
         result = _run(transformer, sc_mapping, myedbc_global_config, history=history)
         assert pd.isna(result.iloc[0]["Credits Earned"])
 
-    def test_standing_pass_suppresses_the_matching_selection_row(
-        self, transformer, sc_mapping, myedbc_global_config
-    ):
+    def test_standing_pass_suppresses_the_matching_selection_row(self, transformer, sc_mapping, myedbc_global_config):
         # has_passed now flows from a standing grant too: a selection row for the same course
         # is excluded exactly as it would be after a numeric pass.
         history = _history([self._history_row("SG", "MEN--10")])
@@ -1083,7 +1081,6 @@ class TestStandingGrantedCredits:
         result = _run(transformer, sc_mapping, myedbc_global_config, history=history, selection=selection)
         assert len(result) == 1
         assert result.iloc[0]["Final Mark"] == "SG"
-
 
 
 class TestConfigDrivenSourceColumns:

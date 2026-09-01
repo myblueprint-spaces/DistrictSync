@@ -970,8 +970,7 @@ class TestWarningRules:
         assert status.verdict is Verdict.WARNING
         assert status.headline == "Completed with 3 data warnings"
         assert status.detail == (
-            "Some records had field problems and were skipped — the files were still "
-            "written to your output folder."
+            "Some records had field problems and were skipped — the files were still written to your output folder."
         )
         assert "delivered" not in status.detail
 
