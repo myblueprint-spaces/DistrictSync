@@ -575,7 +575,9 @@ class TestMyBlueprintPlusGlobalConfig:
             "^X",
             "^ATT",
         ]
-        assert cfg.global_config.excluded_course_flavors == ["HUB", "HOL", "DL", "---"]
+        # "---" is deliberately absent: a hyphen run is MyEd BC PADDING, stripped
+        # unconditionally by the cleaning layer — never a flavor (owner, 2026-08-31).
+        assert cfg.global_config.excluded_course_flavors == ["HUB", "HOL", "DL"]
         assert cfg.global_config.course_start_grade == 10
 
     def test_yaml_load_with_new_fields(self, tmp_path):
