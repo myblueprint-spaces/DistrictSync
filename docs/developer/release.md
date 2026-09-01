@@ -57,7 +57,9 @@ push tag v*
 5. Asserts the packed exe actually embeds the Flet client (offline guarantee) and smoke-tests the real exe (Windows/macOS directly, Linux under `xvfb-run`).
 6. Uploads the binary as a build artifact (`DistrictSync-<matrix.os>`, retained 5 days).
 
-`publish-release` downloads all three artifacts, renames them to `DistrictSync-windows.exe` / `DistrictSync-linux` / `DistrictSync-macos`, computes `SHA256SUMS.txt`, and creates the GitHub Release with auto-generated release notes plus a fixed downloads table.
+`publish-release` downloads all three artifacts and renames them to `DistrictSync-windows.exe` / `DistrictSync-linux` / `DistrictSync-macos.dmg` / `DistrictSync-macos`, computes `SHA256SUMS.txt`, and creates the GitHub Release with auto-generated release notes plus a fixed downloads table.
+
+**macOS publishes two assets** (plan 0045). `DistrictSync-macos.dmg` is the district-facing download: a disk image built on the macOS runner in `flet-pack.yml`, containing `DistrictSync.app` beside an `/Applications` symlink. It is built there rather than here because `upload-artifact` does not preserve POSIX mode bits — a bundle that travels as loose files arrives with a non-executable `Contents/MacOS/DistrictSync`. `DistrictSync-macos` is the bare onefile binary, kept for a headless Mac running the CLI; it is not a double-click artifact (extension-less and non-executable after a browser download, Finder opens it in a text editor — the bug plan 0045 fixed).
 
 There are no separate per-platform PyInstaller jobs and no Streamlit build step — one `flet pack` invocation per OS produces the entire app.
 
@@ -193,10 +195,11 @@ The stable permalink pattern always points to the latest release:
 ```
 https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-windows.exe
 https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-linux
+https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos.dmg
 https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos
 ```
 
-These URLs never change and are safe to use in documentation, scripts, or partner emails. Each release also attaches `SHA256SUMS.txt` so a download can be verified (e.g. `sha256sum -c SHA256SUMS.txt`); binaries are not yet code-signed.
+These URLs never change and are safe to use in documentation, scripts, or partner emails — with one historical exception: before v3.15.0 the macOS permalink pointed at a bare binary, and `DistrictSync-macos` now resolves to the headless/CLI artifact rather than the app. Partner-facing links should use `DistrictSync-macos.dmg`. Each release also attaches `SHA256SUMS.txt` so a download can be verified (e.g. `sha256sum -c SHA256SUMS.txt`); binaries are not yet code-signed.
 
 ---
 
