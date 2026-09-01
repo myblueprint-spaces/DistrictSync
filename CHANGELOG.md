@@ -9,6 +9,24 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.14.0] - 2026-08-31
+
+The release that makes myBlueprint+ transcript delivery actually land, and
+makes the app honest about delivery. The headline fix: course data was
+delivered inside the rostering zip, which SpacesEDU silently never imports —
+both course CSVs now ship standalone. Around it: a hands-on live-data review
+by the owner caught and fixed four transcript-content faults (collapsed module
+courses, missing course names, standing-granted credits, a wall of false
+"data warnings"), two trust bugs (runs claiming "Delivered" without an upload;
+a save race that quietly produced a nightly task without delivery), and seven
+new districts ship built-in for the phase-2 migration.
+
+**Output changes for myBlueprint+ districts** (output contract `2.1.0`; the
+delivery envelope change is `2.0.0`): transcript course codes lose their
+padding and keep their module suffixes, selection rows gain course names,
+`SG`/`TS` rows gain credits. Rostering-only districts see no CSV change — the
+SD74 reference output is byte-identical.
+
 ### Added
 
 - **Seven phase-2 migration district configurations ship in the program:**
