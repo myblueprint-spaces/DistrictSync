@@ -525,13 +525,16 @@ class TestSelectionPass:
         result = _run(transformer, sc_mapping, myedbc_global_config, selection=selection, info=course_info_df)
         assert result.empty
 
-    def test_selection_title_uses_raw_code_not_cleaned(self, transformer, sc_mapping, myedbc_global_config):
-        """PowerShell selection-pass title lookup uses the raw course code, not the cleaned one."""
+    def test_selection_title_resolves_through_the_lookup_chain(self, transformer, sc_mapping, myedbc_global_config):
+        """The selection title uses the SAME exact-then-prefix chain as the history pass
+        (2026-08-31 — the legacy raw-code exact-only lookup shipped nameless rows). A
+        flavored selection still gets its variant's title: the cleaned code's 7-char
+        prefix reaches the same catalog entry the old raw lookup found."""
         info = pd.DataFrame(
             {
                 "course code": ["MAT10HUB"],
                 "school number": ["6262013"],
-                "title": ["Math 10 HUB (raw lookup)"],
+                "title": ["Math 10 HUB"],
                 "credit value": [4],
             }
         )
@@ -546,9 +549,58 @@ class TestSelectionPass:
             ]
         )
         result = _run(transformer, sc_mapping, myedbc_global_config, selection=selection, info=info)
-        # Code is flavor-truncated, but title comes from the raw-code lookup
         assert result.iloc[0]["Course Code"] == "MAT10HU"
-        assert result.iloc[0]["Course Name"] == "Math 10 HUB (raw lookup)"
+        assert result.iloc[0]["Course Name"] == "Math 10 HUB"
+
+    def test_selection_title_found_for_padded_catalog_code(self, transformer, sc_mapping, myedbc_global_config):
+        """The live nameless-rows shape: the catalog carries the padded code, the
+        selection carries the clean one — the exact tier (both sides stripped) hits."""
+        info = pd.DataFrame(
+            {
+                "course code": ["FLTST12---"],
+                "school number": ["6262013"],
+                "title": ["French Literature 12"],
+                "credit value": [4],
+            }
+        )
+        selection = _selection(
+            [
+                {
+                    "student number": "S001",
+                    "school number": "6262013",
+                    "course code": "FLTST12",
+                    "dl start date": "15-Sep-2025",
+                }
+            ]
+        )
+        result = _run(transformer, sc_mapping, myedbc_global_config, selection=selection, info=info)
+        assert result.iloc[0]["Course Name"] == "French Literature 12"
+        assert result.iloc[0]["Potential Credits Earned"] == 4
+
+    def test_selection_title_found_via_prefix_when_school_differs(self, transformer, sc_mapping, myedbc_global_config):
+        """The other live nameless-rows shape: the course is cataloged at a DIFFERENT
+        school — the school-agnostic 7-char prefix tier still names it (the history
+        pass has always resolved this way; the selection pass now matches it)."""
+        info = pd.DataFrame(
+            {
+                "course code": ["MCLC-12---ITT"],
+                "school number": ["9990001"],  # not the student's school
+                "title": ["Career-Life Connections 12"],
+                "credit value": [4],
+            }
+        )
+        selection = _selection(
+            [
+                {
+                    "student number": "S001",
+                    "school number": "6262013",
+                    "course code": "MCLC-12---ITT",
+                    "dl start date": "15-Sep-2025",
+                }
+            ]
+        )
+        result = _run(transformer, sc_mapping, myedbc_global_config, selection=selection, info=info)
+        assert result.iloc[0]["Course Name"] == "Career-Life Connections 12"
 
 
 class TestOutputShape:

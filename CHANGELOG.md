@@ -67,6 +67,14 @@ Per-release download links and auto-generated commit notes live on the
   findings. Blank-by-design columns are now excluded from the missing-field
   check; duplicate and orphan checks are unchanged.
 
+- **Course selections no longer ship without a course name.** Rows sourced from
+  `StudentCourseSelection` looked their course's name up with a raw-code,
+  exact-only, same-school match — so a course cataloged under a padded code or
+  at a different school came through nameless (about a quarter of the real
+  sample's transcript rows). The selection pass now resolves names through the
+  same exact-then-7-character-prefix chain the history pass has always used;
+  a name stays blank only when the course truly has no catalog entry.
+
 - **BC letter and status marks are no longer counted as per-row data errors.**
   A district whose course history carries proficiency-scale marks (`PRF`, `DEV`,
   `EXT`, `EMG`), letter grades, or administrative statuses saw every such row

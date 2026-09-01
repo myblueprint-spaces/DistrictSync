@@ -380,12 +380,14 @@ class StudentCoursesTransformer(BaseTransformer):
             if not self._should_include_selection(sch_lookup, student_id, cleaned, sel_start):
                 continue
 
-            # Title lookup uses raw code (matches PowerShell selection-pass behavior).
-            title_entry = info_exact.get((course_code, school_number))
-            title = title_entry["title"] if title_entry else ""
-
-            # Potential credits use the full lookup chain (exact/prefix/fallback) on cleaned code.
-            _, _, potential = self._lookup_credits(
+            # Title AND potential credits use the same two-tier lookup chain the history
+            # pass uses — exact on the CLEANED code at this school, then the 7-char
+            # prefix table (2026-08-31, live-data fix). The legacy PowerShell parity
+            # (raw-code, exact-only, same-school title lookup) shipped NAMELESS rows for
+            # exactly the selections whose course is cataloged under a padded code or at
+            # another school — while the potential-credits call on the next line was
+            # already resolving the right entry and discarding its title.
+            title, _, potential = self._lookup_credits(
                 cleaned, school_number, is_pass=False, info_exact=info_exact, info_prefix=info_prefix
             )
 
