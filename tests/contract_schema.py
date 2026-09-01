@@ -139,6 +139,16 @@ EXPECTED_ENTITIES: dict[str, frozenset[str]] = {
     "sd74myedbc": ROSTERING_ENTITIES,
     "sd51attendance": frozenset({"StudentAttendance"}),
     "sd83myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
+    # Phase-2 migration districts (2026-08-31): six full-tier configs on the
+    # standard MyEd BC file shape (grade-scope overrides are business logic the
+    # shared fixture exercises), plus SD10 on the mbp_core shape.
+    "sd27myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
+    "sd38myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
+    "sd67myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
+    "sd69myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
+    "sd71myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
+    "sd75myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
+    "sd10myedbc": frozenset({"Students", "CourseInfo", "StudentCourses"}),
     "mbp_all": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
     "mbp_core": frozenset({"Students", "CourseInfo", "StudentCourses"}),
     "mbponly": frozenset({"CourseInfo", "StudentCourses"}),

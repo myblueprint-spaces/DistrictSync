@@ -1,0 +1,35 @@
+# SD38 - Richmond: inherits from standard MyEducation BC mapping, with the
+# full myBlueprint+ tier enabled and the student roster scoped to grades 8-12
+# (phase-2 migration scope). Standard MyEd BC GDE file naming is assumed (no
+# source_files overrides here) — adjust once real GDE exports are available
+# (see docs/developer/adding-district.md, Steps 1-2).
+_base: myedbc
+# Quoted deliberately: PyYAML collapses a bare minor with a trailing zero to a
+# float (1.10 → 1.1), which the version gate would misread (see
+# src/config/loader.py). 1.11 = a declared use of `student_rostering_grades`
+# (plan 0042 1b).
+version: '1.11'
+sis: MyEducationBC
+district_name: SD38 - Richmond School District
+# The district's PUBLIC staff email domain (presentation metadata — see
+# sd27myedbc's comment on this same key).
+district_domains: ["sd38.bc.ca"]
+
+global_config:
+  # Full myBlueprint+ tier. Deep-merge REPLACES lists (see sd51myedbc's
+  # comment on this same key), so the full set must be restated here.
+  enabled_entities:
+    - Students
+    - Staff
+    - Family
+    - Classes
+    - Enrollments
+    - CourseInfo
+    - StudentCourses
+  # Grades 8-12 only — same shape and reasoning as sd27myedbc: the base K-7
+  # homeroom set must be overridden for the chain rule (homeroom ⊆ student),
+  # and every rostered class comes from the timetable (scope 08-12).
+  homeroom_grades: []
+  student_rostering_grades: ["08", "09", "10", "11", "12"]
+  # HS course feeds cover grades 10-12 — the base default course_start_grade
+  # (10) already says exactly that, so it is deliberately not restated.

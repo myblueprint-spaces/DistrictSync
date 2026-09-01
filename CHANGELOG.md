@@ -9,6 +9,22 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Added
+
+- **Seven phase-2 migration district configurations ship in the program:**
+  SD10 (Arrow Lakes — Students + course feeds, generated student emails),
+  SD27 (Cariboo-Chilcotin) and SD38 (Richmond) — full myBlueprint+ tier scoped
+  to grades 8-12, SD67 (Okanagan Skaha), SD69 (Qualicum — course feeds from
+  grade 9), SD71 (Comox Valley), and SD75 (Mission) — full myBlueprint+ tier.
+  All assume standard MyEd BC file naming until real extracts are checked.
+  SD27/SD38 are the first configurations to scope the student roster by grade
+  (`student_rostering_grades`): students outside grades 8-12 don't reach any
+  output CSV for those districts. Note for SD75: a district that created its
+  own `sd75myedbc` mapping with the retired v2.x Mapping Editor still has that
+  file in its per-user mappings folder, and it takes precedence over the new
+  built-in one (the log names the shadowing file) — remove the local copy to
+  use the shipped configuration.
+
 ### Fixed
 
 - **myBlueprint+ transcript data was silently never imported.** `CourseInfo.csv`

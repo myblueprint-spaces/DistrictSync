@@ -7,7 +7,7 @@ Covers:
 - an unreadable version raises an actionable ValueError
 - the version gate applies to the RESOLVED config (a _base-inherited version counts)
 - user-dir files shadowing bundled configs are named in an INFO log line
-- all 12 bundled configs still load clean (no version warnings, no rejects)
+- all bundled configs still load clean (no version warnings, no rejects)
 """
 
 from __future__ import annotations
@@ -34,12 +34,19 @@ BUNDLED_MAPPINGS_DIR = Path(__file__).resolve().parents[1] / "config" / "mapping
 
 ALL_BUNDLED_CONFIGS = [
     "myedbc",
+    "sd10myedbc",
+    "sd27myedbc",
+    "sd38myedbc",
     "sd40myedbc",
     "sd48myedbc",
     "sd51myedbc",
     "sd54myedbc",
     "sd60myedbc",
+    "sd67myedbc",
+    "sd69myedbc",
+    "sd71myedbc",
     "sd74myedbc",
+    "sd75myedbc",
     "sd83myedbc",
     "mbp_all",
     "mbp_core",
@@ -91,7 +98,7 @@ class TestInRangeSilent:
         assert _version_records(caplog, logging.WARNING) == []
 
     def test_lower_minor_than_supported_is_silent(self, user_mappings, caplog):
-        # Bundled configs span 1.0-1.10 — older minors within the major stay clean.
+        # Bundled configs span 1.0-1.11 — older minors within the major stay clean.
         _write_user_config(user_mappings, "vgate_oldminor", "1.2")
         with caplog.at_level(logging.DEBUG, logger=LOADER_LOGGER):
             load_config("vgate_oldminor")
@@ -211,14 +218,16 @@ class TestSD83DeclaresTheClassRosteringMinor:
 
 
 class TestDeclaredRangeVersusSupported:
-    """The constant and the prose beside it legitimately DIVERGE (plan 0042 1b).
+    """The constant and the prose beside it stay in a PINNED relationship.
 
     `SUPPORTED_CONFIG_MINOR` tracks what THIS BUILD understands; `loader.py`'s
-    comment tracks what the BUNDLED CONFIGS DECLARE. Minor 11 added
-    `student_rostering_grades`, which no shipped config sets — so nothing
-    declares '1.11' and the declared range is still 1.0–1.10. Both facts are
-    pinned so nobody "fixes" the apparent lag, and so the first consumer config
-    has to move BOTH together.
+    comment tracks what the BUNDLED CONFIGS DECLARE. The two MAY legitimately
+    diverge (minor 11 landed with plan 0042 1b ahead of any consumer, and this
+    class originally pinned that lag); they CONVERGED on 2026-08-31 when
+    sd27/sd38 — the first `student_rostering_grades` districts — declared
+    '1.11' and moved the prose with them. What must always hold: no bundled
+    config declares ABOVE the supported minor, and the prose matches the real
+    declared range rather than the constant.
     """
 
     LOADER_SOURCE = Path(__file__).resolve().parents[1] / "src" / "config" / "loader.py"
@@ -233,12 +242,16 @@ class TestDeclaredRangeVersusSupported:
                 versions.append(_parse_version(declared, Path(f"{sis}_mapping.yaml")))
         return versions
 
-    def test_the_supported_minor_is_AHEAD_of_every_declared_version(self):
-        """Deliberate: the bump is forward-looking, so it changes no observable
-        behaviour today (the gate only warns on a minor ABOVE the supported one)."""
+    def test_the_supported_minor_covers_every_declared_version(self):
+        """The gate only warns on a minor ABOVE the supported one, so every bundled
+        config must declare AT OR BELOW it — and since 2026-08-31 the highest
+        declared version IS the supported one (sd27/sd38 declare '1.11', the first
+        consumers of `student_rostering_grades`). A future forward-looking bump
+        makes the second assertion a strict <= again; a config declaring past the
+        constant fails here before it can ship a warning to every install."""
         highest = max(self._declared_versions())
-        assert highest == (SUPPORTED_CONFIG_MAJOR, 10)
-        assert highest < (SUPPORTED_CONFIG_MAJOR, SUPPORTED_CONFIG_MINOR)
+        assert highest == (SUPPORTED_CONFIG_MAJOR, 11)
+        assert highest <= (SUPPORTED_CONFIG_MAJOR, SUPPORTED_CONFIG_MINOR)
 
     def test_the_loader_prose_matches_the_range_the_bundled_configs_DECLARE(self):
         """A literal copied out of the data it describes needs a parity test:
