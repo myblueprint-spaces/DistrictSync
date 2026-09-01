@@ -254,20 +254,115 @@ jobs:
           DISTRICTSYNC_DATA_DIR: ${{ runner.temp }}/dsync-smoke-profile
         run: |
           python scripts/ci_flet_pack_smoke.py "$GITHUB_WORKSPACE/dist" DistrictSync \
-            --cli-smoke --phase all \
+            --cli-smoke --phase all --artifact binary \
             --work-dir "$RUNNER_TEMP/dsync-smoke-work"
 
       # Smoke the REAL exe: PE subsystem (win) + offline-embed (all, gating) +
       # zero-orphan close (win gating via --require-close; lin/mac INFO-only).
       # Linux runs under xvfb so the client opens a real window.
-      - name: Smoke the packed exe (Windows / macOS)
-        if: runner.os != 'Linux'
+      # macOS is NOT here: since plan 0045 it smokes the .app inside the mounted
+      # DMG instead — the artifact districts actually download.
+      - name: Smoke the packed exe (Windows)
+        if: runner.os == 'Windows'
         run: python scripts/ci_flet_pack_smoke.py dist DistrictSync ${{ matrix.require_close }}
 
       - name: Smoke the packed exe (Linux, xvfb)
         if: runner.os == 'Linux'
         run: xvfb-run -a python scripts/ci_flet_pack_smoke.py dist DistrictSync ${{ matrix.require_close }}
 
+      # ---------------------------------------------------------------------
+      # macOS: wrap the .app in a DMG — the district-facing download (plan 0045)
+      # ---------------------------------------------------------------------
+      # A macOS `flet pack` emits BOTH `dist/DistrictSync.app` (the real bundle) and
+      # `dist/DistrictSync` (a bare onefile binary). The release used to publish the
+      # bare one, which Finder can only open in a text editor: no extension, and a
+      # browser download carries no executable bit, so LaunchServices has nothing to
+      # identify it with. The fix is to ship the bundle — and a bundle can only reach
+      # a district intact inside a container, because `upload-artifact` does NOT
+      # preserve POSIX mode bits. Hence: build the image HERE, on the runner, while
+      # the bits are still right. Doing it in release.yml would package an already
+      # permission-stripped bundle.
+      #
+      # The .app is MOVED (not copied) into the staging dir, so `dist/` is left
+      # holding exactly the two artifacts we publish — the DMG and the bare binary
+      # kept for a headless Mac — and the upload glob below needs no exclusion.
+      # The `Applications` symlink is what makes the mounted window a drag target.
+      - name: Build the macOS DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/dmg-staging"
+          rm -rf "$STAGE" && mkdir -p "$STAGE"
+          mv dist/DistrictSync.app "$STAGE/DistrictSync.app"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create \
+            -volname DistrictSync \
+            -srcfolder "$STAGE" \
+            -ov -format UDZO \
+            dist/DistrictSync-macos.dmg
+          ls -la dist/
+          SIZE=$(stat -f%z dist/DistrictSync-macos.dmg)
+          MB=$(python -c "print(f'{$SIZE/1e6:.1f}')")
+          echo "dmg size: $SIZE bytes (${MB} MB)"
+          {
+            echo ""
+            echo "| artifact | bytes | MB |"
+            echo "|---|---|---|"
+            echo "| \`DistrictSync-macos.dmg\` | $SIZE | $MB |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------------------------------------------------------------------
+      # macOS: prove the DMG as DELIVERED (plan 0045) — the gating macOS smoke
+      # ---------------------------------------------------------------------
+      # Until this existed, `resolve_artifact`'s fixed candidate order meant every
+      # macOS smoke ran against the bare binary and NOTHING ever launched the .app.
+      # That matters more than usual here: PyInstaller warns on every macOS pack that
+      # onefile + a windowed .app "clashes with macOS's security", so whether the
+      # bundle starts at all was an open question this workflow could not answer.
+      # These steps answer it against the mounted image, so a green run means the
+      # bytes a district downloads mount, carry an executable bundle, and boot with
+      # the Flet client embedded.
+      #
+      # -mountpoint is explicit on purpose: /Volumes auto-naming would append " 1"
+      # if anything were already mounted there, and the asserts would then be
+      # inspecting a different image than the one just built.
+      - name: Verify + mount the DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          hdiutil verify dist/DistrictSync-macos.dmg
+          mkdir -p "$RUNNER_TEMP/dmg-mnt"
+          hdiutil attach dist/DistrictSync-macos.dmg \
+            -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg-mnt"
+          ls -la "$RUNNER_TEMP/dmg-mnt"
+
+      - name: Assert the mounted bundle is intact + executable
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python scripts/ci_flet_pack_smoke.py \
+            --assert-mounted-app "$RUNNER_TEMP/dmg-mnt" DistrictSync
+
+      - name: Smoke the mounted .app (offline embed, gating)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python scripts/ci_flet_pack_smoke.py "$RUNNER_TEMP/dmg-mnt" DistrictSync \
+            --artifact bundle
+
+      # always(): a wedged mount would outlive the job and break the next one on a
+      # reused runner. `|| true` so cleanup can never mask the real failure above.
+      - name: Detach the DMG
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: hdiutil detach "$RUNNER_TEMP/dmg-mnt" || true
+
+      # macOS uploads exactly two files: the DMG (districts) and the bare binary
+      # (headless CLI). The .app is not among them — it was MOVED into the DMG
+      # staging dir above, because uploading it loose would strip its mode bits and
+      # hand anyone who used it the same broken download this plan fixes.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

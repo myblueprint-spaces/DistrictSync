@@ -31,7 +31,8 @@ Get the latest release for your platform:
 |----------|----------|-------|
 | **Windows** | [DistrictSync-windows.exe](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-windows.exe) | Double-click to open Setup Wizard |
 | **Linux** | [DistrictSync-linux](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-linux) | `chmod +x` before first run |
-| **macOS** | [DistrictSync-macos](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos) | Allow in System Settings › Privacy & Security |
+| **macOS** | [DistrictSync-macos.dmg](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos.dmg) | Open the .dmg, drag DistrictSync to Applications, then allow it in System Settings › Privacy & Security |
+| **macOS** (headless/CLI) | [DistrictSync-macos](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos) | Command-line only — `chmod +x` before first run |
 
 !!! tip "First time?"
     Start with the **[Partner Installation Guide](partner/installation.md)** for step-by-step setup instructions including the Setup Wizard walkthrough.

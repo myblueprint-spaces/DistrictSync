@@ -64,6 +64,140 @@ def test_resolve_artifact_missing_returns_none(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+#  resolve_artifact — explicit kind (plan 0045)
+#
+#  macOS packs BOTH a bare binary and a .app, and they ship to different
+#  audiences (the DMG's bundle vs the headless CLI download). These rows pin that
+#  each kind stays addressable — the property a reordered `auto` list would have
+#  destroyed, leaving one of the two artifacts permanently untestable.
+# --------------------------------------------------------------------------- #
+
+
+def _macos_dual_layout(root: Path, name: str) -> tuple[Path, Path]:
+    """Write the two artifacts a macOS `flet pack` really produces. Returns (binary, inner)."""
+    binary = root / name
+    binary.write_bytes(b"x")
+    inner_dir = root / f"{name}.app" / "Contents" / "MacOS"
+    inner_dir.mkdir(parents=True)
+    inner = inner_dir / name
+    inner.write_bytes(b"x")
+    return binary, inner
+
+
+def test_resolve_artifact_binary_kind_picks_the_bare_binary(tmp_path: Path) -> None:
+    binary, _inner = _macos_dual_layout(tmp_path, "DistrictSync")
+    assert smoke.resolve_artifact(tmp_path, "DistrictSync", "binary") == binary
+
+
+def test_resolve_artifact_bundle_kind_picks_the_app_inner_exe(tmp_path: Path) -> None:
+    _binary, inner = _macos_dual_layout(tmp_path, "DistrictSync")
+    assert smoke.resolve_artifact(tmp_path, "DistrictSync", "bundle") == inner
+
+
+def test_resolve_artifact_binary_kind_never_falls_back_to_the_bundle(tmp_path: Path) -> None:
+    # The bundle exists and the bare binary does not. `auto` would happily return the
+    # bundle; `binary` must return None instead. Otherwise the CLI smoke could silently
+    # start proving the GUI artifact and nobody would ever know the difference.
+    inner_dir = tmp_path / "DistrictSync.app" / "Contents" / "MacOS"
+    inner_dir.mkdir(parents=True)
+    (inner_dir / "DistrictSync").write_bytes(b"x")
+    assert smoke.resolve_artifact(tmp_path, "DistrictSync", "bundle") is not None
+    assert smoke.resolve_artifact(tmp_path, "DistrictSync", "binary") is None
+
+
+def test_resolve_artifact_bundle_kind_none_without_an_app(tmp_path: Path) -> None:
+    # Windows/Linux dists have no .app: asking for a bundle there is honestly nothing.
+    (tmp_path / "DistrictSync").write_bytes(b"x")
+    (tmp_path / "DistrictSync.exe").write_bytes(b"x")
+    assert smoke.resolve_artifact(tmp_path, "DistrictSync", "bundle") is None
+
+
+def test_resolve_artifact_auto_is_unchanged_on_the_macos_dual_layout(tmp_path: Path) -> None:
+    # The historical behaviour, pinned deliberately: `auto` picks the BARE BINARY when
+    # both exist. That is exactly the silent preference that let the .app ship
+    # unsmoked for the whole life of the macOS job — so it is documented as a fact
+    # here rather than left as an accident of candidate ordering.
+    binary, _inner = _macos_dual_layout(tmp_path, "DistrictSync")
+    assert smoke.resolve_artifact(tmp_path, "DistrictSync") == binary
+
+
+# --------------------------------------------------------------------------- #
+#  mounted_app_problems — the macOS DMG release gate (plan 0045)
+#
+#  A DMG is only an improvement over the old bare-binary download if the bundle
+#  inside it is intact AS DELIVERED. Every row below is a way an image can look
+#  built-but-broken; the non-executable row is the negative twin for the assert
+#  that exists precisely because `upload-artifact` strips POSIX mode bits.
+# --------------------------------------------------------------------------- #
+
+
+def _applications_symlink(root: Path) -> None:
+    """Create the /Applications drag target, or skip where the OS forbids symlinks.
+
+    Unprivileged Windows without Developer Mode cannot create symlinks. CI runs these
+    on ubuntu, so the rows below really do execute — skipping locally is honest about
+    a platform limit rather than quietly weakening the assertion.
+    """
+    try:
+        (root / "Applications").symlink_to("/Applications")
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform gate
+        pytest.skip(f"symlink creation unavailable on this platform: {exc}")
+
+
+def _mounted_volume(root: Path, name: str, *, executable: bool = True) -> Path:
+    """Build a synthetic mounted-DMG tree: <name>.app + an /Applications symlink."""
+    inner_dir = root / f"{name}.app" / "Contents" / "MacOS"
+    inner_dir.mkdir(parents=True)
+    inner = inner_dir / name
+    inner.write_bytes(b"x")
+    inner.chmod(0o755 if executable else 0o644)
+    _applications_symlink(root)
+    return root
+
+
+def test_mounted_app_problems_clean_volume_is_shippable(tmp_path: Path) -> None:
+    vol = _mounted_volume(tmp_path, "DistrictSync")
+    assert smoke.mounted_app_problems(vol, "DistrictSync") == []
+
+
+def test_mounted_app_problems_flags_a_missing_bundle(tmp_path: Path) -> None:
+    _applications_symlink(tmp_path)
+    problems = smoke.mounted_app_problems(tmp_path, "DistrictSync")
+    assert any("no DistrictSync.app" in p for p in problems)
+
+
+def test_mounted_app_problems_flags_a_bundle_without_an_inner_exe(tmp_path: Path) -> None:
+    (tmp_path / "DistrictSync.app" / "Contents" / "MacOS").mkdir(parents=True)
+    _applications_symlink(tmp_path)
+    problems = smoke.mounted_app_problems(tmp_path, "DistrictSync")
+    assert any("no inner executable" in p for p in problems)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX execute bit to clear")
+def test_mounted_app_problems_flags_a_non_executable_inner_exe(tmp_path: Path) -> None:
+    # THE negative twin. This is the exact corruption `upload-artifact` inflicts on a
+    # loose .app, and shipping it would reproduce the district's bug in a new costume.
+    # Without this row, "the exec-bit assert passed" could only ever mean "the assert
+    # never looked".
+    vol = _mounted_volume(tmp_path, "DistrictSync", executable=False)
+    problems = smoke.mounted_app_problems(vol, "DistrictSync")
+    assert any("NOT executable" in p for p in problems)
+
+
+def test_mounted_app_problems_flags_a_real_applications_directory(tmp_path: Path) -> None:
+    # If `hdiutil` ever dereferenced the symlink it would copy the runner's whole
+    # /Applications into the image. A real directory here is that failure, caught.
+    inner_dir = tmp_path / "DistrictSync.app" / "Contents" / "MacOS"
+    inner_dir.mkdir(parents=True)
+    inner = inner_dir / "DistrictSync"
+    inner.write_bytes(b"x")
+    inner.chmod(0o755)
+    (tmp_path / "Applications").mkdir()
+    problems = smoke.mounted_app_problems(tmp_path, "DistrictSync")
+    assert any("not a symlink" in p for p in problems)
+
+
+# --------------------------------------------------------------------------- #
 #  orphan_pids (baseline-delta)
 # --------------------------------------------------------------------------- #
 

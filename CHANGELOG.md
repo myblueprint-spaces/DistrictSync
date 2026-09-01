@@ -9,6 +9,25 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Fixed
+
+- **macOS downloads open the app instead of a text editor.** The macOS release now
+  ships `DistrictSync-macos.dmg` — double-click it and drag **DistrictSync** into
+  **Applications**. The previous macOS asset was a bare, extension-less binary that
+  Finder could only open as text, because a browser download does not carry the
+  executable bit and there was no file extension to go on. Reported by a district.
+
+### Changed
+
+- **The macOS download link has moved** to
+  `releases/latest/download/DistrictSync-macos.dmg`. The old `DistrictSync-macos`
+  URL still resolves, but now to the bare command-line binary, which is kept for
+  headless Macs and needs `chmod +x` like the Linux build. Update any saved links
+  or partner emails to the `.dmg`.
+- macOS release builds are now verified by mounting the built disk image and
+  launching the app inside it, so the artifact that is tested is the artifact
+  districts download.
+
 ## [3.14.0] - 2026-08-31
 
 The release that makes myBlueprint+ transcript delivery actually land, and
