@@ -1246,8 +1246,28 @@ class TestReconcileSaveNote:
         )
         assert "updating" not in suffix.lower()
 
-    def test_reconcile_outcome_members_are_the_four_states(self):
-        assert {o.value for o in ReconcileOutcome} == {"dispatched", "interrupted", "blocked", "none"}
+    def test_folders_note_in_flight_is_honest_and_says_save_again(self):
+        # 2026-08-31 race: a Save landing while a register/unregister is still applying must not
+        # claim anything about the task — the apply in flight was dispatched with OLDER args.
+        note = folders_save_note(ReconcileOutcome.IN_FLIGHT)
+        assert note == (
+            "Saved — the nightly schedule is still applying an earlier change and doesn't include "
+            "this yet. Save again once it finishes."
+        )
+        assert "updating" not in note.lower()
+
+    def test_sftp_suffix_in_flight_is_honest_and_says_save_again(self):
+        # The exact live shape (2026-08-31): delivery saved during the registration's UAC window —
+        # the task being applied carries no --sftp, so the note must say delivery is NOT included.
+        suffix = sftp_reconcile_suffix(ReconcileOutcome.IN_FLIGHT)
+        assert suffix == (
+            " The nightly schedule is still applying an earlier change and doesn't include delivery "
+            "yet — save again once it finishes."
+        )
+        assert "updating" not in suffix.lower()
+
+    def test_reconcile_outcome_members_are_the_five_states(self):
+        assert {o.value for o in ReconcileOutcome} == {"dispatched", "interrupted", "blocked", "in_flight", "none"}
 
 
 # --------------------------------------------------------------------------- #
