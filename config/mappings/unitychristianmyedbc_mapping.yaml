@@ -59,10 +59,51 @@ mappings:
         format: "{student number}@unitychristian.ca"
 
 # ---------------------------------------------------------------------------
-# PENDING — the Family block to add once Parent Information arrives. Kept as a
-# comment rather than a live entry because the file does not exist yet and a
-# live `source_files` pointing at a missing file would only warn-and-skip,
-# which reads as "working" when it is not.
+# PENDING — how to turn Family on. Kept as a comment because the data is not
+# there yet (confirmed with the school, 2026-09-01: they hold no guardian email
+# addresses today), and a live entity that quietly emits blank `Email` reads as
+# "working" when it is not.
+#
+# The base Family mapping ALREADY reads a column called `Email Address` and is
+# inherited verbatim, so whenever an export arrives carrying one there is NO
+# column mapping to write. Two edits, and the second is NOT optional:
+#
+#   1. add `- Family` back to `enabled_entities` above; and
+#   2. add a row_filter (below), because this is an EMERGENCY-contact list, not
+#      a guardian list.
+#
+# Measured on the real 2,488-row export with emails simulated onto the guardian
+# rows (2026-09-01): UNFILTERED it emits 2,483 rows of which 1,228 carry a blank
+# `Email` — doctors, dentists, aunts, grandparents, friends of the family,
+# homestay coordinators. Two ways to draw the guardian line were compared:
+#
+#   Contact Level Code 1-2 ......... 1,249 rows, 627 of 628 students   <- USE THIS
+#   Relationship Description ....... 1,257 rows, 622 students
+#
+# They agree on 1,227 rows. Prefer `Contact Level Code` — it is the SCHOOL's own
+# priority ordering, and the 22 rows it keeps that the relationship list misses
+# are exactly the ones that should have accounts (13 grandparents, 2 homestay
+# families, 2 homestay coordinators, an adult sister). An end-to-end run through
+# this filter produced 1,247 Family rows with ZERO blank emails and ZERO orphans.
+#
+#   mappings:
+#     Family:
+#       # ONLY if the email arrives in a differently-named export — the base
+#       # already points at EmergencyContactInformation.txt:
+#       source_files:
+#         emergency_contacts: "EmergencyContactInformationEnhanced.txt"
+#       row_filters:
+#         - column: "Contact Level Code"
+#           include: ["1", "2"]
+#
+# Re-check the real column names against the actual export first: `row_filters`
+# fails LOUD on a missing COLUMN, but silently drops any row whose value is not
+# in the include list.
+#
+# ALTERNATIVE, if the school sends the Parent Information GDE instead (the report
+# SD74 uses — a guardian list by construction, carrying `Email Address`). Its
+# columns differ, hence the field_map line; its relationship column is named
+# `Parent Type Description`, NOT the `Relationship Description` above:
 #
 #   mappings:
 #     Family:
@@ -70,11 +111,8 @@ mappings:
 #         emergency_contacts: "ParentInformation.txt"
 #       field_map:
 #         "Last Name": "Surname"
-#       row_filters:
-#         - column: "Parent Type Description"
-#           include: ["Mother", "Father", "Step Mother", "Step Father", "Guardian", "Parent"]
 #
-# Confirm the real column names and the full `Parent Type Description` value set
-# against the actual export before enabling — `row_filters` fails LOUD on a
-# column that is not there, and an unlisted value silently drops that guardian.
+# NOTE no shape can filter on "email is non-blank" — `row_filters` matches an
+# include LIST, not emptiness — so any guardian the SIS has no address for still
+# ships as a blank-`Email` row.
 # ---------------------------------------------------------------------------
