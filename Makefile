@@ -20,7 +20,7 @@ typecheck:
 	mypy src/ --exclude 'src/ui_flet'
 
 validate-config:
-	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc','sd10myedbc','sd27myedbc','sd38myedbc','sd40myedbc','sd48myedbc','sd51myedbc','sd54myedbc','sd60myedbc','sd67myedbc','sd69myedbc','sd71myedbc','sd74myedbc','sd75myedbc','sd83myedbc','mbp_all','mbp_core','mbponly','sd51attendance']]"
+	python -c "from src.config.loader import load_config; [(load_config(n), print(n+': OK')) for n in ['myedbc','sd10myedbc','sd27myedbc','sd38myedbc','sd40myedbc','sd48myedbc','sd51myedbc','sd54myedbc','sd60myedbc','sd67myedbc','sd69myedbc','sd71myedbc','sd74myedbc','sd75myedbc','sd83myedbc','unitychristianmyedbc','mbp_all','mbp_core','mbponly','sd51attendance']]"
 
 # The embedded Flutter client flavor. `light` on every OS since 2026-07-28 (D-0037-1)
 # — the app plays no audio or video, so the `full` client's media stack is dead

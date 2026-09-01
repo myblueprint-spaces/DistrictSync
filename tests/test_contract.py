@@ -666,6 +666,11 @@ _DISTRICT_SETUP = {
     "sd71myedbc": _create_mbp_all_inputs,
     "sd75myedbc": _create_mbp_all_inputs,
     "sd10myedbc": _create_mbp_core_inputs,
+    # Unity Christian School (2026-09-01): standard MyEd BC file shape. Its real
+    # differences (grade-8 homerooms, generated emails, Family off) are config facts
+    # the shared fixture exercises — the EmergencyContactInformation.txt this builder
+    # writes is simply never read, which is the point.
+    "unitychristianmyedbc": _create_myedbc_inputs,
     "mbp_all": _create_mbp_all_inputs,
     "mbp_core": _create_mbp_core_inputs,
     "mbponly": _create_mbponly_inputs,

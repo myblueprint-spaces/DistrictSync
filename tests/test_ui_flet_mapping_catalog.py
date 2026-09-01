@@ -692,7 +692,7 @@ def test_every_bundled_config_can_name_its_own_roster_size(bundle_dir: Path) -> 
     from src.ui_flet.home_status import SIZE_NOUNS, size_clause
 
     ids = available_configs(bundle_dir)
-    assert len(ids) == 19, f"the bundled config count moved ({len(ids)}) — keep this pin in lockstep"
+    assert len(ids) == 20, f"the bundled config count moved ({len(ids)}) — keep this pin in lockstep"
 
     # A record where EVERY entity key is non-zero and DISTINCT, so the entity the clause chose
     # is identifiable from the number it printed.

@@ -63,7 +63,7 @@ jobs:
           python - <<'PY'
           from src.config.loader import available_configs, load_config
 
-          EXPECTED_CONFIGS = 19
+          EXPECTED_CONFIGS = 20
           names = available_configs()
           for name in names:
               load_config(name)

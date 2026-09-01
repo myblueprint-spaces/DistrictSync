@@ -1,0 +1,80 @@
+# Unity Christian School (Chilliwack) — an independent K-12 school, not an SD.
+# Inherits from the standard MyEducation BC mapping.
+#
+# Built against the school's FIRST real GDE drop (2026-08-31, 6 files). All six
+# filenames AND every column name match the MyEd BC canonical set, so there are
+# no `source_files` and no column overrides here — only the three genuine
+# differences below (homeroom band, generated student email, Family disabled).
+_base: myedbc
+version: '1.9'
+sis: MyEducationBC
+district_name: Unity Christian School (Chilliwack)
+# The school's PUBLIC staff email domain. It scopes which rows this school's
+# admins see in the pickers (plan 0038 S4a/S5) — presentation metadata, not
+# access control and not personal data; structurally invisible to the ETL.
+district_domains: ["unitychristian.ca"]
+
+global_config:
+  # Family is OFF until the school supplies a contact export that carries
+  # guardian EMAIL. Its `EmergencyContactInformation.txt` has no email column at
+  # all, so every one of the 2,483 rows this entity would emit carries a blank
+  # `Email` — the field SpacesEDU keys a family account on. Emitting it would
+  # ship the names and relationships of ~1,700 third parties (doctors, aunts,
+  # friends of the family — the file is an EMERGENCY-contact list, not a
+  # guardian list) to the vendor with no function whatsoever, which the
+  # privacy-first standard does not permit.
+  #
+  # TO RE-ENABLE once the school exports Parent Information (the GDE report
+  # SD74 uses — it carries `Email Address` and `Parent Type Description`): add
+  # `Family` back to this list and add the mapping block sketched at the bottom
+  # of this file. Deep-merge REPLACES lists, so the full set is restated here.
+  enabled_entities:
+    - Students
+    - Staff
+    - Classes
+    - Enrollments
+
+  # Adds grade 8 to the base K-7 homeroom set. Unity's StudentSchedule.txt
+  # covers grades 9-12 ONLY — grade 8 has no timetable rows at all, so without
+  # this the 66 active grade-8 pupils would reach Students.csv with zero classes
+  # and zero enrollments. Their `Homeroom` IS fully populated (8A/8B/8C, every
+  # row carrying a Teacher ID that resolves in the staff file), so homeroom
+  # generation is the correct — and only — class source for them. Restated in
+  # full because deep-merge REPLACES lists.
+  #
+  # Grade 9 deliberately STAYS on the timetable side even though it also has
+  # homerooms (9A/9B): it has 437 real schedule rows, and a grade listed here
+  # gets homeroom classes INSTEAD of subject classes, not as well.
+  homeroom_grades: ["IT", "PR", "PK", "TK", "KG", "01", "02", "03", "04", "05", "06", "07", "08"]
+
+mappings:
+  Students:
+    field_map:
+      # The GDE carries no student email column at all: the demographic export
+      # has none, and `User name` is populated for grades 9-12 only (155 of 978
+      # rows) as a bare login name rather than an address. Generate a unique,
+      # stable per-pupil address from the student number — the sd10/sd51/sd74
+      # pattern.
+      "Email Address":
+        format: "{student number}@unitychristian.ca"
+
+# ---------------------------------------------------------------------------
+# PENDING — the Family block to add once Parent Information arrives. Kept as a
+# comment rather than a live entry because the file does not exist yet and a
+# live `source_files` pointing at a missing file would only warn-and-skip,
+# which reads as "working" when it is not.
+#
+#   mappings:
+#     Family:
+#       source_files:
+#         emergency_contacts: "ParentInformation.txt"
+#       field_map:
+#         "Last Name": "Surname"
+#       row_filters:
+#         - column: "Parent Type Description"
+#           include: ["Mother", "Father", "Step Mother", "Step Father", "Guardian", "Parent"]
+#
+# Confirm the real column names and the full `Parent Type Description` value set
+# against the actual export before enabling — `row_filters` fails LOUD on a
+# column that is not there, and an unlisted value silently drops that guardian.
+# ---------------------------------------------------------------------------
