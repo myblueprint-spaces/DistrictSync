@@ -32,7 +32,7 @@ import pandas as pd
 from src.etl.column_names import SCHOOL_NUMBER
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
-from src.etl.transformers.course_codes import course_grade
+from src.etl.transformers.course_codes import course_grade, strip_trailing_hyphens
 from src.utils.helpers import describe_value_for_log as _describe_value
 
 logger = logging.getLogger(__name__)
@@ -194,7 +194,10 @@ class StudentCoursesTransformer(BaseTransformer):
         if info_df.empty:
             return exact, prefix
         for record in info_df.to_dict("records"):
-            code = self._str(record.get(cols["course_code"]))
+            # Strip MyEd BC's trailing hyphen padding so catalog keys line up with
+            # the (identically stripped) history/selection codes — a padded
+            # MAPPR12--- and a cleaned MAPPR12 are the same course (2026-08-31).
+            code = strip_trailing_hyphens(self._str(record.get(cols["course_code"])))
             if not code:
                 continue
             school = self._str(record.get(SCHOOL_NUMBER))

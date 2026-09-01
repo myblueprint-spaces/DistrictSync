@@ -77,6 +77,18 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **Hyphen runs in course codes are treated as MyEd BC's fixed-width padding,
+  not as a course "flavor".** Two visible fixes on real data: (1) distinct
+  module courses that share a base code (`MADGE09---EX1`, `---EX2`, … — each a
+  different ADST course in the catalog) are no longer collapsed into one
+  transcript code, which removed thousands of duplicate `StudentCourses.csv`
+  rows; (2) trailing padding is stripped everywhere (`MAPPR12---` →
+  `MAPPR12`), so `CourseInfo.csv` carries clean codes, padded and unpadded
+  rows of the same course de-duplicate, and transcript rows exact-match the
+  catalog instead of relying on the 7-character-prefix fallback. Internal
+  hyphen runs (`MSC--09`) are positional and are never touched. The `HUB` /
+  `HOL` / `DL` delivery-mode flavors still truncate exactly as before.
+
 - **Standing Granted (`SG`) and Transfer Standing (`TS`) marks now earn course
   credits on grade-10+ courses.** Both codes grant credit per the BC transcript
   legend; previously every non-numeric mark scored as not-passing, so `SG`/`TS`

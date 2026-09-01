@@ -47,11 +47,15 @@ global_config:
     - "^.{5}-K"      # kindergarten variants
     - "^X"           # X-prefix courses
     - "^ATT"         # attendance bookkeeping
+  # Delivery-mode course variants whose codes collapse to the base course.
+  # "---" is deliberately NOT here (owner decision 2026-08-31): a hyphen run is
+  # MyEd BC's fixed-width PADDING, not a flavor — trailing runs are stripped
+  # unconditionally by the cleaning layer, and codes like MADGE09---EX1/EX2
+  # (distinct ADST module courses) must stay distinct.
   excluded_course_flavors:
     - HUB
     - HOL
     - DL
-    - "---"
   # StudentAttendance derivation (read at runtime by StudentAttendanceTransformer;
   # inert unless StudentAttendance is in enabled_entities). Every source column
   # name and every derivation knob lives here so SpacesEDU/SD51 tunes config, not

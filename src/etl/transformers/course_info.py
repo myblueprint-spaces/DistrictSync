@@ -13,6 +13,7 @@ import pandas as pd
 
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
+from src.etl.transformers.course_codes import strip_trailing_hyphens
 
 
 class CourseInfoTransformer(BaseTransformer):
@@ -25,6 +26,13 @@ class CourseInfoTransformer(BaseTransformer):
         result = pd.DataFrame()
         field_map = mapping.get("field_map", {})
         result = self.apply_field_map(working, result, field_map, "CourseInfo", context)
+
+        # MyEd BC pads codes to a fixed width with trailing hyphens (MAPPR12--- is
+        # MAPPR12). Strip the padding BEFORE the dedup so the catalog carries clean
+        # codes and a padded/unpadded pair of the same course collapses (2026-08-31;
+        # StudentCourses strips the same way, so its exact-match lookups line up).
+        if "Course Code" in result.columns:
+            result["Course Code"] = result["Course Code"].map(strip_trailing_hyphens)
 
         dedup_keys = [k for k in ("Course Code", "School ID") if k in result.columns]
         if dedup_keys:

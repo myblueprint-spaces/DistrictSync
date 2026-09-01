@@ -14,7 +14,9 @@ from src.etl.transformer import DataTransformer
 # The numeric early-grade exclusion is derived from course_start_grade
 # (default 10) by the transformer, not listed as a literal pattern.
 MYEDBC_PATTERNS = [r"^.{5}-K", r"^X", r"^ATT"]
-MYEDBC_FLAVORS = ["HUB", "HOL", "DL", "---"]
+# Mirrors the base config: "---" is NOT a flavor (padding — stripped
+# unconditionally by the cleaning layer; owner decision 2026-08-31).
+MYEDBC_FLAVORS = ["HUB", "HOL", "DL"]
 
 STUDENT_COURSES_FIELD_MAP = {
     "Student ID": {"value": ""},
@@ -1281,3 +1283,85 @@ class TestStudentCoursesActiveFiltering:
             result = _run(transformer, sc_mapping, myedbc_global_config, history=self._history())
         assert set(result["Student ID"]) == {"S001", "S999"}
         assert any("[StudentCourses]" in r.message and "active_student_ids empty" in r.message for r in caplog.records)
+
+
+class TestHyphenPaddingAndModuleCourses:
+    """ "---" is padding, not a flavor (owner decision 2026-08-31, from live data).
+
+    The old rule truncated any code containing "---" to 7 chars, which collapsed
+    MyEd BC's distinct ADST module courses (MADGE09---EX1 / EX2 / …, each with its
+    own catalog title) into ONE code — thousands of duplicate transcript rows —
+    and left trailing-padded codes (MAPPR12---) unmatched against the catalog.
+    Now: trailing hyphen runs are stripped unconditionally; internal runs (and the
+    module suffixes after them) survive.
+    """
+
+    def _history_row(self, full_code, section, student="S001"):
+        return {
+            "student number": student,
+            "school number": "6262013",
+            "course code": full_code.split("---")[0],
+            "full course code": full_code,
+            "section": section,
+            "final mark": "PRF",
+            "dl start date": "",
+            "dl completion date": "",
+        }
+
+    def test_module_courses_stay_distinct(self, transformer, sc_mapping):
+        # The live SD sample shape: one student, two exploratory modules of MADGE09 —
+        # grade-9 codes, so the district runs course_start_grade 9 (the SD83/SD69
+        # setting; the default grade-10 floor would drop them before cleaning).
+        global_config = {
+            "excluded_course_code_patterns": MYEDBC_PATTERNS,
+            "excluded_course_flavors": MYEDBC_FLAVORS,
+            "course_start_grade": 9,
+        }
+        history = _history(
+            [
+                self._history_row("MADGE09---EX1-010", "010"),
+                self._history_row("MADGE09---EX2-011", "011"),
+            ]
+        )
+        result = _run(transformer, sc_mapping, global_config, history=history)
+        codes = sorted(result["Course Code"])
+        assert codes == ["MADGE09---EX1", "MADGE09---EX2"]
+
+    def test_trailing_padding_stripped_from_history_codes(self, transformer, sc_mapping, myedbc_global_config):
+        history = _history([self._history_row("MAPPR12---", "")])
+        result = _run(transformer, sc_mapping, myedbc_global_config, history=history)
+        assert list(result["Course Code"]) == ["MAPPR12"]
+
+    def test_padded_catalog_code_exact_matches_stripped_history_code(
+        self, transformer, sc_mapping, myedbc_global_config
+    ):
+        # The catalog carries the padded shape (MAPPR12---); history cleaning yields
+        # MAPPR12 — the lookup strips the catalog key the same way, so this is an
+        # EXACT match (title + credits), not a 7-char-prefix accident.
+        info = pd.DataFrame(
+            {
+                "course code": ["MAPPR12---"],
+                "school number": ["6262013"],
+                "title": ["Apprenticeship Mathematics 12"],
+                "credit value": [4],
+            }
+        )
+        history = _history(
+            [
+                {
+                    "student number": "S001",
+                    "school number": "6262013",
+                    "course code": "MAPPR12",
+                    "full course code": "MAPPR12---",
+                    "section": "",
+                    "final mark": "85",
+                    "dl start date": "15-Sep-2024",
+                    "dl completion date": "30-Jan-2025",
+                }
+            ]
+        )
+        result = _run(transformer, sc_mapping, myedbc_global_config, history=history, info=info)
+        row = result.iloc[0]
+        assert row["Course Code"] == "MAPPR12"
+        assert row["Course Name"] == "Apprenticeship Mathematics 12"
+        assert row["Credits Earned"] == 4
