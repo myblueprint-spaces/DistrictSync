@@ -149,6 +149,11 @@ EXPECTED_ENTITIES: dict[str, frozenset[str]] = {
     "sd71myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
     "sd75myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
     "sd10myedbc": frozenset({"Students", "CourseInfo", "StudentCourses"}),
+    # Unity Christian School (2026-09-01): the rostering tier MINUS Family. Family is
+    # DISABLED in the config (its contact GDE carries no email column at all), so this
+    # is an `enabled_entities` fact, not a withheld fixture — hence no
+    # DELIBERATELY_UNCOVERED entry. Rides the standard MyEd BC file shape.
+    "unitychristianmyedbc": ROSTERING_ENTITIES - {"Family"},
     "mbp_all": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
     "mbp_core": frozenset({"Students", "CourseInfo", "StudentCourses"}),
     "mbponly": frozenset({"CourseInfo", "StudentCourses"}),
