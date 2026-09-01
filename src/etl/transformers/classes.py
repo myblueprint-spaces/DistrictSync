@@ -162,6 +162,8 @@ class ClassTransformer(BaseTransformer):
             )
         ]
 
+        self._check_homeroom_id_collisions(hc, homeroom_col, teacher_id_col, context)
+
         hc["Name"] = hc.apply(
             lambda row: self._homeroom_name(row, homeroom_col, TEACHER_NAME, context.school_year),
             axis=1,
@@ -183,6 +185,71 @@ class ClassTransformer(BaseTransformer):
         final_classes.append(homeroom_output)
         logger.info(f"[Classes] Created {len(hc)} homeroom classes")
         return homeroom_lookup
+
+    def _check_homeroom_id_collisions(
+        self,
+        hc: pd.DataFrame,
+        homeroom_col: str,
+        teacher_id_col: str,
+        context: TransformContext,
+    ) -> None:
+        """Record a data error when two distinct homerooms resolve to ONE Class ID.
+
+        ``hc`` is already deduplicated on (school, homeroom, teacher id), so every
+        row is a homeroom we intend to emit. The Class ID, though, is only
+        ``{school}_{homeroom}_{year}`` — it deliberately omits the teacher — so two
+        same-labelled homerooms at one school with different teachers collapse onto
+        a single ID. ``transform``'s ``drop_duplicates(subset=["Class ID"])`` then
+        SILENTLY discards the loser while the Enrollments handoff still maps BOTH
+        cohorts onto the surviving ID: two real classes merged, one teacher's class
+        gone, no error anywhere. That is precisely the PR #12 silent-drop failure
+        mode, so surface it instead of swallowing it.
+
+        Reported on the ``context.data_errors`` axis (ERROR log + run-log summary +
+        Run History), never as a raise: a district's roster quirk must not fail the
+        nightly sync, and the file still delivers.
+
+        Deliberately NOT "fixed" by widening the Class ID with the teacher — that
+        would re-key every homeroom in every district and SpacesEDU would treat
+        them all as brand-new classes. Emitting as-is and reporting loudly keeps
+        the blast radius at the one colliding pair.
+        """
+        if "Class ID" not in hc.columns or hc.empty:
+            return
+
+        dup_mask = hc["Class ID"].duplicated(keep=False)
+        if not dup_mask.any():
+            return
+
+        label_col = TEACHER_NAME if TEACHER_NAME in hc.columns else teacher_id_col
+        discarded = 0
+        details: list[str] = []
+
+        for class_id, group in hc[dup_mask].groupby("Class ID", sort=True):
+            discarded += len(group) - 1
+            if label_col in group.columns:
+                teachers = sorted({str(t).strip() for t in group[label_col] if str(t).strip()})
+            else:
+                teachers = []
+            homeroom = str(group[homeroom_col].iloc[0]) if homeroom_col in group.columns else "?"
+            details.append(
+                f"{class_id!r} (homeroom {homeroom!r}) is claimed by "
+                f"{len(group)} homerooms: {teachers or '<no teacher recorded>'}"
+            )
+
+        message = (
+            "Two or more distinct homerooms share one Class ID — only the first "
+            "will be emitted and every cohort's students will be enrolled into it. "
+            "Give each homeroom a distinct label in the SIS. " + "; ".join(details)
+        )
+        logger.error(f"[Classes] {message}")
+        self._record_data_error(
+            context,
+            "Classes",
+            "Class ID",
+            failed_rows=discarded,
+            sample=message,
+        )
 
     @staticmethod
     def _homeroom_name(row, homeroom_col: str, teacher_name_col: str, year: int) -> str:

@@ -320,3 +320,62 @@ class TestExcludedCourseCodes:
         """Absent excluded_course_codes → no rows are filtered (backward compatible)."""
         result = self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, global_config)
         assert not result.empty
+
+
+class TestHomeroomClassIdCollision:
+    """The homeroom Class ID omits the teacher; the dedup key does not.
+
+    Two same-labelled homerooms at one school with different teachers therefore
+    survive dedup and collapse onto ONE Class ID, where ``transform``'s
+    ``drop_duplicates(subset=["Class ID"])`` silently discards the loser while
+    Enrollments still maps both cohorts onto the survivor. The guard must make
+    that visible on the data-errors axis without failing the run.
+    """
+
+    def setup_method(self):
+        self.transformer = DataTransformer()
+        self.transformer.set_school_year(2025, "08-25", "07-25")
+
+    @staticmethod
+    def _collide(student_demographic_df):
+        """Add a SECOND 'A1' homeroom at school 100 under a different teacher."""
+        extra = student_demographic_df.iloc[[0]].copy()
+        extra["student number"] = ["S099"]
+        extra["legal first name"] = ["Heidi"]
+        extra["homeroom"] = ["A1"]
+        extra["teacher name"] = ["Mr. Nolan"]
+        extra["teacher id"] = ["T009"]
+        return pd.concat([student_demographic_df, extra], ignore_index=True)
+
+    def _run(self, demo, student_schedule_df, classes_mapping, global_config, raw_data):
+        data = dict(raw_data)
+        data["StudentDemographicInformation.txt"] = demo
+        return self.transformer.transform(student_schedule_df, classes_mapping, "Classes", data, global_config)
+
+    def test_collision_is_recorded_as_a_data_error(
+        self, student_demographic_df, student_schedule_df, classes_mapping, global_config, raw_data
+    ):
+        demo = self._collide(student_demographic_df)
+        result = self._run(demo, student_schedule_df, classes_mapping, global_config, raw_data)
+
+        errors = [e for e in self.transformer._context.data_errors if e["field"] == "Class ID"]
+        assert len(errors) == 1, "a colliding homeroom Class ID must be recorded exactly once"
+        assert errors[0]["entity"] == "Classes"
+        # One of the two homerooms is discarded by the transform-level dedup.
+        assert errors[0]["failed_rows"] == 1
+        # The message must name BOTH teachers so an admin can find the pair.
+        assert "Ms. Harper" in errors[0]["sample"]
+        assert "Mr. Nolan" in errors[0]["sample"]
+        assert "100_A1_2025" in errors[0]["sample"]
+
+        # Behaviour is unchanged: still emitted, still deduped, run still succeeds.
+        assert (result["Class ID"] == "100_A1_2025").sum() == 1
+
+    def test_no_collision_records_nothing(
+        self, student_demographic_df, student_schedule_df, classes_mapping, global_config, raw_data
+    ):
+        """Positive twin of the assertion above — the standard fixture must stay silent."""
+        result = self._run(student_demographic_df, student_schedule_df, classes_mapping, global_config, raw_data)
+
+        assert not result.empty
+        assert [e for e in self.transformer._context.data_errors if e["field"] == "Class ID"] == []
