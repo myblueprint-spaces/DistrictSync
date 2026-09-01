@@ -57,15 +57,27 @@ Usage::
 
     python scripts/ci_flet_pack_smoke.py <dist_dir> <base_name> [--require-close]
     python scripts/ci_flet_pack_smoke.py <dist_dir> <base_name> --cli-smoke [--phase P]
+    python scripts/ci_flet_pack_smoke.py <mountpoint> <base_name> --artifact bundle
     python scripts/ci_flet_pack_smoke.py --assert-embed <manifest>
+    python scripts/ci_flet_pack_smoke.py --assert-mounted-app <mountpoint> <base_name>
+
+**macOS ships TWO artifacts** (plan 0045), so a macOS caller says which one it means
+via ``--artifact``: ``bundle`` is the ``.app`` inside the released DMG — the district's
+download, and the one the GUI smoke above must prove — while ``binary`` is the bare
+CLI binary kept for a headless Mac. Before plan 0045 the resolver's fixed candidate
+order silently picked the bare binary on macOS, so every macOS smoke exercised the
+artifact districts do NOT download and none exercised the one they do.
+``--assert-mounted-app`` is the companion gate: it inspects a MOUNTED DMG for an
+intact, still-executable bundle, because ``upload-artifact`` strips POSIX mode bits
+and a disk image is how those bits reach a district at all.
 
 Exit 0 = all gating phases passed (close gated only with ``--require-close``);
 exit 1 = a gating phase failed.
 
-The PURE helpers (``resolve_artifact``, ``orphan_pids``, ``manifest_has_embed``,
-``override_data_dir``, ``etl_log_candidates``) are import-safe and unit-tested in
-``tests/test_ci_flet_pack_smoke.py``. Everything that touches a real process / the
-filesystem lives under ``run_smoke`` / ``run_cli_smoke``.
+The PURE helpers (``resolve_artifact``, ``mounted_app_problems``, ``orphan_pids``,
+``manifest_has_embed``, ``override_data_dir``, ``etl_log_candidates``) are import-safe
+and unit-tested in ``tests/test_ci_flet_pack_smoke.py``. Everything that touches a real
+process / the filesystem lives under ``run_smoke`` / ``run_cli_smoke``.
 """
 
 from __future__ import annotations
@@ -84,7 +96,11 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+# Which of a pack's artifacts a caller means. macOS produces two (see
+# ``resolve_artifact``); Windows and Linux produce one, so ``auto`` is right there.
+ArtifactKind = Literal["auto", "binary", "bundle"]
 
 # --- single-source, env-overridable timeouts (seconds) ---------------------- #
 # Embed and close are SEPARATE axes with independent budgets (R3/R6/R7): a slow
@@ -111,22 +127,79 @@ _VIEW_NAMES = {"flet", "flet.exe"}
 # ===========================================================================
 
 
-def resolve_artifact(dist: Path, name: str) -> Path | None:
+def resolve_artifact(dist: Path, name: str, kind: ArtifactKind = "auto") -> Path | None:
     """Resolve the packed artifact path under ``dist`` for base ``name``.
 
-    Tries, in order: a Windows ``.exe``, a bare POSIX binary, and a macOS
-    ``.app`` bundle's inner ``MacOS/<name>`` executable. Returns the first that
-    exists, else ``None``. Pure: only filesystem ``exists`` checks, no launch.
+    ``kind`` selects WHICH artifact, because a macOS ``flet pack`` produces TWO and
+    they ship to different audiences (plan 0045):
+
+    * ``auto``   — the historical candidate order: Windows ``.exe``, then the bare
+      POSIX binary, then the ``.app`` bundle's inner ``MacOS/<name>``. Unchanged, so
+      Windows/Linux callers keep byte-identical behaviour.
+    * ``binary`` — ONLY the bare binary (or ``.exe``). Never the bundle.
+    * ``bundle`` — ONLY the ``.app``'s inner executable.
+
+    The selector exists instead of a reordered ``auto`` list because macOS ships both
+    artifacts: the ``.app`` (inside the DMG, the district's download) and the bare
+    binary (the headless/CLI download). Reordering would silently repoint every
+    existing call site and leave one of the two untestable; naming the kind keeps
+    both addressable and makes each CI step say which artifact it is proving.
+
+    Returns the first candidate that exists, else ``None``. Pure: only filesystem
+    ``exists`` checks, no launch.
     """
-    candidates = [
-        dist / f"{name}.exe",
-        dist / name,
-        dist / f"{name}.app" / "Contents" / "MacOS" / name,
-    ]
+    exe = dist / f"{name}.exe"
+    binary = dist / name
+    bundle = dist / f"{name}.app" / "Contents" / "MacOS" / name
+    candidates = {
+        "auto": [exe, binary, bundle],
+        "binary": [exe, binary],
+        "bundle": [bundle],
+    }[kind]
     for cand in candidates:
         if cand.exists():
             return cand
     return None
+
+
+def mounted_app_problems(mount: Path, name: str) -> list[str]:
+    """Return the reasons a mounted DMG is not shippable — empty list means it is.
+
+    This is the assert that would have caught the bug plan 0045 fixes. The macOS
+    release published a bare, extension-less binary that Finder could only open in a
+    text editor; the replacement is a DMG, and a DMG is only better if the bundle
+    inside it is intact **as delivered**. Three things are checked, each a way the
+    image can look built-but-broken:
+
+    * ``<name>.app`` exists on the volume — the image actually carries an app.
+    * ``Contents/MacOS/<name>`` exists AND has the executable bit. ``upload-artifact``
+      strips POSIX modes, which is precisely why the image is built on the runner;
+      this asserts the mode really did survive into the image.
+    * ``Applications`` is a SYMLINK. It is what makes the mounted window a drag
+      target, and checking it is a symlink also catches ``hdiutil`` having followed
+      the link and copied the runner's real ``/Applications`` into the image.
+
+    Pure: ``exists`` / ``is_symlink`` / ``os.access`` checks against a path, so it is
+    unit-testable against a synthetic tree on any OS — including the non-executable
+    negative twin, which a shell ``test -x`` could not carry.
+    """
+    problems: list[str] = []
+    app = mount / f"{name}.app"
+    inner = app / "Contents" / "MacOS" / name
+    applications = mount / "Applications"
+
+    if not app.is_dir():
+        problems.append(f"no {name}.app on the mounted volume ({app})")
+    elif not inner.exists():
+        problems.append(f"bundle has no inner executable at {inner}")
+    elif not os.access(inner, os.X_OK):
+        problems.append(f"inner executable is NOT executable (mode bits lost): {inner}")
+
+    if not applications.is_symlink():
+        what = "missing" if not applications.exists() else "present but not a symlink"
+        problems.append(f"/Applications drag target is {what}: {applications}")
+
+    return problems
 
 
 def orphan_pids(baseline: Iterable[int], current: Iterable[int]) -> set[int]:
@@ -557,12 +630,17 @@ def _phase_close(proc: subprocess.Popen[str], baseline: set[int], gating: bool) 
     return True
 
 
-def run_smoke(dist: Path, name: str, require_close: bool) -> int:
-    """Run all gating phases against the packed artifact. Returns a process exit code."""
+def run_smoke(dist: Path, name: str, require_close: bool, kind: ArtifactKind = "auto") -> int:
+    """Run all gating phases against the packed artifact. Returns a process exit code.
+
+    ``dist`` need not be a build directory: on macOS the release-gating call passes a
+    MOUNTED DMG's mountpoint with ``kind="bundle"``, so the phases below run against
+    the exact bytes a district downloads rather than an intermediate build output.
+    """
     print(f"== PLAT-3 flet pack smoke on {_OSN} ==")
-    art = resolve_artifact(dist, name)
+    art = resolve_artifact(dist, name, kind)
     if not art:
-        print(f"FAIL: no artifact under {dist} for base name '{name}'")
+        print(f"FAIL: no {kind} artifact under {dist} for base name '{name}'")
         with contextlib.suppress(Exception):  # nosec B110 — diagnostics only
             print("dist dir contents:", sorted(p.name for p in dist.iterdir()))
         return 1
@@ -977,6 +1055,7 @@ def run_cli_smoke(
     input_dir: Path,
     work_dir: Path,
     allow_real_profile: bool = False,
+    kind: ArtifactKind = "auto",
 ) -> int:
     """Run one CLI smoke phase (or ``all``) against the packed artifact. Returns an exit code.
 
@@ -986,9 +1065,9 @@ def run_cli_smoke(
     ``allow_real_profile`` is the explicit, deliberate opt-out — it does NOT extend to
     ``corrupt-profile``, which refuses on its own regardless.
     """
-    art = resolve_artifact(dist, name)
+    art = resolve_artifact(dist, name, kind)
     if not art:
-        print(f"FAIL: no artifact under {dist} for base name '{name}'")
+        print(f"FAIL: no {kind} artifact under {dist} for base name '{name}'")
         return 1
     try:
         ctx = CliSmokeContext.build(input_dir, work_dir, os.environ)
@@ -1042,6 +1121,28 @@ def _assert_embed(manifest: Path) -> int:
     return 1
 
 
+def _assert_mounted_app(mount: Path, name: str) -> int:
+    """macOS release gate: report a mounted DMG's layout problems. Exit code.
+
+    Reuses the PURE ``mounted_app_problems`` so the workflow and the unit rows share
+    one source of truth (same shape as ``_assert_embed``). Prints EVERY problem
+    rather than the first, so one CI run tells the whole story.
+    """
+    if not mount.is_dir():
+        print(f"FAIL: mountpoint does not exist or is not a directory: {mount}")
+        return 1
+    problems = mounted_app_problems(mount, name)
+    if not problems:
+        print(f"dmg-assert: PASS — {mount} carries an executable {name}.app + /Applications symlink")
+        return 0
+    print(f"FAIL: mounted image at {mount} is not shippable:")
+    for problem in problems:
+        print(f"  - {problem}")
+    with contextlib.suppress(Exception):  # nosec B110 — diagnostics only
+        print("volume contents:", sorted(p.name for p in mount.iterdir()))
+    return 1
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Smoke the packed DistrictSync exe.")
     parser.add_argument(
@@ -1050,8 +1151,29 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         metavar="MANIFEST",
         help="build-time check only: assert a PyInstaller manifest embeds the Flet client, then exit.",
     )
+    parser.add_argument(
+        # Two values, not one-plus-the-positional: `--assert-mounted-app MNT NAME`
+        # would otherwise bind NAME to the `dist` positional and leave `name` None.
+        "--assert-mounted-app",
+        nargs=2,
+        metavar=("MOUNTPOINT", "NAME"),
+        help=(
+            "macOS release gate: assert a MOUNTED DMG carries an intact, executable "
+            "NAME.app beside an /Applications symlink, then exit."
+        ),
+    )
     parser.add_argument("dist", type=Path, nargs="?", help="dist directory containing the artifact")
     parser.add_argument("name", nargs="?", help="artifact base name (e.g. DistrictSync)")
+    parser.add_argument(
+        "--artifact",
+        choices=["auto", "binary", "bundle"],
+        default="auto",
+        help=(
+            "which packed artifact to smoke when a pack produced more than one (macOS): "
+            "`binary` = the bare CLI binary, `bundle` = the .app. Default `auto` keeps "
+            "the historical candidate order."
+        ),
+    )
     parser.add_argument(
         "--require-close",
         action="store_true",
@@ -1095,6 +1217,9 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     if args.assert_embed is not None:
         return _assert_embed(args.assert_embed)
+    if args.assert_mounted_app is not None:
+        mount, app_name = args.assert_mounted_app
+        return _assert_mounted_app(Path(mount), app_name)
     if args.dist is None or args.name is None:
         print("FAIL: dist dir and artifact name are required (or use --assert-embed).")
         return 2
@@ -1107,8 +1232,9 @@ def main(argv: list[str] | None = None) -> int:
             input_dir=args.input,
             work_dir=work_dir,
             allow_real_profile=args.allow_real_profile,
+            kind=args.artifact,
         )
-    return run_smoke(args.dist, args.name, args.require_close)
+    return run_smoke(args.dist, args.name, args.require_close, args.artifact)
 
 
 if __name__ == "__main__":

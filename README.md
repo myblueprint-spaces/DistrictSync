@@ -10,7 +10,8 @@ Distributed as single-file executables for district servers. Runs daily via Wind
 |----------|------|-------|
 | **Windows** | [DistrictSync-windows.exe](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-windows.exe) | Double-click to open the app (a fresh install starts the Setup wizard), or use in Task Scheduler |
 | **Linux** | [DistrictSync-linux](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-linux) | `chmod +x` before first run |
-| **macOS** | [DistrictSync-macos](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos) | Allow in System Settings > Privacy & Security |
+| **macOS** | [DistrictSync-macos.dmg](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos.dmg) | Open the .dmg, drag DistrictSync to Applications, then allow it in System Settings > Privacy & Security |
+| **macOS** (headless/CLI) | [DistrictSync-macos](https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos) | Command-line only — `chmod +x` before first run |
 
 For setup basics, see the **[SpacesEDU Help Centre article](https://help.spacesedu.com/en-ca/article/mx56qo)**. The `docs/` directory has the complete documentation — installation, headless/Docker SFTP, how it works, FAQ, troubleshooting, and developer guides.
 
