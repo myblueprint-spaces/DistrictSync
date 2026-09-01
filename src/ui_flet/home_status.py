@@ -485,9 +485,11 @@ class LatestReason(Enum):
 
     FAILED_ETL = "failed_etl"  # status != "success" — the dominant fault
     FAILED_DELIVERY = "failed_delivery"  # ETL ok, SFTP attempted + failed (exit-3 shape)
-    ANOMALY = "anomaly"  # delivered but a >20% drop looked off
-    DATA_WARNINGS = "data_warnings"  # delivered, some rows had field problems + were skipped
-    CLEAN = "clean"  # delivered cleanly (a stale run is still CLEAN — staleness is layered on top)
+    ANOMALY = "anomaly"  # succeeded but a >20% drop looked off
+    DATA_WARNINGS = "data_warnings"  # succeeded, some rows had field problems + were skipped
+    CLEAN = "clean"  # succeeded cleanly (a stale run is still CLEAN — staleness is layered on top)
+    # NOTE: none of the success-shaped reasons implies DELIVERY — a run with no SFTP attempt
+    # classifies identically. Copy that says "delivered" must consult ``sftp_delivered(record)``.
 
 
 def classify_latest_reason(record: dict) -> LatestReason:
@@ -839,13 +841,21 @@ def derive_home_status(
             metrics=None,
         )
 
-    # Rule: data errors present — delivered, no anomaly, but some records were skipped.
+    # Rule: data errors present — the run succeeded, no anomaly, but some records were skipped.
+    # "delivered" is claimed only when the record's SFTP axis says it shipped (``sftp_delivered``'s
+    # own rule, which this branch used to bypass): a local-only run with data warnings read
+    # "the sync still delivered" while nothing was ever uploaded (2026-08-31, live install).
     if reason is LatestReason.DATA_WARNINGS:
         total_data_errors = _data_errors_total(latest)
         return HomeStatus(
             verdict=verdict_for_reason(reason),
             headline=f"Completed with {total_data_errors} data {pluralize('warning', total_data_errors)}",
-            detail="A few records had field problems and were skipped — the sync still delivered.",
+            detail=(
+                "Some records had field problems and were skipped — the sync still delivered."
+                if sftp_delivered(latest)
+                else "Some records had field problems and were skipped — the files were still "
+                "written to your output folder."
+            ),
             fix=FixAction(_CHECK_RUN_HISTORY_LABEL, _RUN_HISTORY_FIX),
             metrics=None,
         )

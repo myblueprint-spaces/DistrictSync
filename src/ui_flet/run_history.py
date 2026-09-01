@@ -130,8 +130,9 @@ class RunRow:
 
 
 # Plain per-run status labels keyed by the shared ``LatestReason`` (single-sourced precedence).
-# ``CLEAN`` is resolved at row-build time to "Delivered" vs "Completed" by whether SFTP was
-# attempted (a delivered clean run reads "Delivered"; a clean run with no SFTP reads "Completed").
+# ``CLEAN`` and ``DATA_WARNINGS`` are resolved at row-build time to "Delivered" vs "Completed" by
+# whether the run's SFTP axis says it shipped (a run with no SFTP attempt reads "Completed" —
+# with or without data warnings; claiming delivery for it was the 2026-08-31 mislabel).
 _REASON_LABELS: dict[LatestReason, str] = {
     LatestReason.FAILED_ETL: "Failed",
     LatestReason.FAILED_DELIVERY: "Built, not delivered",
@@ -280,10 +281,17 @@ def derive_history_banner(
         )
 
     if reason is LatestReason.DATA_WARNINGS:
+        # "delivered" is claimed only when the record's SFTP axis says it shipped (the same
+        # honesty rule the CLEAN branch below has always applied) — a local-only run with data
+        # warnings used to read "the runs still delivered" while nothing was ever uploaded.
         return HistoryBanner(
             verdict=verdict_for_reason(reason),
             headline="Recent runs completed with data warnings",
-            detail="Some records had field problems and were skipped — the runs still delivered.",
+            detail=(
+                "Some records had field problems and were skipped — the runs still delivered."
+                if sftp_delivered(latest)
+                else "Some records had field problems and were skipped — the runs still completed."
+            ),
         )
 
     # reason is CLEAN — a delivered success; staleness is the one time-relative axis layered on top.
@@ -360,11 +368,13 @@ def _row_entity_counts(record: dict) -> dict[str, int]:
 def _status_label(reason: LatestReason, record: dict, *, sftp: SftpDelivery) -> str:
     """The plain per-run category label from the shared ``LatestReason`` (no emoji, no raw string).
 
-    ``CLEAN`` resolves to "Delivered · N data warnings" when there were warnings, else "Delivered"
-    (SFTP delivered/attempted) or "Completed" (SFTP not attempted). All other reasons map through
-    ``_REASON_LABELS``. Single-sourced so a row label + the banner can never contradict. A
-    delivery-only record (deliver-from-disk, 0034 Slice 2) labels honestly as a delivery of
-    already-saved files — "Delivered saved files" / "Delivery failed" — never as a build.
+    ``DATA_WARNINGS`` and ``CLEAN`` both open with "Delivered" ONLY when the SFTP axis says the
+    run genuinely shipped, else "Completed" (SFTP not attempted — a local-only run must never
+    claim delivery; a run whose upload FAILED never reaches either reason, ``classify`` routes it
+    to ``FAILED_DELIVERY`` first). All other reasons map through ``_REASON_LABELS``.
+    Single-sourced so a row label + the banner can never contradict. A delivery-only record
+    (deliver-from-disk, 0034 Slice 2) labels honestly as a delivery of already-saved files —
+    "Delivered saved files" / "Delivery failed" — never as a build.
     """
     if reason in _REASON_LABELS:
         if reason is LatestReason.FAILED_DELIVERY and is_delivery_only(record):
@@ -372,7 +382,8 @@ def _status_label(reason: LatestReason, record: dict, *, sftp: SftpDelivery) -> 
         return _REASON_LABELS[reason]
     if reason is LatestReason.DATA_WARNINGS:
         total = _data_errors_total(record)
-        return f"Delivered · {total} data {pluralize('warning', total)}"
+        word = "Delivered" if sftp is SftpDelivery.DELIVERED else "Completed"
+        return f"{word} · {total} data {pluralize('warning', total)}"
     # reason is CLEAN — distinguish a delivered run from one that never attempted SFTP,
     # and a deliver-from-disk (shipped an earlier build) from the build-and-deliver run.
     if is_delivery_only(record):

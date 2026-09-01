@@ -959,6 +959,21 @@ class TestWarningRules:
         assert status.verdict is Verdict.WARNING
         assert status.headline == "Completed with 3 data warnings"
         assert status.fix is not None and status.fix.dest_id == "run_history"
+        # The fixture's record IS delivered (sftp_ok=True) — the delivery claim is earned here.
+        assert status.detail == "Some records had field problems and were skipped — the sync still delivered."
+
+    def test_data_errors_no_sftp_never_claims_delivery(self) -> None:
+        # 2026-08-31 live-install mislabel: a data-warnings run with NO SFTP attempt read "the
+        # sync still delivered" while nothing was uploaded. The detail must consult the record's
+        # SFTP axis (``sftp_delivered``) exactly like the healthy branch always has.
+        status = _derive(_record(data_errors={"total": 3}, sftp_attempted=False, sftp_ok=False))
+        assert status.verdict is Verdict.WARNING
+        assert status.headline == "Completed with 3 data warnings"
+        assert status.detail == (
+            "Some records had field problems and were skipped — the files were still "
+            "written to your output folder."
+        )
+        assert "delivered" not in status.detail
 
     def test_single_data_error_singular_headline(self) -> None:
         status = _derive(_record(data_errors={"total": 1}))
