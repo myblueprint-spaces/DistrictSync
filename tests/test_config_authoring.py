@@ -37,17 +37,23 @@ import yaml
 from src.config.authoring import (
     ALLOWED_BASES,
     CREATOR_ENTITIES,
+    AuthoredWith,
     OverlaySpec,
+    authored_with,
     build_overlay,
+    current_digest,
     delete_overlay,
     derive_sis_id,
     is_custom_sis_id,
     overlay_path,
+    read_authored_with,
+    resolved_digest,
     write_overlay,
 )
 from src.config.loader import available_configs, load_config, validate_overlay
 from src.etl.pipeline import run_pipeline
-from src.utils.paths import user_mappings_dir
+from src.utils.paths import bundle_mappings_dir, user_mappings_dir
+from src.utils.version import app_version
 
 SNAPSHOT_INPUT = Path(__file__).parent / "snapshots" / "input"
 
@@ -773,3 +779,235 @@ class TestDeleteRefusesToLeaveTheMappingsDir:
         """Positive twin — the refusal above is about the symlink, not about the id."""
         write_overlay(_spec(), overwrite=False)
         assert delete_overlay("sd93custom") is True
+
+
+# ---------------------------------------------------------------------------
+# S3 — the resolved digest (the activation gate's key)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def base_pair(tmp_path):
+    """A two-dir USER/BUNDLED pair whose BUNDLED slot holds an editable ``myedbc`` copy.
+
+    The seam ``resolve_config_path``/``validate_overlay`` take, so a test can change what
+    the VENDOR base says — the case a byte-keyed hash of the overlay could never see.
+    """
+    user_dir = tmp_path / "pair_user"
+    bundled = tmp_path / "pair_bundled"
+    user_dir.mkdir()
+    bundled.mkdir()
+    (bundled / "myedbc_mapping.yaml").write_text(
+        (bundle_mappings_dir() / "myedbc_mapping.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    return [user_dir, bundled]
+
+
+def _digest_against(pair, **overrides) -> str:
+    """``resolved_digest`` of an SD93 overlay resolved through the injected ``pair``."""
+    raw_base = yaml.safe_load((pair[1] / "myedbc_mapping.yaml").read_text(encoding="utf-8"))
+    resolved_base = validate_overlay(raw_base, search_dirs=pair)
+    overlay = build_overlay(_spec(**overrides), resolved_base=resolved_base)
+    return resolved_digest(validate_overlay(overlay, search_dirs=pair))
+
+
+class TestResolvedDigest:
+    def test_stable_across_two_independent_loads(self):
+        assert resolved_digest(load_config("myedbc")) == resolved_digest(load_config("myedbc"))
+
+    def test_shape_is_64_lowercase_hex(self):
+        from src.utils.validators import is_config_digest
+
+        assert is_config_digest(resolved_digest(load_config("myedbc")))
+
+    def test_two_different_configs_digest_differently(self):
+        assert resolved_digest(load_config("myedbc")) != resolved_digest(load_config("mbp_core"))
+
+    def test_changed_district_domains_move_the_digest(self, base_config):
+        """The ``to_raw_dict``-only trap, pinned from both sides."""
+        one = build_overlay(_spec(district_domains=("sd93.bc.ca",)), resolved_base=base_config)
+        other = build_overlay(_spec(district_domains=("sd93.ca",)), resolved_base=base_config)
+        resolved_one = validate_overlay(one)
+        resolved_other = validate_overlay(other)
+        # The twin that makes this non-vacuous: a digest over `to_raw_dict()` — the
+        # obvious, wrong choice — would have read these two as IDENTICAL.
+        assert resolved_one.to_raw_dict() == resolved_other.to_raw_dict()
+        assert resolved_digest(resolved_one) != resolved_digest(resolved_other)
+
+    def test_changed_district_name_moves_the_digest(self, base_config):
+        """The accepted cost, stated as a test: a cosmetic fix re-asks for a test run."""
+        one = build_overlay(_spec(district_name="SD93 - one"), resolved_base=base_config)
+        other = build_overlay(_spec(district_name="SD93 - two"), resolved_base=base_config)
+        assert resolved_digest(validate_overlay(one)) != resolved_digest(validate_overlay(other))
+
+    def test_an_edited_BASE_moves_the_digest(self, base_pair):
+        before = _digest_against(base_pair)
+        raw = yaml.safe_load((base_pair[1] / "myedbc_mapping.yaml").read_text(encoding="utf-8"))
+        raw["global_config"]["homeroom_grades"] = ["KG", "01"]
+        (base_pair[1] / "myedbc_mapping.yaml").write_text(yaml.safe_dump(raw), encoding="utf-8")
+        assert _digest_against(base_pair) != before
+
+    def test_an_UNCHANGED_base_leaves_the_digest_identical(self, base_pair):
+        """The twin — the difference above is the edit, not the recomputation."""
+        assert _digest_against(base_pair) == _digest_against(base_pair)
+
+    def test_a_hand_edited_overlay_moves_the_digest(self):
+        path = write_overlay(_spec(), overwrite=False)
+        before = current_digest("sd93custom")
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["district_name"] = "SD93 - edited by hand"
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        after = current_digest("sd93custom")
+        assert before is not None and after is not None
+        assert after != before
+
+
+class TestCurrentDigest:
+    def test_matches_the_pure_digest_of_the_same_load(self):
+        write_overlay(_spec(), overwrite=False)
+        assert current_digest("sd93custom") == resolved_digest(load_config("sd93custom"))
+
+    def test_absent_config_reads_none(self):
+        assert current_digest("sd93custom") is None
+
+    def test_an_unloadable_config_reads_none(self):
+        path = write_overlay(_spec(), overwrite=False)
+        path.write_text("global_config: [this is not a mapping\n", encoding="utf-8")
+        assert current_digest("sd93custom") is None
+
+    def test_a_bad_id_reads_none_rather_than_raising(self):
+        assert current_digest("../evil") is None
+
+
+# ---------------------------------------------------------------------------
+# S3 — `authored_with` provenance
+# ---------------------------------------------------------------------------
+
+
+class TestAuthoredWithEmission:
+    def test_build_overlay_without_provenance_emits_no_such_key(self, base_config):
+        """The twin for every assertion below — and why S1's goldens stayed green."""
+        assert "authored_with" not in build_overlay(_spec(), resolved_base=base_config)
+
+    def test_build_overlay_emits_the_block_verbatim_when_given(self, base_config):
+        block = {"app_version": "1.2.3", "base": "myedbc", "base_digest": "f" * 64}
+        overlay = build_overlay(_spec(), resolved_base=base_config, authored_with=block)
+        assert overlay["authored_with"] == block
+        # LAST in the emission, so provenance never sits between the district's own keys.
+        assert list(overlay)[-1] == "authored_with"
+
+    def test_the_pure_builder_carries_the_running_version_and_base_digest(self, base_config):
+        assert authored_with(base_config, base="myedbc", app_version="7.7.7") == {
+            "app_version": "7.7.7",
+            "base": "myedbc",
+            "base_digest": resolved_digest(base_config),
+        }
+
+    def test_write_overlay_ALWAYS_stamps_provenance(self):
+        path = write_overlay(_spec(), overwrite=False)
+        block = yaml.safe_load(path.read_text(encoding="utf-8"))["authored_with"]
+        assert block == {
+            "app_version": app_version(),
+            "base": "myedbc",
+            "base_digest": resolved_digest(load_config("myedbc")),
+        }
+
+    @pytest.mark.parametrize("base", ALLOWED_BASES)
+    def test_every_base_gets_a_stamp_that_loads_back(self, base):
+        path = write_overlay(_spec(base=base), overwrite=True)
+        assert read_authored_with("sd93custom") == AuthoredWith(
+            app_version=app_version(),
+            base=base,
+            base_digest=resolved_digest(load_config(base)),
+        )
+        # ...and the key is INVISIBLE to the loader (`extra="ignore"`), so it cannot
+        # change what converts.
+        assert not hasattr(load_config("sd93custom"), "authored_with")
+        assert "authored_with" not in load_config("sd93custom").model_dump(mode="json")
+        assert path.exists()
+
+    def test_validate_overlay_accepts_an_overlay_carrying_the_key(self, base_config):
+        overlay = build_overlay(
+            _spec(),
+            resolved_base=base_config,
+            authored_with={"app_version": "0.0.0", "base": "myedbc", "base_digest": "a" * 64},
+        )
+        resolved = validate_overlay(overlay)
+        assert resolved.district_domains == ["sd93.bc.ca"]
+
+    def test_a_provenance_only_rewrite_leaves_the_DIGEST_untouched(self, monkeypatch):
+        """Acceptance (5): re-stamping provenance can never self-invalidate the gate."""
+        path = write_overlay(_spec(), overwrite=False)
+        before_digest = current_digest("sd93custom")
+        before_block = read_authored_with("sd93custom")
+
+        monkeypatch.setattr("src.config.authoring.app_version", lambda: "99.99.99")
+        write_overlay(_spec(), overwrite=True)
+
+        after_block = read_authored_with("sd93custom")
+        assert after_block is not None and before_block is not None
+        # The FILE changed (non-vacuous)...
+        assert after_block.app_version == "99.99.99" != before_block.app_version
+        assert "99.99.99" in path.read_text(encoding="utf-8")
+        # ...and the digest did not.
+        assert current_digest("sd93custom") == before_digest
+
+
+class TestReadAuthoredWith:
+    def _rewrite_block(self, block) -> None:
+        path = write_overlay(_spec(), overwrite=False)
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if block is None:
+            raw.pop("authored_with", None)
+        else:
+            raw["authored_with"] = block
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    def test_a_written_overlay_reads_back(self):
+        """The positive twin for the whole totality table below."""
+        write_overlay(_spec(), overwrite=False)
+        block = read_authored_with("sd93custom")
+        assert block is not None and block.base == "myedbc"
+
+    def test_absent_config_reads_none(self):
+        assert read_authored_with("sd93custom") is None
+
+    def test_a_bundled_config_has_no_provenance(self):
+        assert read_authored_with("myedbc") is None
+
+    def test_absent_key_reads_none(self):
+        self._rewrite_block(None)
+        assert read_authored_with("sd93custom") is None
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            "just a string",
+            ["a", "list"],
+            42,
+            {"app_version": 1, "base": "myedbc", "base_digest": "a" * 64},
+            {"app_version": "1.0", "base": {"nested": "dict"}, "base_digest": "a" * 64},
+            {"app_version": "1.0", "base": "myedbc"},
+            {},
+        ],
+    )
+    def test_a_malformed_block_reads_none(self, block):
+        self._rewrite_block(block)
+        assert read_authored_with("sd93custom") is None
+
+    def test_unreadable_yaml_reads_none(self):
+        path = write_overlay(_spec(), overwrite=False)
+        path.write_text("authored_with: [unterminated\n", encoding="utf-8")
+        assert read_authored_with("sd93custom") is None
+
+    def test_a_bad_id_reads_none_rather_than_raising(self):
+        assert read_authored_with("../evil") is None
+
+    def test_extra_keys_in_the_block_are_tolerated(self):
+        """Forward-compat: a newer build's extra provenance field must not blank the read."""
+        self._rewrite_block(
+            {"app_version": "1.0", "base": "myedbc", "base_digest": "a" * 64, "authored_at": "2026-09-02"}
+        )
+        block = read_authored_with("sd93custom")
+        assert block == AuthoredWith(app_version="1.0", base="myedbc", base_digest="a" * 64)

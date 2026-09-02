@@ -29,6 +29,8 @@ calls into it, not the other way round.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import re
@@ -44,6 +46,7 @@ from src.config.loader import load_config, resolve_config_path, validate_overlay
 from src.config.models import MappingConfig, is_valid_district_domain
 from src.utils.paths import user_mappings_dir
 from src.utils.validators import validate_sis_type
+from src.utils.version import app_version
 
 logger = logging.getLogger(__name__)
 
@@ -112,12 +115,17 @@ def _file_header(sis_id: str) -> str:
 #: therefore always INHERITED via ``_base:`` like any other unset key; the id
 #: itself is carried in the file's header comment instead — see
 #: :func:`_file_header`.
+#: ``authored_with`` (plan 0044 S3) is LAST deliberately: it is machine-written
+#: PROVENANCE, not a district fact, so it must never sit between the keys an admin
+#: reads. ``MappingConfig`` declares ``extra="ignore"``, so the loader never reads it
+#: and it can never change what converts — see :func:`authored_with`.
 _ROOT_KEY_ORDER: tuple[str, ...] = (
     "_base",
     "district_name",
     "district_domains",
     "global_config",
     "mappings",
+    "authored_with",
 )
 
 
@@ -469,7 +477,76 @@ def _assert_no_divergence(
             )
 
 
-def build_overlay(spec: OverlaySpec, *, resolved_base: MappingConfig) -> dict[str, Any]:
+def resolved_digest(config: MappingConfig) -> str:
+    """Fingerprint a RESOLVED config: sha256 of its canonical JSON dump. Lowercase hex.
+
+    This is the fact the creator's activation gate is keyed on (plan 0044 S3): the UI
+    offers "use this district" only while the digest of what would convert TODAY still
+    equals the digest of what was actually test-run.
+
+    **The whole validated model, not a subset.** ``to_raw_dict()`` is the trap it would
+    be natural to fall into — it carries only ``mappings`` + ``global_config``, so a
+    changed ``district_domains`` or ``version`` would be INVISIBLE to the fingerprint.
+    A hand-maintained "fields that matter" list is the other trap: a second spelling of
+    the config schema that drifts the first time a key is added. Cost, named rather than
+    hidden: a cosmetic ``district_name`` fix also invalidates and re-asks for a test run.
+    That is the safe direction — over-firing only re-asks, while under-firing would
+    activate something untested.
+
+    **Fail-safe in BOTH directions.** An edit to the overlay OR to the vendor base moves
+    the dump (the base's values are resolved INTO this model by ``_base`` deep merge), so
+    an app update that changes a base cannot go unnoticed; and because a stored digest
+    only ever *matches*, a REFUSED invalidation write leaves a non-matching value behind
+    — the fact never depends on its own write succeeding.
+
+    **:func:`authored_with` is invisible here** — ``MappingConfig`` declares
+    ``extra="ignore"``, so the provenance key never enters ``model_dump`` and re-writing
+    provenance can never self-invalidate the gate.
+
+    Canonical form: ``json.dumps(..., sort_keys=True, separators=(",", ":"),
+    ensure_ascii=False)`` — key order, whitespace and unicode escaping all pinned, so the
+    digest is stable across loads, processes and platforms.
+    """
+    canonical = json.dumps(
+        config.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def authored_with(resolved_base: MappingConfig, *, base: str, app_version: str) -> dict[str, str]:
+    """Build the overlay's ``authored_with`` provenance block. PURE.
+
+    Three facts, all strings: the app version that authored the file, the base id it was
+    authored against, and :func:`resolved_digest` of that RESOLVED base. Together they
+    answer the only question provenance is asked — "was this district set up against a
+    different build or a different base than the one running now?" — which the Files step
+    turns into "please run the test again".
+
+    ADVISORY by construction: activation safety is the digest of the district's OWN
+    resolved config (:func:`resolved_digest` via ``current_digest``), so this block can
+    never permit a run, and a missing or stale one is "unknown provenance", never "stale".
+    That is why :func:`build_overlay` may legitimately default it to ``None``.
+
+    Pure on purpose — the version comes in as an argument (``write_overlay`` supplies
+    :func:`src.utils.version.app_version`), so building an overlay never reads the
+    environment and S1's emission goldens stay byte-stable.
+    """
+    return {
+        "app_version": app_version,
+        "base": base,
+        "base_digest": resolved_digest(resolved_base),
+    }
+
+
+def build_overlay(
+    spec: OverlaySpec,
+    *,
+    resolved_base: MappingConfig,
+    authored_with: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """Build the thin overlay dict for ``spec`` against an already-resolved base. PURE.
 
     Emits, in this order: ``_base``, ``district_name``, ``district_domains``, then
@@ -511,6 +588,12 @@ def build_overlay(spec: OverlaySpec, *, resolved_base: MappingConfig) -> dict[st
 
     **Rename propagation + the no-divergence invariant.** See :func:`_build_renames`
     and :func:`_assert_no_divergence`.
+
+    **``authored_with``** (plan 0044 S3) is emitted VERBATIM when given and omitted
+    entirely when ``None``, which keeps this function PURE — no version lookup, no file
+    read — and leaves S1's emission goldens untouched. ``write_overlay`` always supplies
+    it (see :func:`authored_with` for why a ``None`` default is safe: provenance is
+    advisory and can never permit a run).
 
     Raises:
         ValueError: base outside :data:`ALLOWED_BASES` (defence in depth — the spec
@@ -562,6 +645,9 @@ def build_overlay(spec: OverlaySpec, *, resolved_base: MappingConfig) -> dict[st
         overlay["global_config"] = global_config
     if entity_overrides:
         overlay["mappings"] = {entity: {"source_files": roles} for entity, roles in sorted(entity_overrides.items())}
+
+    if authored_with is not None:
+        overlay["authored_with"] = dict(authored_with)
 
     _assert_no_divergence(spec, sites, overlay)
     # Emission order is content (see _ROOT_KEY_ORDER) and `yaml.safe_dump(sort_keys=False)`
@@ -667,6 +753,11 @@ def write_overlay(
     file the app cannot read, which matters because a broken file there SHADOWS a
     bundled config of the same name.
 
+    Every written overlay carries an ``authored_with`` provenance block (plan 0044 S3)
+    — the running :func:`src.utils.version.app_version`, the base id and the base's
+    :func:`resolved_digest`. The loader ignores the key (``extra="ignore"``), so it can
+    never change what converts; :func:`read_authored_with` reads it back.
+
     Logs the id and counts only — never the district name, and never a domain.
 
     Does NOT invalidate the UI's memoised catalog
@@ -686,7 +777,15 @@ def write_overlay(
         )
 
     resolved_base = _resolve_base_config(spec.base, search_dirs)
-    overlay = build_overlay(spec, resolved_base=resolved_base)
+    overlay = build_overlay(
+        spec,
+        resolved_base=resolved_base,
+        # ALWAYS stamped (plan 0044 S3) — an overlay with no provenance is one nobody
+        # can ask "which build wrote this, against which base?" of, and the answer is
+        # what the Files step turns into "run the test again". The version comes from
+        # THE single lookup so a frozen exe reports its tag, not "dev".
+        authored_with=authored_with(resolved_base, base=spec.base, app_version=app_version()),
+    )
     validate_overlay(overlay, search_dirs=search_dirs, label=sis_id)
 
     text = _file_header(sis_id) + yaml.safe_dump(
@@ -747,3 +846,83 @@ def delete_overlay(sis_id: str) -> bool:
     target.unlink()
     logger.info("Deleted self-service mapping overlay '%s'.", sis_id)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Read-back: provenance + the current resolved digest
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AuthoredWith:
+    """The provenance a written overlay carries — what wrote it, and against what.
+
+    Frozen: it is a fact read off disk, and every consumer (the Files step's staleness
+    note in S3, the Mapping card's in S6) only ever compares it.
+
+    Attributes:
+        app_version: the DistrictSync version that authored the file (``"dev"`` for an
+            unbuilt source checkout — see :func:`src.utils.version.app_version`).
+        base: the ``_base`` id it was authored against.
+        base_digest: :func:`resolved_digest` of that base AS RESOLVED at authoring time,
+            so a later vendor change to the base is detectable.
+    """
+
+    app_version: str
+    base: str
+    base_digest: str
+
+
+def read_authored_with(sis_id: str) -> AuthoredWith | None:
+    """Read a config's ``authored_with`` provenance block. TOTAL — ``None`` on anything else.
+
+    Reads the YAML TEXT (via :func:`src.config.loader.resolve_config_path`, so the
+    user-then-bundled tiers resolve exactly as the loader would) rather than a validated
+    model, because ``MappingConfig`` declares ``extra="ignore"`` and therefore DROPS this
+    key — it is provenance for humans and for the staleness note, never config.
+
+    ``None`` — meaning "unknown provenance", which is never treated as stale — for every
+    one of: no such config; the file unreadable or not valid YAML; no ``authored_with``
+    key (every hand-written and every bundled config); a value that is not a mapping; or
+    any of the three fields missing or not a string. Total on purpose: this is an
+    advisory read on a hand-editable file, and it must not be able to break a mount.
+    """
+    try:
+        located = resolve_config_path(sis_id)
+        if located is None:
+            return None
+        raw = yaml.safe_load(located.path.read_text(encoding="utf-8")) or {}
+        if not isinstance(raw, dict):
+            return None
+        block = raw.get("authored_with")
+        if not isinstance(block, dict):
+            return None
+        values = [block.get(name) for name in ("app_version", "base", "base_digest")]
+        if not all(isinstance(value, str) for value in values):
+            return None
+        version, base, digest = values
+        return AuthoredWith(app_version=str(version), base=str(base), base_digest=str(digest))
+    except (OSError, ValueError, yaml.YAMLError):
+        logger.debug("Could not read provenance for config '%s'.", sis_id)
+        return None
+
+
+def current_digest(sis_id: str) -> str | None:
+    """:func:`resolved_digest` of what ``sis_id`` would convert with RIGHT NOW, or ``None``.
+
+    The effectful companion to :func:`resolved_digest`: loads through the REAL
+    :func:`src.config.loader.load_config` — the same resolve → version-gate → validate
+    path the pipeline runs — so the fingerprint covers the district's overlay AND
+    everything it inherits from its base.
+
+    TOTAL: any load failure (absent config, unreadable file, failed version gate, invalid
+    values after a hand edit) answers ``None``. ``None`` can only ever mean "not current"
+    — :func:`src.ui_flet.config_editor.verified_is_current` reads two ``None``s as False —
+    so a broken config closes the activation gate instead of holding it open on a
+    fingerprint nobody could compute.
+    """
+    try:
+        return resolved_digest(load_config(sis_id))
+    except Exception:  # noqa: BLE001 - TOTAL by contract; any load failure means "not current"
+        logger.debug("Could not compute the resolved digest for config '%s'.", sis_id)
+        return None
