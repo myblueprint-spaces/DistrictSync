@@ -41,6 +41,7 @@ from src.config.authoring import (
     build_overlay,
     current_digest,
     derive_sis_id,
+    folded_filename,
     write_overlay,
 )
 from src.config.loader import load_config, validate_overlay
@@ -67,9 +68,11 @@ from src.ui_flet.config_editor import (
     file_label,
     files_primary_action,
     gate_outcome_for,
+    has_unsaved_renames,
     humanize_config_error,
     missing_files,
     overlay_staleness,
+    pending_renames,
     renames_from_resolved,
     sd_number_from_text,
     seed_entities,
@@ -940,6 +943,96 @@ class TestDistinctSourceFiles:
         assert tuple(slot.original for slot in slots) == ("StudentSchedule.txt",)
 
 
+class TestTheSchoolYearFileKeepsItsRow:
+    """Plan 0044 S4 review, SHOULD 3: ``expected`` and "which files get loaded" are two
+    different lists, and the schedule file is where they part company."""
+
+    def _homeroom_scoped(self):
+        """A district whose rostered grades ARE its homeroom grades — reachable from the
+        creator's grades form by ticking the same grades twice, which emits
+        ``class_rostering_grades: "homeroom"``."""
+        grades = ("KG", "01", "02", "03", "04", "05", "06", "07")
+        write_overlay(
+            OverlaySpec(
+                sd_number=93,
+                district_name="SD93 - Homeroom Only",
+                district_domains=("sd93.bc.ca",),
+                base="myedbc",
+                homeroom_grades=grades,
+                class_rostering_grades="homeroom",
+            ),
+            overwrite=True,
+        )
+        return load_config("myedbc"), load_config("sd93custom")
+
+    def test_a_homeroom_scoped_district_still_gets_its_schedule_row(self):
+        """``advisory_expected_files`` drops the ``student_schedule`` ROLE (it feeds no
+        surviving class), but ``extract_required_files`` still LOADS the file for the school
+        year — so the district whose schedule extract is named differently must keep the one
+        row that can say so, or its every ``append_year_to_id`` Class ID is wrong with no
+        way to fix it."""
+        from src.etl.pipeline import advisory_expected_files
+
+        base, current = self._homeroom_scoped()
+        expected = advisory_expected_files(current)
+        assert "StudentSchedule.txt" not in expected, "the premise: the role really is inert"
+
+        by_name = {slot.original: slot for slot in distinct_source_files(base, expected=expected)}
+
+        assert by_name["StudentSchedule.txt"].names_school_year is True
+        assert "ClassInformationEnh.txt" not in by_name, "an inert file NO list needs still gets nothing"
+
+    def test_the_twin_a_course_only_tier_still_gets_no_schedule_row(self):
+        """The union is not a blanket: ``mbponly`` names ``StudentSchedule.txt`` in
+        ``school_year_sources`` too, and no active entity reads it — so there is still
+        nothing to rename."""
+        resolved = load_config("mbponly")
+
+        slots = distinct_source_files(resolved, expected=[])
+
+        assert "StudentSchedule.txt" not in {slot.original for slot in slots}
+        assert slots == (), "no active entity names a file, so there is no row at all"
+
+
+class TestPendingRenames:
+    """The rows' own map — shared by the surface and its host (S4 review, BLOCKING 2)."""
+
+    @pytest.mark.parametrize("raw", ["", "   ", "StudentSchedule.txt", "  StudentSchedule.txt "])
+    def test_the_drop_rule_is_with_renames(self, raw):
+        assert pending_renames({"StudentSchedule.txt": raw}) == {}
+
+    def test_a_typed_name_is_stripped_and_kept(self):
+        assert pending_renames({"StudentSchedule.txt": "  sched.txt "}) == {"StudentSchedule.txt": "sched.txt"}
+
+    def test_unsaved_is_the_comparison_the_host_and_the_surface_share(self):
+        pending = {"StudentSchedule.txt": "sched.txt"}
+
+        assert has_unsaved_renames(pending, {}) is True
+        assert has_unsaved_renames(pending, pending) is False, "the positive twin"
+        assert has_unsaved_renames({"StudentSchedule.txt": ""}, {}) is False, "keep-standard is not a change"
+
+
+class TestTheOneFold:
+    """``authoring.folded_filename`` is THE filename identity (S4 review, SHOULD 5).
+
+    ``.lower()`` and ``.casefold()`` disagree on real filenames, and the presence check and
+    the Files step's two-rows-on-one-file refusal must not answer differently about which
+    two names are one file.
+    """
+
+    @pytest.mark.parametrize(("typed", "on_disk"), [("straße.txt", "STRASSE.txt"), ("sched.txt", " Sched.txt ")])
+    def test_a_pair_lower_would_split_reads_as_one_file(self, typed, on_disk):
+        assert typed.lower() != on_disk.lower(), "the premise: ``.lower()`` alone splits this pair"
+        assert folded_filename(typed) == folded_filename(on_disk)
+
+        assert missing_files([typed], [on_disk]) == ()
+
+    def test_the_twin_two_genuinely_different_names_still_read_as_two(self):
+        assert folded_filename("sched_a.txt") != folded_filename("sched_b.txt")
+
+        assert missing_files(["sched_a.txt"], ["sched_b.txt"]) == ("sched_a.txt",)
+
+
 class TestFileLabels:
     def test_every_distinct_file_of_every_base_has_a_plain_language_name(self):
         every = {slot.original for base in ALLOWED_BASES for slot in _slots_for(base)}
@@ -1077,17 +1170,20 @@ class TestRenamesFromResolved:
     def test_a_written_map_round_trips_out_of_the_resolved_config(self):
         base, current = self._resolved_pair(SD74_RENAMES)
 
-        assert renames_from_resolved(base, current) == SD74_RENAMES
+        resumed = renames_from_resolved(base, current)
+
+        assert dict(resumed.renames) == SD74_RENAMES
+        assert resumed.divergent == (), "a written map names each file ONE way"
 
     def test_the_twin_an_unrenamed_config_answers_nothing(self):
         base, current = self._resolved_pair({})
 
-        assert renames_from_resolved(base, current) == {}
+        assert dict(renames_from_resolved(base, current).renames) == {}
 
     def test_a_config_compared_with_itself_answers_nothing(self):
         base = load_config("myedbc")
 
-        assert renames_from_resolved(base, base) == {}
+        assert dict(renames_from_resolved(base, base).renames) == {}
 
     def test_a_hand_edited_divergence_collapses_to_the_first_seen_name(self):
         """The honest repair: the rows on screen and the map the next Save writes are ONE
@@ -1103,7 +1199,8 @@ class TestRenamesFromResolved:
 
         found = renames_from_resolved(base, load_config("sd93custom"))
 
-        assert found == {"StudentSchedule.txt": "sched.txt"}, "Classes is the first site in the walk"
+        assert dict(found.renames) == {"StudentSchedule.txt": "sched.txt"}, "Classes is the first site in the walk"
+        assert found.divergent == ("StudentSchedule.txt",), "the disagreement must be REPORTED, not just collapsed"
 
 
 class TestFilesPrimaryAction:

@@ -44,6 +44,7 @@ from src.config.authoring import (
     current_digest,
     delete_overlay,
     derive_sis_id,
+    folded_filename,
     is_custom_sis_id,
     overlay_path,
     read_authored_with,
@@ -833,6 +834,34 @@ class TestTheChainAndCaseFoldedRefusals:
             )
 
         assert not overlay_path("sd93custom").exists(), "a refused rename map reached disk"
+
+
+class TestFoldedFilename:
+    """The PUBLIC filename identity (plan 0044 S4 review, SHOULD 5).
+
+    ONE fold, four call sites: the chain refusal, the duplicate-target refusal,
+    ``config_editor.missing_files``' presence check and the Files step's
+    two-rows-on-one-file refusal. Three spellings used to answer this question
+    (``.strip().casefold()``, ``.lower()`` and a bare ``.casefold()``), so two checks that
+    must agree about "the same file" could disagree.
+    """
+
+    def test_it_folds_case_and_edge_whitespace(self):
+        assert folded_filename("  StudentSchedule.TXT ") == "studentschedule.txt"
+
+    def test_it_folds_a_pair_lower_alone_would_split(self):
+        """``.lower()`` leaves ``straße``/``STRASSE`` two files; the filesystem does not."""
+        assert "straße.txt".lower() != "STRASSE.txt".lower(), "the premise"
+
+        assert folded_filename("straße.txt") == folded_filename("STRASSE.txt")
+
+    def test_the_twin_two_different_names_stay_two(self):
+        assert folded_filename("sched_a.txt") != folded_filename("sched_b.txt")
+
+    def test_it_is_total(self):
+        """A non-string answers ``""`` — every caller reaches it with hand-editable data."""
+        assert folded_filename(None) == ""
+        assert folded_filename(7) == ""
 
 
 class TestValidateSourceFilename:

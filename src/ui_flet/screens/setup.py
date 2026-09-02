@@ -69,6 +69,7 @@ from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
 from src.ui_flet import components, tokens
 from src.ui_flet.config_editor import (
     CreatorForm,
+    has_unsaved_renames,
 )
 from src.ui_flet.filepicker import (
     ValidationResult,
@@ -507,6 +508,11 @@ def _mount_wizard(
         # The FILES gate fact is I/O (the overlay + the resolved digest), so it is probed once
         # and memoised per act rather than on every footer re-gate. ``None`` = not yet probed.
         "files_ok": None,
+        # The filename form's pending rename map, HELD HERE and mutated in place by the
+        # creator surface (plan 0044 S4 review, BLOCKING 2). It has to outlive a re-mount:
+        # this wizard rebuilds the step body on every hop, and a surface that forgot what
+        # was picked while this footer's Continue stayed open advanced past unsaved names.
+        "files_pending": {},
     }
 
     def _files_step_satisfied() -> bool:
@@ -594,7 +600,11 @@ def _mount_wizard(
         if btn is None:
             return
         step = ws["step"]
-        if step in (SetupStep.FOLDERS, SetupStep.DISTRICT):
+        if step is SetupStep.FILES:
+            # Same gate as the render above (``can_advance`` AND nothing pending), so an
+            # in-place re-gate can never disagree with a freshly built footer.
+            btn.disabled = not (can_advance(step, _inputs()) and not _files_names_pending())  # type: ignore[union-attr]
+        elif step in (SetupStep.FOLDERS, SetupStep.DISTRICT):
             btn.disabled = not can_advance(step, _inputs())  # type: ignore[union-attr]
         elif is_skippable(step):
             # SCHEDULE is skippable but window-gated (an enabled+invalid window closes Continue);
@@ -616,6 +626,16 @@ def _mount_wizard(
 
     def _forward() -> None:
         step = ws["step"]
+        if step is SetupStep.FILES and _files_names_pending():
+            # The load-bearing half of the two-primaries fix (plan 0044 S4 review, BLOCKING
+            # 2): advancing here would carry the district forward under file names that were
+            # never written, and the write it skipped is the only record of them. Re-renders
+            # rather than returning silently, because the button that was pressed was built
+            # before the pick and is now painting the wrong tier — one press and the step
+            # reads its own truth (the body's Save takes the primary tier, this Continue
+            # drops to outlined and disabled, and the unsaved warning is on screen).
+            _go(SetupStep.FILES)
+            return
         if not can_advance(step, _inputs()):
             return  # gate closed (folders/district) — Enter/Continue is a no-op, matching the disabled button
         creator = ws["mode"] == "creator"
@@ -790,6 +810,26 @@ def _mount_wizard(
         return ft.Column(spacing=22, controls=[input_field, output_field])
 
     # ---- creator mode: the host callbacks (plan 0044 S3 §3.5) ----------- #
+    def _files_pending() -> dict[str, str]:
+        """The creator surface's pending rename map (created once, then mutated in place)."""
+        names = ws.setdefault("files_pending", {})
+        if not isinstance(names, dict):  # defensive: the surface mutates whatever it is handed
+            names = {}
+            ws["files_pending"] = names
+        return names
+
+    def _files_names_pending() -> bool:
+        """Whether the FILES step has file names the config on disk does not have.
+
+        Read from the SAME pure comparison the surface tiers its Save on
+        (``config_editor.has_unsaved_renames``), never a second spelling: a footer that
+        disagreed with the body would put a second filled primary on the step and — worse —
+        advance past names that were never written.
+        """
+        form = ws["creator_form"]
+        saved = form.renames if isinstance(form, CreatorForm) else {}
+        return has_unsaved_renames(_files_pending(), saved)
+
     def _on_creator_written(new_sis: str, form: CreatorForm, note: str) -> None:
         """The overlay is on disk and the token is stored — advance to the next step."""
         ws["creator_sis"] = new_sis
@@ -823,6 +863,7 @@ def _mount_wizard(
         ws["creator_sis"] = ""
         ws["creator_form"] = None
         ws["files_ok"] = None
+        ws["files_pending"] = {}  # the district is gone; its rows must not outlive it
         _go(SetupStep.DISTRICT, note=CREATOR_DISCARDED_NOTE)
 
     def _enter_creator(_e: ft.ControlEvent | None = None) -> None:
@@ -831,6 +872,7 @@ def _mount_wizard(
         ws["creator_sis"] = ""
         ws["creator_form"] = creator_form_for_new(cfg)
         ws["files_ok"] = None
+        ws["files_pending"] = {}
         _go(SetupStep.DISTRICT)
 
     def _creator_body(stage: CreatorStage) -> ft.Control:
@@ -848,6 +890,7 @@ def _mount_wizard(
             on_activated=_on_creator_activated,
             on_discarded=_on_creator_discarded,
             stage=stage,
+            pending=_files_pending(),
         )
 
     def _district_body() -> ft.Control:
@@ -1059,7 +1102,11 @@ def _mount_wizard(
             # supporting action (disabled until the gate is genuinely passed — Enter can't
             # bypass it either). Once the district is active, the body has no primary left and
             # Continue becomes the screen's one filled action.
-            open_gate = can_advance(SetupStep.FILES, _inputs())
+            # ...and CLOSED while a file name on screen is not in the config on disk (plan
+            # 0044 S4 review, BLOCKING 2): the body's Save owns the primary tier then, and a
+            # Continue that advanced would carry the district forward under names it never
+            # wrote — silently, since the write it skipped is the only record of them.
+            open_gate = can_advance(SetupStep.FILES, _inputs()) and not _files_names_pending()
             factory = components.primary_button if open_gate else components.secondary_button
             forward = factory(
                 "Continue",

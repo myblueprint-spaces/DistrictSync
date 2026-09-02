@@ -21,8 +21,9 @@ Four families live here:
   unit an admin renames is the file, not the entity: one answer fixes Classes,
   Enrollments and the school-year lookup together), :func:`file_form_rows` pairs those
   with the name in force and its presence in the folder, :func:`renames_from_resolved` is
-  the resume inverse, and :func:`files_primary_action` decides which action is the step's
-  ONE filled primary.
+  the resume inverse (with its report of a hand-edited config that names one file two
+  ways), :func:`pending_renames` is what a set of half-answered ROWS means, and
+  :func:`files_primary_action` decides which action is the step's ONE filled primary.
 * **The gate.** :class:`GateState` / :class:`GateOutcome` / :func:`gate_outcome_for`
   reduce the test conversion's outcome — the worker's result or exception, whether the
   output folder is usable, and the expected-vs-present file lists — to one derived fact.
@@ -68,7 +69,13 @@ from typing import TYPE_CHECKING, Literal
 
 import yaml
 
-from src.config.authoring import ALLOWED_BASES, CREATOR_ENTITIES, OverlaySpec, validate_source_filename
+from src.config.authoring import (
+    ALLOWED_BASES,
+    CREATOR_ENTITIES,
+    OverlaySpec,
+    folded_filename,
+    validate_source_filename,
+)
 from src.config.bc_district_domains import domains_for, presumptive_domain
 from src.config.models import (
     CLASS_ROSTERING_HOMEROOM_SENTINEL,
@@ -353,15 +360,23 @@ def distinct_source_files(resolved_base: MappingConfig, *, expected: Iterable[st
     ``expected`` is INJECTED rather than derived here so ``pipeline.advisory_expected_files``
     stays the SINGLE source for "which files matter" — including its one narrowing (a fully
     homeroom-scoped config's ``student_schedule``/``class_info`` roles feed no surviving
-    class, so offering a row for them would be offering a name that changes nothing).
+    class, so a row for ``class_info`` would offer a name that changes nothing).
 
     A school-year file that no ACTIVE entity reads gets NO slot: ``extract_required_files``
     never loads it, so the row would be equally inert. ``names_school_year`` therefore only
     ever ANNOTATES a row that exists for an entity's sake.
+
+    ``expected`` is UNIONED with ``global_config.school_year_sources`` (plan 0044 S4 review,
+    SHOULD 3), because those two lists answer different questions: a fully homeroom-scoped
+    config's ``student_schedule`` role feeds no surviving class, so
+    ``advisory_expected_files`` correctly drops it — but ``extract_required_files`` still
+    LOADS that file for the school-year lookup, so the district whose schedule extract is
+    named differently would have lost the only row that can say so. The entity filter above
+    is untouched: a school-year file no active entity reads still gets nothing.
     """
-    wanted = {name for name in expected if isinstance(name, str) and name}
     active = resolved_base.active_entities()
     year_files = set(resolved_base.global_config.school_year_sources.values())
+    wanted = {name for name in expected if isinstance(name, str) and name} | year_files
 
     references: dict[str, list[tuple[str, str]]] = {}
     order: list[str] = []
@@ -433,26 +448,82 @@ def file_form_rows(
     )
 
 
-def renames_from_resolved(resolved_base: MappingConfig, resolved_current: MappingConfig) -> dict[str, str]:
+@dataclass(frozen=True)
+class ResumedRenames:
+    """What a district's config on disk says about its file names — and where it disagrees.
+
+    Attributes:
+        renames: ``base filename -> the name this config uses``, first-seen per original.
+        divergent: the base filenames this config names in MORE THAN ONE way across its
+            reference sites (folded, so ``b.TXT``/``B.txt`` is one name — the same identity
+            :func:`authoring.folded_filename` gives the authoring layer). A hand edit is the
+            only way to reach this, and it is why the pair is returned together: the form
+            can show ONE name per file only by choosing one, so the surface it seeds has to
+            be seeded DIRTY, with the unsaved warning prompting the repairing Save.
+    """
+
+    renames: Mapping[str, str] = dataclasses.field(default_factory=dict)
+    divergent: tuple[str, ...] = ()
+
+
+def renames_from_resolved(resolved_base: MappingConfig, resolved_current: MappingConfig) -> ResumedRenames:
     """The rename map a district's CURRENT config already expresses — the RESUME inverse.
 
     For every reference site in the base, if the current config names something else there,
     record ``base name -> current name`` (first-seen per original, same walk as
-    :func:`distinct_source_files`). TOTAL: an identical pair answers ``{}``.
+    :func:`distinct_source_files`). TOTAL: an identical pair answers empty.
 
-    A hand-edited DIVERGENT config — two sites naming one base file two different ways —
-    collapses to its FIRST-SEEN name here, and the next Save writes that one name to every
-    site. That is a visible repair rather than a silent loss, because the rows on screen and
-    the written map are ONE value: whatever this returns is what the form shows.
+    What is GUARANTEED is only the first-seen answer plus an honest report of disagreement
+    (plan 0044 S4 review, SHOULD 4). A hand-edited DIVERGENT config — one base file named
+    two different ways across its sites, INCLUDING the shape where one site keeps the base
+    name — cannot be represented by a map keyed by the file, so ``divergent`` names those
+    originals and the caller seeds its form DIRTY: the next Save then writes the first-seen
+    name to every site, a repair the admin was asked for rather than a silent collapse.
     """
     current = dict(_ordered_reference_sites(resolved_current))
     found: dict[str, str] = {}
+    seen: dict[str, set[str]] = {}
+    divergent: list[str] = []
     for site, original in _ordered_reference_sites(resolved_base):
         now = current.get(site)
-        if not isinstance(now, str) or not now or now == original:
+        if not isinstance(now, str) or not now:
+            continue
+        names = seen.setdefault(original, set())
+        names.add(folded_filename(now))
+        if len(names) > 1 and original not in divergent:
+            divergent.append(original)
+        if now == original:
             continue
         found.setdefault(original, now)
-    return found
+    return ResumedRenames(renames=found, divergent=tuple(divergent))
+
+
+def pending_renames(pending: Mapping[str, str]) -> dict[str, str]:
+    """The rename map a set of half-answered ROWS expresses — the same drop rule as
+    :meth:`CreatorForm.with_rename`, minus its validation.
+
+    A row's raw value is whatever is in its field: ``""`` for "use the standard name", and a
+    half-typed name while it is being typed. Unvalidated ON PURPOSE (the boundary fires on
+    Save, once), but the DROP rule has to be the form's, or "is anything unsaved?" would
+    answer yes for a row the form would emit nothing for.
+
+    PURE, and shared by the surface and its HOST: the host gates its own Continue on the
+    same comparison the surface tiers its Save on (plan 0044 S4 review, BLOCKING 2), and two
+    spellings of "something is pending" is how a second filled primary appears.
+    """
+    chosen: dict[str, str] = {}
+    for original, raw in dict(pending).items():
+        if not isinstance(original, str) or not original:
+            continue
+        name = raw.strip() if isinstance(raw, str) else ""
+        if name and name != original:
+            chosen[original] = name
+    return chosen
+
+
+def has_unsaved_renames(pending: Mapping[str, str], saved: Mapping[str, str]) -> bool:
+    """Whether the ROWS express a rename map the config on disk does not have. PURE."""
+    return pending_renames(pending) != dict(saved)
 
 
 def files_primary_action(*, unsaved: bool, passed: bool, already: bool) -> Literal["save", "run", "confirm", "none"]:
@@ -779,9 +850,13 @@ def missing_files(expected: Iterable[str], present: Iterable[str]) -> tuple[str,
     mapping's ``Students.txt`` was once reported as missing while the ETL loaded it
     perfectly well — a false alarm on the very screen an admin uses to decide whether
     their extract is complete. The MAPPING's spelling is what is returned.
+
+    The fold is :func:`authoring.folded_filename` — THE product's one filename identity
+    (plan 0044 S4 review, SHOULD 5), so this check and the Files step's
+    two-rows-on-one-file refusal can never disagree about which two names are one file.
     """
-    present_folded = {name.lower() for name in present if isinstance(name, str)}
-    return _ordered_unique(name for name in expected if name.lower() not in present_folded)
+    present_folded = {folded_filename(name) for name in present if isinstance(name, str)}
+    return _ordered_unique(name for name in expected if folded_filename(name) not in present_folded)
 
 
 def humanize_config_error(exc: BaseException) -> str:

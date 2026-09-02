@@ -175,3 +175,5 @@
 ## Reference
 - **Proven-API provenance:** every API form in this document was verified against the pinned Flet 0.85.3 in the **2026-06-29 bake-off spike** — a working Home + Convert exercising the shell, the `ft.Theme` brand mapping, `ft.FilePicker`, the async-run-on-thread pattern, and the clean-close lifecycle. The spike itself was throwaway and has been deleted; **this document is the durable proven-API record**, and the landed `src/ui_flet/` shell + `scripts/ci_flet_pack_smoke.py` are the living proof.
 - **Docs (version-matched):** https://flet.dev/docs/getting-started/ · https://flet.dev/docs/controls/ · https://flet.dev/docs/reference/  — **NOT** old `0.2x` blog tutorials.
+
+- `ft.TextField.on_blur` is a verified 0.85.3 form (plan 0044 S4): the creator's typed-filename rows re-tier the step when focus leaves the field, because re-rendering on every keystroke would fight the caret. Pair it with a LOAD-BEARING guard on the action itself (the gate refuses while unsaved) — a blur handler alone is a courtesy, never the safety.

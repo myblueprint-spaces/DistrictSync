@@ -1,7 +1,7 @@
 # 0044 — District self-service config editor (Phase 2, re-scoped)
 
-- **Status:** S1 · S2 · S3 LANDED on `claude/plan-0044-implementation-nrdj2z` (2026-09-02; each Stage-7 reviewed, findings fixed or ledgered); S4 spec written, implementation in flight
-- **Resumable from:** Stage 6 — S4 implementation (the Files step filename form) against the S4 spec; owner approved proceeding through the UI slices 2026-09-02
+- **Status:** S1 · S2 · S3 · S4 LANDED on `claude/plan-0044-implementation-nrdj2z` (2026-09-02; each Stage-7 reviewed, findings fixed or ledgered) — the locally-testable UI milestone; S5–S7 await the owner's go
+- **Resumable from:** Stage 4 — the S5 spec (pure `preflight.py` + `PipelineResult.input_columns`), after the owner's local test of S1–S4 and the go for S5–S7
 - **Blockers:** none
 - **Flags:**
   - `#3+R2-1 activation scope: ALL THREE sis_type writers gated for user-authored configs (wizard creator flow · Mapping Apply · Settings folders-card Save); Convert has no writer and stays explicit-manual` — reviewable at the spec gate.
@@ -500,7 +500,7 @@ halves pinned together. Any new sink keeps `dry_run` a REQUIRED keyword
   gate's existing missing-FILE report with no false copy. **Escape hatch if one session
   can't hold it:** split the grades form to S3b (grades default to inherited in S3a);
   both halves stay vertically complete.
-- [ ] **S4 — the Files step.** Role/file-keyed filename form, input-dir-aware dropdowns,
+- [x] **S4 — the Files step.** _(LANDED 2026-09-02.)_ Role/file-keyed filename form, input-dir-aware dropdowns,
   propagation to every reference incl. `school_year_sources`, the no-divergence invariant
   wiring, FILES-step satisfaction. Lands complete: non-standard-filename districts now
   self-onboard.
@@ -1760,3 +1760,12 @@ _Spec'd just-in-time, each after the prior slice lands (S5 next — the pure `sr
 - **Spec deviations, all in DECISIONS:** overlays inherit `sis`; `build_creator` gained `stage` + `on_written(note)`; the creator lives in `screens/creator.py` from S3, not S6. `sis_type` write sites are FOUR (the gated one added).
 - **CI:** still not read — owed at PR time (owner: PR after the UI slices).
 - **Local test recipe for the owner:** `DISTRICTSYNC_DATA_DIR=<scratch abs path> python -m src.main` → launch page → (any address, or the not-listed escape) → wizard District step → "Set up my district" → four forms → Continue → Folders (point input at a GDE folder, e.g. a copy of `tests/snapshots/input/` — note SD74's filenames differ from the standard, so with S3 alone the test conversion reports them missing; S4 adds the rename form) → "Your files" → "Run a test conversion" → "Use this district" → Delivery/Schedule → Finish.
+
+## Land record — S4 (2026-09-02)
+
+- **Commits:** the filename form (`distinct_source_files` · `file_form_rows` · `CreatorForm.renames`/`with_rename` · `renames_from_resolved` · `files_primary_action` · public `validate_source_filename` + the folded chain/duplicate refusals · the "Your files" rows + ONE "Save these file names" above the gate · fifth callback `on_files_saved`) + the review-fix commit (gate/confirm refuse while unsaved · `on_blur` re-tier · host-owned `pending` map disabling the footer Continue · `school_year_sources` slot union · divergence-aware resume · one `folded_filename` · refused names never shown as in force).
+- **Deterministic gates (local, Linux, after the fixes):** full suite 5,312 passed / 47 skipped / 1 PRE-EXISTING root-container failure · ruff + format clean · `python -m mypy` clean · bandit clean · email scan OK · `make validate-config` 20/20 · tree-check OK (100 files) · SD74 golden byte-identical.
+- **Reviewer sign-off (Stage 7):** 2 BLOCKING fixed · 3 SHOULD fixed · 1 NOTE fixed · 2 tier-gap residuals to ROADMAP. Security/PII, write-correctness and docs clean on the reviewer's probes.
+- **Closes:** ROADMAP "S1 review item 2" (rename chains). **Records:** DECISIONS (pending map host-owned; gate refuses while unsaved). `FLET_1.0_CONVENTIONS.md`: `Dropdown(editable=True)` declined + `TextField.on_blur` verified.
+- **CI:** still not read — owed at PR time (owner: PR after the UI slices).
+- **Milestone:** S1–S4 = the locally-testable self-service UI (standard AND renamed filenames). Remaining: S5 (missing-column report), S6 (Mapping edit + re-gate on Apply/folders-card Save), S7 (export + docs + certification disposition).

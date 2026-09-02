@@ -258,14 +258,20 @@ def validate_source_filename(value: object, *, label: str = "file name") -> str:
     return _require_bare_filename(value, label=label)
 
 
-def _folded_name(value: str) -> str:
+def folded_filename(value: object) -> str:
     """A filename's case-folded identity — how the FILESYSTEM sees it, not how it is typed.
 
     Windows and macOS treat ``b.TXT`` and ``B.txt`` as ONE file, so every rule about two
-    filenames being "the same" has to fold. ONE spelling of that fold, two call sites (the
-    chain refusal in :meth:`OverlaySpec.__post_init__` and the duplicate-target refusal in
-    :func:`_build_renames`), because a rule enforced case-sensitively in one place and
-    case-insensitively in the other is not a rule.
+    filenames being "the same" has to fold. THE one spelling of that fold in the product,
+    PUBLIC because the rule is not confined to this layer (plan 0044 S4 review, SHOULD 5):
+    the chain refusal in :meth:`OverlaySpec.__post_init__`, the duplicate-target refusal in
+    :func:`_build_renames`, ``config_editor.missing_files``' presence check and the Files
+    step's two-rows-on-one-file refusal all ask it. A rule enforced with ``.lower()`` in one
+    place, ``.casefold()`` in another and ``.strip().casefold()`` in a third is not a rule —
+    ``.lower()`` alone leaves ``STRASSE.txt``/``straße.txt`` and ``İ``-cased pairs disagreeing
+    across two checks that must answer identically.
+
+    TOTAL: a non-string answers ``""``.
     """
     return value.strip().casefold() if isinstance(value, str) else ""
 
@@ -364,11 +370,11 @@ class OverlaySpec:
         # today — and A's role then reads the base's B file, i.e. the WRONG DATA with every
         # other guard green. Folded, because ``b.TXT`` and ``B.txt`` are one file on
         # Windows. A self-rename (``A.txt`` → ``a.txt``) is NOT a chain and stays legal.
-        folded_originals = {_folded_name(original): original for original in renames}
+        folded_originals = {folded_filename(original): original for original in renames}
         chained = sorted(
             f"{original!r} -> {new!r}"
             for original, new in renames.items()
-            if _folded_name(new) in folded_originals and _folded_name(new) != _folded_name(original)
+            if folded_filename(new) in folded_originals and folded_filename(new) != folded_filename(original)
         )
         if chained:
             raise ValueError(
@@ -442,7 +448,7 @@ def _build_renames(
     * an ``original`` that appears NOWHERE in the resolved base — a typo would
       simply no-op, and the district would discover it as a missing file at 2 a.m.;
     * two distinct originals renamed to the SAME target (compared CASE-FOLDED, via
-      :func:`_folded_name`) — that collapses two source roles onto one file, which is
+      :func:`folded_filename`) — that collapses two source roles onto one file, which is
       never what a filename form means.
 
     (Not an error: a target that equals a filename the base ALREADY uses at another
@@ -467,7 +473,7 @@ def _build_renames(
     # case-sensitive grouping would let two roles collapse onto one file undetected.
     by_target: dict[str, list[str]] = {}
     for original, new in renames.items():
-        by_target.setdefault(_folded_name(new), []).append(original)
+        by_target.setdefault(folded_filename(new), []).append(original)
     collisions = {renames[originals[0]]: sorted(originals) for originals in by_target.values() if len(originals) > 1}
     if collisions:
         raise ValueError(

@@ -194,9 +194,9 @@ def _slots_of(tree) -> tuple:  # noqa: ANN001
     Derived through the SAME function the view calls, so a test can name a row by its
     standard filename without hard-coding the base's file list twice.
     """
-    from src.ui_flet.screens.creator import _creator_file_slots
+    from src.ui_flet.screens.creator import _creator_files_model
 
-    return _creator_file_slots("myedbc", "sd93custom")
+    return _creator_files_model("myedbc", "sd93custom").slots
 
 
 def _row_field(tree, standard: str) -> ft.TextField:  # noqa: ANN001
@@ -1079,6 +1079,73 @@ class TestTheFilenameFormRenders:
 
         assert creator_screen.FILES_UNSAVED_NOTE in _texts(root)
 
+    def test_a_TYPED_name_re_tiers_the_step_when_the_caret_leaves(self, monkeypatch, tmp_path) -> None:
+        """The type-only twin of the test above (plan 0044 S4 review, BLOCKING 1).
+
+        Typing deliberately does NOT re-render (the field owns the caret), so ``on_blur`` is
+        what makes the tier and the warning catch up. Without it, a district could type the
+        name its extract really uses, touch nothing else, and be left looking at "Run a test
+        conversion" as the step's filled primary — a test against the config on DISK.
+        """
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)
+        field = _row_field(root, "StudentSchedule.txt")
+
+        _type(field, "studentcourseselection.txt")
+        assert creator_screen.FILES_UNSAVED_NOTE not in _texts(root), "the caret-preserving half"
+
+        assert field.on_blur is not None, "the row has no blur handler at all"
+        field.on_blur(None)
+
+        assert _filled(root) == [creator_screen.FILES_SAVE_LABEL], "the save must take the primary tier"
+        assert creator_screen.FILES_UNSAVED_NOTE in _texts(root)
+
+    def test_the_test_conversion_refuses_to_run_against_names_that_are_not_saved(self, monkeypatch, tmp_path) -> None:
+        """BLOCKING 1's load-bearing half: the outlined run button is still PRESSABLE.
+
+        A run reads the config on disk, so a test against names it does not hold reports on
+        the wrong files — and would pass, putting "Use this district" beside a verdict about
+        a district nobody has tested as it now reads.
+        """
+        root, _cfg_, gate = _files_surface(monkeypatch, tmp_path)
+        _type(_row_field(root, "StudentSchedule.txt"), "studentcourseselection.txt")
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+
+        assert gate.calls == [], "the test conversion ran against the config on disk"
+        assert creator_screen.FILES_UNSAVED_NOTE in _texts(root)
+
+        _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+
+        assert len(gate.calls) == 1, "the twin: a saved form really does run"
+
+    def test_a_refused_name_is_never_shown_as_the_name_in_force(self, monkeypatch, tmp_path) -> None:
+        """Plan 0044 S4 review, NOTE 6: the refused value stays in the field the admin has
+        to correct, and NOWHERE else — not as the chipped name, not as the selection, and
+        not as an option in the list of names this district could be using."""
+        bad = "C:\\Users\\jane\\secret.txt"
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)
+        _type(_row_field(root, "StudentSchedule.txt"), bad)
+
+        _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
+
+        assert creator_screen.FILES_NAME_INVALID_NOTE in _texts(root)
+        assert bad not in _error_texts(root), "the note echoed the refused value"
+        dropdown = _dropdown(root, "StudentSchedule.txt")
+        assert dropdown.value == "", "the standard name is still the name in force"
+        assert all(option.key != bad for option in dropdown.options), "a refused value was offered as an option"
+        assert _texts(root).count(bad) == 1, "the refused value is painted somewhere besides its field"
+        assert _row_field(root, "StudentSchedule.txt").value == bad, "the admin cannot correct what is gone"
+
+    def test_the_twin_a_valid_typed_name_IS_shown_as_the_name_in_force(self, monkeypatch, tmp_path) -> None:
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)
+        field = _row_field(root, "StudentSchedule.txt")
+
+        _type(field, "studentcourseselection.txt")
+        field.on_blur(None)
+
+        assert _dropdown(root, "StudentSchedule.txt").value == "studentcourseselection.txt"
+
 
 class TestExactlyOneFilledPrimary:
     @pytest.mark.parametrize("unsaved", [True, False])
@@ -1243,7 +1310,13 @@ class TestTheHeadlineFlow:
         for standard, actual in SD74_RENAMES.items():
             _pick(_dropdown(root, standard), actual)
         assert creator_screen.FILES_UNSAVED_NOTE in _texts(root)
-        assert _filled(root)[0] == creator_screen.FILES_SAVE_LABEL, "the save takes the primary tier"
+        # The footer Continue was built before the picks, so the first press is what makes
+        # the step re-read itself — and it must REFUSE rather than carry this district
+        # forward under names that were never written (S4 review, BLOCKING 2).
+        _button(root, "Continue").on_click(None)
+        assert setup_screen.FILES_STEP_TITLE in _texts(root), "an unsaved pick advanced the walk"
+        assert _filled(root) == [creator_screen.FILES_SAVE_LABEL], "the save takes the step's ONE primary tier"
+        assert _button(root, "Continue").disabled is True
 
         _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
 
@@ -1277,6 +1350,85 @@ class TestTheHeadlineFlow:
 
         assert creator_screen.creator_gate_current(cfg, "sd93custom") is True
         assert "Step 4 of 6" in _texts(root), "the walk moved on"
+
+    def test_the_wizard_footer_cannot_advance_past_an_unsaved_pick(self, monkeypatch, tmp_path) -> None:
+        """Plan 0044 S4 review, BLOCKING 2 — the repro, with the stubbed gate.
+
+        Run the test → use this district → Back → pick a rename. The step then held TWO
+        filled primaries (the body's Save and the footer's Continue) and the Continue
+        ADVANCED, dropping the picked names on the floor: the write it skipped was the only
+        record of them, and the district carried on converting under the standard names.
+        """
+        _write_sd93()
+        cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
+        root, _gate = _wizard_at_the_gate(monkeypatch, cfg)
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+        _button(root, "Back").on_click(None)
+        assert isinstance(_button(root, "Continue"), ft.FilledButton), "the positive twin: nothing pending"
+        assert _button(root, "Continue").disabled is False
+
+        _pick(_dropdown(root, "StudentSchedule.txt"), "sched.txt")
+        _button(root, "Continue").on_click(None)
+
+        assert setup_screen.FILES_STEP_TITLE in _texts(root), "the walk advanced past unsaved file names"
+        assert _filled(root) == [creator_screen.FILES_SAVE_LABEL], "two filled primaries on one step"
+        assert _button(root, "Continue").disabled is True
+        assert creator_screen.FILES_UNSAVED_NOTE in _texts(root)
+        # The pick SURVIVED the host's re-render — the whole reason the map is the host's.
+        assert _dropdown(root, "StudentSchedule.txt").value == "sched.txt"
+
+    def test_the_twin_a_saved_and_re_tested_district_advances_again(self, monkeypatch, tmp_path) -> None:
+        """The same walk, carried through: Save re-closes the gate, a fresh test re-opens
+        it, and Continue is the step's one filled action again."""
+        _write_sd93()
+        cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
+        root, _gate = _wizard_at_the_gate(monkeypatch, cfg)
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+        _button(root, "Back").on_click(None)
+        _pick(_dropdown(root, "StudentSchedule.txt"), "sched.txt")
+        _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
+
+        assert creator_screen.FILES_UNSAVED_NOTE not in _texts(root), "the save cleared the pending map"
+        assert _button(root, "Continue").disabled is True, "the saved config is not the one that was tested"
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+        _button(root, "Back").on_click(None)
+
+        assert isinstance(_button(root, "Continue"), ft.FilledButton)
+        assert _button(root, "Continue").disabled is False
+        assert _filled(root) == ["Continue"], "the body has no primary left once the district is active"
+
+    def test_a_hand_edited_divergence_resumes_dirty_and_one_save_repairs_it(self, monkeypatch, tmp_path) -> None:
+        """Plan 0044 S4 review, SHOULD 4: a config that names ONE file two ways.
+
+        The form can only show one name per file, so the resume used to read as SAVED while
+        the other spelling sat on disk. It now opens dirty, and the Save the warning asks
+        for writes one consistent name to every role.
+        """
+        _write_sd93(renames={"StudentSchedule.txt": "sched_a.txt"})
+        target = overlay_path("sd93custom")
+        raw = yaml.safe_load(target.read_text(encoding="utf-8"))
+        raw["mappings"]["Enrollments"]["source_files"]["student_schedule"] = "sched_b.txt"
+        target.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
+        _pin(monkeypatch, cfg)
+
+        root = build_setup(MagicMock())
+
+        assert creator_screen.FILES_UNSAVED_NOTE in _texts(root), "a divergent config read as saved"
+        assert _dropdown(root, "StudentSchedule.txt").value == "sched_a.txt", "the first-seen name is the answer"
+
+        _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
+
+        written = yaml.safe_load(target.read_text(encoding="utf-8"))["mappings"]
+        assert written["Classes"]["source_files"]["student_schedule"] == "sched_a.txt"
+        assert written["Enrollments"]["source_files"]["student_schedule"] == "sched_a.txt"
+        assert creator_screen.FILES_UNSAVED_NOTE not in _texts(root), "the repair left the step dirty"
 
     def test_a_resumed_setup_shows_the_names_already_saved(self, monkeypatch, tmp_path) -> None:
         """The resume inverse: whatever the config on disk names IS the form's answer, so the
@@ -1415,10 +1567,26 @@ class TestTheHostSeam:
             "on_activated",
             "on_discarded",
             "stage",
+            "pending",
         }, "the seam grew or lost a callback — S6's Mapping host has to pass the same set"
         for name in ("on_written", "on_files_saved", "on_activated", "on_discarded"):
             assert callable(seen[-1][name]), name
         assert seen[-1]["stage"] == "forms"
+        # FOUR callables and one piece of shared STATE — not a fifth callback (S4 review,
+        # BLOCKING 2): the host does not need to be told when a row changes, it needs to be
+        # able to ask, which it does with ``has_unsaved_renames(pending, form.renames)``.
+        assert isinstance(seen[-1]["pending"], dict), "the pending rename map is the host's own dict"
+
+    def test_a_host_that_owns_no_step_footer_may_omit_the_pending_map(self, monkeypatch, tmp_path) -> None:
+        """S6's Mapping host has no Continue of its own to gate, so ``pending`` defaults to
+        ``None`` and the surface keeps a private dict for its own lifetime — the rows still
+        work, and nothing about the omission is silently degraded."""
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)  # mounted with NO pending=
+
+        _pick(_dropdown(root, "StudentSchedule.txt"), "sched.txt")
+
+        assert creator_screen.FILES_UNSAVED_NOTE in _texts(root)
+        assert _filled(root) == [creator_screen.FILES_SAVE_LABEL]
 
     def test_build_creator_renders_identically_from_a_second_host(self, page, monkeypatch) -> None:
         """The ``_finish`` two-mount equivalence precedent: a seam whose two hosts render

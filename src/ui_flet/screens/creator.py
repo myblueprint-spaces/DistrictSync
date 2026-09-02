@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -38,9 +39,11 @@ from src.config.authoring import (
     current_digest,
     delete_overlay,
     derive_sis_id,
+    folded_filename,
     overlay_path,
     read_authored_with,
     resolved_digest,
+    validate_source_filename,
     write_overlay,
 )
 from src.ui_flet import components, tokens
@@ -57,8 +60,10 @@ from src.ui_flet.config_editor import (
     file_form_rows,
     files_primary_action,
     gate_outcome_for,
+    has_unsaved_renames,
     humanize_config_error,
     overlay_staleness,
+    pending_renames,
     renames_from_resolved,
     sd_number_from_text,
     seed_entities,
@@ -292,7 +297,8 @@ def creator_form_from_overlay(sis_id: str) -> CreatorForm:
         # cost the admin the rest of a rehydrated form.
         resolved_base = _resolved_base(base)
         if resolved_base is not None:
-            for original, renamed in renames_from_resolved(resolved_base, config).items():  # type: ignore[arg-type]
+            resumed = renames_from_resolved(resolved_base, config)  # type: ignore[arg-type]
+            for original, renamed in dict(resumed.renames).items():
                 try:
                     form = form.with_rename(original, renamed)
                 except ValueError:
@@ -333,8 +339,27 @@ def _creator_expected_files(sis_id: str) -> tuple[str, ...]:
         return ()
 
 
-def _creator_file_slots(base: str, sis_id: str) -> tuple[SourceFileSlot, ...]:
-    """The Files step's rows — one per source file this district reads. TOTAL — ``()`` on failure.
+@dataclass(frozen=True)
+class _FilesModel:
+    """Everything the Files step needs from DISK, resolved ONCE per mount.
+
+    One bundle rather than two functions because both facts come from the SAME pair of
+    resolved configs (the starting point and this district's own): a second entry point
+    would load and validate both again on every mount for one extra tuple.
+
+    Attributes:
+        slots: one row per source file this district reads (see :func:`distinct_source_files`).
+        divergent: base filenames this district's config names in more than one way — a
+            hand edit only. The surface opens DIRTY on those so the unsaved warning prompts
+            the repairing Save (plan 0044 S4 review, SHOULD 4).
+    """
+
+    slots: tuple[SourceFileSlot, ...] = ()
+    divergent: tuple[str, ...] = ()
+
+
+def _creator_files_model(base: str, sis_id: str) -> _FilesModel:
+    """The Files step's rows — one per source file this district reads. TOTAL — empty on failure.
 
     Two configs, two jobs:
 
@@ -348,27 +373,30 @@ def _creator_file_slots(base: str, sis_id: str) -> tuple[SourceFileSlot, ...]:
       expresses. BOTH spellings are offered to the filter, so a hand-edited config that
       diverges on one file still gets its row (the row is where that gets repaired).
 
-    ``()`` when the starting point cannot be resolved — the state in which ``write_overlay``
+    Empty when the starting point cannot be resolved — the state in which ``write_overlay``
     would fail too, and the gate carries the diagnosis.
     """
     resolved_base = _resolved_base(base)
     if resolved_base is None:
-        return ()
+        return _FilesModel()
     try:
         from src.etl.pipeline import advisory_expected_files
 
         current = _resolved_config(sis_id) if (sis_id or "").strip() else None
+        divergent: tuple[str, ...] = ()
         if current is None:
             expected = list(advisory_expected_files(resolved_base))
         else:
-            saved = renames_from_resolved(resolved_base, current)  # type: ignore[arg-type]
-            back = {new: original for original, new in saved.items()}
+            resumed = renames_from_resolved(resolved_base, current)  # type: ignore[arg-type]
+            divergent = resumed.divergent
+            back = {new: original for original, new in dict(resumed.renames).items()}
             names = list(advisory_expected_files(current))
             expected = [*names, *(back[name] for name in names if name in back)]
-        return distinct_source_files(resolved_base, expected=expected)  # type: ignore[arg-type]
+        slots = distinct_source_files(resolved_base, expected=expected)  # type: ignore[arg-type]
+        return _FilesModel(slots=slots, divergent=divergent)
     except Exception:  # noqa: BLE001 - total: no rows is better than wrong rows
         logger.warning("Could not derive the source file rows for %r.", sis_id)
-        return ()
+        return _FilesModel()
 
 
 def _folder_filenames(path: str) -> tuple[str, ...]:
@@ -411,6 +439,7 @@ def build_creator(  # pragma: no cover - Flet view glue
     on_activated: Callable[[], None],
     on_discarded: Callable[[], None],
     stage: CreatorStage = "forms",
+    pending: dict[str, str] | None = None,
 ) -> ft.Control:
     """The creator's own surface — the HOST seam (plan 0044 S3 §3.5).
 
@@ -443,11 +472,30 @@ def build_creator(  # pragma: no cover - Flet view glue
         on_discarded: after the overlay was deleted, the token cleared and the catalog
             invalidated — the host re-mounts its standard surface.
         stage: which surface to render (see :data:`CreatorStage`).
+        pending: the filename form's pending rename map, OWNED BY THE HOST and mutated in
+            place — the one piece of state that has to outlive a re-mount (plan 0044 S4
+            review, BLOCKING 2). A host that re-renders this step (the wizard does, on every
+            hop and after every save) would otherwise hand back a surface whose rows had
+            forgotten what was picked, while its own footer Continue stayed open and
+            advanced past it. NOT a sixth callback: the host does not need to be TOLD when a
+            row changes, it needs to be able to ASK — which it does with
+            ``config_editor.has_unsaved_renames(pending, form.renames)``, the same
+            comparison this surface tiers its Save on, so the two can never disagree about
+            whether something is pending. ``None`` (S6's Mapping host, which owns no step
+            footer) means this surface keeps a private dict for its own lifetime.
 
     Never fires a callback on a failure: a refused write, a ``None`` digest and a refused
     activation all keep the admin where they are behind a bounded note.
     """
     host = ft.Column(spacing=tokens.space_xl)
+    # The rows' own map: the host's when it owns one, else this surface's for its lifetime.
+    # Seeded from the config on disk only while UNTOUCHED — every row the admin has answered
+    # leaves a key behind (``""`` for "use the standard name"), so an empty map is the one
+    # state that cannot be a choice, and re-seeding a touched map would discard the picks
+    # BLOCKING 2 exists to keep.
+    row_names: dict[str, str] = {} if pending is None else pending
+    if not row_names:
+        row_names.update(dict(form.renames))
     st: dict[str, object] = {
         "form": form,
         "sd_text": str(form.sd_number) if form.sd_number else "",
@@ -458,11 +506,17 @@ def build_creator(  # pragma: no cover - Flet view glue
         # The filename form (S4). ``pending`` is the RAW per-row string the admin has
         # chosen or typed (``""`` = keep the standard name); ``saved`` is what the config on
         # disk says, so "is there anything unsaved?" is one comparison rather than a flag
-        # anything could forget to set. ``slots`` is the mount-time memo: the resolved base
-        # and the expected-file list are I/O and cannot change while the step is on screen.
-        "pending": dict(form.renames),
+        # anything could forget to set. The map itself belongs to the HOST when it passes
+        # one (see the ``pending`` argument) and is mutated IN PLACE, never rebound.
+        # ``model`` is the mount-time memo: the resolved base, the expected-file list and
+        # the divergence report are I/O and cannot change while the step is on screen.
+        "pending": row_names,
         "saved": dict(form.renames),
-        "slots": None,
+        "model": None,
+        # Divergence is a fact about the config on DISK, so it is read from the model once
+        # and then OWNED here: a Save repairs it, and a memo that could not be cleared would
+        # leave the surface permanently dirty. ``None`` = not yet read.
+        "divergent": None,
         "gate": GateOutcome(state=GateState.NOT_RUN),
         "running": False,
         "activated": False,
@@ -762,28 +816,61 @@ def build_creator(  # pragma: no cover - Flet view glue
         return controls
 
     # ---- the filename form (S4) ------------------------------------------ #
+    def _model() -> _FilesModel:
+        """This district's rows + divergence report, derived ONCE per mount (``st["model"]``)."""
+        if st["model"] is None:
+            st["model"] = _creator_files_model(str(st["form"].base), sis_id)  # type: ignore[union-attr]
+        return st["model"]  # type: ignore[return-value]
+
     def _slots() -> tuple[SourceFileSlot, ...]:
-        """This district's file rows, derived ONCE per mount (see ``st["slots"]``)."""
-        if st["slots"] is None:
-            st["slots"] = _creator_file_slots(str(st["form"].base), sis_id)  # type: ignore[union-attr]
-        return st["slots"]  # type: ignore[return-value]
+        return _model().slots
+
+    def _divergent() -> tuple[str, ...]:
+        """The base filenames the config on DISK names in more than one way. Owned here.
+
+        Read from the mount-time model once and then held, because a Save REPAIRS it: a
+        surface that re-read the memo would stay dirty forever after the repair.
+        """
+        if st["divergent"] is None:
+            st["divergent"] = _model().divergent
+        return st["divergent"]  # type: ignore[return-value]
 
     def _pending_renames() -> dict[str, str]:
-        """The rename map the ROWS currently express — the same drop rule ``with_rename`` applies.
+        """The rename map the ROWS currently express (``config_editor.pending_renames``)."""
+        return pending_renames(st["pending"])  # type: ignore[arg-type]
 
-        Unvalidated on purpose: this feeds the rows, the chips and the "anything unsaved?"
-        comparison on every render, and a typed name must be allowed to be half-finished
-        while it is being typed. The boundary fires on Save.
+    def _effective_renames() -> dict[str, str]:
+        """The rename map to SHOW: pending, with any refused name replaced by the name in force.
+
+        A typed name the filename boundary refuses is kept in its field — that is what a
+        field is for, and correcting it is the admin's next move — but it may not be
+        PAINTED as the name in force, offered as a list option, or chipped as present/absent
+        (plan 0044 S4 review, NOTE 6): a refused value is not a name this district has, and
+        a row that showed it would be answering the wrong question about the wrong file.
+        The row falls back to the name the config on disk holds, else the standard name.
         """
         chosen: dict[str, str] = {}
-        for original, raw in dict(st["pending"]).items():  # type: ignore[union-attr]
-            name = raw.strip() if isinstance(raw, str) else ""
-            if name and name != original:
-                chosen[original] = name
+        for original, name in _pending_renames().items():
+            try:
+                validate_source_filename(name)
+            except ValueError:
+                in_force = dict(st["saved"]).get(original, "")  # type: ignore[arg-type]
+                if in_force:
+                    chosen[original] = in_force
+                continue
+            chosen[original] = name
         return chosen
 
     def _unsaved() -> bool:
-        return _pending_renames() != dict(st["saved"])  # type: ignore[arg-type]
+        """Whether anything on screen is not in the config on disk — INCLUDING a hand edit.
+
+        A divergent config (one base file named two ways) has no single saved answer, so the
+        rows can only show one of them: the step opens dirty and the unsaved warning asks
+        for the Save that repairs it.
+        """
+        if _divergent():
+            return True
+        return has_unsaved_renames(st["pending"], st["saved"])  # type: ignore[arg-type]
 
     def _on_pick_name(original: str, value: str) -> None:
         """A folder file (or "use the standard name") picked from the row's list."""
@@ -792,7 +879,14 @@ def build_creator(  # pragma: no cover - Flet view glue
         _render()
 
     def _on_type_name(original: str, value: str) -> None:
-        """A typed name. No re-render (the field owns the caret) — the chip catches up on Save."""
+        """A typed name. No re-render WHILE typing — the field owns the caret.
+
+        The tier, the chip and the unsaved warning catch up on ``on_blur`` (below), never
+        only on Save: a typed name that left the step reading "run a test conversion" as
+        its filled primary would run that test against the config on DISK and pass, and the
+        confirm beside it would activate a district whose typed name was never written
+        (plan 0044 S4 review, BLOCKING 1).
+        """
         st["pending"][original] = value or ""  # type: ignore[index]
 
     def _save_names(_e: ft.ControlEvent | None = None) -> None:
@@ -819,16 +913,16 @@ def build_creator(  # pragma: no cover - Flet view glue
         # the same mistake: which columns would win is a question the ETL has no answer for.
         by_name: dict[str, list[str]] = {}
         for row in file_form_rows(slots, renames=pending, present=()):
-            by_name.setdefault(row.effective.casefold(), []).append(row.slot.original)
+            by_name.setdefault(folded_filename(row.effective), []).append(row.slot.original)
         if any(len(originals) > 1 for originals in by_name.values()):
             _set_note(FILES_NAME_DUPLICATE_NOTE)
             return
         # The CHAIN shape ``A -> B, B -> C``: reachable from this form, because the folder
         # may well hold another row's standard name. Pre-checked here so the admin gets this
         # sentence rather than the authoring layer's bounded write-failure copy.
-        renamed_originals = {original.casefold() for original in pending}
+        renamed_originals = {folded_filename(original) for original in pending}
         if any(
-            name.casefold() in renamed_originals and name.casefold() != original.casefold()
+            folded_filename(name) in renamed_originals and folded_filename(name) != folded_filename(original)
             for original, name in pending.items()
         ):
             _set_note(FILES_NAME_IS_STANDARD_NOTE)
@@ -844,7 +938,13 @@ def build_creator(  # pragma: no cover - Flet view glue
 
         st["form"] = candidate
         st["saved"] = dict(candidate.renames)
-        st["pending"] = dict(candidate.renames)
+        # Mutated IN PLACE, never rebound: the map may be the HOST's (see ``pending``), and
+        # a host still holding the old object would gate its Continue on a stale answer.
+        st["pending"].clear()  # type: ignore[union-attr]
+        st["pending"].update(candidate.renames)  # type: ignore[union-attr]
+        # Whatever the config on disk disagreed with itself about has just been written one
+        # way at every site, so the repair is done and the surface is clean again.
+        st["divergent"] = ()
         st["note"] = ""
         # The config that just landed is NOT the one any earlier test conversion ran, so the
         # gate re-opens: the passed outcome, this session's activation flag and the memoised
@@ -864,9 +964,15 @@ def build_creator(  # pragma: no cover - Flet view glue
         return f"{caption}{FILES_SCHOOL_YEAR_CLAUSE}" if slot.names_school_year else caption
 
     def _name_row(row: FileFormRow, folder: tuple[str, ...]) -> ft.Control:
-        """One file: what it is, the name in force, and the two ways to change it."""
+        """One file: what it is, the name in force, and the two ways to change it.
+
+        ``row.effective`` is the name IN FORCE (see :func:`_effective_renames`), so it is
+        what the chip and the list show; the typed field keeps the raw text, refused or not,
+        because that is the only place a mistyped name can be corrected.
+        """
         slot = row.slot
         selected = "" if row.effective == slot.original else row.effective
+        typed = str(st["pending"].get(slot.original, "") or "")  # type: ignore[union-attr]
         offered = list(folder)
         if selected and selected not in offered:
             # A typed name the folder does not hold is still the name in force, so the list
@@ -903,10 +1009,13 @@ def build_creator(  # pragma: no cover - Flet view glue
                         ),
                         ft.TextField(
                             label=FILES_TYPED_NAME_LABEL,
-                            value=selected,
+                            value=typed,
                             helper=_used_for_caption(slot),  # TextField's helper field is `helper`
                             expand=True,
                             on_change=lambda e, original=slot.original: _on_type_name(original, e.control.value or ""),
+                            # The tier + the warning catch up when the caret leaves (BLOCKING
+                            # 1): re-rendering per keystroke would take the caret with it.
+                            on_blur=lambda _e: _render(),
                         ),
                     ],
                 ),
@@ -927,7 +1036,18 @@ def build_creator(  # pragma: no cover - Flet view glue
         )
 
     def _run_gate(_e: ft.ControlEvent | None = None) -> None:
-        """Run the TEST conversion off the UI thread — exactly Convert's ``JobRunner`` shape."""
+        """Run the TEST conversion off the UI thread — exactly Convert's ``JobRunner`` shape.
+
+        REFUSES while anything on screen is unsaved (plan 0044 S4 review, BLOCKING 1). The
+        run reads the config on DISK, so a test against names it does not hold reports on
+        the wrong files — and passing it would put a confirm beside a verdict about a
+        district nobody has tested as it now reads. ``files_primary_action`` already keeps
+        this button off the primary tier in that state; this is the load-bearing half,
+        because a button is still pressable at its outlined tier.
+        """
+        if _unsaved():
+            _set_note(FILES_UNSAVED_NOTE)
+            return
         runner.state.reset()
         st["running"] = True
         st["note"] = ""
@@ -961,7 +1081,17 @@ def build_creator(  # pragma: no cover - Flet view glue
             _render()
 
     def _activate(_e: ft.ControlEvent | None = None) -> None:
-        """The ONE act that makes this district the one this install converts."""
+        """The ONE act that makes this district the one this install converts.
+
+        Defensively refuses while something is unsaved too: the confirm can only be reached
+        through a passed test, which :func:`_run_gate` already refuses to run in that state,
+        but the two must not be one guard's width apart — this is the act with a
+        consequence, and "the district you activated is not the one you tested" is the exact
+        failure S4's gate exists to prevent.
+        """
+        if _unsaved():
+            _set_note(FILES_UNSAVED_NOTE)
+            return
         digest = current_digest(sis_id)
         if digest is None or not cfg.activate_creator_config(sis_type=sis_id, digest=digest):
             _set_note(CREATOR_ACTIVATE_FAILED_NOTE)
@@ -1044,7 +1174,7 @@ def build_creator(  # pragma: no cover - Flet view glue
         # it. (The gate's own ``GateOutcome.missing_files`` — the config on DISK, after a run
         # — stays the authoritative report, which is why it is derived separately.)
         folder = _folder_filenames(str(cfg.input_dir or ""))
-        rows = file_form_rows(_slots(), renames=_pending_renames(), present=folder)
+        rows = file_form_rows(_slots(), renames=_effective_renames(), present=folder)
         unsaved = _unsaved()
         action = files_primary_action(unsaved=unsaved, passed=passed, already=already)
 
