@@ -1,7 +1,7 @@
 # 0044 — District self-service config editor (Phase 2, re-scoped)
 
-- **Status:** S1 · S2 · S3 · S4 LANDED on `claude/plan-0044-implementation-nrdj2z` (2026-09-02; each Stage-7 reviewed, findings fixed or ledgered) — the locally-testable UI milestone; S5–S7 await the owner's go
-- **Resumable from:** Stage 4 — the S5 spec (pure `preflight.py` + `PipelineResult.input_columns`), after the owner's local test of S1–S4 and the go for S5–S7
+- **Status:** S1 · S2 · S3 · S4 LANDED on `claude/plan-0044-implementation-nrdj2z` (2026-09-02; each Stage-7 reviewed). Owner tested locally 2026-09-02 → S6 REORDERED ahead of S5 (+ a Mapping CREATE door), a Files-step clarity fix in flight; then S5, S7
+- **Resumable from:** Stage 4/6 — the S6 spec (Mapping hosts the creator; re-gate on Apply + folders-card Save) then its implementation; S5 and S7 follow. Owner go given 2026-09-02
 - **Blockers:** none
 - **Flags:**
   - `#3+R2-1 activation scope: ALL THREE sis_type writers gated for user-authored configs (wizard creator flow · Mapping Apply · Settings folders-card Save); Convert has no writer and stays explicit-manual` — reviewable at the spec gate.
@@ -13,6 +13,7 @@
   - `S1 CI gate: ci.yml runs only on push-to-main / PRs to main, so no CI run exists for the branch yet — the land-gate CI read is OWED at PR time` — owner decides when to open the PR.
   - `S2 marker rule: the "added on this computer" marker keys on FILE PROVENANCE (ConfigSummary.origin == "user"), NOT on the sd<num>custom id — so a YAML support hands a district is marked the same way, which is why the wording must stay true for a file the admin did not author` — reviewable at the S2 gate (wording alternatives in the S2 spec's Open questions).
   - `S3 staleness + activation writer: chose a digest of the RESOLVED config (sha256 over the validated `MappingConfig.model_dump(mode="json")`) over the plan's overlay-BYTES hash — a vendor base change on app update leaves overlay bytes unchanged while what converts differs — plus an advisory `authored_with` root key (app version + base digest) the loader ignores; and ONE atomic activation writer (`AppConfig.activate_creator_config`), which makes `sis_type` write sites four, not three` — reviewable at the S3 gate.
+  - `S6 scope addition (owner, 2026-09-02): a CREATE door — "Set up a district that isn't listed" — on the Mapping screen, because a configured install otherwise has no way into the creator; S6 reordered ahead of S5` — ratified by the owner in the same message.
 - **Disposition at close:** per `docs/claugentic-WORKFLOW.md` plan-file lifecycle.
 - **Roadmap item:** `docs/claugentic-ROADMAP.md` → "Brief 0037 … Phase 2 = the district self-service config editor" (updated 2026-08-27)
 - **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` (2026-08-27 re-scope entry — the authority for everything this plan builds) · `.claude/plans/0037-brief-front-door-district-identity-mapping-creator.md` (superseded scope, retained safety rails) · plan 0038 (Phase 1, landed)
