@@ -877,7 +877,10 @@ def is_valid_district_domain(value: object) -> bool:
     (WARN-and-drop) and, later, the creator form's boundary check. Total over any
     object so a non-string entry is simply invalid, never a TypeError.
     """
-    return isinstance(value, str) and _DISTRICT_DOMAIN_RE.match(value) is not None
+    # ``fullmatch``, not ``match``: ``$`` also matches BEFORE a trailing newline, so
+    # ``match`` would accept ``"sd48.bc.ca\n"`` — a value that can never equal a
+    # normalised domain and would therefore silently never match an admin.
+    return isinstance(value, str) and _DISTRICT_DOMAIN_RE.fullmatch(value) is not None
 
 
 class MappingConfig(BaseModel):

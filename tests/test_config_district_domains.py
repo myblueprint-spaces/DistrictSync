@@ -401,3 +401,18 @@ def test_the_forbid_and_ignore_models_are_exactly_as_documented():
             f"{permissive} started forbidding extras — that is a compatibility change, "
             "not a tidy-up; see models.MappingConfig's comment."
         )
+
+
+def test_is_valid_district_domain_rejects_a_trailing_newline():
+    """``$`` matches before a final newline, so only ``fullmatch`` rejects this shape.
+
+    A value ending in a newline can never equal a normalised domain, so accepting it
+    would register a row that silently never matches anyone. Positive twin: the same
+    value without the newline is valid.
+    """
+    from src.config.models import is_valid_district_domain
+
+    assert is_valid_district_domain("sd48.bc.ca")
+    assert not is_valid_district_domain("sd48.bc.ca\n")
+    assert not is_valid_district_domain("sd48.bc.ca ")
+    assert not is_valid_district_domain(None)
