@@ -13,6 +13,7 @@ import pytest
 
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.setup_flow import (
+    CREATOR_STEP_ORDER,
     STEP_ORDER,
     TOTAL_STEPS,
     DeliveryFact,
@@ -43,9 +44,11 @@ from src.ui_flet.setup_flow import (
     schedule_reconcile,
     sftp_reconcile_suffix,
     step_number,
+    step_order,
     task_args_changed,
     task_args_from_persisted,
     task_args_to_persisted,
+    total_steps,
 )
 from src.ui_flet.setup_gates import window_settings_valid, window_valid_from_config
 
@@ -1282,3 +1285,266 @@ class TestAutoSelectDistrict:
 
     def test_zero_configs_no_pre_selection(self):
         assert auto_selected_district([]) == ""
+
+
+# --------------------------------------------------------------------------- #
+# Creator mode — the six-step walk (plan 0044 S3)                              #
+# --------------------------------------------------------------------------- #
+def _creator_inputs(**over) -> FlowInputs:
+    """A creator-mode ``FlowInputs`` with every fact at its SAFE (unsatisfied) default."""
+    base = {
+        "folders_valid": False,
+        "district_chosen": False,
+        "schedule": None,
+        "schedule_skipped": False,
+        "delivery": DeliveryFact.NONE,
+        "mode": "creator",
+        "creator_district_chosen": False,
+        "files_step_satisfied": False,
+        "creator_activated": False,
+    }
+    base.update(over)
+    return FlowInputs(**base)
+
+
+def _all_creator_steps_satisfied(**over) -> FlowInputs:
+    """Every pre-finish creator step satisfied; ``creator_activated`` still at its safe default."""
+    base = {
+        "folders_valid": True,
+        "creator_district_chosen": True,
+        "files_step_satisfied": True,
+        "schedule": _LIVE,
+        "delivery": DeliveryFact.STORED_CRED_PRESENT,
+    }
+    base.update(over)
+    return _creator_inputs(**base)
+
+
+class TestCreatorStepScaffolding:
+    def test_six_named_steps_with_files_after_folders(self):
+        # FILES sits after FOLDERS (its test conversion needs the input folder) and DELIVERY still
+        # precedes SCHEDULE (F1 — ``--sftp`` is baked at registration).
+        assert CREATOR_STEP_ORDER == (
+            SetupStep.DISTRICT,
+            SetupStep.FOLDERS,
+            SetupStep.FILES,
+            SetupStep.DELIVERY,
+            SetupStep.SCHEDULE,
+            SetupStep.FINISH,
+        )
+
+    def test_the_standard_order_is_untouched_and_files_is_creator_only(self):
+        assert SetupStep.FILES not in STEP_ORDER
+        assert step_order("standard") == STEP_ORDER
+        assert step_order("creator") == CREATOR_STEP_ORDER
+
+    def test_the_denominators_are_five_and_six(self):
+        # TOTAL_STEPS stays the STANDARD constant the view reads directly; total_steps is the
+        # mode-aware companion (so the creator's "Step N of M" line can say 6).
+        assert total_steps("standard") == TOTAL_STEPS == 5
+        assert total_steps("creator") == 6
+
+    @pytest.mark.parametrize(
+        ("step", "number"),
+        [
+            (SetupStep.DISTRICT, 1),
+            (SetupStep.FOLDERS, 2),
+            (SetupStep.FILES, 3),
+            (SetupStep.DELIVERY, 4),
+            (SetupStep.SCHEDULE, 5),
+            (SetupStep.FINISH, 6),
+        ],
+    )
+    def test_creator_step_numbers_are_one_based(self, step, number):
+        assert step_number(step, mode="creator") == number
+
+    def test_the_standard_numbering_is_unchanged_by_the_new_step(self):
+        assert [step_number(step) for step in STEP_ORDER] == [1, 2, 3, 4, 5]
+
+    def test_asking_for_the_files_number_in_the_standard_walk_fails_loudly(self):
+        # No invented position for a step that walk does not have (fail loudly, never a silent 0).
+        with pytest.raises(ValueError):
+            step_number(SetupStep.FILES)
+
+    def test_next_and_prev_walk_the_creator_order(self):
+        assert next_step(SetupStep.FOLDERS, mode="creator") is SetupStep.FILES
+        assert next_step(SetupStep.FILES, mode="creator") is SetupStep.DELIVERY
+        assert next_step(SetupStep.DELIVERY, mode="creator") is SetupStep.SCHEDULE
+        assert next_step(SetupStep.SCHEDULE, mode="creator") is SetupStep.FINISH
+        assert next_step(SetupStep.FINISH, mode="creator") is None
+        assert prev_step(SetupStep.FILES, mode="creator") is SetupStep.FOLDERS
+        assert prev_step(SetupStep.DELIVERY, mode="creator") is SetupStep.FILES
+        assert prev_step(SetupStep.DISTRICT, mode="creator") is None
+
+    def test_the_standard_walk_still_steps_folders_straight_to_delivery(self):
+        # The mode default is what keeps every existing call byte-identical.
+        assert next_step(SetupStep.FOLDERS) is SetupStep.DELIVERY
+        assert prev_step(SetupStep.DELIVERY) is SetupStep.FOLDERS
+
+    def test_files_is_not_skippable(self):
+        # FILES IS the activation gate — a "set up later" there would ship an untested district.
+        assert is_skippable(SetupStep.FILES) is False
+
+
+class TestCreatorSatisfaction:
+    def test_files_is_satisfied_only_by_the_injected_gate_fact(self):
+        assert SetupStep.FILES not in derive_flow(_creator_inputs()).satisfied
+        satisfied = derive_flow(_creator_inputs(files_step_satisfied=True)).satisfied
+        assert SetupStep.FILES in satisfied
+
+    def test_nothing_else_can_satisfy_files(self):
+        # Folders + district + a live schedule + a stored credential: FILES stays closed, because
+        # the gate fact is the ONLY thing that opens it.
+        state = derive_flow(
+            _creator_inputs(
+                folders_valid=True,
+                creator_district_chosen=True,
+                district_chosen=True,
+                schedule=_LIVE,
+                delivery=DeliveryFact.STORED_CRED_PRESENT,
+            )
+        )
+        assert SetupStep.FILES not in state.satisfied
+        assert state.resume_step is SetupStep.FILES
+
+    def test_creator_district_is_satisfied_by_the_creator_fact(self):
+        assert SetupStep.DISTRICT in derive_flow(_creator_inputs(creator_district_chosen=True)).satisfied
+
+    def test_the_standard_district_fact_alone_never_satisfies_a_creator(self):
+        # A creator picks no bundled district, so ``district_chosen`` must not stand in for the
+        # overlay/token fact — otherwise the wizard resumes past the forms being written.
+        state = derive_flow(_creator_inputs(district_chosen=True))
+        assert SetupStep.DISTRICT not in state.satisfied
+        assert state.resume_step is SetupStep.DISTRICT
+
+    def test_a_resumed_creator_lands_on_files_once_district_and_folders_are_done(self):
+        state = derive_flow(_creator_inputs(creator_district_chosen=True, folders_valid=True))
+        assert state.resume_step is SetupStep.FILES
+
+    def test_a_resumed_creator_walks_the_creator_tuple_in_order(self):
+        assert derive_flow(_creator_inputs()).resume_step is SetupStep.DISTRICT
+        assert derive_flow(_creator_inputs(creator_district_chosen=True)).resume_step is SetupStep.FOLDERS
+        assert (
+            derive_flow(
+                _creator_inputs(creator_district_chosen=True, folders_valid=True, files_step_satisfied=True)
+            ).resume_step
+            is SetupStep.DELIVERY
+        )
+
+
+class TestCreatorFinishLineRequiresActivation:
+    def test_can_finish_is_blocked_until_the_district_is_activated(self):
+        # Acceptance criterion 2, the negative half: every other step satisfied, gate passed, but
+        # "Use this district" never pressed — the finish confirmation (which flips
+        # ``setup_completed``) must stay out of reach.
+        state = derive_flow(_all_creator_steps_satisfied())
+        assert state.satisfied == frozenset(
+            {
+                SetupStep.DISTRICT,
+                SetupStep.FOLDERS,
+                SetupStep.FILES,
+                SetupStep.DELIVERY,
+                SetupStep.SCHEDULE,
+            }
+        )
+        assert state.can_finish is False
+        assert can_advance(SetupStep.FINISH, _all_creator_steps_satisfied()) is False
+
+    def test_can_finish_opens_once_activated(self):
+        # Acceptance criterion 2, the positive twin (pinned both ways).
+        inputs = _all_creator_steps_satisfied(creator_activated=True)
+        assert derive_flow(inputs).can_finish is True
+        assert can_advance(SetupStep.FINISH, inputs) is True
+
+    def test_activation_alone_never_substitutes_for_the_other_steps(self):
+        assert derive_flow(_creator_inputs(creator_activated=True)).can_finish is False
+
+    def test_the_flow_state_gains_no_field_for_any_of_this(self):
+        # The FlowState shape pin (TestNoStepFlipsCompleted) must stay green in creator mode too.
+        state = derive_flow(_all_creator_steps_satisfied(creator_activated=True))
+        assert set(vars(state)) == {"resume_step", "satisfied", "can_finish"}
+
+
+class TestCreatorFilesAdvanceGate:
+    def test_files_cannot_be_advanced_before_the_gate_passes(self):
+        assert can_advance(SetupStep.FILES, _creator_inputs(folders_valid=True)) is False
+
+    def test_files_advances_once_the_gate_passes(self):
+        assert can_advance(SetupStep.FILES, _creator_inputs(files_step_satisfied=True)) is True
+
+    def test_creator_district_advance_reads_the_creator_fact(self):
+        assert can_advance(SetupStep.DISTRICT, _creator_inputs(district_chosen=True)) is False
+        assert can_advance(SetupStep.DISTRICT, _creator_inputs(creator_district_chosen=True)) is True
+
+    def test_the_creator_walk_keeps_the_two_skippable_gates_open(self):
+        assert can_advance(SetupStep.DELIVERY, _creator_inputs()) is True
+        assert can_advance(SetupStep.SCHEDULE, _creator_inputs()) is True
+
+
+class TestStandardModeIgnoresTheCreatorFacts:
+    def test_all_four_creator_facts_set_change_nothing_in_standard_mode(self):
+        # The positive twin of "consulted only in creator mode": flip every creator field ON in a
+        # standard walk and the derived state is identical to the defaults.
+        plain = _inputs(folders_valid=True, district_chosen=True)
+        loud = FlowInputs(
+            folders_valid=True,
+            district_chosen=True,
+            mode="standard",
+            creator_district_chosen=True,
+            files_step_satisfied=True,
+            creator_activated=True,
+        )
+        assert derive_flow(loud) == derive_flow(plain)
+        assert SetupStep.FILES not in derive_flow(loud).satisfied
+        for step in STEP_ORDER:
+            assert can_advance(step, loud) == can_advance(step, plain)
+
+    def test_a_standard_district_is_not_unsatisfied_by_a_blank_creator_fact(self):
+        assert SetupStep.DISTRICT in derive_flow(_inputs(district_chosen=True)).satisfied
+
+    def test_the_creator_defaults_are_the_safe_values(self):
+        inputs = FlowInputs(folders_valid=False, district_chosen=False)
+        assert inputs.mode == "standard"
+        assert inputs.creator_district_chosen is False
+        assert inputs.files_step_satisfied is False
+        assert inputs.creator_activated is False
+
+    def test_an_unrecognised_mode_reads_as_the_standard_walk(self):
+        # TOTAL: the selector has no third branch to fall through, so a bad mode degrades to the
+        # shape with no activation gate to skip and no hidden step.
+        assert step_order("nonsense") == STEP_ORDER  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- #
+# Purity — the step machine holds no view, no filesystem, no config (0044 S3)  #
+# --------------------------------------------------------------------------- #
+def test_module_imports_nothing_impure():
+    """PURE + COUNTED: the flow machine's whole import graph is toolkit-, path- and config-free.
+
+    The four creator facts are INJECTED by the view, so nothing here may reach for ``flet`` (view),
+    ``pathlib`` (does the overlay exist?), ``src.config`` (AppConfig / authoring / models) or
+    ``src.ui_flet.config_editor`` (the creator form + gate). Structural in the shape of
+    ``test_ui_flet_identity_gate.py``'s no-flet test, extended to the dotted bans — which is why
+    full module paths are collected rather than first segments (``src`` itself is legitimate).
+    """
+    import ast
+    import inspect
+
+    import src.ui_flet.setup_flow as module
+
+    tree = ast.parse(inspect.getsource(module))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+
+    # Positive half (never a vacuous green): the collector really does see this module's imports.
+    assert "src.ui_flet.schedule_status" in imported
+    assert "src.utils.validators" in imported
+
+    banned = ("flet", "pathlib", "src.config", "src.ui_flet.config_editor")
+    for name in sorted(imported):
+        for ban in banned:
+            assert name != ban and not name.startswith(f"{ban}."), f"{name} is banned here (via {ban})"
