@@ -1,10 +1,13 @@
 """Tests for src/utils/validators.py — input validation for security-sensitive ops."""
 
+import hashlib
+
 import pytest
 
 from src.utils.validators import (
     ALLOWED_SFTP_HOSTS,
     IDENTITY_EMAIL_MAX_LEN,
+    is_config_digest,
     quote_for_shell,
     validate_identity_email,
     validate_run_time,
@@ -42,6 +45,45 @@ class TestValidateSisType:
     def test_rejects_empty(self):
         with pytest.raises(ValueError, match="Invalid SIS type"):
             validate_sis_type("")
+
+
+class TestIsConfigDigest:
+    """The one shape a stored "this config was tested" fact may take (plan 0044 S3).
+
+    TOTAL: a malformed stored value must read as ABSENT (ask for another test run), never
+    raise — ``config.json`` is hand-editable, and a crash on the way in would take the
+    admin's district, folders and delivery settings down with it. Lowercase-only because
+    the digest is compared as a plain string at both ends; accepting a mixed-case twin
+    would make "tested" depend on which end wrote it.
+    """
+
+    VALID = "a" * 64
+    REAL = hashlib.sha256(b"a resolved config").hexdigest()
+
+    @pytest.mark.parametrize("value", [VALID, REAL, "0" * 64, "0123456789abcdef" * 4])
+    def test_accepts_64_lowercase_hex(self, value: str):
+        assert is_config_digest(value) is True
+
+    @pytest.mark.parametrize(
+        ("value", "why"),
+        [
+            ("a" * 63, "63 characters — one short"),
+            ("a" * 65, "65 characters — one long"),
+            ("A" * 64, "uppercase hex"),
+            (REAL.upper(), "a real digest, upper-cased"),
+            ("g" * 64, "not hex at all"),
+            ("", "blank"),
+            ("  " + "a" * 64, "leading whitespace is not trimmed — this is a predicate, not a validator"),
+            ("a" * 64 + "\n", "a trailing newline"),
+            (None, "None — the shape a missing entry has"),
+            (0, "an int"),
+            (b"a" * 64, "bytes, not str"),
+            (["a" * 64], "a list holding one"),
+            ({"digest": "a" * 64}, "a nested mapping — the hand-edited shape"),
+        ],
+    )
+    def test_rejects_everything_else_without_raising(self, value: object, why: str):
+        assert is_config_digest(value) is False, why
 
 
 class TestValidateTaskName:

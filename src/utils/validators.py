@@ -72,6 +72,10 @@ _IDENTITY_DOMAIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}$")
 
 # A stored "this config was tested" fact (plan 0044 S3, `AppConfig.creator_verified`)
 # is keyed on a sha256 digest of the RESOLVED config: exactly 64 lowercase hex chars.
+# Matched with ``fullmatch``, not ``match``: Python's ``$`` also matches BEFORE a final
+# newline, so ``match`` accepts a 65-character value ending in "\n" — a value that can
+# never equal a computed digest, and so would read as a shape we vouched for and a fact
+# that never matches.
 _CONFIG_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -84,7 +88,7 @@ def is_config_digest(value: object) -> bool:
     simply not a digest, never a ``TypeError`` — because a malformed stored value must
     read as ABSENT (re-test), never crash the settings load.
     """
-    return isinstance(value, str) and _CONFIG_DIGEST_RE.match(value) is not None
+    return isinstance(value, str) and _CONFIG_DIGEST_RE.fullmatch(value) is not None
 
 
 def validate_sis_type(value: str) -> str:
