@@ -1497,8 +1497,242 @@ _Spec self-check:_
 
 Reviewed: S2 + S3 α/β/γ (commits `3902eac..81f43ec` + fixes). **No BLOCKING finding in the reviewed code**; one BLOCKING relayed to δ in flight (bandit B105 on a copy constant whose NAME carried `TOKEN` — rename, no nosec). Fixed at once: `CreatorForm.__post_init__` now refuses an explicit empty `rostered` (a direct construction bypassed `with_rostered`'s guard and emitted `class_rostering_grades: []`, which `humanize_config_error` mislabelled as a chain problem); the `config_editor` purity test bans `pathlib` too. **Owed once δ lands (components.py is δ's to touch until then):** fold `origin_badge` and `district_chip` onto one private `_chip(label, *, icon)` — the badge duplicates the chip's whole body. **Recorded, not fixed:** (1) `authoring.authored_with(resolved_base, *, base, app_version)` deviates from the spec's `(resolved_base, *, app_version)` — correct, a resolved `MappingConfig` carries no `_base` id — and the module function is shadowed by `build_overlay`'s `authored_with=` parameter (harmless today; a future line inside `build_overlay` would bind the parameter). (2) `resolved_digest` is ORDER-sensitive on `district_domains` (`sort_keys` orders dicts, never lists) — kept: a reorder is an authoring edit and over-firing only costs a re-test. (3) `can_advance(FILES, <standard>)` returns False while `step_number(FILES)` raises in standard mode — False is the safe answer; asymmetry noted in the docstring. (4) `read_authored_with` has no size cap on the YAML it reads — the same alias-bomb exposure `load_config` already has on the same file in the admin's own profile. (5) `humanize_config_error` maps `FileNotFoundError` → "missing base" by TYPE; a missing GDE reaches it only as the pipeline's `SystemExit` (→ OTHER), so the mapping is honest exactly because `run_pipeline` converts file errors — a dependency worth one docstring sentence.
 
-### Slices 4–7
-_Spec'd just-in-time, each after the prior slice lands (S4 next — the Files step: the role/file-keyed filename form, input-dir-aware dropdowns, propagation to every reference incl. `school_year_sources`)._
+### Slice 4 — the Files step: role/file-keyed filename form
+
+#### In plain English (the approval gate)
+
+S3 ships "Your files" as a read-only list plus the test-conversion gate: a district using the
+standard MyEd BC filenames self-onboards today, one whose files are named differently is stopped
+honestly with nothing it can do about it. S4 adds the one thing that district needs — **beside
+each file DistrictSync looks for, the name their extract actually uses** — picked from the files in
+their input folder or typed in. The unit is the FILE, not the entity: setting `StudentSchedule.txt`
+to `studentcourseselection.txt` once fixes Classes, Enrollments **and** the school-year lookup
+together (SD74's real shape). **Done means:** an admin whose extract looks like
+`tests/snapshots/input/` gets an overlay in which every reference to a renamed file moved with it,
+a missing-file list answering against their names, and a test conversion that passes first try.
+**What you're accepting:** one more write through the same `write_overlay` load-back (no new
+persisted field — S4 writes NOTHING to `config.json`), and that changing a file name after
+activation re-closes the gate until the test is run again. **Two limits stay open**, both on
+ROADMAP: one file delivered under two names per ROLE has no expression (the map is keyed by
+original filename), and the absent-mapped-column report is S5's.
+
+#### 4.1 `config_editor.py` — the pure model (the view only assembles it)
+
+- **`FILE_LABELS: Mapping[str, str]`** — a plain-language name per distinct base filename (8 rows),
+  falling back to the filename itself. DATA, not derived: `ClassInformationEnh.txt` split on
+  capitals reads "Class Information Enh", and this is admin-facing copy. A parity test pins a row
+  for every distinct file of all four `ALLOWED_BASES`.
+- **`SourceFileSlot`** (frozen): `original` · `label` · `references: tuple[tuple[str, str], ...]`
+  (entity, role — KEYS; `setup._entity_label` owns the vocabulary) · `names_school_year: bool`.
+- **`distinct_source_files(resolved_base, *, expected) -> tuple[SourceFileSlot, ...]`** — walks
+  `resolved_base.mappings` in `CREATOR_ENTITIES` order (then any remaining entity key, sorted, so
+  nothing is silently dropped), keeps sites whose entity is in `active_entities()` and whose
+  filename is in `expected`, de-duplicating by filename first-seen. `expected` is INJECTED so
+  `pipeline.advisory_expected_files` (which the view already computes, and which already narrows a
+  fully homeroom-scoped config's inert `student_schedule`/`class_info` roles) stays the single
+  source for "which files matter". `names_school_year` is set when
+  `global_config.school_year_sources` also names the file; a school-year file no ACTIVE entity
+  reads gets NO slot — `extract_required_files` never loads it, so the row would offer a rename
+  that changes nothing. **Order is this walk, never `expected`'s:** `advisory_expected_files`
+  returns `list(set)`, whose order varies with `PYTHONHASHSEED`, and S4 replaces S3's inherited
+  instability with a deterministic row order.
+- **`FileFormRow`** (frozen; composition, not duplication): `slot` · `effective` (the renamed name
+  else the original) · `present`. Built by **`file_form_rows(slots, *, renames, present)`**, reusing
+  `missing_files`' case-INSENSITIVE fold so `studentcourseselection.txt` never reads absent against
+  `StudentCourseSelection.txt`. *Deviation from the brief:* no separate `present_files(...)` — it
+  would duplicate that fold to return its own input.
+- **`CreatorForm.renames: Mapping[str, str] = field(default_factory=dict)`** +
+  **`with_rename(original, new)`**: strips `new`, DROPS the entry when blank or equal to `original`
+  (a "rename" to the standard name is not one, and the emission must stay minimal), else validates
+  through `authoring.validate_source_filename` (§4.2). A blank `original` raises; an unknown
+  `original` is not rejected here (the form only passes slot originals, `_build_renames` fails loud
+  at write time, and the model holds no resolved base). `__post_init__` re-validates every entry,
+  so a direct construction cannot bypass `with_rename` (the `rostered` precedent).
+  `to_overlay_spec()` passes `self.renames` unless its existing `source_file_renames=` keyword
+  overrides it, so S3's call sites stay identical.
+- **`renames_from_resolved(resolved_base, resolved_current) -> dict[str, str]`** — the RESUME
+  inverse: where the current config names something else at a base reference site, record
+  `base_name → current_name`, first-seen per original, same walk. TOTAL. A hand-edited DIVERGENT
+  overlay collapses to its first-seen name and the next Save writes it consistently — a visible
+  repair, never a silent loss, because the rows on screen and the written map are ONE value.
+- **`files_primary_action(*, unsaved, passed, already) -> Literal["save","run","confirm","none"]`**
+  — lifts S3's in-view three-way branch into pure code and adds the fourth state, so "exactly ONE
+  filled primary" is asserted over all eight combinations rather than read off a render. `unsaved`
+  wins: a test against names the config on disk lacks reports on the wrong files.
+- **No `suggested_rename(...)`** — a folder holding both spellings has no derivable answer, and a
+  guessed pre-selection nobody is told about is the silent default D9 ruled against. YAGNI.
+
+#### 4.2 `authoring.py` — two boundary lines (closes ROADMAP S1-review item 2)
+
+- **`validate_source_filename(value, *, label="file name") -> str`** — a PUBLIC thin wrapper over
+  `_require_bare_filename`, so the form validates one field without building an `OverlaySpec` and
+  the product keeps ONE filename boundary. Every S1 call site unchanged.
+- **`OverlaySpec.__post_init__` gains the chain refusal:** a rename TARGET may not also be a rename
+  ORIGINAL. `{"A.txt": "B.txt", "B.txt": "C.txt"}` clears unknown-original, target-collision and
+  no-divergence today, and A's role then reads the base's B file — wrong data with every guard
+  green. Compared **case-folded** (`b.TXT`/`B.txt` are one file on Windows), and the same fold goes
+  onto `_build_renames`' two-originals-onto-one-target check, which is case-sensitive today and
+  would let `a.txt`/`A.txt` collapse two roles onto one Windows file: one private `_folded_name`,
+  two call sites, strictly-more-refusals. **Reachable from the form** — the dropdown offers folder
+  files and a folder may hold another slot's standard name — so the view pre-checks it with its own
+  sentence instead of leaving `CONFIG_ERROR_OTHER` to answer "can't be used as it stands".
+
+#### 4.3 `screens/setup.py` — the form ABOVE the gate (S3 moves nothing)
+
+- Inside `build_creator(..., stage="files")` the file card becomes ONE ROW PER SLOT, above every
+  gate control, in `distinct_source_files` order: the label + standard name (read-only) · a
+  `ft.Dropdown` (`on_select`; one option per file in `_folder_filenames(cfg.input_dir)` — ALL files
+  via S3's helper, since a rename target is whatever the district delivers and Convert's
+  `_GDE_SUFFIXES` is a display nicety, not a boundary) with `FILES_KEEP_STANDARD_LABEL` first and
+  the effective name selected · a `ft.TextField` (`helper=`) for a name the folder does not hold ·
+  `components.FileChip(effective, present=row.present)` · a "used for" caption from
+  `row.slot.references` through `_entity_label`, plus the school-year clause when
+  `names_school_year`, because that propagation silently moves every `append_year_to_id` Class ID.
+  **`ft.Dropdown(editable=True)` exists on 0.85.3 and is DECLINED:** typed text lives in
+  `text`/`on_text_change` while `value` stays the selected option's key, nothing here exercises it,
+  and filenames should not rest on an unproven two-field contract. One line into
+  `docs/FLET_1.0_CONVENTIONS.md` records that plus `Dropdown.helper_text` vs `TextField.helper` —
+  the only S4 doc change; S7 owns the rest.
+- **ONE write action: `FILES_SAVE_LABEL` ("Save these file names"), SECONDARY tier** — every write
+  load-backs through the real loader, so per-row writes would run it on each keystroke. Order:
+  pending map → `to_overlay_spec()` → `write_overlay(spec, overwrite=True)` →
+  `reset_catalog_cache()` → `on_files_saved`. Cheap local problems answer FIRST and attempt no
+  write (`FILES_NAME_INVALID_NOTE` · `FILES_NAME_DUPLICATE_NOTE` for two rows on one name ·
+  `FILES_NAME_IS_STANDARD_NOTE` for the chain shape); an authoring refusal reuses
+  `CREATOR_WRITE_FAILED_NOTE` + `humanize_config_error`, never an exception string.
+- **S4 writes NOTHING to `AppConfig`** — no token (re-storing it post-activation would flip
+  `creator_activated` back to False), no `sis_type`, no explicit `creator_verified` invalidation.
+  The stored digest simply stops matching, `_creator_gate_current` goes False and the step
+  re-closes: **the hash-keyed fail-safe working**, since the fact never depends on its own write
+  succeeding and its absence can only force a re-test. `GATE_RESAVED_NOTE` says so when a save
+  lands on an already-active district.
+- **`on_files_saved: Callable[[CreatorForm, str], None]` — a FIFTH required keyword callback** on
+  `build_creator`, not a stage-conditional reuse of `on_written` (which advances a step; a callback
+  whose meaning depends on the host's step is how a second wizard starts). The host sets
+  `ws["creator_form"]`, clears `ws["files_ok"]`, re-renders FILES in place; S6's Mapping host needs
+  the identical callback.
+- **ONE presence source:** rows, chips and the missing-file list all derive from the PENDING
+  effective names, so nothing on screen contradicts anything else; the gate's own
+  `GateOutcome.missing_files` (the config on disk, after a run) stays the authoritative report.
+- **Mount-time memo:** the resolved base and `expected` are I/O and cannot change while the step is
+  on screen, so each resolves ONCE per mount into `st` (the S4b "one memoised config read per
+  mount" cost note; `_resolved_base` is not memoised today).
+- **Copy re-read.** `FILES_INHERITED_NOTE`'s "the standard MyEd BC names your starting point uses"
+  becomes FALSE once a row is renamed → replaced by `FILES_INTRO_NOTE` ("DistrictSync looks for
+  these files in your input folder. If your district's files are named differently, set the name
+  yours uses beside each one."). `FILES_MISSING_NOTE` stays TRUE (it asserts absence, not naming)
+  and gains the now-available fix as its tail. New: `FILES_INTRO_NOTE` ·
+  `FILES_KEEP_STANDARD_LABEL` · `FILES_TYPED_NAME_LABEL` · `FILES_USED_FOR_PREFIX` ·
+  `FILES_SCHOOL_YEAR_CLAUSE` · `FILES_SAVE_LABEL` · `FILES_SAVED_NOTE` · `FILES_UNSAVED_NOTE` ·
+  `FILES_NAME_INVALID_NOTE` · `FILES_NAME_DUPLICATE_NOTE` · `FILES_NAME_IS_STANDARD_NOTE` ·
+  `GATE_RESAVED_NOTE`. **No admin-facing string uses "column" (S5), "edit" (S6) or even "rename"**
+  — the copy says what a file is *called* — so S3's `FORBIDDEN_PROMISES` stays byte-identical and
+  keeps guarding both later slices.
+
+#### In-scope standards dimensions
+
+`security` (every typed filename crosses the ONE public boundary — traversal, drive-relative, ADS,
+control chars, reserved devices — and the chain refusal closes the last way a fully validated map
+still reads the wrong file) · `privacy` (notes name the failed CHECK, never the typed value; logs
+stay counts-only) · `data-and-persistence` (one write path, load-back before bytes land, no new
+persisted field) · `reliability-resilience` (every derivation TOTAL, fail-safe toward "test it
+again") · `maintainability-structure` (pure slots/rows/tiering in `config_editor`, assembly in the
+screen, one filename boundary in `authoring`) · `product-ux` (one filled primary in all eight
+states, one presence source, deterministic order) · `testing` (a positive twin for every absence
+and refusal assertion).
+
+#### Tests to add
+
+- **`tests/test_ui_flet_config_editor.py`** — slot derivation for EACH of the four `ALLOWED_BASES`
+  (count, order, `references`; `names_school_year` true for `myedbc`/`mbp_all`'s
+  `StudentSchedule.txt`, the slot ABSENT for `mbponly`, whose active entities never read it) ·
+  order pinned against a hand-written tuple + a twin that a shuffled `expected` cannot change it ·
+  `FILE_LABELS` covers all four bases' distinct files, fallback returns the filename ·
+  `with_rename` drops on blank / whitespace-only / identical-after-strip, keeps a stripped value,
+  refuses each `validate_source_filename` shape (traversal, `:`, control char, reserved device,
+  >255) · `__post_init__` re-validates a directly constructed `renames` · `file_form_rows` presence
+  is case-insensitive both ways (twin: a genuinely absent file reads absent) · `to_overlay_spec()`
+  carries `renames`, the explicit keyword still wins · `renames_from_resolved` round-trips a written
+  SD74-shaped overlay and answers `{}` for an unrenamed one (twin) · `files_primary_action` over all
+  8 combinations, exactly-one-primary as a property.
+- **`tests/test_config_authoring.py`** — the chain refusal (`A→B`, `B→C`) with its case-folded twin
+  (`A→b.TXT`, `B.txt→C`) and the positive twin that SD74's real four-rename map still writes and
+  loads · the case-folded duplicate-target refusal (`a.txt`/`A.txt`) beside the existing exact one ·
+  `validate_source_filename` is the same boundary as `_require_bare_filename` (one sweep, both
+  entry points).
+- **`tests/test_ui_flet_creator_flow.py`** (extends S3's mount helpers) — one row per distinct file
+  with its standard name and caption · dropdown options == the folder's files, keep-standard first ·
+  **the headline flow:** an `sd93custom` overlay with NO renames, activated over
+  `tests/snapshots/input`, then `StudentSchedule.txt` set to `studentcourseselection.txt` (+ the
+  other three) → "Save these file names" → the WRITTEN overlay moves `Classes`, `Enrollments` **and**
+  `global_config.school_year_sources` → `verified_is_current` flips False and the FILES footer closes
+  (twin: True immediately before) → the REAL gate re-run over those inputs passes and "Use this
+  district" re-activates · the nothing-renamed panel names EXACTLY S3's files with the same
+  present/absent marking — equality on the name SET + marking, deliberately NOT byte-identical
+  ORDER, because S3's is `list(set)` and a byte-identical assertion would flake on `PYTHONHASHSEED`
+  rather than bind · each cheap refusal renders its note and attempts NO write (twin: a valid name
+  does write) · a save leaves `config.json` byte-identical (twin: activation still writes it) · the
+  name-derived copy sweep covers the twelve new constants and the rendered step carries no banned
+  vocabulary and no `FORBIDDEN_PROMISES` word.
+- **Regression:** full suite · SD74 golden byte-identical · render smokes · `make validate-config`
+  20/20 · S3's host-seam test extended to the five callbacks.
+
+#### Acceptance criteria
+
+1. "Your files" shows one row per source file the district's config reads — standard name, name in
+   force, what it is used for, whether it is in the input folder — in the same order every run.
+2. Setting `StudentSchedule.txt` to `studentcourseselection.txt` and saving produces an overlay in
+   which Classes' and Enrollments' `student_schedule` AND
+   `global_config.school_year_sources.student_schedule` all name it, every untouched role stays
+   inherited, and the file loads through the real `load_config`.
+3. A saved change on an already-active district re-closes the FILES step and reopens it after a
+   fresh test conversion + confirm; a district with nothing unsaved is unaffected (twin).
+4. `OverlaySpec` refuses a rename chain and a case-folded target collision, `write_overlay` refuses
+   both before any bytes reach the profile, and SD74's real map still writes.
+5. Every typed name passes `authoring.validate_source_filename`; each refusal answers with its own
+   bounded sentence, echoes nothing typed, and attempts no write.
+6. Exactly one filled primary renders in each of the eight `files_primary_action` states, and the
+   test-run button is never the primary while a change is unsaved.
+7. S4 performs no `AppConfig` write on any path (pinned by a byte-identical `config.json`), and no
+   new copy contains "column", "edit" or "rename" — `FORBIDDEN_PROMISES` unchanged.
+8. All gates green (ruff/format, mypy, bandit, tree-check, email scan, 20-config pin), SD74 golden
+   byte-identical, `districtsync-design` pass clean, ARCHITECTURE_TREE unchanged (no new module) —
+   and **CI's own result read and quoted** before the slice is called landed.
+
+#### Open questions for the owner
+
+- **Two rows pointing at ONE file.** `_build_renames` refuses it; S4 surfaces that as
+  `FILES_NAME_DUPLICATE_NOTE` rather than as the bounded write-failure copy. Default: KEEP the
+  refusal — two roles reading one file is a data question (which columns win?) the ETL has no answer
+  for, and a district genuinely shipping one combined file needs a mapping change, not a filename.
+  Should the note point at `help.SUPPORT_EMAIL`? One line either way.
+- **Offering names the folder does NOT contain** (the typed field). Default: YES — the folder can be
+  empty at setup time, the extract may arrive nightly, and refusing free text would strand exactly
+  the district S4 exists for; the honest consequence is on screen already (the chip reads absent and
+  the missing-file list names it — `FILES_MISSING_NOTE`'s "carries on without it" story).
+- **Should a saved change also explicitly clear `creator_verified[sis]`?** Default: NO — the hash
+  comparison already answers, and a refused clear could never make the gate LOOK passed. Named
+  because it is the one place a reader may expect an explicit invalidation.
+
+_Spec self-check:_
+- **Riskiest element: the post-activation save** — the one path that takes a working district and
+  re-closes its gate. Right (the file that converts changed) and safe with no settings write, but
+  the only S4 state whose recovery is three clicks; if the owner reads that as friction the answer
+  is copy, not a narrower digest.
+- **The chain refusal is REACHABLE from the form, so it needs copy, not just a raise.** I nearly
+  wrote it as unreachable-by-construction; the dropdown offers folder files, and a folder may hold
+  another slot's standard name.
+- **One deviation from the brief** (`present_files` → `file_form_rows`) and one declined API
+  (`Dropdown(editable=True)`), each with its reason in-line so a later slice does not re-derive it.
+- **Vacuous-green watch:** "no `config.json` write", "no overlay written", "the gate re-closed" and
+  "the sweep found nothing" are absence assertions, each with its twin — and the equivalence-with-S3
+  row is deliberately weakened from byte-identical to set+marking, because a strict-looking
+  assertion that flakes on `PYTHONHASHSEED` is worse than an honest one.
+- **Not promised here:** per-ROLE divergence (ROADMAP item 1, the model's honest limit) and the
+  missing-column report (S5). No S4 string implies either.
+
+### Slices 5–7
+_Spec'd just-in-time, each after the prior slice lands (S5 next — the pure `src/etl/preflight.py` column check, the plain-language "not present in any file" report, and the additive `PipelineResult.input_columns` field wired into the gate beside the dry run)._
 
 ---
 
