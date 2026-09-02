@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  # Rehearsal path - builds and SIGNS, publishes nothing (publish-release is
+  # tag-gated below). This exists so the signing steps can be exercised LIVE
+  # without cutting a release: plan 0041 Slice 5 requires signing to land
+  # verified, never dormant - "guarded steps that have never run are not
+  # known-good; flip-a-secret day would really be debug-never-run-steps day".
+  workflow_dispatch:
 
 jobs:
   test:
@@ -27,20 +33,140 @@ jobs:
     uses: ./.github/workflows/flet-pack.yml
 
   # -----------------------------------------------------------------------
+  # Sign the Windows exe - Azure Trusted Signing (plan 0041 Slice 5).
+  # -----------------------------------------------------------------------
+  # DELIBERATELY NOT in flet-pack.yml. That reusable workflow is called by
+  # flet-verify.yml on every PR, so it packs ARBITRARY PR CODE, and its RC4 note
+  # keeps it secret-free with `contents: read` by construction. Granting it
+  # `id-token: write` would let any PR author mint a token that signs binaries as
+  # "myBlueprint Corp." - a supply-chain hole, not a convenience. Signing
+  # therefore lives HERE, in the tag/dispatch-only workflow, on the built artifact.
+  #
+  # `environment: release` is REQUIRED, not decorative: the federated credential on
+  # the `github-districtsync-signing` app registration is scoped to the subject
+  # `repo:myblueprint-spaces@87142684/DistrictSync@1212825406:environment:release`
+  # (the repo issues immutable ID-pinned subjects, `use_immutable_subject: true`).
+  # A job without it presents a non-matching subject and azure/login fails.
+  #
+  # Order is load-bearing: sign FIRST, then re-smoke. Signing rewrites the PE, so
+  # the bytes the smoke proves must be the bytes districts download - the plan-0045
+  # lesson (test the artifact that ships, not its ancestor) applied to signing.
+  #
+  # Windows ONLY. Trusted Signing signs PE files; the macOS .app/.dmg and the Linux
+  # binary would need an Apple Developer ID + notarization, which we do not have.
+  sign-windows:
+    needs: build-flet
+    runs-on: windows-latest
+    environment: release
+    permissions:
+      id-token: write # OIDC token for azure/login - the ONLY elevated scope here
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: DistrictSync-windows-latest
+          path: dist
+
+      # Fail loudly if the artifact arrives already signed - that would mean the
+      # pack job grew a signing step and this job's "sign the unsigned build"
+      # premise is silently wrong. The absence assert; its positive twin is the
+      # verify step below, which proves the mechanism actually works.
+      - name: Assert the downloaded exe is UNSIGNED
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature dist/DistrictSync.exe
+          Write-Output "pre-sign status: $($sig.Status)"
+          if ($sig.Status -eq 'Valid') {
+            Write-Error "dist/DistrictSync.exe is ALREADY signed before the signing step"
+            exit 1
+          }
+
+      - name: Azure login (OIDC - no stored secret)
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign with Azure Trusted Signing
+        uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.SIGNING_CERTIFICATE_PROFILE_NAME }}
+          files-folder: ${{ github.workspace }}\dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # The positive twin of the absence assert above. /pa = Authenticode policy.
+      # A Trusted Signing certificate lives ~3 days, so the TIMESTAMP is what keeps
+      # the signature valid after it expires - assert it explicitly rather than
+      # assume the action requested one.
+      - name: Verify the signature
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { Write-Error "signtool.exe not found on the runner"; exit 1 }
+          Write-Output "using $($signtool.FullName)"
+          & $signtool.FullName verify /pa /v dist\DistrictSync.exe
+          if ($LASTEXITCODE -ne 0) { Write-Error "signtool verify FAILED"; exit 1 }
+
+          $sig = Get-AuthenticodeSignature dist\DistrictSync.exe
+          Write-Output "post-sign status : $($sig.Status)"
+          Write-Output "post-sign subject: $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { Write-Error "signature is not Valid"; exit 1 }
+          if ($null -eq $sig.TimeStamperCertificate) {
+            Write-Error "signature carries NO timestamp - it would die with the 3-day cert"
+            exit 1
+          }
+
+      # Re-run BOTH smokes against the SIGNED bytes. flet-pack proved the unsigned
+      # build converts and opens a window; appending a signature rewrites the PE,
+      # so neither result carries over to what we publish.
+      - name: CLI smokes on the SIGNED exe
+        shell: bash
+        env:
+          DISTRICTSYNC_DATA_DIR: ${{ runner.temp }}/dsync-signed-profile
+        run: |
+          python scripts/ci_flet_pack_smoke.py "$GITHUB_WORKSPACE/dist" DistrictSync \
+            --cli-smoke --phase all --artifact binary \
+            --work-dir "$RUNNER_TEMP/dsync-signed-work"
+
+      - name: GUI smoke on the SIGNED exe
+        run: python scripts/ci_flet_pack_smoke.py dist DistrictSync --require-close
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: DistrictSync-windows-signed
+          path: dist/DistrictSync.exe
+          retention-days: 5
+
+  # -----------------------------------------------------------------------
   # Publish release — attach the Flet-default exe (1/OS) + SHA-256 checksums.
   # The download `name:` values MUST byte-match flet-pack.yml's upload names
   # (DistrictSync-<matrix.os>): windows-latest / ubuntu-22.04 / macos-latest.
   # -----------------------------------------------------------------------
 
   publish-release:
-    needs: [build-flet]
+    needs: [build-flet, sign-windows]
+    # Tag-only: a workflow_dispatch rehearses build+sign and stops here.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: DistrictSync-windows-latest
+          name: DistrictSync-windows-signed
           path: artifacts/windows
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -83,14 +209,16 @@ jobs:
 
             | Platform | File | Notes |
             |----------|------|-------|
-            | Windows | `DistrictSync-windows.exe` | Double-click to open the app, or run with `--sis`/`--input`/`--output` args for CLI use |
+            | Windows | `DistrictSync-windows.exe` | Code-signed by **myBlueprint Corp.** Double-click to open the app, or run with `--sis`/`--input`/`--output` args for CLI use |
             | Linux   | `DistrictSync-linux`       | `chmod +x` before first run |
             | macOS   | `DistrictSync-macos.dmg`   | Double-click, then drag **DistrictSync** into **Applications** |
             | macOS (headless/CLI) | `DistrictSync-macos` | Command-line only — `chmod +x` before first run |
 
-            **First launch on macOS.** Because these builds are unsigned (see below), macOS will say it cannot check the app for malicious software. Open **System Settings › Privacy & Security**, scroll to the message about DistrictSync, and click **Open Anyway**. On macOS 15 and later that is the only route — the old Control-click → Open shortcut no longer works for unsigned apps.
+            **First launch on macOS.** Because the macOS build is unsigned (see below), macOS will say it cannot check the app for malicious software. Open **System Settings › Privacy & Security**, scroll to the message about DistrictSync, and click **Open Anyway**. On macOS 15 and later that is the only route — the old Control-click → Open shortcut no longer works for unsigned apps.
 
-            Verify your download against `SHA256SUMS.txt` (e.g. `sha256sum -c SHA256SUMS.txt`). These binaries are not yet code-signed.
+            **Signing.** The Windows executable is code-signed by **myBlueprint Corp.** via Azure Trusted Signing, so Windows names the publisher instead of warning about an unknown one. SmartScreen builds download reputation separately, so a brand-new version can still show a warning for a while. The **macOS and Linux** builds are **not** signed — signing those needs an Apple Developer ID and notarization, which we do not have yet.
+
+            Verify any download against `SHA256SUMS.txt` (e.g. `sha256sum -c SHA256SUMS.txt`).
 
             See the [SpacesEDU Help Centre article](https://help.spacesedu.com/en-ca/article/mx56qo) for setup basics.
           files: |

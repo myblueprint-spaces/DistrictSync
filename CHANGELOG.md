@@ -9,6 +9,25 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Added
+
+- **The Windows download is code-signed.** `DistrictSync-windows.exe` is now
+  signed as **myBlueprint Corp.** through Azure Trusted Signing, so Windows names
+  the publisher on first run instead of warning about an unknown one, and district
+  IT can verify where the file came from before allowing it. SmartScreen builds its
+  download reputation separately, so a brand-new version can still show a warning
+  for a while — the signature is what lets that reputation accumulate against a
+  real identity rather than starting from nothing every release.
+- The signed executable is verified in CI before it is published (`signtool verify`
+  plus an explicit timestamp check), and the conversion and window smokes are
+  re-run against the **signed** bytes, so what is tested is what districts download.
+
+### Changed
+
+- The macOS and Linux downloads are **still unsigned** — signing those needs an
+  Apple Developer ID and notarization, which is a separate purchase. The release
+  page now says which platforms are signed instead of stating that none are.
+
 ## [3.15.0] - 2026-09-02
 
 A distribution fix, a new school, and a guard against a silent class merge.
