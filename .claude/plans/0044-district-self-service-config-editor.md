@@ -12,6 +12,7 @@
   - `S1 sis-emission deviation: the overlay INHERITS sis: MyEducationBC instead of emitting the config id (reviewer finding; DECISIONS 2026-09-02)` — reviewable at the S2 gate.
   - `S1 CI gate: ci.yml runs only on push-to-main / PRs to main, so no CI run exists for the branch yet — the land-gate CI read is OWED at PR time` — owner decides when to open the PR.
   - `S2 marker rule: the "added on this computer" marker keys on FILE PROVENANCE (ConfigSummary.origin == "user"), NOT on the sd<num>custom id — so a YAML support hands a district is marked the same way, which is why the wording must stay true for a file the admin did not author` — reviewable at the S2 gate (wording alternatives in the S2 spec's Open questions).
+  - `S3 staleness + activation writer: chose a digest of the RESOLVED config (sha256 over the validated `MappingConfig.model_dump(mode="json")`) over the plan's overlay-BYTES hash — a vendor base change on app update leaves overlay bytes unchanged while what converts differs — plus an advisory `authored_with` root key (app version + base digest) the loader ignores; and ONE atomic activation writer (`AppConfig.activate_creator_config`), which makes `sis_type` write sites four, not three` — reviewable at the S3 gate.
 - **Disposition at close:** per `docs/claugentic-WORKFLOW.md` plan-file lifecycle.
 - **Roadmap item:** `docs/claugentic-ROADMAP.md` → "Brief 0037 … Phase 2 = the district self-service config editor" (updated 2026-08-27)
 - **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` (2026-08-27 re-scope entry — the authority for everything this plan builds) · `.claude/plans/0037-brief-front-door-district-identity-mapping-creator.md` (superseded scope, retained safety rails) · plan 0038 (Phase 1, landed)
@@ -1055,8 +1056,445 @@ _Spec self-check:_
   `load_config` performs internally — two extra stats per row, no second parse — which is only
   removable by widening `load_config`'s return type; not worth it for a presentation fact.
 
-### Slices 3–7
-_Spec'd just-in-time, each after the prior slice lands (S3 next — the creator flow: forms, `config_editor.py`, the `setup_flow` creator mode, the `creator_` advisory family, the dry-run gate and the `sis_type` activation write)._
+### Slice 3 — creator flow, activatable end-to-end with inherited filenames
+
+- **In plain English (the approval gate):** S1 built the engine, S2 made its output visible; this
+  slice gives it a FRONT DOOR. An admin whose district isn't listed picks "Set up my district" on
+  the wizard's first step, confirms four things on forms (which shipped mapping to start from ·
+  district name/number/email domains · which CSVs to produce · which grades are rostered), then on a
+  creator-only **"Your files"** step presses one button that runs a **test conversion writing
+  nothing**, shows how many rows each CSV would hold, and only THEN offers "Use this district". That
+  press is the ONLY thing here that makes the new district the one this install converts; everything
+  before it is a file in the admin's own DistrictSync folder that changes nothing. Abandon halfway
+  and the wizard reopens where you were, with a way to discard. **What "done" means:** a district
+  shipping NO mapping today can be set up, tested and activated in-app, with the nightly then
+  running it — on the base's STANDARD MyEd BC filenames (a district whose export renames files is
+  stopped honestly by the test's missing-file list; S4 adds the rename form). **What you're
+  accepting:** three new persisted values (a resume token, a record of what was tested, and — S3's
+  addition — the app version + base fingerprint written INTO the overlay); a test run that creates
+  the output folder and writes a diagnostic log line but no Run History row; and the plan's honest
+  limit — the gate stops an admin *mistake*, not a hand-edited settings file.
+
+#### 3.1 The `creator_` advisory family (spec'd FIRST — S3's riskiest element)
+
+- **Registration.** `_ADVISORY_FIELD_PREFIXES` (`app_config.py:97`) gains `_CREATOR_FIELD_PREFIX =
+  "creator_"`, and the module comment at `:82-96` gains its rationale in the SAME change (that
+  comment IS the contract — R2-2). The sentences, argued against the comment's own definition
+  ("persisted, but NOT settings that make the sync work"): *"`creator_` — the in-progress state of a
+  self-service district (plan 0044). Nothing in the ETL, CLI or scheduler reads either field: the
+  sync runs off `sis_type` + the YAML. The token is resume convenience; the tested-fact only decides
+  whether the UI OFFERS activation, and it is keyed on a digest of the RESOLVED config, so losing it
+  can only force another test run — never unlock one. Both degrade to 'ask again', the property that
+  put `identity_` here: the write must be refusable on a profile we failed to read without trapping
+  the admin."* What the prefix does NOT cover: `activate_creator_config` (3.1.4), which writes
+  `sis_type` beside them and is deliberately non-advisory.
+- **The two fields** (additive, safe defaults — a v3.9.x `config.json` loads unchanged):
+  `creator_pending_sis: str = ""` and `creator_verified: dict[str, str] =
+  field(default_factory=dict)` — never `{}`, which raises `ValueError: mutable default` at
+  class-definition time (round-3 correction 1; `pipeline.py:91` is the precedent).
+- **3.1.1 The extracted write-discipline helper.** `AppConfig._guarded_field_write(self, updates:
+  dict[str, object], *, allowed: frozenset[str], refuse_when_unreadable: bool, subject: str) ->
+  bool` discharges the five obligations `identity_save` documents at `:455-501`: (1) validate KEY
+  (membership in `allowed` — never `hasattr`, which would let `identity_save=…` shadow the bound
+  method) AND VALUE (`_value_fits` against `_settings_field_types()`) for every update before any
+  `setattr`; (2) re-check `settings_unreadable()` on THIS instance at write time, before any
+  mutation, when `refuse_when_unreadable`; (3) apply, then `save()`; (4) swallow + log
+  `SettingsOverwriteRefused`/`OSError`; (5) `_restore` the snapshot on ANY failure and return a
+  bool. `refuse_when_unreadable` is REQUIRED keyword-only with no default
+  (`write_overlay(overwrite=)`, `_store_run_record(dry_run=)`). `subject` is the log noun, so
+  identity's WARNING strings stay byte-identical.
+- **3.1.2 The wrappers.** `identity_save` and the new `creator_save(**updates) -> bool` become thin
+  named wrappers, each passing its own prefix-derived allowlist (`_IDENTITY_FIELD_NAMES` at
+  `:625-627`; a new `_CREATOR_FIELD_NAMES` derived the same way from `fields(AppConfig)`), both
+  `refuse_when_unreadable=True`; `creator_save` also prunes (3.1.5). `identity_save`'s public
+  behaviour — raise shapes, messages, returns, rollback, log text — stays byte-identical under
+  `tests/test_app_config_identity.py` (25 tests, unchanged). Generalising the public seam stays
+  rejected (R2-2).
+- **3.1.3 The digest is over the RESOLVED config, not the overlay's bytes** (S3 correction to
+  Approach `:184`, flagged): a vendor base change on app update leaves the overlay bytes — and a
+  byte-keyed hash — UNCHANGED while what converts differs, so the gate would never re-fire.
+  `authoring.resolved_digest(config: MappingConfig) -> str` = sha256 over
+  `json.dumps(config.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+  ensure_ascii=False)`, lowercase hex. Whole validated model, not a subset: `to_raw_dict()` is the
+  trap (only `mappings` + `global_config`, so `district_domains`/`version` changes are invisible),
+  and a hand-maintained "fields that matter" list is a second spelling that will drift. Cost named:
+  a cosmetic `district_name` fix also invalidates — the safe direction, since over-firing only
+  re-asks while under-firing activates something untested. Fail-safe both ways: an edit to the
+  overlay OR the base moves the dump, and a REFUSED invalidation write leaves a non-matching stored
+  digest, so the fact never depends on its own write succeeding. `authored_with` (3.1.6) is
+  invisible to it (`extra="ignore"`), so re-writing provenance cannot self-invalidate. Shape is
+  validated at ONE boundary — `validators.is_config_digest(value: object) -> bool` (TOTAL, 64
+  lowercase hex) — read by both `app_config` (deferred import, its existing pattern) and
+  `config_editor`; `app_config` must NOT import `authoring`, which would drag yaml + pydantic +
+  loader into the settings module. Effectful companion `authoring.current_digest(sis_id) -> str |
+  None` loads through the real `load_config` and digests it; TOTAL — any load failure is `None`,
+  which can only mean "not current".
+- **3.1.4 Activation is ONE save through a third named wrapper.**
+  `AppConfig.activate_creator_config(*, sis_type: str, digest: str) -> bool` — allowlist exactly
+  `{"sis_type", "creator_pending_sis", "creator_verified"}`, `refuse_when_unreadable=False`,
+  validating `sis_type` (`validators.validate_sis_type`) and `digest` (`is_config_digest`) before
+  applying anything. Rejected: routing through `creator_save` (it must refuse non-`creator_*` keys
+  or become the `sis_type` back door obligation 3 exists to prevent); TWO saves (a torn state where
+  the district is active while the token still stands — and the resumed flow's Discard would then
+  delete a LIVE config); a bare `cfg.sis_type = …; cfg.save()` as at `setup.py:550` (drops
+  validation + rollback on the write that matters most). Non-advisory *because* it carries a chosen
+  setting: `sis_type` off its default is what `_carries_chosen_settings` (`:377-407`) counts, so
+  `save()`'s UNREADABLE branch — write, after quarantining the predecessor — applies exactly as for
+  the standard District step. That parity is the claim and the UNREADABLE-provenance acceptance
+  test's subject. **Record at land:** `sis_type` write sites go three → FOUR — verified today at
+  `setup.py:550` (wizard), `setup.py:1213` (folders card; the plan cites `:1198`, moved),
+  `mapping.py:293` (Apply; the plan cites `:257`, moved), plus this gated one. Goals' "exactly
+  three" is restated at S3 land; the invariant it stood for is unharmed, since the new site is the
+  gated one.
+- **3.1.5 Read-time validation + prune.** `creator_verified` is AppConfig's first non-scalar
+  persisted field and `_value_fits`'s generic branch checks only the CONTAINER
+  (`app_config.py:661-662`), so `{"sd93custom": 123}` loads clean. (i) **Read — pure, no I/O, in
+  `config_editor.py`** (the `identity_gate.stored_identity_email` precedent):
+  `stored_verified_digest(cfg, sis_id) -> str | None` returns the stored value only when the map is
+  a dict, the KEY passes a total `validate_sis_type` wrapper and the VALUE passes
+  `is_config_digest`; anything malformed (wrong type, nested dict, 63 chars, uppercase) reads as
+  ABSENT ⇒ re-test. Deliberately NOT gated on `authoring.is_custom_sis_id`: S6 gates activation on
+  ORIGIN (`ConfigSummary.origin == "user"`, S2's landed rule), so a support-handed user-dir override
+  of a shipped id (`sd40myedbc`) must stay activatable after passing the same gate. Companion
+  `verified_is_current(stored, current) -> bool` = both present and equal (two `None`s never read as
+  "fine"). (ii) **Prune** on every `creator_save` and `activate_creator_config`: drop entries whose
+  id no longer resolves via `loader.resolve_config_path(id)` to a `"user"` file, bounding the map by
+  the user-dir config count. Deferred import inside the method, and TOTAL — any raise prunes nothing
+  and never blocks the write.
+- **3.1.6 `authored_with` — provenance IN the overlay (S3 addition, flagged).** `MappingConfig`
+  declares `extra="ignore"`, so a root key the loader never reads is free and durable.
+  `build_overlay(spec, *, resolved_base, authored_with: Mapping[str, str] | None = None)` emits it
+  verbatim when given and omits it when `None` — so `build_overlay` stays PURE (no version lookup,
+  no file read) and S1's emission goldens pass untouched; `write_overlay` ALWAYS supplies it via the
+  pure `authoring.authored_with(resolved_base, *, app_version) -> dict[str, str]` = `{"app_version":
+  …, "base": <id>, "base_digest": resolved_digest(resolved_base)}`, with the version from
+  `src.utils.version.app_version()` (THE version lookup — build-stamped `src/_version.py`, else
+  installed metadata, else `"dev"`; `version.py:28-40`). The `None` default is legitimate because
+  provenance is ADVISORY: activation safety is 3.1.3's digest, so this key can never permit a run.
+  `_ROOT_KEY_ORDER` gains `authored_with` LAST. Read back by `authoring.read_authored_with(sis_id)
+  -> AuthoredWith | None` (frozen dataclass; reads the YAML through `resolve_config_path`, since the
+  validated model DROPS the key; TOTAL → `None`). **Surfacing:** the pure
+  `config_editor.overlay_staleness(authored_with, *, running_version, current_base_digest) ->
+  StalenessFact` (`version_differs`, `base_changed`) lands in S3 WITH its caller — the Files step's
+  note, where an admin resuming a district set up by an older build needs to know why another test
+  run is asked for. The Mapping-card / picker note is an **S6 obligation** (S6 owns that card's copy
+  and its Apply gate); S3's emission + reader make it view glue there. Existing coverage cited, not
+  duplicated: a user-dir config declaring an OLD `version:` already hits the loader gate (different
+  major → raise, `loader.py:234-241`; newer minor → WARN, `:242-250`), and an overlay with no
+  `version` inherits its base's (`test_config_version_gate.py::TestInheritedVersion`).
+
+#### 3.2 `config_editor.py` (NEW — pure, COUNTED, no flet)
+
+- **Form state over RESOLVED values.** Frozen `CreatorForm` + `with_*` returns (a step can never
+  half-mutate shared state): `base` (one of `authoring.ALLOWED_BASES`, rendered through
+  `BASE_LABELS: Mapping[str, str]` — plain-language names declared HERE so no picker shows a raw
+  id), `sd_number`, `district_name`, `domains`, `entities` (seeded from the resolved base's
+  `enabled_entities` over the seven `authoring.CREATOR_ENTITIES`; `StudentAttendance` absent by
+  construction), and the grade fields.
+- **Domains:** `derive_domains(identity_domain: str, sd_number: int)` = the stored identity domain
+  (`identity_gate.stored_identity_domain`, computed by the view) ∪
+  `bc_district_domains.domains_for(sd)`, order-stable and de-duplicated; ONLY when both are empty,
+  `(presumptive_domain(sd),)`. Correctable; every kept/entered value passes
+  `models.is_valid_district_domain` (S1's single source) at the boundary, and an invalid entry is
+  reported WITHOUT echoing the value (the likeliest bad paste is a personal address —
+  `OverlaySpec.__post_init__`'s existing rule).
+- **Grades — invalid chain states unrepresentable POST-RESOLUTION by construction, not by
+  validation.** Vocabulary and ORDER derive from `CEDS_MAPPING`'s values
+  (`tuple(dict.fromkeys(CEDS_MAPPING.values()))` — `CEDS_GRADE_CODES` is an unordered frozenset and
+  `"Other"` is its one mixed-case member, so nothing case-normalises). The form asks ONE question —
+  "which grades are rostered?" (`rostered`) — plus "which of those get a homeroom class instead of a
+  timetable?" (`homeroom`, offered ONLY from `rostered`). `to_overlay_spec()` derives
+  `student_rostering_grades = rostered`, `class_rostering_grades = rostered` (or
+  `models.CLASS_ROSTERING_HOMEROOM_SENTINEL` exactly when `homeroom == rostered`) and
+  `homeroom_grades = homeroom`, so `homeroom ⊆ class ⊆ student` holds by derivation and
+  `check_rostering_grade_scopes` (`models.py:699`) can only confirm it. Rejected: three independent
+  multi-selects validated on Continue — that makes the admin reconstruct a chain rule from an error
+  message. Untouched fields emit `None` (minimal emission stays the authoring layer's job);
+  `source_file_renames={}` in S3.
+- **Gate state:** `GateState = NOT_RUN | RUNNING | PASSED | FAILED | REFUSED_NO_OUTPUT_DIR` + frozen
+  `GateOutcome(state, counts, missing_files, note)`, derived by `gate_outcome_for(...)` from
+  injected facts (the worker's `PipelineResult` or exception, the output-dir-valid bool, the
+  expected/present filename lists). `humanize_config_error(exc) -> str` maps
+  `validate_overlay`/`load_config` failures to a BOUNDED category (bad grades / bad domain / missing
+  base / unreadable / other) — never the raw message, since Pydantic errors carry values and a
+  domain must never be echoed. The missing-file list derives pure from
+  `pipeline.advisory_expected_files(config)` vs the folder's GDE names (Convert's precedent,
+  `convert.py:1414-1480`) — never scraped from log text.
+
+#### 3.3 `setup_flow.py` — creator mode (two fixed tuples, one selector; still no step engine)
+
+- `SetupStep` gains `FILES = "files"`; `FlowMode = Literal["standard", "creator"]`. `STEP_ORDER`
+  UNCHANGED; `CREATOR_STEP_ORDER = (DISTRICT, FOLDERS, FILES, DELIVERY, SCHEDULE, FINISH)` — six:
+  FILES after FOLDERS because the gate needs the input folder, DELIVERY still before SCHEDULE (F1 —
+  `--sftp` is baked at registration). One selector `step_order(mode)`; `_PRE_FINISH_STEPS` →
+  `_pre_finish_steps(mode)`; `TOTAL_STEPS` stays the module constant (`== 5`, pinned by
+  `TestStepScaffolding`) with a mode-aware companion `total_steps(mode)` for the "Step N of M"
+  denominator; `step_number`/`next_step`/`prev_step` gain `*, mode: FlowMode = "standard"` —
+  keyword-only with the standard default, so every existing call and all 116 tests stay
+  byte-identical.
+- **Four NEW injected `FlowInputs` fields, each defaulting to the SAFE value and consulted only in
+  creator mode** (so no default can loosen standard mode): `mode: FlowMode = "standard"`,
+  `creator_district_chosen: bool = False` (a pending token is present, or a form has been written),
+  `files_step_satisfied: bool = False` (the overlay exists AND `verified_is_current(stored,
+  current)`), `creator_activated: bool = False` (`sis_type` is the creator id AND the token is
+  cleared). The VIEW computes all of them — `folders_valid` (`setup.py:481-491`) is the precedent —
+  so **no `AppConfig`, `Path`, `authoring` or `config_editor` import enters `setup_flow`**, asserted
+  structurally by an AST import test in the shape of `test_ui_flet_identity_gate.py:328-342`,
+  extended to ban `pathlib`, `src.config` and `config_editor` alongside `flet`.
+- `_satisfied_steps` adds FILES (creator only, from `files_step_satisfied`) and in creator mode
+  reads `creator_district_chosen` for DISTRICT. `can_advance` gates FILES on `files_step_satisfied`
+  (NOT skippable — it IS the activation gate). `derive_flow` in creator mode ANDs
+  `creator_activated` into `can_finish`, so a creator who never passes the gate cannot flip
+  `setup_completed` into the `has_completed_setup() == True` / `is_complete() == False` state the
+  reviewer constructed (`app_config.py:425-444`). `FlowState` gains NO field — the `set(vars(state))
+  == {"resume_step","satisfied","can_finish"}` pin (`test_ui_flet_setup_flow.py:432`) stays green by
+  design.
+- **S3 ships FILES as the GATE step ONLY.** Body: the inherited standard filenames as READ-ONLY text
+  (the resolved config's `source_files`, grouped by file, no inputs) · the missing-file list · the
+  gate button · the counts · the activation confirm. S4's filename FORM lands in this same step
+  ABOVE the gate, so S4 adds controls and moves nothing, and `files_step_satisfied` keeps its
+  meaning.
+
+#### 3.4 `screens/setup.py` — creator branch, Files step, resume, discard
+
+- **Mount.** `_mount_wizard` reads `pending = cfg.creator_pending_sis.strip()` FIRST. Non-blank +
+  `authoring.overlay_path(pending).exists()` ⇒ `mode="creator"`, form state rehydrated from the
+  overlay (`load_config` + `read_authored_with`), and **the D9 auto-seed at `setup.py:503` is
+  SKIPPED** (the #8 obligation): seeding a bundled district into a pending creator flow would
+  satisfy the District step with the wrong answer and resume past the step the admin is mid-way
+  through. A token whose overlay is GONE clears itself via `creator_save(creator_pending_sis="")`
+  and falls back to standard mode.
+- **District step, standard branch untouched** — plus one text-tier `CREATOR_ENTRY_LABEL = "Set up
+  my district"` under the dropdown (text tier keeps the step's ONE filled primary), prefilled from
+  `identity_sd_number` when the launch page stored one (`identity_gate.sd_number_digits`). The
+  non-creator path (`_forward` → `cfg.sis_type = ws["sis"]; cfg.save()`, `:549-551`) is unchanged —
+  S2's `TestTheNonCreatorPickPathStillWorks` (#12 twin) must stay green.
+- **The creator forms live on the District step**, one card sequence in the step body (starting
+  point → identity confirm → entities → grades), built ONLY via `components.py` factories +
+  `tokens`, verdict-first, ONE filled primary ("Continue"). `ft.Dropdown` uses `on_select`;
+  `ft.Checkbox`/`ft.Switch` use `on_change`; `ft.TextField` uses `helper`
+  (`docs/FLET_1.0_CONVENTIONS.md:33-34`). There is no checkbox factory today — the seven entity rows
+  use bare `ft.Checkbox` with token colours, and the `districtsync-design` pass decides whether that
+  earns a `components.check_row(...)` (either outcome is one reviewed line).
+- **Continue on the creator District step IS the write**, in order: `form.to_overlay_spec()` →
+  `authoring.write_overlay(spec, overwrite=True)` (its load-back refuses anything invalid before
+  bytes land) → `cfg.creator_save(creator_pending_sis=sis_id)` →
+  `mapping_catalog.reset_catalog_cache()` (S2's rule — the UI caller invalidates, right after a
+  successful write) → advance. A raised write shows `CREATOR_WRITE_FAILED_NOTE` +
+  `humanize_config_error(exc)` and advances NOTHING; a `False` from `creator_save` shows
+  `CREATOR_TOKEN_REFUSED_NOTE` and still advances (the file is on disk and re-visitable — only
+  resume convenience was lost). `overwrite=True` is right here and only here: a creator re-visiting
+  their own step is the edit case that flag exists for. **Discard** (secondary, on every creator
+  step): `delete_overlay(sis_id)` → `creator_save(creator_pending_sis="")` → `reset_catalog_cache()`
+  → re-mount standard mode with `CREATOR_DISCARDED_NOTE`; a `False` from `delete_overlay` is
+  idempotent success, not an error.
+- **The gate.** `GATE_RUN_LABEL = "Run a test conversion"` is the step's ONE filled primary until it
+  passes; then per-entity counts and either `GATE_PASSED_HEADLINE` + `GATE_CONFIRM_LABEL = "Use this
+  district"` (now the filled primary, the run button demoting to secondary `GATE_RERUN_LABEL`) or
+  `GATE_FAILED_HEADLINE` + bounded copy. It runs through `JobRunner` exactly as Convert's
+  `_start_convert` (`convert.py:749-802`), so `route()`'s `SystemExit`-vs-`Exception` asymmetry
+  covers `run_pipeline`'s `sys.exit(1)` config paths (`pipeline.py:726-748`); `on_error` logs the
+  trace and renders category copy only. **`creator_gate_job(sis_id, *, input_dir, output_dir) ->
+  PipelineResult` lives in `src/ui_flet/job_runner.py`** (the plan's stated home) with a DEFERRED
+  `from src.etl.pipeline import run_pipeline` so nothing new loads on a UI mount; being COUNTED is
+  what makes the refusal testable headless — **it raises `GateRefused` when the output path is blank
+  or `filepicker.validate_output_dir(output_dir).ok` is False**, because `DataLoader.__init__`
+  mkdirs unconditionally and falls back to a CWD-relative `data/output` on blank
+  (`loader.py:55-61`), and the wizard's step order protects this while S6's Mapping host will not
+  (R2-6). It calls `run_pipeline(..., dry_run=True, source="manual")` and NEVER Convert's
+  `_record_manual_run` (`convert.py:492`), the one ungated store writer.
+- **Activation.** Confirm → `digest = authoring.current_digest(sis_id)` →
+  `cfg.activate_creator_config(sis_type=sis_id, digest=digest)` (ONE save: `sis_type` set, token
+  cleared, `creator_verified[sis_id] = digest`, map pruned) → `reset_catalog_cache()` → advance. A
+  `None` digest or a `False` return keeps the admin on the step behind
+  `CREATOR_ACTIVATE_FAILED_NOTE` ("nothing was changed — please try again"), never a silent advance.
+  `_STEP_TITLES` gains `FILES: "Your files"`, `_BODIES` gains `SetupStep.FILES`, `_step_header`
+  reads `total_steps(mode)` so the denominator says 6. `_finish` is unchanged (save-then-verify,
+  `FINISH_SAVE_FAILED_NOTE`, the `on_complete` host seam); the finish precondition sits upstream in
+  `can_advance(FINISH, …)`.
+- **New copy constants** — module-level, one per string, PII-free, plain language, and screened
+  against the banned identity vocabulary: **"verify"/"verified" IS banned**
+  (`DESIGN_SYSTEM.md:40-47`), so every gate string says *test / test run / checked*.
+  `CREATOR_ENTRY_LABEL`, `CREATOR_START_TITLE`, `CREATOR_START_PROMPT`, `CREATOR_IDENTITY_PROMPT`,
+  `CREATOR_DOMAINS_HELPER`, `CREATOR_DOMAIN_INVALID_NOTE`, `CREATOR_ENTITIES_PROMPT`,
+  `CREATOR_GRADES_PROMPT`, `CREATOR_HOMEROOM_PROMPT`, `FILES_STEP_TITLE`, `FILES_INHERITED_NOTE`,
+  `FILES_MISSING_NOTE`, `GATE_RUN_LABEL`, `GATE_RUNNING_CAPTION`, `GATE_PASSED_HEADLINE`,
+  `GATE_PASSED_DETAIL`, `GATE_FAILED_HEADLINE`, `GATE_REFUSED_NO_OUTPUT_NOTE`,
+  `GATE_STALE_VERSION_NOTE`, `GATE_STALE_BASE_NOTE`, `GATE_CONFIRM_LABEL`, `GATE_RERUN_LABEL`,
+  `CREATOR_DISCARD_LABEL`, `CREATOR_DISCARDED_NOTE`, `CREATOR_WRITE_FAILED_NOTE`,
+  `CREATOR_TOKEN_REFUSED_NOTE`, `CREATOR_ACTIVATE_FAILED_NOTE` (+ `BASE_LABELS` in `config_editor`).
+  **No string mentions a column report (S5), an edit affordance (S6) or a filename form (S4).**
+
+#### 3.5 Gate side effects (R2-6) · and the S6 host obligation
+
+- The gate writes **no run-STORE record** on any path — `_store_run_record`'s `dry_run` gate
+  (`pipeline.py:552-586`) plus `_record_early_failure(..., dry_run=…)` cover success, failure and
+  every early exit — hence **no Run History row and no Home repaint**. It DOES emit the
+  `__DISTRICTSYNC_RUN__` diagnostic line (`_log_run_record` is not dry-run-gated,
+  `pipeline.py:879-880`) — accepted parity, not a leak. No CSVs, no anomaly check, no SFTP
+  (`pipeline.py:818-849`); it DOES create the output directory, which is why the refusal exists.
+  **Both halves are asserted in ONE test** (no store row + the log line present) — the
+  no-vacuous-greens twin.
+- **The host seam.** The creator forms must be mountable by a SECOND host in S6 (Mapping's Edit), so
+  S3 factors them behind `build_creator(page, *, cfg, sis_id, form, on_written, on_activated,
+  on_discarded) -> ft.Control` — the same shape and reasoning as `build_setup(page, *,
+  on_schedule_changed, on_complete)`: the host owns what happens after the payoff, the surface owns
+  the work. S3 wires the wizard host only; naming the callbacks now is what stops S6 becoming a
+  second wizard. Pinned by a test that the wizard passes exactly these callbacks and that
+  `build_creator` renders identically from both mounts (the `_finish` two-mount equivalence
+  precedent).
+
+#### In-scope standards dimensions
+
+`security`/`privacy` (counts only, never rows; no domain, name or path in any log or bounded error
+copy; id/domain/digest validated at every boundary; no new egress) · `data-and-persistence` (one
+atomic settings save per act; S1's load-back-before-write; the digest keyed on the RESOLVED config
+so an inherited change cannot go unnoticed) · `reliability-resilience` (every new read TOTAL and
+failing toward "test it again"; a refused advisory write rolls the SHARED instance back; the catalog
+stays fail-open) · `maintainability-structure` (one write-discipline helper + three reviewed
+allowlists; pure form/gate/flow logic outside the view; `setup_flow` I/O-free, asserted) ·
+`product-ux` (verdict-first, ONE filled primary per step, plain language, no promise of S4/S5/S6) ·
+`testing` (a positive twin for every negative) · `observability-ops` (a counts-only INFO line naming
+the id and entity counts, never a district name).
+
+#### Tests to add
+
+- `tests/test_app_config_creator.py` (NEW): three advisory prefixes registered AND the module
+  comment names `creator_` (source-substring parity — the "literal copied out of `src/`" rule) · a
+  creator-only save REFUSED under UNREADABLE with the instance rolled back, **twin** a readable
+  profile persists · a non-`creator_*` key refused loudly, incl. `sis_type` (the back-door pin) · a
+  wrong-typed value raises BEFORE any write, and a bad key late in a multi-field call leaves no
+  partial mutation · `False` + rollback on `OSError` / `SettingsOverwriteRefused` ·
+  `activate_creator_config` writes all three fields in ONE `save()` (patched call count == 1),
+  validates `sis_type`/`digest` first, and — the deliberate asymmetry — is NOT refused under
+  UNREADABLE while the predecessor bytes ARE quarantined (the ROADMAP 2026-07-21 acceptance shape:
+  `sftp_host` recoverable from the `config.corrupt-*.json` copy, nothing silently blanked) · prune
+  drops a vanished id, **twin** keeps a live one, and a raising `resolve_config_path` prunes nothing
+  and still writes. `tests/test_app_config_identity.py` unchanged (the shared-helper equivalence
+  proof).
+- `tests/test_config_authoring.py` (EXTEND): `resolved_digest` stable across two loads; DIFFERENT
+  for a changed `district_domains` (the `to_raw_dict`-only trap) and for an edited BASE in a tmp
+  bundled dir, **twin** unchanged base ⇒ identical · a re-write that only bumps `authored_with`
+  leaves the digest UNCHANGED · `write_overlay` ALWAYS emits `authored_with` carrying the running
+  `app_version()` + base digest, **twin** `build_overlay` without provenance emits no such key (S1
+  goldens unchanged) · `read_authored_with` totality (absent / not-a-dict / wrong value types /
+  unreadable ⇒ `None`) · `is_config_digest` accept/reject table in `tests/test_validators.py`.
+- `tests/test_ui_flet_config_editor.py` (NEW): domain derivation (identity ∪ table; presumptive ONLY
+  when both empty; de-dup + order; SD63's multi-domain row) · an invalid domain reported without
+  echoing it · entity seeding from each of the four bases · grade derivation fed through the REAL
+  `check_rostering_grade_scopes` via `validate_overlay` for every reachable form state (incl.
+  `homeroom == rostered` ⇒ the sentinel, and `homeroom == ()`) · CEDS order + `"Other"` case ·
+  `to_overlay_spec` emits `None` for untouched fields · `gate_outcome_for` table incl.
+  `REFUSED_NO_OUTPUT_DIR` · `humanize_config_error` bounded categories with a substring ban on a
+  planted domain + path · `stored_verified_digest` hostile-value table (non-dict, bad key, 63 chars,
+  uppercase, nested) ⇒ `None`, **twin** a well-formed entry returns it · `verified_is_current`
+  refuses two `None`s · `overlay_staleness` both flags and neither · missing-file derivation,
+  **twin** a complete folder reports none.
+- `tests/test_ui_flet_setup_flow.py` (EXTEND — the 116 existing tests byte-identical): the creator
+  tuple + six-step denominators · `step_number(step, mode="creator")` · FILES satisfaction from the
+  injected bool only · creator DISTRICT satisfied by `creator_district_chosen` · `can_finish`
+  BLOCKED with FILES satisfied but `creator_activated=False`, OPEN with both · `can_advance(FILES)`
+  closed then open · the purity AST test.
+- `tests/test_ui_flet_creator_flow.py` (NEW, view glue): the creator branch renders and Continue
+  writes overlay + token + calls `reset_catalog_cache` (spy), **twin** a failed load-back writes
+  nothing and does not advance · resume from a token lands in creator mode at the right step, and a
+  token with no file self-heals to standard · Discard deletes + clears + invalidates · the D9 seed
+  does NOT fire while a token is pending, **twin** it still fires with no token and one visible
+  district · the gate REFUSES a blank output dir with NO `run_pipeline` call (spy), **twin** a
+  validated dir calls it once with `dry_run=True` · a gate run writes NO `history.db` row while the
+  `__DISTRICTSYNC_RUN__` line IS logged (one test, both halves) · activation writes `sis_type` +
+  clears the token + records the digest in one save, and a hand-edit of the overlay re-closes the
+  FILES gate (hash staleness) · `can_finish` blocked pre-gate / open post-gate through the real
+  mount · the banned-vocabulary sweep (`test_ui_flet_identity_page.py:32-50`'s `BANNED_WORDS` +
+  `BANNED_DESCRIPTIONS`, word-boundary matched, with its existing falsification twin) over EVERY new
+  copy constant and every creator/Files body · no rendered string contains "column", "edit", "soon"
+  or "later".
+- Regression: full suite + SD74 golden byte-identical; `make validate-config` still 20/20 (test
+  overlays live only in the isolated profile); render smoke covers the new step bodies.
+
+#### S3b escape hatch (a concrete cut line)
+
+S3a ships everything above EXCEPT the grades form: `config_editor` keeps `CreatorForm`'s
+`rostered`/`homeroom` fields and the derivation, but no view builds them and `to_overlay_spec()`
+returns all three grade fields `None` (fully inherited — a correct config for the K-12 districts the
+base was written for). Moving to S3b: the `_creator_grades_body` card,
+`CREATOR_GRADES_PROMPT`/`CREATOR_HOMEROOM_PROMPT`, exactly the grade rows of
+`tests/test_ui_flet_config_editor.py` (the chain-derivation table) and the grade assertions in the
+creator-flow mount test. Nothing in the step machinery moves — every form sits on the DISTRICT step
+— so both halves stay vertically complete and S3b is additive view glue over an already-tested
+derivation.
+
+#### Acceptance criteria
+
+1. On a profile with no SD93 config an admin completes District → "Set up my district" → the four
+   forms → Continue (an overlay exists in the profile's `mappings/`, the token is stored, the
+   catalog is invalidated) → Folders → Your files → test conversion → counts → "Use this district" →
+   Delivery/Schedule → Finish; afterwards `sis_type == "sd93custom"`, `creator_pending_sis == ""`,
+   `creator_verified["sd93custom"] == authoring.current_digest("sd93custom")`, `setup_completed`
+   True.
+2. The finish line is UNREACHABLE until activation: `can_finish` False with every other step
+   satisfied and `creator_activated=False`, True once activated (pinned both ways).
+3. The gate refuses without a validated output dir (no `run_pipeline` call) and with one runs
+   exactly once with `dry_run=True`, writes no store row, and emits the `__DISTRICTSYNC_RUN__` line.
+4. Staleness re-fires the gate: with `sd93custom` active, an edited BASE (or a hand-edited overlay)
+   makes `verified_is_current` False and re-closes the FILES step; an unchanged base leaves it
+   current (twin). A malformed `creator_verified` entry reads as absent.
+5. Every `write_overlay` output carries `authored_with` with the running `app_version()` + base
+   digest; `read_authored_with` is TOTAL; the digest is insensitive to that key.
+6. `identity_save` is byte-identical (its 25 tests unchanged); `creator_save` is refused on an
+   UNREADABLE profile with the instance rolled back; no wrapper can write outside its own allowlist.
+7. All 116 `test_ui_flet_setup_flow.py` tests unchanged; `setup_flow` imports no `flet`, `pathlib`,
+   `src.config` or `config_editor`; S2's `TestTheNonCreatorPickPathStillWorks` green.
+8. No new copy promises S4/S5/S6 behaviour and none carries banned identity vocabulary; all gates
+   green (ruff/format, mypy, bandit, tree-check, email scan, 20-config pin), SD74 golden
+   byte-identical, `districtsync-design` pass clean, `ARCHITECTURE_TREE` updated for
+   `src/ui_flet/config_editor.py` in the same change.
+
+#### Open questions for the owner
+
+- **An admin at a district we DO ship (SD48) presses "Set up my district".** Default: ALLOW —
+  `sd48custom` is written and coexists with `sd48myedbc` (the id decision anticipates it, and S2's
+  marker + `disambiguated_labels` keep the rows distinguishable); the starting-point card names the
+  shipped mapping as the recommended choice FIRST, because in that case it usually is the right
+  answer. Rejected alternative: refuse when `resolve_sd_number` finds a shipped config — that blocks
+  the district whose export legitimately differs from the shipped assumption, the case support hits
+  most.
+- **Where the "written with an older version — run the test again" note appears.** S3: the Files
+  step only (where the re-test is being asked for). S6: the Mapping card / picker note. Should Home
+  carry it too? Default NO — Home answers "did the roster sync?", and a config that still converts
+  is not a fault.
+- **`GATE_CONFIRM_LABEL` wording:** "Use this district" (default) vs "Start using this district" vs
+  "Make this my district". One constant, one line.
+
+_Spec self-check:_
+- **Riskiest element: `activate_creator_config` as a fourth `sis_type` writer that is deliberately
+  NOT refused on an unreadable profile.** It is the right call (it carries a chosen setting, so
+  parity with `setup.py:550` is the honest posture), but it adds a writer to the
+  UNREADABLE-provenance hazard, and its acceptance test proves only that the predecessor is
+  quarantined — not that delivery settings survive inside `config.json`. Named, not solved; the
+  merge-onto-re-read fix stays that ROADMAP entry's item.
+- **The digest choice trades clicks for safety, knowingly.** Digesting the whole validated model
+  means a district-name typo fix re-closes the gate. Over-firing beats under-firing, but if the
+  owner reads it as friction the narrower subset (`mappings` + `global_config` + `district_domains`
+  + `version`) is a two-line change with a drift risk I would rather flag than hide.
+- **`build_creator`'s second host is unexercised until S6.** S3 pins the callback shape and a
+  both-mount render equality, so the seam's value is asserted by construction rather than by use —
+  the `on_complete` precedent carried the same gap for exactly one slice.
+- **Nothing promises S4+.** FILES ships gate-only with read-only filenames; no string says "column"
+  (S5), "edit" (S6) or "rename" (S4); the missing-file list derives from `advisory_expected_files`,
+  which exists today. The substring bans are the guard.
+- **Layering holds, with two accepted couplings.** `job_runner` gains a DEFERRED `src.etl.pipeline`
+  import (COUNTED — which is what makes the output-dir refusal testable headless), and
+  `config_editor` imports `src.etl.transformers.grades` for the CEDS vocabulary — the same problem
+  `models._ceds_grade_codes` documents; if that import proves circular at implementation the fix is
+  `models`' deferred-import pattern, never a copied table.
+- **Vacuous-green watch:** "no store row", "no `run_pipeline` call" and "the seed does not fire" are
+  all ABSENCE assertions; each is specified with its twin in the same test or the adjacent row, and
+  the vocabulary sweep inherits the existing falsification test that the word list is matched, not
+  merely iterated.
+
+### Slices 4–7
+_Spec'd just-in-time, each after the prior slice lands (S4 next — the Files step: the role/file-keyed filename form, input-dir-aware dropdowns, propagation to every reference incl. `school_year_sources`)._
 
 ---
 
