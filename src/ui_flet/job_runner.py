@@ -20,6 +20,12 @@ SEPARATE clause, and surfaces it to ``on_error`` (a caught ``Exception`` also
 routes to ``on_error``). Convert's adapter path isn't expected to ``sys.exit``,
 but the catch is contract + defense-in-depth for the next consumer.
 
+**The creator's test-conversion gate (plan 0044 S3)** adds a second COUNTED worker body
+here: ``creator_gate_job`` + its ``GateRefused``. It lives in this module rather than in
+``screens/setup.py`` because the refusal it makes — no usable output folder, so nothing
+runs — is safety-relevant and must be testable headless, and because S6's Mapping host
+will call the SAME function rather than re-spell the check.
+
 **No control mutation on the worker thread (C2):** ``_work`` calls ONLY ``work()``
 + ``page.run_task(...)`` — it never touches a Flet control. Every UI update happens
 inside the ``on_done``/``on_error`` handlers the loop owns.
@@ -33,6 +39,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import flet as ft
+
+    from src.etl.pipeline import PipelineResult
 
 
 class JobState(Enum):
@@ -183,3 +191,60 @@ class JobRunner:
 
         page.run_thread(_work)
         return True
+
+
+class GateRefused(Exception):
+    """The creator's test conversion was REFUSED before any work started (plan 0044 S3).
+
+    A distinct type — not a ``ValueError`` — because the view renders a DIFFERENT sentence
+    for it than for a run that started and failed: nothing ran, nothing was created, and
+    the fix is a folder choice rather than a mapping problem.
+
+    Carries no path: the message reaches a log, and the screen renders its own bounded copy
+    (``screens/setup.GATE_REFUSED_NO_OUTPUT_NOTE``) either way.
+    """
+
+
+def creator_gate_job(sis_id: str, *, input_dir: str, output_dir: str) -> PipelineResult:
+    """Run the creator's TEST conversion for ``sis_id`` — a dry run that writes no CSVs.
+
+    The worker body behind the "Your files" gate (plan 0044 S3), run off the UI thread by
+    :class:`JobRunner` exactly as Convert runs ``convert_job``. COUNTED deliberately: the
+    refusal below is the safety-relevant half, and being a plain function makes it testable
+    headless.
+
+    **It REFUSES a blank or unusable output folder before importing the pipeline at all.**
+    ``DataLoader.__init__`` creates its output directory unconditionally and falls back to a
+    CWD-relative ``data/output`` when the path is blank, so a "test that writes nothing"
+    launched without a validated folder would still create a directory somewhere nobody
+    asked for. The wizard's step order happens to protect this today (Folders precedes Your
+    files); a second host — S6's Mapping surface — will not, so the refusal lives HERE, at
+    the one call site every host shares, rather than in a view gate each host re-spells.
+
+    ``dry_run=True`` is what makes this a test: no CSVs, no stale-output archival, no
+    anomaly check, no delivery, and — via ``_store_run_record``'s ``dry_run`` gate — NO run
+    -history row, so a test conversion can never paint Home or add a Run History line. It
+    still emits the ``__DISTRICTSYNC_RUN__`` diagnostic log line (accepted parity), and it
+    never touches the run store directly the way Convert's ``_record_manual_run`` does.
+
+    Returns the pipeline's :class:`~src.etl.pipeline.PipelineResult` (entity counts only —
+    no DataFrame, no rows).
+
+    Raises:
+        GateRefused: ``output_dir`` is blank or fails ``filepicker.validate_output_dir``.
+        Exception / SystemExit: whatever the pipeline raises or exits with — the runner's
+            ``on_error`` is the only failure signal on the ``sys.exit(1)`` config paths.
+    """
+    if not (output_dir or "").strip():
+        raise GateRefused("A test conversion needs an output folder; none is set.")
+
+    # Deferred: this module stays flet-free at import time (``filepicker`` imports flet, and
+    # the pipeline drags pandas + the whole ETL in) — nothing new loads on a UI mount.
+    from src.ui_flet.filepicker import validate_output_dir
+
+    if not validate_output_dir(output_dir).ok:
+        raise GateRefused("A test conversion needs a usable output folder; the one set is not usable.")
+
+    from src.etl.pipeline import run_pipeline
+
+    return run_pipeline(sis_id, input_dir, output_dir, dry_run=True, source="manual")

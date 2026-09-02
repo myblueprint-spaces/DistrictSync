@@ -50,17 +50,46 @@ from __future__ import annotations
 import contextlib
 import datetime
 import logging
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import flet as ft
 
 from src.config.app_config import AppConfig
+from src.config.authoring import (
+    ALLOWED_BASES,
+    CREATOR_ENTITIES,
+    current_digest,
+    delete_overlay,
+    derive_sis_id,
+    overlay_path,
+    read_authored_with,
+    resolved_digest,
+    write_overlay,
+)
 from src.scheduler import get_scheduler, windows
 from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
 from src.ui_flet import components, tokens
+from src.ui_flet.config_editor import (
+    CEDS_GRADE_ORDER,
+    CreatorForm,
+    GateOutcome,
+    GateState,
+    base_label,
+    derive_domains,
+    gate_outcome_for,
+    humanize_config_error,
+    missing_files,
+    overlay_staleness,
+    seed_entities,
+    stored_verified_digest,
+    validate_domains,
+    verified_is_current,
+)
 from src.ui_flet.filepicker import (
     ValidationResult,
     setup_state,
@@ -71,14 +100,18 @@ from src.ui_flet.humanize import friendly_district_name, friendly_sftp_reason
 from src.ui_flet.identity_gate import (
     MatchOutcome,
     matched_state,
+    resolve_sd_number,
+    sd_number_digits,
     stored_identity_domain,
     stored_identity_email,
 )
+from src.ui_flet.job_runner import GateRefused, JobRunner, creator_gate_job
 from src.ui_flet.mapping_catalog import (
     FilteredCatalog,
     disambiguated_labels,
     district_domain_index,
     filtered_catalog,
+    reset_catalog_cache,
 )
 from src.ui_flet.picker_field import PickerField
 from src.ui_flet.schedule_status import (
@@ -91,12 +124,12 @@ from src.ui_flet.screens.identity import NOT_LISTED_NOTE_TAIL as UNMATCHED_DISTR
 from src.ui_flet.screens.identity import log_resolve, matched_headline
 from src.ui_flet.setup_errors import classify_schedule_error
 from src.ui_flet.setup_flow import (
-    TOTAL_STEPS,
     TRANSITION_CUE,
     DeliveryFact,
     DowngradeInterrupt,
     FinishSummaryRow,
     FlowInputs,
+    FlowMode,
     ReconcileOutcome,
     RegisteredSchedule,
     ScheduleReconcile,
@@ -123,6 +156,7 @@ from src.ui_flet.setup_flow import (
     task_args_changed,
     task_args_from_persisted,
     task_args_to_persisted,
+    total_steps,
 )
 from src.ui_flet.setup_gates import (
     can_register_schedule,
@@ -146,6 +180,7 @@ from src.utils.validators import (
     validate_month_day,
     validate_run_time,
 )
+from src.utils.version import app_version
 
 # Surfaced after a successful registration when the running exe lives in a transient dir
 # (Downloads/Temp): pinning a scheduled task there risks the "task fires, exe is gone,
@@ -203,12 +238,20 @@ _RUN_TIME_ERROR_DETAIL = "Enter the time as HH:MM in 24-hour form, e.g. 03:00."
 # month-day. Plain-language, no jargon — mirrors the run-time error's shape.
 _WINDOW_ERROR = "Enter each date as MM-DD (month then day), e.g. 08-11."
 
-# Plain-language titles for the five wizard steps (the "Step N of 5 · <title>" indicator).
+#: The creator-only gate step's title (plan 0044 S3) — the rest of the creator + gate copy
+#: lives further down, beside ``build_creator``; this one sits here because ``_STEP_TITLES``
+#: (right below) is the single source of every step title and must name it.
+FILES_STEP_TITLE = "Your files"
+
+# Plain-language titles for the wizard steps (the "Step N of M · <title>" indicator).
 _STEP_TITLES: dict[SetupStep, str] = {
     SetupStep.FOLDERS: "Choose your folders",
     SetupStep.DISTRICT: "Choose your district",
     SetupStep.SCHEDULE: "Set a nightly schedule",
     SetupStep.DELIVERY: "Set up delivery",
+    # The creator-only gate step (plan 0044 S3) — titled from the ONE constant, declared
+    # just above with the rest of the creator copy it belongs to.
+    SetupStep.FILES: FILES_STEP_TITLE,
     # #5: the step title is a neutral marker so the adaptive banner headline owns the peak moment
     # (avoids stacking "You're all set" twice — step title + banner).
     SetupStep.FINISH: "Finish",
@@ -402,6 +445,834 @@ class _ScheduleHandle:
 
 
 # --------------------------------------------------------------------------- #
+# The creator surface (plan 0044 S3): "Set up my district".                    #
+#                                                                              #
+# An admin whose district ships no mapping answers four questions here, presses #
+# Continue (which WRITES an overlay into their own profile and changes nothing  #
+# else), then on the creator-only "Your files" step runs a TEST conversion that #
+# writes nothing and — only if it worked — chooses "Use this district", the ONE #
+# act that makes it the district this install converts.                         #
+#                                                                              #
+# Every decision this surface makes is COUNTED elsewhere: the form + gate +     #
+# stored-fact rules in ``ui_flet/config_editor.py``, the step shape in          #
+# ``setup_flow`` (creator mode), the write/delete/digest in ``config/authoring``,#
+# the three settings writes in ``AppConfig`` (``creator_save`` /                #
+# ``activate_creator_config``). This block is assembly + I/O.                   #
+# --------------------------------------------------------------------------- #
+
+#: The two surfaces ``build_creator`` renders. A ``Literal`` rather than an Enum for the
+#: same reason ``setup_flow.FlowMode`` is one: the caller already holds a plain string and
+#: the value needs no behaviour of its own.
+CreatorStage = Literal["forms", "files"]
+
+# ---- the forms ----------------------------------------------------------- #
+CREATOR_ENTRY_LABEL = "Set up my district"
+CREATOR_START_TITLE = "Your starting point"
+CREATOR_START_PROMPT = (
+    "Pick the standard MyEd BC mapping closest to what your district sends. DistrictSync fills in "
+    "the rest from it, and you confirm the details below."
+)
+CREATOR_START_FIELD_LABEL = "Starting point"
+CREATOR_IDENTITY_TITLE = "Your district"
+CREATOR_IDENTITY_PROMPT = (
+    "Confirm your district's details. These name your setup in the district list — nothing here is sent anywhere."
+)
+CREATOR_SD_FIELD_LABEL = "District number"
+CREATOR_NAME_FIELD_LABEL = "District name"
+CREATOR_DOMAINS_FIELD_LABEL = "Staff email domains"
+CREATOR_DOMAINS_HELPER = (
+    "Separate more than one with a comma, like sd48.bc.ca. Leave it blank if your district has none."
+)
+CREATOR_DOMAIN_INVALID_NOTE = (
+    "One of those email domains isn't a plain domain name like sd48.bc.ca. Please check the list."
+)
+CREATOR_SD_INVALID_NOTE = "Enter your district number as digits, like 48."
+CREATOR_NAME_REQUIRED_NOTE = "Add your district's name so it reads clearly in the district list."
+CREATOR_ENTITIES_TITLE = "Which files to produce"
+CREATOR_ENTITIES_PROMPT = (
+    "Choose the CSV files this district should produce. Your starting point's usual set is ticked."
+)
+CREATOR_ENTITIES_EMPTY_NOTE = "Choose at least one file to produce."
+CREATOR_GRADES_TITLE = "Which grades"
+CREATOR_GRADES_INHERIT_LABEL = "Use my starting point's grades"
+CREATOR_GRADES_PROMPT = "Which grades should be rostered? Students in every other grade are left out."
+CREATOR_HOMEROOM_PROMPT = "Which of those grades get one homeroom class instead of their timetable classes?"
+CREATOR_GRADES_EMPTY_NOTE = "Choose at least one grade to roster, or use your starting point's grades."
+CREATOR_CONTINUE_LABEL = "Continue"
+CREATOR_DISCARD_LABEL = "Discard this district"
+CREATOR_DISCARDED_NOTE = "Discarded. Nothing was kept, and your district list is back as it was."
+CREATOR_WRITE_FAILED_NOTE = "We couldn't save your district's mapping just now — nothing was changed."
+CREATOR_RESUME_REFUSED_NOTE = (
+    "Your district's mapping is saved, but we couldn't remember where you got to. If you close "
+    "DistrictSync you'll answer these questions again."
+)
+CREATOR_ACTIVATE_FAILED_NOTE = (
+    "We couldn't switch this computer over to your district just now — nothing was changed. Please try again."
+)
+CREATOR_FINISH_NEEDS_GATE_NOTE = (
+    'Go back to "Your files", run the test conversion, then choose "Use this district" — after that you can finish.'
+)
+
+# ---- the "Your files" gate step ------------------------------------------ #
+FILES_INHERITED_NOTE = (
+    "DistrictSync will look for these files in your input folder — the standard MyEd BC names your starting point uses."
+)
+FILES_MISSING_NOTE = (
+    "We can't see these ones in your input folder. A test conversion carries on without them, and "
+    "whatever they feed comes out empty."
+)
+GATE_RUN_LABEL = "Run a test conversion"
+GATE_RUNNING_CAPTION = "Testing your files… nothing is written and nothing is sent."
+GATE_PASSED_HEADLINE = "The test conversion worked"
+GATE_PASSED_DETAIL = "Here's how many rows each file would hold. Nothing was written and nothing was sent."
+GATE_FAILED_HEADLINE = "The test conversion didn't finish"
+GATE_REFUSED_NO_OUTPUT_NOTE = "Pick your output folder on the step before this one first — the test didn't run."
+GATE_STALE_VERSION_NOTE = "A different version of DistrictSync set this district up, so please run the test again."
+GATE_STALE_BASE_NOTE = (
+    "The standard mapping your district builds on has changed since it was set up, so please run the test again."
+)
+GATE_CONFIRM_LABEL = "Use this district"
+GATE_RERUN_LABEL = "Test it again"
+GATE_ACTIVATED_NOTE = "This computer now converts your district."
+
+#: Plain-language names for the seven authorable entities (the vocabulary map — an admin
+#: reads "Families", never ``Family``, and never a raw entity key).
+_ENTITY_LABELS: dict[str, str] = {
+    "Students": "Students",
+    "Staff": "Staff",
+    "Family": "Families",
+    "Classes": "Classes",
+    "Enrollments": "Enrollments",
+    "CourseInfo": "Course list",
+    "StudentCourses": "Student courses",
+}
+
+
+def creator_shipped_note(number: str) -> str:
+    """The starting-point card's note when DistrictSync already ships that district's mapping.
+
+    The owner's decision (plan 0044 S3, open question 1) is to ALLOW a self-service district
+    beside a shipped one — the district whose export legitimately differs from the shipped
+    assumption is the case support hits most — while RECOMMENDING the shipped mapping first,
+    because when one exists it usually is the right answer.
+    """
+    return (
+        f"DistrictSync already ships a mapping for SD{number}. If your MyEd BC files match the standard "
+        "layout, that one is usually the right choice — your own setup sits beside it in the district list."
+    )
+
+
+def _entity_label(name: str) -> str:
+    """Plain-language entity name, falling back to the key (TOTAL — a new entity still renders)."""
+    return _ENTITY_LABELS.get(name, name)
+
+
+def _split_domains(text: str) -> list[str]:
+    """Split the domains field on commas / whitespace, dropping blanks (the boundary validates)."""
+    return [chunk.strip() for chunk in re.split(r"[,;\s]+", text or "") if chunk.strip()]
+
+
+def _sd_number_from_text(text: str) -> int:
+    """The district number a text field holds, or ``0`` when it holds none we can use.
+
+    Bounded at four digits deliberately: this value becomes a filename stem and a ``--sis``
+    argument, and a pasted phone number must fail the field's own note rather than author
+    ``sd6045551234custom``.
+    """
+    digits = sd_number_digits(text or "")
+    if not digits or len(digits) > 4:
+        return 0
+    return int(digits)
+
+
+def _resolved_base(base: str) -> object | None:
+    """The RESOLVED starting-point config, or ``None`` when it cannot be loaded. TOTAL.
+
+    Only used to SEED the entity ticks; a failure there is not a reason to refuse the form
+    (``write_overlay`` resolves the base itself and fails loudly with a bounded note).
+    """
+    try:
+        from src.config.loader import load_config
+
+        return load_config(base)
+    except Exception:  # noqa: BLE001 - total: the seed falls back to every authorable entity
+        logger.warning("Could not resolve the starting-point config %r for the creator form.", base)
+        return None
+
+
+def _seed_entity_ticks(base: str) -> set[str]:
+    """The entity ticks a fresh form opens with: the resolved base's own list (else all of them)."""
+    resolved = _resolved_base(base)
+    if resolved is None:
+        return set(CREATOR_ENTITIES)
+    return set(seed_entities(resolved))  # type: ignore[arg-type]
+
+
+def creator_form_for_new(cfg: AppConfig) -> CreatorForm:
+    """A FRESH creator form, prefilled from what this install already knows. TOTAL.
+
+    The district number comes from the launch page's not-listed answer (``identity_sd_number``)
+    and the domains from ``config_editor.derive_domains`` over the stored identity domain plus
+    the vendored table — both PREFILLS, correctable in the field they land in. Every step is
+    guarded: a prefill that cannot be validated is simply not offered.
+    """
+    base = ALLOWED_BASES[0]
+    sd_number = _sd_number_from_text(getattr(cfg, "identity_sd_number", "") or "")
+    form = CreatorForm(base=base, sd_number=sd_number)
+    with contextlib.suppress(ValueError):
+        form = form.with_domains(derive_domains(stored_identity_domain(cfg), sd_number))
+    return form
+
+
+def creator_form_from_overlay(sis_id: str) -> CreatorForm:
+    """Rebuild a creator form from the overlay already on disk (RESUME). TOTAL.
+
+    Reads the RESOLVED config (so an inherited value reads exactly as it will convert) plus the
+    overlay's ``authored_with`` provenance for the starting point — the one fact the resolved
+    model drops. Any failure answers a default form for the district number in the id: the
+    overlay is still on disk and the gate will report whatever is wrong with it, so a form that
+    cannot be rehydrated must not block the step.
+    """
+    sd_number = _sd_number_from_text(sis_id)
+    fallback = CreatorForm(sd_number=sd_number)
+    try:
+        from src.config.loader import load_config
+
+        config = load_config(sis_id)
+        provenance = read_authored_with(sis_id)
+        base = provenance.base if (provenance is not None and provenance.base in ALLOWED_BASES) else ALLOWED_BASES[0]
+        raw_global = config.to_raw_dict().get("global_config", {})
+        form = CreatorForm(
+            base=base,
+            sd_number=sd_number,
+            district_name=config.district_name or "",
+            domains=tuple(config.district_domains or ()),
+            entities=tuple(name for name in CREATOR_ENTITIES if name in set(config.global_config.enabled_entities)),
+        )
+        rostered = raw_global.get("student_rostering_grades")
+        if isinstance(rostered, list) and rostered:
+            homeroom = raw_global.get("homeroom_grades")
+            keep = [code for code in (homeroom or []) if code in set(rostered)]
+            form = form.with_rostered(rostered).with_homeroom(keep)
+        return form
+    except Exception:  # noqa: BLE001 - total: a broken overlay is the gate's story, not the form's
+        logger.warning("Could not rehydrate the creator form for %r; opening the defaults.", sis_id)
+        return fallback
+
+
+def _creator_expected_files(sis_id: str) -> tuple[str, ...]:
+    """The source filenames ``sis_id``'s resolved config expects. TOTAL — ``()`` on any failure."""
+    try:
+        from src.config.loader import load_config
+        from src.etl.pipeline import advisory_expected_files
+
+        return tuple(advisory_expected_files(load_config(sis_id)))
+    except Exception:  # noqa: BLE001 - total: no list is better than a wrong list
+        logger.warning("Could not resolve the expected source files for %r.", sis_id)
+        return ()
+
+
+def _folder_filenames(path: str) -> tuple[str, ...]:
+    """The filenames sitting in ``path`` (Convert's precedent). TOTAL — ``()`` on any failure."""
+    try:
+        return tuple(sorted(entry.name for entry in Path(path).iterdir() if entry.is_file()))
+    except (OSError, ValueError):
+        return ()
+
+
+def _grade_chips(
+    codes: tuple[str, ...],
+    chosen: set[str],
+    on_toggle: Callable[[str, bool], None],
+) -> ft.Control:
+    """A wrapped row of grade checkboxes over the CEDS vocabulary (0.85.3: ``on_change``)."""
+    return ft.Row(
+        wrap=True,
+        spacing=tokens.space_md,
+        run_spacing=tokens.space_sm,
+        controls=[
+            ft.Checkbox(
+                label=code,
+                value=code in chosen,
+                active_color=tokens.color_action_primary,
+                on_change=lambda e, code=code: on_toggle(code, bool(e.control.value)),
+            )
+            for code in codes
+        ],
+    )
+
+
+def build_creator(  # pragma: no cover - Flet view glue
+    page: ft.Page,
+    *,
+    cfg: AppConfig,
+    sis_id: str,
+    form: CreatorForm,
+    on_written: Callable[[str, CreatorForm, str], None],
+    on_activated: Callable[[], None],
+    on_discarded: Callable[[], None],
+    stage: CreatorStage = "forms",
+) -> ft.Control:
+    """The creator's own surface — the HOST seam (plan 0044 S3 §3.5).
+
+    Same shape and reasoning as ``build_setup(page, *, on_schedule_changed, on_complete)``:
+    the host owns what happens after each payoff, this surface owns the work. S3 wires ONE
+    host (the wizard: ``stage="forms"`` is the District step's creator branch,
+    ``stage="files"`` is the creator-only "Your files" step); S6's Mapping surface is the
+    second, and naming the callbacks now is what stops it becoming a second wizard.
+
+    Args:
+        cfg: the SHARED ``AppConfig`` — every write goes through ``creator_save`` /
+            ``activate_creator_config``, so this surface can never touch ``sis_type``
+            except through the one validated activation method.
+        sis_id: the pending district's config id, or ``""`` before the first write.
+        form: what the admin has answered so far (frozen; the host stores the latest).
+        on_written: ``(sis_id, form, note)`` after a SUCCESSFUL overlay write — the token
+            and the catalog invalidation have already happened. ``note`` is a plain sentence
+            for the host to show on the surface it moves to (only ever
+            ``CREATOR_RESUME_REFUSED_NOTE``: the file is on disk and the step is re-visitable,
+            so only resume convenience was lost and the host still advances).
+        on_activated: after ``sis_type`` genuinely became this district in ONE save.
+        on_discarded: after the overlay was deleted, the token cleared and the catalog
+            invalidated — the host re-mounts its standard surface.
+        stage: which surface to render (see :data:`CreatorStage`).
+
+    Never fires a callback on a failure: a refused write, a ``None`` digest and a refused
+    activation all keep the admin where they are behind a bounded note.
+    """
+    host = ft.Column(spacing=tokens.space_xl)
+    st: dict[str, object] = {
+        "form": form,
+        "sd_text": str(form.sd_number) if form.sd_number else "",
+        "name_text": form.district_name,
+        "domains_text": ", ".join(form.domains),
+        "entities": set(form.entities) if form.entities else _seed_entity_ticks(form.base),
+        "note": "",
+        "gate": GateOutcome(state=GateState.NOT_RUN),
+        "running": False,
+        "activated": False,
+        "mounted": False,
+    }
+    runner = JobRunner()
+
+    def _render() -> None:
+        host.controls = list(_forms_controls() if stage == "forms" else _files_controls())
+        if st["mounted"]:
+            page.update()
+
+    def _set_note(text: str) -> None:
+        st["note"] = text
+        _render()
+
+    def _note_row() -> list[ft.Control]:
+        """The inline note, never colour-alone (a glyph rides beside the words)."""
+        if not st["note"]:
+            return []
+        return [
+            ft.Row(
+                spacing=tokens.space_sm,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(ft.Icons.ERROR_OUTLINE_ROUNDED, size=18, color=tokens.color_status_failed),
+                    ft.Text(str(st["note"]), size=tokens.type_body, color=tokens.color_status_failed, expand=True),
+                ],
+            )
+        ]
+
+    def _discard_row() -> ft.Control:
+        """The text-tier escape, on EVERY creator surface (never a dead end)."""
+        return ft.Row(
+            controls=[components.text_button(CREATOR_DISCARD_LABEL, _discard, icon=ft.Icons.DELETE_OUTLINE_ROUNDED)]
+        )
+
+    # ---- discard --------------------------------------------------------- #
+    def _discard(_e: ft.ControlEvent | None = None) -> None:
+        pending = (sis_id or "").strip()
+        if pending:
+            try:
+                delete_overlay(pending)  # False = nothing there; idempotent success, not an error
+            except ValueError:
+                logger.warning("Refused to delete a non-self-service config while discarding.", exc_info=True)
+            except OSError:
+                logger.warning("Could not delete the self-service overlay while discarding.", exc_info=True)
+        cfg.creator_save(creator_pending_sis="")
+        reset_catalog_cache()
+        on_discarded()
+
+    # ---- the four forms -------------------------------------------------- #
+    def _on_base(e: ft.ControlEvent) -> None:
+        chosen = (e.control.value or ALLOWED_BASES[0]).strip()
+        if chosen not in ALLOWED_BASES:
+            return
+        st["form"] = st["form"].with_base(chosen)  # type: ignore[union-attr]
+        st["entities"] = _seed_entity_ticks(chosen)  # a new starting point re-seeds its own list
+        _render()
+
+    def _on_sd(e: ft.ControlEvent) -> None:
+        st["sd_text"] = e.control.value or ""
+
+    def _on_name(e: ft.ControlEvent) -> None:
+        st["name_text"] = e.control.value or ""
+
+    def _on_domains(e: ft.ControlEvent) -> None:
+        st["domains_text"] = e.control.value or ""
+
+    def _on_entity(name: str, ticked: bool) -> None:
+        ticks: set[str] = st["entities"]  # type: ignore[assignment]
+        ticks.add(name) if ticked else ticks.discard(name)
+
+    def _on_inherit_grades(e: ft.ControlEvent) -> None:
+        inherit = bool(e.control.value)
+        current: CreatorForm = st["form"]  # type: ignore[assignment]
+        if inherit:
+            st["form"] = current.with_rostered(None)  # clears BOTH halves of the chain
+        else:
+            # Opening the question seeds it from the starting point's own homeroom list, so the
+            # chain starts VALID (homeroom ⊆ rostered) and the admin narrows rather than builds.
+            seed = _starting_point_grades(current.base)
+            st["form"] = current.with_rostered(seed or CEDS_GRADE_ORDER).with_homeroom(seed)
+        _render()
+
+    def _starting_point_grades(base: str) -> tuple[str, ...]:
+        """The starting point's own homeroom grades (the seed for the grades question). TOTAL."""
+        resolved = _resolved_base(base)
+        if resolved is None:
+            return ()
+        declared = getattr(resolved.global_config, "homeroom_grades", None) or ()  # type: ignore[attr-defined]
+        return tuple(code for code in CEDS_GRADE_ORDER if code in set(declared))
+
+    def _on_rostered(code: str, ticked: bool) -> None:
+        current: CreatorForm = st["form"]  # type: ignore[assignment]
+        chosen = set(current.rostered or ())
+        chosen.add(code) if ticked else chosen.discard(code)
+        if not chosen:
+            _set_note(CREATOR_GRADES_EMPTY_NOTE)
+            return
+        st["note"] = ""
+        st["form"] = current.with_rostered(sorted(chosen, key=CEDS_GRADE_ORDER.index))
+        _render()
+
+    def _on_homeroom(code: str, ticked: bool) -> None:
+        current: CreatorForm = st["form"]  # type: ignore[assignment]
+        chosen = set(current.homeroom or ())
+        chosen.add(code) if ticked else chosen.discard(code)
+        st["form"] = current.with_homeroom(sorted(chosen, key=CEDS_GRADE_ORDER.index))
+        _render()
+
+    def _continue(_e: ft.ControlEvent | None = None) -> None:
+        """The creator District step's Continue IS the write (plan 0044 S3 §3.4).
+
+        Cheap field problems answer with their OWN note and never attempt a write; anything
+        the authoring layer refuses answers with the bounded write-failed note plus
+        ``humanize_config_error``'s category — never the exception text, which quotes values.
+        """
+        sd_number = _sd_number_from_text(str(st["sd_text"]))
+        if not sd_number:
+            _set_note(CREATOR_SD_INVALID_NOTE)
+            return
+        name = str(st["name_text"]).strip()
+        if not name:
+            _set_note(CREATOR_NAME_REQUIRED_NOTE)
+            return
+        try:
+            domains = validate_domains(_split_domains(str(st["domains_text"])))
+        except ValueError:
+            _set_note(CREATOR_DOMAIN_INVALID_NOTE)  # the note NEVER echoes what was typed
+            return
+        ticks: set[str] = st["entities"]  # type: ignore[assignment]
+        if not ticks:
+            _set_note(CREATOR_ENTITIES_EMPTY_NOTE)
+            return
+        try:
+            candidate = (
+                st["form"]  # type: ignore[union-attr]
+                .with_district(sd_number=sd_number, district_name=name)
+                .with_domains(domains)
+                .with_entities(sorted(ticks, key=CREATOR_ENTITIES.index))
+            )
+            new_sis = derive_sis_id(candidate.sd_number)
+            write_overlay(candidate.to_overlay_spec(), overwrite=True)
+        except Exception as exc:  # noqa: BLE001 - bounded copy on screen, full trace in the log
+            logger.warning("Could not write the self-service mapping overlay.", exc_info=True)
+            _set_note(f"{CREATOR_WRITE_FAILED_NOTE} {humanize_config_error(exc)}")
+            return
+        st["form"] = candidate
+        st["note"] = ""
+        # The resume token, then the catalog invalidation (S2's rule: the UI caller invalidates,
+        # right after a successful write) — in that order, so a refused token still leaves every
+        # picker showing the district whose file is now on disk.
+        token_ok = cfg.creator_save(creator_pending_sis=new_sis)
+        reset_catalog_cache()
+        on_written(new_sis, candidate, "" if token_ok else CREATOR_RESUME_REFUSED_NOTE)
+
+    def _forms_controls() -> list[ft.Control]:
+        current: CreatorForm = st["form"]  # type: ignore[assignment]
+        start_rows: list[ft.Control] = [
+            ft.Text(CREATOR_START_TITLE, size=tokens.type_section, weight=ft.FontWeight.W_700, color=tokens.color_text),
+            ft.Text(CREATOR_START_PROMPT, size=tokens.type_body, color=tokens.color_muted),
+        ]
+        shipped_for = _shipped_district_number(str(st["sd_text"]) or str(current.sd_number or ""))
+        if shipped_for:
+            start_rows.append(
+                ft.Text(creator_shipped_note(shipped_for), size=tokens.type_body, color=tokens.color_muted)
+            )
+        start_rows.append(
+            ft.Dropdown(
+                label=CREATOR_START_FIELD_LABEL,
+                value=current.base,
+                options=[ft.dropdown.Option(key=base, text=base_label(base)) for base in ALLOWED_BASES],
+                on_select=_on_base,  # Dropdown's value-change is on_select on 0.85.3
+                border_color=tokens.color_border,
+            )
+        )
+
+        identity_rows: list[ft.Control] = [
+            ft.Text(
+                CREATOR_IDENTITY_TITLE, size=tokens.type_section, weight=ft.FontWeight.W_700, color=tokens.color_text
+            ),
+            ft.Text(CREATOR_IDENTITY_PROMPT, size=tokens.type_body, color=tokens.color_muted),
+            ft.Row(
+                spacing=tokens.space_lg,
+                controls=[
+                    ft.TextField(
+                        label=CREATOR_SD_FIELD_LABEL,
+                        value=str(st["sd_text"]),
+                        width=170,
+                        max_length=4,
+                        on_change=_on_sd,
+                        autofocus=True,
+                    ),
+                    ft.TextField(
+                        label=CREATOR_NAME_FIELD_LABEL,
+                        value=str(st["name_text"]),
+                        expand=True,
+                        max_length=120,
+                        on_change=_on_name,
+                    ),
+                ],
+            ),
+            ft.TextField(
+                label=CREATOR_DOMAINS_FIELD_LABEL,
+                value=str(st["domains_text"]),
+                helper=CREATOR_DOMAINS_HELPER,  # TextField's helper field is `helper` on 0.85.3
+                on_change=_on_domains,
+            ),
+        ]
+
+        ticks: set[str] = st["entities"]  # type: ignore[assignment]
+        entity_rows: list[ft.Control] = [
+            ft.Text(
+                CREATOR_ENTITIES_TITLE, size=tokens.type_section, weight=ft.FontWeight.W_700, color=tokens.color_text
+            ),
+            ft.Text(CREATOR_ENTITIES_PROMPT, size=tokens.type_body, color=tokens.color_muted),
+            ft.Row(
+                wrap=True,
+                spacing=tokens.space_xl,
+                run_spacing=tokens.space_sm,
+                controls=[
+                    ft.Checkbox(
+                        label=_entity_label(name),
+                        value=name in ticks,
+                        active_color=tokens.color_action_primary,
+                        on_change=lambda e, name=name: _on_entity(name, bool(e.control.value)),
+                    )
+                    for name in CREATOR_ENTITIES
+                ],
+            ),
+        ]
+
+        inherit = current.rostered is None
+        grade_rows: list[ft.Control] = [
+            ft.Text(
+                CREATOR_GRADES_TITLE, size=tokens.type_section, weight=ft.FontWeight.W_700, color=tokens.color_text
+            ),
+            ft.Checkbox(
+                label=CREATOR_GRADES_INHERIT_LABEL,
+                value=inherit,
+                active_color=tokens.color_action_primary,
+                on_change=_on_inherit_grades,
+            ),
+        ]
+        if not inherit:
+            grade_rows.extend(
+                [
+                    ft.Text(CREATOR_GRADES_PROMPT, size=tokens.type_body, color=tokens.color_muted),
+                    _grade_chips(CEDS_GRADE_ORDER, set(current.rostered or ()), _on_rostered),
+                    ft.Text(CREATOR_HOMEROOM_PROMPT, size=tokens.type_body, color=tokens.color_muted),
+                    _grade_chips(tuple(current.rostered or ()), set(current.homeroom or ()), _on_homeroom),
+                ]
+            )
+
+        controls: list[ft.Control] = [
+            components.card(ft.Column(spacing=tokens.space_md, controls=start_rows)),
+            components.card(ft.Column(spacing=tokens.space_md, controls=identity_rows)),
+            components.card(ft.Column(spacing=tokens.space_md, controls=entity_rows)),
+            components.card(ft.Column(spacing=tokens.space_md, controls=grade_rows)),
+        ]
+        controls.extend(_note_row())
+        controls.append(
+            ft.Row(
+                spacing=tokens.space_lg,
+                controls=[
+                    components.primary_button(CREATOR_CONTINUE_LABEL, _continue, icon=ft.Icons.ARROW_FORWARD_ROUNDED),
+                ],
+            )
+        )
+        controls.append(_discard_row())
+        return controls
+
+    # ---- the gate -------------------------------------------------------- #
+    def _output_ok() -> bool:
+        return validate_output_dir(str(cfg.output_dir or "")).ok
+
+    def _gate_outcome(*, result: object | None, error: BaseException | None) -> GateOutcome:
+        return gate_outcome_for(
+            result=result,  # type: ignore[arg-type]
+            error=error,
+            output_dir_valid=_output_ok(),
+            expected_files=_creator_expected_files(sis_id),
+            present_files=_folder_filenames(str(cfg.input_dir or "")),
+        )
+
+    def _run_gate(_e: ft.ControlEvent | None = None) -> None:
+        """Run the TEST conversion off the UI thread — exactly Convert's ``JobRunner`` shape."""
+        runner.state.reset()
+        st["running"] = True
+        st["note"] = ""
+        st["gate"] = GateOutcome(state=GateState.RUNNING)
+        _render()
+
+        def _on_done(result: object) -> None:
+            st["running"] = False
+            st["gate"] = _gate_outcome(result=result, error=None)
+            _render()
+
+        def _on_error(exc: BaseException) -> None:
+            # Privacy: the raw exception (a path, a column name, a pasted value) NEVER reaches
+            # the screen — the trace goes to the log, the card carries a bounded category.
+            logger.error("The creator test conversion failed for %r.", sis_id, exc_info=exc)
+            st["running"] = False
+            if isinstance(exc, GateRefused):
+                st["gate"] = GateOutcome(state=GateState.REFUSED_NO_OUTPUT_DIR)
+            else:
+                st["gate"] = _gate_outcome(result=None, error=exc)
+            _render()
+
+        started = runner.run(
+            page,
+            lambda: creator_gate_job(sis_id, input_dir=str(cfg.input_dir or ""), output_dir=str(cfg.output_dir or "")),
+            on_done=_on_done,
+            on_error=_on_error,
+        )
+        if not started:  # already running — the single-flight guard held
+            st["running"] = True
+            _render()
+
+    def _activate(_e: ft.ControlEvent | None = None) -> None:
+        """The ONE act that makes this district the one this install converts."""
+        digest = current_digest(sis_id)
+        if digest is None or not cfg.activate_creator_config(sis_type=sis_id, digest=digest):
+            _set_note(CREATOR_ACTIVATE_FAILED_NOTE)
+            return
+        st["activated"] = True
+        st["note"] = ""
+        reset_catalog_cache()
+        on_activated()
+
+    def _staleness_notes() -> list[str]:
+        fact = overlay_staleness(
+            read_authored_with(sis_id),
+            running_version=app_version(),
+            current_base_digest=_base_digest_for(sis_id),
+        )
+        notes: list[str] = []
+        if fact.version_differs:
+            notes.append(GATE_STALE_VERSION_NOTE)
+        if fact.base_changed:
+            notes.append(GATE_STALE_BASE_NOTE)
+        return notes
+
+    def _files_controls() -> list[ft.Control]:
+        outcome: GateOutcome = st["gate"]  # type: ignore[assignment]
+        already = bool(st["activated"]) or verified_is_current(
+            stored_verified_digest(cfg, sis_id), current_digest(sis_id)
+        )
+        passed = outcome.state is GateState.PASSED
+        controls: list[ft.Control] = []
+
+        if outcome.state is GateState.PASSED:
+            controls.append(
+                components.HealthVerdictBanner(
+                    Verdict.HEALTHY, headline=GATE_PASSED_HEADLINE, detail=GATE_PASSED_DETAIL
+                )
+            )
+            if outcome.counts:
+                controls.append(
+                    ft.Row(
+                        wrap=True,
+                        spacing=tokens.space_lg,
+                        run_spacing=tokens.space_lg,
+                        controls=[
+                            components.metric_tile(_entity_label(name), f"{count:,}")
+                            for name, count in outcome.counts.items()
+                        ],
+                    )
+                )
+        elif outcome.state is GateState.FAILED:
+            controls.append(
+                components.HealthVerdictBanner(Verdict.FAILED, headline=GATE_FAILED_HEADLINE, detail=outcome.note)
+            )
+        elif outcome.state is GateState.REFUSED_NO_OUTPUT_DIR:
+            controls.append(
+                components.HealthVerdictBanner(
+                    Verdict.WARNING, headline=GATE_FAILED_HEADLINE, detail=GATE_REFUSED_NO_OUTPUT_NOTE
+                )
+            )
+
+        if st["running"]:
+            controls.append(_inflight_row(GATE_RUNNING_CAPTION))
+
+        for note in _staleness_notes():
+            controls.append(ft.Text(note, size=tokens.type_body, color=tokens.color_status_warning))
+
+        expected = _creator_expected_files(sis_id)
+        present = _folder_filenames(str(cfg.input_dir or ""))
+        absent = missing_files(expected, present)
+        file_rows: list[ft.Control] = [
+            ft.Text(FILES_INHERITED_NOTE, size=tokens.type_body, color=tokens.color_muted),
+            ft.Row(
+                wrap=True,
+                spacing=tokens.space_sm,
+                run_spacing=tokens.space_sm,
+                controls=[components.FileChip(name, present=name not in absent) for name in expected],
+            ),
+        ]
+        if absent:
+            file_rows.append(ft.Text(FILES_MISSING_NOTE, size=tokens.type_body, color=tokens.color_status_warning))
+        controls.append(components.card(ft.Column(spacing=tokens.space_md, controls=file_rows)))
+
+        controls.extend(_note_row())
+
+        # ONE filled primary in EVERY state: the run button while there is nothing to confirm,
+        # the confirm once a test has passed, and — once this district is genuinely active —
+        # neither (the step footer's Continue becomes the screen's one filled action).
+        actions: list[ft.Control] = []
+        if already:
+            controls.append(
+                ft.Row(
+                    spacing=tokens.space_sm,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, size=18, color=tokens.color_status_healthy),
+                        ft.Text(GATE_ACTIVATED_NOTE, size=tokens.type_body, color=tokens.color_status_healthy),
+                    ],
+                )
+            )
+            actions.append(components.secondary_button(GATE_RERUN_LABEL, _run_gate, disabled=bool(st["running"])))
+        elif passed:
+            actions.append(components.primary_button(GATE_CONFIRM_LABEL, _activate, icon=ft.Icons.CHECK_ROUNDED))
+            actions.append(components.secondary_button(GATE_RERUN_LABEL, _run_gate, disabled=bool(st["running"])))
+        else:
+            actions.append(
+                components.primary_button(
+                    GATE_RUN_LABEL,
+                    _run_gate,
+                    disabled=bool(st["running"]),
+                    disabled_bgcolor=tokens.color_border,
+                    icon=ft.Icons.PLAY_ARROW_ROUNDED,
+                )
+            )
+        controls.append(ft.Row(spacing=tokens.space_lg, controls=actions))
+        controls.append(_discard_row())
+        return controls
+
+    _render()
+    st["mounted"] = True
+    return host
+
+
+def _shipped_district_number(text: str) -> str:
+    """The district number in ``text`` when DistrictSync ALREADY ships a mapping for it. TOTAL.
+
+    Drives the starting-point card's recommendation (see :func:`creator_shipped_note`). Reads
+    ``available_configs()`` — the bundled ids plus anything in the profile's ``mappings/`` dir —
+    exactly as Home's not-listed card does, and answers ``""`` for a district we do not ship
+    (that admin has nothing to be pointed at).
+    """
+    digits = sd_number_digits(text or "")
+    if not digits:
+        return ""
+    try:
+        from src.config.loader import available_configs
+
+        shipped = resolve_sd_number(digits, available_configs())
+    except Exception:  # noqa: BLE001 - total: no recommendation is better than a wrong one
+        return ""
+    return digits if shipped else ""
+
+
+def _pending_creator_sis(app_config: AppConfig) -> str:
+    """The self-service district still being set up, or ``""``. TOTAL — SELF-HEALING.
+
+    Creator mode is entered on TWO facts together: a stored resume token AND an overlay
+    actually on disk for it. A token whose file is gone (deleted by hand, or a discard whose
+    settings write was refused) is CLEARED here — via the one sanctioned advisory write path —
+    so the wizard opens the standard walk instead of a six-step flow around a district that
+    does not exist. A refused clear is not an error: the next mount simply tries again, and
+    nothing about the standard walk depends on the token being gone.
+    """
+    pending = (getattr(app_config, "creator_pending_sis", "") or "").strip()
+    if not pending:
+        return ""
+    try:
+        exists = overlay_path(pending).exists()
+    except (ValueError, OSError):
+        exists = False  # an invalid id can never name an overlay this app wrote
+    if exists:
+        return pending
+    logger.info("Clearing a district-setup resume token with no mapping file on disk.")
+    app_config.creator_save(creator_pending_sis="")
+    return ""
+
+
+def _creator_gate_current(app_config: AppConfig, sis_id: str) -> bool:
+    """Whether ``sis_id``'s "Your files" gate is passed AND still current. TOTAL.
+
+    The two halves the flow's ``files_step_satisfied`` fact is defined as: the overlay is on
+    disk, and the digest recorded when it last passed the test conversion still equals the
+    digest of what would convert TODAY (so a hand edit to the overlay, or a vendor change to
+    the starting point it inherits, re-closes the gate). Any failure answers ``False`` — the
+    only safe direction, since an absent fact can force another test run but never unlock one.
+    """
+    sis = (sis_id or "").strip()
+    if not sis:
+        return False
+    try:
+        if not overlay_path(sis).exists():
+            return False
+        return verified_is_current(stored_verified_digest(app_config, sis), current_digest(sis))
+    except (ValueError, OSError):
+        return False
+
+
+def _base_digest_for(sis_id: str) -> str | None:
+    """The resolved digest of the STARTING POINT ``sis_id`` was authored against. TOTAL.
+
+    ``None`` — "unknown", which :func:`overlay_staleness` never reads as stale — when the
+    provenance block is absent or its base no longer loads.
+    """
+    provenance = read_authored_with(sis_id)
+    if provenance is None:
+        return None
+    try:
+        from src.config.loader import load_config
+
+        return resolved_digest(load_config(provenance.base))
+    except Exception:  # noqa: BLE001 - total: an unloadable base is unknown, not stale
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # Entry: wizard while not completed, else the flat Settings scroll.            #
 # --------------------------------------------------------------------------- #
 def build_setup(
@@ -448,7 +1319,21 @@ def _mount_wizard(
     on_schedule_changed: Callable[[], None] | None = None,
     on_complete: Callable[[], None] | None = None,
 ) -> None:  # pragma: no cover - Flet view glue
-    """Render the five-step first-run wizard into ``root`` (resume derived from real state)."""
+    """Render the first-run wizard into ``root`` (resume derived from real state).
+
+    Two shapes, ONE mount (plan 0044 S3): the shipped five-step STANDARD walk, and the
+    six-step CREATOR walk an admin takes while a self-service district of their own is still
+    being set up. The mode is decided FIRST, from real state — a pending resume token whose
+    overlay is actually on disk — because it decides the step tuple every later derivation
+    reads (``step_order(mode)``), and because the D9 auto-seed must not fire inside it.
+    """
+    # The creator resume decision, before anything else derives from it. A token whose overlay
+    # is GONE (an admin deleted the file by hand, or a discard's settings write was refused)
+    # self-heals: the token is cleared and the standard walk resumes, rather than opening a
+    # six-step flow around a district that does not exist.
+    creator_sis = _pending_creator_sis(cfg)
+    mode: FlowMode = "creator" if creator_sis else "standard"
+
     # D9, re-scoped to the VISIBLE list (0038 S5 — see the dated DECISIONS entry): the seed
     # reads the FILTERED catalog, so a matched admin whose domain resolves to exactly one
     # district gets it pre-selected on the District step. That keeps D9's rule intact
@@ -476,7 +1361,33 @@ def _mount_wizard(
         "forward_btn": None,  # the current step's forward button (re-gated in place on input change)
         "finish_error": "",  # set ONLY when the finish line's save raised (0038 S6)
         "finishing": False,  # the finish press is latched until it fails (0038 S6)
+        # ---- creator mode (plan 0044 S3) ---------------------------------- #
+        "mode": mode,
+        "creator_sis": creator_sis,  # "" until the first overlay write
+        "creator_form": creator_form_from_overlay(creator_sis) if creator_sis else None,
+        "creator_note": "",  # a one-surface note (token refused / discarded), cleared on the next hop
+        # The FILES gate fact is I/O (the overlay + the resolved digest), so it is probed once
+        # and memoised per act rather than on every footer re-gate. ``None`` = not yet probed.
+        "files_ok": None,
     }
+
+    def _files_step_satisfied() -> bool:
+        """The injected "Your files" fact: the overlay exists AND what was tested still matches.
+
+        Probed at most once per act (write / activate / discard / render), because
+        ``current_digest`` loads and validates the resolved config — ``_inputs()`` is called
+        several times per render and standard mode must pay nothing at all for this.
+        """
+        if ws["mode"] != "creator":
+            return False
+        if ws["files_ok"] is None:
+            ws["files_ok"] = _creator_gate_current(cfg, str(ws["creator_sis"]))
+        return bool(ws["files_ok"])
+
+    def _creator_activated() -> bool:
+        """``sis_type`` IS this district and the resume token is cleared (the activation fact)."""
+        sis = str(ws["creator_sis"]).strip()
+        return bool(sis) and cfg.sis_type == sis and not cfg.creator_pending_sis.strip()
 
     def _inputs() -> FlowInputs:
         return FlowInputs(
@@ -487,6 +1398,12 @@ def _mount_wizard(
             delivery=ws["delivery"],  # type: ignore[arg-type]
             window_valid=bool(ws["window_valid"]),
             schedule_busy=bool(ws["schedule_busy"]),
+            mode=ws["mode"],  # type: ignore[arg-type]
+            # A creator's district is CHOSEN once their overlay is on disk — a creator picks no
+            # bundled district, so the standard fact could never satisfy the step for them.
+            creator_district_chosen=bool(str(ws["creator_sis"]).strip()),
+            files_step_satisfied=_files_step_satisfied(),
+            creator_activated=_creator_activated(),
         )
 
     # Resume: land on the first step real state says is unsatisfied (no stored cursor).
@@ -499,7 +1416,10 @@ def _mount_wizard(
     # "correctable pre-selection" would be neither confirmed nor correctable. Resume derives
     # from PERSISTED state (what the admin actually chose); the auto-selection is a
     # pre-selection ON that step, which is what D9 always meant.
-    if not str(ws["sis"]).strip():
+    # ...and NEVER in creator mode (plan 0044 S3, obligation #8): seeding a bundled district
+    # into a pending creator flow would satisfy the District step with the wrong answer and
+    # resume the admin PAST the step they are half-way through.
+    if mode == "standard" and not str(ws["sis"]).strip():
         ws["sis"] = auto_selected_district(visible_ids)  # D9: auto-select iff exactly one VISIBLE
         # Drives the acknowledging caption on the step: a choice made FOR the admin says so.
         ws["auto_seeded"] = bool(ws["sis"])
@@ -534,21 +1454,37 @@ def _mount_wizard(
             btn.content = "Continue" if _step_addressed(step) else "Set up later"  # type: ignore[union-attr]
         page.update()
 
-    def _go(step: SetupStep) -> None:
+    def _go(step: SetupStep, *, note: str = "") -> None:
+        """Move to ``step``, carrying at most ONE creator note onto the surface it lands on.
+
+        The note defaults to ``""``, so every ordinary hop CLEARS whatever was showing — a
+        "we couldn't remember where you got to" line has one surface's worth of life, and
+        leaving it standing over a later step would make it read as that step's problem.
+        """
         ws["step"] = step
+        ws["creator_note"] = note
         _render()
 
     def _forward() -> None:
         step = ws["step"]
         if not can_advance(step, _inputs()):
             return  # gate closed (folders/district) — Enter/Continue is a no-op, matching the disabled button
+        creator = ws["mode"] == "creator"
         if step is SetupStep.FOLDERS:
             cfg.input_dir = str(ws["input"])
             cfg.output_dir = str(ws["output"])
             cfg.save()
+        elif step is SetupStep.DISTRICT and creator:
+            # A creator's District step persists NOTHING here: its Continue lives in the
+            # creator surface, where it writes the overlay and stores the resume token (and
+            # ``sis_type`` is only ever set by the validated activation). Reachable via Enter,
+            # so it is a deliberate no-op rather than an unreachable branch.
+            pass
         elif step is SetupStep.DISTRICT:
             cfg.sis_type = str(ws["sis"])
             cfg.save()
+        elif step is SetupStep.FILES:
+            pass  # the gate + activation already persisted everything this step decides
         elif is_skippable(step) and not _step_addressed(step):
             # Advancing an unaddressed skippable step defers it ("Set up later") — marked skipped
             # so it counts as satisfied for the finish line WITHOUT asserting anything false.
@@ -556,12 +1492,12 @@ def _mount_wizard(
                 ws["schedule_skipped"] = True
             else:
                 ws["delivery"] = DeliveryFact.SKIPPED
-        nxt = next_step(step)
+        nxt = next_step(step, mode=ws["mode"])  # type: ignore[arg-type]
         if nxt is not None:
             _go(nxt)
 
     def _back() -> None:
-        prev = prev_step(ws["step"])  # type: ignore[arg-type]
+        prev = prev_step(ws["step"], mode=ws["mode"])  # type: ignore[arg-type]
         if prev is not None:
             _go(prev)
 
@@ -704,7 +1640,58 @@ def _mount_wizard(
         )
         return ft.Column(spacing=22, controls=[input_field, output_field])
 
+    # ---- creator mode: the host callbacks (plan 0044 S3 §3.5) ----------- #
+    def _on_creator_written(new_sis: str, form: CreatorForm, note: str) -> None:
+        """The overlay is on disk and the token is stored — advance to the next step."""
+        ws["creator_sis"] = new_sis
+        ws["creator_form"] = form
+        ws["files_ok"] = None  # the gate fact must be re-probed against the file just written
+        nxt = next_step(SetupStep.DISTRICT, mode="creator")
+        _go(nxt if nxt is not None else SetupStep.DISTRICT, note=note)
+
+    def _on_creator_activated() -> None:
+        """``sis_type`` is now this district — move on, exactly as a passed step would."""
+        ws["files_ok"] = None
+        ws["sis"] = cfg.sis_type
+        nxt = next_step(SetupStep.FILES, mode="creator")
+        _go(nxt if nxt is not None else SetupStep.FILES)
+
+    def _on_creator_discarded() -> None:
+        """Back to the STANDARD walk, on the District step, saying what happened."""
+        ws["mode"] = "standard"
+        ws["creator_sis"] = ""
+        ws["creator_form"] = None
+        ws["files_ok"] = None
+        _go(SetupStep.DISTRICT, note=CREATOR_DISCARDED_NOTE)
+
+    def _enter_creator(_e: ft.ControlEvent | None = None) -> None:
+        """Switch the District step to the creator surface (nothing is written yet)."""
+        ws["mode"] = "creator"
+        ws["creator_sis"] = ""
+        ws["creator_form"] = creator_form_for_new(cfg)
+        ws["files_ok"] = None
+        _go(SetupStep.DISTRICT)
+
+    def _creator_body(stage: CreatorStage) -> ft.Control:
+        form = ws["creator_form"]
+        if not isinstance(form, CreatorForm):  # defensive: a creator surface always has a form
+            form = creator_form_for_new(cfg)
+            ws["creator_form"] = form
+        return build_creator(
+            page,
+            cfg=cfg,
+            sis_id=str(ws["creator_sis"]),
+            form=form,
+            on_written=_on_creator_written,
+            on_activated=_on_creator_activated,
+            on_discarded=_on_creator_discarded,
+            stage=stage,
+        )
+
     def _district_body() -> ft.Control:
+        if ws["mode"] == "creator":
+            return _creator_body("forms")
+
         def _instruction_text() -> str:
             picked_now = str(ws["sis"])
             if ws["auto_seeded"] and picked_now:
@@ -747,6 +1734,16 @@ def _mount_wizard(
                 ),
                 instruction_line,
                 dropdown,
+                # The creator door (plan 0044 S3): TEXT tier, so the step keeps its ONE filled
+                # primary (Continue). It sits UNDER the dropdown because picking a shipped
+                # district is the right answer for almost everyone who reaches this step.
+                ft.Row(
+                    controls=[
+                        components.text_button(
+                            CREATOR_ENTRY_LABEL, _enter_creator, icon=ft.Icons.ADD_CIRCLE_OUTLINE_ROUNDED
+                        )
+                    ]
+                ),
             ],
         )
 
@@ -826,6 +1823,26 @@ def _mount_wizard(
             components.HealthVerdictBanner(verdict, headline=headline, detail=detail),
             _finish_summary_card(rows),
         ]
+        if ws["mode"] == "creator" and not _creator_activated():
+            # ``derive_flow`` can land a creator here with ``can_finish`` False (every other
+            # step satisfied, the district never switched over) — the Finish button is
+            # disabled, and a disabled button with no reason beside it is a dead end. Says
+            # what is missing and where to do it; never a silent flip of the precondition.
+            controls.append(
+                ft.Row(
+                    spacing=tokens.space_sm,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, size=18, color=tokens.color_status_warning),
+                        ft.Text(
+                            CREATOR_FINISH_NEEDS_GATE_NOTE,
+                            size=tokens.type_body,
+                            color=tokens.color_status_warning,
+                            expand=True,
+                        ),
+                    ],
+                )
+            )
         if ws["finish_error"]:
             # Never colour-alone: the glyph rides beside words that say what happened.
             controls.append(
@@ -843,6 +1860,7 @@ def _mount_wizard(
     _BODIES: dict[SetupStep, Callable[[], ft.Control]] = {
         SetupStep.FOLDERS: _folders_body,
         SetupStep.DISTRICT: _district_body,
+        SetupStep.FILES: lambda: _creator_body("files"),
         SetupStep.SCHEDULE: _schedule_body,
         SetupStep.DELIVERY: _delivery_body,
         SetupStep.FINISH: _finish_body,
@@ -854,13 +1872,43 @@ def _mount_wizard(
         # unnumbered" count fix is 0032 Tier-1 #10, a separate slice — not folded in here.)
         return components.page_header(
             _STEP_TITLES[step],
-            f"Step {step_number(step)} of {TOTAL_STEPS}",
+            # Mode-aware denominator (plan 0044 S3): 5 on the standard walk, 6 on the creator
+            # walk — both DERIVED from the one step tuple, never typed.
+            f"Step {step_number(step, mode=ws['mode'])} of {total_steps(ws['mode'])}",  # type: ignore[arg-type]
         )
 
     def _step_footer(step: SetupStep) -> ft.Control:
         controls: list[ft.Control] = []
-        if prev_step(step) is not None:
+        creator = ws["mode"] == "creator"
+        if prev_step(step, mode=ws["mode"]) is not None:  # type: ignore[arg-type]
             controls.append(components.secondary_button("Back", lambda _e: _back(), icon=ft.Icons.ARROW_BACK_ROUNDED))
+
+        if creator and step is SetupStep.DISTRICT:
+            # The creator surface owns this step's ONE filled primary (its Continue IS the
+            # overlay write), so the footer contributes no forward button at all — two filled
+            # primaries on one step is a bug, and a second "Continue" that skipped the write
+            # would be worse than one.
+            ws["forward_btn"] = None
+            return ft.Row(spacing=16, controls=controls)
+
+        if creator and step is SetupStep.FILES:
+            # The gate step's tiers: while there is still a test to run or a district to
+            # confirm, the BODY holds the filled primary and this Continue is the outlined
+            # supporting action (disabled until the gate is genuinely passed — Enter can't
+            # bypass it either). Once the district is active, the body has no primary left and
+            # Continue becomes the screen's one filled action.
+            open_gate = can_advance(SetupStep.FILES, _inputs())
+            factory = components.primary_button if open_gate else components.secondary_button
+            forward = factory(
+                "Continue",
+                lambda _e: _forward(),
+                disabled=not open_gate,
+                disabled_bgcolor=tokens.color_border,
+                icon=ft.Icons.ARROW_FORWARD_ROUNDED,
+            )
+            ws["forward_btn"] = forward
+            controls.append(forward)
+            return ft.Row(spacing=16, controls=controls)
 
         if step is SetupStep.FINISH:
             forward = components.primary_button(
@@ -892,7 +1940,22 @@ def _mount_wizard(
 
     def _render() -> None:
         step = ws["step"]  # type: ignore[assignment]
-        root.controls = [_step_header(step), _BODIES[step](), _step_footer(step)]  # type: ignore[index]
+        controls: list[ft.Control] = [_step_header(step)]  # type: ignore[arg-type]
+        if ws["creator_note"]:
+            # ONE creator note, above the step it belongs to (a discard's confirmation, or a
+            # stored-progress refusal). Never colour-alone — the glyph rides beside the words.
+            controls.append(
+                ft.Row(
+                    spacing=tokens.space_sm,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, size=18, color=tokens.color_muted),
+                        ft.Text(str(ws["creator_note"]), size=tokens.type_body, color=tokens.color_muted, expand=True),
+                    ],
+                )
+            )
+        controls.extend([_BODIES[step](), _step_footer(step)])  # type: ignore[index]
+        root.controls = controls
         page.update()
 
     _render()
