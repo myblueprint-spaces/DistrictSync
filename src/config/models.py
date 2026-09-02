@@ -869,6 +869,17 @@ def filter_enabled_entities(names: Iterable[str], enabled: Optional[Iterable[str
 _DISTRICT_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$")
 
 
+def is_valid_district_domain(value: object) -> bool:
+    """TOTAL predicate: is ``value`` a bare lowercase domain per ``_DISTRICT_DOMAIN_RE``?
+
+    The ONE spelling of the `district_domains` entry rule (plan 0044 S1), shared by the
+    model validator below (bundled configs — raise), the loader's user-dir pre-screen
+    (WARN-and-drop) and, later, the creator form's boundary check. Total over any
+    object so a non-string entry is simply invalid, never a TypeError.
+    """
+    return isinstance(value, str) and _DISTRICT_DOMAIN_RE.match(value) is not None
+
+
 class MappingConfig(BaseModel):
     """Root config model — validated representation of the YAML mapping file."""
 
@@ -932,7 +943,7 @@ class MappingConfig(BaseModel):
         the file open.
         """
         for index, entry in enumerate(self.district_domains, start=1):
-            if not isinstance(entry, str) or not _DISTRICT_DOMAIN_RE.match(entry):
+            if not is_valid_district_domain(entry):
                 shape = "a full email address (it contains '@')" if isinstance(entry, str) and "@" in entry else "not"
                 raise ValueError(
                     f"district_domains entry {index} of {len(self.district_domains)} in config "
