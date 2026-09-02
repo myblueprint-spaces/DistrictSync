@@ -37,8 +37,14 @@ class TestFamilyTransform:
         result = self.transformer.transform(empty_df, family_mapping, "Family", raw_data, global_config)
         assert result.empty
 
-    def test_missing_email_produces_na(self, family_mapping, global_config):
-        """Contact without an email address should produce NaN in Email, not crash."""
+    def test_missing_email_source_column_excludes_the_row(self, family_mapping, global_config):
+        """No source email column → the mapped Email is blank → the row is EXCLUDED.
+
+        SpacesEDU does not import a family contact without an email address, so
+        the mapped-but-unpopulated case lands on the same exclusion as a blank
+        cell. The Email column itself is still emitted (schema unchanged) and
+        nothing crashes.
+        """
         no_email_df = pd.DataFrame(
             {
                 "student number": ["S001"],
@@ -49,10 +55,8 @@ class TestFamilyTransform:
         )
         raw_data = {"EmergencyContactInformation.txt": no_email_df}
         result = self.transformer.transform(no_email_df, family_mapping, "Family", raw_data, global_config)
-        assert len(result) == 1
+        assert len(result) == 0
         assert "Email" in result.columns
-        # Value should be NA / NaN, not crash
-        assert pd.isna(result["Email"].iloc[0])
 
     def test_names_with_special_characters(self, family_mapping, global_config):
         """Names with accents, apostrophes, and hyphens should be preserved."""
@@ -154,3 +158,112 @@ class TestFamilyTransform:
         # Only the two guardian rows survive; the non-guardian (S002, "N") is dropped.
         assert len(result) == 2
         assert list(result["First Name"]) == ["John", "Jake"]
+
+
+class TestFamilyNoEmailExclusion:
+    """A contact with no email address is EXCLUDED from Family.csv and counted.
+
+    WHY: SpacesEDU's importer will not create a family contact without an email
+    address, so such a row can only be rejected on ingest. Excluding it here and
+    saying so ONCE (counts only — never a name or an address) is the loud
+    version of a loss that would otherwise happen silently at the partner.
+    """
+
+    _MAPPING = {
+        "source_files": {"emergency_contacts": "EmergencyContactInformation.txt"},
+        "field_map": {
+            "First Name": "First Name",
+            "Last Name": "Last Name",
+            "Email": "Email Address",
+            "Student User ID": "Student Number",
+        },
+    }
+    #: Literals the log must never echo (PII rule): the one real address in the
+    #: fixture plus every contact name.
+    _PII = ["valid@mail.com", "Nomail", "Blankmail", "Hasmail", "Noemail", "Blank", "Valid"]
+
+    def setup_method(self):
+        self.transformer = DataTransformer()
+        self.transformer.set_school_year(2025, "08-25", "07-25")
+
+    def _df(self, emails):
+        return pd.DataFrame(
+            {
+                "student number": [f"S00{i + 1}" for i in range(len(emails))],
+                "first name": ["Noemail", "Blank", "Valid"][: len(emails)],
+                "last name": ["Nomail", "Blankmail", "Hasmail"][: len(emails)],
+                "email address": emails,
+            }
+        )
+
+    def _run(self, df, mapping=None):
+        raw_data = {"EmergencyContactInformation.txt": df}
+        return self.transformer.transform(df, mapping or self._MAPPING, "Family", raw_data, {})
+
+    @staticmethod
+    def _exclusion_records(caplog):
+        return [r for r in caplog.records if "contact row(s) with no email address" in r.message]
+
+    def _assert_no_pii(self, caplog):
+        for record in caplog.records:
+            for literal in self._PII:
+                assert literal not in record.message, f"PII leaked into the log: {literal!r}"
+
+    def test_blank_email_rows_excluded_and_counted_once(self, caplog):
+        """NaN and whitespace-only both count as blank; only the valid row ships."""
+        df = self._df([float("nan"), "   ", "valid@mail.com"])
+        with caplog.at_level("WARNING"):
+            result = self._run(df)
+        assert len(result) == 1
+        assert result["Email"].tolist() == ["valid@mail.com"]
+        assert result["Student User ID"].tolist() == ["S003"]
+        records = self._exclusion_records(caplog)
+        assert len(records) == 1, [r.message for r in records]
+        assert "2 of 3" in records[0].message
+        assert records[0].levelname == "WARNING"
+        assert "SpacesEDU does not import a family contact without one." in records[0].message
+        self._assert_no_pii(caplog)
+
+    def test_empty_string_email_excluded(self, caplog):
+        """An empty string (not NaN) is blank too."""
+        with caplog.at_level("WARNING"):
+            result = self._run(self._df(["", "valid@mail.com"]))
+        assert len(result) == 1
+        assert self._exclusion_records(caplog)[0].message.endswith(
+            "Excluded 1 of 2 contact row(s) with no email address — "
+            "SpacesEDU does not import a family contact without one."
+        )
+
+    def test_all_contacts_with_email_kept_and_silent(self, caplog):
+        """Positive twin: nothing to exclude → every row kept and NO warning."""
+        df = self._df(["a@mail.com", "b@mail.com", "valid@mail.com"])
+        with caplog.at_level("WARNING"):
+            result = self._run(df)
+        assert len(result) == 3
+        assert self._exclusion_records(caplog) == []
+
+    def test_config_without_email_column_warns_and_keeps_every_row(self, caplog):
+        """A field_map with no Email cannot be filtered — surfaced, not hidden.
+
+        The contract requires Email for Family.csv, so this is a config fault:
+        ONE warning naming the missing output column, and the rows pass through
+        untouched (never silently emptied).
+        """
+        mapping = {
+            "source_files": {"emergency_contacts": "EmergencyContactInformation.txt"},
+            "field_map": {
+                "First Name": "First Name",
+                "Last Name": "Last Name",
+                "Student User ID": "Student Number",
+            },
+        }
+        df = self._df([float("nan"), "   ", "valid@mail.com"])
+        with caplog.at_level("WARNING"):
+            result = self._run(df, mapping)
+        assert len(result) == 3
+        assert "Email" not in result.columns
+        no_column = [r for r in caplog.records if "no-email exclusion could not be" in r.message]
+        assert len(no_column) == 1
+        assert "[Family] No 'Email' output column" in no_column[0].message
+        assert self._exclusion_records(caplog) == []
+        self._assert_no_pii(caplog)

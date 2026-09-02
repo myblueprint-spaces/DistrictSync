@@ -46,8 +46,18 @@ padding and keep their module suffixes, selection rows gain course names,
 `SG`/`TS` rows gain credits. Rostering-only districts see no CSV change — the
 SD74 reference output is byte-identical.
 
+- **Family contacts without an email address are no longer sent.** SpacesEDU does
+  not import a family contact without an email address, so those rows are now
+  excluded from `Family.csv` and the run log records how many were left out — a
+  count only, never a name or an address. A district that supplies an email for
+  every contact sees no change; the SD74 reference output is byte-identical.
+
 ### Added
 
+- **A count of students with no email address** is now written to the run log
+  after every conversion. Those students are still sent — SpacesEDU imports
+  them — but they cannot be invited by email, so the number is visible instead
+  of silent. A count only, with no student details.
 - **Seven phase-2 migration district configurations ship in the program:**
   SD10 (Arrow Lakes — Students + course feeds, generated student emails),
   SD27 (Cariboo-Chilcotin) and SD38 (Richmond) — full myBlueprint+ tier scoped
