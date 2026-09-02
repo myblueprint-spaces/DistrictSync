@@ -2024,8 +2024,315 @@ _Spec self-check:_
   the merge-onto-re-read fix for UNREADABLE provenance — S6 adds a writer to that hazard and says so
   rather than pretending to bound it.
 
-### Slices 5 and 7
-_Spec'd just-in-time, each after the prior slice lands. **S5** — the pure `src/etl/preflight.py` column check, the plain-language "not present in any file" report, and the additive `PipelineResult.input_columns` field wired into the gate beside the dry run (reordered AFTER S6 by owner decision, 2026-09-02). **S7** — export affordance + docs (`adding-district.md` self-service section, `output-contract.md` authorship note, PRODUCT_SPEC, qa-checklist rows, ARCHITECTURE_TREE, the four INVARIANTS entries, the CLAUDE.md subsection + the "unclaimed" phrase correction) + the certification disposition._
+### Slice 5 — the pre-flight missing-column report
+
+#### In plain English (the approval gate)
+
+A district whose MyEd BC export has been pre-processed can pass the test conversion and still ship a
+column of blanks — every row there, `Last Name` empty in all of them — because a mapped column that
+is not in the file is a DELIBERATE blank, not an error: `apply_field_map`'s own docstring says
+"**Intended blank** (the config column is simply absent from the frame) is NOT an error … NOT
+recorded" (`base.py:622-623`), and nothing in the product says a word about it. S5 adds that one
+sentence where the district is decided, before it is saved: **"The column “Legal Surname” (needed
+for Students) isn't in any of your files."** The verdict does not change — the test passed, "Save
+district settings" is still the button to press — because a district legitimately without an
+optional column must not be stopped by an app that only *suspects* something. **Done means:** an
+admin whose extract renames a header is told which header, for which output, at setup, not by
+finding blank cells in SpacesEDU in October. **What you're accepting:** a LENS, not a verdict; it can
+only speak about a test run that COMPLETED (a config error fails the run and carries its own
+message); and it says "not in ANY of your files", not "not in this file", because a mapping's column
+entry names no file (R2-4).
+
+#### 5.1 `PipelineResult.input_columns` — the observed headers, carried once
+
+- `input_columns: dict[str, tuple[str, ...]] = field(default_factory=dict)` appended LAST to
+  `PipelineResult` (`pipeline.py:87-94`), `field(default_factory=dict)` per the `entity_counts`
+  precedent at `:91` — a bare `{}` raises `ValueError: mutable default` at class definition
+  (round-3 correction 1, the trap `creator_verified` hit).
+- **Keys are the CONFIG's spelling of the file** — what `extractor.load_data` returns: its dict is
+  keyed by the configured name even when the case-insensitive second look matched a differently-cased
+  file on disk (`extractor.py:97-107`, "every downstream lookup uses the mapping's spelling"). Same
+  spelling the Files-step rows and `config_editor.missing_files` already show.
+- **Values are the ALREADY-normalised headers in file order** — `tuple(df.columns)` of the frames
+  the extractor returned, which `_load_bytes` put through `helpers.normalize_columns` (strip+lower,
+  `extractor.py:173`). No second normalisation, no re-read, no extractor seam, nothing but `str`
+  leaving the pipeline. Populated at the ONE construction site (`pipeline.py:896-901`) from
+  `raw_data`, which is in scope there.
+- **A missing file KEEPS its key with an EMPTY tuple** — `load_data` yields `pd.DataFrame()` for a
+  file not on disk (`extractor.py:104`) and S5 carries that verbatim: `input_columns` is *observed
+  data*, and a dropped key would be a second, quieter missing-FILE report able to disagree with the
+  fold-based one that owns that fact (`config_editor.missing_files`; ONE owner per fact, the S4
+  `folded_filename` rule). Union math unaffected, and `checked_files` counts only keys that
+  contributed a header.
+- **No consumer flips:** both construction sites (`pipeline.py:896`,
+  `tests/test_ui_flet_routing.py:51`) are keyword-only and the one shape test asserts via `hasattr`
+  (`tests/test_sftp_exit.py:145-156`), so an appended defaulted field cannot turn it red (round-3
+  (c), re-verified).
+- **The early-exit paths carry NOTHING, deliberately** (round-3 binding correction 2, settled here):
+  the single construction is on the success path, so a run that `sys.exit(1)`s on either config-load
+  failure (`pipeline.py:713-746`), raises `ExtractionError`, or raises out of a transformer returns
+  no result — the report is absent exactly there. That is the division of labour: the fail-loud
+  raises name the column and the available ones THEMSELVES
+  (`grades.filter_to_grade_scope`'s `KeyError`; `base.apply_row_filters`',
+  `students._generate_emails`' and `_collapse_cross_enrollment`'s `ValueError`) and the gate already
+  surfaces that path as FAILED through `humanize_config_error`; preflight owns the RESILIENT path,
+  the one with no other signal at all. No new sink and no `dry_run` change — the field rides the
+  existing return; `_store_run_record(..., *, dry_run)` and `_record_early_failure(..., dry_run=…)`
+  untouched.
+
+#### 5.2 `src/etl/preflight.py` (NEW — pure, COUNTED, zero I/O)
+
+- **Purity pinned by AST** — no `flet`, no `pathlib`, no `pandas` (banning pandas is what says this
+  module never handles a frame), in the shape of `test_ui_flet_config_editor.py::TestPurity`. It
+  imports `src.config.models` for the typed field variants and `src.etl.column_names` for the name
+  normaliser.
+- **ONE spelling of "the frame's column name."** `helpers.normalize_columns` is a DataFrame
+  function; S5 promotes its per-name half to `column_names.normalize_column_name(name: str) -> str`
+  (`return name.strip().lower()`) and `normalize_columns` becomes
+  `df.rename(columns=normalize_column_name)` — byte-identical semantics INCLUDING the raise on a
+  non-`str` label, so no ETL behaviour moves. `column_names.py` is the home CLAUDE.md designates for
+  shared column-name knowledge and imports nothing, so preflight stays pandas-free; preflight
+  coerces at ITS boundary (`normalize_column_name(str(v))`), where a hand-edited YAML value may not
+  be a string.
+- **`ExpectedColumn(entity, output_field, source_column)`** (frozen). `source_column` is the
+  CONFIG's own spelling, whitespace-trimmed — what a line quotes, since the admin compares it against
+  their header row; every comparison goes through `normalize_column_name`.
+- **`expected_columns(config: MappingConfig) -> tuple[ExpectedColumn, ...]`** walks
+  `config.active_entities()` (never `mappings.keys()` — `_base` leaves disabled entities there) in
+  `config.mappings` order, reading every `field_map` entry through `models.ensure_field_mapping` (the
+  single boundary, idempotent — never `classify_field` directly, whose re-entry hazard its docstring
+  names) plus every `row_filters[].column` and every `source_columns` VALUE. Per variant: bare `str`
+  → that name · `None` (auto-detected `EnrollStatus`) → **nothing** (the aliases are a SET; naming
+  one would be false) · `FieldTransform.column` / `FieldAppendYear.column` → the column ·
+  `FieldFixedValue` / `FieldAcademicYear` → **nothing** (a literal names no column) ·
+  `FieldEmailFormat` → the `{placeholders}` of `format` via `string.Formatter().parse` (the reading
+  `str.format` does, which is how `emails.generate_student_email` interpolates) MINUS the
+  `derived_dates` KEYS (pseudo fields `students._generate_emails` injects, not headers) PLUS each
+  `derived_dates[*].column` · `FieldNameConfig` → its four columns, blanks skipped ·
+  `FieldIdRolePair` → `student_id_col` **and** `staff_id_col` · `FieldEnrollStatus` →
+  `status_column` / `withdraw_date_column` when set (`active_values` are VALUES) · anything else,
+  incl. `classify_field`'s warn-passthrough dict → **nothing, never a raise**. TOTAL by
+  construction: a config the report cannot read yields a SHORTER report, never an error in front of
+  an admin.
+- **Two things it deliberately does not do**, both for the same reason (R2-4 + Configurable
+  Columns: no transformer knowledge here): it never resolves transformer DEFAULTS
+  (`base.resolve_column`'s `default=`) — so SD83's `Grade: {value: ""}` under a grade scope is a
+  fail-loud raise, not a report line (5.1 owns it) — and it never sorts references into resilient
+  and fail-loud (`row_filters`, `derived_dates`, `home_school_column` all raise), which costs
+  nothing: those runs never reach a `PipelineResult`, so their columns can only be reported when the
+  entity was skipped as empty and nothing else would have spoken either.
+- **`missing_columns(expected, input_columns) -> tuple[MissingColumn, ...]`** folds every observed
+  name into ONE set and keeps the expected columns absent from it — the file-agnostic claim, because
+  a `field_map` entry carries no file association (`Classes` declares five roles and names bare
+  columns). `MissingColumn(source_column, entities: tuple[str, ...])`: deduped on the NORMALISED
+  key, keeping the first-seen written spelling, listing every active entity that needs it in
+  first-seen order (one header often feeds several entities; a line each would read as several
+  problems). Output FIELD names ride `ExpectedColumn` but not `MissingColumn` — contract vocabulary
+  an admin never sees in a header row.
+- **No observed columns at all ⇒ NO claim.** An empty `input_columns`, or one whose every value is
+  empty, returns `()`: the premise is "we looked at your files", and without it a
+  default-constructed `PipelineResult` would report every column in the config as missing. The
+  fail-safe direction — an absent report under-reports and can never invent a wall of false ones.
+- **`preflight_report(config, input_columns) -> PreflightReport(missing, checked_files,
+  checked_columns)`** — `checked_files` = keys whose tuple is non-empty, `checked_columns` = distinct
+  normalised expected columns considered. Both exist so "nothing missing" is a MEASURED green:
+  `checked_columns == 0` is a derivation that found nothing, not an all-clear (no-vacuous-greens).
+- **`humanize_missing_columns(report, *, entity_label=None) -> tuple[str, ...]` lives in
+  `src/ui_flet/config_editor.py`**, beside `humanize_config_error`, `missing_files` and the
+  `CONFIG_ERROR_*` sentences. **Deviation from the plan's Affected-files line** (which put "+
+  plain-language report" in `preflight.py`): every admin-facing sentence here is a reviewed constant
+  on a module the copy sweeps see and `src/etl/*` carries none, so this leaves `preflight.py`
+  derivation-only and re-usable by a CLI surface that would word it its own way. One reviewed line,
+  reversible. `entity_label` is an INJECTED pure callable defaulting to identity (the
+  `distinct_source_files(expected=…)` precedent), so the screen passes `creator._entity_label` and
+  the pure layer never learns the vocabulary. The line template is a `config_editor` constant: `The
+  column “{column}” (needed for {entities}) isn't in any of your files.` — smart quotes per the house
+  style (`GATE_PASSED_DETAIL`), entities joined by the same and-list the rest of the surface reads.
+- **PII.** A reported column name is CONFIG vocabulary — the GDE HEADER, never a cell — and the
+  creator cannot author a `field_map` (field remapping is the plan's first non-goal), so every string
+  this report can print comes from a vendor-authored bundled base. It is the one place in the gate
+  where naming the value IS the answer; nothing else moves (`humanize_config_error` still echoes no
+  exception; the only new log line is counts-only).
+
+#### 5.3 The gate wiring — verdict → counts → report → actions
+
+- **`GateOutcome` gains `missing_columns: tuple[MissingColumn, ...] = ()`** (additive + defaulted, so
+  every S3/S4/S6 equality assertion on `GateOutcome(state=…)` stays green) and **`gate_outcome_for`
+  gains `preflight: PreflightReport | None = None`** — S3/S4/S6 call sites identical. That default is
+  NOT a permissive default on a safety-relevant parameter (non-negotiable #4): `None` means "no
+  report", it feeds no state decision and can only under-report. `_store_run_record(..., *,
+  dry_run)`'s required-keyword shape is right where the default would DO something; here it would say
+  nothing.
+- **The soundness rule lives in the pure reduction, not in a view.** `missing_columns` is carried
+  ONLY on `PASSED` **and only when `missing_files` is empty**: while an expected file is absent the
+  claim "not in any of your files" is false by premise — we did not read them all — and every column
+  of that file would be listed, burying the one real finding under the file report already on screen.
+  One pure decision, one truth table, so the wizard host and Mapping's panel cannot disagree.
+- **`creator_gate_job` is UNCHANGED** (still `-> PipelineResult`, still refuses a blank/unusable
+  output dir before importing the pipeline). The VIEW computes the report on the worker's success
+  callback — in `_run_gate`'s `_on_done`: `preflight_report(resolved, result.input_columns)` with
+  `resolved = _resolved_config(sis_id)` (already TOTAL; `None` ⇒ no report). **Correction to the
+  brief:** `_FilesModel` does not RETAIN the resolved config (it uses it and keeps
+  `slots`/`divergent`), so this is one bounded YAML read on the UI thread right after a whole dry
+  run — and it must be the config as it is NOW on disk, which is what the run itself read.
+- **Render.** In `_files_controls`'s `test_rows`, after the counts row and BEFORE the action row (the
+  admin reads the facts before pressing — S6's "told before pressing" reasoning):
+  `PREFLIGHT_MISSING_TITLE` (`type_body`/W_600/`color_text`), one `color_status_warning` line per
+  `MissingColumn`, then `PREFLIGHT_MISSING_NOTE` in `color_muted`. Deliberately NOT a second
+  `HealthVerdictBanner` — a warning band under a healthy band is two verdicts about one run, and the
+  rule is verdict-first, ONE verdict. Factories + `tokens` only; whether the block earns a
+  `components` factory is the `districtsync-design` pass's call (either outcome one reviewed line).
+  `files_primary_action` is UNTOUCHED and **the confirm stays the filled primary** — recommended and
+  specified: the admin decides with the facts in front of them, and demoting it would stop a district
+  whose export legitimately lacks an optional column (SD83 already ships `Date of Birth: {value:
+  ""}`) on a suspicion.
+- **New copy** (both swept): `PREFLIGHT_MISSING_TITLE = "Some columns aren't in your files"` ·
+  `PREFLIGHT_MISSING_NOTE = "A test conversion still passes — the rows are there, but this column
+  comes out blank in every one of them. It usually means your district's export uses a different
+  header, or you've picked a starting point that expects a column your extract doesn't have."` on
+  `screens/creator.py`, plus the line template on `config_editor`. No string uses
+  "verify"/"verified"/"access" or any other `BANNED_WORDS` member.
+- **The run-time twin.** The SETUP-time half of the `data_errors` → run-log summary → Run History
+  "Completed with N data errors" signal (`pipeline.py:791-799`) — complementary, not duplicate: that
+  axis only fires where something RAISED, and an absent mapped column raises nothing. Logs stay
+  counts-only on both.
+
+#### 5.4 Copy retirement — `FORBIDDEN_PROMISES` ends here
+
+S3 banned "column" from every creator string so no copy promised a report that did not exist; S5
+ships it, so the ban RETIRES rather than narrowing again. `FORBIDDEN_PROMISES` (as S6 leaves it —
+`("column",)`) and the three assertions that read it —
+`TestTheCopyDiscipline::test_no_constant_promises_a_later_slice`,
+`test_the_rendered_creator_forms_carry_neither` and
+`test_the_rendered_gate_step_carries_neither_before_or_after_a_run` (the last two keep their
+`_assert_no_banned_vocabulary` half and lose only the promises loop) — are DELETED, not emptied: a
+loop over an empty tuple is a vacuous green. `BANNED_COPY_WORDS = ("soon", "later", "coming")` — S6's shared
+vague-future list — STAYS and keeps sweeping both surfaces (if S6 landed without it, S5 creates it,
+since the retiring tuple must not take the vague-future guard with it), and `test_ui_flet_filtered_pickers.py::TestMappingsSummaryCard::
+test_the_note_PROMISES_NOTHING` narrows to `BANNED_COPY_WORDS` with its positive twin intact.
+Replacing the ban: a POSITIVE test that the rendered block names the missing column and carries
+`PREFLIGHT_MISSING_NOTE` — the guard becomes an assertion about what IS there.
+
+#### In-scope standards dimensions
+
+`privacy` (a config HEADER, never a cell — argued from the creator's inability to author a
+`field_map`; logs counts-only) · `security` (no new egress, write, persisted field or `sis_type`
+writer) · `maintainability-structure` (derivation pure in `src/etl`, wording pure in `ui_flet`,
+assembly in the screen; ONE column-name normaliser; the soundness rule in one reduction, not two
+hosts) · `reliability-resilience` (every derivation TOTAL; an unreadable field-map shape and an
+empty observation both yield NO claim) · `observability-ops` (one counts-only INFO;
+`__DISTRICTSYNC_RUN__` unchanged) · `product-ux` (ONE verdict, ONE filled primary, facts before the
+decision) · `performance` (no second parse and no second file read — why R2-4 rejected the extractor
+seam) · `testing` (a positive twin for every absence; a measured denominator).
+
+#### Tests to add
+
+- **`tests/test_etl_preflight.py` (NEW)** — purity by AST (twin: the sweep does see
+  `src.config.models`) · `expected_columns` over the REAL `myedbc`: non-empty, ACTIVE entities only
+  (an `mbponly` config yields no `Staff` row), a known column present · a SYNTHETIC config
+  exercising EVERY variant — bare string, `None`, `transform`, `append_year_to_id`, `value` (yields
+  NOTHING, twinned against a transform on the same entity), `use_academic_year`, `format` with
+  `{placeholders}` + `derived_dates` (pseudo key excluded, its `column` included), name-config (four
+  cols, blanks skipped), id-role pair (BOTH), enroll-status (`status_column`/`withdraw_date_column`,
+  not `active_values`), `row_filters[].column`, `source_columns` values, an unrecognised dict
+  (nothing, no raise) · normalisation parity: a padded mixed-case observed header matches a
+  title-case config entry, asserted against `normalize_column_name` itself so the sides cannot drift
+  · `missing_columns` — present in ANY ONE file is not reported (twin: absent from all IS), dedupe
+  keeps the first spelling and lists both entities · the empty-observation rule (`{}` and
+  `{"X.txt": ()}` ⇒ no claim; twin: real columns DO report) · `preflight_report` counts
+  (`checked_files` ignores empty tuples; `checked_columns > 0` on `myedbc`) · totality over a
+  malformed field_map (a list, a nested dict, a non-string column) · `humanize_missing_columns`
+  wording, entity grouping, the injected `entity_label` (default identity ⇒ raw keys;
+  `_entity_label` ⇒ "Families"), `()` for an empty report.
+- **`tests/test_pipeline_required_input.py`** (it already drives `run_pipeline` with
+  `_write_full_rostering_input`) — new `TestPipelineResultInputColumns`: a full rostering run's keys
+  == `extract_required_files(config)`, a known header present and already lower-cased · the
+  PARTIAL-input case keeps an absent file's key with an EMPTY tuple (twin: the present file's tuple
+  is non-empty) · `{}` by default on the `tests/test_ui_flet_routing.py` stub (one line, asserted
+  there) while `tests/test_sftp_exit.py:145-156`'s `hasattr` test is UNTOUCHED and green · the
+  existing no-usable-input test still returns no result at all (the early-exit half, unchanged).
+- **`tests/test_ui_flet_config_editor.py`** — `gate_outcome_for` WITHOUT `preflight` ⇒
+  `missing_columns == ()` (every S3/S4 row unchanged), WITH one ⇒ carried on `PASSED` · the soundness
+  rule: a report + a non-empty `missing_files` ⇒ `()` (twin: same report, every file present ⇒
+  carried) · FAILED / NOT_RUN / REFUSED never carry columns even with a report passed · the
+  `CONFIG_ERROR_*`-style copy assertions extended to the new line template.
+- **`tests/test_ui_flet_creator_flow.py`** — **the headline flow, honestly constructed:** copy
+  `tests/snapshots/input` into `tmp_path`, rename ONE header inside
+  `StudentDemographicInformation.txt` (`Legal Surname` → `Family Name`), point the config's folders
+  at the copy, run the REAL gate to PASSED, and assert the block names exactly `Legal Surname` for
+  Students, the counts still render, and "Save district settings" is still the ONE filled primary
+  (list equality) · **twin:** the unmodified copy reports nothing and renders no block · a run with a
+  file MISSING renders the file note and NO column block (the soundness rule at the surface) · the
+  new constants join the prefix sweep (`prefixes` gains `"PREFLIGHT_"`, plus an `S5_COPY_CONSTANTS`
+  tuple registering them by name — the S4 precedent that stops a sweep going quiet) and the sweep
+  extends to `config_editor`'s `PREFLIGHT_*` constants + one rendered line, so no admin-facing
+  sentence escapes it wherever it lives · `FORBIDDEN_PROMISES` and its three assertions gone, the
+  positive replacement in place.
+- **Regression:** full suite · SD74 golden byte-identical · `make validate-config` 20/20 ·
+  tree-check WITH the new `src/etl/preflight.py` entry (**S5's line, not S7's** — the pre-commit gate
+  aborts otherwise) · render smokes · ruff/format/mypy/bandit/email scan · **CI's own result read and
+  quoted** before the slice is called landed.
+
+#### Acceptance criteria
+
+1. `PipelineResult.input_columns` carries, for every file the run loaded, the normalised headers the
+   extractor observed — keyed by the config's spelling, empty tuple for a file not on disk — and
+   defaults to `{}` everywhere else, with no consumer or construction site changed.
+2. `src/etl/preflight.py` derives the expected source columns of a config's ACTIVE entities from
+   every field-map variant that names one (fixed values and the auto-detect sentinel name none), is
+   TOTAL over any malformed shape, and imports no `pandas`, `pathlib` or `flet`.
+3. A column absent from every loaded file is reported once, naming the config's spelling and every
+   entity that needs it; a column present in any one file is not reported; an empty observation
+   reports nothing at all.
+4. The report renders between the counts and the actions on a PASSED run with no missing files and
+   changes neither the verdict nor `files_primary_action` — the confirm stays the one filled primary.
+5. A run with a missing expected file renders the FILE report and no column report; a run that fails
+   before completing renders the bounded failure category and no column report.
+6. Preflight and the extractor agree on what one column name IS — one public `normalize_column_name`
+   used by both sides, `normalize_columns` delegating to it, no ETL behaviour change.
+7. `FORBIDDEN_PROMISES` and its three assertions are gone, replaced by a positive test that the
+   report renders its column and its note; `BANNED_COPY_WORDS` and the banned-vocabulary sweep still
+   cover every new string in both modules.
+8. All gates green (ruff/format, mypy, bandit, tree-check incl. the new module, email scan, 20-config
+   pin), SD74 golden byte-identical, `districtsync-design` pass clean, CI read and quoted.
+
+#### Open questions for the owner
+
+- **Should a missing column for a NON-required output field be reported at a lower tier?** Default
+  **NO — report all, one tier.** The contract's required/optional split
+  (`docs/developer/output-contract.md`) is about what SpacesEDU accepts, not what the district meant
+  to send: SD83 withholds `Date of Birth` on purpose, and an admin who mapped a preferred name wants
+  to know it lands blank. S5 is a lens, not a verdict, so a second tier would be a judgement it has
+  no standing to make — and the note already says the test conversion still passes.
+- **Should the report also appear on Convert?** Default **NO** — Convert is an explicit manual act
+  with no `sis_type` writer and no gate (the plan's standing answer); the check lives on the surface
+  that owns the district.
+- **Wording of the title** ("Some columns aren't in your files"). One constant; the note carries the
+  explanation and the two likely causes.
+
+_Spec self-check:_
+- **Riskiest element: the soundness gate, not the derivation.** A report rendered beside an absent
+  file would list that file's every column and read as twenty problems where the file report already
+  named one — so the "PASSED and no missing files" precondition sits in the pure reduction with a
+  truth table, not in a screen where a second host could spell it differently.
+- **The brief's premise on the resilient path is half right, and the spec says so.** An absent mapped
+  column is NOT recorded in `data_errors` at all (`apply_field_map`'s "intended blank"), so for this
+  case the report is not that signal's twin — it is the ONLY signal. That is the strongest argument
+  for the slice and should not soften into "setup-time duplicate".
+- **Two deviations, both named in-line:** `humanize_missing_columns` lives in `config_editor` rather
+  than `preflight` (copy belongs where the sweeps see it), and the resolved config is re-read in
+  `_on_done` rather than taken from a memo that does not hold it.
+- **Vacuous-green watch:** "not reported", "no block rendered", "no consumer flipped" and the retired
+  ban are absence assertions — each specified with its twin, the ban replaced by a POSITIVE assertion
+  rather than an empty tuple, and `checked_columns` exists precisely so a green report cannot be an
+  empty derivation.
+- **Not promised here:** any claim about WHICH file a column should have been in (R2-4's point), a
+  severity tier, a Convert surface, and the ETL's own `lower()`-without-`strip()` field-map lookups —
+  a padded config entry matches here while some lookup sites would blank it; that inconsistency is a
+  ROADMAP line, not something S5 papers over.
+
+### Slice 7 — export + docs + certification disposition
+_Spec'd just-in-time, after S5 lands. **S7** — the export affordance (reveal/copy the overlay file), `adding-district.md`'s self-service section (freezing the overlay shape the vendor tests base changes against), the `output-contract.md` authorship note, PRODUCT_SPEC, qa-checklist rows for every new surface, ARCHITECTURE_TREE, the four INVARIANTS entries, the CLAUDE.md subsection + the "unclaimed → unmatched" phrase correction, and the D-0037-6 certification disposition (audit pass · product-gap pass · QA walk on a built exe — any deferral is an explicit DECISIONS entry, not a silent skip)._
 
 ---
 
