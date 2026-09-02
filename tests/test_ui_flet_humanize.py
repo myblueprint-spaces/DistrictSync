@@ -113,6 +113,55 @@ class TestFriendlyDistrictName:
             assert result and result != sis_id
 
 
+class TestFriendlyDistrictNameOverAWrittenOverlay:
+    """plan 0044 slice 2 — a self-service overlay's name resolves like a bundled one.
+
+    No ``config_dir`` seam here, deliberately: it must go through the REAL two-directory
+    search (``load_config(sis, None)``) that ``write_overlay`` (plan 0044 S1) writes into,
+    via ``user_mappings_dir()``. ``isolated_user_profile`` (tests/conftest.py, autouse)
+    redirects that into a per-test tmp dir. ``friendly_district_name`` calls
+    ``loader.load_config`` directly rather than through ``mapping_catalog``'s memoised
+    ``catalog()`` — there is no cache to reset here (checked: no ``lru_cache`` sits between
+    it and the disk), unlike the identity-resolve / Home tests in this slice.
+    """
+
+    def test_a_written_overlay_returns_its_district_name(self) -> None:
+        from src.config.authoring import OverlaySpec, write_overlay
+
+        write_overlay(
+            OverlaySpec(
+                sd_number=93,
+                district_name="SD93 test",
+                district_domains=("sd93.bc.ca",),
+                base="myedbc",
+            ),
+            overwrite=False,
+        )
+
+        assert friendly_district_name("sd93custom") == "SD93 test"
+
+    def test_the_twin_after_deletion_falls_back_to_the_raw_id(self) -> None:
+        """The exact current fallback (no config on disk at all → the raw id, per the
+        `except FileNotFoundError` branch `TestFriendlyDistrictName.test_unknown_id_returns_raw_id`
+        already pins with a synthetic ``config_dir``) — here proven over the real search."""
+        from src.config.authoring import OverlaySpec, delete_overlay, write_overlay
+
+        write_overlay(
+            OverlaySpec(
+                sd_number=93,
+                district_name="SD93 test",
+                district_domains=("sd93.bc.ca",),
+                base="myedbc",
+            ),
+            overwrite=False,
+        )
+        assert friendly_district_name("sd93custom") == "SD93 test"
+
+        assert delete_overlay("sd93custom") is True
+
+        assert friendly_district_name("sd93custom") == "sd93custom"
+
+
 class TestFriendlyTimestamp:
     _NOW = datetime(2026, 7, 4, 12, 0, 0)
 

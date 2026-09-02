@@ -26,6 +26,7 @@ from __future__ import annotations
 import pytest
 
 from src.config.app_config import AppConfig, ConfigLoadState
+from src.config.authoring import OverlaySpec, delete_overlay, write_overlay
 from src.ui_flet.identity_gate import (
     MatchOutcome,
     can_continue,
@@ -36,6 +37,7 @@ from src.ui_flet.identity_gate import (
     sd_number_digits,
     stored_identity_email,
 )
+from src.ui_flet.mapping_catalog import district_domain_index, filtered_catalog, reset_catalog_cache
 
 # A miniature catalog shaped like the real one: two claimed districts sharing a domain
 # (SD51 + its attendance tier — the LIVE matched-several case), one claimed alone, and
@@ -282,3 +284,111 @@ def test_gate_reason_is_a_bounded_vocabulary_that_never_carries_the_address() ->
     assert reason == "identity-on-file"
     assert address not in reason
     assert "sd48.bc.ca" not in reason
+
+
+# --------------------------------------------------------------------------- #
+# The REAL index — plan 0044 slice 2 (catalog + identity integration)         #
+# --------------------------------------------------------------------------- #
+# Everything above this line resolves over the miniature fixture `CATALOG` — a
+# stand-in the caller (`mapping_catalog.district_domain_index`) owns. This class
+# proves the same resolver against the REAL two-directory search, through a real
+# `write_overlay`: the fixture above cannot show that an admin-authored config
+# (plan 0044 S1's engine) resolves like a shipped one, because nothing in it was
+# ever written to disk. `isolated_user_profile` is autouse (tests/conftest.py),
+# so `write_overlay` lands in a per-test tmp dir — never the real profile.
+class TestTheRealIndexResolvesAWrittenOverlay:
+    def test_a_custom_overlay_resolves_matched_one(self) -> None:
+        write_overlay(
+            OverlaySpec(
+                sd_number=93,
+                district_name="SD93 test",
+                district_domains=("sd93.bc.ca",),
+                base="myedbc",
+            ),
+            overwrite=False,
+        )
+        reset_catalog_cache()
+
+        index = district_domain_index()
+        state = matched_state("sd93.bc.ca", index)
+
+        assert state.outcome is MatchOutcome.MATCHED_ONE
+        assert state.configs == ("sd93custom",)
+
+    def test_a_custom_overlay_claiming_a_shipped_domain_matches_several(self) -> None:
+        """The `sd<num>custom`-beside-`sd<num>myedbc` case the id decision anticipates."""
+        write_overlay(
+            OverlaySpec(
+                sd_number=48,
+                district_name="SD48 test",
+                district_domains=("sd48.bc.ca",),
+                base="myedbc",
+            ),
+            overwrite=False,
+        )
+        reset_catalog_cache()
+
+        index = district_domain_index()
+        state = matched_state("sd48.bc.ca", index)
+
+        assert state.outcome is MatchOutcome.MATCHED_SEVERAL
+        assert set(state.configs) == {"sd48custom", "sd48myedbc"}
+
+        # `filtered_catalog` for that admin returns BOTH rows — the marker itself is the
+        # sibling slice's to test (`ConfigSummary.origin` is mid-flight elsewhere), so this
+        # asserts on `sis_type`s only.
+        visible = filtered_catalog("sd48.bc.ca", saved_sis="", picked_sis="")
+        assert {s.sis_type for s in visible.summaries} == {"sd48custom", "sd48myedbc"}
+
+    def test_a_domain_less_custom_overlay_behaves_exactly_like_myedbc(self) -> None:
+        """Unclaimed (`district_domains=()`) → shown fail-open, hidden once someone else claims.
+
+        Answers "does an unclaimed user config show everywhere?": it does not — it is
+        absent from a MATCHED admin's list unless it is the saved/picked district, exactly
+        like the unclaimed bundled tiers (`myedbc`, `mbp_all`).
+        """
+        write_overlay(
+            OverlaySpec(
+                sd_number=95,
+                district_name="SD95 test",
+                district_domains=(),
+                base="myedbc",
+            ),
+            overwrite=False,
+        )
+        reset_catalog_cache()
+
+        assert district_domain_index()["sd95custom"] == ()
+
+        # tier (i) — no match at all → the fail-open FULL list, unclaimed rows included.
+        no_match = filtered_catalog("gmail.com", saved_sis="", picked_sis="")
+        assert "sd95custom" in {s.sis_type for s in no_match.summaries}
+
+        # tier (ii) — some OTHER config matches → the unclaimed row is NOT carried along...
+        matched_elsewhere = filtered_catalog("sd48.bc.ca", saved_sis="", picked_sis="")
+        assert "sd95custom" not in {s.sis_type for s in matched_elsewhere.summaries}
+
+        # ...unless it is the SAVED district, exactly like a shipped unclaimed config would be.
+        as_saved = filtered_catalog("sd48.bc.ca", saved_sis="sd95custom", picked_sis="")
+        assert "sd95custom" in {s.sis_type for s in as_saved.summaries}
+
+    def test_deleting_the_overlay_removes_the_match(self) -> None:
+        """The negative twin: proves the index really read the overlay, not a stale build."""
+        write_overlay(
+            OverlaySpec(
+                sd_number=93,
+                district_name="SD93 test",
+                district_domains=("sd93.bc.ca",),
+                base="myedbc",
+            ),
+            overwrite=False,
+        )
+        reset_catalog_cache()
+        assert matched_state("sd93.bc.ca", district_domain_index()).outcome is MatchOutcome.MATCHED_ONE
+
+        assert delete_overlay("sd93custom") is True
+        reset_catalog_cache()
+
+        state = matched_state("sd93.bc.ca", district_domain_index())
+        assert state.outcome is MatchOutcome.NO_MATCH
+        assert state.configs == ()

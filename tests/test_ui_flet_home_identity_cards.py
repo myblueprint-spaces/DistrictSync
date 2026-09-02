@@ -34,7 +34,9 @@ import flet as ft
 import pytest
 
 from src.config.app_config import AppConfig, ConfigLoadState
+from src.config.loader import available_configs as real_available_configs
 from src.ui_flet import components, tokens
+from src.ui_flet.identity_gate import unmapped_sd_number
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.screens import home
 from src.ui_flet.screens.home import build_home
@@ -719,6 +721,62 @@ class TestTheNotListedCard:
         text = _all_text(view)
         assert home.IDENTITY_CARD_HEADLINE in text
         assert home.not_listed_headline("99") in text
+
+
+# --------------------------------------------------------------------------- #
+# 6b. plan 0044 slice 2 — an overlay (shipped OR added) retires the card       #
+# --------------------------------------------------------------------------- #
+# `unmapped_sd_number(cfg, available_configs())` already counts user-dir ids and
+# already ships this behaviour; slice 2's job is to pin it, not to change it. These
+# tests deliberately UNDO `_quiet_home`'s `available_configs` stub (that stub reads
+# a small fixture INDEX, not the disk) and route Home through the REAL loader
+# function instead, over the REAL two-directory search `write_overlay` (plan 0044
+# S1) writes into. `isolated_user_profile` is autouse, so the overlay lands in a
+# per-test tmp dir, never the real profile.
+class TestAnOverlayRetiresTheNotListedCard:
+    def test_a_written_overlay_retires_the_card(self, page, monkeypatch) -> None:
+        from src.config.authoring import OverlaySpec, write_overlay
+
+        monkeypatch.setattr(home, "available_configs", real_available_configs)
+        write_overlay(
+            OverlaySpec(sd_number=93, district_name="SD93 test", district_domains=("sd93.bc.ca",), base="myedbc"),
+            overwrite=False,
+        )
+
+        view = _home(page, _cfg(identity_sd_number="93"), monkeypatch)
+
+        assert home.not_listed_headline("93") not in _all_text(view)
+
+    def test_the_twin_without_the_overlay_still_shows_the_card(self, page, monkeypatch) -> None:
+        """Same config, same real loader, no overlay written — the card must still fire.
+
+        The positive twin above is meaningless without this: it proves the card is not
+        simply gone because we swapped `available_configs`.
+        """
+        monkeypatch.setattr(home, "available_configs", real_available_configs)
+
+        view = _home(page, _cfg(identity_sd_number="93"), monkeypatch)
+
+        assert home.not_listed_headline("93") in _all_text(view)
+
+    def test_unmapped_sd_number_level_pin_sd48custom_retires_while_sd4_stays_unmapped(self, monkeypatch) -> None:
+        """The reader `unmapped_sd_number` itself, isolated from the card's rendering.
+
+        `sd48custom` retires the SD48 ask (an added config is as good as a shipped one);
+        `SD4` is untouched by it — the `(?!\\d)` boundary the resolver already enforces
+        (`SD4` must never match `sd48*`), asserted here at the exact call the card makes.
+        """
+        from src.config.authoring import OverlaySpec, write_overlay
+
+        write_overlay(
+            OverlaySpec(sd_number=48, district_name="SD48 test", district_domains=(), base="myedbc"),
+            overwrite=False,
+        )
+
+        ids = real_available_configs()
+
+        assert unmapped_sd_number(_cfg(identity_sd_number="48"), ids) == ""
+        assert unmapped_sd_number(_cfg(identity_sd_number="4"), ids) == "4"
 
 
 # --------------------------------------------------------------------------- #
