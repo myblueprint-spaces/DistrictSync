@@ -70,6 +70,23 @@ _IDENTITY_DOMAIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}$")
 # ---------------------------------------------------------------------------
 
 
+# A stored "this config was tested" fact (plan 0044 S3, `AppConfig.creator_verified`)
+# is keyed on a sha256 digest of the RESOLVED config: exactly 64 lowercase hex chars.
+_CONFIG_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def is_config_digest(value: object) -> bool:
+    """TOTAL predicate: is ``value`` a sha256 hex digest (64 lowercase hex chars)?
+
+    The ONE spelling of the shape both ``app_config`` (write-time validation of
+    ``creator_verified`` values) and ``ui_flet.config_editor`` (read-time re-validation
+    of a hand-editable ``config.json``) check. Total over any object — a non-string is
+    simply not a digest, never a ``TypeError`` — because a malformed stored value must
+    read as ABSENT (re-test), never crash the settings load.
+    """
+    return isinstance(value, str) and _CONFIG_DIGEST_RE.match(value) is not None
+
+
 def validate_sis_type(value: str) -> str:
     """Ensure *value* is alphanumeric/underscore only (e.g. ``myedbc``)."""
     value = value.strip()
