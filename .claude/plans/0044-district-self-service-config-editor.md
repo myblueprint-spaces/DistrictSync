@@ -1,7 +1,7 @@
 # 0044 — District self-service config editor (Phase 2, re-scoped)
 
-- **Status:** Spec'd (S1) — Stage-3 PASS round 3; five flags owner-ratified 2026-08-27; S1 spec written
-- **Resumable from:** Stage 5 — the owner approval gate on the S1 spec (no implementation before it)
+- **Status:** S1 LANDED on `claude/plan-0044-implementation-nrdj2z` (2026-09-02; Stage-7 review PASS after one BLOCKING + two SHOULD fixes); S2 next — spec JIT
+- **Resumable from:** Stage 4 — write the S2 spec (catalog + identity integration), then the owner approval gate
 - **Blockers:** none
 - **Flags:**
   - `#3+R2-1 activation scope: ALL THREE sis_type writers gated for user-authored configs (wizard creator flow · Mapping Apply · Settings folders-card Save); Convert has no writer and stays explicit-manual` — reviewable at the spec gate.
@@ -9,6 +9,8 @@
   - `#5 version emission: chose emit-NO-version (inherit the base's) — already supported and pinned` — reviewable at the spec gate.
   - `R2-2 advisory writer: chose extract-the-discipline — the five shared obligations move to a private helper; identity_save and the new creator_save become thin named wrappers, each with its own prefix-derived allowlist; creator_ registered in _ADVISORY_FIELD_PREFIXES with its rationale in the module comment` — reviewable at the spec gate.
   - `R2-4 column sets: chose one ADDITIVE defaulted PipelineResult field (input_columns) over a second parse or an extractor header seam` — reviewable at the spec gate.
+  - `S1 sis-emission deviation: the overlay INHERITS sis: MyEducationBC instead of emitting the config id (reviewer finding; DECISIONS 2026-09-02)` — reviewable at the S2 gate.
+  - `S1 CI gate: ci.yml runs only on push-to-main / PRs to main, so no CI run exists for the branch yet — the land-gate CI read is OWED at PR time` — owner decides when to open the PR.
 - **Disposition at close:** per `docs/claugentic-WORKFLOW.md` plan-file lifecycle.
 - **Roadmap item:** `docs/claugentic-ROADMAP.md` → "Brief 0037 … Phase 2 = the district self-service config editor" (updated 2026-08-27)
 - **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` (2026-08-27 re-scope entry — the authority for everything this plan builds) · `.claude/plans/0037-brief-front-door-district-identity-mapping-creator.md` (superseded scope, retained safety rails) · plan 0038 (Phase 1, landed)
@@ -473,7 +475,7 @@ halves pinned together. Any new sink keeps `dry_run` a REQUIRED keyword
 
 ## Decomposition (slices) — reviewer's re-cut adopted
 
-- [ ] **S1 — authoring core + domain table + loader seam + user-dir domains floor (no UI).**
+- [x] **S1 — authoring core + domain table + loader seam + user-dir domains floor (no UI).** _(LANDED 2026-09-02 — see the S1 land record at the end of this file.)_
   `authoring.py` (incl. the version rule and the chain-companion emission rule),
   `bc_district_domains.py`, `resolve_config_path` + origin, the origin-aware
   `district_domains` WARN-and-drop, tests. Lands complete: a hand-driven
@@ -889,3 +891,14 @@ just-in-time per slice; S1 below awaits the owner approval gate._
 
 ### Slices 2–7
 _Spec'd just-in-time, each after the prior slice lands (S2 next)._
+
+---
+
+## Land record — S1 (2026-09-02)
+
+- **Commits (branch `claude/plan-0044-implementation-nrdj2z`):** `is_valid_district_domain` predicate · BC domain table (60 districts / 63 domains, both pinned) · `resolve_config_path` + `validate_overlay` + user-dir domains floor · `authoring.py` (OverlaySpec / build_overlay / write_overlay / delete_overlay) · harness docs (INVARIANTS floor-direction entry, ROADMAP (b) closed, DECISIONS) · reviewer fixes.
+- **Deterministic gates (local, Linux):** full suite 4,676 passed / 47 skipped / 1 PRE-EXISTING failure (`test_ui_flet_filepicker.py::TestCheckWritable::test_unwritable_dir_is_rejected` — the container runs as root; fails on a clean baseline too) · `ruff check` + `ruff format --check` clean · `python -m mypy src/ --exclude src/ui_flet` clean · bandit clean · `check_no_emails` OK · `make validate-config` 20/20 · SD74 golden byte-identical · `authoring.py` 100% covered.
+- **Acceptance:** (1) `write_overlay(SD93)` → `load_config("sd93custom")` → `python -m src.main --sis sd93custom --input tests/snapshots/input --dry-run` exit 0 (renames reproducing SD74's filenames; also pinned in-process with a no-renames twin); (2) all-defaults overlay `to_raw_dict`-equal to its base for all four `ALLOWED_BASES`; (3) user-dir bad domain row → WARN-and-drop, bundled → raise; (4) no existing test flipped.
+- **Reviewer sign-off (Stage 7, adversarial architect pass):** 1 BLOCKING fixed (`_require_bare_filename` accepted Windows drive-relative / ADS `:` names, embedded control chars and reserved device names) · 2 SHOULD fixed (`sis` emission — see the flagged deviation; the shipped-domain parity test enumerated the user dir) · 11 NOTEs: 3 promoted to ROADMAP (per-role divergence, rename chains, SD58/SD70 table quality), the rest accepted as documented.
+- **CI:** NOT read — `ci.yml` triggers only on push-to-main / PRs to main. Owed at PR time (flag above).
+- **Housekeeping landed alongside:** `.githooks/pre-commit` executable bit (the tree gate had never run on Linux/macOS) · a web `SessionStart` hook installing the toolchain.

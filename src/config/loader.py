@@ -524,6 +524,7 @@ def validate_overlay(
     raw: dict[str, Any],
     *,
     search_dirs: Optional[Sequence[Path]] = None,
+    label: Optional[str] = None,
 ) -> MappingConfig:
     """Validate an IN-MEMORY overlay dict exactly as :func:`load_config` would.
 
@@ -537,6 +538,16 @@ def validate_overlay(
     the user dir, so its origin is ``"user"``), and Pydantic errors are wrapped
     with the SAME message shape ``load_config`` produces.
 
+    ``label`` names the config in log/error messages (e.g. ``"Invalid mapping
+    config '<label>': ..."``). Pass the CONFIG ID here (``write_overlay`` passes
+    ``sis_id``) — since plan 0044 review fix #2, an overlay no longer carries a
+    ``sis:`` key of its own (that key is the SIS PRODUCT NAME, inherited from
+    ``_base``, not the config id), so the id must come from the caller who knows
+    it. When ``label`` is ``None`` (the default — used by tests that construct a
+    raw dict directly, or a caller with no id yet), behaviour is UNCHANGED from
+    before this parameter existed: fall back to ``raw["sis"]`` when it is a
+    non-blank string, else the ``"<unsaved overlay>"`` placeholder.
+
     Reads NO file for the overlay itself and does not mutate ``raw`` (a deepcopy
     is validated, because ``_resolve_inheritance`` pops ``_base``).
 
@@ -546,11 +557,14 @@ def validate_overlay(
     """
     dirs = _require_search_pair(search_dirs)
     overlay = copy.deepcopy(raw)
-    sis = overlay.get("sis")
-    label = sis.strip() if isinstance(sis, str) and sis.strip() else _UNSAVED_OVERLAY_LABEL
+    if label is not None:
+        resolved_label = label
+    else:
+        sis = overlay.get("sis")
+        resolved_label = sis.strip() if isinstance(sis, str) and sis.strip() else _UNSAVED_OVERLAY_LABEL
     return _resolve_gate_and_validate(
         overlay,
-        sis_type=label,
+        sis_type=resolved_label,
         path=Path(_UNSAVED_OVERLAY_LABEL),
         origin="user",
         search_dirs=dirs,

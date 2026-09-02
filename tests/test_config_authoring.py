@@ -128,7 +128,39 @@ class TestSisId:
 
 
 class TestSpecValidation:
-    @pytest.mark.parametrize("bad_target", ["../x.txt", "a/b.txt", "", " x.txt", "x.txt ", ".", "..", "d\\x.txt"])
+    @pytest.mark.parametrize(
+        "bad_target",
+        [
+            "../x.txt",
+            "a/b.txt",
+            "",
+            " x.txt",
+            "x.txt ",
+            ".",
+            "..",
+            "d\\x.txt",
+            # Drive-relative / ADS `:` forms — PureWindowsPath("D:/inputs") / "C:x.txt"
+            # discards the input dir entirely under pathlib joining on Windows.
+            "C:x.txt",
+            "x.txt:stream",
+            # Control characters anywhere, not just at the edges.
+            "x\ny.txt",
+            "x\ty.txt",
+            # Windows-forbidden characters.
+            "a<b.txt",
+            'a"b.txt',
+            "a|b.txt",
+            "a?b.txt",
+            "a*b.txt",
+            # Windows reserved device names — case-insensitive, stem before the dot.
+            "CON",
+            "con.txt",
+            "COM1.txt",
+            "nul",
+            # Over the filesystem filename-length limit.
+            "a" * 256,
+        ],
+    )
     def test_rename_target_must_be_a_bare_filename(self, bad_target):
         # This value is joined onto the admin's input dir by the extractor, so it is
         # a path boundary, not a formatting nicety.
@@ -139,6 +171,16 @@ class TestSpecValidation:
         # Positive twin for the boundary above.
         spec = _spec(source_file_renames={"StudentSchedule.txt": "sched.txt"})
         assert spec.source_file_renames == {"StudentSchedule.txt": "sched.txt"}
+
+    @pytest.mark.parametrize(
+        "good_target",
+        ["Student Schedule 2026.txt", "SD-40_students.csv", "données.txt"],
+    )
+    def test_realistic_filenames_are_accepted(self, good_target):
+        # Positive twin for the rejection list above: none of the new checks should
+        # catch ordinary district filenames — spaces, hyphens, years, or accents.
+        spec = _spec(source_file_renames={"StudentSchedule.txt": good_target})
+        assert spec.source_file_renames == {"StudentSchedule.txt": good_target}
 
     def test_blank_district_name_is_refused(self):
         with pytest.raises(ValueError, match="district_name"):
@@ -190,7 +232,6 @@ class TestEmission:
         )
         assert build_overlay(spec, resolved_base=base_config) == {
             "_base": "myedbc",
-            "sis": "sd93custom",
             "district_name": "SD93 - Authoring Test",
             "district_domains": ["sd93.bc.ca"],
             "global_config": {
@@ -210,7 +251,6 @@ class TestEmission:
         spec = _spec(source_file_renames={"StudentSchedule.txt": "sched.txt"})
         assert list(build_overlay(spec, resolved_base=base_config)) == [
             "_base",
-            "sis",
             "district_name",
             "district_domains",
             "global_config",
@@ -220,7 +260,6 @@ class TestEmission:
     def test_all_defaults_emits_only_the_identity_keys(self, base_config):
         assert build_overlay(_spec(), resolved_base=base_config) == {
             "_base": "myedbc",
-            "sis": "sd93custom",
             "district_name": "SD93 - Authoring Test",
             "district_domains": ["sd93.bc.ca"],
         }
@@ -235,13 +274,25 @@ class TestEmission:
     def test_acceptance_2_all_defaults_resolves_byte_equal_to_its_base(self, base_config):
         """An all-defaults overlay changes NOTHING the ETL can see (acceptance (2))."""
         overlay = build_overlay(_spec(), resolved_base=base_config)
+        assert "sis" not in overlay
         resolved = validate_overlay(overlay)
         assert resolved.to_raw_dict() == base_config.to_raw_dict()
-        # ...and the three presentation keys DO differ — the positive half, without
-        # which the equality above would be vacuously satisfiable by an empty overlay.
-        assert resolved.sis == "sd93custom" != base_config.sis
+        # `sis` is the SIS PRODUCT NAME, not the config id — it is INHERITED from the
+        # base, stated here as the positive twin of "sis not in overlay" above (without
+        # it, that assertion would be equally true of a config that just forgot `sis`).
+        assert resolved.sis == "MyEducationBC" == base_config.sis
+        # ...and the two presentation keys that DO differ — the positive half, without
+        # which the to_raw_dict equality above would be vacuously satisfiable by an
+        # empty overlay.
         assert resolved.district_name != base_config.district_name
         assert resolved.district_domains == ["sd93.bc.ca"] != base_config.district_domains
+
+        # Written to disk, the overlay carries no `sis:` line at all — the id lives
+        # in the header comment instead (see `_file_header`), never in the body.
+        path = write_overlay(_spec(), overwrite=False)
+        text = path.read_text(encoding="utf-8")
+        assert not any(line.startswith("sis:") for line in text.splitlines())
+        assert "sd93custom" in text.splitlines()[0]
 
     def test_no_version_key_is_ever_emitted(self, base_config):
         spec = _spec(student_rostering_grades=("08", "09"), homeroom_grades=())
@@ -395,17 +446,22 @@ class TestWriteOverlay:
         assert path == user_mappings_dir() / "sd93custom_mapping.yaml"
         assert path.parent == user_mappings_dir()
         config = load_config("sd93custom")
-        assert config.sis == "sd93custom"
+        # `sis` is the SIS PRODUCT NAME, inherited from the base — the config id
+        # lives elsewhere (the filename stem / --sis argument / header comment).
+        assert config.sis == "MyEducationBC" == load_config("myedbc").sis
         assert config.district_domains == ["sd93.bc.ca"]
         assert "sd93custom" in available_configs()
 
-    def test_the_written_text_carries_a_header_and_no_version_line(self):
+    def test_the_written_text_carries_a_header_and_no_version_or_sis_line(self):
         path = write_overlay(_spec(), overwrite=False)
         text = path.read_text(encoding="utf-8")
-        assert text.startswith("# Generated by DistrictSync's self-service district setup.")
+        assert text.startswith("# DistrictSync self-service mapping config 'sd93custom'")
         assert not any(line.startswith("version:") for line in text.splitlines())
-        # ...and the resolved config still version-gates cleanly (the inherited pin).
+        assert not any(line.startswith("sis:") for line in text.splitlines())
+        # ...and the resolved config still version-gates cleanly (the inherited pin)
+        # and inherits the base's SIS product name.
         assert load_config("sd93custom").version == load_config("myedbc").version
+        assert load_config("sd93custom").sis == load_config("myedbc").sis == "MyEducationBC"
 
     @pytest.mark.parametrize("base", ALLOWED_BASES)
     def test_round_trip_against_every_allowed_base(self, base):
@@ -413,8 +469,12 @@ class TestWriteOverlay:
         path = write_overlay(spec, overwrite=False)
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         assert raw["_base"] == base
+        assert "sis" not in raw
         config = load_config("sd93custom")
-        assert config.sis == derive_sis_id(93) == "sd93custom"
+        # The config ID is sd93custom (the filename stem); `sis` is the inherited
+        # SIS product name from `base`, which need not equal the id.
+        assert derive_sis_id(93) == "sd93custom"
+        assert config.sis == load_config(base).sis
         assert config.district_domains == ["sd93.bc.ca"]
         assert config.district_name == "SD93 - Authoring Test"
         # The overlay inherits the base's entity selection unchanged.

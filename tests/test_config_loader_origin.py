@@ -338,3 +338,14 @@ class TestValidateOverlay:
         with pytest.raises(ValueError) as excinfo:
             validate_overlay(raw)
         assert "<unsaved overlay>" in str(excinfo.value)
+
+    def test_an_explicit_label_names_the_config_even_with_no_sis_key(self, user_mappings):
+        """`write_overlay` passes `label=sis_id` — since plan 0044 review fix #2 an
+        overlay carries no `sis:` key of its own (that key is the inherited SIS
+        PRODUCT NAME, not the config id), so the id must come from the caller.
+        """
+        raw = _overlay(global_config={"student_rostering_grades": []})
+        del raw["sis"]
+        with pytest.raises(ValueError) as excinfo:
+            validate_overlay(raw, label="sd93custom")
+        assert str(excinfo.value).startswith("Invalid mapping config 'sd93custom'")

@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from src.config.bc_district_domains import DOMAINS_BY_SD, domains_for, presumptive_domain
 from src.config.loader import available_configs, load_config
 from src.config.models import MappingConfig, is_valid_district_domain
+from src.utils.paths import bundle_mappings_dir
 from src.utils.validators import _IDENTITY_DOMAIN_RE
 
 # --------------------------------------------------------------------------- #
@@ -154,11 +155,19 @@ def test_every_shipped_district_domain_is_in_the_vendored_table():
     that SD number. `sd51attendance` duplicates sd51myedbc's SD number (51) and is
     skipped once that number has already been checked via sd51myedbc — same
     district, two tiers, not a second data point.
+
+    Enumerated via the BUNDLE dir explicitly (never the plain `available_configs()`,
+    which also globs the user dir): this test's claim is about the shipped,
+    vendor-reviewed table, and a self-service overlay written into the user dir by
+    an unrelated test (e.g. an `sd93custom` config with `district_domains=
+    ["sd93.bc.ca"]`) would otherwise be matched against this table's real SD93 row
+    (`csf.bc.ca`) and fail for a reason that has nothing to do with the bundle.
     """
+    bundle_dir = bundle_mappings_dir()
     checked_sd_numbers: set[int] = set()
     checked_any = False
 
-    for sis in available_configs():
+    for sis in available_configs(bundle_dir):
         match = _SD_ID_RE.match(sis)
         if not match:
             continue  # no SD number in the id (myedbc, mbp_*, unitychristianmyedbc)
@@ -168,7 +177,7 @@ def test_every_shipped_district_domain_is_in_the_vendored_table():
             continue  # sd51attendance-style duplicate of an already-checked number
         checked_sd_numbers.add(sd_number)
 
-        cfg = load_config(sis)
+        cfg = load_config(sis, config_dir=bundle_dir)
         if not cfg.district_domains:
             continue
 
