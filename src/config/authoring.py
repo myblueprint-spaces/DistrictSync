@@ -669,6 +669,10 @@ def write_overlay(
 
     Logs the id and counts only — never the district name, and never a domain.
 
+    Does NOT invalidate the UI's memoised catalog
+    (``src/ui_flet/mapping_catalog.reset_catalog_cache``) — the calling UI layer does,
+    because this module must not import the UI layer.
+
     Raises:
         FileExistsError: the target exists and ``overwrite`` is False.
         ValueError / FileNotFoundError: from :func:`build_overlay` or the load-back.
@@ -717,6 +721,10 @@ def delete_overlay(sis_id: str) -> bool:
     * a target that does not resolve INSIDE ``user_mappings_dir()``. Defence in depth:
       :func:`validate_sis_type` already excludes separators and dots, so this can only
       fire if that boundary ever loosens — which is exactly when a deletion must stop.
+
+    Does NOT invalidate the UI's memoised catalog
+    (``src/ui_flet/mapping_catalog.reset_catalog_cache``) — the calling UI layer does,
+    because this module must not import the UI layer.
 
     Returns:
         ``False`` when there was no such file (idempotent — a caller retrying a

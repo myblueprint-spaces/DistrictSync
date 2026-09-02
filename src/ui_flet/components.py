@@ -532,6 +532,39 @@ def district_chip(label: str) -> ft.Container:
     )
 
 
+def origin_badge(label: str) -> ft.Container:
+    """A rounded PROVENANCE pill: a neutral computer glyph + where a config came from.
+
+    The same body as :func:`district_chip` (``color_chip_bg`` fill, MB_BORDER border, fully
+    rounded, AA-gated ``color_text`` on the chip tint) with one difference that is the whole
+    point: the glyph. ``district_chip``'s building icon means *this is the district* — reusing
+    it for ``mapping_catalog.CUSTOM_ORIGIN_LABEL`` ("Added on this computer") would read as a
+    district-identity marker rather than as a statement about where a file lives. The computer
+    glyph carries the same fact the words do, and it is NEUTRAL: it makes no status claim (a
+    locally-added config is not a fault) and no editability claim.
+
+    Used by Mapping's summary card. Never PII: the label is a structural fact about a file's
+    directory — no path, no author, no address (plan 0044 S2).
+    """
+    return ft.Container(
+        bgcolor=tokens.color_chip_bg,
+        border=_b_all(1, tokens.color_border),
+        border_radius=999,
+        padding=ft.Padding(
+            left=tokens.space_sm, top=tokens.space_xs + 1, right=tokens.space_md, bottom=tokens.space_xs + 1
+        ),
+        content=ft.Row(
+            spacing=tokens.space_sm - 1,
+            tight=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Icon(ft.Icons.COMPUTER_ROUNDED, size=tokens.type_emphasis, color=tokens.color_action_primary),
+                ft.Text(label, size=tokens.type_caption, weight=ft.FontWeight.W_600, color=tokens.color_text),
+            ],
+        ),
+    )
+
+
 def status_pill(label: str, status: Verdict) -> ft.Container:
     """A rounded status pill: a status-colour glyph + a deep on-tint label, toned per status.
 

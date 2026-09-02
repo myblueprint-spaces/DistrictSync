@@ -25,7 +25,9 @@ not data) and NEVER interpolates a raw exception string (a Pydantic/OS error tex
 admin-facing field — a load failure is named by category (``loaded_ok=False``), never echoed.
 ``district_domains`` (0038) adds one more structural fact of the same kind: each config's
 PUBLIC district staff email domains — an organisational fact the district itself publishes,
-never personal data, and never a student's address.
+never personal data, and never a student's address. ``origin`` (0044 S2) is a third: WHICH
+DIRECTORY the YAML came out of, carried as the two-valued loader ``Literal`` and rendered as
+:data:`CUSTOM_ORIGIN_LABEL` — never a path, never an author, never an address.
 
 **The district-list filter (0038 S5) — one choke point, two tiers.** ``filtered_catalog`` is
 the SINGLE place that decides which district rows a picker shows, consumed by all four
@@ -56,7 +58,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from src.config.loader import available_configs, load_config
+from src.config.loader import ConfigOrigin, available_configs, load_config, resolve_config_path
 from src.ui_flet.home_status import (
     _MYBLUEPRINT_ENTITIES,
     _ROSTERING_ENTITIES,
@@ -106,6 +108,16 @@ class ConfigSummary:
     (``home_status.size_clause`` counts by key, and a record's flat count keys are keys, not
     labels). ``output_labels`` is derived FROM it, so the ordering and the produced set are
     decided exactly once.
+
+    ``origin`` (0044 S2) is WHICH TIER the YAML came out of — ``"user"`` for a file in the
+    per-user ``mappings/`` dir (authored on this computer by the admin or by support),
+    ``"bundled"`` for one shipped inside DistrictSync. It is the fact behind
+    :data:`CUSTOM_ORIGIN_LABEL`, which every picker row and Mapping's summary card carry, so
+    an install holding both ``sd48myedbc`` (shipped) and ``sd48custom`` (added here) is never
+    a coin flip. It is **required, with no default**: a defaulted ``"bundled"`` would let a
+    future construction site silently claim vendor provenance for a hand-authored file — the
+    exact claim the marker exists to prevent. Derived by :func:`_origin_of`, never by
+    inspecting a path in a caller (one spelling of the tier rule, the loader's).
     """
 
     sis_type: str
@@ -115,14 +127,63 @@ class ConfigSummary:
     source_file_count: int
     loaded_ok: bool
     district_domains: tuple[str, ...] | None
+    origin: ConfigOrigin
 
 
-def _degraded(sis_type: str, *, config_dir: Path | None) -> ConfigSummary:
+#: The words that mark a district row whose mapping config lives in this computer's
+#: DistrictSync folder rather than inside the executable — the SINGLE source of that
+#: wording, rendered by :func:`disambiguated_labels` (all four pickers) and by Mapping's
+#: summary card. Deliberately PII-free and authorship-free: it stays true whether the admin
+#: built the config with the creator flow or support handed the YAML over, and it claims
+#: NOTHING about editability or about vendor work (plan 0044 S2, owner-approved wording).
+CUSTOM_ORIGIN_LABEL = "Added on this computer"
+
+
+def _origin_of(sis_type: str, config_dir: Path | None) -> ConfigOrigin:
+    """Which TIER this config's YAML comes out of — TOTAL, never raises.
+
+    Exactly ONE :func:`src.config.loader.resolve_config_path` call per summary: a path
+    lookup (two ``exists()`` stats), never a second YAML parse. It is called BEFORE
+    ``summarize_config``'s ``try`` so a config that fails to LOAD still carries its origin —
+    a broken overlay is the row most likely to need the marker.
+
+    Two rules, both deliberate:
+
+    * **an explicit single ``config_dir`` is ``"bundled"``**, re-using ``load_config``'s own
+      definition verbatim ("one dir cannot express an origin", ``loader.py`` ~499-504) rather
+      than inventing a second answer for the same seam. That is *why* origin tests have to
+      go through the real user-then-bundled pair: a single-dir fixture is vacuous by
+      construction;
+    * **it is TOTAL and SILENT.** Any raise (``user_mappings_dir()`` mkdir-ing on a
+      locked-down profile, an OS error mid-stat) → ``"bundled"``, with no log line: that
+      root cause already surfaces in ``summarize_config``'s load WARN, and one duplicate per
+      catalog row would bury it. A config that is simply not found anywhere reads
+      ``"bundled"`` for the same reason.
+
+    Fallback DIRECTION, argued: an unmarked row loses a distinction (two rows that could
+    have read differently read the same, which is the pre-S2 status quo), while a
+    wrongly-``"user"`` row would tell an admin that a mapping we ship was added on their
+    computer — denying our own provenance and inviting them to delete it.
+    """
+    if config_dir is not None:
+        return "bundled"
+    try:
+        resolved = resolve_config_path(sis_type)
+    except Exception:  # noqa: BLE001 - total: origin is a presentation fact, never a failure path
+        return "bundled"
+    return "bundled" if resolved is None else resolved.origin
+
+
+def _degraded(sis_type: str, *, config_dir: Path | None, origin: ConfigOrigin) -> ConfigSummary:
     """The safe degraded summary for a config that failed to load — no PII, no raw error text.
 
     ``district_name`` falls back to the raw id via ``friendly_district_name``'s totality (itself
     total — a nested load failure returns the raw id, never raises). ``district_domains`` is
     ``None`` (unresolvable), which is what keeps a broken YAML from ever matching anybody.
+
+    ``origin`` is PASSED THROUGH, never re-derived here: the caller resolved it before the
+    load was attempted, so a broken user overlay still renders marked (and re-resolving it on
+    this path would be a second lookup that could disagree with the first).
     """
     return ConfigSummary(
         sis_type=sis_type,
@@ -132,6 +193,7 @@ def _degraded(sis_type: str, *, config_dir: Path | None) -> ConfigSummary:
         source_file_count=0,
         loaded_ok=False,
         district_domains=None,
+        origin=origin,
     )
 
 
@@ -141,7 +203,11 @@ def summarize_config(sis_type: str, *, config_dir: Path | None = None) -> Config
     ``config_dir`` is a test seam passed straight through to ``load_config`` /
     ``friendly_district_name`` (overriding the ``~/.districtsync`` search dirs), so this is
     unit-testable against a fixture mappings dir with no home dependency.
+
+    ``origin`` is resolved BEFORE the load is attempted (see :func:`_origin_of`), so a config
+    that fails to load still reports the tier it came from.
     """
+    origin = _origin_of(sis_type, config_dir)
     try:
         cfg = load_config(sis_type, config_dir)
         # `active_entities` is enabled ∩ DEFINED: an entity enabled but absent from `mappings`
@@ -158,6 +224,7 @@ def summarize_config(sis_type: str, *, config_dir: Path | None = None) -> Config
             source_file_count=source_file_count,
             loaded_ok=True,
             district_domains=tuple(cfg.district_domains or ()),
+            origin=origin,
         )
     except Exception:  # noqa: BLE001 - total: any load failure degrades, never surfaces the raw error
         # ONE WARN naming the config ID — the support signal a silent degradation would cost,
@@ -168,7 +235,7 @@ def summarize_config(sis_type: str, *, config_dir: Path | None = None) -> Config
             "The district mapping %r could not be read; it is shown but can match nobody.",
             sis_type,
         )
-        return _degraded(sis_type, config_dir=config_dir)
+        return _degraded(sis_type, config_dir=config_dir, origin=origin)
 
 
 def _ordered_entities(enabled: set[str]) -> tuple[str, ...]:
@@ -334,6 +401,16 @@ def reset_catalog_cache() -> None:
     The support/test seam; the app never needs to call it. Both are cleared together so a
     caller that re-reads the disk after dropping a YAML cannot get a fresh catalog beside a
     stale single-config summary.
+
+    **The invalidation RULE (plan 0044 S2).** Writing or deleting a mapping config while the
+    app is running — ``src.config.authoring.write_overlay`` / ``delete_overlay`` — leaves this
+    memo stale (the new district is absent from every picker, a deleted one still offered).
+    The UI CALLER invalidates, by calling this right after a successful write or delete.
+    ``authoring`` deliberately does NOT call it: ``src/config/`` importing ``src/ui_flet/``
+    would invert the layer isolation CLAUDE.md states as a principle and drag a UI module
+    into the CLI's import graph. Pinned stale-then-fresh in
+    ``tests/test_ui_flet_mapping_catalog.py``, and stated at ``write_overlay`` /
+    ``delete_overlay`` too, so the rule is readable from either side of the seam.
     """
     _cached_catalog.cache_clear()
     _cached_summary.cache_clear()
@@ -511,6 +588,22 @@ def disambiguated_labels(summaries: Sequence[ConfigSummary]) -> dict[str, str]:
     YAMLs we do NOT control — a partner-authored mapping dropped into
     ``~/.districtsync/mappings/``. If it ever starts firing on the bundled catalog, G13 has
     regressed and that is the bug to fix, not this.
+
+    **The provenance marker (0044 S2).** A row whose config came out of the per-user
+    ``mappings/`` dir (``origin == "user"``) gets ``" — "`` + :data:`CUSTOM_ORIGIN_LABEL`
+    appended, AFTER any collision suffix. Two properties matter:
+
+    * this function is **the entire four-picker change**: the wizard District step, Settings'
+      folders card, Convert and Mapping's switch list all render ``labels[s.sis_type]``, so
+      the marker reaches every district decision point from one place. (A future picker that
+      stops routing through here silently loses it — the per-picker rendered-tree tests in
+      ``tests/test_ui_flet_filtered_pickers.py`` are the guard.) Text rather than a badge
+      because ``ft.dropdown.Option(key=, text=)`` is the pinned 0.85.3 form;
+    * the marker does **not** join collision detection. It is appended after the fact, so a
+      same-named shipped/added pair still gets the raw id on BOTH rows (the id is what
+      separates them; the marker only says where one of them lives). Detection reads
+      ``district_name`` only, which also keeps two ADDED configs sharing a name from reading
+      identically just because both carry the marker.
     """
     seen: dict[str, list[str]] = {}
     for summary in summaries:
@@ -521,7 +614,10 @@ def disambiguated_labels(summaries: Sequence[ConfigSummary]) -> dict[str, str]:
     for summary in summaries:
         display = (summary.district_name or "").strip() or summary.sis_type
         collides = len(seen[display.strip().lower()]) > 1
-        labels[summary.sis_type] = f"{display} ({summary.sis_type})" if collides else display
+        label = f"{display} ({summary.sis_type})" if collides else display
+        if summary.origin == "user":
+            label = f"{label} — {CUSTOM_ORIGIN_LABEL}"
+        labels[summary.sis_type] = label
     return labels
 
 

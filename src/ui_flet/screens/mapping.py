@@ -68,6 +68,7 @@ from src.scheduler import get_scheduler
 from src.ui_flet import components, tokens
 from src.ui_flet.identity_gate import stored_identity_domain
 from src.ui_flet.mapping_catalog import (
+    CUSTOM_ORIGIN_LABEL,
     ConfigSummary,
     can_apply,
     disambiguated_labels,
@@ -90,14 +91,25 @@ def _greeting_header(app_config: AppConfig) -> ft.Control:  # noqa: ARG001 - uni
     )
 
 
+# Where a mapping added on THIS computer lives, said once. It deliberately says NOTHING
+# about editing — Mapping is review-and-switch for every row today, an added row is no
+# different yet, and "read-only for now" / "you'll be able to edit this soon" would promise a
+# later slice's work on a surface that cannot do it (plan 0044 S2).
+CUSTOM_ORIGIN_NOTE = "This mapping lives in this computer's DistrictSync folder — it wasn't shipped with DistrictSync."
+
+
 def _summary_lines(summary: ConfigSummary) -> list[ft.Control]:
     """The plain-language body of a config summary: what it produces + how many files it reads.
 
     A degraded (``loaded_ok=False``) config gets a calm "couldn't read this configuration" note
     instead of a fabricated summary (never a raw error).
+
+    A config from the per-user ``mappings/`` dir also carries ``CUSTOM_ORIGIN_NOTE`` — on BOTH
+    branches, because a mapping that was added here AND cannot be read is exactly the row whose
+    provenance the admin most needs (that is the one they can fix or remove).
     """
     if not summary.loaded_ok:
-        return [
+        lines: list[ft.Control] = [
             ft.Text(
                 "We couldn't read this configuration — it may need attention.",
                 size=14,
@@ -105,16 +117,20 @@ def _summary_lines(summary: ConfigSummary) -> list[ft.Control]:
                 weight=ft.FontWeight.W_600,
             ),
         ]
-    produces = ", ".join(summary.output_labels) if summary.output_labels else "nothing yet"
-    files_word = "file" if summary.source_file_count == 1 else "files"
-    return [
-        ft.Text(f"Produces: {produces}", size=14, color=tokens.color_text),
-        ft.Text(
-            f"Reads {summary.source_file_count} extract {files_word}",
-            size=13,
-            color=tokens.color_muted,
-        ),
-    ]
+    else:
+        produces = ", ".join(summary.output_labels) if summary.output_labels else "nothing yet"
+        files_word = "file" if summary.source_file_count == 1 else "files"
+        lines = [
+            ft.Text(f"Produces: {produces}", size=14, color=tokens.color_text),
+            ft.Text(
+                f"Reads {summary.source_file_count} extract {files_word}",
+                size=13,
+                color=tokens.color_muted,
+            ),
+        ]
+    if summary.origin == "user":
+        lines.append(ft.Text(CUSTOM_ORIGIN_NOTE, size=tokens.type_body, color=tokens.color_muted))
+    return lines
 
 
 # The "nothing chosen yet" state of the current-mapping card (0038 S5). Without it, a blank
@@ -140,6 +156,26 @@ def _no_district_card() -> ft.Control:
     )
 
 
+def _name_row(summary: ConfigSummary) -> ft.Control:
+    """The card's district name, with the provenance badge beside it for an added mapping.
+
+    A badge rather than more copy at the name's own tier: the pickers already mark the row
+    with the same words (``CUSTOM_ORIGIN_LABEL``, single-sourced from ``mapping_catalog``), so
+    an admin who chose the row and an admin reading the card see one wording. It rides in a
+    wrapping Row so a long district name on a narrow window pushes the badge onto its own
+    line rather than clipping it.
+    """
+    name = ft.Text(summary.district_name, size=tokens.type_title, weight=ft.FontWeight.W_800, color=tokens.color_text)
+    if summary.origin != "user":
+        return name
+    return ft.Row(
+        spacing=tokens.space_sm,
+        wrap=True,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[name, components.origin_badge(CUSTOM_ORIGIN_LABEL)],
+    )
+
+
 def _summary_card(title: str, summary: ConfigSummary) -> ft.Control:
     """A titled card for one config's summary: friendly name (primary) + what it produces + the raw id hint."""
     return components.card(
@@ -147,7 +183,7 @@ def _summary_card(title: str, summary: ConfigSummary) -> ft.Control:
             spacing=10,
             controls=[
                 ft.Text(title, size=14, weight=ft.FontWeight.W_700, color=tokens.color_muted),
-                ft.Text(summary.district_name, size=20, weight=ft.FontWeight.W_800, color=tokens.color_text),
+                _name_row(summary),
                 *_summary_lines(summary),
                 # The raw sis_type — a small secondary technical hint only (support recoverability),
                 # never the primary label.

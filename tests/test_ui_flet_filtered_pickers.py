@@ -707,3 +707,264 @@ class TestTheScreensNeverFailClosed:
         _pin_config(monkeypatch, _cfg(load_state=ConfigLoadState.UNREADABLE))
 
         assert len(_keys(_dropdown(build_convert(page), "District"))) == 20
+
+
+# --------------------------------------------------------------------------- #
+# 7. The provenance marker on screen (plan 0044 S2)                            #
+#                                                                             #
+# `disambiguated_labels` is the ONE lever for all four pickers, so the guard    #
+# that it still REACHES each of them is per-surface and reads the rendered      #
+# option text. Every "the marker is there" assertion names a SHIPPED row in the #
+# same `_texts()` list that does NOT carry it — otherwise a marker leaking onto #
+# every row (or a label helper that appends unconditionally) would pass.        #
+# --------------------------------------------------------------------------- #
+CUSTOM_SD = 93
+CUSTOM_ID = "sd93custom"
+CUSTOM_NAME = "SD93 - Marker Test"
+
+
+@pytest.fixture
+def custom_overlay(monkeypatch, isolated_user_profile) -> str:
+    """A REAL ``sd93custom`` overlay in the isolated user mappings dir, claiming SD48's domain.
+
+    Written through ``authoring.write_overlay`` (load-backed by the real loader), so these are
+    rows the app could genuinely run. It claims ``sd48.bc.ca`` deliberately: the SD48 admin
+    these tests drive then sees exactly TWO rows — one shipped, one added — which is both the
+    ``sd<num>custom``-beside-a-shipped-district shape the id namespace anticipates and the
+    shortest list in which "marked" and "unmarked" can be read side by side.
+    """
+    import sys
+
+    from src.config.authoring import OverlaySpec, write_overlay
+    from src.ui_flet import mapping_catalog
+
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    write_overlay(
+        OverlaySpec(
+            sd_number=CUSTOM_SD,
+            district_name=CUSTOM_NAME,
+            district_domains=("sd48.bc.ca",),
+            base="myedbc",
+        ),
+        overwrite=False,
+    )
+    mapping_catalog.reset_catalog_cache()  # the write landed after the autouse fixture's reset
+    return CUSTOM_ID
+
+
+def _assert_marked_beside_a_shipped_row(dropdown: ft.Dropdown, where: str) -> None:
+    """The marker is on the ADDED row and on nothing else in the same rendered list."""
+    from src.ui_flet.mapping_catalog import CUSTOM_ORIGIN_LABEL
+
+    texts = dict(zip(_keys(dropdown), _texts(dropdown), strict=True))
+
+    assert CUSTOM_ID in texts, f"{where} did not offer the added mapping at all: {texts}"
+    assert "sd48myedbc" in texts, f"{where} lost the shipped twin — the comparison is vacuous: {texts}"
+    assert CUSTOM_ORIGIN_LABEL in texts[CUSTOM_ID], f"{where} renders the added row unmarked: {texts[CUSTOM_ID]!r}"
+    assert CUSTOM_ORIGIN_LABEL not in texts["sd48myedbc"], (
+        f"{where} marks a SHIPPED mapping as added on this computer: {texts['sd48myedbc']!r}"
+    )
+    assert CUSTOM_NAME in texts[CUSTOM_ID], "the district's own name still leads the row"
+
+
+class TestTheMarkerReachesEveryPicker:
+    def test_the_wizard_District_step(self, page: MagicMock, monkeypatch, custom_overlay: str) -> None:
+        _pin_config(monkeypatch, _cfg(setup_completed=False, sis_type=""))
+
+        _assert_marked_beside_a_shipped_row(_dropdown(build_setup(page), "District"), "the wizard District step")
+
+    def test_the_Settings_folders_card(self, page: MagicMock, monkeypatch, custom_overlay: str) -> None:
+        _pin_config(monkeypatch, _cfg())
+
+        _assert_marked_beside_a_shipped_row(_dropdown(build_setup(page), "District"), "the Settings folders card")
+
+    def test_Convert(self, page: MagicMock, monkeypatch, custom_overlay: str) -> None:
+        _pin_config(monkeypatch, _cfg())
+
+        _assert_marked_beside_a_shipped_row(_dropdown(build_convert(page), "District"), "Convert")
+
+    def test_the_Mapping_switch_list(self, page: MagicMock, monkeypatch, custom_overlay: str) -> None:
+        cfg = _cfg()
+        _pin_config(monkeypatch, cfg)
+
+        _assert_marked_beside_a_shipped_row(
+            _dropdown(build_mapping(page, app_config=cfg), "Roster mapping"), "Mapping's switch list"
+        )
+
+    def test_an_all_shipped_list_carries_NO_marker_anywhere(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """The whole-list negative twin, with no overlay written at all: nothing about the
+        marker may render on an install that has only the mappings we ship."""
+        from src.ui_flet.mapping_catalog import CUSTOM_ORIGIN_LABEL
+
+        cfg = _cfg(identity_email=UNMATCHED)
+        _pin_config(monkeypatch, cfg)
+
+        for dropdown in (
+            _dropdown(build_setup(page), "District"),
+            _dropdown(build_convert(page), "District"),
+            _dropdown(build_mapping(page, app_config=cfg), "Roster mapping"),
+        ):
+            assert len(_texts(dropdown)) == 20, "the positive twin: a full shipped list really rendered"
+            assert not any(CUSTOM_ORIGIN_LABEL in text for text in _texts(dropdown)), _texts(dropdown)
+
+
+class TestMappingsSummaryCard:
+    def _texts_of(self, tree) -> list[str]:  # noqa: ANN001, ANN202
+        return [c.value for c in _walk(tree) if isinstance(getattr(c, "value", None), str)]
+
+    def test_an_added_current_mapping_shows_the_BADGE_and_the_NOTE(
+        self, page: MagicMock, monkeypatch, custom_overlay: str
+    ) -> None:
+        """The card an admin lands on when the added mapping is the one in use.
+
+        The badge is asserted through the FACTORY (``components.origin_badge``), not just by
+        its words: the design rule is that a screen assembles, never styles, and a hand-rolled
+        pill would satisfy a text-only probe.
+        """
+        from src.ui_flet.mapping_catalog import CUSTOM_ORIGIN_LABEL
+        from src.ui_flet.screens import mapping as mapping_screen
+
+        cfg = _cfg(sis_type=CUSTOM_ID)
+        _pin_config(monkeypatch, cfg)
+        badged: list[str] = []
+        real = components.origin_badge
+        monkeypatch.setattr(components, "origin_badge", lambda label: badged.append(label) or real(label))
+
+        texts = self._texts_of(build_mapping(page, app_config=cfg))
+
+        # TWO badges: on mount the pending selection IS the current mapping, so Mapping paints
+        # both the "Current mapping" and the "Switch to" card for the same config.
+        assert badged and set(badged) == {CUSTOM_ORIGIN_LABEL}, (
+            f"the provenance badge was not built by the factory: {badged}"
+        )
+        assert mapping_screen.CUSTOM_ORIGIN_NOTE in texts
+        assert CUSTOM_NAME in texts, "the district's own name is still the card's primary label"
+
+    def test_a_SHIPPED_current_mapping_shows_NEITHER(self, page: MagicMock, monkeypatch, custom_overlay: str) -> None:
+        """The twin, on the same install (the overlay exists, it is just not the one in use) —
+        so this cannot pass merely because nothing was ever added."""
+        from src.ui_flet.mapping_catalog import CUSTOM_ORIGIN_LABEL
+        from src.ui_flet.screens import mapping as mapping_screen
+
+        cfg = _cfg(sis_type="sd48myedbc")
+        _pin_config(monkeypatch, cfg)
+        badged: list[str] = []
+        real = components.origin_badge
+        monkeypatch.setattr(components, "origin_badge", lambda label: badged.append(label) or real(label))
+
+        texts = self._texts_of(build_mapping(page, app_config=cfg))
+
+        assert any("Sea to Sky" in t for t in texts), "the positive twin: the card really did render"
+        assert badged == []
+        assert mapping_screen.CUSTOM_ORIGIN_NOTE not in texts
+        assert not any(CUSTOM_ORIGIN_LABEL in text for text in texts)
+
+    def test_the_note_PROMISES_NOTHING(self) -> None:
+        """S6 owns editing. The card must not say "read-only for now", "you'll be able to edit
+        this soon" or anything else about a capability this surface does not have — Mapping is
+        review-and-switch for every row today, and an added row is no different yet."""
+        from src.ui_flet.screens import mapping as mapping_screen
+
+        note = mapping_screen.CUSTOM_ORIGIN_NOTE
+
+        assert "DistrictSync folder" in note, "the positive twin: it does state where the file lives"
+        assert "wasn't shipped with DistrictSync" in note
+        lowered = note.lower()
+        for banned in ("edit", "soon", "later", "read-only", "coming"):
+            assert banned not in lowered, f"the note promises {banned!r}: {note!r}"
+
+    def test_an_added_mapping_that_CANNOT_be_read_still_shows_its_provenance(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """The row most likely to need the marker is a broken overlay: the admin has to know
+        the file is theirs to fix or remove, not a fault in the shipped product."""
+        import sys
+
+        from src.ui_flet.mapping_catalog import CUSTOM_ORIGIN_LABEL
+        from src.ui_flet.screens import mapping as mapping_screen
+        from src.utils.paths import user_mappings_dir
+
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+        (user_mappings_dir() / "sd94custom_mapping.yaml").write_text(
+            "mappings: [not a valid mappings dict\n", encoding="utf-8"
+        )
+        cfg = _cfg(sis_type="sd94custom")
+        _pin_config(monkeypatch, cfg)
+
+        texts = self._texts_of(build_mapping(page, app_config=cfg))
+
+        assert any("couldn't read this configuration" in t for t in texts), "the degraded card is what renders"
+        assert any(CUSTOM_ORIGIN_LABEL in t for t in texts)
+        assert mapping_screen.CUSTOM_ORIGIN_NOTE in texts
+
+
+# --------------------------------------------------------------------------- #
+# 8. The plain pick-a-shipped-district path, behaviourally (#12)               #
+#                                                                             #
+# S3 branches the District step into a creator flow. Before that lands, this    #
+# pins the path it branches — not a render smoke: an admin who just wants one   #
+# of the mappings we ship must still be able to pick it, have it PERSISTED, and #
+# come back to a wizard that has moved on. Driven against the REAL on-disk      #
+# `config.json` in the isolated profile (no patched `AppConfig.load`), because  #
+# a mocked save cannot fail the way a real one can.                            #
+# --------------------------------------------------------------------------- #
+class TestTheNonCreatorPickPathStillWorks:
+    PICKED = "sd74myedbc"
+
+    def _fresh_install(self) -> None:
+        """A genuinely unfinished install on disk: no district, setup not completed."""
+        AppConfig(
+            input_dir="/in",
+            output_dir="/out",
+            sis_type="",
+            setup_completed=False,
+            identity_email=UNMATCHED,  # unmatched, so every shipped district is offered
+        ).save()
+
+    def test_picking_a_shipped_district_and_pressing_Continue_PERSISTS_and_ADVANCES(
+        self, page: MagicMock, isolated_user_profile
+    ) -> None:
+        import json
+
+        from src.config.app_config import config_file_path
+
+        self._fresh_install()
+        tree = build_setup(page)
+        dropdown = _dropdown(tree, "District")
+        assert self.PICKED in _keys(dropdown), "the district we are about to pick is really offered"
+
+        dropdown.value = self.PICKED
+        dropdown.on_select(_pick_event(self.PICKED))
+        _button(tree, "Continue").on_click(None)
+
+        # (a) it reached DISK — the whole point of driving the real AppConfig.
+        on_disk = json.loads(config_file_path().read_text(encoding="utf-8"))
+        assert on_disk["sis_type"] == self.PICKED, on_disk
+
+        # (b) the wizard moved on: the FOLDERS body is what renders now.
+        texts = [c.value for c in _walk(tree) if isinstance(getattr(c, "value", None), str)]
+        assert "Step 2 of 5" in texts
+        with pytest.raises(AssertionError):
+            _dropdown(tree, "District")  # the step we just left is gone, not merely disabled
+        assert "Input folder (MyEd BC extract)" in texts, "the FOLDERS body is what renders now"
+        assert "Output folder (SpacesEDU CSVs)" in texts
+
+    def test_a_fresh_mount_RESUMES_past_the_district_step(self, page: MagicMock, isolated_user_profile) -> None:
+        """The resume half: re-opening the app must not ask again for something answered."""
+        self._fresh_install()
+        first = build_setup(page)
+        dropdown = _dropdown(first, "District")
+        dropdown.value = self.PICKED
+        dropdown.on_select(_pick_event(self.PICKED))
+        _button(first, "Continue").on_click(None)
+
+        second = build_setup(page)
+
+        texts = [c.value for c in _walk(second) if isinstance(getattr(c, "value", None), str)]
+        assert "Step 2 of 5" in texts, texts
+        with pytest.raises(AssertionError):
+            _dropdown(second, "District")
