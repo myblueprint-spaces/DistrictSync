@@ -1,7 +1,7 @@
 # 0044 — District self-service config editor (Phase 2, re-scoped)
 
-- **Status:** S1 LANDED on `claude/plan-0044-implementation-nrdj2z` (2026-09-02; Stage-7 review PASS after one BLOCKING + two SHOULD fixes); S2 next — spec JIT
-- **Resumable from:** Stage 4 — write the S2 spec (catalog + identity integration), then the owner approval gate
+- **Status:** S1 · S2 · S3 LANDED on `claude/plan-0044-implementation-nrdj2z` (2026-09-02; each Stage-7 reviewed, findings fixed or ledgered); S4 spec written, implementation in flight
+- **Resumable from:** Stage 6 — S4 implementation (the Files step filename form) against the S4 spec; owner approved proceeding through the UI slices 2026-09-02
 - **Blockers:** none
 - **Flags:**
   - `#3+R2-1 activation scope: ALL THREE sis_type writers gated for user-authored configs (wizard creator flow · Mapping Apply · Settings folders-card Save); Convert has no writer and stays explicit-manual` — reviewable at the spec gate.
@@ -483,12 +483,12 @@ halves pinned together. Any new sink keeps `dry_run` a REQUIRED keyword
   `district_domains` WARN-and-drop, tests. Lands complete: a hand-driven
   `authoring.create(...)` call produces a config the CLI can run — the feature exists
   headless before any form does. (Closes ROADMAP "Spotted at S3's Stage-7 gate (b)".)
-- [ ] **S2 — catalog + identity integration.** `ConfigSummary.origin` (through the
+- [x] **S2 — catalog + identity integration.** _(LANDED 2026-09-02.)_ `ConfigSummary.origin` (through the
   non-vacuous seam), visually distinct rows in all four pickers + Mapping, invalidation
   call sites, `unmapped_sd_number`/matched-state/friendly-name pins, the #8 auto-seed
   pin, the #12 pick-path behavioural twin. Lands complete: a hand-authored user config
   renders distinctly everywhere and the not-listed card retires itself.
-- [ ] **S3 — creator flow, activatable end-to-end with inherited filenames.** Creator
+- [x] **S3 — creator flow, activatable end-to-end with inherited filenames.** _(LANDED 2026-09-02 — grades form INCLUDED, S3b hatch not taken.)_ Creator
   forms (starting point · derived-identity confirm · entities · grades over resolved
   seeds) + `config_editor.py` + the `setup_flow` creator mode + overlay write + pending
   token + **the dry-run gate and the `sis_type` activation write + finish precondition**.
@@ -1746,3 +1746,13 @@ _Spec'd just-in-time, each after the prior slice lands (S5 next — the pure `sr
 - **Reviewer sign-off (Stage 7, adversarial architect pass):** 1 BLOCKING fixed (`_require_bare_filename` accepted Windows drive-relative / ADS `:` names, embedded control chars and reserved device names) · 2 SHOULD fixed (`sis` emission — see the flagged deviation; the shipped-domain parity test enumerated the user dir) · 11 NOTEs: 3 promoted to ROADMAP (per-role divergence, rename chains, SD58/SD70 table quality), the rest accepted as documented.
 - **CI:** NOT read — `ci.yml` triggers only on push-to-main / PRs to main. Owed at PR time (flag above).
 - **Housekeeping landed alongside:** `.githooks/pre-commit` executable bit (the tree gate had never run on Linux/macOS) · a web `SessionStart` hook installing the toolchain.
+
+## Land record — S2 + S3 (2026-09-02)
+
+- **S2 commits:** `ConfigSummary.origin` + `CUSTOM_ORIGIN_LABEL` ("Added on this computer") in every picker and on Mapping's card (`origin_badge`); invalidation rule at both ends of the config↔UI seam; pins for identity resolve / not-listed-card retirement / friendly name / the #12 non-creator pick path.
+- **S3 commits (α β γ δ + two fix rounds):** the `creator_` advisory family behind one `_guarded_field_write` (identity messages byte-identical), `activate_creator_config` (ONE save), `is_config_digest`; `resolved_digest` over the whole validated model + `authored_with` provenance stamped by `write_overlay`; pure `config_editor` (grade chain valid by construction); `setup_flow` creator mode (six steps, four safe-default inputs, `can_finish` gated on activation); `screens/creator.py` (`build_creator` host seam, 42 copy constants swept) + `creator_gate_job` (refuses an unusable output dir before importing the pipeline).
+- **Deterministic gates (local, Linux, after the last fix):** full suite 5,149 passed / 47 skipped / 1 PRE-EXISTING root-container failure · ruff + format clean · `python -m mypy` clean (non-UI + `config_editor`) · bandit clean · email scan OK · `make validate-config` 20/20 · tree-check OK · SD74 golden byte-identical.
+- **Reviewer sign-offs (Stage 7):** foundations pass (S2 + α/β/γ) — no BLOCKING in reviewed code, 3 SHOULD fixed; δ pass — 2 BLOCKING fixed (grades seed; superseded overlay), 5 SHOULD fixed (Finish asserted end-to-end; `creator.py` module; field rules into `config_editor`; `check_row`; one spelling + lazy catalog), NOTEs ledgered above. Security/PII probes clean on both passes.
+- **Spec deviations, all in DECISIONS:** overlays inherit `sis`; `build_creator` gained `stage` + `on_written(note)`; the creator lives in `screens/creator.py` from S3, not S6. `sis_type` write sites are FOUR (the gated one added).
+- **CI:** still not read — owed at PR time (owner: PR after the UI slices).
+- **Local test recipe for the owner:** `DISTRICTSYNC_DATA_DIR=<scratch abs path> python -m src.main` → launch page → (any address, or the not-listed escape) → wizard District step → "Set up my district" → four forms → Continue → Folders (point input at a GDE folder, e.g. a copy of `tests/snapshots/input/` — note SD74's filenames differ from the standard, so with S3 alone the test conversion reports them missing; S4 adds the rename form) → "Your files" → "Run a test conversion" → "Use this district" → Delivery/Schedule → Finish.

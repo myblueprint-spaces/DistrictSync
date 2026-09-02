@@ -36,15 +36,24 @@ value, and the likeliest bad value is a pasted personal email address.
 malformed stored digest reads as ABSENT, two unknown digests never compare equal, and
 unknown provenance is never reported as stale.
 
+A fourth, smaller family sits in front of those: the **field rules** —
+:func:`split_domains` and :func:`sd_number_from_text`, what a raw text field's string
+MEANS. They live here rather than in the view because the four-digit bound on a district
+number is safety-relevant (it becomes a filename stem and a ``--sis`` argument), and a
+safety rule belongs where it can be tested directly.
+
 Layering: imports the config layer (``authoring`` / ``models`` /
-``bc_district_domains``), ``src.utils.validators`` and the ETL's CEDS grade
-vocabulary — the same co-ownership ``models._ceds_grade_codes`` documents, since every
-grade-scope question is asked in the CEDS OUTPUT space and a second table would drift.
+``bc_district_domains``), ``src.utils.validators``, the ETL's CEDS grade vocabulary —
+the same co-ownership ``models._ceds_grade_codes`` documents, since every grade-scope
+question is asked in the CEDS OUTPUT space and a second table would drift — and the pure
+``ui_flet.identity_gate`` for its ONE digit rule (``sd_number_digits``), so the creator
+reads "SD48" exactly as the launch page's not-listed answer does.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -60,6 +69,7 @@ from src.config.models import (
     is_valid_district_domain,
 )
 from src.etl.transformers.grades import CEDS_MAPPING
+from src.ui_flet.identity_gate import sd_number_digits
 from src.utils.validators import is_config_digest, validate_sis_type
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; no runtime import of either layer
@@ -96,6 +106,54 @@ CONFIG_ERROR_DOMAIN = "One of the email domains isn't a plain district domain (l
 CONFIG_ERROR_MISSING_BASE = "The starting point this district builds on isn't in this version of DistrictSync."
 CONFIG_ERROR_UNREADABLE = "This district's mapping file couldn't be read."
 CONFIG_ERROR_OTHER = "This district's mapping can't be used as it stands."
+
+
+# ---------------------------------------------------------------------------
+# Field rules (what a text field's raw string MEANS)
+# ---------------------------------------------------------------------------
+#: Whatever separates one typed domain from the next: a comma, a semicolon, or plain
+#: whitespace. An admin pasting a list from an email will use any of the three.
+_DOMAIN_SEPARATORS = re.compile(r"[,;\s]+")
+
+#: The district number's upper bound, in DIGITS. Safety-relevant, not cosmetic — see
+#: :func:`sd_number_from_text`.
+_MAX_SD_NUMBER_DIGITS = 4
+
+
+def split_domains(text: str) -> tuple[str, ...]:
+    """The domains a text field holds, split on commas / semicolons / whitespace. TOTAL.
+
+    Blank entries are dropped (a trailing comma is not an error) and the ORDER the admin
+    typed is preserved. Deliberately NOT de-duplicated and NOT shape-checked here: this
+    is the field's reading of the raw string, and :func:`validate_domains` is the ONE
+    boundary that decides whether each entry is a usable district domain (it also
+    de-duplicates). Splitting that decision across two functions is how a note that
+    should have said "that isn't a domain" ends up saying nothing at all.
+    """
+    return tuple(chunk.strip() for chunk in _DOMAIN_SEPARATORS.split(text or "") if chunk.strip())
+
+
+def sd_number_from_text(text: str) -> int | None:
+    """The district number a text field holds, or ``None`` when it holds none we can use.
+
+    Delegates the digit rule to :func:`src.ui_flet.identity_gate.sd_number_digits` (the
+    single source, shared with the launch page's not-listed answer): the first run of
+    digits, leading zeros dropped, so ``"SD48"`` / ``"#48"`` / ``"048"`` / ``" 48 "`` are
+    all district 48.
+
+    **Bounded at four digits deliberately** — this is a safety rule, not a cosmetic one.
+    The value becomes a filename stem AND a ``--sis`` argument baked into a scheduled
+    task, so a pasted phone number must fail the field's own note rather than author
+    ``sd6045551234custom``.
+
+    ``0`` is representable (an admin can type it) and is refused downstream by
+    :func:`src.config.authoring.derive_sis_id`, which takes a POSITIVE int — the caller's
+    own falsy check catches it first and paints the field's note.
+    """
+    digits = sd_number_digits(text or "")
+    if not digits or len(digits) > _MAX_SD_NUMBER_DIGITS:
+        return None
+    return int(digits)
 
 
 # ---------------------------------------------------------------------------

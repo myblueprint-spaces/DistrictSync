@@ -35,8 +35,9 @@ from src.config.authoring import (
 )
 from src.history.store import read_run_records
 from src.ui_flet import components
-from src.ui_flet.config_editor import CreatorForm
+from src.ui_flet.config_editor import CEDS_GRADE_ORDER, CreatorForm
 from src.ui_flet.job_runner import GateRefused, creator_gate_job
+from src.ui_flet.screens import creator as creator_screen
 from src.ui_flet.screens import setup as setup_screen
 from src.ui_flet.screens.setup import build_setup
 from src.utils.version import app_version
@@ -164,6 +165,21 @@ def _checkbox(tree, label: str) -> ft.Checkbox:  # noqa: ANN001
     raise AssertionError(f"no Checkbox labelled {label!r}")
 
 
+def _checkboxes(tree, label: str) -> list[ft.Checkbox]:  # noqa: ANN001
+    """EVERY checkbox carrying ``label``, in tree order.
+
+    The grades card asks the same vocabulary twice — the rostered row, then the homeroom
+    subset row — so a grade code legitimately labels two boxes and ``_checkbox`` (first
+    match) can only ever speak for the first of them.
+    """
+    return [c for c in _walk(tree) if isinstance(c, ft.Checkbox) and c.label == label]
+
+
+def _rostered_row(tree) -> list[ft.Checkbox]:  # noqa: ANN001
+    """The grades card's FIRST row — one box per CEDS code, in vocabulary order."""
+    return [_checkboxes(tree, code)[0] for code in CEDS_GRADE_ORDER]
+
+
 def _event(value: object) -> MagicMock:
     """A control event exposing ``e.control.value`` (Dropdown/TextField/Checkbox all read it)."""
     evt = MagicMock()
@@ -230,7 +246,7 @@ def _pin(monkeypatch: pytest.MonkeyPatch, cfg: AppConfig) -> AppConfig:
 def _spy_reset(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """Spy on the catalog invalidation the UI caller owes after every write/delete (S2's rule)."""
     calls: list[int] = []
-    monkeypatch.setattr(setup_screen, "reset_catalog_cache", lambda: calls.append(1))
+    monkeypatch.setattr(creator_screen, "reset_catalog_cache", lambda: calls.append(1))
     return calls
 
 
@@ -262,9 +278,9 @@ def _open_creator(page: MagicMock, monkeypatch: pytest.MonkeyPatch, cfg: AppConf
 
 
 def _fill_and_continue(root: ft.Control, *, sd: str = "93", name: str = "Sunny Ridge") -> None:
-    _type(_field(root, setup_screen.CREATOR_SD_FIELD_LABEL), sd)
-    _type(_field(root, setup_screen.CREATOR_NAME_FIELD_LABEL), name)
-    _button(root, setup_screen.CREATOR_CONTINUE_LABEL).on_click(None)
+    _type(_field(root, creator_screen.CREATOR_SD_FIELD_LABEL), sd)
+    _type(_field(root, creator_screen.CREATOR_NAME_FIELD_LABEL), name)
+    _button(root, creator_screen.CREATOR_CONTINUE_LABEL).on_click(None)
 
 
 # --------------------------------------------------------------------------- #
@@ -285,49 +301,53 @@ class TestTheCreatorBranchRenders:
         root = _open_creator(page, monkeypatch, _cfg())
 
         blob = _blob(root)
-        assert _dropdown(root, setup_screen.CREATOR_START_FIELD_LABEL) is not None
-        assert _field(root, setup_screen.CREATOR_SD_FIELD_LABEL).value == "93", "prefilled from the launch page"
-        assert _field(root, setup_screen.CREATOR_NAME_FIELD_LABEL) is not None
+        assert _dropdown(root, creator_screen.CREATOR_START_FIELD_LABEL) is not None
+        assert _field(root, creator_screen.CREATOR_SD_FIELD_LABEL).value == "93", "prefilled from the launch page"
+        assert _field(root, creator_screen.CREATOR_NAME_FIELD_LABEL) is not None
         # The stored identity domain LEADS (it is the one value we know is real for this
         # install); the vendored table's rows for SD93 follow. Both are prefills, correctable
         # in the field they land in.
-        assert _field(root, setup_screen.CREATOR_DOMAINS_FIELD_LABEL).value.startswith("sd93.bc.ca")
+        assert _field(root, creator_screen.CREATOR_DOMAINS_FIELD_LABEL).value.startswith("sd93.bc.ca")
         for entity in ("Students", "Families", "Student courses"):
             assert _checkbox(root, entity) is not None
-        assert _checkbox(root, setup_screen.CREATOR_GRADES_INHERIT_LABEL).value is True, "grades inherit by default"
-        assert setup_screen.CREATOR_START_PROMPT in blob
+        assert _checkbox(root, creator_screen.CREATOR_GRADES_INHERIT_LABEL).value is True, "grades inherit by default"
+        assert creator_screen.CREATOR_START_PROMPT in blob
         assert not [d for d in _dropdowns(root) if d.label == "District"], "the creator surface replaces the picker"
-        assert _has_button(root, setup_screen.CREATOR_DISCARD_LABEL), "never a dead end"
+        assert _has_button(root, creator_screen.CREATOR_DISCARD_LABEL), "never a dead end"
 
     def test_exactly_one_filled_primary_on_the_creator_forms(self, page, monkeypatch) -> None:
         root = _open_creator(page, monkeypatch, _cfg())
 
         filled = [c for c in _walk(root) if isinstance(c, ft.FilledButton)]
 
-        assert [c.content for c in filled] == [setup_screen.CREATOR_CONTINUE_LABEL]
+        assert [c.content for c in filled] == [creator_screen.CREATOR_CONTINUE_LABEL]
 
-    def test_the_grades_form_opens_from_the_starting_points_own_grades(self, page, monkeypatch) -> None:
-        """S3b's card. Un-ticking "use my starting point's grades" must open a VALID chain —
-        the base's homeroom list seeds both halves, so ``homeroom ⊆ rostered`` holds before
-        the admin touches anything and the loader can only ever confirm it."""
+    def test_the_grades_form_opens_on_a_full_roster_with_the_homeroom_half_seeded(self, page, monkeypatch) -> None:
+        """S3b's card. Un-ticking "use my starting point's grades" must open a VALID chain
+        (``homeroom ⊆ rostered`` before the admin touches anything) that narrows NOTHING: the
+        rostered row opens on the WHOLE vocabulary, and only the homeroom subset is seeded from
+        the starting point's own list. Seeding the rostered row from that list instead
+        de-rostered grades 8-12 the moment the question was opened."""
         root = _open_creator(page, monkeypatch, _cfg())
 
-        _tick(_checkbox(root, setup_screen.CREATOR_GRADES_INHERIT_LABEL), False)
+        _tick(_checkbox(root, creator_screen.CREATOR_GRADES_INHERIT_LABEL), False)
 
         blob = _blob(root)
-        assert setup_screen.CREATOR_GRADES_PROMPT in blob
-        assert setup_screen.CREATOR_HOMEROOM_PROMPT in blob
-        assert _checkbox(root, "KG").value is True, "the base's homeroom grades seed the answer"
-        assert _checkbox(root, "12").value is False, "…and the grades it does not roster stay off"
+        assert creator_screen.CREATOR_GRADES_PROMPT in blob
+        assert creator_screen.CREATOR_HOMEROOM_PROMPT in blob
+        # Two rows, same vocabulary: [rostered, homeroom].
+        assert [c.value for c in _checkboxes(root, "KG")] == [True, True], "a homeroom grade, rostered"
+        assert [c.value for c in _checkboxes(root, "12")] == [True, False], "rostered, but no homeroom"
+        assert all(box.value is True for box in _rostered_row(root)), "opening the question narrowed the roster"
 
     def test_the_shipped_recommendation_only_appears_for_a_district_we_ship(self, page, monkeypatch) -> None:
         """The owner's decision (open question 1): a shipped mapping is RECOMMENDED, never enforced."""
         root = _open_creator(page, monkeypatch, _cfg(identity_email=SD48_ADMIN, identity_sd_number="48"))
-        assert setup_screen.creator_shipped_note("48") in _blob(root)
+        assert creator_screen.creator_shipped_note("48") in _blob(root)
 
         # The twin: SD93 ships nothing, so there is nothing to point that admin at.
         other = _open_creator(MagicMock(), monkeypatch, _cfg())
-        assert setup_screen.creator_shipped_note("93") not in _blob(other)
+        assert creator_screen.creator_shipped_note("93") not in _blob(other)
 
 
 # --------------------------------------------------------------------------- #
@@ -359,7 +379,7 @@ class TestContinueIsTheWrite:
         def _refuse(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
             raise ValueError("homeroom grades ['09'] are not rostering grades: roster.admin@sd93.bc.ca")
 
-        monkeypatch.setattr(setup_screen, "write_overlay", _refuse)
+        monkeypatch.setattr(creator_screen, "write_overlay", _refuse)
         root = _open_creator(page, monkeypatch, cfg)
 
         _fill_and_continue(root)
@@ -368,7 +388,7 @@ class TestContinueIsTheWrite:
         assert cfg.creator_pending_sis == ""
         assert resets == [], "nothing was written, so nothing may be invalidated"
         note = _error_texts(root)
-        assert setup_screen.CREATOR_WRITE_FAILED_NOTE in note
+        assert creator_screen.CREATOR_WRITE_FAILED_NOTE in note
         assert "Step 1 of 6" in _texts(root), "a failed write must not walk the admin forward"
         assert "sd93.bc.ca" not in note, "the note echoed the exception's value"
 
@@ -384,22 +404,22 @@ class TestContinueIsTheWrite:
     ) -> None:
         cfg = _cfg()
         wrote: list[int] = []
-        monkeypatch.setattr(setup_screen, "write_overlay", lambda *_a, **_kw: wrote.append(1))
+        monkeypatch.setattr(creator_screen, "write_overlay", lambda *_a, **_kw: wrote.append(1))
         root = _open_creator(page, monkeypatch, cfg)
 
         _fill_and_continue(root, sd=sd, name=name)
 
         assert wrote == []
-        assert getattr(setup_screen, expected) in _error_texts(root)
+        assert getattr(creator_screen, expected) in _error_texts(root)
 
     def test_an_invalid_domain_is_reported_without_echoing_it(self, page, monkeypatch) -> None:
         root = _open_creator(page, monkeypatch, _cfg())
-        _type(_field(root, setup_screen.CREATOR_DOMAINS_FIELD_LABEL), "roster.admin@sd93.bc.ca")
+        _type(_field(root, creator_screen.CREATOR_DOMAINS_FIELD_LABEL), "roster.admin@sd93.bc.ca")
 
         _fill_and_continue(root)
 
         note = _error_texts(root)
-        assert setup_screen.CREATOR_DOMAIN_INVALID_NOTE in note
+        assert creator_screen.CREATOR_DOMAIN_INVALID_NOTE in note
         assert "roster.admin" not in note, "the likeliest bad paste is a personal address"
         assert not overlay_path("sd93custom").exists()
 
@@ -412,8 +432,91 @@ class TestContinueIsTheWrite:
 
         _fill_and_continue(root)
 
-        assert setup_screen.CREATOR_ENTITIES_EMPTY_NOTE in _error_texts(root)
+        assert creator_screen.CREATOR_ENTITIES_EMPTY_NOTE in _error_texts(root)
         assert not overlay_path("sd93custom").exists()
+
+    def test_opening_the_grades_question_writes_no_narrowing_of_its_own(self, page, monkeypatch, tmp_path) -> None:
+        """Merely OPENING the grades question must de-roster NOBODY.
+
+        The S3 review's first blocking finding: the question seeded its rostered row from the
+        starting point's HOMEROOM list, so on ``myedbc`` an admin who un-ticked "use my
+        starting point's grades" and pressed Continue — without touching a single grade — wrote
+        a roster of ``IT…07`` and lost every grade 8-12 student silently. What is written must
+        be behaviourally identical to inheriting until the admin narrows something.
+        """
+        from src.config.loader import load_config
+        from src.config.models import CLASS_ROSTERING_HOMEROOM_SENTINEL
+
+        cfg = _cfg(**_valid_folders(tmp_path))
+        root = _open_creator(page, monkeypatch, cfg)
+
+        _tick(_checkbox(root, creator_screen.CREATOR_GRADES_INHERIT_LABEL), False)
+        _fill_and_continue(root)
+
+        assert overlay_path("sd93custom").exists(), "the write did not happen"
+        resolved = load_config("sd93custom").global_config
+        assert set(resolved.student_rostering_grades or ()) == set(CEDS_GRADE_ORDER), (
+            "opening the question dropped grades from the roster"
+        )
+        assert resolved.class_rostering_grades != CLASS_ROSTERING_HOMEROOM_SENTINEL, (
+            "the homeroom sentinel would confine class rostering to K-7"
+        )
+        assert set(resolved.class_rostering_grades or ()) == set(CEDS_GRADE_ORDER)
+        # …and the homeroom half is the starting point's own list, so the chain is unchanged.
+        assert list(resolved.homeroom_grades) == list(load_config("myedbc").global_config.homeroom_grades)
+
+    def test_the_twin_unticking_one_grade_DOES_narrow_the_written_roster(self, page, monkeypatch, tmp_path) -> None:
+        """Without this twin the row above passes just as well on a form that cannot narrow."""
+        from src.config.loader import load_config
+
+        cfg = _cfg(**_valid_folders(tmp_path))
+        root = _open_creator(page, monkeypatch, cfg)
+
+        _tick(_checkbox(root, creator_screen.CREATOR_GRADES_INHERIT_LABEL), False)
+        _tick(_checkboxes(root, "08")[0], False)  # the ROSTERED row's grade 8
+        _fill_and_continue(root)
+
+        resolved = load_config("sd93custom").global_config
+        assert set(resolved.student_rostering_grades or ()) == set(CEDS_GRADE_ORDER) - {"08"}
+
+    def test_a_corrected_district_number_leaves_exactly_one_overlay_behind(self, page, monkeypatch, tmp_path) -> None:
+        """The S3 review's second blocking finding: a mistyped number left an ORPHAN.
+
+        ``93`` → Continue → Back → ``94`` → Continue used to write ``sd94custom`` while leaving
+        ``sd93custom`` on disk: both rode every picker, Discard only ever knew the pending one,
+        and "Nothing was kept, and your district list is back as it was" became untrue.
+        """
+        from src.config.loader import available_configs
+
+        cfg = _cfg(**_valid_folders(tmp_path))
+        root = _open_creator(page, monkeypatch, cfg)
+
+        _fill_and_continue(root, sd="93")
+        _button(root, "Back").on_click(None)  # back to the creator District step
+        _fill_and_continue(root, sd="94")
+
+        assert overlay_path("sd94custom").exists(), "the corrected district was not written"
+        assert not overlay_path("sd93custom").exists(), "the superseded overlay was left behind"
+        assert [sis for sis in available_configs() if sis.endswith("custom")] == ["sd94custom"]
+        assert cfg.creator_pending_sis == "sd94custom"
+
+    def test_the_twin_re_pressing_continue_on_the_same_number_deletes_nothing(
+        self, page, monkeypatch, tmp_path
+    ) -> None:
+        """The twin: the tidy-up is keyed on a CHANGED id, so an edit that keeps the number
+        (a corrected name, another domain) must never delete the district's own mapping."""
+        cfg = _cfg(**_valid_folders(tmp_path))
+        root = _open_creator(page, monkeypatch, cfg)
+        _fill_and_continue(root, sd="93")
+        _button(root, "Back").on_click(None)
+        deletes: list[str] = []
+        monkeypatch.setattr(creator_screen, "delete_overlay", lambda sis: deletes.append(sis))
+
+        _fill_and_continue(root, sd="93", name="Sunny Ridge East")
+
+        assert deletes == [], "an unchanged district number must not delete anything"
+        assert overlay_path("sd93custom").exists()
+        assert cfg.creator_pending_sis == "sd93custom"
 
     def test_a_refused_resume_token_still_advances_and_says_what_was_lost(self, page, monkeypatch, tmp_path) -> None:
         """The file is on disk and the step is re-visitable, so only resume convenience was lost."""
@@ -425,7 +528,7 @@ class TestContinueIsTheWrite:
 
         assert overlay_path("sd93custom").exists()
         assert "Step 2 of 6" in _texts(root), "a refused advisory write must not trap the admin"
-        assert setup_screen.CREATOR_RESUME_REFUSED_NOTE in _blob(root)
+        assert creator_screen.CREATOR_RESUME_REFUSED_NOTE in _blob(root)
 
 
 # --------------------------------------------------------------------------- #
@@ -444,7 +547,7 @@ class TestResume:
         # gate step is where the work actually stopped.
         assert setup_screen.FILES_STEP_TITLE in texts
         assert "Step 3 of 6" in texts
-        assert _has_button(root, setup_screen.GATE_RUN_LABEL)
+        assert _has_button(root, creator_screen.GATE_RUN_LABEL)
 
     def test_the_form_is_rehydrated_from_the_overlay_on_disk(self, page, monkeypatch) -> None:
         _write_sd93(name="Sunny Ridge")
@@ -454,8 +557,8 @@ class TestResume:
 
         _button(root, "Back").on_click(None)  # back to the creator District step
 
-        assert _field(root, setup_screen.CREATOR_NAME_FIELD_LABEL).value == "Sunny Ridge"
-        assert _field(root, setup_screen.CREATOR_SD_FIELD_LABEL).value == "93"
+        assert _field(root, creator_screen.CREATOR_NAME_FIELD_LABEL).value == "Sunny Ridge"
+        assert _field(root, creator_screen.CREATOR_SD_FIELD_LABEL).value == "93"
 
     def test_a_token_with_no_mapping_file_self_heals_to_the_standard_walk(self, page, monkeypatch) -> None:
         """The twin of the row above: a token is only half the fact, and the missing half must
@@ -481,7 +584,7 @@ class TestDiscard:
         _pin(monkeypatch, cfg)
         root = build_setup(page)
 
-        _button(root, setup_screen.CREATOR_DISCARD_LABEL).on_click(None)
+        _button(root, creator_screen.CREATOR_DISCARD_LABEL).on_click(None)
 
         assert not overlay_path("sd93custom").exists(), "the overlay was left behind"
         assert cfg.creator_pending_sis == ""
@@ -497,7 +600,7 @@ class TestDiscard:
         cfg = _cfg()
         root = _open_creator(page, monkeypatch, cfg)
 
-        _button(root, setup_screen.CREATOR_DISCARD_LABEL).on_click(None)
+        _button(root, creator_screen.CREATOR_DISCARD_LABEL).on_click(None)
 
         assert setup_screen.CREATOR_DISCARDED_NOTE in _texts(root)
         assert _dropdown(root, "District") is not None
@@ -577,16 +680,16 @@ class TestTheGateRefusesWithoutAUsableOutputFolder:
         def _refuse(*_a, **_kw):  # noqa: ANN002, ANN003, ANN202
             raise GateRefused("A test conversion needs an output folder; none is set.")
 
-        monkeypatch.setattr(setup_screen, "creator_gate_job", _refuse)
+        monkeypatch.setattr(creator_screen, "creator_gate_job", _refuse)
         _pin(monkeypatch, cfg)
         root = build_setup(_driving_page())
 
-        _button(root, setup_screen.GATE_RUN_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
 
         blob = _blob(root)
-        assert setup_screen.GATE_REFUSED_NO_OUTPUT_NOTE in blob
+        assert creator_screen.GATE_REFUSED_NO_OUTPUT_NOTE in blob
         assert "none is set" not in blob, "the raw exception text reached the screen"
-        assert not _has_button(root, setup_screen.GATE_CONFIRM_LABEL), "a refused test cannot offer activation"
+        assert not _has_button(root, creator_screen.GATE_CONFIRM_LABEL), "a refused test cannot offer activation"
 
 
 # --------------------------------------------------------------------------- #
@@ -613,10 +716,10 @@ class TestTheGateRunIsInvisibleToRunHistory:
         assert setup_screen.FILES_STEP_TITLE in _texts(root), "the gate step is where an untested district resumes"
 
         with caplog.at_level(logging.INFO):
-            _button(root, setup_screen.GATE_RUN_LABEL).on_click(None)
+            _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
 
         blob = _blob(root)
-        assert setup_screen.GATE_PASSED_HEADLINE in blob, "the dry run did not complete"
+        assert creator_screen.GATE_PASSED_HEADLINE in blob, "the dry run did not complete"
         # ``metric_tile`` upper-cases its caption, so the count row reads "STUDENTS" over "100".
         assert "STUDENTS" in blob, "the per-entity counts did not render"
         # Half 1 — nothing durable: no store row (and the DB was never even created).
@@ -646,7 +749,7 @@ class _PassingGate:
 def _wizard_at_the_gate(monkeypatch: pytest.MonkeyPatch, cfg: AppConfig) -> tuple[ft.Control, _PassingGate]:
     """Mount the creator walk on its gate step with a stubbed (passing) test conversion."""
     gate = _PassingGate()
-    monkeypatch.setattr(setup_screen, "creator_gate_job", gate)
+    monkeypatch.setattr(creator_screen, "creator_gate_job", gate)
     _pin(monkeypatch, cfg)
     root = build_setup(_driving_page())
     assert setup_screen.FILES_STEP_TITLE in _texts(root)
@@ -662,13 +765,13 @@ class TestActivation:
         resets = _spy_reset(monkeypatch)
         root, gate = _wizard_at_the_gate(monkeypatch, cfg)
 
-        _button(root, setup_screen.GATE_RUN_LABEL).on_click(None)
-        assert gate.calls and setup_screen.GATE_PASSED_HEADLINE in _blob(root)
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        assert gate.calls and creator_screen.GATE_PASSED_HEADLINE in _blob(root)
         saves: list[int] = []
         real_save = AppConfig.save
         monkeypatch.setattr(AppConfig, "save", lambda self: (saves.append(1), real_save(self))[1])
 
-        _button(root, setup_screen.GATE_CONFIRM_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
 
         assert cfg.sis_type == "sd93custom"
         assert cfg.creator_pending_sis == ""
@@ -684,28 +787,28 @@ class TestActivation:
         cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
         root, _gate = _wizard_at_the_gate(monkeypatch, cfg)
 
-        assert not _has_button(root, setup_screen.GATE_CONFIRM_LABEL)
-        assert [c.content for c in _walk(root) if isinstance(c, ft.FilledButton)] == [setup_screen.GATE_RUN_LABEL]
+        assert not _has_button(root, creator_screen.GATE_CONFIRM_LABEL)
+        assert [c.content for c in _walk(root) if isinstance(c, ft.FilledButton)] == [creator_screen.GATE_RUN_LABEL]
 
-        _button(root, setup_screen.GATE_RUN_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
 
         assert [c.content for c in _walk(root) if isinstance(c, ft.FilledButton)] == [
-            setup_screen.GATE_CONFIRM_LABEL
+            creator_screen.GATE_CONFIRM_LABEL
         ], "exactly one filled primary, and it is the confirm"
-        assert _has_button(root, setup_screen.GATE_RERUN_LABEL)
+        assert _has_button(root, creator_screen.GATE_RERUN_LABEL)
 
     def test_a_refused_activation_keeps_the_admin_on_the_step(self, monkeypatch, tmp_path) -> None:
         _write_sd93()
         cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
         monkeypatch.setattr(AppConfig, "activate_creator_config", lambda _self, **_kw: False)
         root, _gate = _wizard_at_the_gate(monkeypatch, cfg)
-        _button(root, setup_screen.GATE_RUN_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
 
-        _button(root, setup_screen.GATE_CONFIRM_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
 
         assert cfg.sis_type == "", "a refused save must not leave a district applied"
         texts = _texts(root)
-        assert setup_screen.CREATOR_ACTIVATE_FAILED_NOTE in texts
+        assert creator_screen.CREATOR_ACTIVATE_FAILED_NOTE in texts
         assert setup_screen.FILES_STEP_TITLE in texts, "a failure must never advance silently"
 
     def test_a_hand_edit_of_the_overlay_re_closes_the_gate(self, monkeypatch, tmp_path) -> None:
@@ -714,14 +817,14 @@ class TestActivation:
         _write_sd93()
         cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
         root, _gate = _wizard_at_the_gate(monkeypatch, cfg)
-        _button(root, setup_screen.GATE_RUN_LABEL).on_click(None)
-        _button(root, setup_screen.GATE_CONFIRM_LABEL).on_click(None)
-        assert setup_screen._creator_gate_current(cfg, "sd93custom") is True, "the positive half"
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+        assert creator_screen.creator_gate_current(cfg, "sd93custom") is True, "the positive half"
 
         path = overlay_path("sd93custom")
         path.write_text(path.read_text(encoding="utf-8").replace("SD93 - Creator Test", "SD93 - Edited"), "utf-8")
 
-        assert setup_screen._creator_gate_current(cfg, "sd93custom") is False
+        assert creator_screen.creator_gate_current(cfg, "sd93custom") is False
         # …and the re-closed gate is where a re-mount lands the admin.
         _pin(monkeypatch, cfg)
         cfg.creator_pending_sis = "sd93custom"  # a resumed setup for the same district
@@ -746,7 +849,7 @@ class TestTheStalenessNote:
         cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
         _pin(monkeypatch, cfg)
 
-        assert setup_screen.GATE_STALE_VERSION_NOTE in _texts(build_setup(MagicMock()))
+        assert creator_screen.GATE_STALE_VERSION_NOTE in _texts(build_setup(MagicMock()))
 
     def test_the_twin_an_overlay_this_build_wrote_says_nothing(self, monkeypatch, tmp_path) -> None:
         _write_sd93()
@@ -755,8 +858,8 @@ class TestTheStalenessNote:
 
         texts = _texts(build_setup(MagicMock()))
 
-        assert setup_screen.GATE_STALE_VERSION_NOTE not in texts
-        assert setup_screen.GATE_STALE_BASE_NOTE not in texts, "unknown provenance is never staleness"
+        assert creator_screen.GATE_STALE_VERSION_NOTE not in texts
+        assert creator_screen.GATE_STALE_BASE_NOTE not in texts, "unknown provenance is never staleness"
 
 
 # --------------------------------------------------------------------------- #
@@ -770,8 +873,8 @@ class TestTheFinishLineIsGatedOnActivation:
 
         assert _button(root, "Continue").disabled is True, "an untested district walked on"
 
-        _button(root, setup_screen.GATE_RUN_LABEL).on_click(None)
-        _button(root, setup_screen.GATE_CONFIRM_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
         _button(root, "Back").on_click(None)  # back to the (now passed) gate step
 
         assert _button(root, "Continue").disabled is False
@@ -800,12 +903,16 @@ class TestTheFinishLineIsGatedOnActivation:
         assert _button(root, "Finish setup").disabled is True
         assert cfg.setup_completed is False
 
-    def test_the_twin_once_activated_the_finish_line_opens(self, monkeypatch, tmp_path) -> None:
+    def test_the_twin_once_activated_the_finish_line_opens_and_finishes(self, monkeypatch, tmp_path) -> None:
+        """Acceptance 1 end to end, INCLUDING its last clause: the finish line is pressed and
+        the four facts are read back from DISK, not from the instance the wizard was holding —
+        an in-memory assertion would pass on a save that never landed."""
         _write_sd93()
+        real_load = AppConfig.load  # captured BEFORE the pin, so the read-back is the real one
         cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
         root, _gate = _wizard_at_the_gate(monkeypatch, cfg)
-        _button(root, setup_screen.GATE_RUN_LABEL).on_click(None)
-        _button(root, setup_screen.GATE_CONFIRM_LABEL).on_click(None)  # → Delivery
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)  # → Delivery
 
         _button(root, "Set up later").on_click(None)  # defer delivery
         _button(root, "Set up later").on_click(None)  # defer the schedule → Finish
@@ -814,6 +921,14 @@ class TestTheFinishLineIsGatedOnActivation:
         assert "Step 6 of 6" in texts
         assert setup_screen.CREATOR_FINISH_NEEDS_GATE_NOTE not in texts
         assert _button(root, "Finish setup").disabled is False
+
+        _button(root, "Finish setup").on_click(None)
+
+        fresh = real_load()
+        assert fresh.setup_completed is True, "the finish line did not record completion on disk"
+        assert fresh.sis_type == "sd93custom"
+        assert fresh.creator_pending_sis == "", "the resume token outlived the setup"
+        assert fresh.creator_verified["sd93custom"] == current_digest("sd93custom")
 
 
 # --------------------------------------------------------------------------- #
@@ -824,10 +939,10 @@ def _creator_copy_constants() -> dict[str, str]:
     prefixes = ("CREATOR_", "FILES_", "GATE_")
     found = {
         name: value
-        for name, value in vars(setup_screen).items()
+        for name, value in vars(creator_screen).items()
         if name.startswith(prefixes) and isinstance(value, str)
     }
-    found["creator_shipped_note"] = setup_screen.creator_shipped_note("48")
+    found["creator_shipped_note"] = creator_screen.creator_shipped_note("48")
     return found
 
 
@@ -851,7 +966,7 @@ class TestTheCopy:
 
     def test_the_rendered_creator_forms_carry_neither(self, page, monkeypatch) -> None:
         root = _open_creator(page, monkeypatch, _cfg())
-        _tick(_checkbox(root, setup_screen.CREATOR_GRADES_INHERIT_LABEL), False)  # the grades card too
+        _tick(_checkbox(root, creator_screen.CREATOR_GRADES_INHERIT_LABEL), False)  # the grades card too
 
         blob = _blob(root)
 
@@ -865,7 +980,7 @@ class TestTheCopy:
         root, _gate = _wizard_at_the_gate(monkeypatch, cfg)
 
         before = _blob(root)
-        _button(root, setup_screen.GATE_RUN_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
         after = _blob(root)
 
         for where, blob in (("before the test run", before), ("after the test run", after)):

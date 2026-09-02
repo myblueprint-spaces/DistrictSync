@@ -40,6 +40,7 @@ from src.config.authoring import (
     OverlaySpec,
     build_overlay,
     current_digest,
+    derive_sis_id,
     write_overlay,
 )
 from src.config.loader import load_config, validate_overlay
@@ -64,7 +65,9 @@ from src.ui_flet.config_editor import (
     humanize_config_error,
     missing_files,
     overlay_staleness,
+    sd_number_from_text,
     seed_entities,
+    split_domains,
     stored_verified_digest,
     validate_domains,
     verified_is_current,
@@ -142,6 +145,72 @@ class TestBaseLabels:
     def test_base_label_falls_back_to_the_id_rather_than_blanking_the_row(self):
         assert base_label("mbponly") == BASE_LABELS["mbponly"]
         assert base_label("some_future_base") == "some_future_base"
+
+
+# ---------------------------------------------------------------------------
+# Field rules — what a raw text field's string MEANS (plan 0044 S3 review)
+# ---------------------------------------------------------------------------
+
+
+class TestSdNumberFromText:
+    """The four-digit bound is SAFETY-relevant: the value becomes a filename stem and a
+    ``--sis`` argument baked into a scheduled task."""
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("93", 93),
+            (" 93 ", 93),  # a pasted value carries whitespace
+            ("SD93", 93),  # the launch page's own spelling
+            ("#48", 48),
+            ("048", 48),  # leading zeros are not a different district
+            ("9999", 9999),  # the bound is INCLUSIVE — a real 4-digit number is usable
+            ("0", 0),  # representable; refused downstream by `derive_sis_id` (positive int)
+        ],
+    )
+    def test_a_usable_district_number_is_read(self, text, expected):
+        assert sd_number_from_text(text) == expected
+
+    @pytest.mark.parametrize("text", ["", "   ", "not a number", "SD", "6045551234", "12345"])
+    def test_anything_unusable_answers_None_rather_than_a_wrong_number(self, text):
+        assert sd_number_from_text(text) is None
+
+    def test_a_pasted_phone_number_can_never_author_a_config_id(self):
+        """The bound's whole point, asserted as the consequence rather than the digit count:
+        without it ``derive_sis_id`` would happily author ``sd6045551234custom``. The positive
+        twin sits right beside it — the same call on a real district number DOES author one."""
+        assert sd_number_from_text("6045551234") is None
+        assert derive_sis_id(sd_number_from_text("93") or 0) == "sd93custom"
+
+
+class TestSplitDomains:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("sd48.bc.ca", ("sd48.bc.ca",)),
+            ("sd48.bc.ca, sd48.ca", ("sd48.bc.ca", "sd48.ca")),  # comma
+            ("sd48.bc.ca; sd48.ca", ("sd48.bc.ca", "sd48.ca")),  # semicolon
+            ("sd48.bc.ca sd48.ca", ("sd48.bc.ca", "sd48.ca")),  # bare whitespace
+            ("  sd48.bc.ca  ", ("sd48.bc.ca",)),  # surrounding whitespace
+            ("sd48.bc.ca,,  ,sd48.ca,", ("sd48.bc.ca", "sd48.ca")),  # blank entries dropped
+            ("", ()),
+            ("   ", ()),
+            (",;, ", ()),
+        ],
+    )
+    def test_the_split(self, text, expected):
+        assert split_domains(text) == expected
+
+    def test_duplicates_and_shape_are_left_to_the_boundary(self):
+        """Deliberately NOT de-duplicated or shape-checked here: ``validate_domains`` is the
+        ONE boundary that decides both, and splitting that decision in two is how a note that
+        should say "that isn't a domain" ends up saying nothing."""
+        assert split_domains("sd48.bc.ca, sd48.bc.ca") == ("sd48.bc.ca", "sd48.bc.ca")
+        assert validate_domains(split_domains("sd48.bc.ca, sd48.bc.ca")) == ("sd48.bc.ca",)
+        # …and an entry that is not a domain survives the split to be REFUSED at the boundary.
+        assert split_domains("roster.admin@sd48.bc.ca") == ("roster.admin@sd48.bc.ca",)
+        with pytest.raises(ValueError, match="bare lowercase domain"):
+            validate_domains(split_domains("roster.admin@sd48.bc.ca"))
 
 
 # ---------------------------------------------------------------------------

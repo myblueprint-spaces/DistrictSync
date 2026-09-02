@@ -343,6 +343,52 @@ def open_log_folder(_e: object | None = None) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Checkbox row — the ONE tick-box form (entities, grade scopes)                  #
+# --------------------------------------------------------------------------- #
+def check_row(label: str, *, value: bool, on_toggle: Callable[[bool], None]) -> ft.Control:
+    """One labelled tick box in the brand's action colour.
+
+    The ONE checkbox factory (plan 0044 S3 review): the creator's entity list and its two
+    grade rows hand-rolled ~50 ``ft.Checkbox``es with the same ``active_color`` repeated at
+    each site, which is exactly the inline styling a screen must not own.
+
+    ``on_toggle`` takes the new BOOLEAN, not the event: ``ft.Checkbox`` reports a change via
+    ``on_change`` on 0.85.3 (not ``on_toggle``/``on_select``), and every caller was already
+    unwrapping ``bool(e.control.value)`` by hand. The factory adapts it once, so no screen
+    reads the event object and none can read the stale value by mistake.
+    """
+
+    def _adapt(event: ft.ControlEvent) -> None:
+        on_toggle(bool(event.control.value))
+
+    return ft.Checkbox(
+        label=label,
+        value=value,
+        active_color=tokens.color_action_primary,
+        on_change=_adapt,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# In-flight row — a spinner beside an honest waiting line                        #
+# --------------------------------------------------------------------------- #
+def inflight_row(text: str) -> ft.Control:
+    """A spinner + honest waiting line shown while an off-thread operation is in flight (D5).
+
+    Moved out of ``screens/setup.py`` by plan 0044 S3's review so the creator surface
+    (``screens/creator.py``) can show the same waiting line without importing the wizard —
+    the dependency runs wizard → creator, never back. Pixel-identical to the row it
+    replaces: the ring's 18dp and the row's 10dp gap are the moved literals (no token sits
+    on either value, and a token pair would have moved the pixels).
+    """
+    return ft.Row(
+        spacing=10,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[ft.ProgressRing(width=18, height=18), ft.Text(text, size=tokens.type_body, color=tokens.color_muted)],
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Cards                                                                          #
 # --------------------------------------------------------------------------- #
 def card(
