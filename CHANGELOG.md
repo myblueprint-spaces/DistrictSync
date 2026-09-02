@@ -9,6 +9,24 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-09-02
+
+The Windows download is now code-signed as **myBlueprint Corp.** Districts
+downloading DistrictSync see a named publisher instead of an unknown one, and
+district IT can verify where the file came from before allowing it onto a
+server. Nothing about how the tool converts or delivers data changed — this
+release is entirely about the first mile, getting the app onto the machine.
+
+**Windows only.** The macOS and Linux downloads are unchanged and still
+unsigned. Signing those needs an Apple Developer ID and notarization, which is
+a separate enrolment.
+
+**One honest limit:** the signature covers the file you download. On first
+launch the app still unpacks an unsigned helper into your user profile, so a
+district antivirus that inspects behaviour rather than publisher can still
+object. Signing narrows the "unknown publisher" problem; it does not by itself
+close the antivirus one.
+
 ### Added
 
 - **The Windows download is code-signed.** `DistrictSync-windows.exe` is now

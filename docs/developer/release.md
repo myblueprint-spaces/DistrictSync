@@ -199,7 +199,7 @@ https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/Dist
 https://github.com/myblueprint-spaces/DistrictSync/releases/latest/download/DistrictSync-macos
 ```
 
-These URLs never change and are safe to use in documentation, scripts, or partner emails — with one historical exception: before v3.15.0 the macOS permalink pointed at a bare binary, and `DistrictSync-macos` now resolves to the headless/CLI artifact rather than the app. Partner-facing links should use `DistrictSync-macos.dmg`. Each release also attaches `SHA256SUMS.txt` so a download can be verified (e.g. `sha256sum -c SHA256SUMS.txt`); binaries are not yet code-signed.
+These URLs never change and are safe to use in documentation, scripts, or partner emails — with one historical exception: before v3.15.0 the macOS permalink pointed at a bare binary, and `DistrictSync-macos` now resolves to the headless/CLI artifact rather than the app. Partner-facing links should use `DistrictSync-macos.dmg`. Each release also attaches `SHA256SUMS.txt` so a download can be verified (e.g. `sha256sum -c SHA256SUMS.txt`). **The Windows executable is code-signed** as `myBlueprint Corp.` via Azure Trusted Signing from v3.16.0 (the `sign-windows` job in `release.yml`; see DECISIONS 2026-09-02 for why it is deliberately not in `flet-pack.yml`). The macOS and Linux binaries are **not** signed.
 
 ---
 

@@ -81,10 +81,19 @@ the tool to first-run state.
 
 ### "Windows protected your PC?"
 
-The first time you run the `.exe`, Windows may show a blue **"Windows
-protected your PC"** screen (SmartScreen). This appears because the app is
-not yet code-signed — it does not mean anything is wrong with the file.
-Click **More info**, then **Run anyway**.
+DistrictSync is code-signed, so Windows should name **myBlueprint Corp.**
+as the publisher rather than warning about an unknown one. You can confirm
+this yourself before running it: right-click the `.exe`, choose
+**Properties**, and open the **Digital Signatures** tab.
+
+You may still see a blue **"Windows protected your PC"** screen (SmartScreen)
+for a while after a new version comes out. SmartScreen builds trust from how
+widely a specific file has been downloaded, which takes time even for a signed
+app — it does not mean anything is wrong with the file. Click **More info**,
+check that the publisher reads **myBlueprint Corp.**, then click **Run anyway**.
+
+If the publisher shows as unknown, stop and contact us — a signed release
+should never show that.
 
 If your district's antivirus quarantines the file instead, restore it from
 quarantine and ask your IT team to add it to the antivirus exclusion list.

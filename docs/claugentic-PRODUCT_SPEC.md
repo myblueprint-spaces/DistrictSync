@@ -28,7 +28,7 @@ The governing rule is the **trust bar**: *never assert a state you didn't check.
 
 The promise above covers **download → wizard → nightly sync**. Two links in the partner's real path sit *outside* the product today, and the spec names them rather than implying we own them:
 
-- **Getting the app onto the server.** The released binaries are **not code-signed**, so a first download can meet a Windows SmartScreen warning or a district antivirus prompt before the app ever opens. Getting past that is covered by the partner installation guide and district IT, not by the app.
+- **Getting the app onto the server.** The **Windows** executable is code-signed as `myBlueprint Corp.` (v3.16.0+), so Windows names the publisher rather than warning about an unknown one; **macOS and Linux are still unsigned**. A signed build can still meet a SmartScreen warning until that specific file accumulates download reputation, and the app still unpacks an unsigned helper into the user profile on first launch, so a behaviour-based antivirus can still object. Getting past either is covered by the partner installation guide and district IT, not by the app.
 - **Getting GDE files into the input folder.** DistrictSync **reads** the MyEducation BC extract files; it does not produce them. The district must already have its MyEdBC GDE export scheduled to drop files into the input folder on its own cadence. The wizard validates that the input folder *is a usable folder* — it does not verify that tonight's extract will land there.
 
 Naming these is the trust bar applied to the product's own edges: a tool that says "you're set up" should not be read as a claim about links it never checked.
