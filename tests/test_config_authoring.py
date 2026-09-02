@@ -48,6 +48,7 @@ from src.config.authoring import (
     overlay_path,
     read_authored_with,
     resolved_digest,
+    validate_source_filename,
     write_overlay,
 )
 from src.config.loader import available_configs, load_config, validate_overlay
@@ -756,6 +757,136 @@ class TestRenameFilenameTypes:
     def test_blank_or_non_string_originals_are_refused(self, bad_original):
         with pytest.raises(ValueError, match="source_file_renames keys"):
             _spec(source_file_renames={bad_original: "sched.txt"})
+
+
+class TestTheChainAndCaseFoldedRefusals:
+    """Plan 0044 S4: the last two ways a fully validated rename map still reads wrong.
+
+    Both are REACHABLE from the filename form — its dropdown offers whatever the input
+    folder holds, and a folder may hold another row's standard name — so both are refused
+    at the spec boundary, before ``build_overlay`` ever runs.
+    """
+
+    def test_a_rename_chain_is_refused(self):
+        """``A -> B, B -> C`` clears unknown-original, target-collision AND no-divergence,
+        and A's role then reads the base's B file: the WRONG DATA with every guard green."""
+        with pytest.raises(ValueError, match="chains one file onto another"):
+            _spec(
+                source_file_renames={
+                    "StudentSchedule.txt": "CourseInformation.txt",
+                    "CourseInformation.txt": "courses.txt",
+                }
+            )
+
+    def test_the_case_folded_twin_of_the_chain(self):
+        """``b.TXT`` and ``B.txt`` are ONE file on Windows, so the chain rule has to fold."""
+        with pytest.raises(ValueError, match="chains one file onto another"):
+            _spec(
+                source_file_renames={
+                    "StudentSchedule.txt": "courseinformation.TXT",
+                    "CourseInformation.txt": "courses.txt",
+                }
+            )
+
+    def test_a_self_rename_is_not_a_chain(self):
+        """The narrow twin: a file renamed to its OWN name (in any case) is a no-op, not a
+        chain — refusing it would be a rule about nothing."""
+        spec = _spec(source_file_renames={"StudentSchedule.txt": "studentschedule.txt"})
+
+        assert dict(spec.source_file_renames) == {"StudentSchedule.txt": "studentschedule.txt"}
+
+    def test_the_positive_twin_sd74s_real_four_rename_map_still_writes_and_loads(self):
+        """The refusals are STRICTLY MORE: the one map a real district needs must still go."""
+        _spec(source_file_renames=SD74_RENAMES)  # the spec boundary
+        write_overlay(_spec(district_name="SD93 - Chain Twin", source_file_renames=SD74_RENAMES), overwrite=True)
+
+        resolved = load_config("sd93custom")
+
+        assert resolved.mappings["Classes"].source_files["student_schedule"] == "studentcourseselection.txt"
+        assert resolved.global_config.school_year_sources["student_schedule"] == "studentcourseselection.txt"
+
+    def test_two_originals_onto_one_case_variant_target_fails_loud(self, base_config):
+        """Beside the existing exact-collision refusal: a case-sensitive grouping would let
+        two roles collapse onto ONE Windows file undetected."""
+        with pytest.raises(ValueError, match="onto one filename"):
+            build_overlay(
+                _spec(
+                    source_file_renames={
+                        "StudentSchedule.txt": "everything.txt",
+                        "CourseInformation.txt": "EVERYTHING.TXT",
+                    }
+                ),
+                resolved_base=base_config,
+            )
+
+    def test_write_overlay_refuses_both_before_any_bytes_reach_the_profile(self, base_config):
+        """Acceptance 4's second half — and its twin is the write above."""
+        with pytest.raises(ValueError):
+            write_overlay(
+                _spec(
+                    source_file_renames={
+                        "StudentSchedule.txt": "everything.txt",
+                        "CourseInformation.txt": "EVERYTHING.TXT",
+                    }
+                ),
+                overwrite=True,
+            )
+
+        assert not overlay_path("sd93custom").exists(), "a refused rename map reached disk"
+
+
+class TestValidateSourceFilename:
+    """The PUBLIC filename boundary the form validates one typed name through.
+
+    ONE boundary in the product: the same function, reached two ways. A second spelling in
+    the UI layer is how a validated map still reads the wrong file.
+    """
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "../escape.txt",
+            "sub/file.txt",
+            "sub\\file.txt",
+            ".",
+            "..",
+            "C:file.txt",
+            "file.txt:stream",
+            "file<1>.txt",
+            'file".txt',
+            "file|.txt",
+            "file?.txt",
+            "file*.txt",
+            "fi\tle.txt",
+            "fi\nle.txt",
+            "file\x00.txt",
+            "CON",
+            "con.txt",
+            "LPT9.dat",
+            " file.txt",
+            "file.txt ",
+            "",
+            "f" * 256,
+        ],
+    )
+    def test_the_same_shapes_are_refused_through_both_entry_points(self, bad):
+        with pytest.raises(ValueError):
+            validate_source_filename(bad)
+        with pytest.raises(ValueError):
+            _spec(source_file_renames={"StudentSchedule.txt": bad})
+
+    @pytest.mark.parametrize("good", ["file.txt", "studentcourseselection.txt", "Class Info Enhanced.txt", "f" * 255])
+    def test_a_bare_filename_is_returned_unchanged(self, good):
+        assert validate_source_filename(good) == good
+
+    @pytest.mark.parametrize("bad", [None, 7, b"file.txt"])
+    def test_a_non_string_is_refused(self, bad):
+        with pytest.raises(ValueError):
+            validate_source_filename(bad)
+
+    def test_the_label_names_the_field_and_the_message_carries_no_district_data(self):
+        with pytest.raises(ValueError, match="my row"):
+            validate_source_filename("../escape.txt", label="my row")
 
 
 class TestDeleteRefusesToLeaveTheMappingsDir:

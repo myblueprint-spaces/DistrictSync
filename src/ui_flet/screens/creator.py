@@ -47,14 +47,19 @@ from src.ui_flet import components, tokens
 from src.ui_flet.config_editor import (
     CEDS_GRADE_ORDER,
     CreatorForm,
+    FileFormRow,
     GateOutcome,
     GateState,
+    SourceFileSlot,
     base_label,
     derive_domains,
+    distinct_source_files,
+    file_form_rows,
+    files_primary_action,
     gate_outcome_for,
     humanize_config_error,
-    missing_files,
     overlay_staleness,
+    renames_from_resolved,
     sd_number_from_text,
     seed_entities,
     split_domains,
@@ -133,12 +138,34 @@ CREATOR_FINISH_NEEDS_GATE_NOTE = (
 #: The creator-only gate step's title. The wizard reads it from here: its ``_STEP_TITLES``
 #: is the single source of every step title and must name this one.
 FILES_STEP_TITLE = "Your files"
-FILES_INHERITED_NOTE = (
-    "DistrictSync will look for these files in your input folder — the standard MyEd BC names your starting point uses."
+#: S3's ``FILES_INHERITED_NOTE`` said "the standard MyEd BC names your starting point uses",
+#: which stops being true the moment a row carries this district's own name. This says what
+#: the step is FOR instead, in both states.
+FILES_INTRO_NOTE = (
+    "DistrictSync looks for these files in your input folder. If your district's files are named "
+    "differently, set the name yours uses beside each one."
 )
 FILES_MISSING_NOTE = (
     "We can't see these ones in your input folder. A test conversion carries on without them, and "
-    "whatever they feed comes out empty."
+    "whatever they feed comes out empty. If your district calls them something else, set that name above."
+)
+FILES_KEEP_STANDARD_LABEL = "Use the standard name"
+FILES_TYPED_NAME_LABEL = "Type the name your district uses if it isn't in the list"
+FILES_USED_FOR_PREFIX = "Used for: "
+FILES_SCHOOL_YEAR_CLAUSE = " It also tells DistrictSync which school year the data is from."
+FILES_SAVE_LABEL = "Save these file names"
+FILES_SAVED_NOTE = "Saved. DistrictSync will look for these file names from now on."
+FILES_UNSAVED_NOTE = "These file names aren't saved yet. Save them, then run a test conversion against them."
+FILES_NAME_INVALID_NOTE = (
+    "One of those file names can't be used. Give just the file name as it appears in your input "
+    'folder — no folder path, and none of : \\ / < > " | ? *'
+)
+FILES_NAME_DUPLICATE_NOTE = (
+    "Two of these files would end up with the same name. Each one needs the name your district actually uses for it."
+)
+FILES_NAME_IS_STANDARD_NOTE = (
+    "One of those names is the standard name of another file on this list — and that file has a "
+    "name of its own here, so the two would swap places. Please check them."
 )
 GATE_RUN_LABEL = "Run a test conversion"
 GATE_RUNNING_CAPTION = "Testing your files… nothing is written and nothing is sent."
@@ -153,6 +180,7 @@ GATE_STALE_BASE_NOTE = (
 GATE_CONFIRM_LABEL = "Use this district"
 GATE_RERUN_LABEL = "Test it again"
 GATE_ACTIVATED_NOTE = "This computer now converts your district."
+GATE_RESAVED_NOTE = "Saved. Your district's file names changed, so please run the test conversion once more."
 
 #: Plain-language names for the seven authorable entities (the vocabulary map — an admin
 #: reads "Families", never ``Family``, and never a raw entity key).
@@ -257,21 +285,89 @@ def creator_form_from_overlay(sis_id: str) -> CreatorForm:
             homeroom = raw_global.get("homeroom_grades")
             keep = [code for code in (homeroom or []) if code in set(rostered)]
             form = form.with_rostered(rostered).with_homeroom(keep)
+        # The filename form's own answer, recovered from the config on disk (plan 0044 S4):
+        # whatever the district's config names at a base reference site IS the rename map,
+        # so the rows on screen and the map the next Save writes are ONE value. Per-entry
+        # suppression, because a HAND-EDITED name the filename boundary refuses must not
+        # cost the admin the rest of a rehydrated form.
+        resolved_base = _resolved_base(base)
+        if resolved_base is not None:
+            for original, renamed in renames_from_resolved(resolved_base, config).items():  # type: ignore[arg-type]
+                try:
+                    form = form.with_rename(original, renamed)
+                except ValueError:
+                    logger.warning("A source file name in %r's mapping is not a usable filename.", sis_id)
         return form
     except Exception:  # noqa: BLE001 - total: a broken overlay is the gate's story, not the form's
         logger.warning("Could not rehydrate the creator form for %r; opening the defaults.", sis_id)
         return fallback
 
 
-def _creator_expected_files(sis_id: str) -> tuple[str, ...]:
-    """The source filenames ``sis_id``'s resolved config expects. TOTAL — ``()`` on any failure."""
+def _resolved_config(sis_id: str) -> object | None:
+    """The district's OWN resolved config (base + overlay), or ``None``. TOTAL.
+
+    Separate from :func:`_resolved_base`, which resolves the STARTING POINT: the two answer
+    different questions on the Files step (what a file is CALLED in the base, versus what
+    this district's config reads today) and both are needed to show one row per file.
+    """
     try:
         from src.config.loader import load_config
+
+        return load_config(sis_id)
+    except Exception:  # noqa: BLE001 - total: the gate reports what is wrong with the config
+        logger.warning("Could not resolve the self-service config %r.", sis_id)
+        return None
+
+
+def _creator_expected_files(sis_id: str) -> tuple[str, ...]:
+    """The source filenames ``sis_id``'s resolved config expects. TOTAL — ``()`` on any failure."""
+    config = _resolved_config(sis_id)
+    if config is None:
+        return ()
+    try:
         from src.etl.pipeline import advisory_expected_files
 
-        return tuple(advisory_expected_files(load_config(sis_id)))
+        return tuple(advisory_expected_files(config))
     except Exception:  # noqa: BLE001 - total: no list is better than a wrong list
         logger.warning("Could not resolve the expected source files for %r.", sis_id)
+        return ()
+
+
+def _creator_file_slots(base: str, sis_id: str) -> tuple[SourceFileSlot, ...]:
+    """The Files step's rows — one per source file this district reads. TOTAL — ``()`` on failure.
+
+    Two configs, two jobs:
+
+    * the SLOTS come from the resolved STARTING POINT, because a rename is keyed by the
+      base's own filename (that is what ``authoring._build_renames`` propagates from), and
+      because the row set must not move when a name changes;
+    * ``expected`` comes from the DISTRICT's own config, so
+      ``pipeline.advisory_expected_files`` stays the single source for "which files matter"
+      WITH the narrowing this district's entity selection and grade scopes earn — then it is
+      translated back into base-name space through the renames the config on disk already
+      expresses. BOTH spellings are offered to the filter, so a hand-edited config that
+      diverges on one file still gets its row (the row is where that gets repaired).
+
+    ``()`` when the starting point cannot be resolved — the state in which ``write_overlay``
+    would fail too, and the gate carries the diagnosis.
+    """
+    resolved_base = _resolved_base(base)
+    if resolved_base is None:
+        return ()
+    try:
+        from src.etl.pipeline import advisory_expected_files
+
+        current = _resolved_config(sis_id) if (sis_id or "").strip() else None
+        if current is None:
+            expected = list(advisory_expected_files(resolved_base))
+        else:
+            saved = renames_from_resolved(resolved_base, current)  # type: ignore[arg-type]
+            back = {new: original for original, new in saved.items()}
+            names = list(advisory_expected_files(current))
+            expected = [*names, *(back[name] for name in names if name in back)]
+        return distinct_source_files(resolved_base, expected=expected)  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001 - total: no rows is better than wrong rows
+        logger.warning("Could not derive the source file rows for %r.", sis_id)
         return ()
 
 
@@ -311,6 +407,7 @@ def build_creator(  # pragma: no cover - Flet view glue
     sis_id: str,
     form: CreatorForm,
     on_written: Callable[[str, CreatorForm, str], None],
+    on_files_saved: Callable[[CreatorForm, str], None],
     on_activated: Callable[[], None],
     on_discarded: Callable[[], None],
     stage: CreatorStage = "forms",
@@ -334,6 +431,14 @@ def build_creator(  # pragma: no cover - Flet view glue
             for the host to show on the surface it moves to (only ever
             ``CREATOR_RESUME_REFUSED_NOTE``: the file is on disk and the step is re-visitable,
             so only resume convenience was lost and the host still advances).
+        on_files_saved: ``(form, note)`` after a SUCCESSFUL save of the file-name form —
+            the overlay is on disk and the catalog invalidation has already happened. A
+            SEPARATE callback from ``on_written`` deliberately (plan 0044 S4): that one
+            ADVANCES a step, and a callback whose meaning depends on which step the host
+            is showing is how a second wizard starts. The host stores the form, drops any
+            memoised gate fact and re-renders the step it is on; ``note`` is
+            :data:`FILES_SAVED_NOTE`, or :data:`GATE_RESAVED_NOTE` when the save landed on
+            a district this computer is already converting.
         on_activated: after ``sis_type`` genuinely became this district in ONE save.
         on_discarded: after the overlay was deleted, the token cleared and the catalog
             invalidated — the host re-mounts its standard surface.
@@ -350,6 +455,14 @@ def build_creator(  # pragma: no cover - Flet view glue
         "domains_text": ", ".join(form.domains),
         "entities": set(form.entities) if form.entities else _seed_entity_ticks(form.base),
         "note": "",
+        # The filename form (S4). ``pending`` is the RAW per-row string the admin has
+        # chosen or typed (``""`` = keep the standard name); ``saved`` is what the config on
+        # disk says, so "is there anything unsaved?" is one comparison rather than a flag
+        # anything could forget to set. ``slots`` is the mount-time memo: the resolved base
+        # and the expected-file list are I/O and cannot change while the step is on screen.
+        "pending": dict(form.renames),
+        "saved": dict(form.renames),
+        "slots": None,
         "gate": GateOutcome(state=GateState.NOT_RUN),
         "running": False,
         "activated": False,
@@ -648,6 +761,158 @@ def build_creator(  # pragma: no cover - Flet view glue
         controls.append(_discard_row())
         return controls
 
+    # ---- the filename form (S4) ------------------------------------------ #
+    def _slots() -> tuple[SourceFileSlot, ...]:
+        """This district's file rows, derived ONCE per mount (see ``st["slots"]``)."""
+        if st["slots"] is None:
+            st["slots"] = _creator_file_slots(str(st["form"].base), sis_id)  # type: ignore[union-attr]
+        return st["slots"]  # type: ignore[return-value]
+
+    def _pending_renames() -> dict[str, str]:
+        """The rename map the ROWS currently express — the same drop rule ``with_rename`` applies.
+
+        Unvalidated on purpose: this feeds the rows, the chips and the "anything unsaved?"
+        comparison on every render, and a typed name must be allowed to be half-finished
+        while it is being typed. The boundary fires on Save.
+        """
+        chosen: dict[str, str] = {}
+        for original, raw in dict(st["pending"]).items():  # type: ignore[union-attr]
+            name = raw.strip() if isinstance(raw, str) else ""
+            if name and name != original:
+                chosen[original] = name
+        return chosen
+
+    def _unsaved() -> bool:
+        return _pending_renames() != dict(st["saved"])  # type: ignore[arg-type]
+
+    def _on_pick_name(original: str, value: str) -> None:
+        """A folder file (or "use the standard name") picked from the row's list."""
+        st["pending"][original] = value or ""  # type: ignore[index]
+        st["note"] = ""
+        _render()
+
+    def _on_type_name(original: str, value: str) -> None:
+        """A typed name. No re-render (the field owns the caret) — the chip catches up on Save."""
+        st["pending"][original] = value or ""  # type: ignore[index]
+
+    def _save_names(_e: ft.ControlEvent | None = None) -> None:
+        """The filename form's ONE write. Cheap local problems answer FIRST, with no write.
+
+        Every write load-backs through the real loader, which is why this is one action for
+        the whole form rather than a write per row.
+        """
+        slots = _slots()
+        try:
+            candidate: CreatorForm = st["form"]  # type: ignore[assignment]
+            for slot in slots:
+                candidate = candidate.with_rename(slot.original, str(st["pending"].get(slot.original, "")))  # type: ignore[union-attr]
+        except ValueError:
+            # Never echoed: the note names the CHECK, and a refused name can carry control
+            # characters of its own.
+            logger.info("A source file name on the Files step was refused by the filename boundary.")
+            _set_note(FILES_NAME_INVALID_NOTE)
+            return
+
+        pending = _pending_renames()
+        # Two ROWS on one file. Broader than the authoring layer's refusal (which only sees
+        # two renames onto one target) because a name typed onto a file another row KEEPS is
+        # the same mistake: which columns would win is a question the ETL has no answer for.
+        by_name: dict[str, list[str]] = {}
+        for row in file_form_rows(slots, renames=pending, present=()):
+            by_name.setdefault(row.effective.casefold(), []).append(row.slot.original)
+        if any(len(originals) > 1 for originals in by_name.values()):
+            _set_note(FILES_NAME_DUPLICATE_NOTE)
+            return
+        # The CHAIN shape ``A -> B, B -> C``: reachable from this form, because the folder
+        # may well hold another row's standard name. Pre-checked here so the admin gets this
+        # sentence rather than the authoring layer's bounded write-failure copy.
+        renamed_originals = {original.casefold() for original in pending}
+        if any(
+            name.casefold() in renamed_originals and name.casefold() != original.casefold()
+            for original, name in pending.items()
+        ):
+            _set_note(FILES_NAME_IS_STANDARD_NOTE)
+            return
+
+        already = bool(st["activated"]) or _gate_already_passed()
+        try:
+            write_overlay(candidate.to_overlay_spec(), overwrite=True)
+        except Exception as exc:  # noqa: BLE001 - bounded copy on screen, full trace in the log
+            logger.warning("Could not save this district's source file names.", exc_info=True)
+            _set_note(f"{CREATOR_WRITE_FAILED_NOTE} {humanize_config_error(exc)}")
+            return
+
+        st["form"] = candidate
+        st["saved"] = dict(candidate.renames)
+        st["pending"] = dict(candidate.renames)
+        st["note"] = ""
+        # The config that just landed is NOT the one any earlier test conversion ran, so the
+        # gate re-opens: the passed outcome, this session's activation flag and the memoised
+        # stored-gate fact all describe files this district no longer reads. Nothing is
+        # written to settings — the stored digest simply stops matching, which is the
+        # hash-keyed fail-safe doing its job (an absent fact can only force another test).
+        st["gate"] = GateOutcome(state=GateState.NOT_RUN)
+        st["activated"] = False
+        st["gate_current"] = None
+        reset_catalog_cache()
+        on_files_saved(candidate, GATE_RESAVED_NOTE if already else FILES_SAVED_NOTE)
+
+    def _used_for_caption(slot: SourceFileSlot) -> str:
+        """The row's caption: what this file feeds, plus the school-year clause when it applies."""
+        entities = tuple(dict.fromkeys(entity for entity, _role in slot.references))
+        caption = f"{FILES_USED_FOR_PREFIX}{', '.join(_entity_label(name) for name in entities)}."
+        return f"{caption}{FILES_SCHOOL_YEAR_CLAUSE}" if slot.names_school_year else caption
+
+    def _name_row(row: FileFormRow, folder: tuple[str, ...]) -> ft.Control:
+        """One file: what it is, the name in force, and the two ways to change it."""
+        slot = row.slot
+        selected = "" if row.effective == slot.original else row.effective
+        offered = list(folder)
+        if selected and selected not in offered:
+            # A typed name the folder does not hold is still the name in force, so the list
+            # has to be able to SHOW it selected rather than silently reading "standard".
+            offered.append(selected)
+        options = [ft.dropdown.Option(key="", text=FILES_KEEP_STANDARD_LABEL)]
+        options.extend(ft.dropdown.Option(key=name, text=name) for name in offered)
+        return ft.Column(
+            spacing=tokens.space_sm,
+            controls=[
+                ft.Row(
+                    spacing=tokens.space_md,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Text(
+                            slot.label,
+                            size=tokens.type_body,
+                            weight=ft.FontWeight.W_600,
+                            color=tokens.color_text,
+                        ),
+                        components.FileChip(row.effective, present=row.present),
+                    ],
+                ),
+                ft.Row(
+                    spacing=tokens.space_lg,
+                    controls=[
+                        ft.Dropdown(
+                            label=slot.original,  # the STANDARD name, read-only, labelling its own row
+                            value=selected,
+                            options=options,
+                            expand=True,
+                            border_color=tokens.color_border,
+                            on_select=lambda e, original=slot.original: _on_pick_name(original, e.control.value or ""),
+                        ),
+                        ft.TextField(
+                            label=FILES_TYPED_NAME_LABEL,
+                            value=selected,
+                            helper=_used_for_caption(slot),  # TextField's helper field is `helper`
+                            expand=True,
+                            on_change=lambda e, original=slot.original: _on_type_name(original, e.control.value or ""),
+                        ),
+                    ],
+                ),
+            ],
+        )
+
     # ---- the gate -------------------------------------------------------- #
     def _output_ok() -> bool:
         return validate_output_dir(str(cfg.output_dir or "")).ok
@@ -774,27 +1039,46 @@ def build_creator(  # pragma: no cover - Flet view glue
         for note in _staleness_notes():
             controls.append(ft.Text(note, size=tokens.type_body, color=tokens.color_status_warning))
 
-        expected = _creator_expected_files(sis_id)
-        present = _folder_filenames(str(cfg.input_dir or ""))
-        absent = missing_files(expected, present)
-        file_rows: list[ft.Control] = [
-            ft.Text(FILES_INHERITED_NOTE, size=tokens.type_body, color=tokens.color_muted),
-            ft.Row(
-                wrap=True,
-                spacing=tokens.space_sm,
-                run_spacing=tokens.space_sm,
-                controls=[components.FileChip(name, present=name not in absent) for name in expected],
-            ),
-        ]
-        if absent:
+        # ONE presence source: the rows, their chips and the missing-file list all read the
+        # PENDING effective names, so nothing on this card can contradict anything else on
+        # it. (The gate's own ``GateOutcome.missing_files`` — the config on DISK, after a run
+        # — stays the authoritative report, which is why it is derived separately.)
+        folder = _folder_filenames(str(cfg.input_dir or ""))
+        rows = file_form_rows(_slots(), renames=_pending_renames(), present=folder)
+        unsaved = _unsaved()
+        action = files_primary_action(unsaved=unsaved, passed=passed, already=already)
+
+        def _tiered(label: str, handler, *, primary: bool, icon: str) -> ft.Control:  # noqa: ANN001
+            """The 3-tier rule applied from ONE decision: filled when this is the primary."""
+            if primary:
+                return components.primary_button(
+                    label,
+                    handler,
+                    disabled=bool(st["running"]),
+                    disabled_bgcolor=tokens.color_border,
+                    icon=icon,
+                )
+            return components.secondary_button(label, handler, disabled=bool(st["running"]), icon=icon)
+
+        file_rows: list[ft.Control] = [ft.Text(FILES_INTRO_NOTE, size=tokens.type_body, color=tokens.color_muted)]
+        file_rows.extend(_name_row(row, folder) for row in rows)
+        if any(not row.present for row in rows):
             file_rows.append(ft.Text(FILES_MISSING_NOTE, size=tokens.type_body, color=tokens.color_status_warning))
-        controls.append(components.card(ft.Column(spacing=tokens.space_md, controls=file_rows)))
+        if unsaved:
+            file_rows.append(ft.Text(FILES_UNSAVED_NOTE, size=tokens.type_body, color=tokens.color_status_warning))
+        file_rows.append(
+            ft.Row(
+                controls=[_tiered(FILES_SAVE_LABEL, _save_names, primary=action == "save", icon=ft.Icons.SAVE_OUTLINED)]
+            )
+        )
+        controls.append(components.card(ft.Column(spacing=tokens.space_lg, controls=file_rows)))
 
         controls.extend(_note_row())
 
-        # ONE filled primary in EVERY state: the run button while there is nothing to confirm,
-        # the confirm once a test has passed, and — once this district is genuinely active —
-        # neither (the step footer's Continue becomes the screen's one filled action).
+        # ONE filled primary in EVERY state, decided by the pure ``files_primary_action``:
+        # the save while a name on screen is not in the config, the run while there is
+        # nothing to confirm, the confirm once a test has passed, and — once this district is
+        # genuinely active — none at all (the step footer's Continue takes that tier).
         actions: list[ft.Control] = []
         if already:
             controls.append(
@@ -807,20 +1091,16 @@ def build_creator(  # pragma: no cover - Flet view glue
                     ],
                 )
             )
-            actions.append(components.secondary_button(GATE_RERUN_LABEL, _run_gate, disabled=bool(st["running"])))
-        elif passed:
+        if action == "confirm":
             actions.append(components.primary_button(GATE_CONFIRM_LABEL, _activate, icon=ft.Icons.CHECK_ROUNDED))
-            actions.append(components.secondary_button(GATE_RERUN_LABEL, _run_gate, disabled=bool(st["running"])))
-        else:
-            actions.append(
-                components.primary_button(
-                    GATE_RUN_LABEL,
-                    _run_gate,
-                    disabled=bool(st["running"]),
-                    disabled_bgcolor=tokens.color_border,
-                    icon=ft.Icons.PLAY_ARROW_ROUNDED,
-                )
+        actions.append(
+            _tiered(
+                GATE_RERUN_LABEL if (passed or already) else GATE_RUN_LABEL,
+                _run_gate,
+                primary=action == "run",
+                icon=ft.Icons.PLAY_ARROW_ROUNDED,
             )
+        )
         controls.append(ft.Row(spacing=tokens.space_lg, controls=actions))
         controls.append(_discard_row())
         return controls

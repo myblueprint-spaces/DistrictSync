@@ -6,7 +6,7 @@ headless: what an overlay will SAY (``CreatorForm`` → ``OverlaySpec``), whethe
 test-conversion gate passed, and whether an activated district still matches what
 was actually tested.
 
-Three families live here:
+Four families live here:
 
 * **The form.** Frozen :class:`CreatorForm` with ``with_*`` returns, so a step can
   never half-mutate shared state. It holds RESOLVED values (a base id, the district
@@ -16,6 +16,13 @@ Three families live here:
   rostered?") plus one subset question ("which of those get a homeroom class instead of
   a timetable?"), so ``GlobalConfig.check_rostering_grade_scopes`` can only ever confirm
   it — the admin never has to reconstruct a chain rule from an error message.
+* **The filename form** (slice 4). :class:`SourceFileSlot` /
+  :func:`distinct_source_files` derive ONE row per FILE the district's config reads (the
+  unit an admin renames is the file, not the entity: one answer fixes Classes,
+  Enrollments and the school-year lookup together), :func:`file_form_rows` pairs those
+  with the name in force and its presence in the folder, :func:`renames_from_resolved` is
+  the resume inverse, and :func:`files_primary_action` decides which action is the step's
+  ONE filled primary.
 * **The gate.** :class:`GateState` / :class:`GateOutcome` / :func:`gate_outcome_for`
   reduce the test conversion's outcome — the worker's result or exception, whether the
   output folder is usable, and the expected-vs-present file lists — to one derived fact.
@@ -61,7 +68,7 @@ from typing import TYPE_CHECKING, Literal
 
 import yaml
 
-from src.config.authoring import ALLOWED_BASES, CREATOR_ENTITIES, OverlaySpec
+from src.config.authoring import ALLOWED_BASES, CREATOR_ENTITIES, OverlaySpec, validate_source_filename
 from src.config.bc_district_domains import domains_for, presumptive_domain
 from src.config.models import (
     CLASS_ROSTERING_HOMEROOM_SENTINEL,
@@ -95,6 +102,23 @@ BASE_LABELS: Mapping[str, str] = {
     "mbp_all": "Full myBlueprint+ (rostering and courses)",
     "mbp_core": "myBlueprint+ core (students and courses)",
     "mbponly": "myBlueprint+ courses only",
+}
+
+#: A plain-language name per DISTINCT source filename across all four
+#: :data:`ALLOWED_BASES` — admin-facing copy, so DATA rather than something derived:
+#: ``ClassInformationEnh.txt`` split on capitals reads "Class Information Enh", which is
+#: worse than the filename it came from. :func:`file_label` falls back to the filename, so
+#: a base that grows a new source file still renders a row (the parity test is what says
+#: it needs a label).
+FILE_LABELS: Mapping[str, str] = {
+    "StudentDemographicInformation.txt": "Student details",
+    "StaffInformationEnhanced.txt": "Staff details",
+    "EmergencyContactInformation.txt": "Parent and guardian contacts",
+    "StudentSchedule.txt": "Student timetables",
+    "CourseInformation.txt": "Course list",
+    "ClassInformationEnh.txt": "Class details",
+    "StudentCourseHistory.txt": "Past courses",
+    "StudentCourseSelection.txt": "Course choices",
 }
 
 #: The bounded categories :func:`humanize_config_error` answers with. One constant per
@@ -250,6 +274,212 @@ def seed_entities(resolved_base: MappingConfig) -> tuple[str, ...]:
 
 
 # ---------------------------------------------------------------------------
+# Source files (the filename form — plan 0044 slice 4)
+# ---------------------------------------------------------------------------
+#: One place a filename is referenced from in a resolved config:
+#: ``("mappings", <entity>, <role>)`` or ``("school_year_sources", <key>)``. The same
+#: shape ``authoring._reference_sites`` keys its propagation map by — that one is a DICT
+#: for propagation, this walk is ORDERED for display, and both must agree on what a site
+#: is or a row on screen would not be the thing the write moves.
+_SiteKey = tuple[str, ...]
+
+
+def file_label(filename: str) -> str:
+    """The plain-language name for a source filename, falling back to the filename itself.
+
+    TOTAL, for the same reason :func:`base_label` is: a base that grows a source file with
+    no :data:`FILE_LABELS` row still renders a usable row instead of a blank one, and the
+    parity test is what says the row is missing.
+    """
+    return FILE_LABELS.get(filename, filename)
+
+
+def _ordered_reference_sites(config: MappingConfig) -> tuple[tuple[_SiteKey, str], ...]:
+    """Every filename reference in ``config``, in a DETERMINISTIC display order.
+
+    Entities in :data:`CREATOR_ENTITIES` order, then any remaining entity key sorted (so
+    a vendor-only entity is never silently dropped from the walk), roles in the config's
+    own order, then ``global_config.school_year_sources``.
+
+    The order matters: ``pipeline.advisory_expected_files`` returns ``list(set)``, whose
+    order varies with ``PYTHONHASHSEED``, and the Files step's rows must not move between
+    runs. So the ROW ORDER is this walk's, never ``expected``'s.
+    """
+    remaining = sorted(name for name in config.mappings if name not in CREATOR_ENTITIES)
+    sites: list[tuple[_SiteKey, str]] = []
+    for entity in (*CREATOR_ENTITIES, *remaining):
+        entity_cfg = config.mappings.get(entity)
+        if entity_cfg is None:
+            continue
+        for role, filename in entity_cfg.source_files.items():
+            sites.append((("mappings", entity, role), filename))
+    for key, filename in config.global_config.school_year_sources.items():
+        sites.append((("school_year_sources", key), filename))
+    return tuple(sites)
+
+
+@dataclass(frozen=True)
+class SourceFileSlot:
+    """One FILE the district's config reads — the unit the filename form is keyed by.
+
+    The unit is the FILE, not the entity/role: setting ``StudentSchedule.txt`` once fixes
+    Classes, Enrollments AND the school-year lookup together (SD74's real shape), which is
+    why ``OverlaySpec.source_file_renames`` is keyed the same way.
+
+    Attributes:
+        original: the base config's own filename — what a rename is keyed BY.
+        label: the plain-language name (:func:`file_label`).
+        references: the ACTIVE ``(entity, role)`` sites naming it, in walk order. Entity
+            KEYS, never labels: ``setup``/``creator``'s ``_entity_label`` owns that
+            vocabulary, and a second table would drift from it.
+        names_school_year: ``global_config.school_year_sources`` also names this file, so
+            a new name moves the school-year lookup — and with it every
+            ``append_year_to_id`` Class ID. The one propagation worth saying out loud.
+    """
+
+    original: str
+    label: str
+    references: tuple[tuple[str, str], ...] = ()
+    names_school_year: bool = False
+
+
+def distinct_source_files(resolved_base: MappingConfig, *, expected: Iterable[str]) -> tuple[SourceFileSlot, ...]:
+    """The files the Files step shows a row for, de-duplicated and in a stable order.
+
+    Walks ``resolved_base`` through :func:`_ordered_reference_sites`, keeping a site only
+    when its entity is one this config actually produces (``active_entities()``) and its
+    filename is in ``expected``; the first site to name a file decides that row's place.
+
+    ``expected`` is INJECTED rather than derived here so ``pipeline.advisory_expected_files``
+    stays the SINGLE source for "which files matter" — including its one narrowing (a fully
+    homeroom-scoped config's ``student_schedule``/``class_info`` roles feed no surviving
+    class, so offering a row for them would be offering a name that changes nothing).
+
+    A school-year file that no ACTIVE entity reads gets NO slot: ``extract_required_files``
+    never loads it, so the row would be equally inert. ``names_school_year`` therefore only
+    ever ANNOTATES a row that exists for an entity's sake.
+    """
+    wanted = {name for name in expected if isinstance(name, str) and name}
+    active = resolved_base.active_entities()
+    year_files = set(resolved_base.global_config.school_year_sources.values())
+
+    references: dict[str, list[tuple[str, str]]] = {}
+    order: list[str] = []
+    for site, filename in _ordered_reference_sites(resolved_base):
+        if site[0] != "mappings":
+            continue
+        _, entity, role = site
+        if entity not in active or filename not in wanted:
+            continue
+        if filename not in references:
+            references[filename] = []
+            order.append(filename)
+        references[filename].append((entity, role))
+
+    return tuple(
+        SourceFileSlot(
+            original=filename,
+            label=file_label(filename),
+            references=tuple(references[filename]),
+            names_school_year=filename in year_files,
+        )
+        for filename in order
+    )
+
+
+@dataclass(frozen=True)
+class FileFormRow:
+    """One rendered row: the slot, the name in force, and whether the folder holds it.
+
+    Composition, not duplication — the slot is carried whole rather than re-spelled, so a
+    row can never disagree with the file it describes.
+
+    Attributes:
+        slot: the file this row is for.
+        effective: the district's name for it (the renamed name, else ``slot.original``).
+        present: the input folder holds a file of that name (case-insensitively).
+    """
+
+    slot: SourceFileSlot
+    effective: str
+    present: bool
+
+
+def file_form_rows(
+    slots: Iterable[SourceFileSlot],
+    *,
+    renames: Mapping[str, str],
+    present: Iterable[str],
+) -> tuple[FileFormRow, ...]:
+    """Pair each slot with the name in force and its presence in the input folder.
+
+    Presence reuses :func:`missing_files`' case-INSENSITIVE fold — ONE fold in the product,
+    so ``studentcourseselection.txt`` can never read as absent against a mapping that says
+    ``StudentCourseSelection.txt`` while the extractor loads it perfectly well.
+
+    (Deliberately no separate ``present_files(...)`` helper: it would duplicate that fold
+    to hand back its own input.)
+    """
+    rows = tuple(slots)
+    effective: list[str] = []
+    for slot in rows:
+        renamed = renames.get(slot.original) if isinstance(renames, Mapping) else None
+        chosen = renamed.strip() if isinstance(renamed, str) else ""
+        effective.append(chosen or slot.original)
+    absent = set(missing_files(effective, present))
+    return tuple(
+        FileFormRow(slot=slot, effective=name, present=name not in absent)
+        for slot, name in zip(rows, effective, strict=True)
+    )
+
+
+def renames_from_resolved(resolved_base: MappingConfig, resolved_current: MappingConfig) -> dict[str, str]:
+    """The rename map a district's CURRENT config already expresses — the RESUME inverse.
+
+    For every reference site in the base, if the current config names something else there,
+    record ``base name -> current name`` (first-seen per original, same walk as
+    :func:`distinct_source_files`). TOTAL: an identical pair answers ``{}``.
+
+    A hand-edited DIVERGENT config — two sites naming one base file two different ways —
+    collapses to its FIRST-SEEN name here, and the next Save writes that one name to every
+    site. That is a visible repair rather than a silent loss, because the rows on screen and
+    the written map are ONE value: whatever this returns is what the form shows.
+    """
+    current = dict(_ordered_reference_sites(resolved_current))
+    found: dict[str, str] = {}
+    for site, original in _ordered_reference_sites(resolved_base):
+        now = current.get(site)
+        if not isinstance(now, str) or not now or now == original:
+            continue
+        found.setdefault(original, now)
+    return found
+
+
+def files_primary_action(*, unsaved: bool, passed: bool, already: bool) -> Literal["save", "run", "confirm", "none"]:
+    """Which of the Files step's actions is the ONE filled primary. PURE.
+
+    * ``"save"`` — there are file names on screen the config on disk does not have.
+      ``unsaved`` WINS over everything: a test conversion run against names the config
+      lacks reports on the wrong files, and confirming one would activate a district
+      nobody has tested as it now reads.
+    * ``"none"`` — this district is already active and current: the step's footer
+      Continue is the screen's one filled action, so the body offers none.
+    * ``"confirm"`` — a test passed and the district is not active yet.
+    * ``"run"`` — nothing has been tested yet.
+
+    Lifting the branch out of the view is what lets "exactly ONE filled primary" be
+    asserted over all EIGHT input combinations rather than read off a render.
+    """
+    if unsaved:
+        return "save"
+    if already:
+        return "none"
+    if passed:
+        return "confirm"
+    return "run"
+
+
+# ---------------------------------------------------------------------------
 # The form
 # ---------------------------------------------------------------------------
 
@@ -296,6 +526,11 @@ class CreatorForm:
             timetable classes — ``()`` is a legitimate answer (a secondary-only district
             has to SAY it) — or ``None`` to inherit, only while ``rostered`` is ``None``
             too.
+        renames: base filename → the name this district's extract uses, keyed by the
+            FILE (see :class:`SourceFileSlot`). Empty = the base's standard MyEd BC
+            names. Every entry is validated at :func:`with_rename` AND re-validated at
+            construction, so no reachable form state emits a filename the authoring
+            boundary refuses.
     """
 
     base: str = ALLOWED_BASES[0]
@@ -305,6 +540,7 @@ class CreatorForm:
     entities: tuple[str, ...] = ()
     rostered: tuple[str, ...] | None = None
     homeroom: tuple[str, ...] | None = None
+    renames: Mapping[str, str] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.base not in ALLOWED_BASES:
@@ -344,6 +580,13 @@ class CreatorForm:
                     f"homeroom grades {outside} are not rostered grades. A homeroom grade must be one of the "
                     "rostered grades — the chain homeroom ⊆ class ⊆ student is what makes the config load."
                 )
+        # Re-validated here, not only in `with_rename`, so a DIRECT construction cannot
+        # bypass the filename boundary (the `rostered` precedent). Labelled generically:
+        # the message reaches a log, and the actionable fact is which CHECK failed.
+        for original, renamed in dict(self.renames).items():
+            if not isinstance(original, str) or not original.strip():
+                raise ValueError("renames keys must be the base filenames they replace.")
+            validate_source_filename(renamed, label="file name")
 
     # -- edits ------------------------------------------------------------
     def with_base(self, base: str) -> CreatorForm:
@@ -417,6 +660,35 @@ class CreatorForm:
             return dataclasses.replace(self, rostered=None, homeroom=None)
         return dataclasses.replace(self, homeroom=_grade_tuple(values, label="homeroom"))
 
+    def with_rename(self, original: str, new: str) -> CreatorForm:
+        """Set (or clear) the name this district's extract uses for ``original``.
+
+        DROPS the entry when ``new`` is blank/whitespace-only or — after stripping —
+        equal to ``original``: a "rename" to the standard name is not one, and the
+        emission has to stay MINIMAL (an entry naming the base's own filename would emit
+        a ``source_files`` override that only forks the base).
+
+        Anything else is validated through :func:`authoring.validate_source_filename` —
+        the ONE filename boundary, shared with ``OverlaySpec`` — so a traversal, a
+        drive-relative/ADS colon, a control character, a reserved device name or an
+        over-long name is refused HERE, with nothing written.
+
+        A blank ``original`` raises (a row with no file is a programming error). An
+        ``original`` the base does not reference is NOT rejected here: this module holds
+        no resolved base, the form only ever passes slot originals, and
+        ``authoring._build_renames`` fails loud at write time — one check, at the layer
+        that can see the base.
+        """
+        if not isinstance(original, str) or not original.strip():
+            raise ValueError("with_rename needs the base filename it is replacing.")
+        renames = dict(self.renames)
+        chosen = new.strip() if isinstance(new, str) else new
+        if not isinstance(chosen, str) or not chosen or chosen == original:
+            renames.pop(original, None)
+        else:
+            renames[original] = validate_source_filename(chosen, label="file name")
+        return dataclasses.replace(self, renames=renames)
+
     # -- emission ---------------------------------------------------------
     def to_overlay_spec(self, *, source_file_renames: Mapping[str, str] | None = None) -> OverlaySpec:
         """Derive the :class:`~src.config.authoring.OverlaySpec` this form describes.
@@ -435,9 +707,10 @@ class CreatorForm:
         field emits ``None`` — minimal emission stays the authoring layer's job, and an
         inherited scope is the right answer for a district that never asked the question.
 
-        ``source_file_renames`` is empty in S3 (the base's standard MyEd BC filenames);
-        the parameter exists so the filename form can pass its map without this
-        derivation changing.
+        ``source_file_renames`` defaults to :attr:`renames` — the filename form's own
+        answer — so S3's call sites are unchanged and the Files step passes nothing. The
+        keyword still WINS when given (``is not None``, so an explicit ``{}`` really does
+        mean "no renames" rather than falling back to the form's).
         """
         rostered = self.rostered
         homeroom = self.homeroom
@@ -458,7 +731,7 @@ class CreatorForm:
             homeroom_grades=homeroom,
             class_rostering_grades=class_scope,
             student_rostering_grades=rostered,
-            source_file_renames=dict(source_file_renames or {}),
+            source_file_renames=dict(self.renames if source_file_renames is None else source_file_renames),
         )
 
 

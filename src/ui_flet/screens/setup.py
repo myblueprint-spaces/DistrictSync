@@ -798,6 +798,18 @@ def _mount_wizard(
         nxt = next_step(SetupStep.DISTRICT, mode="creator")
         _go(nxt if nxt is not None else SetupStep.DISTRICT, note=note)
 
+    def _on_creator_files_saved(form: CreatorForm, note: str) -> None:
+        """The file names are on disk — re-render THIS step against what it now says.
+
+        Never an advance (plan 0044 S4): a save is not a step being passed. The memoised
+        gate fact is dropped because the saved config is a different config from the one any
+        earlier test conversion ran — ``files_step_satisfied`` has to be re-probed, and it
+        will now be False until another test run, which is what re-closes Continue.
+        """
+        ws["creator_form"] = form
+        ws["files_ok"] = None
+        _go(SetupStep.FILES, note=note)
+
     def _on_creator_activated() -> None:
         """``sis_type`` is now this district — move on, exactly as a passed step would."""
         ws["files_ok"] = None
@@ -832,6 +844,7 @@ def _mount_wizard(
             sis_id=str(ws["creator_sis"]),
             form=form,
             on_written=_on_creator_written,
+            on_files_saved=_on_creator_files_saved,
             on_activated=_on_creator_activated,
             on_discarded=_on_creator_discarded,
             stage=stage,

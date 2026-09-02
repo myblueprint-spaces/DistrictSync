@@ -25,6 +25,7 @@ from unittest.mock import MagicMock
 
 import flet as ft
 import pytest
+import yaml
 
 from src.config.app_config import AppConfig
 from src.config.authoring import (
@@ -33,8 +34,9 @@ from src.config.authoring import (
     overlay_path,
     write_overlay,
 )
+from src.config.loader import load_config
 from src.history.store import read_run_records
-from src.ui_flet import components
+from src.ui_flet import components, tokens
 from src.ui_flet.config_editor import CEDS_GRADE_ORDER, CreatorForm
 from src.ui_flet.job_runner import GateRefused, creator_gate_job
 from src.ui_flet.screens import creator as creator_screen
@@ -178,6 +180,47 @@ def _checkboxes(tree, label: str) -> list[ft.Checkbox]:  # noqa: ANN001
 def _rostered_row(tree) -> list[ft.Checkbox]:  # noqa: ANN001
     """The grades card's FIRST row — one box per CEDS code, in vocabulary order."""
     return [_checkboxes(tree, code)[0] for code in CEDS_GRADE_ORDER]
+
+
+def _name_dropdowns(tree) -> list[ft.Dropdown]:  # noqa: ANN001
+    """The filename form's row dropdowns, in row order (each is labelled by its STANDARD name)."""
+    standards = {slot.original for slot in _slots_of(tree)}
+    return [c for c in _walk(tree) if isinstance(c, ft.Dropdown) and c.label in standards]
+
+
+def _slots_of(tree) -> tuple:  # noqa: ANN001
+    """The slots the rendered surface is showing, read from ``config_editor`` (not the tree).
+
+    Derived through the SAME function the view calls, so a test can name a row by its
+    standard filename without hard-coding the base's file list twice.
+    """
+    from src.ui_flet.screens.creator import _creator_file_slots
+
+    return _creator_file_slots("myedbc", "sd93custom")
+
+
+def _row_field(tree, standard: str) -> ft.TextField:  # noqa: ANN001
+    """The "type the name your district uses" field belonging to ONE row."""
+    for control in _walk(tree):
+        if not isinstance(control, ft.Column):
+            continue
+        kids = list(_walk(control))
+        dropdowns = [c for c in kids if isinstance(c, ft.Dropdown)]
+        fields = [c for c in kids if isinstance(c, ft.TextField)]
+        if len(dropdowns) == 1 and dropdowns[0].label == standard and len(fields) == 1:
+            return fields[0]
+    raise AssertionError(f"no filename row for {standard!r}")
+
+
+def _pick(dropdown: ft.Dropdown, value: str) -> None:
+    """Choose an option the way Flet does: set the value, then fire ``on_select``."""
+    dropdown.value = value
+    if dropdown.on_select is not None:
+        dropdown.on_select(_event(value))
+
+
+def _filled(tree) -> list[str]:  # noqa: ANN001
+    return [c.content for c in _walk(tree) if isinstance(c, ft.FilledButton)]
 
 
 def _event(value: object) -> MagicMock:
@@ -932,6 +975,324 @@ class TestTheFinishLineIsGatedOnActivation:
 
 
 # --------------------------------------------------------------------------- #
+# 9b. The filename form (plan 0044 S4) — one row per FILE, one write, one gate   #
+# --------------------------------------------------------------------------- #
+def _files_surface(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    already: bool = False,
+    input_dir: str | None = None,
+) -> tuple[ft.Control, AppConfig, _PassingGate]:
+    """``build_creator(stage="files")`` mounted DIRECTLY — the surface, without step chrome.
+
+    The eight-state tiering rule is a property of this surface (S6's Mapping host mounts the
+    same one and has no wizard footer), so it is asserted here rather than through the
+    wizard, whose footer contributes an action of its own.
+    """
+    _write_sd93()
+    folders = _valid_folders(tmp_path)
+    if input_dir is not None:
+        folders["input_dir"] = input_dir
+    verified = {"sd93custom": current_digest("sd93custom") or ""} if already else {}
+    cfg = _cfg(creator_pending_sis="sd93custom", creator_verified=verified, **folders)
+    gate = _PassingGate()
+    monkeypatch.setattr(creator_screen, "creator_gate_job", gate)
+    root = creator_screen.build_creator(
+        _driving_page(),
+        cfg=cfg,
+        sis_id="sd93custom",
+        form=creator_screen.creator_form_from_overlay("sd93custom"),
+        on_written=lambda *_a: None,
+        on_files_saved=lambda *_a: None,
+        on_activated=lambda: None,
+        on_discarded=lambda: None,
+        stage="files",
+    )
+    return root, cfg, gate
+
+
+class TestTheFilenameFormRenders:
+    def test_one_row_per_source_file_with_its_standard_name_and_what_it_is_used_for(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)
+
+        labels = [dropdown.label for dropdown in _name_dropdowns(root)]
+
+        assert labels == [
+            "StudentDemographicInformation.txt",
+            "StaffInformationEnhanced.txt",
+            "EmergencyContactInformation.txt",
+            "StudentSchedule.txt",
+            "CourseInformation.txt",
+            "ClassInformationEnh.txt",
+        ], "one row per DISTINCT file, in the same order every run"
+        blob = _blob(root)
+        assert creator_screen.FILES_INTRO_NOTE in blob
+        assert "Used for: Classes, Enrollments." in blob, "the row does not say what it feeds"
+        # The one propagation worth saying out loud: the school-year lookup moves with it.
+        assert creator_screen.FILES_SCHOOL_YEAR_CLAUSE.strip() in blob
+
+    def test_the_dropdown_offers_every_file_in_the_folder_with_keep_standard_first(self, monkeypatch, tmp_path) -> None:
+        """ALL files, not just ``.txt``: a rename target is whatever the district delivers."""
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path, input_dir=str(SNAPSHOT_INPUT))
+
+        dropdown = _dropdown(root, "StudentSchedule.txt")
+        keys = [option.key for option in dropdown.options]
+
+        assert keys[0] == ""
+        assert dropdown.options[0].text == creator_screen.FILES_KEEP_STANDARD_LABEL
+        assert keys[1:] == sorted(entry.name for entry in SNAPSHOT_INPUT.iterdir() if entry.is_file())
+        assert dropdown.value == "", "nothing renamed yet, so the standard name is the selection"
+
+    def test_the_nothing_renamed_panel_names_exactly_the_files_S3_named(self, monkeypatch, tmp_path) -> None:
+        """Equality on the NAME SET and the present/absent marking — deliberately not on
+        byte-identical order: S3's list came from ``advisory_expected_files``' ``list(set)``,
+        so an order assertion would flake on ``PYTHONHASHSEED`` rather than bind anything."""
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path, input_dir=str(SNAPSHOT_INPUT))
+        expected = creator_screen._creator_expected_files("sd93custom")
+        from src.ui_flet.config_editor import missing_files
+
+        absent = set(missing_files(expected, creator_screen._folder_filenames(str(SNAPSHOT_INPUT))))
+
+        chips = {
+            control.content.controls[1].value: control  # the chip's filename text
+            for control in _walk(root)
+            if isinstance(control, ft.Container)
+            and isinstance(getattr(control, "content", None), ft.Row)
+            and len(control.content.controls) == 2
+            and isinstance(control.content.controls[1], ft.Text)
+        }
+
+        assert set(expected) <= set(chips), "a file S3 named has no chip"
+        for name in expected:
+            painted_absent = chips[name].content.controls[0].color == tokens.color_status_warning
+            assert painted_absent is (name in absent), f"{name} is marked wrongly"
+
+    def test_the_unsaved_warning_appears_only_while_something_is_pending(self, monkeypatch, tmp_path) -> None:
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)
+        assert creator_screen.FILES_UNSAVED_NOTE not in _texts(root), "the positive twin"
+
+        _type(_row_field(root, "StudentSchedule.txt"), "sched.txt")
+        _pick(_dropdown(root, "StudentSchedule.txt"), "sched.txt")  # a re-render
+
+        assert creator_screen.FILES_UNSAVED_NOTE in _texts(root)
+
+
+class TestExactlyOneFilledPrimary:
+    @pytest.mark.parametrize("unsaved", [True, False])
+    @pytest.mark.parametrize("passed", [True, False])
+    @pytest.mark.parametrize("already", [True, False])
+    def test_every_one_of_the_eight_states(self, monkeypatch, tmp_path, unsaved, passed, already) -> None:
+        """Acceptance 6, over all eight combinations — and the test-run button is never the
+        filled action while a change is unsaved."""
+        from src.ui_flet.config_editor import files_primary_action
+
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path, already=already)
+        if passed:
+            _button(root, creator_screen.GATE_RERUN_LABEL if already else creator_screen.GATE_RUN_LABEL).on_click(None)
+        if unsaved:
+            _pick(_dropdown(root, "StudentSchedule.txt"), "sched.txt")
+
+        action = files_primary_action(unsaved=unsaved, passed=passed, already=already)
+        expected = {
+            "save": [creator_screen.FILES_SAVE_LABEL],
+            "run": [creator_screen.GATE_RUN_LABEL],
+            "confirm": [creator_screen.GATE_CONFIRM_LABEL],
+            "none": [],
+        }[action]
+
+        assert _filled(root) == expected, f"state unsaved={unsaved} passed={passed} already={already}"
+
+
+class TestTheCheapRefusalsAttemptNoWrite:
+    def _refuse(self, root: ft.Control, note: str) -> None:
+        before = overlay_path("sd93custom").read_bytes()
+
+        _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
+
+        assert note in _texts(root)
+        assert overlay_path("sd93custom").read_bytes() == before, "a refused form still wrote"
+
+    def test_a_name_the_filename_boundary_refuses(self, monkeypatch, tmp_path) -> None:
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)
+
+        _type(_row_field(root, "StudentSchedule.txt"), "../escape.txt")
+
+        self._refuse(root, creator_screen.FILES_NAME_INVALID_NOTE)
+
+    def test_the_refusal_never_echoes_what_was_typed(self, monkeypatch, tmp_path) -> None:
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)
+
+        _type(_row_field(root, "StudentSchedule.txt"), "../escape.txt")
+        _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
+
+        assert "escape" not in _error_texts(root), "the note quoted the typed value"
+
+    def test_two_rows_on_one_name(self, monkeypatch, tmp_path) -> None:
+        """The owner's decision (S4 open question 1): KEEP the refusal — two roles reading one
+        file is a data question the ETL has no answer for — and say so in the form's OWN
+        sentence rather than in the bounded write-failure copy."""
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)
+
+        _type(_row_field(root, "StudentSchedule.txt"), "everything.txt")
+        _type(_row_field(root, "CourseInformation.txt"), "everything.txt")
+
+        self._refuse(root, creator_screen.FILES_NAME_DUPLICATE_NOTE)
+
+    def test_a_name_that_is_another_renamed_rows_standard_name(self, monkeypatch, tmp_path) -> None:
+        """The CHAIN shape, reachable because the folder may hold another row's standard name:
+        without this refusal StudentSchedule's roles would read the base's course file."""
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)
+
+        _type(_row_field(root, "StudentSchedule.txt"), "CourseInformation.txt")
+        _type(_row_field(root, "CourseInformation.txt"), "courses.txt")
+
+        self._refuse(root, creator_screen.FILES_NAME_IS_STANDARD_NOTE)
+
+    def test_the_twin_a_valid_name_really_does_write(self, monkeypatch, tmp_path) -> None:
+        saved: list[tuple[CreatorForm, str]] = []
+        _write_sd93()
+        cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
+        root = creator_screen.build_creator(
+            _driving_page(),
+            cfg=cfg,
+            sis_id="sd93custom",
+            form=creator_screen.creator_form_from_overlay("sd93custom"),
+            on_written=lambda *_a: None,
+            on_files_saved=lambda form, note: saved.append((form, note)),
+            on_activated=lambda: None,
+            on_discarded=lambda: None,
+            stage="files",
+        )
+        before = overlay_path("sd93custom").read_bytes()
+
+        _type(_row_field(root, "StudentSchedule.txt"), "studentcourseselection.txt")
+        _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
+
+        assert overlay_path("sd93custom").read_bytes() != before
+        assert saved and saved[0][1] == creator_screen.FILES_SAVED_NOTE
+        assert dict(saved[0][0].renames) == {"StudentSchedule.txt": "studentcourseselection.txt"}
+
+
+class TestASaveWritesNoSettings:
+    def _settings_bytes(self) -> bytes:
+        from src.utils.paths import user_data_dir
+
+        path = user_data_dir() / "config.json"
+        return path.read_bytes() if path.exists() else b""
+
+    def test_saving_file_names_leaves_config_json_byte_identical(self, monkeypatch, tmp_path) -> None:
+        """Acceptance 7: S4 performs NO ``AppConfig`` write on any path. The gate re-closes
+        because the stored digest stops matching — the hash-keyed fail-safe — not because
+        anything was written."""
+        root, cfg, _gate = _files_surface(monkeypatch, tmp_path, already=True)
+        cfg.save()  # a settings file to compare against
+        before = self._settings_bytes()
+        assert before, "nothing to compare — the assertion below would be vacuous"
+
+        _type(_row_field(root, "StudentSchedule.txt"), "studentcourseselection.txt")
+        _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
+
+        assert self._settings_bytes() == before, "the filename form wrote to settings"
+        assert cfg.creator_verified.get("sd93custom"), "no explicit invalidation is written either"
+        assert creator_screen.creator_gate_current(cfg, "sd93custom") is False, "the gate must re-close"
+
+    def test_the_twin_activation_still_writes_settings(self, monkeypatch, tmp_path) -> None:
+        root, cfg, _gate = _files_surface(monkeypatch, tmp_path)
+        cfg.save()
+        before = self._settings_bytes()
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+
+        assert self._settings_bytes() != before, "activation is a settings write — the mechanism works"
+
+
+class TestTheHeadlineFlow:
+    def test_a_district_whose_extract_is_named_differently_gets_there(self, monkeypatch, tmp_path) -> None:
+        """S4 end to end, through the REAL gate over the REAL SD74-shaped snapshot inputs.
+
+        An ``sd93custom`` overlay on the STANDARD MyEd BC names is activated first (that is
+        the district S3 leaves half-served: two of its six files happen to match). Then the
+        four names its extract really uses are set and saved — and the WRITTEN overlay moves
+        Classes, Enrollments AND ``global_config.school_year_sources`` together, the recorded
+        test stops matching, the step re-closes, and a fresh test conversion re-opens it.
+        """
+        _write_sd93()
+        cfg = _cfg(
+            creator_pending_sis="sd93custom",
+            input_dir=str(SNAPSHOT_INPUT),
+            output_dir=str(tmp_path / "out"),
+        )
+        _pin(monkeypatch, cfg)
+        root = build_setup(_driving_page())
+        assert setup_screen.FILES_STEP_TITLE in _texts(root)
+
+        # 1. The inherited names pass a test conversion and activate.
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        assert creator_screen.GATE_PASSED_HEADLINE in _blob(root)
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+        assert cfg.sis_type == "sd93custom"
+        _button(root, "Back").on_click(None)  # back to "Your files"
+        assert creator_screen.creator_gate_current(cfg, "sd93custom") is True, "the positive twin"
+        assert _button(root, "Continue").disabled is False
+
+        # 2. The four names this district's extract actually uses.
+        for standard, actual in SD74_RENAMES.items():
+            _pick(_dropdown(root, standard), actual)
+        assert creator_screen.FILES_UNSAVED_NOTE in _texts(root)
+        assert _filled(root)[0] == creator_screen.FILES_SAVE_LABEL, "the save takes the primary tier"
+
+        _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
+
+        # 3. ONE answer per FILE reached every role that names it — including the year source.
+        raw = yaml.safe_load(overlay_path("sd93custom").read_text(encoding="utf-8"))
+        assert raw["mappings"]["Classes"]["source_files"] == {
+            "student_schedule": "studentcourseselection.txt",
+            "staff_info": "StaffInformation.txt",
+            "class_info": "ClassInfoEnhanced.txt",
+        }
+        assert raw["mappings"]["Enrollments"]["source_files"] == {"student_schedule": "studentcourseselection.txt"}
+        assert raw["global_config"]["school_year_sources"] == {"student_schedule": "studentcourseselection.txt"}
+        assert raw["mappings"]["Classes"]["source_files"].keys() == {
+            "student_schedule",
+            "staff_info",
+            "class_info",
+        }, "an untouched role must stay INHERITED, not restated"
+        assert load_config("sd93custom").mappings["Classes"].source_files["course_info"] == "CourseInformation.txt"
+
+        # 4. The step re-closed itself — with nothing written to settings to do it.
+        assert creator_screen.creator_gate_current(cfg, "sd93custom") is False
+        assert _button(root, "Continue").disabled is True
+        assert creator_screen.GATE_RESAVED_NOTE in _texts(root)
+
+        # 5. A fresh REAL test conversion over the same folder passes and re-activates.
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        blob = _blob(root)
+        assert creator_screen.GATE_PASSED_HEADLINE in blob
+        assert "FAMILIES" in blob, "the renamed parent file did not reach the run"
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+
+        assert creator_screen.creator_gate_current(cfg, "sd93custom") is True
+        assert "Step 4 of 6" in _texts(root), "the walk moved on"
+
+    def test_a_resumed_setup_shows_the_names_already_saved(self, monkeypatch, tmp_path) -> None:
+        """The resume inverse: whatever the config on disk names IS the form's answer, so the
+        rows and the map the next Save writes are ONE value."""
+        _write_sd93(renames=SD74_RENAMES)
+        cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
+        _pin(monkeypatch, cfg)
+
+        root = build_setup(MagicMock())
+
+        for standard, actual in SD74_RENAMES.items():
+            assert _dropdown(root, standard).value == actual, f"{standard} came back as the standard name"
+        assert creator_screen.FILES_UNSAVED_NOTE not in _texts(root), "a resume has nothing pending"
+
+
+# --------------------------------------------------------------------------- #
 # 10. Copy: identification-not-authentication, and no promise of a later slice  #
 # --------------------------------------------------------------------------- #
 def _creator_copy_constants() -> dict[str, str]:
@@ -946,11 +1307,42 @@ def _creator_copy_constants() -> dict[str, str]:
     return found
 
 
+#: The twelve strings plan 0044 S4 adds. Named explicitly so the prefix-derived sweeps
+#: below cannot go quiet on them: a renamed or deleted constant fails HERE rather than
+#: silently leaving a dozen admin-facing sentences unswept.
+S4_COPY_CONSTANTS = (
+    "FILES_INTRO_NOTE",
+    "FILES_KEEP_STANDARD_LABEL",
+    "FILES_TYPED_NAME_LABEL",
+    "FILES_USED_FOR_PREFIX",
+    "FILES_SCHOOL_YEAR_CLAUSE",
+    "FILES_SAVE_LABEL",
+    "FILES_SAVED_NOTE",
+    "FILES_UNSAVED_NOTE",
+    "FILES_NAME_INVALID_NOTE",
+    "FILES_NAME_DUPLICATE_NOTE",
+    "FILES_NAME_IS_STANDARD_NOTE",
+    "GATE_RESAVED_NOTE",
+)
+
+
 class TestTheCopy:
     def test_the_constant_index_is_not_empty(self) -> None:
         """The falsification twin for the two sweeps below: a name-derived index that matched
         nothing would pass every assertion in this class."""
         assert len(_creator_copy_constants()) >= 25
+
+    def test_the_filename_forms_own_copy_is_in_the_swept_index(self) -> None:
+        index = _creator_copy_constants()
+
+        missing = [name for name in S4_COPY_CONSTANTS if name not in index]
+
+        assert missing == [], f"{missing} is admin-facing copy that no sweep in this class sees"
+
+    def test_S3s_retired_note_did_not_survive_beside_its_replacement(self) -> None:
+        """``FILES_INHERITED_NOTE`` claimed "the standard MyEd BC names your starting point
+        uses", which stops being true the moment a row carries this district's own name."""
+        assert not hasattr(creator_screen, "FILES_INHERITED_NOTE")
 
     @pytest.mark.parametrize("name", sorted(_creator_copy_constants()))
     def test_no_constant_carries_banned_identity_vocabulary(self, name) -> None:
@@ -1014,8 +1406,17 @@ class TestTheHostSeam:
         _open_creator(page, monkeypatch, _cfg())
 
         assert seen, "the creator branch did not route through the host seam"
-        assert set(seen[-1]) == {"cfg", "sis_id", "form", "on_written", "on_activated", "on_discarded", "stage"}
-        for name in ("on_written", "on_activated", "on_discarded"):
+        assert set(seen[-1]) == {
+            "cfg",
+            "sis_id",
+            "form",
+            "on_written",
+            "on_files_saved",
+            "on_activated",
+            "on_discarded",
+            "stage",
+        }, "the seam grew or lost a callback — S6's Mapping host has to pass the same set"
+        for name in ("on_written", "on_files_saved", "on_activated", "on_discarded"):
             assert callable(seen[-1][name]), name
         assert seen[-1]["stage"] == "forms"
 
@@ -1042,6 +1443,7 @@ class TestTheHostSeam:
             sis_id="",
             form=setup_screen.creator_form_for_new(cfg),
             on_written=lambda *_a: None,
+            on_files_saved=lambda *_a: None,
             on_activated=lambda: None,
             on_discarded=lambda: None,
         )

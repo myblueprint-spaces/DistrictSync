@@ -55,16 +55,22 @@ from src.ui_flet.config_editor import (
     CONFIG_ERROR_MISSING_BASE,
     CONFIG_ERROR_OTHER,
     CONFIG_ERROR_UNREADABLE,
+    FILE_LABELS,
     CreatorForm,
     GateOutcome,
     GateState,
     StalenessFact,
     base_label,
     derive_domains,
+    distinct_source_files,
+    file_form_rows,
+    file_label,
+    files_primary_action,
     gate_outcome_for,
     humanize_config_error,
     missing_files,
     overlay_staleness,
+    renames_from_resolved,
     sd_number_from_text,
     seed_entities,
     split_domains,
@@ -819,3 +825,318 @@ class TestTheStoredFactAgainstTheRealConfig:
         path.write_text("global_config: [broken\n", encoding="utf-8")
         assert current_digest("sd93custom") is None
         assert verified_is_current(stored_verified_digest(cfg, "sd93custom"), current_digest("sd93custom")) is False
+
+
+# ---------------------------------------------------------------------------
+# The filename form (plan 0044 S4): slots, rows, the resume inverse, tiering
+# ---------------------------------------------------------------------------
+#: The rows each starting point earns, in the order they must render. Hand-written on
+#: purpose: a tuple derived from the same walk the code uses would pass whatever the walk
+#: did, and this is the assertion that the ORDER is a decision (``CREATOR_ENTITIES``, then
+#: first-seen per file) rather than ``advisory_expected_files``' ``list(set)``.
+SLOT_ORDER: dict[str, tuple[str, ...]] = {
+    "myedbc": (
+        "StudentDemographicInformation.txt",
+        "StaffInformationEnhanced.txt",
+        "EmergencyContactInformation.txt",
+        "StudentSchedule.txt",
+        "CourseInformation.txt",
+        "ClassInformationEnh.txt",
+    ),
+    "mbp_all": (
+        "StudentDemographicInformation.txt",
+        "StaffInformationEnhanced.txt",
+        "EmergencyContactInformation.txt",
+        "StudentSchedule.txt",
+        "CourseInformation.txt",
+        "ClassInformationEnh.txt",
+        "StudentCourseHistory.txt",
+        "StudentCourseSelection.txt",
+    ),
+    "mbp_core": (
+        "StudentDemographicInformation.txt",
+        "CourseInformation.txt",
+        "StudentCourseHistory.txt",
+        "StudentCourseSelection.txt",
+    ),
+    "mbponly": (
+        "CourseInformation.txt",
+        "StudentCourseHistory.txt",
+        "StudentCourseSelection.txt",
+    ),
+}
+
+#: The four renames the SD74 snapshot extract really needs (the same table
+#: ``tests/test_config_authoring.py`` and ``tests/test_ui_flet_creator_flow.py`` use).
+SD74_RENAMES = {
+    "StaffInformationEnhanced.txt": "StaffInformation.txt",
+    "EmergencyContactInformation.txt": "ParentInformation.txt",
+    "StudentSchedule.txt": "studentcourseselection.txt",
+    "ClassInformationEnh.txt": "ClassInfoEnhanced.txt",
+}
+
+
+def _slots_for(base: str):
+    from src.etl.pipeline import advisory_expected_files
+
+    resolved = load_config(base)
+    return distinct_source_files(resolved, expected=advisory_expected_files(resolved))
+
+
+class TestDistinctSourceFiles:
+    @pytest.mark.parametrize("base", ALLOWED_BASES)
+    def test_one_slot_per_file_the_config_reads_in_a_pinned_order(self, base):
+        assert tuple(slot.original for slot in _slots_for(base)) == SLOT_ORDER[base]
+
+    @pytest.mark.parametrize("base", ALLOWED_BASES)
+    def test_the_order_is_the_walk_never_the_expected_list(self, base):
+        """The twin for the order pin: ``advisory_expected_files`` returns ``list(set)``,
+        whose order moves with ``PYTHONHASHSEED``. A shuffled ``expected`` may not move a
+        single row — otherwise S4 would have inherited S3's instability."""
+        resolved = load_config(base)
+        shuffled = sorted(SLOT_ORDER[base], reverse=True)
+
+        slots = distinct_source_files(resolved, expected=shuffled)
+
+        assert tuple(slot.original for slot in slots) == SLOT_ORDER[base]
+
+    def test_references_name_the_active_entity_role_sites_in_walk_order(self):
+        by_name = {slot.original: slot for slot in _slots_for("myedbc")}
+
+        assert by_name["StudentSchedule.txt"].references == (
+            ("Classes", "student_schedule"),
+            ("Enrollments", "student_schedule"),
+        )
+        # ONE row fixes three roles — the whole reason the map is keyed by FILE.
+        assert by_name["StudentDemographicInformation.txt"].references == (
+            ("Students", "student_demographic"),
+            ("Classes", "student_demographic"),
+            ("Enrollments", "student_demographic"),
+        )
+
+    @pytest.mark.parametrize("base", ["myedbc", "mbp_all"])
+    def test_the_school_year_file_is_flagged_where_an_active_entity_reads_it(self, base):
+        by_name = {slot.original: slot for slot in _slots_for(base)}
+
+        assert by_name["StudentSchedule.txt"].names_school_year is True
+        assert by_name["CourseInformation.txt"].names_school_year is False
+
+    @pytest.mark.parametrize("base", ["mbp_core", "mbponly"])
+    def test_a_school_year_file_no_active_entity_reads_gets_no_row_at_all(self, base):
+        """``global_config.school_year_sources`` still names ``StudentSchedule.txt`` on
+        both course-only tiers, but no ACTIVE entity reads it — ``extract_required_files``
+        never loads it, so a row would offer a name that changes nothing."""
+        resolved = load_config(base)
+        assert "student_schedule" in resolved.global_config.school_year_sources
+
+        assert "StudentSchedule.txt" not in {slot.original for slot in _slots_for(base)}
+
+    def test_a_file_outside_expected_is_dropped(self):
+        """The positive twin for the ``expected`` filter: it really is a filter."""
+        resolved = load_config("myedbc")
+
+        slots = distinct_source_files(resolved, expected=["StudentSchedule.txt"])
+
+        assert tuple(slot.original for slot in slots) == ("StudentSchedule.txt",)
+
+
+class TestFileLabels:
+    def test_every_distinct_file_of_every_base_has_a_plain_language_name(self):
+        every = {slot.original for base in ALLOWED_BASES for slot in _slots_for(base)}
+
+        assert every, "the slot walk found nothing — the sweep below would be vacuous"
+        assert every <= set(FILE_LABELS), f"no FILE_LABELS row for {sorted(every - set(FILE_LABELS))}"
+
+    def test_the_labels_are_the_slots_labels(self):
+        for slot in _slots_for("mbp_all"):
+            assert slot.label == FILE_LABELS[slot.original]
+
+    def test_an_unlabelled_filename_falls_back_to_itself(self):
+        assert file_label("SomethingNew.txt") == "SomethingNew.txt"
+
+
+class TestWithRename:
+    @pytest.mark.parametrize("typed", ["", "   ", "StudentSchedule.txt", "  StudentSchedule.txt  "])
+    def test_blank_or_the_standard_name_drops_the_entry(self, typed):
+        """A "rename" to the standard name is not one, and the emission must stay minimal —
+        an entry naming the base's own file would emit an override that only forks it."""
+        form = _form().with_rename("StudentSchedule.txt", "sched.txt")
+        assert form.renames == {"StudentSchedule.txt": "sched.txt"}
+
+        assert form.with_rename("StudentSchedule.txt", typed).renames == {}
+
+    def test_a_typed_name_is_stripped_and_kept(self):
+        form = _form().with_rename("StudentSchedule.txt", "  studentcourseselection.txt \t")
+
+        assert form.renames == {"StudentSchedule.txt": "studentcourseselection.txt"}
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "../StudentSchedule.txt",
+            "sub/StudentSchedule.txt",
+            "sub\\StudentSchedule.txt",
+            "C:sched.txt",
+            "sched.txt:stream",
+            "sched<1>.txt",
+            "sched\nule.txt",
+            "CON.txt",
+            "nul",
+            "s" * 256,
+        ],
+    )
+    def test_every_shape_the_filename_boundary_refuses_is_refused_here(self, bad):
+        with pytest.raises(ValueError):
+            _form().with_rename("StudentSchedule.txt", bad)
+
+    def test_a_blank_original_raises(self):
+        with pytest.raises(ValueError, match="base filename"):
+            _form().with_rename("  ", "sched.txt")
+
+    def test_an_unknown_original_is_not_rejected_here(self):
+        """This module holds no resolved base; ``authoring._build_renames`` fails loud at
+        write time, which is the one layer that can see what the base references."""
+        assert _form().with_rename("NotAFile.txt", "sched.txt").renames == {"NotAFile.txt": "sched.txt"}
+
+    def test_a_direct_construction_cannot_bypass_the_boundary(self):
+        with pytest.raises(ValueError):
+            _form(renames={"StudentSchedule.txt": "../escape.txt"})
+
+    def test_a_direct_construction_with_a_blank_key_is_refused(self):
+        with pytest.raises(ValueError, match="renames keys"):
+            _form(renames={"": "sched.txt"})
+
+    def test_the_renames_ride_the_overlay_spec(self):
+        spec = _form().with_rename("StudentSchedule.txt", "sched.txt").to_overlay_spec()
+
+        assert dict(spec.source_file_renames) == {"StudentSchedule.txt": "sched.txt"}
+
+    def test_an_explicit_keyword_still_wins_including_an_empty_map(self):
+        form = _form().with_rename("StudentSchedule.txt", "sched.txt")
+
+        assert dict(
+            form.to_overlay_spec(source_file_renames={"CourseInformation.txt": "c.txt"}).source_file_renames
+        ) == {"CourseInformation.txt": "c.txt"}
+        assert dict(form.to_overlay_spec(source_file_renames={}).source_file_renames) == {}
+
+
+class TestFileFormRows:
+    def test_the_effective_name_is_the_renamed_one_else_the_standard_one(self):
+        slots = _slots_for("myedbc")
+
+        rows = file_form_rows(slots, renames={"StudentSchedule.txt": "sched.txt"}, present=[])
+
+        by_name = {row.slot.original: row for row in rows}
+        assert by_name["StudentSchedule.txt"].effective == "sched.txt"
+        assert by_name["CourseInformation.txt"].effective == "CourseInformation.txt"
+
+    @pytest.mark.parametrize(
+        ("renamed", "on_disk"),
+        [
+            ("studentcourseselection.txt", "StudentCourseSelection.txt"),
+            ("StudentCourseSelection.txt", "studentcourseselection.txt"),
+        ],
+    )
+    def test_presence_folds_case_in_both_directions(self, renamed, on_disk):
+        """The extractor loads it either way, so a chip reading "missing" would be a false
+        alarm on the very card an admin uses to decide whether their extract is complete."""
+        rows = file_form_rows(_slots_for("myedbc"), renames={"StudentSchedule.txt": renamed}, present=[on_disk])
+
+        assert {row.slot.original: row.present for row in rows}["StudentSchedule.txt"] is True
+
+    def test_the_twin_a_genuinely_absent_file_reads_absent(self):
+        rows = file_form_rows(
+            _slots_for("myedbc"), renames={"StudentSchedule.txt": "sched.txt"}, present=["Something.txt"]
+        )
+
+        assert all(row.present is False for row in rows)
+
+    def test_the_slot_is_carried_whole(self):
+        """Composition, not duplication — a row cannot disagree with the file it describes."""
+        slots = _slots_for("myedbc")
+
+        rows = file_form_rows(slots, renames={}, present=[])
+
+        assert [row.slot for row in rows] == list(slots)
+
+
+class TestRenamesFromResolved:
+    def _resolved_pair(self, renames: dict[str, str]):
+        write_overlay(
+            OverlaySpec(
+                sd_number=93,
+                district_name="SD93 - Resume Test",
+                district_domains=("sd93.bc.ca",),
+                base="myedbc",
+                source_file_renames=renames,
+            ),
+            overwrite=True,
+        )
+        return load_config("myedbc"), load_config("sd93custom")
+
+    def test_a_written_map_round_trips_out_of_the_resolved_config(self):
+        base, current = self._resolved_pair(SD74_RENAMES)
+
+        assert renames_from_resolved(base, current) == SD74_RENAMES
+
+    def test_the_twin_an_unrenamed_config_answers_nothing(self):
+        base, current = self._resolved_pair({})
+
+        assert renames_from_resolved(base, current) == {}
+
+    def test_a_config_compared_with_itself_answers_nothing(self):
+        base = load_config("myedbc")
+
+        assert renames_from_resolved(base, base) == {}
+
+    def test_a_hand_edited_divergence_collapses_to_the_first_seen_name(self):
+        """The honest repair: the rows on screen and the map the next Save writes are ONE
+        value, so a config whose two sites disagree reads as its first-seen name (and the
+        next Save writes that everywhere) rather than silently keeping both."""
+        from src.config.authoring import overlay_path
+
+        base, _current = self._resolved_pair({"StudentSchedule.txt": "sched.txt"})
+        target = overlay_path("sd93custom")
+        raw = yaml.safe_load(target.read_text(encoding="utf-8"))
+        raw["mappings"]["Enrollments"]["source_files"]["student_schedule"] = "other.txt"
+        target.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+        found = renames_from_resolved(base, load_config("sd93custom"))
+
+        assert found == {"StudentSchedule.txt": "sched.txt"}, "Classes is the first site in the walk"
+
+
+class TestFilesPrimaryAction:
+    @pytest.mark.parametrize(
+        ("unsaved", "passed", "already", "expected"),
+        [
+            (True, True, True, "save"),
+            (True, True, False, "save"),
+            (True, False, True, "save"),
+            (True, False, False, "save"),
+            (False, True, True, "none"),
+            (False, False, True, "none"),
+            (False, True, False, "confirm"),
+            (False, False, False, "run"),
+        ],
+    )
+    def test_all_eight_states(self, unsaved, passed, already, expected):
+        assert files_primary_action(unsaved=unsaved, passed=passed, already=already) == expected
+
+    def test_unsaved_always_wins(self):
+        """A test conversion run against names the config on disk lacks reports on the
+        WRONG files, so the run button may never be the primary while a change is pending."""
+        for passed in (True, False):
+            for already in (True, False):
+                assert files_primary_action(unsaved=True, passed=passed, already=already) == "save"
+
+    def test_at_most_one_action_is_ever_the_primary(self):
+        """The property the "exactly ONE filled primary" rule rests on: the answer is a
+        single value in every state, and only the active district's state has none."""
+        answers = {
+            files_primary_action(unsaved=u, passed=p, already=a)
+            for u in (True, False)
+            for p in (True, False)
+            for a in (True, False)
+        }
+        assert answers == {"save", "run", "confirm", "none"}

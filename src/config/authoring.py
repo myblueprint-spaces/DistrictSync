@@ -242,6 +242,34 @@ def _require_bare_filename(value: object, *, label: str) -> str:
     return value
 
 
+def validate_source_filename(value: object, *, label: str = "file name") -> str:
+    """THE public source-filename boundary: returns ``value`` or raises ``ValueError``.
+
+    A thin, deliberate wrapper over :func:`_require_bare_filename` so a FORM can validate
+    ONE typed filename without building an :class:`OverlaySpec` — and so the product keeps
+    exactly ONE filename boundary. Every rule (traversal, drive-relative/ADS colons, Win32
+    forbidden characters, control characters, reserved device names, length, edge
+    whitespace) lives in that function and is shared by both entry points; a second
+    spelling in the UI layer is how a validated map still reads the wrong file.
+
+    ``label`` names the FIELD in the message, so a form can say which row failed without
+    echoing what was typed.
+    """
+    return _require_bare_filename(value, label=label)
+
+
+def _folded_name(value: str) -> str:
+    """A filename's case-folded identity — how the FILESYSTEM sees it, not how it is typed.
+
+    Windows and macOS treat ``b.TXT`` and ``B.txt`` as ONE file, so every rule about two
+    filenames being "the same" has to fold. ONE spelling of that fold, two call sites (the
+    chain refusal in :meth:`OverlaySpec.__post_init__` and the duplicate-target refusal in
+    :func:`_build_renames`), because a rule enforced case-sensitively in one place and
+    case-insensitively in the other is not a rule.
+    """
+    return value.strip().casefold() if isinstance(value, str) else ""
+
+
 @dataclass(frozen=True)
 class OverlaySpec:
     """The district facts a self-service overlay is built from.
@@ -252,8 +280,9 @@ class OverlaySpec:
 
     ``__post_init__`` validates only what is CHEAP AND LOCAL — a non-blank name,
     the domain shape (via the single-source :func:`is_valid_district_domain`), the
-    base allowlist, the entity allowlist and the bare-filename boundary on every
-    rename target. Grade CODES are deliberately NOT validated here: the chain
+    base allowlist, the entity allowlist, the bare-filename boundary on every
+    rename target (:func:`validate_source_filename`) and the CHAIN refusal — a
+    rename target may not also be a rename original, folded. Grade CODES are deliberately NOT validated here: the chain
     ``homeroom_grades ⊆ class_rostering_grades ⊆ student_rostering_grades`` and the
     CEDS vocabulary are properties of the RESOLVED config, and
     ``GlobalConfig.check_rostering_grade_scopes`` is their single source. Duplicating
@@ -324,10 +353,29 @@ class OverlaySpec:
                     f"Allowed: {list(CREATOR_ENTITIES)}."
                 )
 
-        for original, new in dict(self.source_file_renames).items():
+        renames = dict(self.source_file_renames)
+        for original, new in renames.items():
             if not isinstance(original, str) or not original.strip():
                 raise ValueError("source_file_renames keys must be non-blank base filenames.")
-            _require_bare_filename(new, label=f"source_file_renames[{original!r}]")
+            validate_source_filename(new, label=f"source_file_renames[{original!r}]")
+
+        # A rename TARGET may never also be a rename ORIGINAL. ``{"A.txt": "B.txt",
+        # "B.txt": "C.txt"}`` clears unknown-original, target-collision AND no-divergence
+        # today — and A's role then reads the base's B file, i.e. the WRONG DATA with every
+        # other guard green. Folded, because ``b.TXT`` and ``B.txt`` are one file on
+        # Windows. A self-rename (``A.txt`` → ``a.txt``) is NOT a chain and stays legal.
+        folded_originals = {_folded_name(original): original for original in renames}
+        chained = sorted(
+            f"{original!r} -> {new!r}"
+            for original, new in renames.items()
+            if _folded_name(new) in folded_originals and _folded_name(new) != _folded_name(original)
+        )
+        if chained:
+            raise ValueError(
+                f"source_file_renames chains one file onto another file's own name: {chained}. "
+                "A file this district renames cannot also be the new name of a different file — "
+                "the first would end up reading the second's data."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -393,8 +441,9 @@ def _build_renames(
 
     * an ``original`` that appears NOWHERE in the resolved base — a typo would
       simply no-op, and the district would discover it as a missing file at 2 a.m.;
-    * two distinct originals renamed to the SAME target — that collapses two
-      source roles onto one file, which is never what a filename form means.
+    * two distinct originals renamed to the SAME target (compared CASE-FOLDED, via
+      :func:`_folded_name`) — that collapses two source roles onto one file, which is
+      never what a filename form means.
 
     (Not an error: a target that equals a filename the base ALREADY uses at another
     site. Roles legitimately share files in the base — ``CourseInformation.txt`` is
@@ -414,10 +463,12 @@ def _build_renames(
             f"references. Rename an existing source file — the base uses: {sorted(known)}."
         )
 
+    # Grouped by the FOLDED target: ``a.txt`` and ``A.txt`` are one file on Windows, so a
+    # case-sensitive grouping would let two roles collapse onto one file undetected.
     by_target: dict[str, list[str]] = {}
     for original, new in renames.items():
-        by_target.setdefault(new, []).append(original)
-    collisions = {target: sorted(originals) for target, originals in by_target.items() if len(originals) > 1}
+        by_target.setdefault(_folded_name(new), []).append(original)
+    collisions = {renames[originals[0]]: sorted(originals) for originals in by_target.values() if len(originals) > 1}
     if collisions:
         raise ValueError(
             f"source_file_renames maps several different source files onto one filename: {collisions}. "
