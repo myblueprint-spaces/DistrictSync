@@ -506,12 +506,13 @@ def page_header(
 # --------------------------------------------------------------------------- #
 # Chips & pills — rounded identity / status markers                             #
 # --------------------------------------------------------------------------- #
-def district_chip(label: str) -> ft.Container:
-    """A rounded district-identity pill: a small building glyph + the friendly district.
+def _chip(label: str, *, icon: str) -> ft.Container:
+    """ONE body for the two pill factories (:func:`district_chip`, :func:`origin_badge`).
 
-    Direction B's page-header right-slot marker (``color_chip_bg`` fill, MB_BORDER
-    border, fully rounded). The label is a config-derived friendly district name (never
-    PII), shown verbatim.
+    ``color_chip_bg`` fill, MB_BORDER border, fully rounded, AA-gated ``color_text`` on the
+    chip tint. The two public factories differ ONLY in the glyph, and each carries its own
+    docstring for WHY that glyph — this helper exists so a geometry/token tweak lands once
+    (S3 review: the badge had duplicated the chip's whole body).
     """
     return ft.Container(
         bgcolor=tokens.color_chip_bg,
@@ -525,11 +526,21 @@ def district_chip(label: str) -> ft.Container:
             tight=True,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
-                ft.Icon(ft.Icons.APARTMENT_ROUNDED, size=tokens.type_emphasis, color=tokens.color_action_primary),
+                ft.Icon(icon, size=tokens.type_emphasis, color=tokens.color_action_primary),
                 ft.Text(label, size=tokens.type_caption, weight=ft.FontWeight.W_600, color=tokens.color_text),
             ],
         ),
     )
+
+
+def district_chip(label: str) -> ft.Container:
+    """A rounded district-identity pill: a small building glyph + the friendly district.
+
+    Direction B's page-header right-slot marker (``color_chip_bg`` fill, MB_BORDER
+    border, fully rounded). The label is a config-derived friendly district name (never
+    PII), shown verbatim.
+    """
+    return _chip(label, icon=ft.Icons.APARTMENT_ROUNDED)
 
 
 def origin_badge(label: str) -> ft.Container:
@@ -546,23 +557,7 @@ def origin_badge(label: str) -> ft.Container:
     Used by Mapping's summary card. Never PII: the label is a structural fact about a file's
     directory — no path, no author, no address (plan 0044 S2).
     """
-    return ft.Container(
-        bgcolor=tokens.color_chip_bg,
-        border=_b_all(1, tokens.color_border),
-        border_radius=999,
-        padding=ft.Padding(
-            left=tokens.space_sm, top=tokens.space_xs + 1, right=tokens.space_md, bottom=tokens.space_xs + 1
-        ),
-        content=ft.Row(
-            spacing=tokens.space_sm - 1,
-            tight=True,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=[
-                ft.Icon(ft.Icons.COMPUTER_ROUNDED, size=tokens.type_emphasis, color=tokens.color_action_primary),
-                ft.Text(label, size=tokens.type_caption, weight=ft.FontWeight.W_600, color=tokens.color_text),
-            ],
-        ),
-    )
+    return _chip(label, icon=ft.Icons.COMPUTER_ROUNDED)
 
 
 def status_pill(label: str, status: Verdict) -> ft.Container:
