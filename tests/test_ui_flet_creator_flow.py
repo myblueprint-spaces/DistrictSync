@@ -188,6 +188,26 @@ def _name_dropdowns(tree) -> list[ft.Dropdown]:  # noqa: ANN001
     return [c for c in _walk(tree) if isinstance(c, ft.Dropdown) and c.label in standards]
 
 
+def _group_of(tree, title: str) -> list[ft.Control]:  # noqa: ANN001
+    """The control list of the section whose FIRST child is the Text ``title``.
+
+    Lets an order assertion name a section by its heading instead of by an index into the
+    body, so adding a card above it cannot silently retarget the assertion.
+    """
+    for control in _walk(tree):
+        kids = getattr(control, "controls", None)
+        if isinstance(kids, list) and kids and isinstance(kids[0], ft.Text) and kids[0].value == title:
+            return kids
+    raise AssertionError(f"no section headed {title!r}; found {sorted(_texts(tree))}")
+
+
+def _index_of(tree, text: str) -> int:  # noqa: ANN001
+    """Where ``text`` first appears in the body's depth-first order (its reading position)."""
+    found = _texts(tree)
+    assert text in found, f"{text!r} is not on screen; found {sorted(found)}"
+    return found.index(text)
+
+
 def _slots_of(tree) -> tuple:  # noqa: ANN001
     """The slots the rendered surface is showing, read from ``config_editor`` (not the tree).
 
@@ -1103,8 +1123,8 @@ class TestTheFilenameFormRenders:
         """BLOCKING 1's load-bearing half: the outlined run button is still PRESSABLE.
 
         A run reads the config on disk, so a test against names it does not hold reports on
-        the wrong files — and would pass, putting "Use this district" beside a verdict about
-        a district nobody has tested as it now reads.
+        the wrong files — and would pass, putting "Save district settings" beside a verdict
+        about a district nobody has tested as it now reads.
         """
         root, _cfg_, gate = _files_surface(monkeypatch, tmp_path)
         _type(_row_field(root, "StudentSchedule.txt"), "studentcourseselection.txt")
@@ -1145,6 +1165,185 @@ class TestTheFilenameFormRenders:
         field.on_blur(None)
 
         assert _dropdown(root, "StudentSchedule.txt").value == "studentcourseselection.txt"
+
+
+class TestTheFilesBodyIsVerdictFirst:
+    """The owner's report (2026-09-02), pinned as structure rather than as copy.
+
+    What they saw after a PASSED test: the verdict and the per-entity counts above the
+    filename rows, and the filled activation BELOW them and below the missing-file note — so
+    "the one button that decides what this computer converts" read as an action about file
+    names, and the counts it belongs to were half a screen away.
+    """
+
+    def _forms_surface(self, form: CreatorForm) -> ft.Control:
+        """``build_creator(stage="forms")`` mounted DIRECTLY, so ``controls[0]`` is the body's own."""
+        return creator_screen.build_creator(
+            MagicMock(),
+            cfg=_cfg(),
+            sis_id="",
+            form=form,
+            on_written=lambda *_a: None,
+            on_files_saved=lambda *_a: None,
+            on_activated=lambda: None,
+            on_discarded=lambda: None,
+        )
+
+    def test_the_district_being_set_up_is_named_before_anything_else(self, monkeypatch, tmp_path) -> None:
+        """The files step is reached by a resume that showed none of the forms, so the page
+        has to say which district it belongs to — first, and from the FORM, not from disk."""
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)
+
+        first = root.controls[0]
+
+        assert "SD93 · SD93 - Creator Test" in _texts(first), "the first thing on the page is not the district"
+        assert isinstance(first, ft.Row) and isinstance(first.controls[0], ft.Container), "not the chip factory"
+
+    def test_the_forms_surface_names_the_district_once_it_has_a_name(self) -> None:
+        root = self._forms_surface(CreatorForm(sd_number=93, district_name="Sunny Ridge"))
+
+        assert "SD93 · Sunny Ridge" in _texts(root.controls[0])
+
+    def test_the_twin_a_fresh_forms_surface_with_no_name_yet_shows_no_chip(self) -> None:
+        """An empty identity pill identifies nothing — and the district NUMBER alone is a
+        prefill from the launch page, not something this admin has told us."""
+        fresh = creator_screen.creator_form_for_new(_cfg())
+        assert fresh.sd_number == 93, "the prefill under test is not present"
+
+        root = self._forms_surface(fresh)
+
+        assert not any("SD93" in text for text in _texts(root)), "a nameless form painted a district chip"
+        assert creator_screen.CREATOR_START_TITLE in _texts(root), "the positive twin: the forms did render"
+
+    def test_the_chip_label_is_trimmed_rather_than_running_off_the_pill(self) -> None:
+        """``components.district_chip`` shows its label verbatim (its docstring says so) and
+        the name field takes 120 characters, so the trim belongs to this caller."""
+        label = creator_screen.creator_district_label(93, "  School   District   No. 93 " + "x" * 80)
+
+        assert label.startswith("SD93 · School District No. 93")
+        assert len(label) < 60 and label.endswith("…")
+        assert creator_screen.creator_district_label(0, "Unity Christian") == "Unity Christian"
+        assert creator_screen.creator_district_label(93, "   ") == ""
+
+    def test_the_file_names_section_leads_and_the_test_section_follows(self, monkeypatch, tmp_path) -> None:
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)
+
+        assert _index_of(root, creator_screen.FILES_NAMES_TITLE) < _index_of(root, creator_screen.FILES_TEST_TITLE)
+        names = _group_of(root, creator_screen.FILES_NAMES_TITLE)
+        assert creator_screen.FILES_SAVE_LABEL in _button_labels(ft.Column(controls=names)), (
+            "the Save belongs to the names section it saves"
+        )
+
+    def test_the_action_row_is_the_sibling_immediately_after_the_counts(self, monkeypatch, tmp_path) -> None:
+        """The fix's load-bearing half: the buttons sit under the verdict + counts they act
+        on, never under the filename rows."""
+        root, _cfg_, gate = _files_surface(monkeypatch, tmp_path)
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        assert gate.calls, "the stubbed test conversion never ran"
+
+        group = _group_of(root, creator_screen.FILES_TEST_TITLE)
+        counts = [i for i, kid in enumerate(group) if "STUDENTS" in _texts(kid)]
+
+        assert len(counts) == 1, "the per-entity counts are not one row of the test section"
+        actions = group[counts[0] + 1]
+        assert creator_screen.GATE_CONFIRM_LABEL in _button_labels(actions), "the confirm is not under the counts"
+        assert creator_screen.GATE_RERUN_LABEL in _button_labels(actions)
+        assert creator_screen.CREATOR_DISCARD_LABEL in _button_labels(actions), "the escape left the group"
+        # ...and the verdict leads the group it belongs to.
+        assert _index_of(root, creator_screen.GATE_PASSED_HEADLINE) < _index_of(root, "STUDENTS")
+
+    def test_the_verdict_detail_says_what_the_confirm_does(self, monkeypatch, tmp_path) -> None:
+        """The counts answered "did it work?" and left "so what do I press?" to a label."""
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+
+        detail = creator_screen.GATE_PASSED_DETAIL
+
+        assert detail in _texts(root)
+        assert creator_screen.GATE_CONFIRM_LABEL in detail, "the detail does not name the button under it"
+
+
+class TestTheLockedContinueSaysWhy:
+    """The other half of the owner's report: "it's unclear why 'continue' is locked".
+
+    Driven through the REAL wizard mount, because the caption is the HOST's control and the
+    creator surface fills it — a test over the pure reason alone (``test_ui_flet_config_editor``)
+    could not catch a caption that never reached the footer, or one that went stale the moment
+    the test conversion changed the answer.
+    """
+
+    def _captions(self, tree) -> list[str]:  # noqa: ANN001
+        locked = (
+            creator_screen.FILES_CONTINUE_LOCKED_SAVE,
+            creator_screen.FILES_CONTINUE_LOCKED_RUN,
+            creator_screen.FILES_CONTINUE_LOCKED_CONFIRM,
+        )
+        found = _texts(tree)
+        return [note for note in locked if note in found]
+
+    def test_each_locked_state_names_its_own_next_act_and_the_open_state_says_nothing(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        _write_sd93()
+        cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
+        root, _gate = _wizard_at_the_gate(monkeypatch, cfg)
+
+        # 1. Saved names, nothing tested — run a test conversion.
+        assert self._captions(root) == [creator_screen.FILES_CONTINUE_LOCKED_RUN]
+        assert _button(root, "Continue").disabled is True
+
+        # 2. A pick the config on disk does not have — the Save wins over everything.
+        _pick(_dropdown(root, "StudentSchedule.txt"), "sched.txt")
+        assert self._captions(root) == [creator_screen.FILES_CONTINUE_LOCKED_SAVE]
+
+        _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
+        assert self._captions(root) == [creator_screen.FILES_CONTINUE_LOCKED_RUN], "a save is not a test"
+
+        # 3. A passed test, nothing confirmed — the caption follows the run that changed it.
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        assert self._captions(root) == [creator_screen.FILES_CONTINUE_LOCKED_CONFIRM]
+        assert _button(root, "Continue").disabled is True
+
+        # 4. Confirmed: Continue is the step's one filled action, and the caption is gone.
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+        _button(root, "Back").on_click(None)  # back onto "Your files"
+        assert setup_screen.FILES_STEP_TITLE in _texts(root)
+        assert self._captions(root) == [], "the caption outlived the lock it explained"
+        assert isinstance(_button(root, "Continue"), ft.FilledButton)
+        assert _button(root, "Continue").disabled is False
+
+    def test_the_caption_is_a_muted_caption_tier_line_that_hides_itself(self, monkeypatch, tmp_path) -> None:
+        """It is an explanation, not a warning: caption tier, muted token, and genuinely
+        HIDDEN (not merely empty) once Continue opens, so it takes no vertical band with it."""
+        _write_sd93()
+        cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
+        root, _gate = _wizard_at_the_gate(monkeypatch, cfg)
+
+        caption = next(
+            control
+            for control in _walk(root)
+            if isinstance(control, ft.Text) and control.value == creator_screen.FILES_CONTINUE_LOCKED_RUN
+        )
+        assert caption.size == tokens.type_caption
+        assert caption.color == tokens.color_muted
+        assert caption.visible is True
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+        _button(root, "Back").on_click(None)
+
+        # The SAME control (the host owns one for the mount's life), now silent AND hidden.
+        assert caption in list(_walk(root)), "the host swapped its caption control out"
+        assert caption.value == ""
+        assert caption.visible is False, "the caption was blanked without being hidden"
+
+    def test_a_host_with_no_continue_of_its_own_gets_no_caption(self, monkeypatch, tmp_path) -> None:
+        """S6's Mapping host owns no step footer, passes no note, and must not be told about
+        a Continue it does not have."""
+        root, _cfg_, _gate = _files_surface(monkeypatch, tmp_path)  # mounted with NO note
+
+        assert self._captions(root) == []
+        assert creator_screen.FILES_SAVE_LABEL in _button_labels(root), "the positive twin: the surface did mount"
 
 
 class TestExactlyOneFilledPrimary:
@@ -1478,6 +1677,45 @@ S4_COPY_CONSTANTS = (
 )
 
 
+#: The seven strings the owner's 2026-09-02 usability fix adds or rewrites. Named for the
+#: same reason ``S4_COPY_CONSTANTS`` is: the prefix-derived sweeps below would go quiet on a
+#: renamed constant, leaving the step's whole decision block unswept.
+FIX_COPY_CONSTANTS = (
+    "GATE_CONFIRM_LABEL",
+    "GATE_PASSED_DETAIL",
+    "FILES_NAMES_TITLE",
+    "FILES_TEST_TITLE",
+    "FILES_CONTINUE_LOCKED_SAVE",
+    "FILES_CONTINUE_LOCKED_RUN",
+    "FILES_CONTINUE_LOCKED_CONFIRM",
+)
+
+#: The ONLY creator strings allowed to say "unlock", and the ONLY word they are allowed —
+#: every other banned word still applies to them, and every other constant still faces the
+#: full list. The ban exists because identification is never authentication (0038); these
+#: four describe a WIZARD's own Continue, closed until a step of the wizard is finished, and
+#: say nothing about an identity, an address or the district-domain list. Allowance by exact
+#: constant name, never a widened sweep (``scripts/check_no_emails.py``'s discipline).
+UNLOCK_ALLOWED = (
+    "GATE_PASSED_DETAIL",
+    "FILES_CONTINUE_LOCKED_SAVE",
+    "FILES_CONTINUE_LOCKED_RUN",
+    "FILES_CONTINUE_LOCKED_CONFIRM",
+)
+
+
+def _swept_blob(tree) -> str:  # noqa: ANN001
+    """The rendered blob with the four reviewed "unlock" strings REMOVED, not exempted.
+
+    So the whole-surface sweep still bans the word everywhere else on the step — including in
+    any future string that copies the phrasing without the review.
+    """
+    blob = _blob(tree)
+    for name in UNLOCK_ALLOWED:
+        blob = blob.replace(getattr(creator_screen, name), "")
+    return blob
+
+
 class TestTheCopy:
     def test_the_constant_index_is_not_empty(self) -> None:
         """The falsification twin for the two sweeps below: a name-derived index that matched
@@ -1487,9 +1725,18 @@ class TestTheCopy:
     def test_the_filename_forms_own_copy_is_in_the_swept_index(self) -> None:
         index = _creator_copy_constants()
 
-        missing = [name for name in S4_COPY_CONSTANTS if name not in index]
+        missing = [name for name in S4_COPY_CONSTANTS + FIX_COPY_CONSTANTS if name not in index]
 
         assert missing == [], f"{missing} is admin-facing copy that no sweep in this class sees"
+
+    def test_every_unlock_allowance_names_a_real_constant_that_needs_it(self) -> None:
+        """The allowance may not outlive the string it was written for: a constant that no
+        longer says "unlock" must lose its exemption, or the next edit inherits it silently."""
+        index = _creator_copy_constants()
+
+        for name in UNLOCK_ALLOWED:
+            assert name in index, f"{name} is exempted but is not a swept constant"
+            assert "unlock" in index[name].lower(), f"{name} no longer needs its exemption"
 
     def test_S3s_retired_note_did_not_survive_beside_its_replacement(self) -> None:
         """``FILES_INHERITED_NOTE`` claimed "the standard MyEd BC names your starting point
@@ -1500,7 +1747,8 @@ class TestTheCopy:
     def test_no_constant_carries_banned_identity_vocabulary(self, name) -> None:
         """0038's promise, extended: "verify"/"verified" IS banned, so every gate string says
         test / test run / checked."""
-        _assert_no_banned_vocabulary(_creator_copy_constants()[name], name)
+        allow = {"unlock"} if name in UNLOCK_ALLOWED else set()
+        _assert_no_banned_vocabulary(_creator_copy_constants()[name], name, allow=allow)
 
     @pytest.mark.parametrize("name", sorted(_creator_copy_constants()))
     def test_no_constant_promises_a_later_slice(self, name) -> None:
@@ -1512,7 +1760,7 @@ class TestTheCopy:
         root = _open_creator(page, monkeypatch, _cfg())
         _tick(_checkbox(root, creator_screen.CREATOR_GRADES_INHERIT_LABEL), False)  # the grades card too
 
-        blob = _blob(root)
+        blob = _swept_blob(root)
 
         _assert_no_banned_vocabulary(blob, "the rendered creator forms")
         for probe in FORBIDDEN_PROMISES:
@@ -1523,9 +1771,9 @@ class TestTheCopy:
         cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
         root, _gate = _wizard_at_the_gate(monkeypatch, cfg)
 
-        before = _blob(root)
+        before = _swept_blob(root)
         _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
-        after = _blob(root)
+        after = _swept_blob(root)
 
         for where, blob in (("before the test run", before), ("after the test run", after)):
             _assert_no_banned_vocabulary(blob, f"the rendered gate step {where}")
@@ -1568,6 +1816,7 @@ class TestTheHostSeam:
             "on_discarded",
             "stage",
             "pending",
+            "continue_lock_note",
         }, "the seam grew or lost a callback — S6's Mapping host has to pass the same set"
         for name in ("on_written", "on_files_saved", "on_activated", "on_discarded"):
             assert callable(seen[-1][name]), name
@@ -1576,6 +1825,9 @@ class TestTheHostSeam:
         # BLOCKING 2): the host does not need to be told when a row changes, it needs to be
         # able to ask, which it does with ``has_unsaved_renames(pending, form.renames)``.
         assert isinstance(seen[-1]["pending"], dict), "the pending rename map is the host's own dict"
+        # ...and the SECOND piece of host-owned state, for the same reason: the wizard owns a
+        # step footer whose Continue it closes, so it owns the control that says why.
+        assert isinstance(seen[-1]["continue_lock_note"], ft.Text), "the locked-Continue caption is the host's"
 
     def test_a_host_that_owns_no_step_footer_may_omit_the_pending_map(self, monkeypatch, tmp_path) -> None:
         """S6's Mapping host has no Continue of its own to gate, so ``pending`` defaults to

@@ -3,8 +3,8 @@
 An admin whose district ships no mapping answers four questions here, presses Continue
 (which WRITES an overlay into their own profile and changes nothing else), then on the
 creator-only "Your files" step runs a TEST conversion that writes nothing and — only if it
-worked — chooses "Use this district", the ONE act that makes it the district this install
-converts.
+worked — chooses "Save district settings", the ONE act that makes it the district this
+install converts.
 
 VIEW glue (coverage-omitted). Every decision this surface makes is COUNTED elsewhere: the
 form + gate + stored-fact rules and the two field rules in ``ui_flet/config_editor.py``,
@@ -58,6 +58,7 @@ from src.ui_flet.config_editor import (
     derive_domains,
     distinct_source_files,
     file_form_rows,
+    files_continue_lock_reason,
     files_primary_action,
     gate_outcome_for,
     has_unsaved_renames,
@@ -136,7 +137,8 @@ CREATOR_ACTIVATE_FAILED_NOTE = (
     "We couldn't switch this computer over to your district just now — nothing was changed. Please try again."
 )
 CREATOR_FINISH_NEEDS_GATE_NOTE = (
-    'Go back to "Your files", run the test conversion, then choose "Use this district" — after that you can finish.'
+    'Go back to "Your files", run the test conversion, then choose “Save district settings” '
+    "— after that you can finish."
 )
 
 # ---- the "Your files" gate step ------------------------------------------ #
@@ -154,6 +156,13 @@ FILES_MISSING_NOTE = (
     "We can't see these ones in your input folder. A test conversion carries on without them, and "
     "whatever they feed comes out empty. If your district calls them something else, set that name above."
 )
+#: The Files step's TWO sections (owner report, 2026-09-02). The step used to interleave
+#: them — the passed-test verdict and its counts above the filename rows, the filled
+#: activation below them — so the one button that changes what this computer converts read
+#: as an action about file names. The names section is the INPUT and leads; the test section
+#: is the DECISION and carries the verdict, the counts and the actions as one block.
+FILES_NAMES_TITLE = "File names"
+FILES_TEST_TITLE = "Test and confirm"
 FILES_KEEP_STANDARD_LABEL = "Use the standard name"
 FILES_TYPED_NAME_LABEL = "Type the name your district uses if it isn't in the list"
 FILES_USED_FOR_PREFIX = "Used for: "
@@ -175,17 +184,43 @@ FILES_NAME_IS_STANDARD_NOTE = (
 GATE_RUN_LABEL = "Run a test conversion"
 GATE_RUNNING_CAPTION = "Testing your files… nothing is written and nothing is sent."
 GATE_PASSED_HEADLINE = "The test conversion worked"
-GATE_PASSED_DETAIL = "Here's how many rows each file would hold. Nothing was written and nothing was sent."
+#: Says what the button under it DOES. The counts alone answered "did it work?" and left
+#: "so what do I press?" to a label, which is how the activation came to read as a filename
+#: action (owner report, 2026-09-02).
+GATE_PASSED_DETAIL = (
+    "Here's how many rows each file would hold. Nothing was written and nothing was sent. If these look "
+    "right, choose “Save district settings” — that saves this district as the one this computer "
+    "converts, and unlocks Continue."
+)
 GATE_FAILED_HEADLINE = "The test conversion didn't finish"
 GATE_REFUSED_NO_OUTPUT_NOTE = "Pick your output folder on the step before this one first — the test didn't run."
 GATE_STALE_VERSION_NOTE = "A different version of DistrictSync set this district up, so please run the test again."
 GATE_STALE_BASE_NOTE = (
     "The standard mapping your district builds on has changed since it was set up, so please run the test again."
 )
-GATE_CONFIRM_LABEL = "Use this district"
+#: The ONE act that makes this district the one this install converts. "Use this district"
+#: read as a filename action while it sat below the rows (owner report, 2026-09-02); this
+#: names the SAVE it performs, in sentence case like every other action in the product.
+GATE_CONFIRM_LABEL = "Save district settings"
 GATE_RERUN_LABEL = "Test it again"
 GATE_ACTIVATED_NOTE = "This computer now converts your district."
 GATE_RESAVED_NOTE = "Saved. Your district's file names changed, so please run the test conversion once more."
+
+#: Why the HOST's step footer Continue is closed, one per :func:`files_continue_lock_reason`
+#: answer. Owner report (2026-09-02): "it's unclear why 'continue' is locked … need an
+#: indication of why continue is locked, if it needs to be, and how to continue."
+#:
+#: These four strings (with :data:`GATE_PASSED_DETAIL`) are the ONLY creator copy allowed to
+#: say "unlock" — the word is otherwise banned across this product because identification is
+#: never authentication (0038). Here it describes a wizard's own Continue, closed until a step
+#: is finished: no identity, no address, no claim about the district-domain list. The
+#: allowance is by exact constant name in ``tests/test_ui_flet_creator_flow.py``, never a
+#: widened sweep.
+FILES_CONTINUE_LOCKED_SAVE = "Save these file names, then run a test conversion, to unlock Continue."
+FILES_CONTINUE_LOCKED_RUN = (
+    "Run a test conversion that passes, then choose “Save district settings”, to unlock Continue."
+)
+FILES_CONTINUE_LOCKED_CONFIRM = "Choose “Save district settings” above to unlock Continue."
 
 #: Plain-language names for the seven authorable entities (the vocabulary map — an admin
 #: reads "Families", never ``Family``, and never a raw entity key).
@@ -217,6 +252,50 @@ def creator_shipped_note(number: str) -> str:
 def _entity_label(name: str) -> str:
     """Plain-language entity name, falling back to the key (TOTAL — a new entity still renders)."""
     return _ENTITY_LABELS.get(name, name)
+
+
+#: How much of a district's own name a chip may carry before it is cut. A chip is a pill,
+#: not a heading, and ``components.district_chip`` shows its label verbatim (its docstring
+#: says so), so the trim belongs to the caller that knows the value can be 120 characters
+#: of admin-typed text (``CREATOR_NAME_FIELD_LABEL``'s ``max_length``).
+_CHIP_NAME_MAX = 40
+
+
+def creator_district_label(sd_number: int, district_name: str) -> str:
+    """The district-identity chip's label — ``"SD48 · Sea to Sky"``, or ``""`` for nothing to show.
+
+    PURE, and derived from the FORM rather than from disk: on the forms surface the district
+    on screen is the one being answered, and a chip that read the config on disk would name a
+    different district from the fields under it during a correction.
+
+    ``""`` while there is no NAME — the caller renders no chip at all then. A number alone is
+    not an identity the admin has given: it arrives PREFILLED from the launch page's
+    not-listed answer, so a chip reading "SD93" over an empty name field would be the app
+    telling the admin what it already decided about them. The files surface always has a name
+    (the forms surface refuses to write an overlay without one), so it always carries a chip.
+    """
+    name = " ".join((district_name or "").split())
+    if not name:
+        return ""
+    if len(name) > _CHIP_NAME_MAX:
+        name = f"{name[: _CHIP_NAME_MAX - 1].rstrip()}…"
+    return f"SD{sd_number} · {name}" if sd_number else name
+
+
+def files_continue_lock_note(reason: str | None) -> str:
+    """The sentence for one :func:`config_editor.files_continue_lock_reason` answer.
+
+    The reason is DECIDED by the pure function and WORDED here, where the rest of this
+    surface's copy lives and where the sweep in ``tests/test_ui_flet_creator_flow.py`` sees
+    it. ``""`` for ``None`` (nothing to explain) and for anything unrecognised — a caption is
+    advisory, and an unknown reason must leave the step silent rather than raise in front of
+    an admin who has done nothing wrong.
+    """
+    return {
+        "save_names": FILES_CONTINUE_LOCKED_SAVE,
+        "run_test": FILES_CONTINUE_LOCKED_RUN,
+        "confirm": FILES_CONTINUE_LOCKED_CONFIRM,
+    }.get(reason or "", "")
 
 
 def _resolved_base(base: str) -> object | None:
@@ -440,6 +519,7 @@ def build_creator(  # pragma: no cover - Flet view glue
     on_discarded: Callable[[], None],
     stage: CreatorStage = "forms",
     pending: dict[str, str] | None = None,
+    continue_lock_note: ft.Text | None = None,
 ) -> ft.Control:
     """The creator's own surface — the HOST seam (plan 0044 S3 §3.5).
 
@@ -483,6 +563,17 @@ def build_creator(  # pragma: no cover - Flet view glue
             comparison this surface tiers its Save on, so the two can never disagree about
             whether something is pending. ``None`` (S6's Mapping host, which owns no step
             footer) means this surface keeps a private dict for its own lifetime.
+        continue_lock_note: the HOST's own caption control for its step footer, filled from
+            :func:`config_editor.files_continue_lock_reason` on every render of the files
+            surface — the second piece of host-owned state, for the same reason ``pending``
+            is the first (plan 0044 S4 review, BLOCKING 2) and NOT a fifth callback. The host
+            CREATES and PLACES it (it owns the footer, and decides whether a locked Continue
+            needs explaining at all — S6's Mapping host has no Continue, passes ``None``, and
+            gets no caption); this surface fills it, because it holds all three inputs the
+            reason is a function of and re-renders on every change to any of them. A caption
+            the host computed once at footer-build time would be a render behind the test
+            conversion that changes it, and "why is Continue locked" is exactly the question
+            an admin asks right after pressing something.
 
     Never fires a callback on a failure: a refused write, a ``None`` digest and a refused
     activation all keep the admin where they are behind a bounded note.
@@ -552,6 +643,22 @@ def build_creator(  # pragma: no cover - Flet view glue
                 ],
             )
         ]
+
+    def _district_chip_row() -> list[ft.Control]:
+        """The district-identity pill, at the top of EVERY creator surface (owner, 2026-09-02).
+
+        Three cards of questions and a step of file names all read the same whichever district
+        they belong to, and the files step is reached by a resume that showed none of them —
+        so the pill answers "which district am I setting up?" before anything else on the
+        page. Read from the FORM (never from disk), and omitted entirely while there is
+        nothing to show: on a fresh forms surface no name has been given yet, and an empty
+        identity pill identifies nothing.
+        """
+        current: CreatorForm = st["form"]  # type: ignore[assignment]
+        label = creator_district_label(current.sd_number, current.district_name)
+        if not label:
+            return []
+        return [ft.Row(controls=[components.district_chip(label)])]
 
     def _discard_row() -> ft.Control:
         """The text-tier escape, on EVERY creator surface (never a dead end)."""
@@ -797,12 +904,15 @@ def build_creator(  # pragma: no cover - Flet view glue
                 ]
             )
 
-        controls: list[ft.Control] = [
-            components.card(ft.Column(spacing=tokens.space_md, controls=start_rows)),
-            components.card(ft.Column(spacing=tokens.space_md, controls=identity_rows)),
-            components.card(ft.Column(spacing=tokens.space_md, controls=entity_rows)),
-            components.card(ft.Column(spacing=tokens.space_md, controls=grade_rows)),
-        ]
+        controls: list[ft.Control] = _district_chip_row()
+        controls.extend(
+            [
+                components.card(ft.Column(spacing=tokens.space_md, controls=start_rows)),
+                components.card(ft.Column(spacing=tokens.space_md, controls=identity_rows)),
+                components.card(ft.Column(spacing=tokens.space_md, controls=entity_rows)),
+                components.card(ft.Column(spacing=tokens.space_md, controls=grade_rows)),
+            ]
+        )
         controls.extend(_note_row())
         controls.append(
             ft.Row(
@@ -1128,46 +1238,38 @@ def build_creator(  # pragma: no cover - Flet view glue
             st["gate_current"] = creator_gate_current(cfg, sis_id)
         return bool(st["gate_current"])
 
+    def _fill_lock_note(*, unsaved_names: bool, already: bool, passed: bool) -> None:
+        """Say why the HOST's step footer Continue is closed — in the host's own control.
+
+        ``unsaved_names`` is the FOOTER's predicate (``has_unsaved_renames``), not this
+        surface's ``_unsaved()``: a hand-edited config that names one file two ways leaves the
+        rows dirty without closing the host's Continue, and a caption that explained a
+        Continue nobody had closed would be the same disagreement in reverse.
+        """
+        if continue_lock_note is None:  # a host with no Continue of its own (S6's Mapping)
+            return
+        reason = files_continue_lock_reason(
+            names_pending=unsaved_names,
+            activated=already,
+            gate_passed=passed,
+        )
+        note = files_continue_lock_note(reason)
+        continue_lock_note.value = note
+        continue_lock_note.visible = bool(note)
+
     def _files_controls() -> list[ft.Control]:
+        """TWO sections, in the order the step is actually worked (owner report, 2026-09-02).
+
+        The gate block used to straddle the filename rows: the verdict and its counts above
+        them, the filled activation below them and below the missing-file note — so the ONE
+        button that decides what this computer converts read as an action about file names,
+        and the counts it belonged to were half a screen away. Now the FILE NAMES (the input)
+        are one card, and the TEST AND CONFIRM block (the decision) is one contiguous group
+        underneath: verdict → counts → the action row, adjacent, in that order.
+        """
         outcome: GateOutcome = st["gate"]  # type: ignore[assignment]
         already = bool(st["activated"]) or _gate_already_passed()
         passed = outcome.state is GateState.PASSED
-        controls: list[ft.Control] = []
-
-        if outcome.state is GateState.PASSED:
-            controls.append(
-                components.HealthVerdictBanner(
-                    Verdict.HEALTHY, headline=GATE_PASSED_HEADLINE, detail=GATE_PASSED_DETAIL
-                )
-            )
-            if outcome.counts:
-                controls.append(
-                    ft.Row(
-                        wrap=True,
-                        spacing=tokens.space_lg,
-                        run_spacing=tokens.space_lg,
-                        controls=[
-                            components.metric_tile(_entity_label(name), f"{count:,}")
-                            for name, count in outcome.counts.items()
-                        ],
-                    )
-                )
-        elif outcome.state is GateState.FAILED:
-            controls.append(
-                components.HealthVerdictBanner(Verdict.FAILED, headline=GATE_FAILED_HEADLINE, detail=outcome.note)
-            )
-        elif outcome.state is GateState.REFUSED_NO_OUTPUT_DIR:
-            controls.append(
-                components.HealthVerdictBanner(
-                    Verdict.WARNING, headline=GATE_FAILED_HEADLINE, detail=GATE_REFUSED_NO_OUTPUT_NOTE
-                )
-            )
-
-        if st["running"]:
-            controls.append(components.inflight_row(GATE_RUNNING_CAPTION))
-
-        for note in _staleness_notes():
-            controls.append(ft.Text(note, size=tokens.type_body, color=tokens.color_status_warning))
 
         # ONE presence source: the rows, their chips and the missing-file list all read the
         # PENDING effective names, so nothing on this card can contradict anything else on
@@ -1177,6 +1279,11 @@ def build_creator(  # pragma: no cover - Flet view glue
         rows = file_form_rows(_slots(), renames=_effective_renames(), present=folder)
         unsaved = _unsaved()
         action = files_primary_action(unsaved=unsaved, passed=passed, already=already)
+        _fill_lock_note(
+            unsaved_names=has_unsaved_renames(st["pending"], st["saved"]),  # type: ignore[arg-type]
+            already=already,
+            passed=passed,
+        )
 
         def _tiered(label: str, handler, *, primary: bool, icon: str) -> ft.Control:  # noqa: ANN001
             """The 3-tier rule applied from ONE decision: filled when this is the primary."""
@@ -1190,7 +1297,11 @@ def build_creator(  # pragma: no cover - Flet view glue
                 )
             return components.secondary_button(label, handler, disabled=bool(st["running"]), icon=icon)
 
-        file_rows: list[ft.Control] = [ft.Text(FILES_INTRO_NOTE, size=tokens.type_body, color=tokens.color_muted)]
+        # ---- the file names: the INPUT, so it leads ------------------------ #
+        file_rows: list[ft.Control] = [
+            ft.Text(FILES_NAMES_TITLE, size=tokens.type_section, weight=ft.FontWeight.W_700, color=tokens.color_text),
+            ft.Text(FILES_INTRO_NOTE, size=tokens.type_body, color=tokens.color_muted),
+        ]
         file_rows.extend(_name_row(row, folder) for row in rows)
         if any(not row.present for row in rows):
             file_rows.append(ft.Text(FILES_MISSING_NOTE, size=tokens.type_body, color=tokens.color_status_warning))
@@ -1201,26 +1312,50 @@ def build_creator(  # pragma: no cover - Flet view glue
                 controls=[_tiered(FILES_SAVE_LABEL, _save_names, primary=action == "save", icon=ft.Icons.SAVE_OUTLINED)]
             )
         )
-        controls.append(components.card(ft.Column(spacing=tokens.space_lg, controls=file_rows)))
 
-        controls.extend(_note_row())
+        # ---- the test and the decision: verdict → counts → actions -------- #
+        test_rows: list[ft.Control] = [
+            ft.Text(FILES_TEST_TITLE, size=tokens.type_section, weight=ft.FontWeight.W_700, color=tokens.color_text)
+        ]
+        if outcome.state is GateState.PASSED:
+            test_rows.append(
+                components.HealthVerdictBanner(
+                    Verdict.HEALTHY, headline=GATE_PASSED_HEADLINE, detail=GATE_PASSED_DETAIL
+                )
+            )
+        elif outcome.state is GateState.FAILED:
+            test_rows.append(
+                components.HealthVerdictBanner(Verdict.FAILED, headline=GATE_FAILED_HEADLINE, detail=outcome.note)
+            )
+        elif outcome.state is GateState.REFUSED_NO_OUTPUT_DIR:
+            test_rows.append(
+                components.HealthVerdictBanner(
+                    Verdict.WARNING, headline=GATE_FAILED_HEADLINE, detail=GATE_REFUSED_NO_OUTPUT_NOTE
+                )
+            )
+        if st["running"]:
+            # RUNNING carries no verdict and no counts, so this can never come between them.
+            test_rows.append(components.inflight_row(GATE_RUNNING_CAPTION))
+        if passed and outcome.counts:
+            test_rows.append(
+                ft.Row(
+                    wrap=True,
+                    spacing=tokens.space_lg,
+                    run_spacing=tokens.space_lg,
+                    controls=[
+                        components.metric_tile(_entity_label(name), f"{count:,}")
+                        for name, count in outcome.counts.items()
+                    ],
+                )
+            )
 
         # ONE filled primary in EVERY state, decided by the pure ``files_primary_action``:
         # the save while a name on screen is not in the config, the run while there is
         # nothing to confirm, the confirm once a test has passed, and — once this district is
-        # genuinely active — none at all (the step footer's Continue takes that tier).
+        # genuinely active — none at all (the step footer's Continue takes that tier). The
+        # row sits DIRECTLY under the counts it acts on, and carries the text-tier escape
+        # with it so the group stays contiguous.
         actions: list[ft.Control] = []
-        if already:
-            controls.append(
-                ft.Row(
-                    spacing=tokens.space_sm,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, size=18, color=tokens.color_status_healthy),
-                        ft.Text(GATE_ACTIVATED_NOTE, size=tokens.type_body, color=tokens.color_status_healthy),
-                    ],
-                )
-            )
         if action == "confirm":
             actions.append(components.primary_button(GATE_CONFIRM_LABEL, _activate, icon=ft.Icons.CHECK_ROUNDED))
         actions.append(
@@ -1231,8 +1366,26 @@ def build_creator(  # pragma: no cover - Flet view glue
                 icon=ft.Icons.PLAY_ARROW_ROUNDED,
             )
         )
-        controls.append(ft.Row(spacing=tokens.space_lg, controls=actions))
-        controls.append(_discard_row())
+        actions.append(components.text_button(CREATOR_DISCARD_LABEL, _discard, icon=ft.Icons.DELETE_OUTLINE_ROUNDED))
+        test_rows.append(ft.Row(spacing=tokens.space_lg, controls=actions))
+        if already:
+            test_rows.append(
+                ft.Row(
+                    spacing=tokens.space_sm,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, size=18, color=tokens.color_status_healthy),
+                        ft.Text(GATE_ACTIVATED_NOTE, size=tokens.type_body, color=tokens.color_status_healthy),
+                    ],
+                )
+            )
+        for note in _staleness_notes():
+            test_rows.append(ft.Text(note, size=tokens.type_body, color=tokens.color_status_warning))
+
+        controls: list[ft.Control] = _district_chip_row()
+        controls.append(components.card(ft.Column(spacing=tokens.space_lg, controls=file_rows)))
+        controls.extend(_note_row())
+        controls.append(ft.Column(spacing=tokens.space_lg, controls=test_rows))
         return controls
 
     _render()

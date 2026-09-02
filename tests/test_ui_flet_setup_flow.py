@@ -1435,7 +1435,7 @@ class TestCreatorSatisfaction:
 class TestCreatorFinishLineRequiresActivation:
     def test_can_finish_is_blocked_until_the_district_is_activated(self):
         # Acceptance criterion 2, the negative half: every other step satisfied, gate passed, but
-        # "Use this district" never pressed — the finish confirmation (which flips
+        # "Save district settings" never pressed — the finish confirmation (which flips
         # ``setup_completed``) must stay out of reach.
         state = derive_flow(_all_creator_steps_satisfied())
         assert state.satisfied == frozenset(

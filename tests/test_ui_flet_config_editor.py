@@ -66,6 +66,7 @@ from src.ui_flet.config_editor import (
     distinct_source_files,
     file_form_rows,
     file_label,
+    files_continue_lock_reason,
     files_primary_action,
     gate_outcome_for,
     has_unsaved_renames,
@@ -1237,3 +1238,68 @@ class TestFilesPrimaryAction:
             for a in (True, False)
         }
         assert answers == {"save", "run", "confirm", "none"}
+
+
+class TestFilesContinueLockReason:
+    """Why the HOST's step footer Continue is closed (owner report, 2026-09-02).
+
+    The owner's words: "it's unclear why 'continue' is locked … need an indication of why
+    continue is locked, if it needs to be, and how to continue." All eight inputs, because
+    a caption naming the wrong next act is worse than no caption at all.
+    """
+
+    @pytest.mark.parametrize(
+        ("names_pending", "activated", "gate_passed", "expected"),
+        [
+            # Unsaved file names WIN — the body's own primary is the Save, and a caption
+            # that named a later act would point past it.
+            (True, True, True, "save_names"),
+            (True, True, False, "save_names"),
+            (True, False, True, "save_names"),
+            (True, False, False, "save_names"),
+            # Nothing pending, this district is already the one that converts: Continue is
+            # OPEN, so there is nothing to explain.
+            (False, True, True, None),
+            (False, True, False, None),
+            # Nothing pending, not active yet: the test conversion, then the confirm.
+            (False, False, True, "confirm"),
+            (False, False, False, "run_test"),
+        ],
+    )
+    def test_all_eight_states(self, names_pending, activated, gate_passed, expected):
+        assert (
+            files_continue_lock_reason(names_pending=names_pending, activated=activated, gate_passed=gate_passed)
+            == expected
+        )
+
+    def test_exactly_one_state_has_nothing_to_explain(self):
+        """The property the caption's disappearance rests on: ``None`` means Continue is open,
+        and it is answered for the activated-and-clean state ALONE."""
+        silent = {
+            (u, a, p)
+            for u in (True, False)
+            for a in (True, False)
+            for p in (True, False)
+            if files_continue_lock_reason(names_pending=u, activated=a, gate_passed=p) is None
+        }
+
+        assert silent == {(False, True, True), (False, True, False)}
+
+    def test_a_locked_continue_always_names_a_next_act(self):
+        """TOTAL over the closed states: no state may leave the admin with a dead button and
+        no sentence — the failure the owner actually hit."""
+        for names_pending in (True, False):
+            for gate_passed in (True, False):
+                reason = files_continue_lock_reason(
+                    names_pending=names_pending, activated=False, gate_passed=gate_passed
+                )
+                assert reason in {"save_names", "run_test", "confirm"}
+
+    def test_it_is_not_a_second_spelling_of_the_body_tiering(self):
+        """``files_primary_action`` answers "none" for the state this function must EXPLAIN
+        (a body with no primary is exactly where the footer holds one), so the two are
+        deliberately separate — and one is not derivable from the other."""
+        assert files_primary_action(unsaved=False, passed=True, already=False) == "confirm"
+        assert files_continue_lock_reason(names_pending=False, activated=False, gate_passed=True) == "confirm"
+        assert files_primary_action(unsaved=False, passed=True, already=True) == "none"
+        assert files_continue_lock_reason(names_pending=False, activated=True, gate_passed=True) is None

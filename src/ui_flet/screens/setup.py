@@ -513,6 +513,9 @@ def _mount_wizard(
         # this wizard rebuilds the step body on every hop, and a surface that forgot what
         # was picked while this footer's Continue stayed open advanced past unsaved names.
         "files_pending": {},
+        # The FILES footer's locked-Continue caption, created lazily by ``_files_lock_note``
+        # and FILLED by the creator surface (never a second computation of the same reason).
+        "files_lock_note": None,
     }
 
     def _files_step_satisfied() -> bool:
@@ -818,6 +821,25 @@ def _mount_wizard(
             ws["files_pending"] = names
         return names
 
+    def _files_lock_note() -> ft.Text:
+        """The FILES footer's "why is Continue locked?" caption — created ONCE, host-owned.
+
+        The owner's report (2026-09-02): the gate step's Continue sat disabled with no
+        indication of why or what would open it. The host owns the control because it owns
+        the footer and the Continue being explained (S6's Mapping host has neither, passes
+        no note, and gets no caption); the creator surface FILLS it, because it holds every
+        input the reason is a function of — see ``build_creator``'s ``continue_lock_note``.
+
+        One control for this mount's lifetime, re-parented into each footer it is rendered
+        into (``ws["forward_btn"]``'s neighbour), so the surface never has to be handed a
+        fresh object it did not ask for.
+        """
+        note = ws.get("files_lock_note")
+        if not isinstance(note, ft.Text):
+            note = ft.Text("", size=tokens.type_caption, color=tokens.color_muted, visible=False)
+            ws["files_lock_note"] = note
+        return note
+
     def _files_names_pending() -> bool:
         """Whether the FILES step has file names the config on disk does not have.
 
@@ -891,6 +913,7 @@ def _mount_wizard(
             on_discarded=_on_creator_discarded,
             stage=stage,
             pending=_files_pending(),
+            continue_lock_note=_files_lock_note(),
         )
 
     def _district_body() -> ft.Control:
@@ -1117,7 +1140,12 @@ def _mount_wizard(
             )
             ws["forward_btn"] = forward
             controls.append(forward)
-            return ft.Row(spacing=16, controls=controls)
+            # ...and UNDER it, the caption saying why it is closed and what opens it — filled
+            # by the creator surface on every render, hidden the moment Continue opens.
+            return ft.Column(
+                spacing=tokens.space_sm,
+                controls=[ft.Row(spacing=16, controls=controls), _files_lock_note()],
+            )
 
         if step is SetupStep.FINISH:
             forward = components.primary_button(

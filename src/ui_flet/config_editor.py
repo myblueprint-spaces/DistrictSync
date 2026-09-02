@@ -23,7 +23,9 @@ Four families live here:
   with the name in force and its presence in the folder, :func:`renames_from_resolved` is
   the resume inverse (with its report of a hand-edited config that names one file two
   ways), :func:`pending_renames` is what a set of half-answered ROWS means, and
-  :func:`files_primary_action` decides which action is the step's ONE filled primary.
+  :func:`files_primary_action` decides which action is the step's ONE filled primary,
+  and :func:`files_continue_lock_reason` says why a HOST's step footer Continue is
+  still closed.
 * **The gate.** :class:`GateState` / :class:`GateOutcome` / :func:`gate_outcome_for`
   reduce the test conversion's outcome — the worker's result or exception, whether the
   output folder is usable, and the expected-vs-present file lists — to one derived fact.
@@ -548,6 +550,38 @@ def files_primary_action(*, unsaved: bool, passed: bool, already: bool) -> Liter
     if passed:
         return "confirm"
     return "run"
+
+
+def files_continue_lock_reason(
+    *, names_pending: bool, activated: bool, gate_passed: bool
+) -> Literal["save_names", "run_test", "confirm"] | None:
+    """WHY the Files step's HOST footer Continue is closed, or ``None`` when it is open. PURE.
+
+    The owner's report (2026-09-02): the footer Continue sat disabled with no indication of
+    why or what would open it, so the step was a dead end for anyone who had not already
+    read the body top to bottom. This names the ONE next act, and the three answers are the
+    three the step actually has:
+
+    * ``"save_names"`` — file names on screen are not in the config on disk. WINS, exactly as
+      it does in :func:`files_primary_action`: the host's own Continue is closed on this fact
+      first, and a caption that named a later act would point past the step's own primary.
+    * ``"run_test"`` — nothing has passed a test conversion yet.
+    * ``"confirm"`` — a test passed and the district is not the one this computer converts yet.
+    * ``None`` — nothing to explain: Continue is open.
+
+    ``activated`` is the SAME fact the host gates ``can_advance(FILES, …)`` on (the recorded
+    test digest still matches what would convert today), not a second spelling of it — a
+    caption that could disagree with the button beside it is worse than no caption. Deliberately
+    a separate function from :func:`files_primary_action`: that one tiers the BODY's actions and
+    answers ``"none"`` in the state this one has to explain (a body with no primary left is
+    precisely the state where the footer holds one), so folding the two would make each state's
+    answer depend on which surface was asking.
+    """
+    if names_pending:
+        return "save_names"
+    if activated:
+        return None
+    return "confirm" if gate_passed else "run_test"
 
 
 # ---------------------------------------------------------------------------
