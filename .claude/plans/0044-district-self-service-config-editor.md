@@ -11,6 +11,7 @@
   - `R2-4 column sets: chose one ADDITIVE defaulted PipelineResult field (input_columns) over a second parse or an extractor header seam` — reviewable at the spec gate.
   - `S1 sis-emission deviation: the overlay INHERITS sis: MyEducationBC instead of emitting the config id (reviewer finding; DECISIONS 2026-09-02)` — reviewable at the S2 gate.
   - `S1 CI gate: ci.yml runs only on push-to-main / PRs to main, so no CI run exists for the branch yet — the land-gate CI read is OWED at PR time` — owner decides when to open the PR.
+  - `S2 marker rule: the "added on this computer" marker keys on FILE PROVENANCE (ConfigSummary.origin == "user"), NOT on the sd<num>custom id — so a YAML support hands a district is marked the same way, which is why the wording must stay true for a file the admin did not author` — reviewable at the S2 gate (wording alternatives in the S2 spec's Open questions).
 - **Disposition at close:** per `docs/claugentic-WORKFLOW.md` plan-file lifecycle.
 - **Roadmap item:** `docs/claugentic-ROADMAP.md` → "Brief 0037 … Phase 2 = the district self-service config editor" (updated 2026-08-27)
 - **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` (2026-08-27 re-scope entry — the authority for everything this plan builds) · `.claude/plans/0037-brief-front-door-district-identity-mapping-creator.md` (superseded scope, retained safety rails) · plan 0038 (Phase 1, landed)
@@ -887,10 +888,175 @@ just-in-time per slice; S1 below awaits the owner approval gate._
   `sis`/`district_name`/`district_domains`; (3) a user-dir config with one bad domain
   row loads with a WARN and an empty/reduced domain list — the same row in a bundled
   config still raises; (4) no existing test flips; SD74 golden byte-identical; all
-  gates green (ruff/format, mypy, bandit, tree-check, email scan, 12-config pin).
+  gates green (ruff/format, mypy, bandit, tree-check, email scan, 20-config pin).
 
-### Slices 2–7
-_Spec'd just-in-time, each after the prior slice lands (S2 next)._
+### Slice 2 — catalog + identity integration
+
+- **In plain English (the approval gate):** S1 built the engine; this slice makes what it
+  writes VISIBLE and HONEST, with no new screens and no new writers. Three effects. (1) A
+  config that lives in this computer's DistrictSync folder — added by the admin or handed over
+  by support — is **marked** everywhere a district is chosen (wizard District step, Settings
+  folders card, Convert, Mapping's switch list) plus Mapping's summary card, so an install
+  holding both `sd48myedbc` (shipped) and `sd48custom` (added here) is never a coin flip.
+  (2) An added district's email domain now RESOLVES like a shipped one — the launch page
+  matches its own admin. (3) Home's "we don't have a mapping for SD93 yet" card **retires
+  itself** once an SD93 config exists, shipped or added — no new rule, just a currently
+  accidental fact, now pinned. **What "done" means:** a hand-authored overlay renders
+  distinctly on all five surfaces, resolves by domain, and silences the not-listed card —
+  proven against the REAL two-directory search, not a single-dir fixture. **What you're accepting:** one marker wording beside district names; the
+  marker keying on *where the file lives*, so a support-supplied YAML is marked the same way
+  (flagged); and Approach #8's consequence becoming observable — a matched custom district
+  narrows that admin's pickers to their own rows, exactly as a shipped district already does.
+- **Files & changes:**
+  - `src/ui_flet/mapping_catalog.py`:
+    - `ConfigSummary` gains **`origin: ConfigOrigin`** (the `Literal["user","bundled"]` alias
+      imported from `src.config.loader`, never re-spelled). **Required, no default:** a
+      defaulted `"bundled"` would let a future construction site silently claim vendor
+      provenance for a hand-authored file — the exact claim the marker exists to prevent. Three
+      keyword-only construction sites, all in tests, take the field.
+    - new private `_origin_of(sis_type, config_dir) -> ConfigOrigin` — **exactly one**
+      `resolve_config_path` call per summary (a path lookup, never a second YAML parse),
+      computed BEFORE the existing `try` so a config that fails to LOAD still carries its
+      origin (a broken overlay is the row most likely to need the marker). Two documented
+      rules: an explicit single `config_dir` is `"bundled"`-equivalent, re-using `load_config`'s
+      own definition verbatim ("one dir cannot express a tier", `loader.py:498-501`) — which is
+      *why* origin tests must go through the real pair; and it is TOTAL (any raise, e.g.
+      `user_mappings_dir()`'s mkdir on a locked-down profile, → `"bundled"`) and SILENT, since
+      that root cause already surfaces in `summarize_config`'s load WARN and 11 duplicates per
+      mount would bury it. Fallback direction argued: an unmarked row loses a distinction; a
+      wrongly-`"user"` row would deny shipping a mapping we ship.
+    - `_degraded(...)` takes `origin` (passed through, never re-derived).
+    - new constant **`CUSTOM_ORIGIN_LABEL = "Added on this computer"`** — the SINGLE source of
+      the marker words: PII-free, true whoever authored the file, and no claim about
+      editability or vendor work.
+    - `disambiguated_labels` (already "the label a picker row renders") appends
+      ` — {CUSTOM_ORIGIN_LABEL}` when `origin == "user"`, AFTER the collision-id suffix; the
+      marker does not join collision detection (the id suffix already separates a same-named
+      pair). **This is the entire four-picker change** — all four render `labels[s.sis_type]`
+      (`setup.py:332-333`, `setup.py:1250`, `convert.py:630-634`, `mapping.py:73-76`), so
+      **setup.py, convert.py and Mapping's dropdown need no edit**; the picker tests therefore
+      assert on rendered trees, not on the helper.
+    - `reset_catalog_cache` docstring gains the invalidation rule (below).
+  - `src/ui_flet/screens/mapping.py`: `_summary_card` renders
+    `components.district_chip(CUSTOM_ORIGIN_LABEL)` beside the district name when
+    `origin == "user"`; `_summary_lines` appends a screen-local `CUSTOM_ORIGIN_NOTE` ("This
+    mapping lives in this computer's DistrictSync folder — it wasn't shipped with
+    DistrictSync."). **The copy says nothing about editing:** Mapping is review-and-switch for
+    every row today, a custom row is no different yet, and "read-only for now" would promise
+    S6. No new button, so "Use this mapping" stays the one filled primary. Factories only,
+    tokens only; the `districtsync-design` skill runs on this change. If that pass rejects
+    `district_chip`'s building glyph for a provenance badge, the pre-authorised fallback is
+    `components.origin_badge(label)` — the same body, a neutral glyph — and nothing else moves.
+  - **Catalog invalidation — the seam decision.** `authoring.write_overlay`/`delete_overlay`
+    must NOT call `reset_catalog_cache()`: `src/config/` importing `src/ui_flet/` inverts the
+    layer isolation CLAUDE.md states as a principle and drags a UI module into the CLI's import
+    graph. **The UI caller invalidates**, right after a successful write/delete. S2 has no UI
+    writer (S3 is the first), so it lands the RULE, not a wrapper — written into
+    `reset_catalog_cache`'s docstring and into `write_overlay`/`delete_overlay`'s (comment-only,
+    no behaviour), with the hazard pinned both ways below. A `note_config_written()` wrapper is
+    rejected as dead code with one caller.
+  - `identity_gate.py`, `humanize.py`, `screens/home.py`, `screens/setup.py`,
+    `screens/convert.py`: **no code change.** `unmapped_sd_number(cfg, available_configs())`
+    already counts user-dir ids and `_SD_CONFIG_RE` already matches `sd48custom` (verified:
+    `^sd0*48(?!\d)` matches it; `SD4` matches neither); `friendly_district_name` already
+    resolves user-dir names; the auto-seed already reads the VISIBLE list. S2's job here is to
+    pin behaviour that is currently accidental.
+- **In-scope standards dimensions:** `product-ux` (the marker separates two rows that decide
+  which roster ships — words, never colour alone) · `maintainability-structure` (one label
+  rule for four pickers; origin's single-dir definition re-used from the loader; the
+  invalidation seam keeps the config→UI direction) · `reliability-resilience` (`_origin_of`
+  TOTAL, degraded rows still carry origin, fallback direction argued) · `testing` (origin is
+  non-vacuous only through the real two-dir pair; every "marker shows" has a shipped-row twin
+  in the same list) · `privacy` (marker + note are structural facts — no address, path or SD
+  number; nothing new logged) · `api-and-contracts` (`ConfigSummary` is the catalog's published
+  shape; a required field is a once-only break with three test sites).
+- **Tests to add:**
+  - `tests/test_ui_flet_mapping_catalog.py` — origin through the REAL pair (autouse
+    `isolated_user_profile` gives the tmp user dir; `authoring.write_overlay` puts a real
+    `sd93custom` in it): `"user"` for it, **twin** `"bundled"` for `myedbc` (the pair is what
+    makes either non-vacuous) · an explicit `config_dir` reports `"bundled"` for a file in that
+    dir (the loader's stated rule, asserted not assumed) · a MALFORMED user overlay degrades
+    AND still reports `"user"` · `_origin_of` totality (patched `resolve_config_path` raise →
+    `"bundled"`, nothing escapes) · `disambiguated_labels`: user row marked, bundled row not,
+    a same-`district_name` collision carrying BOTH id suffix and marker · **memo staleness
+    both ways** — after `write_overlay` an already-built `catalog()` lacks the new id (the
+    documented residual) and after `reset_catalog_cache()` has it (the twin proving the
+    invalidation is real, not a comment).
+  - `tests/test_ui_flet_filtered_pickers.py` — the marker on screen, one test per picker,
+    each asserting the custom row's option text carries `CUSTOM_ORIGIN_LABEL` **and** that a
+    shipped row in the same `_texts()` list does not · Mapping's card shows chip + note for a
+    custom current mapping and neither for a shipped one · the note promises nothing (substring
+    ban on "edit"/"soon"/"later") · new `TestTheNonCreatorPickPathStillWorks` — the **#12
+    behavioural twin**: from `setup_completed=False, sis_type=""`, pick + Continue (a) leaves
+    the picked id in the isolated profile's on-disk `config.json`, (b) renders the FOLDERS body
+    (District dropdown gone), and a fresh `build_setup(page)` lands on FOLDERS — the actual
+    persist-and-advance path S3 branches, not a render smoke. Lives here for the mount helpers.
+  - `tests/test_ui_flet_identity_resolve.py` — a class over the REAL index
+    (`district_domain_index()` after `write_overlay`): a custom overlay claiming `sd93.bc.ca`
+    → MATCHED_ONE `("sd93custom",)` · one claiming a SHIPPED district's domain (`sd48.bc.ca` —
+    the `sd<num>custom`-beside-`sd<num>myedbc` case the id decision anticipates) →
+    MATCHED_SEVERAL with both ids, and `filtered_catalog` returns both rows with only the
+    custom one marked · a domain-LESS user overlay behaves exactly like `myedbc` (shown
+    unmatched, absent for a matched admin unless saved/picked — the answer to "does an
+    unclaimed user config show everywhere?": it does not; the CLAUDE.md phrase fix is S7's).
+  - `tests/test_ui_flet_home_identity_cards.py` — the not-listed card RETIRES with an
+    `sd93custom` overlay present (`identity_sd_number="93"`), **twin** the same config without
+    the overlay still renders it · `sd48custom` retires an SD48 ask while `SD4` does not.
+    `tests/test_ui_flet_humanize.py` — `friendly_district_name("sd93custom")` returns the
+    overlay's `district_name`; **twin** the raw id once it is deleted.
+  - Regression: full suite + SD74 golden byte-identical; `make validate-config` still 20/20
+    (test overlays live only in the isolated profile, so the pinned count cannot move).
+- **Acceptance criteria:** (1) `origin` is populated on every row of a real `catalog()` build,
+  `"user"` exactly for files in `user_mappings_dir()`, proven through the two-dir pair
+  (single-dir fixtures asserted to report `"bundled"`); (2) an `sd93custom` overlay renders with
+  `CUSTOM_ORIGIN_LABEL` in all four pickers and as chip + note on Mapping's card while shipped
+  rows stay unmarked, `screens/mapping.py` the only view file changed; (3) it resolves by domain
+  through the real index (MATCHED_ONE alone; MATCHED_SEVERAL beside a shipped district sharing
+  its domain) and retires Home's not-listed card, each with its negative twin; (4) the
+  invalidation rule is documented at all three sites and pinned stale-then-fresh, with no
+  `src/config/` → `src/ui_flet/` import; (5) the non-creator District step still persists
+  `sis_type` and still advances/resumes past DISTRICT (behavioural); (6) no existing test flips,
+  SD74 golden byte-identical, all gates green (ruff/format, mypy, bandit, tree-check, email
+  scan, 20-config pin), `districtsync-design` pass clean.
+- **Open questions for the owner:**
+  - **Marker wording.** Default `"Added on this computer"`, chosen to stay true when support
+    authored the file (see the flag). Alternatives weighed: `"Your district (custom)"` (false
+    in that case), `"Custom"` (technical). One constant, one line to change.
+  - **Should the marker follow a district OUTSIDE the pickers** — Convert's "This run: <x>"
+    pill, page-header district chips, Home's copy? S2 says NO (its job is separating two rows
+    at a decision point; a header naming one district has nothing to be confused with), so a
+    custom district reads exactly like a shipped one wherever it is merely named. Reversible
+    later at the cost of noise on the common path.
+
+_Spec self-check:_
+- **Single-lever risk (buildable, but fragile).** `disambiguated_labels` is the ONLY four-picker
+  lever; a future picker that stops routing through it, or a designer who wants a non-text badge
+  inside a dropdown, silently loses the marker there. The per-picker rendered-tree tests are the
+  only guard, and text is a platform constraint (`ft.dropdown.Option(key=,text=)` is the pinned
+  0.85.3 form — richer option content is unpinned and the `on_change` class of trap is expensive
+  to discover), not a design preference. Named rather than designed around.
+- **The required `origin` field is a real, if tiny, contract break.** Five `ConfigSummary(`
+  construction sites exist (two in `mapping_catalog`, three in tests); all are keyword-only, so
+  the break is three test lines — but it IS a break, chosen over a default that could claim
+  vendor provenance falsely. An out-of-repo consumer would see it.
+- **One near-vacuous pair, deliberately kept.** The memo-staleness test asserts an ABSENCE (a
+  freshly written overlay is missing from an already-built `catalog()`); its post-reset twin is
+  what makes it mean anything. If memoisation were ever removed, the stale half would pass for
+  the wrong reason — it pins a documented residual, not a guarantee.
+- **No S3+ behaviour is promised.** No pending token, no Edit affordance, no activation gate;
+  Mapping's note deliberately omits editability. The one hand-off risk is misreading "a user
+  config is seed-eligible like any other" as licence to seed INTO a creator flow — S3 owns
+  token-aware seed suppression and creator-mode `district_chosen`, and S2 pins only the
+  pre-token half (seed reads the VISIBLE list, fires only when nothing is saved, applied AFTER
+  `derive_flow`).
+- **Layering holds, with one accepted duplicate lookup.** The config layer gains no UI import
+  (the UI caller invalidates), and reading a loader `Literal` from a UI module matches the
+  existing `filtered_catalog` layer note. `_origin_of` does repeat a path resolution
+  `load_config` performs internally — two extra stats per row, no second parse — which is only
+  removable by widening `load_config`'s return type; not worth it for a presentation fact.
+
+### Slices 3–7
+_Spec'd just-in-time, each after the prior slice lands (S3 next — the creator flow: forms, `config_editor.py`, the `setup_flow` creator mode, the `creator_` advisory family, the dry-run gate and the `sis_type` activation write)._
 
 ---
 
