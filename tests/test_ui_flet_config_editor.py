@@ -95,8 +95,10 @@ def _cfg(**overrides) -> AppConfig:
 
 
 class TestPurity:
-    def test_the_module_imports_no_flet(self):
-        """A pure decision layer that imported the toolkit could not be tested headless."""
+    def test_the_module_imports_no_flet_and_no_io(self):
+        """A pure decision layer that imported the toolkit could not be tested headless,
+        and one that imported ``pathlib`` would be a step from doing I/O — the module's
+        docstring claims BOTH halves ("no flet, no I/O"), so both are pinned."""
         tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
         imported: list[str] = []
         for node in ast.walk(tree):
@@ -104,9 +106,21 @@ class TestPurity:
                 imported.extend(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.append(node.module)
-        assert not [name for name in imported if name.split(".")[0] == "flet"]
+        banned = ("flet", "pathlib")
+        assert not [name for name in imported if name.split(".")[0] in banned]
         # The positive twin — the sweep really does see this module's imports.
         assert "src.config.authoring" in imported
+
+    def test_an_explicit_empty_rostered_scope_is_refused_at_construction(self):
+        """Reviewer finding (S3): `with_rostered` refused `()` but a direct construction did
+        not, so `CreatorForm(rostered=(), homeroom=())` emitted `class_rostering_grades: []`
+        — a config the loader refuses and `humanize_config_error` mislabels as a chain
+        problem. Positive twin: `None` (inherit) and a one-grade scope both construct."""
+        with pytest.raises(ValueError, match="at least one grade"):
+            CreatorForm(base="myedbc", sd_number=93, district_name="T", rostered=(), homeroom=())
+        assert CreatorForm(base="myedbc", sd_number=93, district_name="T").rostered is None
+        form = CreatorForm(base="myedbc", sd_number=93, district_name="T", rostered=("08",), homeroom=())
+        assert form.rostered == ("08",)
 
 
 # ---------------------------------------------------------------------------

@@ -257,6 +257,16 @@ class CreatorForm:
         for label, values in (("rostered", self.rostered), ("homeroom", self.homeroom)):
             if values is not None:
                 _grade_tuple(values, label=label)
+        if self.rostered is not None and not self.rostered:
+            # Guarded at CONSTRUCTION, not only in `with_rostered`: an explicit empty
+            # rostered scope emits `class_rostering_grades: []`, which the loader refuses
+            # with an "EMPTY list" error that `humanize_config_error` would mislabel as a
+            # chain problem. Refusing here keeps the module's claim true — no reachable
+            # form state emits a chain the loader refuses. `None` still means "inherit".
+            raise ValueError(
+                "rostered must name at least one grade — an empty grade scope sends no students at all. "
+                "Use None to inherit the starting point's grades."
+            )
         if (self.rostered is None) != (self.homeroom is None):
             # The two halves are ONE question ("which grades are rostered, and which of
             # those get a homeroom class instead of a timetable?"), so a half-answer is
@@ -333,6 +343,7 @@ class CreatorForm:
                 "Choose at least one grade to roster — an empty grade scope sends no students at all, which can "
                 "only end at the delivery floor. Leave the question unanswered to inherit the starting point's grades."
             )
+        # (`__post_init__` re-checks this, so a direct construction cannot bypass it.)
         homeroom = tuple(code for code in (self.homeroom or ()) if code in rostered)
         return dataclasses.replace(self, rostered=rostered, homeroom=homeroom)
 
