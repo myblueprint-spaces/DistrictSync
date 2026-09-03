@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Collection
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -108,19 +107,16 @@ def _field(control, label: str) -> ft.TextField:  # noqa: ANN001 - untyped Flet 
     raise AssertionError(f"no TextField labelled {label!r}")
 
 
-def _assert_no_banned_vocabulary(text: str, where: str, *, allow: Collection[str] = ()) -> None:
+def _assert_no_banned_vocabulary(text: str, where: str) -> None:
     """No identity-page string may use authentication vocabulary. ONE list, ONE implementation.
 
-    ``allow`` narrows the sweep by EXACT banned word for one caller's one string — never a
-    widened path and never a second list (``check_no_emails.py``'s allowance discipline). No
-    identity surface passes it; ``tests/test_ui_flet_creator_flow.py`` passes ``{"unlock"}``
-    for the four reviewed strings that describe a WIZARD's own Continue being closed until a
-    step is finished, which is not a claim about identity, an address or the domain list.
+    There is NO per-caller allowance, deliberately: a copy exemption is a hole the next edit
+    inherits silently. Every caller — the launch page, the Settings section, the Help echo,
+    the Home cards and the district creator — faces the whole list, and a string that needs
+    an exemption gets rewritten instead (plan 0044 S6 removed the one that existed).
     """
     lowered = text.lower()
     for word in BANNED_WORDS:
-        if word in allow:
-            continue
         assert not re.search(rf"\b{re.escape(word)}\b", lowered), f"banned word {word!r} in {where}: {text!r}"
     for word in BANNED_DESCRIPTIONS:
         assert word not in lowered, f"banned description {word!r} in {where}: {text!r}"

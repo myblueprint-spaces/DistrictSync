@@ -54,6 +54,7 @@ from src.ui_flet.config_editor import (
     GateOutcome,
     GateState,
     SourceFileSlot,
+    activation_allowed,
     base_label,
     derive_domains,
     distinct_source_files,
@@ -69,9 +70,7 @@ from src.ui_flet.config_editor import (
     sd_number_from_text,
     seed_entities,
     split_domains,
-    stored_verified_digest,
     validate_domains,
-    verified_is_current,
 )
 from src.ui_flet.filepicker import validate_output_dir
 from src.ui_flet.identity_gate import (
@@ -190,10 +189,19 @@ GATE_PASSED_HEADLINE = "The test conversion worked"
 GATE_PASSED_DETAIL = (
     "Here's how many rows each file would hold. Nothing was written and nothing was sent. If these look "
     "right, choose “Save district settings” — that saves this district as the one this computer "
-    "converts, and unlocks Continue."
+    "converts, and after that you can continue."
 )
 GATE_FAILED_HEADLINE = "The test conversion didn't finish"
-GATE_REFUSED_NO_OUTPUT_NOTE = "Pick your output folder on the step before this one first — the test didn't run."
+#: HOST-NEUTRAL (plan 0044 S6): "the step before this one" was true only in the wizard,
+#: whose Folders step precedes this one. Mapping hosts the same surface with no step order
+#: at all, so the note names the FOLDER and where it is set — never a step. The ROUTE to
+#: those settings belongs to the host (Mapping renders its own precondition notice with an
+#: "Open Settings" hop); this sentence is the surface's own bounded refusal, and it renders
+#: on either host if the button is pressed anyway.
+GATE_REFUSED_NO_OUTPUT_NOTE = (
+    "DistrictSync needs an output folder before it can run a test conversion. "
+    "Set one in your folders settings, then come back."
+)
 GATE_STALE_VERSION_NOTE = "A different version of DistrictSync set this district up, so please run the test again."
 GATE_STALE_BASE_NOTE = (
     "The standard mapping your district builds on has changed since it was set up, so please run the test again."
@@ -210,17 +218,15 @@ GATE_RESAVED_NOTE = "Saved. Your district's file names changed, so please run th
 #: answer. Owner report (2026-09-02): "it's unclear why 'continue' is locked … need an
 #: indication of why continue is locked, if it needs to be, and how to continue."
 #:
-#: These four strings (with :data:`GATE_PASSED_DETAIL`) are the ONLY creator copy allowed to
-#: say "unlock" — the word is otherwise banned across this product because identification is
-#: never authentication (0038). Here it describes a wizard's own Continue, closed until a step
-#: is finished: no identity, no address, no claim about the district-domain list. The
-#: allowance is by exact constant name in ``tests/test_ui_flet_creator_flow.py``, never a
-#: widened sweep.
-FILES_CONTINUE_LOCKED_SAVE = "Save these file names, then run a test conversion, to unlock Continue."
+#: Each names the ONE next act and then says what it earns in the product's own plain words
+#: ("after that you can continue"). They carry NO banned vocabulary — the 0038 sweep applies
+#: to them unchanged and without an exemption, because a copy allowance is a hole the next
+#: edit inherits silently.
+FILES_CONTINUE_LOCKED_SAVE = "Save these file names, then run a test conversion — after that you can continue."
 FILES_CONTINUE_LOCKED_RUN = (
-    "Run a test conversion that passes, then choose “Save district settings”, to unlock Continue."
+    "Run a test conversion that passes, then choose “Save district settings” — after that you can continue."
 )
-FILES_CONTINUE_LOCKED_CONFIRM = "Choose “Save district settings” above to unlock Continue."
+FILES_CONTINUE_LOCKED_CONFIRM = "Choose “Save district settings” above — after that you can continue."
 
 #: Plain-language names for the seven authorable entities (the vocabulary map — an admin
 #: reads "Families", never ``Family``, and never a raw entity key).
@@ -1215,7 +1221,7 @@ def build_creator(  # pragma: no cover - Flet view glue
         fact = overlay_staleness(
             read_authored_with(sis_id),
             running_version=app_version(),
-            current_base_digest=_base_digest_for(sis_id),
+            current_base_digest=base_digest_for(sis_id),
         )
         notes: list[str] = []
         if fact.version_differs:
@@ -1444,7 +1450,14 @@ def creator_gate_current(app_config: AppConfig, sis_id: str) -> bool:
     disk, and the digest recorded when it last passed the test conversion still equals the
     digest of what would convert TODAY (so a hand edit to the overlay, or a vendor change to
     the starting point it inherits, re-closes the gate). Any failure answers ``False`` — the
-    only safe direction, since an absent fact can force another test run but never unlock one.
+    only safe direction, since an absent fact can force another test run but never open one.
+
+    The comparison itself is DELEGATED to ``config_editor.activation_allowed`` (plan 0044
+    S6), which Mapping's Apply and the Settings folders card consult too. There is exactly
+    ONE ``verified_is_current`` call behind the four surfaces that can switch this install
+    onto a district it authored itself: a second spelling is how one surface activates what
+    another refuses. ``origin="user"`` is passed as a FACT, not a guess — this function is
+    the creator's own question about a config the creator wrote.
     """
     sis = (sis_id or "").strip()
     if not sis:
@@ -1452,12 +1465,17 @@ def creator_gate_current(app_config: AppConfig, sis_id: str) -> bool:
     try:
         if not overlay_path(sis).exists():
             return False
-        return verified_is_current(stored_verified_digest(app_config, sis), current_digest(sis))
+        return activation_allowed(
+            app_config,
+            sis_id=sis,
+            origin="user",
+            current_digest=current_digest(sis),
+        ).allowed
     except (ValueError, OSError):
         return False
 
 
-def _base_digest_for(sis_id: str) -> str | None:
+def base_digest_for(sis_id: str) -> str | None:
     """The resolved digest of the STARTING POINT ``sis_id`` was authored against. TOTAL.
 
     ``None`` — "unknown", which :func:`overlay_staleness` never reads as stale — when the

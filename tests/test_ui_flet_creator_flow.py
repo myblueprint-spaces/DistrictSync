@@ -68,9 +68,25 @@ SD93_ADMIN = "roster.admin@sd93.bc.ca"
 #: district to fire on (the twin that proves the "seed did not fire" assertion is real).
 SD48_ADMIN = "roster.admin@sd48.bc.ca"
 
-#: Strings that would promise a LATER slice's behaviour (S4's filename form, S5's column
-#: report, S6's editor). No rendered creator/Files string may contain one.
-FORBIDDEN_PROMISES = ("column", "edit", "soon", "later", "rename")
+#: Strings that would promise a LATER slice's behaviour. Narrowed to S5's COLUMN report by
+#: plan 0044 S6 (its ledger records the deliberate retirement): "edit" and "rename" banned
+#: capabilities the product now HAS — S4 shipped the filename form and S6 shipped the change
+#: door — and a ban that outlives the gap it guarded only stops the copy from saying what is
+#: true. No rendered creator/Files/Mapping string may contain one.
+FORBIDDEN_PROMISES = ("column",)
+
+#: The vague-future words, kept in the SAME sweep the promise list is applied by (plan 0044
+#: S6): "we'll add this soon" is a promise nobody was told about whatever the capability.
+#: Imported by ``tests/test_ui_flet_filtered_pickers.py`` so Mapping's card note and the
+#: creator's copy face ONE list.
+BANNED_COPY_WORDS = ("soon", "later", "coming")
+
+
+def _assert_promises_nothing(text: str, where: str) -> None:
+    """ONE sweep: the narrowed promise list plus the vague-future words."""
+    lowered = text.lower()
+    for probe in FORBIDDEN_PROMISES + BANNED_COPY_WORDS:
+        assert probe not in lowered, f"{where} promises {probe!r}: {text!r}"
 
 
 # --------------------------------------------------------------------------- #
@@ -1690,31 +1706,6 @@ FIX_COPY_CONSTANTS = (
     "FILES_CONTINUE_LOCKED_CONFIRM",
 )
 
-#: The ONLY creator strings allowed to say "unlock", and the ONLY word they are allowed —
-#: every other banned word still applies to them, and every other constant still faces the
-#: full list. The ban exists because identification is never authentication (0038); these
-#: four describe a WIZARD's own Continue, closed until a step of the wizard is finished, and
-#: say nothing about an identity, an address or the district-domain list. Allowance by exact
-#: constant name, never a widened sweep (``scripts/check_no_emails.py``'s discipline).
-UNLOCK_ALLOWED = (
-    "GATE_PASSED_DETAIL",
-    "FILES_CONTINUE_LOCKED_SAVE",
-    "FILES_CONTINUE_LOCKED_RUN",
-    "FILES_CONTINUE_LOCKED_CONFIRM",
-)
-
-
-def _swept_blob(tree) -> str:  # noqa: ANN001
-    """The rendered blob with the four reviewed "unlock" strings REMOVED, not exempted.
-
-    So the whole-surface sweep still bans the word everywhere else on the step — including in
-    any future string that copies the phrasing without the review.
-    """
-    blob = _blob(tree)
-    for name in UNLOCK_ALLOWED:
-        blob = blob.replace(getattr(creator_screen, name), "")
-    return blob
-
 
 class TestTheCopy:
     def test_the_constant_index_is_not_empty(self) -> None:
@@ -1729,15 +1720,6 @@ class TestTheCopy:
 
         assert missing == [], f"{missing} is admin-facing copy that no sweep in this class sees"
 
-    def test_every_unlock_allowance_names_a_real_constant_that_needs_it(self) -> None:
-        """The allowance may not outlive the string it was written for: a constant that no
-        longer says "unlock" must lose its exemption, or the next edit inherits it silently."""
-        index = _creator_copy_constants()
-
-        for name in UNLOCK_ALLOWED:
-            assert name in index, f"{name} is exempted but is not a swept constant"
-            assert "unlock" in index[name].lower(), f"{name} no longer needs its exemption"
-
     def test_S3s_retired_note_did_not_survive_beside_its_replacement(self) -> None:
         """``FILES_INHERITED_NOTE`` claimed "the standard MyEd BC names your starting point
         uses", which stops being true the moment a row carries this district's own name."""
@@ -1747,38 +1729,33 @@ class TestTheCopy:
     def test_no_constant_carries_banned_identity_vocabulary(self, name) -> None:
         """0038's promise, extended: "verify"/"verified" IS banned, so every gate string says
         test / test run / checked."""
-        allow = {"unlock"} if name in UNLOCK_ALLOWED else set()
-        _assert_no_banned_vocabulary(_creator_copy_constants()[name], name, allow=allow)
+        _assert_no_banned_vocabulary(_creator_copy_constants()[name], name)
 
     @pytest.mark.parametrize("name", sorted(_creator_copy_constants()))
     def test_no_constant_promises_a_later_slice(self, name) -> None:
-        lowered = _creator_copy_constants()[name].lower()
-        for probe in FORBIDDEN_PROMISES:
-            assert probe not in lowered, f"{name} promises {probe!r}, which S3 does not ship"
+        _assert_promises_nothing(_creator_copy_constants()[name], name)
 
     def test_the_rendered_creator_forms_carry_neither(self, page, monkeypatch) -> None:
         root = _open_creator(page, monkeypatch, _cfg())
         _tick(_checkbox(root, creator_screen.CREATOR_GRADES_INHERIT_LABEL), False)  # the grades card too
 
-        blob = _swept_blob(root)
+        blob = _blob(root)
 
         _assert_no_banned_vocabulary(blob, "the rendered creator forms")
-        for probe in FORBIDDEN_PROMISES:
-            assert probe not in blob.lower(), f"the creator forms promise {probe!r}"
+        _assert_promises_nothing(blob, "the creator forms")
 
     def test_the_rendered_gate_step_carries_neither_before_or_after_a_run(self, monkeypatch, tmp_path) -> None:
         _write_sd93()
         cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
         root, _gate = _wizard_at_the_gate(monkeypatch, cfg)
 
-        before = _swept_blob(root)
+        before = _blob(root)
         _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
-        after = _swept_blob(root)
+        after = _blob(root)
 
         for where, blob in (("before the test run", before), ("after the test run", after)):
             _assert_no_banned_vocabulary(blob, f"the rendered gate step {where}")
-            for probe in FORBIDDEN_PROMISES:
-                assert probe not in blob.lower(), f"the gate step {where} promises {probe!r}"
+            _assert_promises_nothing(blob, f"the gate step {where}")
 
     def test_the_files_step_title_is_single_sourced(self) -> None:
         """The step-title dict and the constant must not drift (one title, one source)."""
@@ -1892,7 +1869,453 @@ class TestTheHostSeam:
 
 
 # --------------------------------------------------------------------------- #
-# 12. Mount smoke — no creator surface may fall to the ErrorCard floor          #
+# 12. The SECOND host: Mapping (plan 0044 S6)                                   #
+#                                                                               #
+# The wizard was the creator's only door, so nobody past first run could set up  #
+# a district of their own or fix one. These drive the REAL `build_mapping` mount  #
+# on a CONFIGURED install — the population S6 exists for.                        #
+# --------------------------------------------------------------------------- #
+def _spy_reset_through(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record the catalog invalidation AND call it through, so the view really re-derives."""
+    calls: list[int] = []
+    real = creator_screen.reset_catalog_cache
+
+    def _spy() -> None:
+        calls.append(1)
+        real()
+
+    monkeypatch.setattr(creator_screen, "reset_catalog_cache", _spy)
+    return calls
+
+
+def _configured(tmp_path: Path, **over) -> AppConfig:  # noqa: ANN003
+    """A finished install with a shipped district and a registered nightly — S6's population."""
+    base = {
+        "setup_completed": True,
+        "sis_type": "sd48myedbc",
+        "schedule_registered": True,
+        "input_dir": str(SNAPSHOT_INPUT),
+        "output_dir": str(tmp_path / "out"),
+    }
+    base.update(over)
+    return _cfg(**base)
+
+
+def _mapping(monkeypatch: pytest.MonkeyPatch, cfg: AppConfig, *, page=None) -> ft.Control:  # noqa: ANN001
+    """Mount the REAL Mapping surface (its handlers all take a FRESH ``AppConfig.load()``)."""
+    from src.ui_flet.mapping_catalog import reset_catalog_cache
+    from src.ui_flet.screens.mapping import build_mapping
+
+    _pin(monkeypatch, cfg)
+    reset_catalog_cache()
+    return build_mapping(page or _driving_page(), app_config=cfg, on_navigate=lambda _dest: None)
+
+
+def _mapping_screen():  # noqa: ANN202
+    from src.ui_flet.screens import mapping as mapping_screen
+
+    return mapping_screen
+
+
+class TestTheCreateDoorOnMapping:
+    def test_a_configured_install_can_set_up_test_and_ACTIVATE_a_district_from_Mapping(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Acceptance 1, end to end through the REAL test conversion over the SD74 snapshot."""
+        mapping_screen = _mapping_screen()
+        cfg = _configured(tmp_path)
+        resets = _spy_reset_through(monkeypatch)
+        root = _mapping(monkeypatch, cfg)
+
+        _button(root, mapping_screen.MAPPING_CREATE_LABEL).on_click(None)
+        assert _filled(root) == [creator_screen.CREATOR_CONTINUE_LABEL], "the panel is the four forms"
+        _fill_and_continue(root, sd="93", name="Sunny Ridge")
+
+        assert setup_screen.FILES_STEP_TITLE not in _texts(root), "the panel must not grow step chrome"
+        assert creator_screen.FILES_NAMES_TITLE in _texts(root), "the panel did not move to the file names"
+        for standard, actual in SD74_RENAMES.items():
+            _pick(_dropdown(root, standard), actual)
+        _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        assert creator_screen.GATE_PASSED_HEADLINE in _blob(root), "the real dry run did not pass"
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+
+        # (a) the four durable facts of an activation.
+        assert cfg.sis_type == "sd93custom"
+        assert cfg.creator_pending_sis == ""
+        assert cfg.creator_verified["sd93custom"] == current_digest("sd93custom")
+        assert resets, "the catalog was never invalidated"
+        # (b) the Mapping VIEW is back, and it offers the district that was just created.
+        labels = _button_labels(root)
+        assert "Use this mapping" in labels, sorted(labels)
+        assert creator_screen.CREATOR_CONTINUE_LABEL not in labels, "the panel is still in the tree"
+        assert "sd93custom" in [option.key for option in _dropdown(root, "Roster mapping").options]
+        # (c) ...carrying the SAME post-switch presentation Apply paints, naming the OLD district.
+        blob = _blob(root)
+        assert "Now using Sunny Ridge" in blob
+        assert "Sea to Sky" in blob, "the stale-schedule notice does not name the district the nightly still runs"
+        assert "Open Settings" in labels, "Mapping never re-registers — it routes to the one flow that does"
+
+    def test_the_door_is_TEXT_tier_and_offered_in_every_state(self, monkeypatch, tmp_path) -> None:
+        """It may not compete with "Use this mapping" — and it is on the rail's every state, so
+        hiding it on an unfinished install would make the door state-dependent for no gain."""
+        mapping_screen = _mapping_screen()
+        for cfg in (_configured(tmp_path), _cfg(setup_completed=False, sis_type="")):
+            root = _mapping(monkeypatch, cfg)
+            door = _button(root, mapping_screen.MAPPING_CREATE_LABEL)
+            assert isinstance(door, ft.TextButton), "the create door competes with Apply"
+
+    def test_discarding_from_the_panel_returns_to_the_view_with_the_note_and_no_overlay(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        mapping_screen = _mapping_screen()
+        cfg = _configured(tmp_path)
+        _spy_reset_through(monkeypatch)
+        root = _mapping(monkeypatch, cfg)
+        _button(root, mapping_screen.MAPPING_CREATE_LABEL).on_click(None)
+        _fill_and_continue(root)
+        assert overlay_path("sd93custom").exists(), "the positive twin: there was something to discard"
+
+        _button(root, creator_screen.CREATOR_DISCARD_LABEL).on_click(None)
+
+        assert overlay_path("sd93custom").exists() is False
+        assert cfg.creator_pending_sis == ""
+        assert creator_screen.CREATOR_DISCARDED_NOTE in _texts(root)
+        assert "Use this mapping" in _button_labels(root), "the view did not come back"
+
+
+class TestTheChangeDoorOnMapping:
+    def _live(self, tmp_path: Path) -> AppConfig:
+        """An install already converting a district it set up here, gate open."""
+        _write_sd93(renames=SD74_RENAMES)
+        digest = current_digest("sd93custom")
+        assert digest is not None
+        return _configured(tmp_path, sis_type="sd93custom", creator_verified={"sd93custom": digest})
+
+    def test_a_user_authored_current_card_carries_the_door_and_a_shipped_one_does_NOT(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Acceptance 2's second half, with the twin in the same install: the shipped row is
+        ours, and Mapping stays review-and-switch for it."""
+        mapping_screen = _mapping_screen()
+        root = _mapping(monkeypatch, self._live(tmp_path))
+        door = _button(root, mapping_screen.MAPPING_EDIT_LABEL)
+        assert isinstance(door, ft.OutlinedButton), "the change door must not be a second primary"
+
+        shipped = _mapping(monkeypatch, _configured(tmp_path))
+
+        assert mapping_screen.MAPPING_EDIT_LABEL not in _button_labels(shipped)
+        assert "Sea to Sky" in _blob(shipped), "the positive twin: the shipped card really rendered"
+        # The card-level provenance notes (§6.4) live with Mapping's other card rows, in
+        # ``tests/test_ui_flet_filtered_pickers.py::TestMappingsSummaryCard``.
+
+    def test_a_saved_change_re_closes_the_gate_until_another_test_and_confirm(self, monkeypatch, tmp_path) -> None:
+        """Acceptance 2's first half. The twin is the line immediately before the change."""
+        mapping_screen = _mapping_screen()
+        cfg = self._live(tmp_path)
+        _spy_reset_through(monkeypatch)
+        root = _mapping(monkeypatch, cfg)
+        assert creator_screen.creator_gate_current(cfg, "sd93custom") is True, "the twin: the gate starts OPEN"
+
+        _button(root, mapping_screen.MAPPING_EDIT_LABEL).on_click(None)
+        _button(root, creator_screen.CREATOR_CONTINUE_LABEL).on_click(None)  # the same answers, re-written
+        _pick(_dropdown(root, "StudentSchedule.txt"), "")  # back to the standard name: a real change
+        _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
+
+        assert creator_screen.creator_gate_current(cfg, "sd93custom") is False, "a change did not re-close the gate"
+        assert not _has_button(root, creator_screen.GATE_CONFIRM_LABEL), "the confirm outlived the test it belonged to"
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        assert creator_screen.GATE_PASSED_HEADLINE in _blob(root)
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+
+        assert cfg.creator_verified["sd93custom"] == current_digest("sd93custom")
+        assert creator_screen.creator_gate_current(cfg, "sd93custom") is True
+
+
+class TestTheOutputFolderPreconditionOnMapping:
+    def test_the_host_says_so_BEFORE_the_press_and_the_surface_refuses_the_press(self, monkeypatch, tmp_path) -> None:
+        """R2-6 on THIS host: Mapping has no Folders step to protect the gate, so the host
+        renders the precondition and the surface's own bounded refusal still fires."""
+        mapping_screen = _mapping_screen()
+        _write_sd93(renames=SD74_RENAMES)
+        cfg = _configured(tmp_path, output_dir="", creator_pending_sis="sd93custom")
+        calls: list[dict] = []
+
+        from src.etl import pipeline as pipeline_mod
+
+        monkeypatch.setattr(
+            pipeline_mod,
+            "run_pipeline",
+            lambda *a, **kw: calls.append(kw) or pipeline_mod.PipelineResult(entity_counts={}),  # noqa: ARG005
+        )
+        root = _mapping(monkeypatch, cfg)
+
+        _button(root, mapping_screen.MAPPING_RESUME_LABEL).on_click(None)
+        assert mapping_screen.MAPPING_PANEL_NEEDS_OUTPUT_NOTE in _texts(root), "the admin is not told first"
+        assert "Open Settings" in _button_labels(root), "the host owns the route and offered none"
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+
+        assert calls == [], "a test conversion ran without a folder to write to"
+        assert creator_screen.GATE_REFUSED_NO_OUTPUT_NOTE in _blob(root)
+        assert not _has_button(root, creator_screen.GATE_CONFIRM_LABEL)
+
+    def test_the_twin_a_validated_folder_runs_once_as_a_dry_run_and_shows_no_precondition(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        mapping_screen = _mapping_screen()
+        _write_sd93(renames=SD74_RENAMES)
+        cfg = _configured(tmp_path, creator_pending_sis="sd93custom")
+        calls: list[dict] = []
+
+        from src.etl import pipeline as pipeline_mod
+
+        def _fake(sis_type, input_path, output_path, **kwargs):  # noqa: ANN001, ANN202
+            calls.append({"sis": sis_type, **kwargs})
+            return pipeline_mod.PipelineResult(entity_counts={"Students": 3})
+
+        monkeypatch.setattr(pipeline_mod, "run_pipeline", _fake)
+        root = _mapping(monkeypatch, cfg)
+
+        _button(root, mapping_screen.MAPPING_RESUME_LABEL).on_click(None)
+        assert mapping_screen.MAPPING_PANEL_NEEDS_OUTPUT_NOTE not in _texts(root)
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+
+        assert len(calls) == 1
+        assert calls[0]["dry_run"] is True
+
+    def test_the_refusal_note_names_no_STEP(self, monkeypatch, tmp_path) -> None:
+        """§6.3: "the step before this one" was true only in the wizard. The surface's own
+        refusal now names the FOLDER and where it is set — the host owns the route."""
+        note = creator_screen.GATE_REFUSED_NO_OUTPUT_NOTE
+
+        assert "output folder" in note, "the positive twin: it does name what is missing"
+        for step_word in ("step", "previous page", "go back"):
+            assert step_word not in note.lower(), f"the host-neutral refusal names a step: {note!r}"
+
+
+class TestTheResumeTokenIsSharedBetweenBothHosts:
+    def test_a_creation_abandoned_on_Mapping_still_resumes_the_WIZARD_at_the_files_step(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The token is a fact about the INSTALL, not about the wizard — an overlay only one
+        surface could pick up is how one becomes invisible litter."""
+        mapping_screen = _mapping_screen()
+        cfg = _cfg(setup_completed=False, sis_type="", **_valid_folders(tmp_path))
+        _spy_reset_through(monkeypatch)
+        root = _mapping(monkeypatch, cfg)
+        _button(root, mapping_screen.MAPPING_CREATE_LABEL).on_click(None)
+        _fill_and_continue(root)
+        _button(root, mapping_screen.MAPPING_PANEL_BACK_LABEL).on_click(None)  # abandoned, not discarded
+
+        wizard = build_setup(MagicMock())
+
+        assert setup_screen.FILES_STEP_TITLE in _texts(wizard), "the wizard did not pick up the abandoned creation"
+        assert cfg.creator_pending_sis == "sd93custom"
+
+    def test_the_twin_after_an_activation_the_wizard_opens_the_STANDARD_walk(self, monkeypatch, tmp_path) -> None:
+        """Activation clears the token, so neither host offers to resume a finished district."""
+        mapping_screen = _mapping_screen()
+        _write_sd93(renames=SD74_RENAMES)
+        digest = current_digest("sd93custom")
+        assert digest is not None
+        cfg = _configured(
+            tmp_path,
+            setup_completed=False,
+            sis_type="sd93custom",
+            creator_pending_sis="",
+            creator_verified={"sd93custom": digest},
+        )
+        root = _mapping(monkeypatch, cfg)
+
+        assert mapping_screen.MAPPING_RESUME_LABEL not in _button_labels(root)
+        assert setup_screen.FILES_STEP_TITLE not in _texts(build_setup(MagicMock()))
+
+
+class TestExactlyOneFilledPrimaryInEveryMappingState:
+    """Pinned as LIST equality, per state — a count would pass for two of the wrong one."""
+
+    def test_the_view(self, monkeypatch, tmp_path) -> None:
+        assert _filled(_mapping(monkeypatch, _configured(tmp_path))) == ["Use this mapping"]
+
+    def test_the_panel_on_the_forms(self, monkeypatch, tmp_path) -> None:
+        mapping_screen = _mapping_screen()
+        root = _mapping(monkeypatch, _configured(tmp_path))
+
+        _button(root, mapping_screen.MAPPING_CREATE_LABEL).on_click(None)
+
+        assert _filled(root) == [creator_screen.CREATOR_CONTINUE_LABEL]
+
+    def test_the_panel_on_the_files_step_through_all_three_of_its_actions(self, monkeypatch, tmp_path) -> None:
+        mapping_screen = _mapping_screen()
+        cfg = _configured(tmp_path)
+        _spy_reset_through(monkeypatch)
+        root = _mapping(monkeypatch, cfg)
+        _button(root, mapping_screen.MAPPING_CREATE_LABEL).on_click(None)
+        _fill_and_continue(root)
+
+        # 1. nothing tested yet, nothing pending → the run.
+        assert _filled(root) == [creator_screen.GATE_RUN_LABEL]
+        # 2. a name the config on disk does not have → the save WINS.
+        _pick(_dropdown(root, "StudentSchedule.txt"), SD74_RENAMES["StudentSchedule.txt"])
+        assert _filled(root) == [creator_screen.FILES_SAVE_LABEL]
+        _button(root, creator_screen.FILES_SAVE_LABEL).on_click(None)
+        # 3. a passed test, nothing confirmed → the confirm.
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+        assert _filled(root) == [creator_screen.GATE_CONFIRM_LABEL]
+        # 4. confirmed and current → the body has none, so the way back is PROMOTED.
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+        _button(root, mapping_screen.MAPPING_EDIT_LABEL).on_click(None)
+        _button(root, creator_screen.CREATOR_CONTINUE_LABEL).on_click(None)
+
+        assert _filled(root) == [mapping_screen.MAPPING_PANEL_DONE_LABEL]
+        assert not _has_button(root, mapping_screen.MAPPING_PANEL_BACK_LABEL), "two ways back is two controls"
+        _button(root, mapping_screen.MAPPING_PANEL_DONE_LABEL).on_click(None)
+        assert _filled(root) == ["Use this mapping"], "Done did not return to the view"
+
+
+class TestMappingIsTheSameHostSeam:
+    def test_it_passes_exactly_the_same_keywords_as_the_wizard(self, monkeypatch, tmp_path) -> None:
+        """A seam whose two hosts pass different things is two surfaces. Mapping owns no step
+        footer, so it passes ``continue_lock_note=None`` — an explicit None, not an omission,
+        so the keyword set stays identical and a renamed parameter fails LOUDLY here."""
+        mapping_screen = _mapping_screen()
+        seen: list[dict] = []
+        real = mapping_screen.build_creator
+
+        def _spy(page_arg, **kwargs):  # noqa: ANN001, ANN003, ANN202
+            seen.append(kwargs)
+            return real(page_arg, **kwargs)
+
+        monkeypatch.setattr(mapping_screen, "build_creator", _spy)
+        root = _mapping(monkeypatch, _configured(tmp_path))
+
+        _button(root, mapping_screen.MAPPING_CREATE_LABEL).on_click(None)
+
+        assert seen, "the create door did not route through the host seam"
+        assert set(seen[-1]) == {
+            "cfg",
+            "sis_id",
+            "form",
+            "on_written",
+            "on_files_saved",
+            "on_activated",
+            "on_discarded",
+            "stage",
+            "pending",
+            "continue_lock_note",
+        }, "Mapping and the wizard no longer pass the same seam"
+        assert seen[-1]["continue_lock_note"] is None, "Mapping has no Continue to explain"
+        assert isinstance(seen[-1]["pending"], dict), "the pending rename map is the host's own dict"
+        assert seen[-1]["stage"] == "forms"
+        assert seen[-1]["sis_id"] == ""
+        assert isinstance(seen[-1]["form"], CreatorForm)
+
+    def test_the_panel_takes_a_FRESH_AppConfig_at_open(self, monkeypatch, tmp_path) -> None:
+        """Another surface may have written since the mount — ``_on_apply``'s own reason."""
+        mapping_screen = _mapping_screen()
+        seen: list[dict] = []
+        real = mapping_screen.build_creator
+
+        def _spy(page_arg, **kwargs):  # noqa: ANN001, ANN003, ANN202
+            seen.append(kwargs)
+            return real(page_arg, **kwargs)
+
+        monkeypatch.setattr(mapping_screen, "build_creator", _spy)
+        loads: list[int] = []
+        cfg = _configured(tmp_path)
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda _cls: loads.append(1) or cfg))
+        from src.ui_flet.mapping_catalog import reset_catalog_cache
+
+        reset_catalog_cache()
+        root = mapping_screen.build_mapping(_driving_page(), app_config=cfg, on_navigate=None)
+        before = len(loads)
+
+        _button(root, mapping_screen.MAPPING_CREATE_LABEL).on_click(None)
+
+        assert len(loads) > before, "the panel reused the mount instance"
+        assert seen[-1]["cfg"] is cfg
+
+    def test_the_creator_module_names_no_host(self) -> None:
+        """S3's one-way rule, widened by S6 from "may not name the wizard" to "may not name a
+        host": a creator that imported either host could only live in that one."""
+        import ast
+
+        path = Path(creator_screen.__file__)
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            for name in names:
+                assert "screens.setup" not in name, f"the creator imports the wizard: {name}"
+                assert "screens.mapping" not in name, f"the creator imports the Mapping host: {name}"
+
+
+class TestMappingsNewCopy:
+    """The sweeps, over every constant S6 adds AND over the rendered panel + cards."""
+
+    #: Named explicitly (not prefix-derived alone) so a renamed constant fails loudly rather
+    #: than dropping out of the sweep — ``S4_COPY_CONSTANTS``' reasoning.
+    S6_COPY_CONSTANTS = (
+        "MAPPING_CREATE_LABEL",
+        "MAPPING_EDIT_LABEL",
+        "MAPPING_RESUME_LABEL",
+        "MAPPING_PANEL_BACK_LABEL",
+        "MAPPING_PANEL_DONE_LABEL",
+        "MAPPING_NEEDS_TEST_HEADLINE",
+        "MAPPING_NEEDS_TEST_NOTE",
+        "MAPPING_PANEL_NEEDS_OUTPUT_HEADLINE",
+        "MAPPING_PANEL_NEEDS_OUTPUT_NOTE",
+        "MAPPING_STALE_VERSION_NOTE",
+        "MAPPING_STALE_BASE_NOTE",
+        "MAPPING_PANEL_FLOOR_HEADLINE",
+        "MAPPING_PANEL_FLOOR_DETAIL",
+        "CUSTOM_ORIGIN_NOTE",
+    )
+
+    def _index(self) -> dict[str, str]:
+        mapping_screen = _mapping_screen()
+        found = {name: getattr(mapping_screen, name) for name in self.S6_COPY_CONSTANTS}
+        assert all(isinstance(value, str) and value for value in found.values()), found
+        return found | {"FOLDERS_NEEDS_TEST_NOTE": setup_screen.FOLDERS_NEEDS_TEST_NOTE}
+
+    def test_every_named_constant_exists(self) -> None:
+        """The falsification twin: an index that matched nothing would pass the sweeps below."""
+        assert len(self._index()) == len(self.S6_COPY_CONSTANTS) + 1
+
+    @pytest.mark.parametrize("name", sorted(S6_COPY_CONSTANTS + ("FOLDERS_NEEDS_TEST_NOTE",)))
+    def test_no_constant_carries_banned_identity_vocabulary(self, name) -> None:
+        _assert_no_banned_vocabulary(self._index()[name], name)
+
+    @pytest.mark.parametrize("name", sorted(S6_COPY_CONSTANTS + ("FOLDERS_NEEDS_TEST_NOTE",)))
+    def test_no_constant_promises_a_later_slice(self, name) -> None:
+        _assert_promises_nothing(self._index()[name], name)
+
+    def test_the_rendered_view_and_panel_carry_neither(self, monkeypatch, tmp_path) -> None:
+        mapping_screen = _mapping_screen()
+        _write_sd93(renames=SD74_RENAMES)
+        digest = current_digest("sd93custom")
+        assert digest is not None
+        cfg = _configured(tmp_path, sis_type="sd93custom", creator_verified={"sd93custom": digest})
+        root = _mapping(monkeypatch, cfg)
+
+        view = _blob(root)
+        _button(root, mapping_screen.MAPPING_EDIT_LABEL).on_click(None)
+        forms = _blob(root)
+        _button(root, creator_screen.CREATOR_CONTINUE_LABEL).on_click(None)
+        files = _blob(root)
+
+        assert mapping_screen.CUSTOM_ORIGIN_NOTE in view, "the positive twin: the user card really rendered"
+        for where, blob in (("the view", view), ("the panel's forms", forms), ("the panel's files", files)):
+            _assert_no_banned_vocabulary(blob, f"Mapping — {where}")
+            _assert_promises_nothing(blob, f"Mapping — {where}")
+
+
+# --------------------------------------------------------------------------- #
+# 13. Mount smoke — no creator surface may fall to the ErrorCard floor          #
 # --------------------------------------------------------------------------- #
 class TestTheMountsRender:
     def _assert_no_floor(self, monkeypatch: pytest.MonkeyPatch, build) -> ft.Control:  # noqa: ANN001
@@ -1917,3 +2340,15 @@ class TestTheMountsRender:
         cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
         _pin(monkeypatch, cfg)
         self._assert_no_floor(monkeypatch, lambda: build_setup(MagicMock()))
+
+    def test_the_Mapping_panel_mounts_on_both_stages(self, monkeypatch, tmp_path) -> None:
+        """The SECOND host's panel has a floor of its own (a bug while authoring may not show
+        a stack trace), so it needs the same smoke the wizard's two surfaces have."""
+        mapping_screen = _mapping_screen()
+        _write_sd93(renames=SD74_RENAMES)
+        cfg = _configured(tmp_path, creator_pending_sis="sd93custom")
+        root = _mapping(monkeypatch, cfg)
+
+        for label in (mapping_screen.MAPPING_CREATE_LABEL, mapping_screen.MAPPING_RESUME_LABEL):
+            self._assert_no_floor(monkeypatch, lambda label=label: _button(root, label).on_click(None) or root)
+            _button(root, mapping_screen.MAPPING_PANEL_BACK_LABEL).on_click(None)

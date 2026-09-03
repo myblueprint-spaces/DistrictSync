@@ -863,18 +863,106 @@ class TestMappingsSummaryCard:
         assert not any(CUSTOM_ORIGIN_LABEL in text for text in texts)
 
     def test_the_note_PROMISES_NOTHING(self) -> None:
-        """S6 owns editing. The card must not say "read-only for now", "you'll be able to edit
-        this soon" or anything else about a capability this surface does not have — Mapping is
-        review-and-switch for every row today, and an added row is no different yet."""
+        """S2's ban NARROWS with the capability arriving (plan 0044 S6).
+
+        The note may now say the setup is changeable, because the change door is on this very
+        card. What it must still never promise is S5's COLUMN report or a vague future — so the
+        ban is ``FORBIDDEN_PROMISES`` (now ``("column",)``) plus the shared
+        ``BANNED_COPY_WORDS``, single-sourced from the creator-flow sweep rather than a second
+        hand-typed list here. The positive twin — it does state WHERE the file lives — stays.
+        """
         from src.ui_flet.screens import mapping as mapping_screen
+        from tests.test_ui_flet_creator_flow import _assert_promises_nothing
 
         note = mapping_screen.CUSTOM_ORIGIN_NOTE
 
         assert "DistrictSync folder" in note, "the positive twin: it does state where the file lives"
         assert "wasn't shipped with DistrictSync" in note
-        lowered = note.lower()
-        for banned in ("edit", "soon", "later", "read-only", "coming"):
-            assert banned not in lowered, f"the note promises {banned!r}: {note!r}"
+        assert "read-only" not in note.lower(), "the note claims a limitation the surface no longer has"
+        _assert_promises_nothing(note, "Mapping's added-mapping note")
+
+    def test_an_added_current_mapping_offers_the_CHANGE_door_and_a_shipped_row_does_NOT(
+        self, page: MagicMock, monkeypatch, custom_overlay: str
+    ) -> None:
+        """Plan 0044 S6 §6.2, with both halves in ONE render: the current card is the added
+        mapping (door), the "Switch to" card is the shipped one (none). A shipped mapping is
+        ours — Mapping stays review-and-switch for it."""
+        from src.ui_flet.screens import mapping as mapping_screen
+
+        cfg = _cfg(sis_type=CUSTOM_ID)
+        _pin_config(monkeypatch, cfg)
+        tree = build_mapping(page, app_config=cfg)
+
+        dropdown = _dropdown(tree, "Roster mapping")
+        dropdown.value = "sd48myedbc"
+        dropdown.on_select(_pick_event("sd48myedbc"))
+
+        doors = [
+            control
+            for control in _walk(tree)
+            if isinstance(control, ft.OutlinedButton) and control.content == mapping_screen.MAPPING_EDIT_LABEL
+        ]
+        assert len(doors) == 1, "the shipped 'Switch to' card grew a change door too"
+        assert CUSTOM_NAME in self._texts_of(tree), "the positive twin: the added card really rendered"
+        assert any("Sea to Sky" in text for text in self._texts_of(tree)), "the shipped twin never rendered"
+
+    def test_exactly_ONE_filled_primary_in_the_view_state(
+        self, page: MagicMock, monkeypatch, custom_overlay: str
+    ) -> None:
+        """The doors are text/secondary tier: Apply stays the screen's one filled action, even
+        on the card that carries the change door."""
+        cfg = _cfg(sis_type=CUSTOM_ID)
+        _pin_config(monkeypatch, cfg)
+
+        tree = build_mapping(page, app_config=cfg)
+
+        filled = [c.content for c in _walk(tree) if isinstance(c, ft.FilledButton)]
+        assert filled == ["Use this mapping"], filled
+
+    def test_the_provenance_notes_render_for_a_STALE_overlay_and_for_NEITHER_flag(
+        self, page: MagicMock, monkeypatch, custom_overlay: str
+    ) -> None:
+        """§6.4's pair, with its twin: an overlay this build wrote over the base it still
+        inherits says NOTHING, so these are not always-on text. (``authored_with`` is dropped
+        by ``MappingConfig``'s ``extra="ignore"``, so the notes are advisory only — the
+        activation gate is the resolved digest and is untouched by this edit.)"""
+        import yaml
+
+        from src.config.authoring import overlay_path
+        from src.ui_flet import mapping_catalog
+        from src.ui_flet.screens import mapping as mapping_screen
+
+        cfg = _cfg(sis_type=CUSTOM_ID)
+        _pin_config(monkeypatch, cfg)
+        fresh = self._texts_of(build_mapping(page, app_config=cfg))
+        assert mapping_screen.MAPPING_STALE_VERSION_NOTE not in fresh
+        assert mapping_screen.MAPPING_STALE_BASE_NOTE not in fresh
+
+        path = overlay_path(CUSTOM_ID)
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["authored_with"] = {"app_version": "0.0.1", "base": "myedbc", "base_digest": "c" * 64}
+        path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+        mapping_catalog.reset_catalog_cache()
+
+        stale = self._texts_of(build_mapping(page, app_config=cfg))
+
+        assert mapping_screen.MAPPING_STALE_VERSION_NOTE in stale
+        assert mapping_screen.MAPPING_STALE_BASE_NOTE in stale
+
+    def test_the_provenance_read_is_NOT_paid_by_a_shipped_only_install(
+        self, page: MagicMock, monkeypatch, isolated_user_profile
+    ) -> None:
+        """The S4b cost note: a shipped card cannot HAVE an answer to the provenance question,
+        so it must not pay a YAML read plus a base digest for it."""
+        from src.ui_flet.screens import mapping as mapping_screen
+
+        reads: list[str] = []
+        monkeypatch.setattr(mapping_screen, "read_authored_with", lambda sis: reads.append(sis) or None)  # noqa: ARG005
+        cfg = _cfg(sis_type="sd48myedbc")
+        _pin_config(monkeypatch, cfg)
+
+        assert any("Sea to Sky" in text for text in self._texts_of(build_mapping(page, app_config=cfg)))
+        assert reads == [], f"provenance was read for a shipped card: {reads}"
 
     def test_an_added_mapping_that_CANNOT_be_read_still_shows_its_provenance(
         self, page: MagicMock, monkeypatch, isolated_user_profile

@@ -34,7 +34,9 @@ Four families live here:
 * **The stored facts.** :func:`stored_verified_digest` re-validates the hand-editable
   ``creator_verified`` map at READ time (the ``identity_gate.stored_identity_email``
   precedent), :func:`verified_is_current` compares it against what would convert today,
-  and :func:`overlay_staleness` turns an overlay's ``authored_with`` provenance into the
+  :func:`activation_allowed` is the ONE verdict all three ``sis_type`` writers consult
+  before switching onto a district authored on this computer (plan 0044 S6), and
+  :func:`overlay_staleness` turns an overlay's ``authored_with`` provenance into the
   two booleans the Files step's note reads.
 
 **Privacy.** Nothing here returns a district name, a domain, a path or a roster row.
@@ -1024,6 +1026,67 @@ def verified_is_current(stored: str | None, current: str | None) -> bool:
     shape was already validated where each value came from.
     """
     return stored is not None and current is not None and stored == current
+
+
+@dataclass(frozen=True)
+class ActivationVerdict:
+    """May this district become the one this install converts, and if not, why not.
+
+    TWO booleans rather than one ``Literal``, deliberately: a future third refusal
+    reason added to a single enum would read as "allowed" at every ``verdict ==
+    "allowed"`` call site that had not been updated, whereas an unset ``allowed``
+    can only ever refuse.
+
+    Attributes:
+        allowed: the switch may proceed.
+        needs_test: it may not, because this district was authored HERE and has not
+            passed a test conversion as it currently reads.
+    """
+
+    allowed: bool
+    needs_test: bool
+
+
+def activation_allowed(
+    app_config: AppConfig,
+    *,
+    sis_id: str,
+    origin: str,
+    current_digest: str | None,
+) -> ActivationVerdict:
+    """Whether ``sis_id`` may be made the district this install converts. PURE, TOTAL.
+
+    THE one verified-fact check, consumed by all three surfaces that can write
+    ``sis_type`` onto a district authored on this computer — the creator's own confirm
+    (through :func:`screens.creator.creator_gate_current`), Mapping's "Use this mapping"
+    and the Settings folders card's Save. A second spelling of "has this been tested?" is
+    how one surface activates what another refuses.
+
+    The rule:
+
+    * ``origin != "user"`` — a SHIPPED mapping (or one whose provenance could not be
+      read, which :func:`mapping_catalog._origin_of` already fails OPEN on) ⇒ allowed,
+      and ``current_digest`` is never read. Shipped configs are ours; gating them would
+      strand every install that has one.
+    * ``origin == "user"`` ⇒ allowed only when the digest recorded at the last passing
+      test conversion still equals what would convert TODAY
+      (:func:`verified_is_current`), else :attr:`ActivationVerdict.needs_test`.
+
+    ``current_digest`` is a required keyword with NO default (CLAUDE.md: no permissive
+    default on a safety-relevant parameter). It is the EFFECTFUL half — the caller
+    computes it with ``authoring.current_digest(sis_id)`` — and a default of ``None``
+    would let a caller that forgot it refuse every user-authored district instead of
+    failing to compile. Callers pass ``None`` deliberately on the bundled branch, so the
+    20 shipped rows never pay a config load.
+
+    Takes ``origin`` as a plain string rather than the ``ConfigSummary`` both view call
+    sites hold: that is the only field the rule reads, and importing the catalog's
+    published shape into this pure module would put a UI type in front of a truth table.
+    """
+    if origin != "user":
+        return ActivationVerdict(allowed=True, needs_test=False)
+    current = verified_is_current(stored_verified_digest(app_config, sis_id), current_digest)
+    return ActivationVerdict(allowed=current, needs_test=not current)
 
 
 @dataclass(frozen=True)

@@ -64,11 +64,13 @@ from pathlib import Path
 import flet as ft
 
 from src.config.app_config import AppConfig
+from src.config.authoring import current_digest
 from src.scheduler import get_scheduler, windows
 from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
 from src.ui_flet import components, tokens
 from src.ui_flet.config_editor import (
     CreatorForm,
+    activation_allowed,
     has_unsaved_renames,
 )
 from src.ui_flet.filepicker import (
@@ -426,6 +428,7 @@ def build_setup(
     *,
     on_schedule_changed: Callable[[], None] | None = None,
     on_complete: Callable[[], None] | None = None,
+    on_navigate: Callable[[str], None] | None = None,
 ) -> ft.Control:  # pragma: no cover - Flet view glue
     """Build the Setup surface — the first-run wizard, or the Settings page once completed.
 
@@ -444,13 +447,35 @@ def build_setup(
     always has: `_mount_settings(..., transition_cue=True)` in place. That equivalence is
     the point of the seam and is pinned by a test, because a rail item and a hosted wizard
     that quietly diverge are two wizards.
+
+    ``on_navigate`` (plan 0044 S6, the shell's rail-follow lambda — Mapping/Convert/Home's
+    exact pattern) is the ONE route out of this scroll: the folders card's Save can now be
+    REFUSED for a district set up on this computer that has not passed a test conversion as
+    it currently reads, and the test lives on Mapping. ``None`` (the default, and what
+    Home's wizard host passes — it renders no folders card at all) renders the refusal note
+    with no button rather than a dead one; the rail still carries Mapping either way, so a
+    note alone is never a dead end.
     """
     cfg = AppConfig.load()
     root = ft.Column(spacing=22)
     if not cfg.has_completed_setup():
-        _mount_wizard(page, cfg, root, on_schedule_changed=on_schedule_changed, on_complete=on_complete)
+        _mount_wizard(
+            page,
+            cfg,
+            root,
+            on_schedule_changed=on_schedule_changed,
+            on_complete=on_complete,
+            on_navigate=on_navigate,
+        )
     else:
-        _mount_settings(page, cfg, root, transition_cue=False, on_schedule_changed=on_schedule_changed)
+        _mount_settings(
+            page,
+            cfg,
+            root,
+            transition_cue=False,
+            on_schedule_changed=on_schedule_changed,
+            on_navigate=on_navigate,
+        )
     return root
 
 
@@ -464,6 +489,7 @@ def _mount_wizard(
     *,
     on_schedule_changed: Callable[[], None] | None = None,
     on_complete: Callable[[], None] | None = None,
+    on_navigate: Callable[[str], None] | None = None,
 ) -> None:  # pragma: no cover - Flet view glue
     """Render the first-run wizard into ``root`` (resume derived from real state).
 
@@ -742,7 +768,17 @@ def _mount_wizard(
             # and a leftover task firing with no record stays invisible until a restart. Same
             # guard as the register/unregister callers: advisory, never breaks the graduation.
             _fire_schedule_changed()
-            _mount_settings(page, AppConfig.load(), root, transition_cue=True, on_schedule_changed=on_schedule_changed)
+            # ``on_navigate`` rides the graduation too (plan 0044 S6): the Settings scroll this
+            # finish line mounts IN PLACE is the same scroll the rail item mounts, and a folders
+            # card whose refusal could route on one mount and not the other is two cards.
+            _mount_settings(
+                page,
+                AppConfig.load(),
+                root,
+                transition_cue=True,
+                on_schedule_changed=on_schedule_changed,
+                on_navigate=on_navigate,
+            )
             page.update()
         except Exception:
             # The save SUCCEEDED and the hand-off did not. Re-open the latch so the button
@@ -1223,6 +1259,7 @@ def _mount_settings(  # pragma: no cover - Flet view glue
     *,
     transition_cue: bool,
     on_schedule_changed: Callable[[], None] | None = None,
+    on_navigate: Callable[[str], None] | None = None,
 ) -> None:
     """Render the completed-install Settings scroll into ``root`` (folders + schedule + SFTP)."""
     # The ONE reconcile the folders Save AND the SFTP Save both drive (D8/F1): any change to a
@@ -1271,7 +1308,7 @@ def _mount_settings(  # pragma: no cover - Flet view glue
         return ReconcileOutcome.NONE
 
     sftp_card = _build_sftp_section(page, cfg, on_saved=_reconcile)
-    folders_card = _build_settings_folders(page, cfg, reconcile=_reconcile)
+    folders_card = _build_settings_folders(page, cfg, reconcile=_reconcile, on_navigate=on_navigate)
 
     # Direction B (0033 Slice 2): the Settings gradient hero demotes to a slim page header.
     header = components.page_header(
@@ -1463,8 +1500,25 @@ def _build_identity_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
     return components.card(content=body)
 
 
+# ---- the verified-fact refusal on this Save (plan 0044 S6 §6.1) ---------- #
+#: A Save that changes nothing has to SAY it changed nothing — and this Save also drives the
+#: reconcile, so the second fact ("your nightly schedule was not updated") is the one an
+#: admin would otherwise discover a night later. Structural: no district name, no path, no
+#: digest. It names Mapping because that is where the test conversion lives.
+FOLDERS_NEEDS_TEST_NOTE = (
+    "Nothing was saved, and your nightly schedule was not updated. This district was set up "
+    "on this computer, and it hasn't passed a test conversion as it now reads. Run one under "
+    "Mapping, then save again."
+)
+FOLDERS_NEEDS_TEST_LINK_LABEL = "Open Mapping"
+
+
 def _build_settings_folders(  # pragma: no cover - Flet view glue
-    page: ft.Page, cfg: AppConfig, *, reconcile: Callable[[], ReconcileOutcome]
+    page: ft.Page,
+    cfg: AppConfig,
+    *,
+    reconcile: Callable[[], ReconcileOutcome],
+    on_navigate: Callable[[str], None] | None = None,
 ) -> ft.Control:
     """The Settings folders/district card with the ONE reconciling Save (D8).
 
@@ -1472,8 +1526,24 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
     the task when a task-baked field changed AND a schedule is registered — the SAME reconcile the
     SFTP Save uses, so the nightly action can never go stale). The Save is still structurally gated
     on valid folders.
+
+    **This Save can now be REFUSED** (plan 0044 S6): it is one of the four writers of
+    ``sis_type``, and for a district set up on THIS computer the pure
+    ``config_editor.activation_allowed`` is consulted BEFORE any write. Refused ⇒ no
+    ``cfg.save()`` and no ``reconcile()`` at all — not a partial save that keeps the folders
+    and drops the district, because "Saved." would then be a lie about the field that
+    matters — plus :data:`FOLDERS_NEEDS_TEST_NOTE` and, when ``on_navigate`` is given, a
+    text-tier hop to Mapping (where the test lives). SHIPPED districts are untouched by the
+    check: the ``origin`` map comes from the SAME memoised catalog build the dropdown options
+    do, and an id missing from it reads as ``"bundled"`` (fail OPEN — this prevents a mistake
+    and may never strand an admin whose provenance we could not read).
     """
     state = {"input": cfg.input_dir, "output": cfg.output_dir, "sis": cfg.sis_type}
+    # ONE catalog build for BOTH the options and the provenance map — no second parse, and no
+    # second source of "where did this mapping come from?". Every id the dropdown can hold is
+    # a row of this catalog by construction, so the map answers for every reachable pick.
+    district_catalog = _district_catalog(cfg, picked_sis=cfg.sis_type)
+    origins = {summary.sis_type: summary.origin for summary in district_catalog.summaries}
     save_btn = components.primary_button(
         # Scope-accurate label (0034 S3-c): this button saves the folders + district (and runs
         # the shared reconcile) — "Save settings" over-claimed the whole surface.
@@ -1486,6 +1556,9 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
         text_weight=ft.FontWeight.W_700,
     )
     saved_note = ft.Text("", size=13, weight=ft.FontWeight.W_600)
+    # The refusal lives in its own slot rather than in ``saved_note``: it is two sentences and
+    # a route, not a status word, and it must be clearable independently of the "Saved." line.
+    refusal_slot = ft.Column(spacing=tokens.space_sm, controls=[])
 
     def _refresh_gate() -> None:
         save_btn.disabled = not setup_state(state["input"], state["output"], state["sis"]).can_save
@@ -1505,9 +1578,51 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
         _refresh_gate()
         page.update()
 
+    def _refuse_needs_test() -> None:
+        """Say what did NOT happen (both halves), and put the fix one click away."""
+        saved_note.value = ""  # a stale "Saved." beside a refusal is the worst of both
+        row: list[ft.Control] = [
+            ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, size=18, color=tokens.color_status_warning),
+            ft.Text(FOLDERS_NEEDS_TEST_NOTE, size=tokens.type_body, color=tokens.color_status_warning, expand=True),
+        ]
+        controls: list[ft.Control] = [
+            ft.Row(spacing=tokens.space_sm, vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=row)
+        ]
+        if on_navigate is not None:
+            controls.append(
+                ft.Row(
+                    controls=[
+                        components.text_button(
+                            FOLDERS_NEEDS_TEST_LINK_LABEL,
+                            lambda _e: on_navigate("mapping"),
+                            icon=ft.Icons.ARROW_FORWARD_ROUNDED,
+                        )
+                    ]
+                )
+            )
+        refusal_slot.controls = controls
+        page.update()
+
     def _save(_e: ft.ControlEvent | None = None) -> None:
         if not setup_state(state["input"], state["output"], state["sis"]).can_save:
             return  # structural gate (matches the disabled button)
+        # The verified-fact check, BEFORE any write (plan 0044 S6): this Save both sets the
+        # district and re-registers the nightly, so letting an untested one through would bake
+        # it into a scheduled task.
+        picked = str(state["sis"])
+        origin = origins.get(picked, "bundled")
+        verdict = activation_allowed(
+            cfg,
+            sis_id=picked,
+            origin=origin,
+            # ``None`` on the bundled branch deliberately — the rule never reads it there, so
+            # the shipped rows pay no config load.
+            current_digest=current_digest(picked) if origin == "user" else None,
+        )
+        if not verdict.allowed:
+            _refuse_needs_test()
+            return
+        refusal_slot.controls = []  # a Save that lands clears the refusal it replaces
         cfg.input_dir = state["input"]
         cfg.output_dir = state["output"]
         cfg.sis_type = state["sis"]
@@ -1547,7 +1662,7 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
         # `picked_sis` carries the saved district unconditionally, so the control can never
         # point at a row it does not offer. Built ONCE: with the show-all toggle retired the
         # option list no longer changes during a visit.
-        options=_district_options(_district_catalog(cfg, picked_sis=cfg.sis_type)),
+        options=_district_options(district_catalog),
         on_select=_on_district_change,
         border_color=tokens.color_border,
     )
@@ -1563,6 +1678,7 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
                 output_field,
                 district_dropdown,
                 ft.Row(spacing=16, controls=[save_btn, saved_note]),
+                refusal_slot,
             ],
         )
     )

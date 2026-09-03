@@ -492,6 +492,111 @@ class TestActivateCreatorConfig:
         assert cfg.creator_save(creator_pending_sis="sd93custom") is False
         assert not list(config_file.parent.glob("config.corrupt-*.json"))
 
+    def test_activating_from_the_MAPPING_HOST_quarantines_the_predecessor(self, config_file: Path, monkeypatch):
+        """Plan 0044 S6 §6.5 — the ROADMAP 2026-07-21 entry's acceptance shape, from the NEW
+        writer at that entry's surface (a).
+
+        Mapping's hosted creator panel is a second place ``activate_creator_config`` is
+        called, so the UNREADABLE branch of ``save()`` now has one more entry point. Driven
+        through the REAL ``build_mapping`` mount to prove the host routes through THAT method
+        (deliberately non-advisory) rather than a bare ``sis_type`` write, which would drop
+        both the validation and the quarantine.
+
+        The folders are set on the loaded instance deliberately: an UNREADABLE load answers
+        with DEFAULTS (that is what "we could not read it" means), and the panel's test
+        conversion needs a folder to be reachable at all. It is an in-memory state, not a
+        claim about disk — and it is precisely the residual the ROADMAP entry names.
+        """
+        from unittest.mock import MagicMock
+
+        from src.etl.pipeline import PipelineResult
+        from src.ui_flet import mapping_catalog
+        from src.ui_flet.screens import creator as creator_screen
+        from src.ui_flet.screens import mapping as mapping_screen
+        from tests.test_ui_flet_activation_gate import _button, _texts
+
+        AppConfig(**_real_settings(), creator_pending_sis="sd93custom").save()
+        original_bytes = config_file.read_bytes()
+        live = _write_sd93_overlay()
+        mapping_catalog.reset_catalog_cache()
+
+        cfg = _load_through_one_read_blip(config_file, monkeypatch)
+        cfg.input_dir = "/district/in"  # see the docstring: in-memory, so the panel is reachable
+        cfg.output_dir = str(config_file.parent / "out")
+        cfg.creator_pending_sis = live
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda _cls: cfg))
+        monkeypatch.setattr(
+            creator_screen,
+            "creator_gate_job",
+            lambda *_a, **_kw: PipelineResult(entity_counts={"Students": 5}),
+        )
+        page = MagicMock()
+        page.run_thread = lambda fn: fn()
+        page.run_task = lambda coro, *args: __import__("asyncio").run(coro(*args))
+
+        tree = mapping_screen.build_mapping(page, app_config=cfg, on_navigate=None)
+        _button(tree, mapping_screen.MAPPING_RESUME_LABEL).on_click(None)
+        _button(tree, creator_screen.GATE_RUN_LABEL).on_click(None)
+        assert creator_screen.GATE_PASSED_HEADLINE in _texts(tree), "the stubbed test never passed"
+        _button(tree, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+
+        # (a) the write LANDED — and never reported success for something it did not write.
+        assert cfg.sis_type == live
+        assert cfg.creator_verified.get(live), "the tested fact was not recorded"
+        assert creator_screen.CREATOR_ACTIVATE_FAILED_NOTE not in _texts(tree)
+        # ``AppConfig.load`` is pinned for this mount, so the on-disk check reads the JSON.
+        on_disk = json.loads(config_file.read_text(encoding="utf-8"))
+        assert on_disk["sis_type"] == live
+
+        # (b) the bytes this config never read are RECOVERABLE, not silently replaced.
+        preserved = sorted(config_file.parent.glob("config.corrupt-*.json"))
+        assert len(preserved) == 1, "settings we never read were replaced without a recoverable copy"
+        assert preserved[0].read_bytes() == original_bytes
+        assert "sftp.spacesedu.com" in json.loads(preserved[0].read_text(encoding="utf-8"))["sftp_host"]
+
+    def test_the_twin_a_READABLE_profile_activates_from_that_host_with_no_quarantine(
+        self, config_file: Path, monkeypatch
+    ):
+        """Without this, the quarantine above could be a copy the write path always takes."""
+        from unittest.mock import MagicMock
+
+        from src.etl.pipeline import PipelineResult
+        from src.ui_flet import mapping_catalog
+        from src.ui_flet.screens import creator as creator_screen
+        from src.ui_flet.screens import mapping as mapping_screen
+        from tests.test_ui_flet_activation_gate import _button, _texts
+
+        live = _write_sd93_overlay()
+        mapping_catalog.reset_catalog_cache()
+        settings = _real_settings() | {
+            "creator_pending_sis": live,
+            "output_dir": str(config_file.parent / "out"),
+        }
+        AppConfig(**settings).save()  # type: ignore[arg-type]
+        cfg = AppConfig.load()
+        assert cfg.load_state is ConfigLoadState.LOADED
+        monkeypatch.setattr(AppConfig, "load", classmethod(lambda _cls: cfg))
+        monkeypatch.setattr(
+            creator_screen,
+            "creator_gate_job",
+            lambda *_a, **_kw: PipelineResult(entity_counts={"Students": 5}),
+        )
+        page = MagicMock()
+        page.run_thread = lambda fn: fn()
+        page.run_task = lambda coro, *args: __import__("asyncio").run(coro(*args))
+
+        tree = mapping_screen.build_mapping(page, app_config=cfg, on_navigate=None)
+        _button(tree, mapping_screen.MAPPING_RESUME_LABEL).on_click(None)
+        _button(tree, creator_screen.GATE_RUN_LABEL).on_click(None)
+        _button(tree, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+
+        assert cfg.sis_type == live
+        assert _texts(tree), "the tree rendered nothing — the assertions above are vacuous"
+        assert not list(config_file.parent.glob("config.corrupt-*.json"))
+        assert json.loads(config_file.read_text(encoding="utf-8"))["sftp_host"] == "sftp.spacesedu.com", (
+            "a readable profile lost the delivery settings it could read"
+        )
+
     def test_returns_false_and_rolls_back_when_the_save_fails(self, monkeypatch):
         def boom(self):
             raise OSError(13, "Permission denied")

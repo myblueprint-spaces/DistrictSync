@@ -57,10 +57,12 @@ from src.ui_flet.config_editor import (
     CONFIG_ERROR_OTHER,
     CONFIG_ERROR_UNREADABLE,
     FILE_LABELS,
+    ActivationVerdict,
     CreatorForm,
     GateOutcome,
     GateState,
     StalenessFact,
+    activation_allowed,
     base_label,
     derive_domains,
     distinct_source_files,
@@ -740,6 +742,188 @@ class TestVerifiedIsCurrent:
     )
     def test_everything_else_closes_the_gate(self, stored, current):
         assert verified_is_current(stored, current) is False
+
+
+# ---------------------------------------------------------------------------
+# The verified-fact check — ONE predicate, three consumers (plan 0044 S6 §6.1)
+# ---------------------------------------------------------------------------
+
+
+class TestActivationAllowed:
+    """The truth table behind every switch onto a district authored on THIS computer.
+
+    The BUNDLED rows are what keep the user rows meaningful: without them "refused" would
+    be indistinguishable from a predicate that refuses everything.
+    """
+
+    @pytest.mark.parametrize(
+        "stored,current,why",
+        [
+            ({"sd93custom": DIGEST}, DIGEST, "current"),
+            ({"sd93custom": OTHER_DIGEST}, DIGEST, "stale"),
+            ({}, DIGEST, "nothing recorded"),
+            ({"sd93custom": DIGEST}, None, "the config would not load"),
+            ("not a dict", DIGEST, "a hand-mangled map"),
+        ],
+    )
+    def test_a_shipped_mapping_is_always_allowed(self, stored, current, why):
+        verdict = activation_allowed(
+            _cfg(creator_verified=stored), sis_id="sd40myedbc", origin="bundled", current_digest=current
+        )
+
+        assert verdict == ActivationVerdict(allowed=True, needs_test=False), why
+
+    def test_a_shipped_mapping_never_reads_the_digest_at_all(self):
+        """``current_digest=None`` is what the bundled call site PASSES (no config load), so
+        the bundled branch must not consult it — the 20 shipped rows pay nothing."""
+        assert activation_allowed(_cfg(), sis_id="sd40myedbc", origin="bundled", current_digest=None).allowed is True
+
+    @pytest.mark.parametrize("origin", ["bundled", "", "unknown", "USER", "vendor"])
+    def test_anything_that_is_not_user_fails_OPEN(self, origin):
+        """``mapping_catalog._origin_of`` already degrades to ``"bundled"``, and the call sites
+        read an absent id as bundled too: the check exists to stop a MISTAKE and may never
+        strand an admin whose provenance could not be read."""
+        assert activation_allowed(_cfg(), sis_id="sd93custom", origin=origin, current_digest=None).allowed is True
+
+    def test_a_user_mapping_whose_digest_is_CURRENT_is_allowed(self):
+        """The positive twin for the whole refusal table below."""
+        verdict = activation_allowed(
+            _cfg(creator_verified={"sd93custom": DIGEST}), sis_id="sd93custom", origin="user", current_digest=DIGEST
+        )
+
+        assert verdict == ActivationVerdict(allowed=True, needs_test=False)
+
+    @pytest.mark.parametrize(
+        "stored,current,why",
+        [
+            ({"sd93custom": OTHER_DIGEST}, DIGEST, "the config changed since the test"),
+            ({}, DIGEST, "no test has ever passed"),
+            ({"sd93custom": DIGEST}, None, "the config no longer loads"),
+            ({"sd93custom": DIGEST.upper()}, DIGEST, "a malformed stored digest reads as absent"),
+            ({"sd93custom": 42}, DIGEST, "a non-string stored digest"),
+            ("not a dict", DIGEST, "the whole map hand-mangled"),
+            ({"sd93custom": DIGEST}, "", "an empty current digest is not a digest"),
+        ],
+    )
+    def test_a_user_mapping_needs_a_test(self, stored, current, why):
+        verdict = activation_allowed(
+            _cfg(creator_verified=stored), sis_id="sd93custom", origin="user", current_digest=current
+        )
+
+        assert verdict == ActivationVerdict(allowed=False, needs_test=True), why
+
+    @pytest.mark.parametrize(
+        "origin,stored,current",
+        [
+            ("bundled", {"sd93custom": DIGEST}, DIGEST),
+            ("bundled", {}, None),
+            ("user", {"sd93custom": DIGEST}, DIGEST),
+            ("user", {}, DIGEST),
+            ("user", {"sd93custom": OTHER_DIGEST}, None),
+        ],
+    )
+    def test_the_two_flags_are_never_both_true(self, origin, stored, current):
+        """TWO booleans rather than one ``Literal`` exist so a future third refusal reason
+        cannot read as "allowed" — which is only worth anything if they stay exclusive."""
+        verdict = activation_allowed(
+            _cfg(creator_verified=stored), sis_id="sd93custom", origin=origin, current_digest=current
+        )
+
+        assert not (verdict.allowed and verdict.needs_test)
+        assert verdict.allowed is not verdict.needs_test, "one of the two always answers"
+
+    def test_current_digest_is_keyword_only_with_NO_default(self):
+        """The ``_store_run_record(dry_run=)`` precedent (CLAUDE.md: no permissive default on
+        a safety-relevant parameter). A default of ``None`` would let a caller that forgot the
+        effectful half refuse every user-authored district instead of failing to compile."""
+        import inspect
+
+        sig = inspect.signature(activation_allowed)
+        param = sig.parameters["current_digest"]
+
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+        assert param.default is inspect.Parameter.empty
+        for name in ("sis_id", "origin"):
+            assert sig.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+            assert sig.parameters[name].default is inspect.Parameter.empty
+        with pytest.raises(TypeError):
+            activation_allowed(_cfg(), sis_id="sd93custom", origin="user")  # type: ignore[call-arg]
+
+    def test_the_verdict_is_frozen(self):
+        verdict = activation_allowed(_cfg(), sis_id="sd40myedbc", origin="bundled", current_digest=None)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            verdict.allowed = False  # type: ignore[misc]
+
+    def test_it_is_the_ONLY_comparison_in_the_codebase(self):
+        """A second spelling of "has this been tested?" is how one surface activates what
+        another refuses. ``verified_is_current`` is CALLED exactly once in ``src/`` — here —
+        and every consumer reaches it through this verdict."""
+        calls: list[str] = []
+        for path in sorted((Path(__file__).resolve().parents[1] / "src").rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name == "verified_is_current":
+                    calls.append(f"{path.name}:{node.lineno}")
+
+        # An AST walk, not a text grep: the creator's docstring QUOTES the old inline spelling
+        # to explain why it no longer does it, and a text scan would read that as a call.
+        assert len(calls) == 1, f"more than one 'has this been tested?' comparison: {calls}"
+        assert calls[0].startswith("config_editor.py:"), calls
+
+
+class TestCreatorGateCurrentDelegates:
+    """``creator_gate_current`` and ``activation_allowed`` must agree on EVERY row.
+
+    The wizard's ``files_step_satisfied``, Mapping's Apply and the Settings folders card all
+    reduce to the one comparison; this drives the view-layer function and the pure predicate
+    over the same on-disk overlay and asserts they never diverge.
+    """
+
+    def _write(self) -> str:
+        write_overlay(
+            OverlaySpec(
+                sd_number=93,
+                district_name="SD93 - Gate Delegation",
+                district_domains=("sd93.bc.ca",),
+                base="myedbc",
+            ),
+            overwrite=True,
+        )
+        return "sd93custom"
+
+    @pytest.mark.parametrize("recorded", ["current", "stale", "absent", "malformed"])
+    def test_they_agree_on_every_row(self, recorded):
+        from src.ui_flet.screens.creator import creator_gate_current
+
+        sis = self._write()
+        live = current_digest(sis)
+        assert live is not None, "the overlay we just wrote does not resolve — the rows are vacuous"
+        stored = {
+            "current": {sis: live},
+            "stale": {sis: OTHER_DIGEST},
+            "absent": {},
+            "malformed": {sis: "nope"},
+        }[recorded]
+        cfg = _cfg(creator_verified=stored)
+
+        assert creator_gate_current(cfg, sis) is (
+            activation_allowed(cfg, sis_id=sis, origin="user", current_digest=live).allowed
+        )
+        # ...and the positive twin: exactly one of the four rows really is open.
+        assert creator_gate_current(cfg, sis) is (recorded == "current")
+
+    def test_the_gate_ALSO_requires_the_overlay_on_disk(self):
+        """The one fact ``creator_gate_current`` adds on top of the shared comparison: a
+        recorded digest for a config with no overlay is not an open gate."""
+        from src.ui_flet.screens.creator import creator_gate_current
+
+        cfg = _cfg(creator_verified={"sd93custom": DIGEST})
+
+        assert creator_gate_current(cfg, "sd93custom") is False
+        assert creator_gate_current(cfg, "") is False
 
 
 class TestOverlayStaleness:
