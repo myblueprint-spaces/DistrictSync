@@ -1,10 +1,10 @@
 # 0044 — District self-service config editor (Phase 2, re-scoped)
 
-- **Status:** S1–S6 LANDED on `claude/plan-0044-implementation-nrdj2z` (S6 reviewed + fixed 2026-09-03; S5 both halves landed, its review folded into the S7 close-out pass); S7 (export + docs) in flight — the last slice
-- **Resumable from:** Stage 4/6 — the S6 spec (Mapping hosts the creator; re-gate on Apply + folders-card Save) then its implementation; S5 and S7 follow. Owner go given 2026-09-02
+- **Status:** S1–S7 ALL LANDED on `claude/plan-0044-implementation-nrdj2z` (2026-09-03; closing Stage-7 pass: no BLOCKING, 3 SHOULD fixed). OWED: the owner's local test + review findings → PR → CI read and quoted → certification disposition (D-0037-6) recorded
+- **Resumable from:** Stage 8 (Land) — after the owner's local test: address review findings, open the ONE feature PR, read + quote CI here, record the certification disposition in DECISIONS, then Stage 9 retrospect and the plan-file lifecycle disposition
 - **Blockers:** none
 - **Flags:**
-  - `#3+R2-1 activation scope: ALL THREE sis_type writers gated for user-authored configs (wizard creator flow · Mapping Apply · Settings folders-card Save); Convert has no writer and stays explicit-manual` — reviewable at the spec gate.
+  - `#3+R2-1 activation scope: ALL THREE sis_type writers gated for user-authored configs (wizard creator flow · Mapping Apply · Settings folders-card Save); Convert has no writer and stays explicit-manual` — reviewable at the spec gate. **— superseded: FIVE surfaces (S6 review), all gated** (wizard standard District pick · wizard creator activation · Mapping Apply · Mapping-panel activation · Settings folders-card Save), reached through FOUR `activation_allowed` call sites.
   - `#8 domains persistence: chose PERSIST — the matched-tier collapse is the same behavior every shipped district already has; consequence named, D9 auto-seed interplay pinned` — reviewable at the spec gate.
   - `#5 version emission: chose emit-NO-version (inherit the base's) — already supported and pinned` — reviewable at the spec gate.
   - `R2-2 advisory writer: chose extract-the-discipline — the five shared obligations move to a private helper; identity_save and the new creator_save become thin named wrappers, each with its own prefix-derived allowlist; creator_ registered in _ADVISORY_FIELD_PREFIXES with its rationale in the module comment` — reviewable at the spec gate.
@@ -505,7 +505,7 @@ halves pinned together. Any new sink keeps `dry_run` a REQUIRED keyword
   propagation to every reference incl. `school_year_sources`, the no-divergence invariant
   wiring, FILES-step satisfaction. Lands complete: non-standard-filename districts now
   self-onboard.
-- [ ] **S5 — pre-flight column check (shrunk per R2-4).** Pure `src/etl/preflight.py` +
+- [x] **S5 — pre-flight column check (shrunk per R2-4).** _(LANDED 2026-09-03, after S6 by owner decision.)_ Pure `src/etl/preflight.py` +
   plain-language "not present in any file" report + the additive
   `PipelineResult.input_columns` field, wired into the gate beside the dry-run. Lands
   complete: the pre-processing-district trap is caught at setup, not at 2 a.m.
@@ -517,7 +517,7 @@ halves pinned together. Any new sink keeps `dry_run` a REQUIRED keyword
   edit-invalidates-fact, the gate's output-dir refusal exercised on this host (the wizard
   ordering doesn't protect it here), UNREADABLE-provenance acceptance test for the new
   writer. Lands complete: lifecycle closed for edits.
-- [ ] **S7 — export + docs + certification disposition.** Export affordance (reveal/copy
+- [x] **S7 — export + docs + certification disposition.** _(LANDED 2026-09-03 — certification disposition + the CI read remain OWNER items at PR time; see the S7 land record.)_ Export affordance (reveal/copy
   the file), `adding-district.md` self-service section (freezing the overlay shape the
   vendor tests base changes against), `output-contract.md` authorship note, PRODUCT_SPEC,
   qa-checklist rows for every new surface, ARCHITECTURE_TREE, INVARIANTS (FOUR entries,
@@ -2709,3 +2709,13 @@ _Spec self-check:_
 - **Reviewer sign-off (Stage 7):** 2 BLOCKING fixed (Done discarding pending names; the fifth ungated writer) · 3 SHOULD fixed · NOTEs ledgered above. Security/PII and the gate's reality at both named sites verified on the real mounts.
 - **Decisions (DECISIONS 2026-09-03):** five writers, one comparison; the folders card gates only when the district changes; Done keyed on `creator_gate_current` alone; the wizard's refusal routes to Mapping rather than hijacking "Set up my district" (hijacking would trap a stale-pick admin behind Discard, which deletes the overlay).
 - **CI:** still not read — owed at PR time (owner: one PR for the feature).
+
+## Land record — S5 + S7 + closing pass (2026-09-03)
+
+- **S5 commits:** `PipelineResult.input_columns` (observed headers per configured filename, empty tuple = absent file) · pure `src/etl/preflight.py` (`expected_columns` over every field-map shape naming a source column, `missing_columns` = present in NO file, `preflight_report` with denominators; TOTAL; empty observation ⇒ no claim; `_looks_like_header` drops stringified junk) · `column_names.normalize_column_name` (the one per-name rule; `helpers.normalize_columns` delegates) · the gate: `GateOutcome.missing_columns` carried ONLY on PASSED with no missing files (the soundness rule in `gate_outcome_for`), `humanize_missing_columns`, the report rendered between counts and actions on both hosts; `FORBIDDEN_PROMISES` retired. **Finding:** the report is the ONLY signal for an absent mapped column (`apply_field_map` blanks it without a data error); the frozen SD74 snapshot genuinely lacks `Next school code` (DECISIONS 2026-09-01).
+- **S7 commits:** the export reveal on Mapping's user-authored current card (path + copy + Open FOLDER; TOTAL; never logged) · `adding-district.md` "Self-service overlays" freezing the overlay shape (byte-accurate to `write_overlay`) · output-contract authorship note (no stamp) · PRODUCT/PRODUCT_SPEC journey + `AC-selfserve-1/2` · qa-checklist rows 8–8g · partner installation touch-up · CLAUDE.md "Self-service districts" subsection + the "every UNMATCHED state" fix · INVARIANTS ii–iv · the corrupt-user-overlay FAILED-run pin (real bytes, two shapes, success + shadowing twins — which found and fixed a torn YAML recording `unknown` instead of `config`) · the exe-smoke `user-overlay` phase (negative control BEFORE the plant; literal parity-tested) · `NOT_LISTED_NOTE_TAIL` now names the self-service door · DECISIONS: the four ratified adjudications + R2-4 + the digest choice · ROADMAP Phase 2 closed.
+- **Deterministic gates (local, Linux, final):** full suite 5,580 passed / 47 skipped / 1 PRE-EXISTING root-container failure (`test_ui_flet_filepicker.py::TestCheckWritable::test_unwritable_dir_is_rejected`, reproduces on a clean baseline) · ruff + format clean · `python -m mypy src/ --exclude src/ui_flet` clean (55 files) · bandit clean · email scan OK (342 files) · `make validate-config` 20/20 · tree-check OK (101 files) · SD74 golden byte-identical throughout.
+- **Reviewer sign-offs (Stage 7):** S5+S7+close-out pass — **no BLOCKING**; 3 SHOULD fixed (qa row 8e / `AC-selfserve-2` asserted a refusal the code deliberately does not give; the writer count stated four ways; the preflight junk-shape guard dead on the validated path); NOTEs fixed (export label pinned both directions; smoke phase numbering; two DECISIONS one-liners). Debt sweep: zero TODO/FIXME/skip/xfail added; every copy constant has a non-test consumer. **Definition-of-Done verdict (reviewer):** substantively done; owed at PR/certification time only.
+- **Owner-driven changes folded in during the build:** S6 before S5 + the Mapping CREATE door; the Files-step decision copy ("Save district settings", verdict-first group, locked-Continue captions, district chip); Family no-email exclusion + Students no-email WARN (separate change, contract 2.2.0).
+- **OWED (owner + PR time):** (1) the owner's local test of the branch and their review findings; (2) the ONE feature PR → **CI read and quoted here** (the 2026-07-30 land gate; no CI run exists for the branch); (3) the **certification disposition** (D-0037-6: audit pass · product-gap pass · QA walk on a BUILT exe) — run before the release, or a dated DECISIONS deferral; S7 wrote no "audited" claim anywhere; (4) Stage 9 retrospect + the plan-file lifecycle disposition.
+- **Flags for the owner (all in the `Flags:` list):** overlays inherit `sis`; `build_creator` seam additions (`stage`, `on_written(note)`, `pending`, `continue_lock_note`); creator in `screens/creator.py`; five writer surfaces; SD58/SD70 prefill-table rows; "Added on this computer" wording; the two tier-gap residuals (footer/Done a press behind on a pick); the `mbponly` grades-card edge.

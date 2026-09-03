@@ -963,7 +963,7 @@ def _smoke_write_run(art: Path, ctx: CliSmokeContext) -> bool:
     return all(checks)
 
 
-# The user-dir overlay phase 5 plants (plan 0044 S7 §7.2). TWO constants, one fact:
+# The user-dir overlay phase 4 plants (plan 0044 S7 §7.2). TWO constants, one fact:
 # `_SD93_OVERLAY_SPEC` is the district FACTS as the kwargs `src.config.authoring.OverlaySpec`
 # takes, and `_SD93_OVERLAY_YAML` is what the authoring layer emits for them. This script
 # never imports `src` (it runs against a FROZEN artifact, not this checkout), so the YAML is
@@ -1010,7 +1010,7 @@ mappings:
 
 
 def _smoke_user_overlay(art: Path, ctx: CliSmokeContext) -> bool:
-    """5 — a USER-DIR mapping overlay: the frozen exe reads one and converts through it.
+    """4 — a USER-DIR mapping overlay: the frozen exe reads one and converts through it.
 
     **What this phase claims:** the MECHANISM — a packed one-file exe resolves
     ``paths.user_mappings_dir()`` inside the profile seam, finds a district config that is
@@ -1022,7 +1022,7 @@ def _smoke_user_overlay(art: Path, ctx: CliSmokeContext) -> bool:
     validates a user-dir config (that is why the FAILED-run floor in
     ``tests/test_pipeline_run_store.py`` exists) — this proves only that the path works.
 
-    Shaped like phase 4, for the same reason: it plants bytes, so it REFUSES without
+    Shaped like phase 5, for the same reason: it plants bytes, so it REFUSES without
     ``DISTRICTSYNC_DATA_DIR`` and ``--allow-real-profile`` does not extend to it. The
     NEGATIVE CONTROL runs BEFORE the plant — the exe must not already know
     ``sd93custom`` — so the exit 0 afterwards cannot be true for any other reason.
@@ -1079,7 +1079,7 @@ def _smoke_user_overlay(art: Path, ctx: CliSmokeContext) -> bool:
 
 
 def _smoke_corrupt_profile(art: Path, ctx: CliSmokeContext) -> bool:
-    """4 — boot on a CORRUPT ``config.json``: degrade honestly, and never overwrite it.
+    """5 — boot on a CORRUPT ``config.json``: degrade honestly, and never overwrite it.
 
     ``--dry-run --source scheduled`` is the one CLI shape that actually LOADS
     ``AppConfig`` (the sync-window gate); ``--version`` exits before any config read,
@@ -1087,7 +1087,7 @@ def _smoke_corrupt_profile(art: Path, ctx: CliSmokeContext) -> bool:
     the profile, and removes ONLY the planted ``config.json`` in a ``finally`` — the
     profile dir itself belongs to the caller (``$RUNNER_TEMP`` in CI) and every one of
     this phase's diagnostics lives inside it: deleting the whole dir here destroyed
-    ``etl_tool.log`` before the failure path could print it, so a red phase 4 reported
+    ``etl_tool.log`` before the failure path could print it, so a red phase 5 reported
     "(absent)" instead of the traceback that explained it.
     """
     if ctx.seam_dir is None:
@@ -1162,7 +1162,7 @@ CLI_SMOKE_PHASES: dict[str, Callable[[Path, CliSmokeContext], bool]] = {
 
 _NO_SEAM_FAIL = (
     "FAIL: DISTRICTSYNC_DATA_DIR is not set — the CLI smokes write a log, a run store and "
-    "(phase 4) a corrupt config.json, so an unset seam would exercise the REAL user profile. "
+    "(phase 5) a corrupt config.json, so an unset seam would exercise the REAL user profile. "
     "Point it at a throwaway absolute path, or pass --allow-real-profile if you truly mean to."
 )
 

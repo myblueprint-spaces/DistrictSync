@@ -506,7 +506,7 @@ def test_corrupt_profile_phase_prints_the_log_before_it_cleans_up(
 
     It used to ``rmtree`` the whole seam dir in its ``finally`` — which deleted
     ``etl_tool.log`` before ``run_cli_smoke``'s failure path could print it, so a red
-    phase 4 reported "(absent)" instead of the traceback that explained it. Now the
+    phase 5 reported "(absent)" instead of the traceback that explained it. Now the
     phase prints the slice it already holds in memory, and removes ONLY the planted
     ``config.json``.
     """
@@ -568,11 +568,11 @@ def _dist_with_artifact(tmp_path: Path) -> Path:
 def test_cli_smoke_refuses_every_phase_without_the_seam(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], phase: str
 ) -> None:
-    """The seam is a BOUNDARY, not a warning — and it guards ALL FOUR phases.
+    """The seam is a BOUNDARY, not a warning — and it guards EVERY phase.
 
     Every phase writes into whatever profile the exe resolves (a log, a run store,
-    and in phase 4 a corrupt config.json), so refusing only at the one that plants
-    bytes left the other three free to scribble on a real install.
+    and in phase 5 a corrupt config.json), so refusing only at the one that plants
+    bytes left the others free to scribble on a real install.
     """
     rc = smoke.run_cli_smoke(
         _dist_with_artifact(tmp_path),
@@ -677,7 +677,7 @@ def test_paused_marker_is_absent_when_the_window_is_off(caplog: pytest.LogCaptur
     """The falsifiability half: an in-window (or disabled) run must log NO pause marker.
 
     Without it, `_PAUSED_MARKER` could be a string that is never emitted at all and
-    phase 4's "no sync-window pause" check would pass vacuously forever.
+    phase 5's "no sync-window pause" check would pass vacuously forever.
     """
     from datetime import date
 

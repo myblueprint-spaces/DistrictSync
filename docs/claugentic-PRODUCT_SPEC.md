@@ -193,7 +193,9 @@ the file names this district's export actually uses.
 - **States** — **error** (a mapping that will not load, or a write that fails, is reported as a
   bounded plain-language category and changes nothing), **refused / needs a test** (the activation
   is refused while a file name is unsaved or no passing test conversion matches the mapping as it
-  now reads — every refusal says what to do next and leaves the saved district alone), **stale
+  now reads — every refusal says what to do next and leaves the saved district alone; the
+  folders-card Save is refused only when it changes the district, since a folder-only fix on the
+  district already running activates nothing), **stale
   provenance** (a different app version, or a changed standard mapping underneath, asks for the
   test again rather than trusting the old one).
 - **What good feels like** — Nothing becomes the active district untested. A shipped mapping is
@@ -896,13 +898,13 @@ The checkable projection of the Features above. All checks are `manual` — Dist
     "flow": [
       "On the profile from AC-selfserve-1, hand-edit the overlay YAML in the mappings folder (change the district name)",
       "Open Mapping, select that district and press Apply",
-      "Open Settings > Folders & district, change the district to that one and Save",
+      "Open Settings > Folders & district and make a real district change twice: switch to a shipped district and Save, then switch back to the hand-edited one (still a stale digest) and Save again — the folders-card Save is refused only when it changes the district",
       "Read config.json after each press",
       "On Mapping's card for that district, open the mapping-file reveal"
     ],
     "expect": [
-      "both presses are REFUSED with a plain-language note: the district was set up on this computer and has not passed a test conversion as it now reads",
-      "config.json is unchanged after each refusal, and the nightly scheduled task is not re-registered",
+      "Mapping's Apply and the SECOND folders-card Save are REFUSED with a plain-language note: the district was set up on this computer and has not passed a test conversion as it now reads",
+      "the FIRST folders-card Save lands, because a shipped district is never gated; config.json is unchanged after each refusal, and the nightly scheduled task is not re-registered by a refused press",
       "the change door on Mapping runs the same test conversion, and only that path can re-activate the district",
       "a district that ships with DistrictSync offers no change door and no reveal in the same look",
       "the reveal names the overlay's real path inside the scratch profile, lets it be copied, and opens the containing mappings folder"

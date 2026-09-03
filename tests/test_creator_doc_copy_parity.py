@@ -1,7 +1,7 @@
 """The self-service creator's copy is quoted in four docs — this ties it back (plan 0044 S7).
 
 CLAUDE.md's testing conventions: *any literal copied out of ``src/`` into a standalone
-script/CI/doc needs a parity test tying it back*. Plan 0044 put eight authored button
+script/CI/doc needs a parity test tying it back*. Plan 0044 put nine authored button
 labels and step titles into the QA checklist, PRODUCT_SPEC (prose AND its machine-readable
 AC block) and the partner installation guide, where a release-day tester and a district
 admin are told to look for them word-for-word. Nothing connected them to the modules —
@@ -28,12 +28,6 @@ test that exists to stop hand-copying would be the same defect one level up:
 
 And one **cheap structural row**: the QA checklist's prose check-count against its own table
 (ROADMAP gate item (3) — the count had drifted before).
-
-**Declared gap: the export reveal's own label.** ``mapping.MAPPING_EXPORT_LABEL`` lands with
-the export control (plan 0044 S7 §7.1) and carries its own sweep in
-``tests/test_ui_flet_creator_flow.py``; the checklist row for it (8g) therefore describes the
-reveal functionally instead of quoting it. Registering it here is one line when the two halves
-meet — the row is declared rather than left to be noticed.
 """
 
 from __future__ import annotations
@@ -50,7 +44,7 @@ from src.ui_flet.screens import creator, mapping
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # The pinned constants, read off their MODULES rather than re-typed here. Hand-listed by
-# NAME (not harvested by prefix) because these eight span three modules and two prefix
+# NAME (not harvested by prefix) because these nine span three modules and two prefix
 # families — but every VALUE comes from the module, which is the half that matters.
 _COPY_CONSTANTS: dict[str, str] = {
     "creator.CREATOR_ENTRY_LABEL": creator.CREATOR_ENTRY_LABEL,
@@ -60,6 +54,7 @@ _COPY_CONSTANTS: dict[str, str] = {
     "creator.GATE_CONFIRM_LABEL": creator.GATE_CONFIRM_LABEL,
     "mapping.MAPPING_CREATE_LABEL": mapping.MAPPING_CREATE_LABEL,
     "mapping.MAPPING_EDIT_LABEL": mapping.MAPPING_EDIT_LABEL,
+    "mapping.MAPPING_EXPORT_LABEL": mapping.MAPPING_EXPORT_LABEL,
     "mapping_catalog.CUSTOM_ORIGIN_LABEL": mapping_catalog.CUSTOM_ORIGIN_LABEL,
 }
 
@@ -76,11 +71,16 @@ _QA_ALL = frozenset(
     }
 )
 
+#: Quoted by the QA CHECKLIST alone (row 8g). PRODUCT_SPEC's AC block describes the export
+#: reveal functionally, so the string must be ABSENT there — which the undeclared-quote
+#: direction below is what enforces.
+_QA_ONLY = frozenset({"mapping.MAPPING_EXPORT_LABEL"})
+
 # doc -> the constants that doc is DECLARED to quote. Anything not listed must be absent.
 # The empty declarations are deliberate and load-bearing: they are what makes a NEW quote
 # in a doc that has none today go red instead of arriving unpinned.
 _DOC_QUOTES: dict[str, frozenset[str]] = {
-    "docs/developer/qa-checklist.md": _QA_ALL,
+    "docs/developer/qa-checklist.md": _QA_ALL | _QA_ONLY,
     "docs/claugentic-PRODUCT_SPEC.md": _QA_ALL,
     "docs/partner/installation.md": frozenset({"creator.CREATOR_ENTRY_LABEL"}),
     "docs/developer/adding-district.md": frozenset(),

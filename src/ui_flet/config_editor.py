@@ -34,8 +34,9 @@ Four families live here:
 * **The stored facts.** :func:`stored_verified_digest` re-validates the hand-editable
   ``creator_verified`` map at READ time (the ``identity_gate.stored_identity_email``
   precedent), :func:`verified_is_current` compares it against what would convert today,
-  :func:`activation_allowed` is the ONE verdict all three ``sis_type`` writers consult
-  before switching onto a district authored on this computer (plan 0044 S6), and
+  :func:`activation_allowed` is the ONE comparison behind every ``sis_type`` writer —
+  FIVE writer surfaces reach it through FOUR call sites (plan 0044 S6) — before
+  switching onto a district authored on this computer, and
   :func:`overlay_staleness` turns an overlay's ``authored_with`` provenance into the
   two booleans the Files step's note reads.
 
@@ -1124,11 +1125,16 @@ def activation_allowed(
 ) -> ActivationVerdict:
     """Whether ``sis_id`` may be made the district this install converts. PURE, TOTAL.
 
-    THE one verified-fact check, consumed by all three surfaces that can write
-    ``sis_type`` onto a district authored on this computer — the creator's own confirm
-    (through :func:`screens.creator.creator_gate_current`), Mapping's "Use this mapping"
-    and the Settings folders card's Save. A second spelling of "has this been tested?" is
-    how one surface activates what another refuses.
+    THE one verified-fact comparison behind every surface that can write ``sis_type``
+    onto a district authored on this computer. There are FIVE such surfaces — the
+    wizard's standard District pick, the wizard's creator activation, Mapping's Apply,
+    Mapping's panel activation and the Settings folders card's Save (that last one only
+    when it changes the district) — reaching this function through FOUR call sites:
+    :func:`screens.creator.creator_gate_current` (which serves BOTH creator
+    activations, in the wizard and in Mapping's panel), the wizard's District step and
+    the folders card in :mod:`screens.setup`, and Mapping's Apply. Five surfaces, four
+    call sites, ONE comparison: a second spelling of "has this been tested?" is how one
+    surface activates what another refuses.
 
     The rule:
 

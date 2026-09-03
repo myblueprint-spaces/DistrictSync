@@ -154,6 +154,11 @@ def expected_columns(config: MappingConfig) -> tuple[ExpectedColumn, ...]:
     naming one would be false), ``classify_field``'s warn-passthrough dict, and
     any other shape.
 
+    Every derived name then passes ONE shape filter, :func:`_looks_like_header`: a
+    VALIDATED config has already turned an unreadable field_map value into a string
+    (``classify_field``'s ``str(raw)`` fallback), so ``[1, 2]`` arrives here as the
+    plausible-looking column name ``'[1, 2]'`` and must not be reported as one.
+
     TOTAL: anything unreadable is skipped with a DEBUG line naming the entity
     and output field (both config vocabulary) and never the value.
     """
@@ -184,7 +189,10 @@ def expected_columns(config: MappingConfig) -> tuple[ExpectedColumn, ...]:
             if name:
                 expected.append(ExpectedColumn(entity=entity, output_field=role, source_column=name))
 
-    return tuple(expected)
+    # ONE shape filter over every derived expectation (field_map, row_filters AND
+    # source_columns): a name that cannot be a header is a stringified junk value, not
+    # a column an admin should be sent looking for. See :func:`_looks_like_header`.
+    return tuple(item for item in expected if _looks_like_header(item.source_column))
 
 
 def _mapping_items(entity: str, entity_cfg: Any, attribute: str) -> list[tuple[str, Any]]:
@@ -225,9 +233,15 @@ def _field_map_columns(raw: Any) -> list[str]:
         return [name] if name else []
     if not isinstance(raw, (dict, ConfiguredField)):
         # A shape that is neither a column name nor a structured variant (a list,
-        # a number) names no column. Deliberately handled BEFORE
-        # ``ensure_field_mapping``, whose non-dict fallback would stringify it
-        # into a plausible-looking column name and report that junk to an admin.
+        # a number) names no column, and is dropped before ``ensure_field_mapping``
+        # can stringify it into a plausible-looking column name.
+        #
+        # **This branch only fires for a RAW / UNVALIDATED caller** (a hand-built
+        # ``model_construct`` config, or a future caller reading YAML directly). A
+        # validated ``MappingConfig`` has already been through ``classify_field``,
+        # whose own non-dict fallback is ``str(raw)`` — so ``{"Weird": [1, 2]}``
+        # reaches this module as the bare string ``'[1, 2]'`` and is caught one
+        # layer out, by :func:`_looks_like_header`.
         return []
 
     # A dict / typed variant from here on, so ``ensure_field_mapping`` can only
@@ -289,6 +303,31 @@ def _email_format_columns(spec: FieldEmailFormat) -> list[str]:
         if name:
             names.append(name)
     return names
+
+
+def _looks_like_header(name: str) -> bool:
+    """Whether *name* could be a GDE header row entry at all.
+
+    The shape filter that keeps a stringified junk VALUE out of an admin-facing
+    report. A validated ``MappingConfig`` has already run ``classify_field``, whose
+    non-dict fallback is ``str(raw)`` — so a hand-edited ``field_map: {"Weird": [1, 2]}``
+    arrives here as the bare string ``'[1, 2]'``, indistinguishable by TYPE from a real
+    column name. Reporting it would tell an admin to go looking for a column named
+    ``[1, 2]`` in their export, which is worse than saying nothing: the ETL does not
+    treat that entry as a column either — it blanks the field and
+    ``apply_field_map``'s own data-error path owns the failure.
+
+    Deliberately a SHAPE test and nothing more (non-empty once normalised, no
+    ``[]``/``{}`` brackets, not purely numeric): a GDE header is arbitrary district
+    vocabulary, so anything narrower would start suppressing real columns — and
+    under-reporting a real missing column is the failure this module exists to avoid.
+    """
+    cleaned = normalize_column_name(name)
+    if not cleaned:
+        return False
+    if any(bracket in cleaned for bracket in "[]{}"):
+        return False
+    return not cleaned.isdigit()
 
 
 def _non_blank(*values: Any) -> list[str]:

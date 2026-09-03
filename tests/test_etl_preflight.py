@@ -378,6 +378,38 @@ class TestPreflightReport:
         assert report.checked_columns > 0
         assert "Legal Surname" in {item.source_column for item in report.missing}
 
+    def test_a_junk_field_map_value_survives_validation_as_a_string_and_is_not_reported(self):
+        """The REAL path a hand-edited YAML takes — and why the shape filter exists.
+
+        ``MappingConfig(**raw)`` runs ``classify_field``, whose non-dict fallback is
+        ``str(raw)``: ``field_map: {"Weird": [1, 2]}`` is stored as the bare string
+        ``'[1, 2]'`` and ``{"WeirdNum": 5}`` as ``'5'``. Both reach preflight
+        indistinguishable by TYPE from a real column name, so the ``_field_map_columns``
+        junk-shape guard (which fires only for ``model_construct``-style callers) never
+        sees them — without ``_looks_like_header`` the report would tell an admin to look
+        for a column named ``[1, 2]`` in their export."""
+        raw = {
+            "version": "1.0",
+            "sis": "Junk",
+            "district_name": "Junk District",
+            "global_config": {},
+            "mappings": {
+                "Students": {
+                    "source_files": {"student_demographic": "Demo.txt"},
+                    "field_map": {"Weird": [1, 2], "WeirdNum": 5, "Fine": "Legal Surname"},
+                }
+            },
+        }
+        config = MappingConfig(**raw)
+        # The positive twin for the premise: validation really did stringify them.
+        assert config.mappings["Students"].field_map["Weird"] == "[1, 2]"
+
+        assert [normalize_column_name(item.source_column) for item in expected_columns(config)] == ["legal surname"]
+
+        report = preflight_report(config, {"Demo.txt": ("student number",)})
+        assert [item.source_column for item in report.missing] == ["Legal Surname"]
+        assert report.checked_columns == 1
+
     def test_a_real_config_has_a_non_zero_denominator(self):
         report = preflight_report(load_config("myedbc"), {"StudentDemographicInformation.txt": ("student number",)})
         assert report.checked_columns > 10
@@ -390,11 +422,16 @@ class TestPreflightReport:
         assert report.checked_columns > 0  # we DID derive expectations — we just read nothing
 
     def test_a_malformed_field_map_degrades_instead_of_raising(self):
-        """Totality (acceptance criterion 2). ``model_construct`` bypasses Pydantic so the
-        entity carries exactly the shapes a hand-edited YAML could smuggle past a partial
-        validation: a list, a nested dict, a non-string column, a junk row filter and a
-        blank auxiliary column. Only the ONE readable entry survives — which is the
-        positive twin proving the walk still ran."""
+        """Totality (acceptance criterion 2) for a RAW / UNVALIDATED caller.
+
+        ``model_construct`` bypasses Pydantic entirely, so this pins the in-module guard
+        for a caller that hands over shapes ``classify_field`` never saw: a list, a
+        nested dict, a non-string column, a junk row filter and a blank auxiliary
+        column. It is deliberately NOT a hand-edited-YAML scenario — a hand-edited YAML
+        goes through ``MappingConfig`` and arrives already stringified (see
+        ``test_a_junk_field_map_value_survives_validation_as_a_string_and_is_not_reported``).
+        Only the ONE readable entry survives, which is the positive twin proving the walk
+        still ran."""
         config = MappingConfig.model_construct(
             version="1.0",
             sis="Malformed",
