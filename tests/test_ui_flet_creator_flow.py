@@ -20,6 +20,7 @@ a mechanism that does not work at all.
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -68,24 +69,30 @@ SD93_ADMIN = "roster.admin@sd93.bc.ca"
 #: district to fire on (the twin that proves the "seed did not fire" assertion is real).
 SD48_ADMIN = "roster.admin@sd48.bc.ca"
 
-#: Strings that would promise a LATER slice's behaviour. Narrowed to S5's COLUMN report by
-#: plan 0044 S6 (its ledger records the deliberate retirement): "edit" and "rename" banned
-#: capabilities the product now HAS — S4 shipped the filename form and S6 shipped the change
-#: door — and a ban that outlives the gap it guarded only stops the copy from saying what is
-#: true. No rendered creator/Files/Mapping string may contain one.
-FORBIDDEN_PROMISES = ("column",)
-
-#: The vague-future words, kept in the SAME sweep the promise list is applied by (plan 0044
-#: S6): "we'll add this soon" is a promise nobody was told about whatever the capability.
-#: Imported by ``tests/test_ui_flet_filtered_pickers.py`` so Mapping's card note and the
-#: creator's copy face ONE list.
+#: The vague-future words — the whole of this sweep since plan 0044 S5 RETIRED
+#: ``FORBIDDEN_PROMISES``. That tuple banned the word "column" from every creator string so
+#: no copy could promise a report the product did not have; S5 SHIPS the report (see
+#: ``TestThePreflightColumnReport``), so the ban retires rather than narrowing again — and
+#: it is deleted rather than emptied, because a loop over ``()`` is a vacuous green. Its
+#: replacement is a POSITIVE assertion that the report renders its column and its note.
+#:
+#: "we'll add this soon" stays banned whatever the capability. Imported by
+#: ``tests/test_ui_flet_filtered_pickers.py`` so Mapping's card note and the creator's copy
+#: face ONE list.
 BANNED_COPY_WORDS = ("soon", "later", "coming")
 
 
+def _this_module():  # noqa: ANN202
+    """This test module itself — so the retired ban can be asserted GONE by name."""
+    import sys
+
+    return sys.modules[__name__]
+
+
 def _assert_promises_nothing(text: str, where: str) -> None:
-    """ONE sweep: the narrowed promise list plus the vague-future words."""
+    """The vague-future sweep: no string may promise an unscheduled future."""
     lowered = text.lower()
-    for probe in FORBIDDEN_PROMISES + BANNED_COPY_WORDS:
+    for probe in BANNED_COPY_WORDS:
         assert probe not in lowered, f"{where} promises {probe!r}: {text!r}"
 
 
@@ -1660,11 +1667,181 @@ class TestTheHeadlineFlow:
 
 
 # --------------------------------------------------------------------------- #
+# 9b. The pre-flight column report (plan 0044 S5) — the LENS on a passed run     #
+# --------------------------------------------------------------------------- #
+class TestThePreflightColumnReport:
+    """A district whose export renames ONE header, through the REAL gate.
+
+    This is the case nothing else in the product can speak about: an absent mapped column
+    is a DELIBERATE blank the ETL does not record as a data error, so the run passes, the
+    counts look right, Run History reports nothing — and that column ships empty in every
+    row. Every assertion below runs the REAL dry run over a COPY of the SD74-shaped
+    snapshot extract, because the finding is a fact about observed headers and a stub
+    observing nothing could satisfy the absence halves trivially.
+    """
+
+    #: What the STANDARD MyEd BC mapping names that the FROZEN snapshot extract genuinely
+    #: does not carry. Asserted EXACTLY rather than as "nothing", because it is not
+    #: nothing: two are columns the base names for optional outputs (a pre-registration
+    #: school code, a student email address), and two are names the transformers resolve
+    #: with a fallback of their own, which this layer deliberately does not read (plan 0044
+    #: §5.2 — no transformer knowledge here). A change to that set is a change to what an
+    #: admin is told, so it fails HERE rather than drifting.
+    BASELINE = (
+        "Next school code",
+        "Student email address",
+        "Course Title",
+        "Student ID",
+    )
+    RENAMED_HEADER = ("Legal surname,", "Family name,")
+    #: The config's own spelling of the header renamed above — what the line must quote.
+    RENAMED_COLUMN = "Legal Surname"
+
+    def _at_the_gate(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        *,
+        rename_header: bool = False,
+        drop: str | None = None,
+    ) -> tuple[ft.Control, AppConfig]:
+        """A resumed creator walk on its gate step, pointed at a WRITABLE copy of the extract."""
+        source = tmp_path / "input"
+        shutil.copytree(SNAPSHOT_INPUT, source)
+        if rename_header:
+            target = source / "StudentDemographicInformation.txt"
+            text = target.read_text(encoding="utf-8")
+            assert self.RENAMED_HEADER[0] in text, "the header this test renames is not in the fixture"
+            target.write_text(text.replace(*self.RENAMED_HEADER, 1), encoding="utf-8")
+        if drop is not None:
+            (source / drop).unlink()
+
+        _write_sd93(renames=SD74_RENAMES)
+        cfg = _cfg(
+            creator_pending_sis="sd93custom",
+            input_dir=str(source),
+            output_dir=str(tmp_path / "out"),
+        )
+        _pin(monkeypatch, cfg)
+        root = build_setup(_driving_page())
+        assert setup_screen.FILES_STEP_TITLE in _texts(root)
+        assert creator_screen.FILES_UNSAVED_NOTE not in _texts(root), "a resumed walk has nothing pending"
+        return root, cfg
+
+    def _lines(self, tree) -> list[str]:  # noqa: ANN001
+        """The report's own lines — the ones painted in the WARNING colour and matching the
+        reviewed template — never the whole surface."""
+        from src.ui_flet.config_editor import PREFLIGHT_MISSING_LINE
+
+        head, _, _ = PREFLIGHT_MISSING_LINE.partition("{")
+        return [
+            control.value
+            for control in _walk(tree)
+            if isinstance(control, ft.Text)
+            and isinstance(control.value, str)
+            and control.value.startswith(head)
+            and control.color == tokens.color_status_warning
+        ]
+
+    def _columns(self, tree) -> list[str]:  # noqa: ANN001
+        """The COLUMN each rendered line quotes, in render order."""
+        return [line.split("“", 1)[1].split("”", 1)[0] for line in self._lines(tree)]
+
+    def test_a_renamed_header_is_named_after_the_counts_and_before_the_actions(self, monkeypatch, tmp_path) -> None:
+        root, _cfg_ = self._at_the_gate(monkeypatch, tmp_path, rename_header=True)
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+
+        blob = _blob(root)
+        assert creator_screen.GATE_PASSED_HEADLINE in blob, "the run did not complete — nothing else here holds"
+        assert creator_screen.PREFLIGHT_MISSING_TITLE in blob
+        assert creator_screen.PREFLIGHT_MISSING_NOTE in blob, "the block states the finding without explaining it"
+        assert f"The column “{self.RENAMED_COLUMN}” (needed for Students) isn't in any of your files." in self._lines(
+            root
+        )
+        # DERIVATION order (the config's own walk), which is why the renamed header leads:
+        # ``Last Name`` is the first field Students maps.
+        assert self._columns(root) == [self.RENAMED_COLUMN, *self.BASELINE], (
+            "the report is not the baseline plus the header this test renamed"
+        )
+
+        # …and it reads between the facts and the decision: counts → report → actions.
+        group = _group_of(root, creator_screen.FILES_TEST_TITLE)
+        counts = next(i for i, kid in enumerate(group) if "STUDENTS" in _texts(kid))
+        assert creator_screen.PREFLIGHT_MISSING_TITLE in _texts(group[counts + 1]), "the report is not under the counts"
+        assert creator_screen.GATE_CONFIRM_LABEL in _button_labels(group[counts + 2]), (
+            "the action row is not under the report"
+        )
+
+    def test_the_twin_the_unmodified_extract_reports_exactly_the_baseline(self, monkeypatch, tmp_path) -> None:
+        """The falsification half: an unrenamed header must not be reported, and the report
+        is not simply naming every column the config mentions."""
+        root, _cfg_ = self._at_the_gate(monkeypatch, tmp_path)
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+
+        assert creator_screen.GATE_PASSED_HEADLINE in _blob(root)
+        assert self._columns(root) == list(self.BASELINE)
+        assert self.RENAMED_COLUMN not in self._columns(root), "a header the extract DOES carry was reported"
+
+    def test_the_confirm_is_still_the_ONE_filled_primary_with_a_report_on_screen(self, monkeypatch, tmp_path) -> None:
+        """Acceptance 4: the report is a LENS, not a verdict. A district whose export
+        legitimately lacks an optional column must not be stopped on a suspicion — SD83
+        ships ``Date of Birth: {value: ""}`` on purpose — so neither the verdict nor
+        ``files_primary_action`` moves."""
+        root, cfg = self._at_the_gate(monkeypatch, tmp_path, rename_header=True)
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+
+        assert creator_screen.PREFLIGHT_MISSING_TITLE in _blob(root), "the state under test is not on screen"
+        assert _filled(root) == [creator_screen.GATE_CONFIRM_LABEL], "the report moved the step's one filled primary"
+        assert creator_screen.GATE_FAILED_HEADLINE not in _blob(root), "the lens became a second verdict"
+        tints = {tint for tint, _line, _on_tint in components._VERDICT_TINTS.values()}
+        bands = [c for c in _walk(root) if isinstance(c, ft.Container) and c.bgcolor in tints]
+        assert len(bands) == 1, "a warning band under the healthy band is two verdicts about one run"
+
+        _button(root, creator_screen.GATE_CONFIRM_LABEL).on_click(None)
+        assert cfg.sis_type == "sd93custom", "the confirm still activates with a report on screen"
+
+    def test_a_run_with_a_MISSING_FILE_shows_the_file_report_and_no_column_report(self, monkeypatch, tmp_path) -> None:
+        """Acceptance 5, and the soundness rule at the surface: while a file is absent we
+        did not read them all, so "not in any of your files" is false by premise — and every
+        column of that file would be listed under the file report that already named it."""
+        root, _cfg_ = self._at_the_gate(monkeypatch, tmp_path, rename_header=True, drop="ParentInformation.txt")
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+
+        blob = _blob(root)
+        assert creator_screen.GATE_PASSED_HEADLINE in blob, "the run must still PASS — a per-entity skip is legitimate"
+        assert creator_screen.FILES_MISSING_NOTE in blob, "the file report is what owns this fact"
+        assert creator_screen.PREFLIGHT_MISSING_TITLE not in blob
+        assert self._lines(root) == []
+
+    def test_the_twin_the_same_folder_complete_DOES_report(self, monkeypatch, tmp_path) -> None:
+        """Which is what makes the assertion above about the missing FILE, and not about a
+        mechanism that never speaks."""
+        root, _cfg_ = self._at_the_gate(monkeypatch, tmp_path, rename_header=True)
+
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+
+        assert creator_screen.FILES_MISSING_NOTE not in _blob(root), "the folder under test is not complete"
+        assert creator_screen.PREFLIGHT_MISSING_TITLE in _blob(root)
+
+    def test_nothing_is_reported_before_a_run(self, monkeypatch, tmp_path) -> None:
+        """NOT_RUN observed no files, so it can make no claim — and the block must not be
+        left on screen by a mount that has not tested anything."""
+        root, _cfg_ = self._at_the_gate(monkeypatch, tmp_path, rename_header=True)
+
+        assert creator_screen.PREFLIGHT_MISSING_TITLE not in _blob(root)
+        assert creator_screen.GATE_RUN_LABEL in _button_labels(root), "the positive twin: the gate is mountable"
+
+
+# --------------------------------------------------------------------------- #
 # 10. Copy: identification-not-authentication, and no promise of a later slice  #
 # --------------------------------------------------------------------------- #
 def _creator_copy_constants() -> dict[str, str]:
     """Every creator/gate copy constant on the module, by name (never a hand-typed list)."""
-    prefixes = ("CREATOR_", "FILES_", "GATE_")
+    prefixes = ("CREATOR_", "FILES_", "GATE_", "PREFLIGHT_")
     found = {
         name: value
         for name, value in vars(creator_screen).items()
@@ -1707,6 +1884,31 @@ FIX_COPY_CONSTANTS = (
 )
 
 
+#: The two strings plan 0044 S5 adds to this surface, named for the reason
+#: ``S4_COPY_CONSTANTS`` is: a renamed constant would drop out of the prefix-derived sweeps
+#: silently, leaving the column report's whole block unswept.
+S5_COPY_CONSTANTS = (
+    "PREFLIGHT_MISSING_TITLE",
+    "PREFLIGHT_MISSING_NOTE",
+)
+
+
+def _config_editor_copy_constants() -> dict[str, str]:
+    """``config_editor``'s own admin-facing ``PREFLIGHT_*`` copy, by name.
+
+    The report's LINE TEMPLATE lives beside ``humanize_missing_columns`` rather than on the
+    screen (plan 0044 S5's named deviation), so the sweep has to follow it there — a
+    sentence that escapes the sweep by moving one module is the hole the next edit inherits.
+    """
+    from src.ui_flet import config_editor
+
+    return {
+        name: value
+        for name, value in vars(config_editor).items()
+        if name.startswith("PREFLIGHT_") and isinstance(value, str)
+    }
+
+
 class TestTheCopy:
     def test_the_constant_index_is_not_empty(self) -> None:
         """The falsification twin for the two sweeps below: a name-derived index that matched
@@ -1716,9 +1918,19 @@ class TestTheCopy:
     def test_the_filename_forms_own_copy_is_in_the_swept_index(self) -> None:
         index = _creator_copy_constants()
 
-        missing = [name for name in S4_COPY_CONSTANTS + FIX_COPY_CONSTANTS if name not in index]
+        missing = [name for name in S4_COPY_CONSTANTS + FIX_COPY_CONSTANTS + S5_COPY_CONSTANTS if name not in index]
 
         assert missing == [], f"{missing} is admin-facing copy that no sweep in this class sees"
+
+    def test_the_reports_line_template_is_swept_where_it_actually_lives(self) -> None:
+        """The falsification twin for the two ``config_editor`` sweeps below."""
+        assert set(_config_editor_copy_constants()) == {"PREFLIGHT_MISSING_LINE"}
+
+    @pytest.mark.parametrize("name", sorted(_config_editor_copy_constants()))
+    def test_no_config_editor_constant_carries_banned_vocabulary_or_a_vague_future(self, name) -> None:
+        value = _config_editor_copy_constants()[name]
+        _assert_no_banned_vocabulary(value, name)
+        _assert_promises_nothing(value, name)
 
     def test_S3s_retired_note_did_not_survive_beside_its_replacement(self) -> None:
         """``FILES_INHERITED_NOTE`` claimed "the standard MyEd BC names your starting point
@@ -1732,7 +1944,9 @@ class TestTheCopy:
         _assert_no_banned_vocabulary(_creator_copy_constants()[name], name)
 
     @pytest.mark.parametrize("name", sorted(_creator_copy_constants()))
-    def test_no_constant_promises_a_later_slice(self, name) -> None:
+    def test_no_constant_promises_a_vague_future(self, name) -> None:
+        """What survives ``FORBIDDEN_PROMISES``' retirement (plan 0044 S5): the
+        vague-future list, which is not about any one capability."""
         _assert_promises_nothing(_creator_copy_constants()[name], name)
 
     def test_the_rendered_creator_forms_carry_neither(self, page, monkeypatch) -> None:
@@ -1756,6 +1970,25 @@ class TestTheCopy:
         for where, blob in (("before the test run", before), ("after the test run", after)):
             _assert_no_banned_vocabulary(blob, f"the rendered gate step {where}")
             _assert_promises_nothing(blob, f"the gate step {where}")
+
+    def test_the_retired_ban_is_replaced_by_the_report_it_guarded(self, monkeypatch, tmp_path) -> None:
+        """``FORBIDDEN_PROMISES`` banned the word "column" so no copy promised a report the
+        product did not have. Deleting the loop would leave nothing behind, so the guard
+        becomes an assertion about what IS there: the block names a COLUMN and carries the
+        note that says what it does not mean. If the report ever stops rendering, this is
+        the test that says so — not a sweep that passes over an empty tuple.
+        """
+        assert not hasattr(_this_module(), "FORBIDDEN_PROMISES"), "the retired ban survived its replacement"
+
+        root, _cfg_ = TestThePreflightColumnReport()._at_the_gate(monkeypatch, tmp_path, rename_header=True)
+        _button(root, creator_screen.GATE_RUN_LABEL).on_click(None)
+
+        blob = _blob(root)
+        assert "column" in blob.lower(), "the shipped report does not say the word the ban forbade"
+        assert f"“{TestThePreflightColumnReport.RENAMED_COLUMN}”" in blob, "no column is named"
+        assert creator_screen.PREFLIGHT_MISSING_NOTE in blob
+        _assert_promises_nothing(blob, "the rendered column report")
+        _assert_no_banned_vocabulary(blob, "the rendered column report")
 
     def test_the_files_step_title_is_single_sourced(self) -> None:
         """The step-title dict and the constant must not drift (one title, one source)."""
@@ -2291,7 +2524,7 @@ class TestMappingsNewCopy:
         _assert_no_banned_vocabulary(self._index()[name], name)
 
     @pytest.mark.parametrize("name", sorted(S6_COPY_CONSTANTS + ("FOLDERS_NEEDS_TEST_NOTE",)))
-    def test_no_constant_promises_a_later_slice(self, name) -> None:
+    def test_no_constant_promises_a_vague_future(self, name) -> None:
         _assert_promises_nothing(self._index()[name], name)
 
     def test_the_rendered_view_and_panel_carry_neither(self, monkeypatch, tmp_path) -> None:

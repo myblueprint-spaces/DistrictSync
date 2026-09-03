@@ -66,7 +66,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Literal
@@ -94,6 +94,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only; no runtime import of either
     from src.config.app_config import AppConfig
     from src.config.authoring import AuthoredWith
     from src.etl.pipeline import PipelineResult
+    from src.etl.preflight import MissingColumn, PreflightReport
 
 
 #: The CEDS grade vocabulary in DISPLAY ORDER, derived from :data:`CEDS_MAPPING`'s
@@ -141,6 +142,14 @@ CONFIG_ERROR_DOMAIN = "One of the email domains isn't a plain district domain (l
 CONFIG_ERROR_MISSING_BASE = "The starting point this district builds on isn't in this version of DistrictSync."
 CONFIG_ERROR_UNREADABLE = "This district's mapping file couldn't be read."
 CONFIG_ERROR_OTHER = "This district's mapping can't be used as it stands."
+
+#: ONE line per column no loaded file carried (plan 0044 S5). A reviewed constant on THIS
+#: module rather than in ``src/etl/preflight.py``, for the reason every other sentence in
+#: this layer is here: admin-facing copy belongs where the copy sweeps see it, ``src/etl/*``
+#: carries none, and the derivation stays re-usable by a surface that would word it its own
+#: way. Smart quotes per the house style (``GATE_PASSED_DETAIL``), and the column name is
+#: quoted VERBATIM because the admin's job is to compare it against their own header row.
+PREFLIGHT_MISSING_LINE = "The column “{column}” (needed for {entities}) isn't in any of your files."
 
 
 # ---------------------------------------------------------------------------
@@ -870,12 +879,17 @@ class GateOutcome:
             :func:`humanize_config_error`), and ``""`` in every other state — the view
             owns the copy for the states that need no diagnosis, so no screen constant
             is duplicated here.
+        missing_columns: the columns the config names that NO loaded file carried (plan
+            0044 S5) — a LENS, not a verdict, carried only when the claim is sound (see
+            :func:`gate_outcome_for`). Column NAMES only: config vocabulary and a GDE
+            header row, never a cell.
     """
 
     state: GateState
     counts: Mapping[str, int] = dataclasses.field(default_factory=dict)
     missing_files: tuple[str, ...] = ()
     note: str = ""
+    missing_columns: tuple[MissingColumn, ...] = ()
 
 
 def missing_files(expected: Iterable[str], present: Iterable[str]) -> tuple[str, ...]:
@@ -923,6 +937,49 @@ def humanize_config_error(exc: BaseException) -> str:
     return CONFIG_ERROR_OTHER
 
 
+def humanize_missing_columns(
+    missing: Iterable[MissingColumn] | None,
+    *,
+    entity_label: Callable[[str], str] | None = None,
+) -> tuple[str, ...]:
+    """One :data:`PREFLIGHT_MISSING_LINE` per missing column, in derivation order. PURE.
+
+    Takes the missing COLUMNS (``PreflightReport.missing``, or the sound subset a
+    :class:`GateOutcome` carries) rather than the whole :class:`~src.etl.preflight.PreflightReport`
+    — a named, deliberate narrowing of the spec's ``humanize_missing_columns(report, …)``.
+    The wording never reads the report's denominators, and the VIEW must render from
+    ``GateOutcome.missing_columns``, which is the only value the soundness rule has been
+    applied to; a signature that demanded the report would have made the screen hold a
+    second copy of the same finding, able to disagree with the one the gate decided about.
+    ``humanize_missing_columns(report.missing)`` is the caller that has a report.
+
+    ``entity_label`` is INJECTED (the ``distinct_source_files(expected=…)`` precedent), so
+    this layer never learns the product's entity vocabulary: the screen passes
+    ``creator._entity_label`` and an admin reads "Families", while the default is IDENTITY
+    and answers in raw entity keys. That default is a vocabulary choice, not a safety one —
+    the worst it can do is print a key an admin would otherwise never see.
+
+    What a line quotes is the CONFIG's spelling of the column — a GDE HEADER NAME, never a
+    value from a row — because the admin's next act is to compare it against their own
+    header row. Entities are joined with the comma list the rest of the Files surface
+    already reads (``FILES_USED_FOR_PREFIX``'s caption), so one header feeding four
+    entities is ONE line rather than four separate-looking problems.
+
+    ``()`` for ``None`` and for nothing missing: there is no sentence to say, and a caller
+    must not have to tell "no report" apart from "nothing to report".
+    """
+    if missing is None:
+        return ()
+    label = entity_label or (lambda name: name)
+    return tuple(
+        PREFLIGHT_MISSING_LINE.format(
+            column=item.source_column,
+            entities=", ".join(label(name) for name in item.entities),
+        )
+        for item in missing
+    )
+
+
 def gate_outcome_for(
     *,
     result: PipelineResult | None,
@@ -930,6 +987,7 @@ def gate_outcome_for(
     output_dir_valid: bool,
     expected_files: Iterable[str],
     present_files: Iterable[str],
+    preflight: PreflightReport | None = None,
 ) -> GateOutcome:
     """Reduce the test conversion's facts to one :class:`GateOutcome`. PURE.
 
@@ -949,6 +1007,15 @@ def gate_outcome_for(
     4. **Neither ⇒ ``NOT_RUN``.** ``RUNNING`` is the view's own transient state (it
        cannot be derived from a result that does not exist yet), so it is never
        returned here.
+
+    ``preflight`` is the pre-flight column derivation (plan 0044 S5) — OPTIONAL, and its
+    default is not a permissive default on a safety-relevant parameter: ``None`` means
+    "no report", it feeds no state decision, and it can only ever under-report. **The
+    soundness rule lives HERE**, in the one reduction both hosts read, rather than in a
+    screen: the columns are carried only on ``PASSED`` and only when NO expected file is
+    missing. While a file is absent the claim "not in any of your files" is false by
+    premise — we did not read them all — and every column of that file would be listed,
+    burying the one real finding under the file report already on screen.
 
     Raises:
         ValueError: both a result and an error were passed — a run cannot both
@@ -970,6 +1037,7 @@ def gate_outcome_for(
         state=GateState.PASSED,
         counts=dict(getattr(result, "entity_counts", {}) or {}),
         missing_files=absent,
+        missing_columns=() if (absent or preflight is None) else tuple(preflight.missing),
     )
 
 

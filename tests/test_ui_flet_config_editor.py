@@ -47,6 +47,7 @@ from src.config.authoring import (
 from src.config.loader import load_config, validate_overlay
 from src.config.models import CLASS_ROSTERING_HOMEROOM_SENTINEL
 from src.etl.pipeline import PipelineResult
+from src.etl.preflight import MissingColumn, PreflightReport
 from src.etl.transformers.grades import CEDS_GRADE_CODES, CEDS_MAPPING
 from src.ui_flet.config_editor import (
     BASE_LABELS,
@@ -57,6 +58,7 @@ from src.ui_flet.config_editor import (
     CONFIG_ERROR_OTHER,
     CONFIG_ERROR_UNREADABLE,
     FILE_LABELS,
+    PREFLIGHT_MISSING_LINE,
     ActivationVerdict,
     CreatorForm,
     GateOutcome,
@@ -73,6 +75,7 @@ from src.ui_flet.config_editor import (
     gate_outcome_for,
     has_unsaved_renames,
     humanize_config_error,
+    humanize_missing_columns,
     missing_files,
     overlay_staleness,
     pending_renames,
@@ -596,6 +599,173 @@ class TestGateOutcomeFor:
             GateState.FAILED,
             GateState.REFUSED_NO_OUTPUT_DIR,
         }
+
+
+def _missing(column: str, *entities: str, fields: tuple[str, ...] = ("Last Name",)) -> MissingColumn:
+    return MissingColumn(source_column=column, entities=entities, output_fields=fields)
+
+
+def _report(*missing: MissingColumn, checked_files: int = 3, checked_columns: int = 20) -> PreflightReport:
+    """A report with real denominators — a report whose ``checked_*`` were zero would be
+    a derivation that looked at nothing, and no assertion below should be able to pass on
+    one by accident."""
+    return PreflightReport(missing=missing, checked_files=checked_files, checked_columns=checked_columns)
+
+
+class TestTheGateCarriesThePreflightReport:
+    """Plan 0044 S5 §5.3 — the SOUNDNESS rule, in the one reduction both hosts read.
+
+    The rule is not cosmetic: rendered beside an absent FILE, "this column isn't in any of
+    your files" is false by premise (we did not read them all) and every column of that
+    file would be listed, burying the one real finding under the file report already on
+    screen. So it lives here rather than in a screen, where the wizard's host and Mapping's
+    panel could spell it two ways.
+    """
+
+    REPORT = _report(_missing("Legal Surname", "Students"))
+
+    def _outcome(
+        self,
+        *,
+        result: PipelineResult | None = None,
+        error: BaseException | None = None,
+        output_dir_valid: bool = True,
+        expected: list[str] | None = None,
+        present: list[str] | None = None,
+        preflight: PreflightReport | None = None,
+    ) -> GateOutcome:
+        return gate_outcome_for(
+            result=result,
+            error=error,
+            output_dir_valid=output_dir_valid,
+            expected_files=["Students.txt"] if expected is None else expected,
+            present_files=["Students.txt"] if present is None else present,
+            preflight=preflight,
+        )
+
+    def test_a_call_that_passes_no_report_carries_no_columns(self):
+        """Every S3/S4/S6 call site is unchanged: the parameter is additive and defaulted,
+        and ``None`` means "no report" rather than "nothing missing"."""
+        outcome = self._outcome(result=PipelineResult(entity_counts={"Students": 5}))
+
+        assert outcome.state is GateState.PASSED
+        assert outcome.missing_columns == ()
+
+    def test_a_passed_run_with_every_file_present_CARRIES_the_columns(self):
+        outcome = self._outcome(result=PipelineResult(entity_counts={"Students": 5}), preflight=self.REPORT)
+
+        assert outcome.missing_columns == (_missing("Legal Surname", "Students"),)
+
+    def test_the_same_report_beside_a_MISSING_FILE_is_not_carried(self):
+        """The twin of the row above, one input apart: the file report owns that fact."""
+        outcome = self._outcome(
+            result=PipelineResult(entity_counts={"Students": 5}),
+            expected=["Students.txt", "StaffInformation.txt"],
+            present=["Students.txt"],
+            preflight=self.REPORT,
+        )
+
+        assert outcome.state is GateState.PASSED
+        assert outcome.missing_files == ("StaffInformation.txt",), "the file report is what speaks here"
+        assert outcome.missing_columns == ()
+
+    def test_the_truth_table_over_every_state(self):
+        """FAILED / NOT_RUN / REFUSED never carry columns even when a report is passed: a
+        run that did not complete observed nothing worth a claim, and a refused one never
+        started."""
+        rows = {
+            GateState.PASSED: self._outcome(result=PipelineResult(), preflight=self.REPORT),
+            GateState.FAILED: self._outcome(error=RuntimeError("boom"), preflight=self.REPORT),
+            GateState.NOT_RUN: self._outcome(preflight=self.REPORT),
+            GateState.REFUSED_NO_OUTPUT_DIR: self._outcome(
+                result=PipelineResult(), output_dir_valid=False, preflight=self.REPORT
+            ),
+        }
+
+        assert {state: outcome.state for state, outcome in rows.items()} == {state: state for state in rows}, (
+            "a row did not reach the state it is filed under"
+        )
+        assert [state for state, outcome in rows.items() if outcome.missing_columns] == [GateState.PASSED]
+
+    def test_an_empty_report_on_a_passed_run_carries_nothing_to_say(self):
+        outcome = self._outcome(result=PipelineResult(), preflight=_report())
+
+        assert outcome.missing_columns == ()
+
+    def test_the_field_defaults_so_a_bare_construction_still_compares_equal(self):
+        """Every existing equality assertion on ``GateOutcome(state=…)`` stays green."""
+        assert GateOutcome(state=GateState.NOT_RUN).missing_columns == ()
+        assert self._outcome(output_dir_valid=False) == GateOutcome(state=GateState.REFUSED_NO_OUTPUT_DIR)
+
+
+class TestHumanizeMissingColumns:
+    """The WORDING of the report — the one admin-facing sentence plan 0044 S5 adds.
+
+    It lives on ``config_editor`` beside the ``CONFIG_ERROR_*`` categories rather than in
+    ``src/etl/preflight.py``: every admin-facing string in this product is a reviewed
+    constant on a module the copy sweeps see, and ``src/etl/*`` carries none.
+    """
+
+    def test_one_line_per_missing_column_in_derivation_order(self):
+        lines = humanize_missing_columns(
+            (_missing("Legal Surname", "Students"), _missing("Course Title", "Classes")),
+        )
+
+        assert lines == (
+            "The column “Legal Surname” (needed for Students) isn't in any of your files.",
+            "The column “Course Title” (needed for Classes) isn't in any of your files.",
+        )
+
+    def test_the_line_is_the_reviewed_template_and_not_a_second_spelling(self):
+        (line,) = humanize_missing_columns((_missing("Legal Surname", "Students"),))
+
+        assert line == PREFLIGHT_MISSING_LINE.format(column="Legal Surname", entities="Students")
+
+    def test_one_header_feeding_several_entities_is_ONE_line(self):
+        """A header often feeds four entities; a line each would read as four problems."""
+        (line,) = humanize_missing_columns((_missing("Student Number", "Students", "Family", "Enrollments"),))
+
+        assert line.count("isn't in any of your files") == 1
+        assert "Students, Family, Enrollments" in line
+
+    def test_the_injected_label_is_what_an_admin_reads(self):
+        """The pure layer never learns the vocabulary — the screen injects it."""
+        from src.ui_flet.screens.creator import _entity_label
+
+        (raw,) = humanize_missing_columns((_missing("Parent Email", "Family"),))
+        (worded,) = humanize_missing_columns((_missing("Parent Email", "Family"),), entity_label=_entity_label)
+
+        assert "needed for Family)" in raw, "the default is identity, so it answers in config keys"
+        assert "needed for Families)" in worded
+
+    def test_the_config_s_own_spelling_is_quoted_verbatim(self):
+        """The admin's next act is to compare it against their header row, so nothing here
+        may normalise, title-case or trim it a second time."""
+        (line,) = humanize_missing_columns((_missing("Next school code", "Students"),))
+
+        assert "“Next school code”" in line
+
+    def test_nothing_missing_and_no_report_at_all_both_say_nothing(self):
+        assert humanize_missing_columns(()) == ()
+        assert humanize_missing_columns(None) == ()
+
+    def test_a_report_is_worded_through_its_own_missing_list(self):
+        """The caller that HAS a report (a CLI surface, or a test) passes ``report.missing``;
+        the view passes ``GateOutcome.missing_columns``, the only value the soundness rule
+        has been applied to."""
+        report = _report(_missing("Legal Surname", "Students"))
+
+        assert humanize_missing_columns(report.missing) == humanize_missing_columns(
+            (_missing("Legal Surname", "Students"),)
+        )
+
+    def test_the_sentence_carries_no_banned_identity_vocabulary(self):
+        from tests.test_ui_flet_identity_page import _assert_no_banned_vocabulary
+
+        _assert_no_banned_vocabulary(PREFLIGHT_MISSING_LINE, "PREFLIGHT_MISSING_LINE")
+        _assert_no_banned_vocabulary(
+            humanize_missing_columns((_missing("Legal Surname", "Students"),))[0], "the rendered line"
+        )
 
 
 class TestHumanizeConfigError:

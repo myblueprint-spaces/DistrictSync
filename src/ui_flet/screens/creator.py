@@ -46,6 +46,7 @@ from src.config.authoring import (
     validate_source_filename,
     write_overlay,
 )
+from src.etl.preflight import PreflightReport, preflight_report
 from src.ui_flet import components, tokens
 from src.ui_flet.config_editor import (
     CEDS_GRADE_ORDER,
@@ -64,6 +65,7 @@ from src.ui_flet.config_editor import (
     gate_outcome_for,
     has_unsaved_renames,
     humanize_config_error,
+    humanize_missing_columns,
     overlay_staleness,
     pending_renames,
     renames_from_resolved,
@@ -213,6 +215,19 @@ GATE_CONFIRM_LABEL = "Save district settings"
 GATE_RERUN_LABEL = "Test it again"
 GATE_ACTIVATED_NOTE = "This computer now converts your district."
 GATE_RESAVED_NOTE = "Saved. Your district's file names changed, so please run the test conversion once more."
+
+#: The pre-flight column report (plan 0044 S5) — a LENS on a run that PASSED, never a
+#: second verdict. A mapped column that is simply not in the file is a DELIBERATE blank
+#: the ETL does not record as an error, so this block is the ONLY place an admin can be
+#: told before their October in SpacesEDU. The title states the finding plainly; the note
+#: says what it does NOT mean (the test still passed) and then the two likely causes,
+#: because "a column is missing" reads as a failure until something says otherwise.
+PREFLIGHT_MISSING_TITLE = "Some columns aren't in your files"
+PREFLIGHT_MISSING_NOTE = (
+    "A test conversion still passes — the rows are there, but this column comes out blank in every one of "
+    "them. It usually means your district's export uses a different header, or you've picked a starting "
+    "point that expects a column your extract doesn't have."
+)
 
 #: Why the HOST's step footer Continue is closed, one per :func:`files_continue_lock_reason`
 #: answer. Owner report (2026-09-02): "it's unclear why 'continue' is locked … need an
@@ -422,6 +437,28 @@ def _creator_expected_files(sis_id: str) -> tuple[str, ...]:
     except Exception:  # noqa: BLE001 - total: no list is better than a wrong list
         logger.warning("Could not resolve the expected source files for %r.", sis_id)
         return ()
+
+
+def _creator_preflight(sis_id: str, result: object) -> PreflightReport | None:
+    """The pre-flight column report for a run that COMPLETED. TOTAL — ``None`` on anything.
+
+    Computed on the worker's success callback rather than inside ``creator_gate_job``,
+    which stays ``-> PipelineResult``: this is a bounded read of the config as it is NOW on
+    disk — the same file the run itself read — right after a whole dry run, and
+    :class:`_FilesModel` does not retain a resolved config to take it from.
+
+    ``None`` — no claim — whenever the config cannot be resolved (that state is the gate's
+    own story, told by its verdict) or the derivation itself fails: an advisory lens must
+    never be able to turn a passed test conversion into an error in front of an admin.
+    """
+    config = _resolved_config(sis_id)
+    if config is None:
+        return None
+    try:
+        return preflight_report(config, getattr(result, "input_columns", {}) or {})  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001 - total: no report is better than a broken screen
+        logger.warning("Could not derive the pre-flight column report for %r.", sis_id)
+        return None
 
 
 @dataclass(frozen=True)
@@ -1142,13 +1179,19 @@ def build_creator(  # pragma: no cover - Flet view glue
     def _output_ok() -> bool:
         return validate_output_dir(str(cfg.output_dir or "")).ok
 
-    def _gate_outcome(*, result: object | None, error: BaseException | None) -> GateOutcome:
+    def _gate_outcome(
+        *,
+        result: object | None,
+        error: BaseException | None,
+        preflight: PreflightReport | None = None,
+    ) -> GateOutcome:
         return gate_outcome_for(
             result=result,  # type: ignore[arg-type]
             error=error,
             output_dir_valid=_output_ok(),
             expected_files=_creator_expected_files(sis_id),
             present_files=_folder_filenames(str(cfg.input_dir or "")),
+            preflight=preflight,
         )
 
     def _run_gate(_e: ft.ControlEvent | None = None) -> None:
@@ -1172,7 +1215,14 @@ def build_creator(  # pragma: no cover - Flet view glue
 
         def _on_done(result: object) -> None:
             st["running"] = False
-            st["gate"] = _gate_outcome(result=result, error=None)
+            # The column report is derived HERE, from the run that just completed: whether it
+            # is SOUND to make the claim at all is ``gate_outcome_for``'s decision, not this
+            # callback's (one truth table, so both hosts say the same thing).
+            st["gate"] = _gate_outcome(
+                result=result,
+                error=None,
+                preflight=_creator_preflight(sis_id, result),
+            )
             _render()
 
         def _on_error(exc: BaseException) -> None:
@@ -1351,6 +1401,32 @@ def build_creator(  # pragma: no cover - Flet view glue
                     controls=[
                         components.metric_tile(_entity_label(name), f"{count:,}")
                         for name, count in outcome.counts.items()
+                    ],
+                )
+            )
+
+        # The pre-flight column report: the FACTS before the decision, and deliberately NOT a
+        # second ``HealthVerdictBanner`` — a warning band under a healthy band is two
+        # verdicts about one run. Rendered on ``missing_columns`` ALONE: whether the claim is
+        # sound (a run that passed, with every expected file present) is already decided by
+        # ``gate_outcome_for``, and re-spelling that condition here would be a second rule
+        # able to disagree with it.
+        if outcome.missing_columns:
+            test_rows.append(
+                ft.Column(
+                    spacing=tokens.space_sm,
+                    controls=[
+                        ft.Text(
+                            PREFLIGHT_MISSING_TITLE,
+                            size=tokens.type_body,
+                            weight=ft.FontWeight.W_600,
+                            color=tokens.color_text,
+                        ),
+                        *(
+                            ft.Text(line, size=tokens.type_body, color=tokens.color_status_warning)
+                            for line in humanize_missing_columns(outcome.missing_columns, entity_label=_entity_label)
+                        ),
+                        ft.Text(PREFLIGHT_MISSING_NOTE, size=tokens.type_body, color=tokens.color_muted),
                     ],
                 )
             )

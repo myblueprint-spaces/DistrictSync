@@ -863,13 +863,15 @@ class TestMappingsSummaryCard:
         assert not any(CUSTOM_ORIGIN_LABEL in text for text in texts)
 
     def test_the_note_PROMISES_NOTHING(self) -> None:
-        """S2's ban NARROWS with the capability arriving (plan 0044 S6).
+        """S2's ban NARROWS with each capability arriving (plan 0044 S6, then S5).
 
         The note may now say the setup is changeable, because the change door is on this very
-        card. What it must still never promise is S5's COLUMN report or a vague future — so the
-        ban is ``FORBIDDEN_PROMISES`` (now ``("column",)``) plus the shared
-        ``BANNED_COPY_WORDS``, single-sourced from the creator-flow sweep rather than a second
-        hand-typed list here. The positive twin — it does state WHERE the file lives — stays.
+        card — and ``FORBIDDEN_PROMISES`` is GONE, because S5 shipped the column report the
+        word "column" was banned to avoid promising (its replacement is a positive assertion
+        in ``tests/test_ui_flet_creator_flow.py``). What is left, and still single-sourced
+        from the creator-flow sweep rather than a second hand-typed list here, is the shared
+        ``BANNED_COPY_WORDS`` vague-future list. The positive twin — it does state WHERE the
+        file lives — stays.
         """
         from src.ui_flet.screens import mapping as mapping_screen
         from tests.test_ui_flet_creator_flow import _assert_promises_nothing
