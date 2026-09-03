@@ -2771,3 +2771,50 @@ exists for this branch; `ci.yml` fires only on push/PR to `main`, and `flet-veri
 matrix fires on a PR touching `src/ui_flet/**`, which this does); the **certification disposition**
 (D-0037-6 — audit pass · product-gap pass · QA walk on a BUILT exe), to be recorded in DECISIONS when
 the PR opens, as a plan, not a deferral; Stage 9 retrospect.
+
+## Owner review round 3 (2026-09-03)
+
+Handoff `handoff0044round3.md` plus three owner answers to its open items. Fixed inline on the
+branch (no subagents — standing instruction for finding rounds). **The branch was first merged up
+from `origin/main`**, which had shipped v3.15.0 and v3.16.0 (the first signed Windows build) since it
+was cut: 7 files conflicted on paper, only 2 in fact (`docs/claugentic-DECISIONS.md`, both sides
+appending at the head of a newest-first log — resolved by date, our 09-03 block, main's 09-02 release
+block, then our 09-02 block; and `docs/developer/output-contract.md`'s front matter, resolved to our
+`2.2.0` with an honest `emitted_by` saying `2.2.0` is UNRELEASED and the newest tag still emits
+`2.1.0`). No source file conflicted.
+
+| # | Item | Disposition |
+|---|---|---|
+| A | The D-0037-6 certification entry said **three** components; the rule names **four** | Amended in DECISIONS and in ROADMAP's Phase-2 entry. The fourth, *spec review*, was never dropped — since 2026-08-17 it has been performed INSIDE the product-gap pass, and that collapse had simply never been recorded, so the count silently became three. Both docs now say four, one discharged inside another, and both carry the two standing facts: there is no `/claugentic-dev-harness:product` skill in this installed harness (the `product-designer` agent in elevate mode is the documented substitute), and **neither harness pass runs the app** — which is why the QA walk is the only component that touches a running binary, and why owner rounds 1 and 2 found what no static pass had. |
+| B | Vendor the district NAME table | `NAMES_BY_SD` (60 rows) + total `name_for()` in `bc_district_domains`, same placeholder posture and provenance note as the domains. `screens/creator._shipped_district_names` falls back to it; the pure `config_editor.district_name_seed` is untouched and still takes names as DATA. Names vendored BARE — no `SD<N>` prefix, no `School District` suffix (owner: SD92/SD93 are not that shape). A shipped name still WINS; a district in neither source still opens EMPTY. |
+| C | `creator.GATE_CONFIRM_LABEL` → **"Save district mapping"** | The third leg of round 2's vocabulary decision. Renamed at the constant plus its three inline quoters and the two DECLARED doc quoters the parity pin watches. The RAIL question stays an open owner decision. |
+| 1 | Owner: `kackaamin.org` is an artifact; SD70's real domain is `sd70.bc.ca` | Dropped, with the same reasoning already recorded for SD78's `sd48.bc.ca`. Pinned in both directions so a re-vendoring from the older CSV cannot restore it. |
+| 2 | Owner: use SD83's new correct name, ASCII-fying only if necessary | It was NOT necessary — vendored and shipped as `K̓wsaltktnéws ne Secwepemcúl'ecw`, exactly as the district spells it. `sd83myedbc_mapping.yaml`'s `district_name` renamed too (owner-confirmed: a table-only change would have had no visible effect, since a shipped name wins the prefill). Pinned by CODEPOINT, not by a pasted literal, because the combining mark is invisible in an editor. |
+| 3 | Owner: districts with custom domains should still match `sd##.bc.ca` | The rule lives in `domains_for()`, not the literal — one home, faithful provenance, and a future row inherits it. 17 rows augmented. Applied to the two SHIPPED configs too (`sd60myedbc` + `sd60.bc.ca`, `sd75myedbc` + `sd75.bc.ca`), which is the half that changes what an admin actually matches. Closes the flagged SD58 residual (`365.sd58.bc.ca`) and SD84's identical shape. |
+
+### The bug this round found
+
+Vendoring SD83's name exposed a **live, silent data-corruption bug in plan 0044's own surface**:
+`loader._load_yaml` opened with the PLATFORM LOCALE while `authoring._atomic_write_text` has always
+pinned `utf-8`. On Windows — the district-server platform — `cp1252` maps almost every byte, so a
+UTF-8 name did not fail to load, it loaded WRONG. Any admin who typed a district name with an accent,
+a curly apostrophe or their own orthography got it back **mojibake** in every picker, on Mapping,
+Convert and Run History, with no error anywhere and no gate that could see it. It would also have
+shipped SD83's new name as garbage.
+
+Fixed to `open(path, encoding="utf-8")`. Reproduced end to end before and after; both regression
+tests were confirmed **RED against the un-fixed reader**, and each carries a positive twin proving
+the fixture bytes are genuinely non-ASCII — an ASCII fixture cannot exercise a decoding bug, and
+`yaml.safe_dump`'s default would have written exactly such a fixture.
+
+### Tests
+
+`domains_for` sheet-vs-effective contract (the sheet's rows lead, in order; at most one appended) ·
+the conventional-form rule parameterised over the wholly-custom / subdomain / near-miss / already-present
+/ already-conventional cases · both domain totals pinned (62 sheet, 79 effective, plus the count of
+augmented rows — the effective pin is the anti-vacuous twin of the sheet one) · SD70 pinned in both
+directions · the SD60/SD75 conventional form resolving end-to-end through `normalize_email` ·
+`name_for` totality, table-set parity with the domains, every name BARE, SD83 by codepoint, and a
+sweep of all 15 shipped SD configs against the table · the creator fallback (vendored name fills a
+district we do not ship; NEITHER source still leaves it empty; a shipped name wins) · the two
+encoding regressions with their twins.

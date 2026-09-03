@@ -3,7 +3,7 @@
 An admin whose district ships no mapping answers four questions here, presses Continue
 (which WRITES an overlay into their own profile and changes nothing else), then on the
 creator-only "Your files" step runs a TEST conversion that writes nothing and — only if it
-worked — chooses "Save district settings", the ONE act that makes it the district this
+worked — chooses "Save district mapping", the ONE act that makes it the district this
 install converts.
 
 VIEW glue (coverage-omitted). Every decision this surface makes is COUNTED elsewhere: the
@@ -47,6 +47,7 @@ from src.config.authoring import (
     validate_source_filename,
     write_overlay,
 )
+from src.config.bc_district_domains import name_for
 from src.etl.preflight import PreflightReport, preflight_report
 from src.ui_flet import components, tokens
 from src.ui_flet.config_editor import (
@@ -159,8 +160,7 @@ CREATOR_ACTIVATE_FAILED_NOTE = (
     "We couldn't switch this computer over to your district just now — nothing was changed. Please try again."
 )
 CREATOR_FINISH_NEEDS_GATE_NOTE = (
-    'Go back to "Your files", run the test conversion, then choose “Save district settings” '
-    "— after that you can finish."
+    'Go back to "Your files", run the test conversion, then choose “Save district mapping” — after that you can finish.'
 )
 
 # ---- the "Your files" gate step ------------------------------------------ #
@@ -211,7 +211,7 @@ GATE_PASSED_HEADLINE = "The test conversion worked"
 #: action (owner report, 2026-09-02).
 GATE_PASSED_DETAIL = (
     "Here's how many rows each file would hold. Nothing was written and nothing was sent. If these look "
-    "right, choose “Save district settings” — that saves this mapping as the one this computer "
+    "right, choose “Save district mapping” — that saves this mapping as the one this computer "
     "converts, and after that you can continue."
 )
 GATE_FAILED_HEADLINE = "The test conversion didn't finish"
@@ -232,7 +232,13 @@ GATE_STALE_BASE_NOTE = (
 #: The ONE act that makes this district the one this install converts. "Use this district"
 #: read as a filename action while it sat below the rows (owner report, 2026-09-02); this
 #: names the SAVE it performs, in sentence case like every other action in the product.
-GATE_CONFIRM_LABEL = "Save district settings"
+#:
+#: The NOUN is "mapping", not "settings" (owner, 2026-09-03 round 3) — the THIRD leg of the
+#: same vocabulary collision round 2 closed at the change door and the export reveal. This
+#: button has nothing to do with the rail's Setup item or the Settings scroll it graduates
+#: into; it saves a MAPPING. The wider Setup/Settings/Mapping rail question is a separate,
+#: still-open owner decision (ROADMAP) — this is the button, not the rail.
+GATE_CONFIRM_LABEL = "Save district mapping"
 GATE_RERUN_LABEL = "Test it again"
 GATE_ACTIVATED_NOTE = "This computer now converts your district."
 GATE_RESAVED_NOTE = "Saved. Your district's file names changed, so please run the test conversion once more."
@@ -260,9 +266,9 @@ PREFLIGHT_MISSING_NOTE = (
 #: edit inherits silently.
 FILES_CONTINUE_LOCKED_SAVE = "Save these file names, then run a test conversion — after that you can continue."
 FILES_CONTINUE_LOCKED_RUN = (
-    "Run a test conversion that passes, then choose “Save district settings” — after that you can continue."
+    "Run a test conversion that passes, then choose “Save district mapping” — after that you can continue."
 )
-FILES_CONTINUE_LOCKED_CONFIRM = "Choose “Save district settings” above — after that you can continue."
+FILES_CONTINUE_LOCKED_CONFIRM = "Choose “Save district mapping” above — after that you can continue."
 
 #: Plain-language names for the seven authorable entities (the vocabulary map — an admin
 #: reads "Families", never ``Family``, and never a raw entity key).
@@ -1733,24 +1739,42 @@ def _paint_field(field: object, value: str) -> None:
 
 
 def _shipped_district_names(sd_number: int) -> tuple[str, ...]:
-    """The ``district_name`` of every config we SHIP for that district number. TOTAL.
+    """Candidate names for that district number, best first. TOTAL.
 
     The I/O half of the name prefill; the rule is the pure
-    :func:`config_editor.district_name_seed`, which takes these as data.
+    :func:`config_editor.district_name_seed`, which takes these as data and picks the
+    first non-blank. Two sources, in precedence order:
 
-    Self-service ids are excluded (``authoring.is_custom_sis_id``) — the district being
-    authored right now may already have an overlay of its own on disk, and seeding the name
-    field from it would hand the admin back the value they are in the middle of replacing.
-    ``()`` on any failure and for a district we ship nothing for, which is the common case.
+    1. the ``district_name`` of every config we SHIP for that number — ours, reviewed,
+       and the only ones that can reflect a district we actually support;
+    2. the vendored owner sheet (:func:`src.config.bc_district_domains.name_for`),
+       which covers 60 BC districts whether or not we ship a mapping for them.
+
+    (2) is why this exists at all: before 2026-09-03 the name field opened EMPTY for
+    every district without a bundled config — which is precisely the population the
+    self-service creator is FOR, so the prefill was absent exactly where it was needed.
+
+    Self-service ids are excluded from (1) (``authoring.is_custom_sis_id``) — the district
+    being authored right now may already have an overlay of its own on disk, and seeding
+    the name field from it would hand the admin back the value they are in the middle of
+    replacing. The vendored name is NOT excluded on that ground: it is the owner's sheet,
+    not the admin's own in-progress answer.
+
+    The vendored lookup sits OUTSIDE the ``try`` deliberately. It is a pure dict read that
+    cannot raise, and putting it inside would let a config-directory failure — the one case
+    where we have least to offer — also throw away the one prefill still available.
+    ``()`` when neither source has anything, which stays the common case.
     """
+    vendored = name_for(sd_number) if isinstance(sd_number, int) and not isinstance(sd_number, bool) else ""
+    tail = (vendored,) if vendored else ()
     try:
         from src.config.loader import available_configs
 
         ids = [sis for sis in resolve_sd_number(str(sd_number), available_configs()) if not is_custom_sis_id(sis)]
-        return tuple(friendly_district_name(sis) for sis in ids)
+        return (*(friendly_district_name(sis) for sis in ids), *tail)
     except Exception:  # noqa: BLE001 - total: no prefill is better than a wrong one
         logger.warning("Could not read the shipped district names for the name prefill.", exc_info=True)
-        return ()
+        return tail
 
 
 def pending_creator_sis(app_config: AppConfig) -> str:

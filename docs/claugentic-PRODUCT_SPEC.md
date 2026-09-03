@@ -189,7 +189,7 @@ the file names this district's export actually uses.
      district's own name set beside it where it differs, saved with "Save these file names".
   4. "Run a test conversion" — a real conversion that writes nothing and sends nothing, reporting
      how many rows each file would hold, plus any mapped column that is not in the files at all.
-  5. "Save district settings" — the one act that makes this the district this computer converts.
+  5. "Save district mapping" — the one act that makes this the district this computer converts.
 - **States** — **error** (a mapping that will not load, or a write that fails, is reported as a
   bounded plain-language category and changes nothing), **refused / needs a test** (the activation
   is refused while a file name is unsaved or no passing test conversion matches the mapping as it
@@ -879,13 +879,13 @@ The checkable projection of the Features above. All checks are `manual` — Dist
       "Past the launch page, on the wizard's District step press 'Set up my district'",
       "Fill the four forms (starting point, district number/name/staff domains, which files, which grades) and Continue",
       "Set the input and output folders, reach 'Your files', correct one file name and press 'Save these file names'",
-      "Press 'Run a test conversion', then 'Save district settings'",
+      "Press 'Run a test conversion', then 'Save district mapping'",
       "Open the profile folder's mappings subfolder and config.json"
     ],
     "expect": [
       "the district's mapping is written as one small YAML in the profile's mappings folder, named sd<number>custom_mapping.yaml",
       "the test conversion writes no CSV and sends nothing, and reports a row count per file",
-      "'Save district settings' is refused while a file name is unsaved or no passing test matches the mapping as it reads, and every refusal says what to do next",
+      "'Save district mapping' is refused while a file name is unsaved or no passing test matches the mapping as it reads, and every refusal says what to do next",
       "after it succeeds, config.json names the new district and the district pickers list it as 'Added on this computer'",
       "the district reads as 'SD<number> - <the name you gave>' everywhere, the same shape as a district that ships with DistrictSync",
       "typing the district number fills in the name and the staff domains where DistrictSync knows them; correcting the number replaces them, and anything typed by hand is never overwritten",

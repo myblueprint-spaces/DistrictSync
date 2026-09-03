@@ -14,10 +14,13 @@
 _base: myedbc
 sis: MyEducationBC
 district_name: SD75 - Mission School District
-# The district's PUBLIC staff email domain (presentation metadata — see
-# sd27myedbc's comment on this same key). Mission's staff domain is mpsd.ca,
-# NOT sd75.bc.ca (owner-supplied BC district domains sheet, 2026-08-27).
-district_domains: ["mpsd.ca"]
+# The district's PUBLIC staff email domains (presentation metadata — see
+# sd27myedbc's comment on this same key). Mission's own staff domain is mpsd.ca
+# (owner-supplied BC district domains sheet, 2026-08-27); sd75.bc.ca rides
+# alongside it per the owner's 2026-09-03 rule that a district with a custom
+# domain still matches the conventional sd<N>.bc.ca form. Order matters only for
+# reading: mpsd.ca is the verified one.
+district_domains: ["mpsd.ca", "sd75.bc.ca"]
 
 global_config:
   # Full myBlueprint+ tier. Deep-merge REPLACES lists (see sd51myedbc's

@@ -46,11 +46,13 @@ SHIPPED_DOMAINS: dict[str, str] = {
     "sd51.bc.ca": "sd51myedbc",
     "sd54.bc.ca": "sd54myedbc",
     "prn.bc.ca": "sd60myedbc",  # the STAFF domain, NOT the generated student domain
+    "sd60.bc.ca": "sd60myedbc",  # the conventional form, beside the custom one (owner, 2026-09-03)
     "sd67.bc.ca": "sd67myedbc",
     "sd69.bc.ca": "sd69myedbc",
     "sd71.bc.ca": "sd71myedbc",
     "sd74.bc.ca": "sd74myedbc",
-    "mpsd.ca": "sd75myedbc",  # Mission's STAFF domain, NOT sd75.bc.ca (owner sheet, 2026-08-27)
+    "mpsd.ca": "sd75myedbc",  # Mission's STAFF domain (owner sheet, 2026-08-27)
+    "sd75.bc.ca": "sd75myedbc",  # the conventional form, beside the custom one (owner, 2026-09-03)
     "sd83.bc.ca": "sd83myedbc",
     # An INDEPENDENT school, not an SD — so no sd##.bc.ca form to fall back on.
     "unitychristian.ca": "unitychristianmyedbc",
@@ -127,19 +129,37 @@ def test_no_domain_is_claimed_by_two_different_districts(resolved):
 
 
 def test_sd60_ships_the_staff_domain_not_the_student_one(bundle_dir):
-    """SD60's row is `prn.bc.ca`, deliberately NOT its generated student domain.
+    """SD60's row leads with `prn.bc.ca`, deliberately NOT its generated student domain.
 
     The domain rows come from the owner's verified staff-contact sheet. Deriving them
     from the student email templates already in these YAMLs would have shipped the wrong
     domain for SD60 — an admin at the staff domain would then match nothing. Pinned so a
     future "tidy-up" cannot re-derive the rows from the templates.
+
+    `sd60.bc.ca` sits BESIDE it since 2026-09-03 (owner): a district with its own custom
+    domain still matches the conventional form. The student domain is still excluded, and
+    that is the half this test exists to defend — a second STAFF domain is not a licence
+    to let the student one in.
     """
     cfg = load_config("sd60myedbc", bundle_dir)
     student_template = str(cfg.mappings["Students"].field_map.get("Email Address"))
 
-    assert cfg.district_domains == ["prn.bc.ca"]
+    assert cfg.district_domains == ["prn.bc.ca", "sd60.bc.ca"]
     assert "learn60.ca" in student_template  # the student domain really is different
     assert "learn60.ca" not in cfg.district_domains
+
+
+def test_a_custom_domain_district_also_matches_the_conventional_form(resolved):
+    """Owner, 2026-09-03: SD60 and SD75 ship a custom staff domain AND `sd<N>.bc.ca`.
+
+    The live end-to-end direction, not just the YAML: an admin typing the conventional
+    address must reach their own district. Under EXACT-equality matching this could only
+    ever work by shipping the row, which is what this pins — and it pins the district too,
+    so a copy-paste that gave SD75 `sd60.bc.ca` would be red rather than merely odd.
+    """
+    for domain, sis in (("sd60.bc.ca", "sd60myedbc"), ("sd75.bc.ca", "sd75myedbc")):
+        admin_domain = extract_domain(normalize_email(f"A.Person@{domain.upper()}"))
+        assert {s for s, domains in resolved.items() if admin_domain in domains} == {sis}
 
 
 @pytest.mark.parametrize("sis", sorted(UNCLAIMED_CONFIGS))

@@ -766,15 +766,47 @@ class TestTheDistrictDetailPrefill:
         assert _field(root, creator_screen.CREATOR_NAME_FIELD_LABEL).value == "Arrow Lakes School District"
         assert _field(root, creator_screen.CREATOR_DOMAINS_FIELD_LABEL).value == "sd93.bc.ca, sd10.bc.ca"
 
-    def test_a_district_we_do_NOT_ship_still_gets_its_domains(self, page, monkeypatch) -> None:
-        """SD22 is in the vendored table and ships no mapping — the common shape for an admin
-        who needs this flow at all. The name stays EMPTY rather than invented."""
+    def test_a_district_we_do_NOT_ship_fills_both_fields_from_the_vendored_sheet(self, page, monkeypatch) -> None:
+        """SD22 is in the vendored tables and ships no mapping — the common shape for an admin
+        who needs this flow at all, and the case the NAME prefill missed until 2026-09-03.
+
+        The name used to stay EMPTY here: `_shipped_district_names` read only configs we ship,
+        so the prefill was absent exactly for the population the creator exists to serve. It
+        now falls back to the owner's vendored name sheet. Still never INVENTED — a district
+        in neither source is covered by the next test."""
         root = _open_creator(page, monkeypatch, _cfg())
 
         self._sd(root, "22")
 
-        assert _field(root, creator_screen.CREATOR_NAME_FIELD_LABEL).value == ""
+        assert _field(root, creator_screen.CREATOR_NAME_FIELD_LABEL).value == "Vernon"
         assert _field(root, creator_screen.CREATOR_DOMAINS_FIELD_LABEL).value == "sd93.bc.ca, sd22.bc.ca"
+
+    def test_a_district_in_NEITHER_source_leaves_the_name_empty(self, page, monkeypatch) -> None:
+        """The rule the vendored fallback must not erode: a name is never fabricated.
+
+        SD1 ships no mapping and is not in the owner's sheet. A domain is still offered —
+        `sd<N>.bc.ca` is a real naming CONVENTION, so `presumptive_domain` may guess one —
+        but nothing lets us guess a NAME, and "District 1" in the picker would be
+        indistinguishable from a name an admin chose."""
+        root = _open_creator(page, monkeypatch, _cfg())
+
+        self._sd(root, "1")
+
+        assert _field(root, creator_screen.CREATOR_NAME_FIELD_LABEL).value == ""
+        assert _field(root, creator_screen.CREATOR_DOMAINS_FIELD_LABEL).value == "sd93.bc.ca"
+
+    def test_a_shipped_name_still_WINS_over_the_vendored_one(self, page, monkeypatch) -> None:
+        """Precedence, pinned. SD10 is in BOTH sources and they differ: the sheet says the bare
+        "Arrow Lakes", the config we ship says "SD10 - Arrow Lakes School District".
+
+        Ours must win — it is the name reviewed for a district we actually support, and it is
+        what every picker already shows, so a prefill that disagreed would invite an admin to
+        author a second spelling of a district we already name."""
+        root = _open_creator(page, monkeypatch, _cfg())
+
+        self._sd(root, "10")
+
+        assert _field(root, creator_screen.CREATOR_NAME_FIELD_LABEL).value == "Arrow Lakes School District"
 
     def test_a_CORRECTED_number_replaces_its_own_prefill(self, page, monkeypatch) -> None:
         """The rule that "only fill an empty field" gets wrong on every multi-digit number:
@@ -1311,7 +1343,7 @@ class TestTheFilenameFormRenders:
         """BLOCKING 1's load-bearing half: the outlined run button is still PRESSABLE.
 
         A run reads the config on disk, so a test against names it does not hold reports on
-        the wrong files — and would pass, putting "Save district settings" beside a verdict
+        the wrong files — and would pass, putting "Save district mapping" beside a verdict
         about a district nobody has tested as it now reads.
         """
         root, _cfg_, gate = _files_surface(monkeypatch, tmp_path)

@@ -242,23 +242,53 @@ class TestDeriveDomains:
         assert derive_domains("sd48.bc.ca", 48) == ("sd48.bc.ca",)
 
     def test_a_multi_domain_district_keeps_the_tables_order(self):
-        """SD63 is one of the two multi-domain rows — order is the source CSV's."""
+        """SD63 is the one remaining multi-domain row — order is the source CSV's."""
         assert derive_domains("", 63) == ("saanichschools.ca", "sides.ca", "sd63.bc.ca")
 
     def test_identity_alone_when_the_table_has_no_row(self):
         assert derive_domains("sd93.bc.ca", 900) == ("sd93.bc.ca",)
 
-    def test_the_table_wins_over_the_conventional_guess(self):
-        """SD93's real staff domain is nothing like ``sd93.bc.ca`` — the guess must not
-        be offered when the vendored table actually knows the district."""
-        assert derive_domains("", 93) == ("csf.bc.ca",)
+    def test_the_table_LEADS_and_the_conventional_form_follows_it(self):
+        """SD93's real staff domain (``csf.bc.ca``) is nothing like ``sd93.bc.ca``.
 
-    def test_the_presumptive_guess_ONLY_when_both_are_empty(self):
+        Since 2026-09-03 (owner) the conventional form rides ALONGSIDE a custom domain
+        rather than being withheld — a district with its own domain still matches
+        ``sd<N>.bc.ca``, because identity matching is exact equality and an admin on the
+        conventional address would otherwise match nothing.
+
+        What this pins is the ORDER, which is the part that still matters: the owner's
+        verified domain LEADS, so it is the one an admin reads first in the creator's
+        field. The conventional form is appended by `bc_district_domains.domains_for`,
+        never by this function.
+        """
+        assert derive_domains("", 93) == ("csf.bc.ca", "sd93.bc.ca")
+
+    def test_the_presumptive_guess_ONLY_for_a_district_the_table_does_not_cover(self):
+        """The GUESS and the RULE are different things, and only one of them is a guess.
+
+        `presumptive_domain` invents `sd<N>.bc.ca` for a district the vendored sheet has
+        never heard of (SD900). `domains_for`'s appended conventional form is not that: it
+        is the owner's 2026-09-03 rule applied to a district we DO have data for.
+
+        The invariant that survives unchanged is that the GUESS is never mixed in beside
+        vendored domains, where it would look equally authoritative. SD34 is the case that
+        proves it: it is in the sheet, so the guess path is not taken at all — its second
+        entry comes from the rule, and there is no third.
+        """
         assert derive_domains("", 900) == ("sd900.bc.ca",)
-        # ...and it is never mixed IN beside a known domain, where it would look
-        # equally authoritative (the twin for the row above).
-        assert "sd48.bc.ca" in derive_domains("", 48)
-        assert derive_domains("", 34) == ("abbyschools.ca",)
+        assert derive_domains("", 34) == ("abbyschools.ca", "sd34.bc.ca")
+
+        # The guess path really is dead for a district in the sheet: patching it to a
+        # sentinel changes nothing for SD34, and everything for SD900.
+        import src.ui_flet.config_editor as config_editor_module
+
+        original = config_editor_module.presumptive_domain
+        try:
+            config_editor_module.presumptive_domain = lambda n: f"GUESS{n}"
+            assert derive_domains("", 34) == ("abbyschools.ca", "sd34.bc.ca")
+            assert derive_domains("", 900) == ("GUESS900",)
+        finally:
+            config_editor_module.presumptive_domain = original
 
     @pytest.mark.parametrize("bad_sd", [0, -5, True, "48", None])
     def test_total_over_an_unusable_district_number(self, bad_sd):
