@@ -6,7 +6,8 @@ VIEW glue (coverage-omitted): the trust-critical *derivation* lives COUNTED in t
 ``post_apply_presentation``, the post-Apply schedule-staleness honesty) and in the pure
 ``config_editor`` (``activation_allowed``, ``overlay_staleness``, ``files_primary_action``).
 This file only RENDERS that already-tested output: which config is active + what it produces,
-a calm switch, and — since plan 0044 S6 — the two doors onto the district creator.
+a calm switch, the two doors onto the district creator (plan 0044 S6) and — since S7 — the
+export door onto a self-authored mapping's own file.
 
 **Post-Apply schedule honesty (plan 0034 Slice 1).** A registered nightly task bakes
 ``--sis <district>`` into its action args, so switching the district here leaves a LIVE task
@@ -45,6 +46,15 @@ filled primary renders in every Mapping state. That promoted Done REFUSES while 
 on screen is not in the config on disk (the wizard footer's own rule): the rows re-render
 themselves, so it would otherwise carry a pending rename out of the panel and discard the
 only record of it — see ``_on_panel_done``.
+
+**The export door (plan 0044 S7).** When a conversion looks wrong, support asks for the
+district's mapping — so a mapping authored HERE carries :data:`MAPPING_EXPORT_LABEL` at text
+tier on the CURRENT card, revealing the file's location, a copy button and its FOLDER (via
+``convert_output.open_folder``, the one per-OS dispatcher). It is a REVEAL, never a YAML text
+dump and never an invitation to hand-edit; it is TOTAL (an unresolvable id or a hand-deleted
+overlay offers no control at all, never a dead one); the reveal lives in the view closure, so
+no disclosure toggle reaches ``config.json``; and the path — which carries the OS account
+name — is shown and copied but interpolated into NO log line.
 
 **The verified-fact check (plan 0044 S6).** "Use this mapping" is one of four writers of
 ``AppConfig.sis_type``. For a mapping authored on THIS computer it now consults the pure
@@ -106,9 +116,9 @@ from collections.abc import Callable, Sequence
 import flet as ft
 
 from src.config.app_config import AppConfig
-from src.config.authoring import current_digest, read_authored_with
+from src.config.authoring import current_digest, overlay_path, read_authored_with
 from src.scheduler import get_scheduler
-from src.ui_flet import components, tokens
+from src.ui_flet import components, convert_output, tokens
 from src.ui_flet.config_editor import (
     CreatorForm,
     activation_allowed,
@@ -215,6 +225,24 @@ MAPPING_STALE_BASE_NOTE = (
     "The standard mapping this district builds on has changed since it was set up. Change "
     "its setup to run a test conversion against the new one."
 )
+
+# ---- the export affordance (plan 0044 S7 §7.1) --------------------------- #
+#: The TRIGGER, text tier, on a user-authored CURRENT card only. "Show" rather than
+#: "export" (an admin asked for a file by support is not performing a data export), and it
+#: names the FILE, because that is the thing support asks for.
+MAPPING_EXPORT_LABEL = "Show this district's mapping file"
+#: The revealed block's own small heading.
+MAPPING_EXPORT_TITLE = "This district's mapping file"
+#: One sentence: what the file IS and why an admin would ever want it. Deliberately NOT an
+#: invitation to hand-edit it — the change door beside this control is the sanctioned way to
+#: change the setup, and a note that suggested a text editor would retire a promise S6 left
+#: standing (the app never rewrites a file an admin edited by hand).
+MAPPING_EXPORT_NOTE = "This is the whole of your district's setup — one small file. Support may ask you for it."
+#: Opens the CONTAINING FOLDER (never the file). Knowingly the same words as Convert's own
+#: inline "Open folder" (``convert.py:_output_folder_row``) — the two rows open DIFFERENT
+#: folders, so a shared factory label would imply one affordance; the duplication is named
+#: here rather than removed.
+MAPPING_EXPORT_OPEN_LABEL = "Open folder"
 
 #: The panel's own never-crash floor (the view has Mapping's). It says what is TRUE of a
 #: failed authoring surface — nothing was changed — and offers the way back, because a floor
@@ -325,12 +353,15 @@ def _summary_card(
     summary: ConfigSummary,
     *,
     notes: Sequence[str] = (),
-    action: ft.Control | None = None,
+    actions: Sequence[ft.Control | None] = (),
 ) -> ft.Control:
     """A titled card for one config's summary: friendly name (primary) + what it produces + the raw id hint.
 
-    ``action`` is the card's own affordance — the change door on a user-authored mapping
-    (plan 0044 S6), absent on a shipped one.
+    ``actions`` are the card's own affordances, riding ONE wrapping Row at the foot of the
+    card: the change door on a user-authored mapping (plan 0044 S6) and, on the CURRENT card
+    only, the export door onto the mapping file itself (plan 0044 S7). ``None`` entries are
+    DROPPED rather than rejected, so a caller passes an absent door positionally instead of
+    assembling the list twice — a shipped card contributes neither and gets no Row at all.
     """
     body: list[ft.Control] = [
         ft.Text(title, size=14, weight=ft.FontWeight.W_700, color=tokens.color_muted),
@@ -340,8 +371,16 @@ def _summary_card(
         # never the primary label.
         ft.Text(summary.sis_type, size=12, color=tokens.color_muted, selectable=True),
     ]
-    if action is not None:
-        body.append(ft.Row(controls=[action]))
+    live_actions = [control for control in actions if control is not None]
+    if live_actions:
+        body.append(
+            ft.Row(
+                wrap=True,
+                spacing=tokens.space_md,
+                run_spacing=tokens.space_md,
+                controls=live_actions,
+            )
+        )
     return components.card(content=ft.Column(spacing=10, controls=body))
 
 
@@ -392,6 +431,11 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
     # `_show_view` — see the reason there: a memo that outlived the change door would keep
     # showing a note the door had just fixed.
     stale_memo: dict[str, tuple[str, ...]] = {}
+    # The export reveal (plan 0044 S7 §7.1) — SESSION-LOCAL, in this closure and nowhere else.
+    # A disclosure toggle is not a district's setting, so it never reaches ``config.json``; it
+    # does survive a ``_refresh`` (the card is re-rendered by every Apply and probe refine, and
+    # a block that vanished under the admin mid-read would be a worse answer than a stale one).
+    export_open = {"on": False}
 
     def _origin_of(origins: dict[str, str], sis: str) -> str:
         """This install's provenance for ``sis`` — ABSENT reads as ``"bundled"``.
@@ -757,6 +801,80 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
                 icon=ft.Icons.TUNE_ROUNDED,
             )
 
+        def _export_door(sis: str) -> ft.Control | None:
+            """The EXPORT door — text tier, on a mapping authored HERE, and TOTAL (§7.1).
+
+            Renders nothing at all unless the file really is on disk: ``overlay_path``
+            validates the id and can RAISE, and an overlay deleted by hand leaves an id whose
+            path resolves to nothing. Either way the answer is no control — an affordance that
+            reveals a path to a file that is not there is worse than no affordance, and there
+            is nothing to report because nothing is wrong. One ``is_file()`` per render, on the
+            ``origin == "user"`` branch only, so the 20 shipped rows are never stat'ed.
+
+            Progressive disclosure: the trigger swaps for the block inside this same card. The
+            block is a REVEAL, never a YAML dump — the file's location, a copy of it and its
+            folder. Everything is text/secondary tier so the Switch card's "Use this mapping"
+            stays the screen's ONE filled primary in the revealed state too.
+
+            **The path is shown and copied, never logged** — it carries the OS account name,
+            and no line here interpolates it (the ``except`` below says nothing about it).
+            """
+            if _origin_of(origins, sis) != "user":
+                return None
+            try:
+                path = overlay_path(sis)
+                if not path.is_file():
+                    return None
+            except Exception:  # noqa: BLE001 - TOTAL: an unresolvable id offers nothing, never a trace
+                logger.warning("Could not locate this district's mapping file; the export door is not offered.")
+                return None
+
+            def _reveal(_e: ft.ControlEvent) -> None:
+                export_open["on"] = True
+                _refresh()  # ONE re-render path for the card — the block rides the rebuild
+
+            if not export_open["on"]:
+                return components.text_button(
+                    MAPPING_EXPORT_LABEL,
+                    _reveal,
+                    icon=ft.Icons.DESCRIPTION_OUTLINED,
+                )
+            return ft.Column(
+                spacing=tokens.space_sm,
+                controls=[
+                    ft.Text(
+                        MAPPING_EXPORT_TITLE,
+                        size=tokens.type_body,
+                        weight=ft.FontWeight.W_600,
+                        color=tokens.color_text,
+                    ),
+                    ft.Row(
+                        spacing=tokens.space_xs,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            # Selectable text FIRST (help.py's house pattern): an admin on a
+                            # locked-down server can read and copy it by hand, so the copy
+                            # button is the one-click path and never the only one.
+                            ft.Text(str(path), size=tokens.type_body, color=tokens.color_muted, selectable=True),
+                            components.copy_button(page, str(path)),
+                        ],
+                    ),
+                    ft.Row(
+                        controls=[
+                            components.secondary_button(
+                                MAPPING_EXPORT_OPEN_LABEL,
+                                # The FOLDER, never the file — opening the file would hand a
+                                # district's mapping to whatever the OS has registered for
+                                # ``.yaml``, which on a district server is a coin toss.
+                                lambda _e, folder=str(path.parent): convert_output.open_folder(folder),
+                                icon=ft.Icons.FOLDER_OPEN_ROUNDED,
+                            )
+                        ]
+                    ),
+                    ft.Text(MAPPING_EXPORT_NOTE, size=tokens.type_body, color=tokens.color_muted),
+                ],
+            )
+
         def _refresh() -> None:
             # Re-render the current-mapping card + the pending summary + re-derive the gate, all
             # against the freshly-PERSISTED current — so an Apply is reflected in place and revertible.
@@ -773,7 +891,10 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
                         "Current mapping",
                         current_summary,
                         notes=_stale_notes(current, _origin_of(origins, current)),
-                        action=_edit_door(current),
+                        # The export door rides the CURRENT card alone (§7.1): you export the
+                        # district this computer converts, and two paths on screen would be two
+                        # answers to "which file?".
+                        actions=(_edit_door(current), _export_door(current)),
                     )
                 ]
                 live["name"] = current_summary.district_name
@@ -787,11 +908,12 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
                         pending_summary,
                         # The door on the PENDING row, only while it is a different mapping from
                         # the current one (on mount the two cards describe the same config) and
-                        # while no refusal band below is already carrying it.
-                        action=(
+                        # while no refusal band below is already carrying it. No export door
+                        # here, by design (§7.1).
+                        actions=(
                             _edit_door(pending["sis"])
                             if pending["sis"] != current and pending["sis"] != refused["sis"]
-                            else None
+                            else None,
                         ),
                     )
                 ]
