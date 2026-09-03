@@ -631,7 +631,10 @@ class TestTheNotListedCard:
 
         _button(view, home.NOT_LISTED_EMAIL_LABEL).on_click(None)
 
-        (url,), _kw = page.launch_url.call_args
+        # `page.launch_url` is a coroutine on 0.85.3, so the click SCHEDULES it through
+        # `components.open_url` -> `page.run_task(page.launch_url, url)` (owner finding 2026-09-03).
+        (fn, url), _kw = page.run_task.call_args
+        assert fn is page.launch_url
         assert url.startswith("mailto:")
         assert "body=" not in url
         assert "admin@x.example.com" not in url
