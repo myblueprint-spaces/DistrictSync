@@ -86,12 +86,38 @@ class RunErrorCategory(str, Enum):
 
 @dataclass
 class PipelineResult:
-    """Structured return value from run_pipeline."""
+    """Structured return value from run_pipeline.
+
+    ``input_columns`` is the run's RAW OBSERVATION of its input headers — no
+    derivation, no judgement: ``{ configured filename -> the normalised column
+    names the extractor saw, in file order }``. Keys are the CONFIG's spelling
+    of each file (what ``extractor.load_data`` returns, even when the
+    case-insensitive second look matched a differently-cased file on disk), and
+    a file that was not on disk KEEPS its key with an EMPTY tuple — the
+    extractor yields an empty frame for it, and dropping the key would make
+    this a second, quieter missing-FILE report able to disagree with the one
+    that owns that fact. Values are already strip+lower-cased: the extractor
+    normalises every frame it loads (``helpers.normalize_columns`` ->
+    ``column_names.normalize_column_name``), so no consumer re-normalises.
+
+    It exists for the pre-flight missing-column report (``src.etl.preflight``),
+    which turns it into a claim only in combination with a config; the
+    interpretation deliberately lives there, not here.
+
+    Only the SUCCESS path constructs a ``PipelineResult``, so the early-exit
+    paths (a config that fails to load, ``ExtractionError``, any transformer
+    raise) return no result at all and carry no observation — by design: those
+    failures name the offending column themselves and fail loudly, while an
+    absent mapped column is an *intended blank* that nothing else reports.
+    """
 
     entity_counts: dict[str, int] = field(default_factory=dict)
     sftp_attempted: bool = False
     sftp_ok: bool = False
     anomalies: list[str] = field(default_factory=list)
+    # `field(default_factory=dict)` per the `entity_counts` precedent above — a bare
+    # `{}` default raises `ValueError: mutable default` at class definition.
+    input_columns: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def extract_required_files(config) -> list[str]:
@@ -898,6 +924,11 @@ def run_pipeline(
             sftp_attempted=sftp_attempted,
             sftp_ok=sftp_ok,
             anomalies=anomalies,
+            # The observed headers, carried verbatim (see PipelineResult): the
+            # extractor already normalised them, so this is a copy — never a
+            # re-read, a second normalisation or a new extractor seam. `str()` so
+            # nothing but `str` leaves the pipeline.
+            input_columns={filename: tuple(str(column) for column in df.columns) for filename, df in raw_data.items()},
         )
 
     except SystemExit:
