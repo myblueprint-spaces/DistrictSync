@@ -2332,7 +2332,341 @@ _Spec self-check:_
   ROADMAP line, not something S5 papers over.
 
 ### Slice 7 — export + docs + certification disposition
-_Spec'd just-in-time, after S5 lands. **S7** — the export affordance (reveal/copy the overlay file), `adding-district.md`'s self-service section (freezing the overlay shape the vendor tests base changes against), the `output-contract.md` authorship note, PRODUCT_SPEC, qa-checklist rows for every new surface, ARCHITECTURE_TREE, the four INVARIANTS entries, the CLAUDE.md subsection + the "unclaimed → unmatched" phrase correction, and the D-0037-6 certification disposition (audit pass · product-gap pass · QA walk on a built exe — any deferral is an explicit DECISIONS entry, not a silent skip)._
+
+#### In plain English (the approval gate)
+
+Everything the admin can do now exists; S7 makes it findable, supportable and honest on paper. **(1)** A district
+that added its own mapping can SEE the file: Mapping's card grows a text-tier "Show this district's mapping file"
+that reveals the path, lets them copy it and opens the folder — because when a conversion looks wrong support asks
+for that file and nothing in the app says where it lives. Deliberately NOT a YAML text dump: it is one small
+readable file, support wants the FILE, and `CUSTOM_ORIGIN_NOTE` still promises no text-editing surface. **(2)** The
+plan's sharpest cost — a vendor base change breaking a district's overlay at 2 a.m., where no CI gate can ever see
+it — gets its floor PINNED (that night records a FAILED run with the bounded `config` category, never a crash
+before the record) plus a positive twin in the packed-exe smoke proving a frozen exe really does read and run a
+user-dir overlay. **(3)** The docs catch up: the vendor doc FREEZES the overlay shape a base change must be tested
+against, the output contract admits a second config author, PRODUCT_SPEC gains the journey and stops saying new
+configs are added by hand, the QA checklist gains a row per new surface, CLAUDE.md gains one dense subsection.
+**Done means:** support can ask for the file, a vendor changing a base knows what will break, and the certification
+gate this release owes is a written decision rather than a forgotten one. **What you're accepting:** S7 RECORDS the
+certification disposition — it does not run the three passes (one is a manual walk on a Windows exe on your
+machine) — and the whole feature's CI result is read once, at the PR, as the plan's closing gate.
+
+#### 7.1 The export affordance — reveal the file, never dump its text
+
+- **Placement: the CURRENT-mapping card, `origin == "user"` only**, beneath S6's change door; the "Switch to" card
+  gets NO export door (you export the district this computer converts — two paths on screen are two answers to
+  "which file?"). `_summary_card`'s `action: ft.Control | None` widens to `actions: Sequence[ft.Control] = ()` (one
+  signature, both call sites, `_edit_door` untouched) so both controls ride one wrapping Row.
+- **Constants on `screens/mapping.py`** (prefix `MAPPING_`, joining the S6 sweep): `MAPPING_EXPORT_LABEL = "Show
+  this district's mapping file"` · `MAPPING_EXPORT_TITLE` · `MAPPING_EXPORT_NOTE` (one sentence — a small text file,
+  support may ask for it; no vague-future word, no `BANNED_WORDS` member, and **no invitation to edit it**, which
+  would retire a promise S6 deliberately left standing) · `MAPPING_EXPORT_OPEN_LABEL = "Open folder"`. That label
+  duplicates Convert's inline literal (`convert.py:_output_folder_row`) **knowingly** — the two rows open DIFFERENT
+  folders and a shared factory label would imply one affordance; declared here so the sweep sees it, duplication
+  named in a comment.
+- **Progressive disclosure, session-local.** The trigger swaps for a block inside the same card:
+  `MAPPING_EXPORT_TITLE` (`type_body`/W_600) · the path as `selectable=True` muted text ·
+  `components.copy_button(page, path)` (help.py's house pattern — a locked-down server may have no other route) · a
+  secondary `MAPPING_EXPORT_OPEN_LABEL` + `ft.Icons.FOLDER_OPEN_ROUNDED` · `MAPPING_EXPORT_NOTE`. Reveal state lives
+  in the view closure, **never in `config.json`** — a disclosure toggle is not a district's setting.
+- **Open folder opens the DIRECTORY**, `authoring.overlay_path(sis).parent`, through `convert_output.open_folder` —
+  the ONE per-OS dispatcher (best-effort, never raises), imported from `ui_flet/convert_output`, never from a screen.
+- **TOTAL, never a dead affordance.** `overlay_path` validates the id and can RAISE; the trigger renders only when
+  the path resolves AND `.is_file()` — one stat per mount on the user branch only (the S4b cost note), so a
+  hand-deleted overlay offers no path to nothing and a shipped row is never stat'ed. Any raise ⇒ nothing rendered.
+- **Design + PII.** Text tier, so the Switch card's "Use this mapping" stays the screen's ONE filled primary in the
+  revealed state too (S6's list-equality pin extends to it); factories + `tokens` only; `districtsync-design` runs.
+  The path carries the OS account name: shown and copied by the admin, **interpolated into no new log line**
+  (swept). `open_folder`'s pre-existing WARNING can echo an `OSError` filename — the same exposure Convert's row
+  already has, in a log whose startup banner already prints the profile dir. No new exposure, no write of any kind.
+
+#### 7.2 The breaking-base pin, and the exe-smoke positive twin
+
+- **The pin — `tests/test_pipeline_run_store.py`, new `TestCorruptUserOverlayRecordsAFailedRun`.** Today's
+  `config`-category coverage is an unknown id and a monkeypatched `load_config` raise; neither is a real user-dir
+  file. The new class writes bytes to `authoring.overlay_path("sd93custom")` (the autouse `isolated_user_profile`
+  puts `user_mappings_dir()` in `tmp_path`) in two shapes — YAML that does not parse, and YAML that parses but fails
+  Pydantic (`enabled_entities: [Nope]`) — and asserts, for `source="scheduled"`: `SystemExit(1)`, `status ==
+  "failed"`, `error_category == "config"`, the record's `sis_type` being the custom id, `"error" not in` it (the
+  privacy split). **Positive twin, same class:** the SAME id written properly (an `authoring.OverlaySpec` built
+  locally — **never** importing `tests/test_config_authoring.py`, which inverts the test dependency, the S2b lesson)
+  records `success`, so the red half is the corruption, not the harness. Nothing asserts repair — the app never
+  rewrites a user's file.
+- **The exe twin — `scripts/ci_flet_pack_smoke.py`, a FIFTH CLI phase `"user-overlay"`,** inserted between
+  `write-run` and `corrupt-profile` in `CLI_SMOKE_PHASES` (that dict is the only place order lives;
+  `corrupt-profile` stays LAST). Phase-4's shape verbatim: refuse without `DISTRICTSYNC_DATA_DIR` (it plants bytes;
+  `--allow-real-profile` does not extend to it) · **negative control FIRST** — `--sis sd93custom --dry-run` before
+  planting ⇒ non-zero (the exe does not already know the id) · plant `ctx.seam_dir / "mappings" /
+  "sd93custom_mapping.yaml"` from a module constant `_SD93_OVERLAY_YAML` whose renames reproduce the SD74 fixture's
+  filenames · re-run ⇒ exit 0, `"=== DRY RUN"` in stdout, the new log slice naming `sd93custom` · `finally` unlinks
+  ONLY the planted YAML. `ci.yml` needs NO change (it runs `--phase all`) and the script stays standalone — it
+  imports nothing from `src/`. **Literal tie-back** (no-vacuous-greens): a parity test asserts `_SD93_OVERLAY_YAML`
+  is EXACTLY `authoring.build_overlay(<the same spec>)`'s text and `load_config`s cleanly once written into a user
+  dir (the script is importable from the suite — `conftest` registers it). **What the phase claims**, in its
+  docstring so the plan's own sentence stays true: the MECHANISM (a frozen exe resolves `user_mappings_dir()`,
+  deep-merges a `_base`, converts) and **no district's content** — no CI gate ever validates a user-dir config.
+
+#### 7.3 The docs, file by file
+
+1. **`docs/developer/adding-district.md` — a new `## Self-service overlays` section** before `## District config
+   reference` (it is not a step in the vendor's own walk). It **FREEZES the shape**: the emitted keys in
+   `authoring._ROOT_KEY_ORDER` order — `_base` (one of `ALLOWED_BASES`), `district_name`, `district_domains`,
+   diff-only `global_config` (+ the chain-companion rule: a scope key always drags `homeroom_grades` out, because
+   deep merge REPLACES lists), per-entity `source_files` renames propagated to every role **and**
+   `school_year_sources`, `authored_with` — and what is deliberately absent (`version:`, `sis:`, both inherited).
+   Then **what a vendor must check before changing a base**: never rename/repurpose a `global_config` key an overlay
+   names literally · a changed list default is REPLACED, so re-check the grade chain resolves for a secondary-only
+   overlay · renaming a bundled `source_files` filename orphans a rename key (fail-loud ⇒ a `config`-category FAILED
+   run, §7.2) · removing an entity breaks an overlay's `enabled_entities` · **no CI gate ever sees a user-dir
+   config**, so this frozen shape plus the FAILED-run floor IS the mitigation. Closes with the local reproduction
+   (`authoring.write_overlay` + `--sis sd##custom --dry-run`) and `sd<num>custom` as the reserved namespace.
+2. **`docs/developer/output-contract.md` — an authorship note in `## Config schema — the other contract`.** Its two
+   future-tense sentences ("Phase 2's mapping creator will generate configs against it", "…should validate key names
+   on the way in") become present tense, and 2–3 sentences state that configs now have TWO authors — the vendor's
+   bundled files, gated by `make validate-config` in CI, and a district admin's user-dir overlay, gated only at load
+   plus the activation dry-run — which is why the additive-key rule binds harder. **No CSV contract change, no
+   changelog row, no `contract_version` bump, NO dated `confirmed` stamp**: the doc-wide stamp population stays at
+   exactly 6, a test S7 leaves green without editing.
+3. **`docs/claugentic-PRODUCT_SPEC.md` — a `### Self-service district setup` feature section** after `### Mapping
+   review & switch` (Flow: two doors → four forms → Your files → test conversion → "Save district settings"; States:
+   error · refused-needs-test · stale-provenance; What good feels like: nothing becomes the active district
+   untested, a shipped mapping is never editable, support can always be given the file), **two AC entries** in the
+   JSON block — `AC-selfserve-1` (create → test → activate on a scratch profile) and `AC-selfserve-2` (both re-gate
+   refusals change nothing; the export reveals a path in that profile) — and a **correction to `## What's
+   deliberately out (today)`**: the column-mapping editor stays out, but "New configs are added by hand in
+   `config/mappings/`" is now false for a district's own mapping. `docs/claugentic-PRODUCT.md` gets the matching
+   paragraph beside its "my district isn't listed" line (`:469`): the dead end became a door.
+4. **`docs/developer/qa-checklist.md` — EIGHT rows, prose count 26 → 34**, every one under
+   `DISTRICTSYNC_DATA_DIR`: `8` launch-page not-listed → wizard creator end to end · `8a` Mapping's CREATE door on
+   an already-configured install · `8b` the CHANGE door, with a shipped row's absence of one in the same look · `8c`
+   the Files step including three real renames (input pointed at a copy of `tests/snapshots/input`, whose filenames
+   are SD74's) · `8d` the test conversion and its three refusals (names unsaved · no output folder · a FAILED run's
+   bounded category) · `8e` the re-gate — hand-edit the overlay, then press Mapping's Apply and Settings' folders
+   Save: both change NOTHING (check `config.json` after each) and the nightly is not re-registered · `8f` the
+   "written with an older version" note (hand-bump `authored_with`) · `8g` the export (reveal, copy, Open folder
+   lands in the scratch profile's `mappings`).
+5. **`docs/partner/installation.md` — two touch-ups only.** The `mappings/*.yaml` table row stops attributing the
+   file to the DistrictSync team ("…or added by you in the app — one small readable text file per district,
+   `sd<number>custom_mapping.yaml`, kept across exe upgrades"), and Wizard Step 1's "If your district is not listed,
+   contact SpacesEDU support." names the in-app path, support still offered. No new section.
+6. **`docs/claugentic-ARCHITECTURE_TREE.md`** — refresh the `src/ui_flet/screens/mapping.py` line for the export;
+   every new module already has its own line (S1/S3/S5 added them). Verify with the pre-commit gate, not by eye.
+   **7. `CLAUDE.md`** — §7.5.
+- **Parity for every doc literal: `tests/test_creator_doc_copy_parity.py` (NEW)**, in
+  `tests/test_ui_flet_band_copy_parity.py`'s shape — a doc → constant-name map pinned BOTH ways (a declared quote
+  present verbatim; a doc declared not to quote it must not contain it). Covers
+  `creator.CREATOR_ENTRY_LABEL`/`GATE_RUN_LABEL`/`GATE_CONFIRM_LABEL`/`FILES_SAVE_LABEL`,
+  `mapping.MAPPING_CREATE_LABEL`/`MAPPING_EDIT_LABEL`/`MAPPING_EXPORT_LABEL`, `mapping_catalog.CUSTOM_ORIGIN_LABEL`,
+  plus two DERIVED rows rather than hand-listed ones — `authoring.overlay_path("sd93custom").name` for
+  installation.md's filename claim and `authoring._ROOT_KEY_ORDER` for adding-district.md's key list **in order** —
+  and the cheap row-count check that closes ROADMAP gate item (3) (the checklist's prose count equals its rows).
+
+#### 7.4 INVARIANTS — the three remaining entries (S1's floor-direction entry is (i) of four)
+
+File format: a bold one-line headline, `_(Plan 0044 S…, date · files.)_`, the why-it-bit paragraph, an explicit
+"do not" list.
+
+- **(ii) An emitted overlay can never name one source-file ROLE two ways: the rename map is keyed by ORIGINAL
+  filename, propagated to every reference including `school_year_sources`, and the emission is REFUSED rather than
+  shipped half-renamed.** _(Plan 0044 S1+S4 · `src/config/authoring.py` (`_build_renames`, `_assert_no_divergence`,
+  `OverlaySpec.__post_init__`) + `src/ui_flet/config_editor.py` (`distinct_source_files`, `file_form_rows`).)_ One
+  file is named by up to three entity roles; a partial propagation LOADS CLEANLY and silently drops an entity's
+  source. The chain refusal (a target may not also be an original, case-folded) and the ONE fold
+  (`folded_filename`) are part of the same rule. The honest limit — per-ROLE divergence is inexpressible on this
+  model — stays a ROADMAP line and may not be closed by weakening the check.
+- **(iii) The creator's resume token and its activation write are SEPARATE and each single-pathed:
+  `creator_pending_sis` is ADVISORY and may never activate anything, and `activate_creator_config` is the ONE
+  writer of `sis_type` for a user config — district and tested digest in ONE save.** _(Plan 0044 S3 ·
+  `src/config/app_config.py` (`creator_save`, `activate_creator_config`, `_ADVISORY_FIELD_PREFIXES`) +
+  `src/ui_flet/screens/creator.py` (`creator_gate_current`).)_ The `creator_` PREFIX is load-bearing — it is what
+  makes a creator-only save on an unreadable profile REFUSED; `creator_save` refuses every non-`creator_*` key,
+  `sis_type` most of all, so no creator path becomes a back door; one save means no crash leaves a district active
+  with no recorded test, or a test recorded against no district. Do not add a second activation path, widen
+  `creator_save`'s key rule, or drop the prefix.
+- **(iv) The verified fact is DIGEST-keyed and fails SAFE: a refused or failed invalidation still leaves a digest
+  that no longer matches, and a non-matching digest can only re-ASK for a test.** _(Plan 0044 S3+S6 ·
+  `src/ui_flet/config_editor.py` (`stored_verified_digest`, `verified_is_current`, `activation_allowed`) +
+  `src/config/authoring.py` (`resolved_digest`, `current_digest`).)_ The fact is keyed by the digest of the whole
+  RESOLVED config, so an edit invalidates it by construction rather than by anyone remembering to clear it — which
+  makes the dangerous direction (a stale PASS) structurally unreachable and prices the failure direction at one
+  extra test run. A bundled config never reads the digest at all. Do not key it on mtime or app version, do not
+  "repair" a mismatch by re-stamping, do not add a second spelling of the comparison.
+
+#### 7.5 CLAUDE.md — the subsection to paste
+
+In the **Desktop UI (`src/ui_flet/`)** section, immediately AFTER the `Pure COUNTED (tested) logic:` paragraph (so
+the pure-module list stays in one place); that paragraph gains `config_editor` and `preflight` to the COUNTED list
+and `screens/creator.py` to the coverage-omitted list. Also, in the `district_domains` paragraph, the phrase fix:
+**"unclaimed = shown in every state" → "unclaimed = shown in every UNMATCHED state"** (filter tier (ii) carries no
+unclaimed row unless it is the saved or picked district). Verified 2026-09-03:
+`tests/test_config_district_domains.py:59` repeats the phrase in a comment — correct it in the same change; no
+assertion quotes it.
+
+> **Self-service districts (plan 0044).** A district admin can author their OWN mapping in-app — no vendor PR, no
+> release. `src/config/authoring.py` writes a THIN overlay YAML into `paths.user_mappings_dir()`
+> (`sd<num>custom_mapping.yaml`): `_base` (one of `ALLOWED_BASES`) + `district_name` + `district_domains` +
+> diff-only `global_config` + per-entity `source_files` renames + `authored_with`; **no `version:`/`sis:`**
+> (inherited through `_base`, so the bundled-only declared-range parity stays intact) and the grade-chain COMPANION
+> rule (a scope key always emits `homeroom_grades` too — deep merge REPLACES lists).
+> `src/config/bc_district_domains.py` is a placeholder-quality PREFILL table (60 districts / 63 public staff
+> domains), never a source of truth. Surfaces: `screens/creator.py` (`build_creator` — the host seam; the wizard's
+> District step and Mapping's panel are its TWO hosts, and it may never import a host) over the pure
+> `ui_flet/config_editor.py` (`CreatorForm` — grade chain valid BY CONSTRUCTION — the files form,
+> `activation_allowed`, `overlay_staleness`, `humanize_config_error`) + the pure `src/etl/preflight.py`
+> (expected-column derivation over `PipelineResult.input_columns`; a column in NO file is REPORTED, never a
+> verdict). The `creator_` `AppConfig` family is ADVISORY BY PREFIX (`_ADVISORY_FIELD_PREFIXES`, beside
+> `identity_`/`window_`): `creator_save` is the ONE `creator_*` writer and refuses any other key — `sis_type` most
+> of all — while `activate_creator_config` is the ONE user-config activation, writing district + tested digest in
+> ONE save. **The verified fact is DIGEST-keyed** (`authoring.resolved_digest` over the resolved model), so an edit
+> invalidates it structurally and a mismatch can only re-ASK. FOUR `sis_type` writers (wizard District step ·
+> creator activation · Mapping Apply · Settings folders Save); the three that can select a USER config reduce to ONE
+> comparison (`creator.creator_gate_current` → `config_editor.activation_allowed`), so no surface activates what
+> another refuses. Provenance is visible everywhere: `ConfigSummary.origin` + `CUSTOM_ORIGIN_LABEL` in all four
+> pickers and on Mapping's card, which also carries the change door, the staleness notes and the export reveal
+> (`authoring.overlay_path` + `convert_output.open_folder` — the path is shown, never logged). Floors:
+> `district_domains` RAISES for a bundled config and WARNS-and-drops for a user-dir one (INVARIANTS — never
+> invert); **no CI gate ever validates a user-dir config**, so a base change that breaks an overlay surfaces as a
+> FAILED run with the bounded `config` category (pinned in `tests/test_pipeline_run_store.py`) plus a degraded
+> read-only Mapping — which is why `docs/developer/adding-district.md` FREEZES the overlay shape a vendor tests base
+> changes against. Threat model, stated: the gate stops an admin MISTAKE, not tampering (a hand-edited `config.json`
+> or a hand-dropped YAML bypasses it).
+
+#### 7.6 DECISIONS + ROADMAP closures
+
+- **DECISIONS — spec only what is still missing.** Verified 2026-09-03: none of the four ratified adjudications has
+  its own dated line (the 2026-08-27 owner entry records domain DERIVATION and the gate's existence; the 2026-09-02
+  lines record S1/S3/S4 DEVIATIONS). Re-check at implementation time — S6's land record may take (a) — then write
+  the missing ones, one dated line each: **(a) activation scope** (four `sis_type` writers, three consulting ONE
+  comparison, Convert deliberately ungated, the threat-model sentence); **(b) domains persistence** (confirmed
+  domains are PERSISTED into the overlay, so a self-served district scopes every picker exactly as a shipped one
+  does; the escape — blanking the stored address in Settings — stands; CLAUDE.md's phrase corrected); **(c) version
+  emission** (no `version:` in an overlay, keeping `TestDeclaredRangeVersusSupported` bundled-only, and what would
+  force a change: an overlay-only key); **(d) advisory-writer shape** (the `creator_` family behind
+  `_guarded_field_write`'s five obligations with two thin prefix-scoped wrappers, chosen over generalizing the
+  identity writer).
+- **ROADMAP — CLOSE exactly one item:** the Brief-0037 **"Phase 2 = the district self-service config editor"**
+  bullet, marked LANDED with the plan link and its certification sentence rewritten to point at §7.7's recorded
+  disposition. **LEAVE OPEN** (backlog, not debt): the S1-gate items (per-role divergence · SD58/SD70 table
+  quality), the S3-gate items (a) unlinted `scripts/` and (c) the un-gated `scripts/` tree section, the S3-review
+  items (the `mbponly` grades card; the per-instance gate single-flight), S4's two tier-gap residuals, S5's
+  padded-lookup line, the detailed-editor deferred phase, the partner-docs-surface item. S1-harvest item (3)
+  (checklist count drift) is CLOSED for this doc by §7.3's row-count test.
+
+#### 7.7 Certification disposition (D-0037-6) and the CI land gate
+
+- **The three components, and what each runs against.** (1) **Audit pass** — `/claugentic-dev-harness:audit` against
+  `docs/claugentic-standards/`, at RELEASE level over the accumulated S1–S7 set (each slice's own Stage-7
+  adversarial pass is already on record; the cross-set pass is what is missing). (2) **Product-gap pass** —
+  `/claugentic-dev-harness:product` in gap mode against `docs/claugentic-PRODUCT_SPEC.md` **as §7.3 leaves it**: the
+  new feature section and its two AC entries are what the pass reads, so the docs land BEFORE the pass, not after.
+  (3) **QA walk on a BUILT exe** — `make build-win` on the owner's Windows machine, walking
+  `docs/developer/qa-checklist.md` including the eight new rows; CI is structurally blind to all of them (native
+  dialogs, real profile state, whether anything renders).
+- **S7 records the disposition; it does not run the passes** — (3) needs the owner's Windows machine, and (1)/(2)
+  are release-gate work rather than slice work. Two acceptable outcomes, both explicit: **run all three before the
+  release that ships plan 0044** (the 2026-08-05 re-proposal condition as written, and the 2026-08-17 entry's
+  warning that a fourth silent override makes the rule nominal), or **an explicit dated DECISIONS entry** naming
+  which component is deferred, why, and what it does NOT prove — the 2026-08-31 v3.14.0 entry is the model for an
+  owner-driven substitution recorded honestly. If the owner says nothing, S7 lands a DECISIONS line stating the pass
+  is OWED and UNRUN; never an implied pass, and no "audited" claim in any doc S7 touches.
+- **The CI land gate — the plan's closing gate.** S1–S6 each landed with CI unread (`ci.yml` fires on push-to-main /
+  PRs to main only), owed at PR time under the owner's one-PR-for-the-feature decision. S7 discharges it: `gh pr
+  checks --watch` on that PR, the three-OS result READ and QUOTED in the plan's `## Land record — S7` before the
+  plan is called done. The 2026-07-30 rule's motivating incident was exactly this — a Linux-only failure sitting on
+  `main` for three consecutive pushes.
+
+#### In-scope standards dimensions
+
+`docs-and-traceability` (the primary axis: a frozen vendor-facing shape, a second config author named, every new
+surface walkable, four INVARIANTS entries, the decisions recorded) · `product-ux` (an export the admin can act on;
+text tier so ONE filled primary survives; progressive disclosure; no invitation to hand-edit) · `privacy` (a profile
+path shown and copied, never logged or persisted; no district content in CI) · `reliability-resilience` (the
+FAILED-run floor pinned on a REAL corrupt user file; the export TOTAL over a raise and a missing file) ·
+`observability-ops` (no new log line; the bounded `config` category is the nightly's only claim) · `testing` (a twin
+for every absence) · `maintainability-structure` (one signature widened, no new module, no cross-screen import, the
+script still standalone) · `security` (no new egress, write, subprocess shape or `sis_type` writer).
+
+#### Tests to add
+
+- **`tests/test_ui_flet_creator_flow.py`** — the export: rendered on a user-authored CURRENT card, **absent** on a
+  shipped card in the same render (the twin), absent when the overlay file does not exist, absent when
+  `overlay_path` raises · the revealed block carries the path text, a copy control and the Open-folder button ·
+  `convert_output.open_folder` monkeypatched and asserted to receive `overlay_path(sis).parent`, **never the file** ·
+  the ONE-filled-primary list equality extended to the revealed state · the new constants join the sweep via an
+  `S7_COPY_CONSTANTS` tuple (with `test_every_named_constant_exists`'s count bumped — a sweep going quiet is the S4
+  lesson) and the banned-vocabulary / promises-nothing rows · a log sweep asserting no new line interpolates the path.
+- **`tests/test_pipeline_run_store.py`** — `TestCorruptUserOverlayRecordsAFailedRun` (§7.2), both corruption shapes
+  plus the success twin. **`tests/test_config_authoring.py`** — the exe-smoke literal parity (the script's
+  `_SD93_OVERLAY_YAML` equals `build_overlay`'s text for the same spec, and loads cleanly from a user dir).
+  **`tests/test_creator_doc_copy_parity.py` (NEW)** — the doc→constant map both ways, the two DERIVED rows, the
+  checklist row-count check.
+- **Left green without editing:** `tests/test_output_contract_doc.py` (stamp count 6, the no-doc-wide-stamp
+  sentence) and `tests/test_config_district_domains.py` (its `:59` comment corrected in the same change).
+- **Regression:** full suite · SD74 golden byte-identical · `make validate-config` 20/20 · tree-check ·
+  ruff/format/mypy/bandit/email scan · the five-phase `--cli-smoke` run (locally against a built artifact if one is
+  at hand, else in CI) · `districtsync-design` pass on the Mapping change · **CI's own result read and quoted**.
+
+#### Acceptance criteria
+
+1. A user-authored CURRENT mapping offers "Show this district's mapping file"; revealing it names the real
+   `overlay_path`, allows copying it, and opens the containing folder through the one per-OS dispatcher. A shipped
+   mapping, a missing overlay file and an unresolvable id each offer nothing — never a dead control, never an error.
+2. Mapping still has exactly ONE filled primary in every state, revealed state included; the export writes nothing
+   to `config.json` and interpolates the path into no log line.
+3. A corrupt USER-DIR overlay driving a scheduled run exits 1 and records a FAILED run with `error_category ==
+   "config"` and no free text, with a success twin proving the mechanism.
+4. The packed exe converts through a planted user-dir overlay under `DISTRICTSYNC_DATA_DIR`, with a pre-plant
+   negative control, cleanup of only what it planted, `corrupt-profile` still last, and the planted YAML tied back
+   to `authoring.build_overlay`.
+5. `adding-district.md` states the emitted key set in `_ROOT_KEY_ORDER` order, what is absent and why, and the five
+   things a vendor must check before changing a base — pinned to the module rather than hand-copied.
+6. `output-contract.md` names the second author and the harder additive-key obligation, with no CSV contract change,
+   no `contract_version` bump, and the dated-stamp population still exactly 6.
+7. PRODUCT_SPEC carries the feature section plus two AC entries and no longer claims new configs are added only by
+   hand; PRODUCT carries the matching paragraph.
+8. The QA checklist carries the eight new rows, its prose count matches its table, and every row runs under
+   `DISTRICTSYNC_DATA_DIR`.
+9. CLAUDE.md carries §7.5's subsection verbatim, the pure/omitted lists include the new modules, and the
+   "unclaimed" phrase reads "every UNMATCHED state" in both the doc and the test comment quoting it.
+10. INVARIANTS carries entries (ii)–(iv) in the file's format; the missing DECISIONS adjudication lines exist; the
+    ROADMAP Phase-2 item is closed and nothing else is closed with it.
+11. The certification disposition is RECORDED (run-before-release, or a dated deferral naming what it does not
+    prove), and the feature PR's three-OS CI result is read and quoted in the S7 land record.
+12. All gates green: ruff/format, mypy, bandit, tree-check, email scan, 20-config pin, full suite, SD74 golden
+    byte-identical.
+
+#### Open questions for the owner
+
+- **Export = reveal the path, or copy the YAML text?** Default and recommendation: **reveal the path + Open folder +
+  copy the path**. The file is one small readable YAML, support asks for the FILE, a clipboard of YAML invites
+  hand-edits the app cannot validate, and `CUSTOM_ORIGIN_NOTE` still promises no text surface. A "copy the contents"
+  button is one reviewed line later if support actually asks.
+- **Is the qa-checklist walk owner-run or agent-run?** Default **owner-run** — a manual pass on a built Windows exe
+  is the one thing no agent here can do. S7 writes the rows; the walk is §7.7's component (3).
+- **Certification timing** — run all three before the release that ships this plan, or record a dated deferral? S7
+  writes whichever the owner chooses and will not imply a pass.
+- **Does PRODUCT_SPEC's `AC-identity-2` expectation need re-wording?** Its "the not-listed note says we'll need to
+  build a mapping" is still what the launch page says (`NOT_LISTED_NOTE_TAIL` is unchanged by this plan), so S7
+  leaves it alone — flagged because the self-service door arguably belongs in that copy, which is a copy change
+  beyond this slice.
+
+_Spec self-check:_
+- **The riskiest element is the docs' truth, not the button.** The export is ~40 lines behind one `is_file()`; what
+  can actually harm someone is a FROZEN shape a vendor trusts — so §7.3(1) pins the key list to `_ROOT_KEY_ORDER`
+  and §7.4(ii)–(iv) record the three rules a future "simplification" would break.
+- **The plan's sharpest cost gets a real pin, not a mock.** The existing `config`-category tests use an unknown id
+  and a monkeypatched raise; S7's writes actual bad bytes into `user_mappings_dir()` with a success twin beside it,
+  because the claim ("a broken overlay tells the admin next morning") is about a FILE, not a patch.
+- **One deviation named in-line:** the "Open folder" label is duplicated between Convert and Mapping deliberately
+  (two folders, two sentences) rather than hoisted into `components` — a label is copy, and copy lives on the
+  surface that speaks it.
+- **Vacuous-green watch.** "No trigger on a shipped row", "nothing logged", "no stamp added", "no contract bump" are
+  absence claims — each carries its twin (the user-row render, the sweep's positive index, the untouched stamp-count
+  test, the golden), and the exe phase's negative control runs BEFORE the plant so its exit 0 cannot be true for any
+  other reason.
+- **Not decided here:** whether the certification components run (owner's call, recorded either way), whether the
+  launch page's not-listed copy should mention the new door, and the per-ROLE divergence limit — all three stay
+  named rather than quietly resolved.
 
 ---
 
