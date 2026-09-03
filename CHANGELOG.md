@@ -9,6 +9,14 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Changed
+
+- The installation guide now tells district IT how to skip the SmartScreen
+  screen on managed machines: host the release on an internal share (Windows
+  does not SmartScreen-check trusted-intranet files) or submit the signed
+  `.exe` to Microsoft for review. Neither is required — **Run anyway** with
+  the publisher reading **myBlueprint Corp.** remains the documented path.
+
 ## [3.16.0] - 2026-09-02
 
 The Windows download is now code-signed as **myBlueprint Corp.** Districts
