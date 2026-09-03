@@ -1,6 +1,6 @@
 # 0044 — District self-service config editor (Phase 2, re-scoped)
 
-- **Status:** S1 · S2 · S3 · S4 LANDED on `claude/plan-0044-implementation-nrdj2z` (2026-09-02; each Stage-7 reviewed). Owner tested locally 2026-09-02 → S6 REORDERED ahead of S5 (+ a Mapping CREATE door), a Files-step clarity fix in flight; then S5, S7
+- **Status:** S1–S6 LANDED on `claude/plan-0044-implementation-nrdj2z` (S6 reviewed + fixed 2026-09-03; S5 both halves landed, its review folded into the S7 close-out pass); S7 (export + docs) in flight — the last slice
 - **Resumable from:** Stage 4/6 — the S6 spec (Mapping hosts the creator; re-gate on Apply + folders-card Save) then its implementation; S5 and S7 follow. Owner go given 2026-09-02
 - **Blockers:** none
 - **Flags:**
@@ -509,7 +509,7 @@ halves pinned together. Any new sink keeps `dry_run` a REQUIRED keyword
   plain-language "not present in any file" report + the additive
   `PipelineResult.input_columns` field, wired into the gate beside the dry-run. Lands
   complete: the pre-processing-district trap is caught at setup, not at 2 a.m.
-- [ ] **S6 — Mapping edit + re-gate (+ the folders-card call site, R2-1).** Edit
+- [x] **S6 — Mapping edit + re-gate (+ the folders-card call site, R2-1).** _(LANDED 2026-09-03 — plus the owner's CREATE door on Mapping; reordered ahead of S5.)_ Edit
   affordance on user configs (the second host of the creator forms — the
   `build_setup(on_complete=…)` host pattern is the precedent, settled in S3's spec as a
   design obligation), verified-fact check on Mapping's Apply AND the Settings
@@ -2701,3 +2701,11 @@ _Spec self-check:_
 - **Closes:** ROADMAP "S1 review item 2" (rename chains). **Records:** DECISIONS (pending map host-owned; gate refuses while unsaved). `FLET_1.0_CONVENTIONS.md`: `Dropdown(editable=True)` declined + `TextField.on_blur` verified.
 - **CI:** still not read — owed at PR time (owner: PR after the UI slices).
 - **Milestone:** S1–S4 = the locally-testable self-service UI (standard AND renamed filenames). Remaining: S5 (missing-column report), S6 (Mapping edit + re-gate on Apply/folders-card Save), S7 (export + docs + certification disposition).
+
+## Land record — S6 (2026-09-03)
+
+- **Commits:** Mapping hosts `build_creator` in a `body_host` panel — CREATE door ("Set up a district that isn't listed", owner-requested), CHANGE door (user rows only), resume of a pending creation; `config_editor.activation_allowed` → `ActivationVerdict`, the ONE tested? comparison behind Mapping's Apply, the folders-card Save, the wizard's creator activation AND (review find) the wizard's standard District step — FIVE `sis_type` writers; `_after_switch` shared by Apply and activation; `MAPPING_STALE_*` provenance notes; host-neutral `GATE_REFUSED_NO_OUTPUT_NOTE` + the output-folder precondition with an Open Settings route; the `unlock` exemption removed; review fixes (Done refuses while names pend; District step gated; staleness memo cleared; folders gate only on change; fresh `AppConfig.load()` at both checks).
+- **Deterministic gates (local, Linux, after the fixes):** full suite 5,534 passed / 47 skipped / 1 PRE-EXISTING root-container failure (a second transient failure belonged to S7-α's then-in-flight smoke phase, since paired) · ruff + format clean on every S6 file · `python -m mypy` clean · bandit clean · email scan OK · `make validate-config` 20/20 · tree-check OK (101 files) · SD74 golden byte-identical.
+- **Reviewer sign-off (Stage 7):** 2 BLOCKING fixed (Done discarding pending names; the fifth ungated writer) · 3 SHOULD fixed · NOTEs ledgered above. Security/PII and the gate's reality at both named sites verified on the real mounts.
+- **Decisions (DECISIONS 2026-09-03):** five writers, one comparison; the folders card gates only when the district changes; Done keyed on `creator_gate_current` alone; the wizard's refusal routes to Mapping rather than hijacking "Set up my district" (hijacking would trap a stale-pick admin behind Discard, which deletes the overlay).
+- **CI:** still not read — owed at PR time (owner: one PR for the feature).
