@@ -224,8 +224,8 @@ GATE_RESAVED_NOTE = "Saved. Your district's file names changed, so please run th
 #: because "a column is missing" reads as a failure until something says otherwise.
 PREFLIGHT_MISSING_TITLE = "Some columns aren't in your files"
 PREFLIGHT_MISSING_NOTE = (
-    "A test conversion still passes — the rows are there, but this column comes out blank in every one of "
-    "them. It usually means your district's export uses a different header, or you've picked a starting "
+    "A test conversion still passes — the rows are there, but these columns come out blank in every row. "
+    "It usually means your district's export uses a different header, or you've picked a starting "
     "point that expects a column your extract doesn't have."
 )
 
