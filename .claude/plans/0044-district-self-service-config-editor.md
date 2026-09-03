@@ -2818,3 +2818,54 @@ directions · the SD60/SD75 conventional form resolving end-to-end through `norm
 sweep of all 15 shipped SD configs against the table · the creator fallback (vendored name fills a
 district we do not ship; NEITHER source still leaves it empty; a shipped name wins) · the two
 encoding regressions with their twins.
+
+## Land record — owner review round 3 (2026-09-03)
+
+Commits `d9dffec` (the UTF-8 read fix, deliberately separate so the bug is bisectable on its own)
+and `dd9fd3a` (the round-3 work), on top of merge `810b311` from `origin/main`.
+
+**The branch's FIRST-EVER CI run, and the cause of the silence is now known.** PR #100 had reported
+"no checks reported" for its whole life. It was the CONFLICT: GitHub cannot build a
+`refs/pull/N/merge` ref for a `CONFLICTING` PR, so `pull_request`-triggered workflows never fire at
+all. Both `ci.yml` and `flet-verify.yml` matched this PR's base and paths the entire time. The
+moment the merge from `main` was pushed the PR went `CONFLICTING` → `MERGEABLE` and all four checks
+registered and ran. Worth remembering: a conflicting PR is not merely un-mergeable, it is
+**un-tested**, and `gh pr checks` reports that as "no checks" rather than as a blocked state.
+
+**CI — read, not assumed (`gh pr checks 100 --watch`, quoted verbatim):**
+
+```
+pack / pack (macos-latest, light, :)                                   pass   3m59s
+pack / pack (ubuntu-22.04, light, :)                                   pass   2m25s
+pack / pack (windows-latest, light, ;, --require-close, --icon ...)    pass   4m41s
+test                                                                   pass  16m4s
+```
+
+Runs [33812629925](https://github.com/myblueprint-spaces/DistrictSync/actions/runs/33812629925)
+(`CI`) and [33812630377](https://github.com/myblueprint-spaces/DistrictSync/actions/runs/33812630377)
+(`flet-verify`). The three-OS pack matrix matters specifically here: the 2026-07-30 land gate exists
+because a **Linux-only** failure sat on `main` for three consecutive pushes while every slice read
+its own Windows run as authoritative. This branch has now been exercised on Linux and macOS too.
+
+**Local gates (Windows, Python 3.13 — the interpreter `requires-python` and `ci.yml` both name):**
+
+- full suite + coverage: **5,721 passed / 41 skipped / 1 deselected**, `TOTAL 7644 stmts, 276 miss,
+  96%` — `Required test coverage of 80% reached. Total coverage: 96.39%`, `PYTEST_EXIT=0` (13m33s);
+- `ruff check src/ tests/` + `ruff format --check` clean (221 files) · `mypy src/ --exclude
+  src/ui_flet` — no issues in 55 files · `bandit -r src/ -q -c pyproject.toml` exit 0 ·
+  `scripts/check_no_emails.py` — 342 tracked files, none · `make validate-config` — 20/20 ·
+  `scripts/claugentic-check_architecture_tree.py` — 101 in-scope files indexed · SD74 golden
+  byte-identical (in-suite).
+
+**A process note, recorded because it nearly shipped a false green.** The first full run was invoked
+as `pytest … | tail -25`, and `$?` then reports **`tail`'s** status, not pytest's — it read as exit 0
+while the suite actually had two failures. They were real (`TestDeriveDomains` pinned the pre-owner-rule
+domain answers for SD93 and SD34) and are fixed, but the pipeline hid them for one reporting cycle.
+Every subsequent run used `> log 2>&1; echo "PYTEST_EXIT=$?"`. A piped gate command cannot be trusted
+for a pass/fail claim.
+
+**Residual, NOT closed, flagged to the owner:** there is no `[Unreleased]` CHANGELOG entry for plan
+0044. `main` shipped v3.15.0/v3.16.0 and emptied that section, and the feature never had one. The
+repo's land-time convention says a user-visible feature earns one, but partner-facing release copy is
+an owner call and was not drafted unprompted.
+
