@@ -13,6 +13,13 @@ mount ``build_creator`` and own what happens after each payoff — and imports e
 constant and helper it needs from there. The dependency runs ONE WAY, wizard → creator, so
 S6's Mapping surface can become the second host without dragging the wizard along.
 
+**Two verified-fact refusals live on this surface** (plan 0044 S6 + its review): the
+Settings folders card's Save and the wizard's STANDARD District step's Continue both write
+``sis_type``, and both consult the pure ``config_editor.activation_allowed`` first, so
+neither can switch this install onto a district it set up itself and never tested. Each
+refuses whole — nothing written, nothing advanced, nothing re-registered — says so, and
+routes to Mapping, where the test conversion lives.
+
 **Two modes, one build entry (``build_setup``):**
 
 * **Wizard mode** — while ``not cfg.has_completed_setup()``: a five-step guided path
@@ -320,6 +327,21 @@ def district_auto_seeded_note(district: str) -> str:
     return f"We've picked {district} from your email's domain — change it if that's wrong."
 
 
+# ---- the verified-fact refusal on the wizard's District step (S6 review) - #
+#: The FIFTH writer of ``sis_type`` (plan 0044 S6 review, BLOCKING 2): this step's Continue
+#: persists the district, and the finish line then bakes it into the nightly task — so a
+#: district set up on THIS computer that has not passed a test conversion as it now reads is
+#: refused here too. Same wording pattern as :data:`FOLDERS_NEEDS_TEST_NOTE`: the OUTCOME
+#: first ("nothing was saved"), then the reason, then the one act that fixes it. Structural —
+#: no district name, no path, no digest. It names Mapping because that is where the test
+#: conversion lives (and where the setup of a district added here can be changed); the rail
+#: carries Mapping in every state, D7, so the note alone is never a dead end.
+WIZARD_DISTRICT_NEEDS_TEST_NOTE = (
+    "Nothing was saved. This district was set up on this computer, and it hasn't passed a "
+    "test conversion as it now reads. Run one under Mapping, then come back and continue."
+)
+
+
 def _district_catalog(cfg: AppConfig, *, picked_sis: str = "") -> FilteredCatalog:
     """The district rows THIS admin should see — the one choke point, per mount (0038 S5).
 
@@ -449,10 +471,11 @@ def build_setup(
     that quietly diverge are two wizards.
 
     ``on_navigate`` (plan 0044 S6, the shell's rail-follow lambda — Mapping/Convert/Home's
-    exact pattern) is the ONE route out of this scroll: the folders card's Save can now be
-    REFUSED for a district set up on this computer that has not passed a test conversion as
-    it currently reads, and the test lives on Mapping. ``None`` (the default, and what
-    Home's wizard host passes — it renders no folders card at all) renders the refusal note
+    exact pattern) is the ONE route out of this surface, for BOTH of its verified-fact
+    refusals: the folders card's Save and — since the S6 review's BLOCKING 2 — the wizard
+    District step's Continue can each be REFUSED for a district set up on this computer that
+    has not passed a test conversion as it currently reads, and the test lives on Mapping.
+    ``None`` (the default, and what Home's wizard host passes) renders each refusal note
     with no button rather than a dead one; the rail still carries Mapping either way, so a
     note alone is never a dead end.
     """
@@ -516,6 +539,9 @@ def _mount_wizard(
         # below, deliberately. See the comment there.
         "sis": cfg.sis_type,
         "auto_seeded": False,  # set below iff D9's seed actually fired (drives the step's caption)
+        # The District step's verified-fact refusal (plan 0044 S6 review, BLOCKING 2) — a
+        # fact about the LAST Continue press, cleared the moment the pick changes.
+        "district_refused": False,
         "schedule_skipped": False,
         "schedule_status": None,  # latest ScheduleStatus from the section's read-back
         "window_valid": True,  # the seasonal-window gate (B): enabled+invalid closes Continue
@@ -653,6 +679,38 @@ def _mount_wizard(
         ws["creator_note"] = note
         _render()
 
+    def _district_activation_allowed(picked: str) -> bool:
+        """The verified-fact check on the wizard's STANDARD District step. TOTAL.
+
+        This step's Continue is the FIFTH writer of ``sis_type`` (plan 0044 S6 review,
+        BLOCKING 2), and the one the wizard's own finish line bakes into the nightly task.
+        Its dropdown lists districts set up on THIS computer — ``_district_catalog`` is the
+        same scoped build every picker uses — so it consults the SAME pure
+        ``config_editor.activation_allowed`` Mapping's Apply, the folders card and the
+        creator's own confirm do. One rule, one comparison, five writers.
+
+        The origin comes from that catalog (the build is session-memoised, so this is a
+        projection over what the dropdown was just built from, not a second parse), and an id
+        missing from it reads as ``"bundled"`` — the fail-OPEN direction ``mapping_catalog``
+        documents for itself, and the one this threat model requires: the check exists to
+        stop an admin MISTAKE and may never strand an admin whose provenance we could not
+        read. Read through a FRESH ``AppConfig`` for the same reason Mapping's Apply does:
+        the digest it looks for is written by the creator panel on another surface, which
+        this mount's instance would not have seen.
+        """
+        if not picked.strip():
+            return True  # nothing chosen to check — ``can_advance`` already closed Continue
+        origins = {summary.sis_type: summary.origin for summary in _district_catalog(cfg, picked_sis=picked).summaries}
+        origin = origins.get(picked, "bundled")
+        return activation_allowed(
+            AppConfig.load(),
+            sis_id=picked,
+            origin=origin,
+            # ``None`` on the bundled branch deliberately — the rule never reads it there, so
+            # the shipped rows pay no config load.
+            current_digest=current_digest(picked) if origin == "user" else None,
+        ).allowed
+
     def _forward() -> None:
         step = ws["step"]
         if step is SetupStep.FILES and _files_names_pending():
@@ -679,7 +737,18 @@ def _mount_wizard(
             # so it is a deliberate no-op rather than an unreachable branch.
             pass
         elif step is SetupStep.DISTRICT:
-            cfg.sis_type = str(ws["sis"])
+            picked = str(ws["sis"])
+            if not _district_activation_allowed(picked):
+                # Nothing written, no advance (plan 0044 S6 review, BLOCKING 2): the standard
+                # walk offers a district added on this computer like any other, and this press
+                # is what would carry an untested one to a finish line that registers it as a
+                # nightly task. Re-renders the step so the refusal is on screen beside the
+                # dropdown that corrects it — the same shape as the FILES branch above.
+                ws["district_refused"] = True
+                _go(SetupStep.DISTRICT)
+                return
+            ws["district_refused"] = False
+            cfg.sis_type = picked
             cfg.save()
         elif step is SetupStep.FILES:
             pass  # the gate + activation already persisted everything this step decides
@@ -962,6 +1031,49 @@ def _mount_wizard(
                 return district_auto_seeded_note(friendly_district_name(picked_now) or picked_now)
             return DISTRICT_PICK_PROMPT
 
+        def _refusal_controls() -> list[ft.Control]:
+            """The refused-Continue note, plus the route to where the test conversion lives.
+
+            Never colour-alone (the glyph rides beside the words), and never a dead
+            affordance: with no ``on_navigate`` (Home's wizard host passes none) the note
+            renders alone and the rail still carries Mapping.
+            """
+            controls: list[ft.Control] = [
+                ft.Row(
+                    spacing=tokens.space_sm,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, size=18, color=tokens.color_status_warning),
+                        ft.Text(
+                            WIZARD_DISTRICT_NEEDS_TEST_NOTE,
+                            size=tokens.type_body,
+                            color=tokens.color_status_warning,
+                            expand=True,
+                        ),
+                    ],
+                )
+            ]
+            if on_navigate is not None:
+                controls.append(
+                    ft.Row(
+                        controls=[
+                            components.text_button(
+                                # ONE label for both refusal sites — the folders card and this
+                                # step send an admin to the same screen for the same reason.
+                                FOLDERS_NEEDS_TEST_LINK_LABEL,
+                                lambda _e: on_navigate("mapping"),
+                                icon=ft.Icons.ARROW_FORWARD_ROUNDED,
+                            )
+                        ]
+                    )
+                )
+            return controls
+
+        refusal_slot = ft.Column(
+            spacing=tokens.space_sm,
+            controls=_refusal_controls() if ws["district_refused"] else [],
+        )
+
         def _on_pick(e: ft.ControlEvent) -> None:
             ws["sis"] = e.control.value or ""
             # An explicit pick supersedes the auto-seed, so the acknowledging caption retires —
@@ -970,6 +1082,12 @@ def _mount_wizard(
             # mid-interaction and take the focus with it.
             ws["auto_seeded"] = False
             instruction_line.value = _instruction_text()
+            # ...and the refusal goes with it: it named the district that was picked when
+            # Continue was pressed, so leaving it standing over a NEW pick would report a
+            # fault about a district it was never about. Cleared in place for the same reason
+            # the caption is (the focus stays in the control the admin is using).
+            ws["district_refused"] = False
+            refusal_slot.controls = []
             _refresh_footer()
 
         picked = str(ws["sis"])
@@ -998,6 +1116,9 @@ def _mount_wizard(
                 ),
                 instruction_line,
                 dropdown,
+                # The refusal sits directly under the control that corrects it (and directly
+                # above the footer Continue that was refused).
+                refusal_slot,
                 # The creator door (plan 0044 S3): TEXT tier, so the step keeps its ONE filled
                 # primary (Continue). It sits UNDER the dropdown because picking a shipped
                 # district is the right answer for almost everyone who reaches this step.
@@ -1527,7 +1648,7 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
     SFTP Save uses, so the nightly action can never go stale). The Save is still structurally gated
     on valid folders.
 
-    **This Save can now be REFUSED** (plan 0044 S6): it is one of the four writers of
+    **This Save can now be REFUSED** (plan 0044 S6): it is one of the writers of
     ``sis_type``, and for a district set up on THIS computer the pure
     ``config_editor.activation_allowed`` is consulted BEFORE any write. Refused ⇒ no
     ``cfg.save()`` and no ``reconcile()`` at all — not a partial save that keeps the folders
@@ -1537,6 +1658,12 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
     check: the ``origin`` map comes from the SAME memoised catalog build the dropdown options
     do, and an id missing from it reads as ``"bundled"`` (fail OPEN — this prevents a mistake
     and may never strand an admin whose provenance we could not read).
+
+    **Only a district CHANGE is gated** (plan 0044 S6 review, SHOULD 2): a folders-only edit
+    on the district this install already converts activates nothing, so it saves and
+    reconciles exactly as it always has — even while that district's own test is out of date.
+    And both halves of the decision are read from a FRESH ``AppConfig`` (SHOULD 3), because
+    the test conversion that records the digest runs on Mapping, not here.
     """
     state = {"input": cfg.input_dir, "output": cfg.output_dir, "sis": cfg.sis_type}
     # ONE catalog build for BOTH the options and the provenance map — no second parse, and no
@@ -1609,19 +1736,33 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
         # The verified-fact check, BEFORE any write (plan 0044 S6): this Save both sets the
         # district and re-registers the nightly, so letting an untested one through would bake
         # it into a scheduled task.
+        #
+        # A FRESH instance for BOTH halves (plan 0044 S6 review, SHOULD 3 — Mapping's Apply
+        # already did this): the digest the rule looks for is recorded by the creator panel on
+        # ANOTHER surface, so this mount's shared instance may not have seen the very test
+        # conversion the admin has just run, and "is the district changing?" has to be asked
+        # of what is on DISK now rather than of a snapshot. Only READ from here — the write
+        # still goes through the shared ``cfg`` every other section on this scroll holds.
+        persisted = AppConfig.load()
         picked = str(state["sis"])
-        origin = origins.get(picked, "bundled")
-        verdict = activation_allowed(
-            cfg,
-            sis_id=picked,
-            origin=origin,
-            # ``None`` on the bundled branch deliberately — the rule never reads it there, so
-            # the shipped rows pay no config load.
-            current_digest=current_digest(picked) if origin == "user" else None,
-        )
-        if not verdict.allowed:
-            _refuse_needs_test()
-            return
+        # ...and the check applies only to a district CHANGE (plan 0044 S6 review, SHOULD 2):
+        # a folders-only edit on the district this install ALREADY converts activates nothing
+        # — it is what the nightly runs either way — and refusing to let an admin fix a folder
+        # path prevents nothing while blocking the repair. The refusal belongs to the act that
+        # would switch districts.
+        if picked != persisted.sis_type:
+            origin = origins.get(picked, "bundled")
+            verdict = activation_allowed(
+                persisted,
+                sis_id=picked,
+                origin=origin,
+                # ``None`` on the bundled branch deliberately — the rule never reads it there,
+                # so the shipped rows pay no config load.
+                current_digest=current_digest(picked) if origin == "user" else None,
+            )
+            if not verdict.allowed:
+                _refuse_needs_test()
+                return
         refusal_slot.controls = []  # a Save that lands clears the refusal it replaces
         cfg.input_dir = state["input"]
         cfg.output_dir = state["output"]

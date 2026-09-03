@@ -41,7 +41,10 @@ filled primary):
 The panel owns no step numbers, no footer Continue and no ``setup_flow`` import; its
 ``MAPPING_PANEL_BACK_LABEL`` control promotes to a filled :data:`MAPPING_PANEL_DONE_LABEL`
 in the one state where the creator surface offers no primary of its own, so exactly ONE
-filled primary renders in every Mapping state.
+filled primary renders in every Mapping state. That promoted Done REFUSES while a file name
+on screen is not in the config on disk (the wizard footer's own rule): the rows re-render
+themselves, so it would otherwise carry a pending rename out of the panel and discard the
+only record of it — see ``_on_panel_done``.
 
 **The verified-fact check (plan 0044 S6).** "Use this mapping" is one of four writers of
 ``AppConfig.sis_type``. For a mapping authored on THIS computer it now consults the pure
@@ -385,7 +388,9 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
     # mount instance — `_on_apply`'s reason: another surface may have written since).
     panel: dict[str, object] = {}
     # The provenance notes are I/O (a YAML read + a base digest), so they are derived at most
-    # ONCE per district per mount and only on the `origin == "user"` branch.
+    # ONCE per district per VIEW BUILD and only on the `origin == "user"` branch. Cleared by
+    # `_show_view` — see the reason there: a memo that outlived the change door would keep
+    # showing a note the door had just fixed.
     stale_memo: dict[str, tuple[str, ...]] = {}
 
     def _origin_of(origins: dict[str, str], sis: str) -> str:
@@ -519,6 +524,16 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
     def _panel_pending() -> dict[str, str]:
         return panel["pending"]  # type: ignore[return-value]
 
+    def _panel_names_pending() -> bool:
+        """Whether the panel's rows express file names the config on disk does not have.
+
+        ONE spelling for the host, read from the pure ``has_unsaved_renames`` — the same
+        comparison the creator surface tiers its own Save on, and the same one the wizard's
+        footer is closed by. Two spellings of "something is pending" is how a second filled
+        primary appears (plan 0044 S4 review, BLOCKING 2).
+        """
+        return has_unsaved_renames(_panel_pending(), _panel_form().renames)
+
     def _panel_done_ready() -> bool:
         """Whether the panel's way back is the screen's ONE filled primary.
 
@@ -530,13 +545,34 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
         ``already`` does not include that equality, so requiring it here would leave the
         (reachable) "tested, current, but not the active district" state with NO filled
         primary at all — the invariant this promotion exists to hold.
+
+        Re-derived on EVERY host render, so a rename picked after this control was built
+        drops it back to the text-tier Back rather than leaving a second filled primary on
+        screen beside the creator's Save.
         """
         sis = str(panel.get("sis") or "").strip()
         if not sis:
             return False
-        unsaved = has_unsaved_renames(_panel_pending(), _panel_form().renames)
         already = creator_gate_current(_panel_cfg(), sis)
-        return files_primary_action(unsaved=unsaved, passed=False, already=already) == "none"
+        return files_primary_action(unsaved=_panel_names_pending(), passed=False, already=already) == "none"
+
+    def _on_panel_done(_e: ft.ControlEvent | None = None) -> None:
+        """Leave the panel — unless file names on screen are not in the config on disk.
+
+        The load-bearing half of the two-primaries fix on THIS host (plan 0044 S6 review,
+        BLOCKING 1), and the same refusal the wizard's footer ``_forward`` makes: the rows
+        re-render themselves when a name is picked, but this control was built before the
+        pick and is still painting the filled "Done" — so pressing it would leave the panel
+        with the pending names discarded, and the write it skipped is the only record of
+        them. Re-renders the panel instead of returning silently: one press and the surface
+        reads its own truth (this control drops to the text-tier Back, the creator's Save
+        takes the primary tier, and ``FILES_UNSAVED_NOTE`` is on screen). The pending map is
+        the host's own dict, mutated in place, so the picks survive the re-render.
+        """
+        if _panel_names_pending():
+            _show_panel()
+            return
+        _show_view()
 
     def _panel_way_back() -> ft.Control:
         """Back (text tier, while the creator owns the primary) → Done (filled) when it does not."""
@@ -545,7 +581,7 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
                 controls=[
                     components.primary_button(
                         MAPPING_PANEL_DONE_LABEL,
-                        lambda _e: _show_view(),
+                        _on_panel_done,
                         icon=ft.Icons.CHECK_ROUNDED,
                     )
                 ]
@@ -901,6 +937,14 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
 
     def _show_view(*, note: str = "") -> None:
         apply_seq["n"] += 1  # a rebuild invalidates any in-flight probe painting into the old slot
+        # ...and so does the provenance memo (plan 0044 S6 review, SHOULD 1): the change door
+        # is the very fix these notes ask for, and it re-writes ``authored_with`` on its way
+        # back here. A memo held across the return would leave "a different version set this
+        # district up" standing over a district this version has just re-written — the note
+        # surviving its own fix. Cleared rather than invalidated per district because a
+        # rebuild re-derives at most one card's worth (the ``origin == "user"`` branch only),
+        # and only for the districts the rebuilt view actually shows.
+        stale_memo.clear()
         body_host.content = _build_view(note=note)
         page.update()
 
