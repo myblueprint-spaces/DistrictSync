@@ -514,7 +514,11 @@ def _creator_files_model(base: str, sis_id: str) -> _FilesModel:
             back = {new: original for original, new in dict(resumed.renames).items()}
             names = list(advisory_expected_files(current))
             expected = [*names, *(back[name] for name in names if name in back)]
-        slots = distinct_source_files(resolved_base, expected=expected)  # type: ignore[arg-type]
+        # The entity filter follows the DISTRICT's own selection (the overlay on disk), never
+        # the starting point's — otherwise a Students + courses district is asked for the
+        # schedule it does not read and not for the course history it does.
+        active = current.active_entities() if current is not None else None
+        slots = distinct_source_files(resolved_base, expected=expected, active_entities=active)  # type: ignore[arg-type]
         return _FilesModel(slots=slots, divergent=divergent)
     except Exception:  # noqa: BLE001 - total: no rows is better than wrong rows
         logger.warning("Could not derive the source file rows for %r.", sis_id)
@@ -534,18 +538,29 @@ def _grade_chips(
     chosen: set[str],
     on_toggle: Callable[[str, bool], None],
 ) -> ft.Control:
-    """A wrapped row of grade tick boxes over the CEDS vocabulary (built via ``check_row``)."""
+    """Grade tick boxes over the CEDS vocabulary in TWO columns (built via ``check_row``).
+
+    Two fixed columns rather than a wrapped row: a wrapped row of full-width tick rows
+    collapsed into one long column on a wide window (owner finding, 2026-09-03), and the
+    CEDS list is long enough that a single column pushes the gate off screen. The split is
+    deterministic (first half left, second half right) so the same grade always sits in the
+    same place.
+    """
+    boxes = [
+        components.check_row(
+            code,
+            value=code in chosen,
+            on_toggle=lambda ticked, code=code: on_toggle(code, ticked),
+        )
+        for code in codes
+    ]
+    half = (len(boxes) + 1) // 2
     return ft.Row(
-        wrap=True,
-        spacing=tokens.space_md,
-        run_spacing=tokens.space_sm,
+        vertical_alignment=ft.CrossAxisAlignment.START,
+        spacing=tokens.space_xl,
         controls=[
-            components.check_row(
-                code,
-                value=code in chosen,
-                on_toggle=lambda ticked, code=code: on_toggle(code, ticked),
-            )
-            for code in codes
+            ft.Column(controls=boxes[:half], spacing=tokens.space_xs, tight=True),
+            ft.Column(controls=boxes[half:], spacing=tokens.space_xs, tight=True),
         ],
     )
 

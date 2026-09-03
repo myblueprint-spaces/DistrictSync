@@ -124,3 +124,45 @@ def test_real_help_wins_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     assert callable(route)
     assert route() == "HELP_SURFACE"  # routes to the real build_help
     assert len(seen) == 1 and isinstance(seen[0], AppConfig)  # a fresh config per mount (D1)
+
+
+def test_launch_url_is_a_coroutine_so_every_click_routes_through_open_url() -> None:
+    """Owner finding (2026-09-03): every Help-page link was a dead click with
+    ``RuntimeWarning: coroutine 'Page.launch_url' was never awaited`` in the console.
+    ``ft.Page.launch_url`` is ``async def`` on 0.85.3 behind a ``@deprecated`` wrapper, so
+    a sync handler must schedule it (``components.open_url`` → ``page.run_task``). Two
+    halves: the premise (it IS a coroutine once unwrapped — if a future flet makes it sync,
+    this row tells us the helper can go) and the rule (no ``page.launch_url(`` call anywhere
+    in ``src/ui_flet`` outside the helper)."""
+    import inspect
+    import re
+
+    import flet as ft
+
+    unwrapped = inspect.unwrap(ft.Page.launch_url)
+    assert inspect.iscoroutinefunction(unwrapped), "premise: launch_url is a coroutine on this flet"
+
+    root = Path(__file__).resolve().parents[1] / "src" / "ui_flet"
+    offenders = []
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith("#") or stripped.startswith("``") or "launch_url`" in stripped:
+                continue
+            if re.search(r"\bpage\.launch_url\(", line) and path.name != "components.py":
+                offenders.append(f"{path.name}:{lineno}")
+    assert offenders == [], offenders
+    # The helper itself schedules, never calls: the positive half.
+    scheduled: list[tuple] = []
+
+    class _Page:
+        def run_task(self, fn, *args):
+            scheduled.append((fn, args))
+
+        async def launch_url(self, url):  # pragma: no cover - never awaited here
+            return None
+
+    page = _Page()
+    components.open_url(page, "https://example.invalid/x")  # type: ignore[arg-type]
+    assert scheduled and scheduled[0][0] == page.launch_url and scheduled[0][1] == ("https://example.invalid/x",)

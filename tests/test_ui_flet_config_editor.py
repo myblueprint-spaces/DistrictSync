@@ -1657,3 +1657,36 @@ class TestFilesContinueLockReason:
         assert files_continue_lock_reason(names_pending=False, activated=False, gate_passed=True) == "confirm"
         assert files_primary_action(unsaved=False, passed=True, already=True) == "none"
         assert files_continue_lock_reason(names_pending=False, activated=True, gate_passed=True) is None
+
+
+class TestSlotsFollowTheDistrictsEntitySelection:
+    """Owner finding (2026-09-03): a Students + courses district was asked for
+    `StudentSchedule.txt` (which it never reads) and NOT for the course history/selection
+    files (which it does) — the entity filter ran on the STARTING POINT's `enabled_entities`
+    (myedbc = the five rostering entities), not the district's. The caller now injects the
+    district's own active set."""
+
+    COURSES_ONLY = ("Students", "CourseInfo", "StudentCourses")
+
+    def test_a_students_plus_courses_district_gets_course_files_and_no_schedule(self):
+        resolved = load_config("myedbc")
+        expected = [
+            "StudentDemographicInformation.txt",
+            "CourseInformation.txt",
+            "StudentCourseHistory.txt",
+            "StudentCourseSelection.txt",
+        ]
+        slots = distinct_source_files(resolved, expected=expected, active_entities=self.COURSES_ONLY)
+        names = [slot.original for slot in slots]
+        assert names == expected
+        assert "StudentSchedule.txt" not in names  # in school_year_sources, read by NO active entity
+        by_name = {slot.original: slot for slot in slots}
+        assert by_name["StudentCourseHistory.txt"].references == (("StudentCourses", "course_history"),)
+
+    def test_the_twin_the_base_selection_still_asks_for_the_schedule_and_not_the_courses(self):
+        resolved = load_config("myedbc")
+        from src.etl.pipeline import advisory_expected_files
+
+        names = [slot.original for slot in distinct_source_files(resolved, expected=advisory_expected_files(resolved))]
+        assert "StudentSchedule.txt" in names
+        assert "StudentCourseHistory.txt" not in names

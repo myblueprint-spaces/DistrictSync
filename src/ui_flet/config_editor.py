@@ -364,11 +364,17 @@ class SourceFileSlot:
     names_school_year: bool = False
 
 
-def distinct_source_files(resolved_base: MappingConfig, *, expected: Iterable[str]) -> tuple[SourceFileSlot, ...]:
+def distinct_source_files(
+    resolved_base: MappingConfig,
+    *,
+    expected: Iterable[str],
+    active_entities: Iterable[str] | None = None,
+) -> tuple[SourceFileSlot, ...]:
     """The files the Files step shows a row for, de-duplicated and in a stable order.
 
     Walks ``resolved_base`` through :func:`_ordered_reference_sites`, keeping a site only
-    when its entity is one this config actually produces (``active_entities()``) and its
+    when its entity is one THIS DISTRICT produces (``active_entities`` — the district's own
+    selection, injected by the caller; the base's when ``None``) and its
     filename is in ``expected``; the first site to name a file decides that row's place.
 
     ``expected`` is INJECTED rather than derived here so ``pipeline.advisory_expected_files``
@@ -388,7 +394,13 @@ def distinct_source_files(resolved_base: MappingConfig, *, expected: Iterable[st
     named differently would have lost the only row that can say so. The entity filter above
     is untouched: a school-year file no active entity reads still gets nothing.
     """
-    active = resolved_base.active_entities()
+    # The entity filter must follow the DISTRICT's selection, not the starting point's:
+    # `myedbc` enables the five rostering entities, so filtering on the BASE would keep
+    # Classes/Enrollments sites (a phantom `StudentSchedule.txt` row for a
+    # Students + courses district) and drop CourseInfo/StudentCourses sites (no
+    # course-history/selection rows) — the owner's 2026-09-03 finding. `None` keeps the
+    # base's own selection (a district that has not narrowed it yet).
+    active = set(active_entities) if active_entities is not None else set(resolved_base.active_entities())
     year_files = set(resolved_base.global_config.school_year_sources.values())
     wanted = {name for name in expected if isinstance(name, str) and name} | year_files
 

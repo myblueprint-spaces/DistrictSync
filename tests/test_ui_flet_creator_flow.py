@@ -2585,3 +2585,34 @@ class TestTheMountsRender:
         for label in (mapping_screen.MAPPING_CREATE_LABEL, mapping_screen.MAPPING_RESUME_LABEL):
             self._assert_no_floor(monkeypatch, lambda label=label: _button(root, label).on_click(None) or root)
             _button(root, mapping_screen.MAPPING_PANEL_BACK_LABEL).on_click(None)
+
+
+class TestTheFilesRowsFollowTheDistrictsOwnEntities:
+    """Owner finding (2026-09-03), pinned at the surface's model: an overlay narrowed to
+    Students + CourseInfo + StudentCourses gets rows for the demographic file and the three
+    course files, and NO `StudentSchedule.txt` row; the default selection is the twin."""
+
+    def test_a_students_plus_courses_overlay_rows(self):
+        write_overlay(
+            OverlaySpec(
+                sd_number=93,
+                district_name="SD93 - Courses Test",
+                district_domains=("sd93.bc.ca",),
+                base="myedbc",
+                enabled_entities=("Students", "CourseInfo", "StudentCourses"),
+            ),
+            overwrite=True,
+        )
+        names = [slot.original for slot in creator_screen._creator_files_model("myedbc", "sd93custom").slots]
+        assert names == [
+            "StudentDemographicInformation.txt",
+            "CourseInformation.txt",
+            "StudentCourseHistory.txt",
+            "StudentCourseSelection.txt",
+        ]
+
+    def test_the_twin_a_default_overlay_asks_for_the_schedule_and_not_the_course_history(self):
+        _write_sd93()
+        names = [slot.original for slot in creator_screen._creator_files_model("myedbc", "sd93custom").slots]
+        assert "StudentSchedule.txt" in names
+        assert "StudentCourseHistory.txt" not in names

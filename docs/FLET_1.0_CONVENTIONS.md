@@ -177,3 +177,5 @@
 - **Docs (version-matched):** https://flet.dev/docs/getting-started/ · https://flet.dev/docs/controls/ · https://flet.dev/docs/reference/  — **NOT** old `0.2x` blog tutorials.
 
 - `ft.TextField.on_blur` is a verified 0.85.3 form (plan 0044 S4): the creator's typed-filename rows re-tier the step when focus leaves the field, because re-rendering on every keystroke would fight the caret. Pair it with a LOAD-BEARING guard on the action itself (the gate refuses while unsaved) — a blur handler alone is a courtesy, never the safety.
+
+- `ft.Page.launch_url` is `async def` on 0.85.3, hidden behind a `@deprecated` wrapper that defeats `inspect.iscoroutinefunction`. A sync handler that calls it directly builds a never-awaited coroutine (`RuntimeWarning` in the console, dead click). Call `components.open_url(page, url)` — it schedules the coroutine with `page.run_task` — never `page.launch_url(` directly (owner finding 2026-09-03; pinned by `tests/test_ui_flet_help.py`).

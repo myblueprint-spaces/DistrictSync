@@ -942,3 +942,18 @@ def build_design_demo() -> ft.Control:
             ),
         ],
     )
+
+
+def open_url(page: ft.Page, url: str) -> None:
+    """Open ``url`` in the system browser/mail client — the ONE way to call ``page.launch_url``.
+
+    ``ft.Page.launch_url`` is ``async def`` on flet 0.85.3, wrapped in a ``@deprecated``
+    decorator that hides that from ``inspect.iscoroutinefunction``. A plain
+    ``lambda _e: page.launch_url(url)`` therefore builds a coroutine nobody awaits — the
+    console prints ``RuntimeWarning: coroutine 'Page.launch_url' was never awaited`` and
+    the click does NOTHING (owner finding, 2026-09-03: every Help-page link was dead).
+    Scheduling it on the page's event loop is the fix; ``page.run_task`` is the sanctioned
+    bridge from a sync handler (see ``docs/FLET_1.0_CONVENTIONS.md``). Pinned by
+    ``tests/test_ui_flet_help.py`` (no direct ``page.launch_url(`` call outside this helper).
+    """
+    page.run_task(page.launch_url, url)
