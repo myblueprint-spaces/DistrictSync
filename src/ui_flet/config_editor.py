@@ -247,6 +247,43 @@ def derive_domains(identity_domain: str, sd_number: int) -> tuple[str, ...]:
     return ()
 
 
+# ---------------------------------------------------------------------------
+# The district name
+# ---------------------------------------------------------------------------
+
+#: Strips a leading ``SD<digits>`` and whatever separates it from the name — a hyphen, an
+#: en/em dash, a middot, a colon, or plain whitespace. Every bundled ``district_name``
+#: carries the prefix ("SD10 - Arrow Lakes School District"); the creator's name FIELD holds
+#: the bare name, because ``humanize.friendly_district_name`` puts the prefix back on for
+#: display. Seeding the field from a shipped name without this strip would author
+#: "SD10 - SD10 - Arrow Lakes School District" the first time the district was renamed.
+_SD_NAME_PREFIX = re.compile(r"^\s*sd\s*\d+\s*[-–—·:]?\s*", re.IGNORECASE)
+
+
+def district_name_seed(shipped_names: Iterable[str]) -> str:
+    """A PREFILL for the creator's district-name field, or ``""``. PURE and TOTAL.
+
+    ``shipped_names`` is the ``district_name`` of every config DistrictSync already ships for
+    the district number the admin has typed — passed as DATA, exactly like
+    :func:`derive_domains`' vendored table, so this stays a pure rule the view feeds rather
+    than a second place that reads configs.
+
+    The first non-blank name wins, with its ``SD<num>`` prefix stripped (see
+    :data:`_SD_NAME_PREFIX`). ``""`` when there is nothing to offer — most districts using
+    this flow are ones we ship no mapping for, and that is the normal, quiet answer: an
+    empty field the admin fills in, never a guessed name presented as ours.
+
+    Deliberately NOT fabricated from the number ("SD34", "District 34"): a name we invented
+    would land in the district list looking like a district name somebody chose, and the
+    admin would have no way to tell it apart from one they typed.
+    """
+    for name in shipped_names:
+        bare = _SD_NAME_PREFIX.sub("", (name or "").strip()).strip()
+        if bare:
+            return bare
+    return ""
+
+
 def validate_domains(values: Iterable[str]) -> tuple[str, ...]:
     """Return the kept domains, de-duplicated in order. Raises on an invalid entry.
 

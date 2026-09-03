@@ -40,6 +40,7 @@ from src.config.authoring import (
     delete_overlay,
     derive_sis_id,
     folded_filename,
+    is_custom_sis_id,
     overlay_path,
     read_authored_with,
     resolved_digest,
@@ -59,6 +60,7 @@ from src.ui_flet.config_editor import (
     base_label,
     derive_domains,
     distinct_source_files,
+    district_name_seed,
     file_form_rows,
     files_continue_lock_reason,
     files_primary_action,
@@ -75,6 +77,7 @@ from src.ui_flet.config_editor import (
     validate_domains,
 )
 from src.ui_flet.filepicker import validate_output_dir
+from src.ui_flet.humanize import friendly_district_name
 from src.ui_flet.identity_gate import (
     resolve_sd_number,
     sd_number_digits,
@@ -118,7 +121,7 @@ CREATOR_SD_INVALID_NOTE = "Enter your district number as digits, like 48."
 CREATOR_NAME_REQUIRED_NOTE = "Add your district's name so it reads clearly in the district list."
 CREATOR_ENTITIES_TITLE = "Which files to produce"
 CREATOR_ENTITIES_PROMPT = (
-    "Choose the CSV files this district should produce. Your starting point's usual set is ticked."
+    "Choose the CSV files DistrictSync should produce for your district. Your starting point's usual set is ticked."
 )
 CREATOR_ENTITIES_EMPTY_NOTE = "Choose at least one file to produce."
 CREATOR_GRADES_TITLE = "Which grades"
@@ -127,7 +130,25 @@ CREATOR_GRADES_PROMPT = "Which grades should be rostered? Students in every othe
 CREATOR_HOMEROOM_PROMPT = "Which of those grades get one homeroom class instead of their timetable classes?"
 CREATOR_GRADES_EMPTY_NOTE = "Choose at least one grade to roster, or use your starting point's grades."
 CREATOR_CONTINUE_LABEL = "Continue"
-CREATOR_DISCARD_LABEL = "Discard this district"
+#: The escape. Says MAPPING rather than "district" (owner finding, 2026-09-03): nothing here
+#: discards a district — a district is a place, and the admin using this screen belongs to
+#: exactly one. What this deletes is the mapping file being authored for it.
+CREATOR_DISCARD_LABEL = "Discard this mapping"
+#: The armed confirm. Names what is deleted, WHERE it is (so an admin who has just saved
+#: knows this reaches the saved copy, not only what is on screen) and what it does not touch.
+CREATOR_DISCARD_CONFIRM_NOTE = (
+    "Discard this mapping? It's saved on this computer, and discarding deletes it. Nothing else changes."
+)
+CREATOR_DISCARD_CONFIRM_LABEL = "Yes, discard it"
+CREATOR_DISCARD_KEEP_LABEL = "Keep it"
+#: The refusal on the ACTIVE district. States the outcome first (nothing was changed), then
+#: the reason, then the one act that makes the discard possible — and names a rail
+#: destination rather than a step, because this surface has two hosts.
+CREATOR_DISCARD_ACTIVE_NOTE = (
+    "Nothing was changed. This is the mapping DistrictSync converts with right now, so it "
+    "can't be discarded here. Switch to a different mapping under Mapping first, then come "
+    "back and discard this one."
+)
 CREATOR_DISCARDED_NOTE = "Discarded. Nothing was kept, and your district list is back as it was."
 CREATOR_WRITE_FAILED_NOTE = "We couldn't save your district's mapping just now — nothing was changed."
 CREATOR_RESUME_REFUSED_NOTE = (
@@ -190,7 +211,7 @@ GATE_PASSED_HEADLINE = "The test conversion worked"
 #: action (owner report, 2026-09-02).
 GATE_PASSED_DETAIL = (
     "Here's how many rows each file would hold. Nothing was written and nothing was sent. If these look "
-    "right, choose “Save district settings” — that saves this district as the one this computer "
+    "right, choose “Save district settings” — that saves this mapping as the one this computer "
     "converts, and after that you can continue."
 )
 GATE_FAILED_HEADLINE = "The test conversion didn't finish"
@@ -204,7 +225,7 @@ GATE_REFUSED_NO_OUTPUT_NOTE = (
     "DistrictSync needs an output folder before it can run a test conversion. "
     "Set one in your folders settings, then come back."
 )
-GATE_STALE_VERSION_NOTE = "A different version of DistrictSync set this district up, so please run the test again."
+GATE_STALE_VERSION_NOTE = "A different version of DistrictSync set this mapping up, so please run the test again."
 GATE_STALE_BASE_NOTE = (
     "The standard mapping your district builds on has changed since it was set up, so please run the test again."
 )
@@ -280,6 +301,12 @@ def _entity_label(name: str) -> str:
 #: says so), so the trim belongs to the caller that knows the value can be 120 characters
 #: of admin-typed text (``CREATOR_NAME_FIELD_LABEL``'s ``max_length``).
 _CHIP_NAME_MAX = 40
+
+#: How many columns the grade tick-box grids use. The CEDS vocabulary is 21 codes, so five
+#: columns takes each grid from eleven rows to five and leaves the card's primary in view
+#: without scrolling (owner finding, 2026-09-03 round 2). Every code but ``Other`` is two
+#: characters, so the columns stay narrow enough for the narrowest supported window.
+_GRADE_COLUMNS = 5
 
 
 def creator_district_label(sd_number: int, district_name: str) -> str:
@@ -538,13 +565,20 @@ def _grade_chips(
     chosen: set[str],
     on_toggle: Callable[[str, bool], None],
 ) -> ft.Control:
-    """Grade tick boxes over the CEDS vocabulary in TWO columns (built via ``check_row``).
+    """Grade tick boxes over the CEDS vocabulary in :data:`_GRADE_COLUMNS` columns.
 
-    Two fixed columns rather than a wrapped row: a wrapped row of full-width tick rows
-    collapsed into one long column on a wide window (owner finding, 2026-09-03), and the
-    CEDS list is long enough that a single column pushes the gate off screen. The split is
-    deterministic (first half left, second half right) so the same grade always sits in the
-    same place.
+    Fixed columns rather than a wrapped row: a wrapped row of full-width tick rows collapsed
+    into one long column on a wide window (owner finding, 2026-09-03), and the CEDS list is
+    long enough that too few columns push the gate below the fold (owner finding, round 2 —
+    two columns still ran eleven rows deep). The fill is COLUMN-MAJOR and deterministic
+    (each column takes the next contiguous run), so the vocabulary still reads top-to-bottom
+    in CEDS order and a given grade always sits in the same place.
+
+    The last column is the short one: with ``_GRADE_COLUMNS`` columns the height is the
+    ceiling of ``len(codes) / _GRADE_COLUMNS``, so a homeroom list narrowed to three grades
+    renders three columns of one rather than one column of three. Empty trailing columns are
+    dropped — an empty ``ft.Column`` still claims its spacing, which reads as a gap nobody
+    put there.
     """
     boxes = [
         components.check_row(
@@ -554,14 +588,12 @@ def _grade_chips(
         )
         for code in codes
     ]
-    half = (len(boxes) + 1) // 2
+    height = -(-len(boxes) // _GRADE_COLUMNS) if boxes else 0
+    columns = [boxes[start : start + height] for start in range(0, len(boxes), height)] if height else []
     return ft.Row(
         vertical_alignment=ft.CrossAxisAlignment.START,
         spacing=tokens.space_xl,
-        controls=[
-            ft.Column(controls=boxes[:half], spacing=tokens.space_xs, tight=True),
-            ft.Column(controls=boxes[half:], spacing=tokens.space_xs, tight=True),
-        ],
+        controls=[ft.Column(controls=column, spacing=tokens.space_xs, tight=True) for column in columns],
     )
 
 
@@ -652,6 +684,29 @@ def build_creator(  # pragma: no cover - Flet view glue
         "domains_text": ", ".join(form.domains),
         "entities": set(form.entities) if form.entities else _seed_entity_ticks(form.base),
         "note": "",
+        # The discard confirm (owner finding, 2026-09-03). Session-local and deliberately
+        # NOT persisted: an armed confirm is a question asked half a second ago, and one
+        # that survived a re-mount would be a delete button waiting on a surface nobody
+        # armed. Every path that leaves the question — the answer, the cancel, a re-mount —
+        # lowers it. Three values: "" (the plain button), "armed" (the confirm), "refused"
+        # (the active-district refusal, which keeps the button beside it).
+        "discard_prompt": "",
+        # The district-detail prefill (owner finding, 2026-09-03). ``seeded_for`` is the last
+        # district number a prefill ran for, so a keystroke that does not change the NUMBER
+        # costs nothing; the two ``*_seeded`` flags say "this value is ours, not the admin's",
+        # which is what makes a prefill replaceable while a typed answer never is.
+        #
+        # A FRESH form (no overlay written yet) opens already prefilled by
+        # ``creator_form_for_new`` — from the launch page's not-listed SD number — so those
+        # values are seeded TOO, and correcting the number replaces them. Marking them as the
+        # admin's would strand the launch page's district's domains under a different one,
+        # which is the same defect one step earlier. A RESUMED form (``sis_id`` set) is the
+        # opposite: every value in it was typed or already saved, so nothing may overwrite it.
+        "seeded_for": form.sd_number if not (sis_id or "").strip() else 0,
+        "name_seeded": False,
+        "domains_seeded": bool(form.domains) and not (sis_id or "").strip(),
+        "name_field": None,
+        "domains_field": None,
         # The filename form (S4). ``pending`` is the RAW per-row string the admin has
         # chosen or typed (``""`` = keep the standard name); ``saved`` is what the config on
         # disk says, so "is there anything unsaved?" is one comparison rather than a flag
@@ -688,19 +743,10 @@ def build_creator(  # pragma: no cover - Flet view glue
         _render()
 
     def _note_row() -> list[ft.Control]:
-        """The inline note, never colour-alone (a glyph rides beside the words)."""
+        """The surface's ONE shared note slot, above the actions."""
         if not st["note"]:
             return []
-        return [
-            ft.Row(
-                spacing=tokens.space_sm,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    ft.Icon(ft.Icons.ERROR_OUTLINE_ROUNDED, size=18, color=tokens.color_status_failed),
-                    ft.Text(str(st["note"]), size=tokens.type_body, color=tokens.color_status_failed, expand=True),
-                ],
-            )
-        ]
+        return [_advisory_line(str(st["note"]), color=tokens.color_status_failed, icon=ft.Icons.ERROR_OUTLINE_ROUNDED)]
 
     def _district_chip_row() -> list[ft.Control]:
         """The district-identity pill, at the top of EVERY creator surface (owner, 2026-09-02).
@@ -719,13 +765,95 @@ def build_creator(  # pragma: no cover - Flet view glue
         return [ft.Row(controls=[components.district_chip(label)])]
 
     def _discard_row() -> ft.Control:
-        """The text-tier escape, on EVERY creator surface (never a dead end)."""
-        return ft.Row(
+        """The text-tier escape, on EVERY creator surface (never a dead end).
+
+        Three states, all rendered HERE so the answer to a press is always beside the button
+        that was pressed. The surface's shared ``_note_row`` sits adjacent to this on the
+        forms surface but a whole card away on the files one, and a message far from the
+        control it answers is a message an admin does not connect to their own click.
+
+        * ``""`` — one text button;
+        * ``"armed"`` — the question and its two answers, in place rather than in a dialog, so
+          the mapping's details stay on screen while the admin decides;
+        * ``"refused"`` — the active-district refusal, with the button still there (the
+          refusal is about THIS mapping's state, not about the affordance, and hiding the
+          control would leave nothing to press once they have switched mapping).
+        """
+        if st["discard_prompt"] == "armed":
+            return ft.Column(
+                spacing=tokens.space_sm,
+                controls=[
+                    ft.Text(CREATOR_DISCARD_CONFIRM_NOTE, size=tokens.type_body, color=tokens.color_text),
+                    ft.Row(
+                        spacing=tokens.space_lg,
+                        controls=[
+                            components.secondary_button(
+                                CREATOR_DISCARD_CONFIRM_LABEL,
+                                _discard_confirmed,
+                                icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
+                            ),
+                            components.text_button(CREATOR_DISCARD_KEEP_LABEL, _discard_cancelled),
+                        ],
+                    ),
+                ],
+            )
+        button = ft.Row(
             controls=[components.text_button(CREATOR_DISCARD_LABEL, _discard, icon=ft.Icons.DELETE_OUTLINE_ROUNDED)]
+        )
+        if st["discard_prompt"] != "refused":
+            return button
+        return ft.Column(
+            spacing=tokens.space_sm,
+            controls=[
+                _advisory_line(
+                    CREATOR_DISCARD_ACTIVE_NOTE,
+                    color=tokens.color_status_warning,
+                    icon=ft.Icons.INFO_OUTLINE_ROUNDED,
+                ),
+                button,
+            ],
         )
 
     # ---- discard --------------------------------------------------------- #
     def _discard(_e: ft.ControlEvent | None = None) -> None:
+        """FIRST press. Refuses outright on the active district, otherwise asks.
+
+        Owner finding (2026-09-03): pressing this while EDITING a mapping already on disk
+        deleted it with no warning — and when it was also the district this computer
+        converts, Mapping came back showing an unreadable "current mapping" pointing at a
+        file that no longer existed.
+
+        Two rules, in this order:
+
+        * **the ACTIVE district is refused, not confirmed.** ``sis_type`` has exactly five
+          writer surfaces and this is not one of them, so a discard here could delete the
+          config while leaving the install pointed at it — the broken card the owner saw.
+          Rather than mint a sixth writer to blank it (a district-less install is its own
+          failure state), this refuses and names the ONE act that makes the discard
+          possible: switch mapping first. The escape is never a dead end — Mapping is on the
+          rail in every state, and the mapping being refused is still fully usable;
+        * **anything already ON DISK is confirmed first.** Before the first write there is
+          nothing to lose, so an unwritten draft still discards on one press — a confirm
+          over nothing is a speed bump that teaches admins to click through confirms.
+        """
+        pending = (sis_id or "").strip()
+        if pending and pending.lower() == (getattr(cfg, "sis_type", "") or "").strip().lower():
+            st["discard_prompt"] = "refused"
+            _render()
+            return
+        if pending:
+            st["discard_prompt"] = "armed"
+            _render()
+            return
+        _discard_confirmed()
+
+    def _discard_cancelled(_e: ft.ControlEvent | None = None) -> None:
+        st["discard_prompt"] = ""
+        _render()
+
+    def _discard_confirmed(_e: ft.ControlEvent | None = None) -> None:
+        """The delete itself — reached from the confirm, or directly for an unwritten draft."""
+        st["discard_prompt"] = ""
         pending = (sis_id or "").strip()
         if pending:
             try:
@@ -749,12 +877,57 @@ def build_creator(  # pragma: no cover - Flet view glue
 
     def _on_sd(e: ft.ControlEvent) -> None:
         st["sd_text"] = e.control.value or ""
+        _prefill_from_sd()
 
     def _on_name(e: ft.ControlEvent) -> None:
         st["name_text"] = e.control.value or ""
+        st["name_seeded"] = False  # the admin owns this field now — never overwrite it
 
     def _on_domains(e: ft.ControlEvent) -> None:
         st["domains_text"] = e.control.value or ""
+        st["domains_seeded"] = False
+
+    def _prefill_from_sd() -> None:
+        """Fill the name + domain fields from what we know about the district just typed.
+
+        Owner finding (2026-09-03): the district number is the one thing the admin always
+        knows, and the two fields under it were left blank even where the answer sits in the
+        vendored table or in a mapping we already ship.
+
+        Three rules keep a prefill from ever destroying an answer:
+
+        * a field is only written while it is EMPTY or still holds an untouched prefill
+          (``*_seeded``, cleared the moment its own ``on_change`` fires). Without the second
+          half, typing "1" then "0" would leave ``sd1.bc.ca`` standing under district 10 —
+          the "only if empty" rule alone is wrong on every multi-digit number;
+        * the controls are mutated IN PLACE rather than through ``_render()``. This runs on
+          every keystroke of an autofocused field, and a re-render would rebuild the very
+          ``TextField`` being typed into;
+        * it is TOTAL. A prefill is a convenience; a raise here would take down the field's
+          own ``on_change`` and strand the admin mid-answer.
+
+        The ``st`` value is the source of truth and is written FIRST, with the control's
+        repaint suppressed separately (see :func:`_paint_field`) — so a field that cannot be
+        repainted still carries the prefilled value into the write, and still shows it on the
+        next render.
+        """
+        try:
+            sd_number = sd_number_from_text(str(st["sd_text"]))
+            if not sd_number or sd_number == st["seeded_for"]:
+                return
+            st["seeded_for"] = sd_number
+            if st["name_seeded"] or not str(st["name_text"]).strip():
+                seed = district_name_seed(_shipped_district_names(sd_number))
+                st["name_text"] = seed
+                st["name_seeded"] = bool(seed)
+                _paint_field(st.get("name_field"), seed)
+            if st["domains_seeded"] or not str(st["domains_text"]).strip():
+                domains = ", ".join(derive_domains(stored_identity_domain(cfg), sd_number))
+                st["domains_text"] = domains
+                st["domains_seeded"] = bool(domains)
+                _paint_field(st.get("domains_field"), domains)
+        except Exception:  # noqa: BLE001 - total: a prefill may never break the field it rides on
+            logger.warning("Could not prefill the district details from the district number.", exc_info=True)
 
     def _on_entity(name: str, ticked: bool) -> None:
         ticks: set[str] = st["entities"]  # type: ignore[assignment]
@@ -887,6 +1060,22 @@ def build_creator(  # pragma: no cover - Flet view glue
             )
         )
 
+        # Held on ``st`` so ``_prefill_from_sd`` can write into them WITHOUT a re-render (it
+        # runs on every keystroke of the autofocused number field beside them). Re-captured
+        # on each render, because a render replaces the controls these names point at.
+        st["name_field"] = ft.TextField(
+            label=CREATOR_NAME_FIELD_LABEL,
+            value=str(st["name_text"]),
+            expand=True,
+            max_length=120,
+            on_change=_on_name,
+        )
+        st["domains_field"] = ft.TextField(
+            label=CREATOR_DOMAINS_FIELD_LABEL,
+            value=str(st["domains_text"]),
+            helper=CREATOR_DOMAINS_HELPER,  # TextField's helper field is `helper` on 0.85.3
+            on_change=_on_domains,
+        )
         identity_rows: list[ft.Control] = [
             ft.Text(
                 CREATOR_IDENTITY_TITLE, size=tokens.type_section, weight=ft.FontWeight.W_700, color=tokens.color_text
@@ -903,21 +1092,10 @@ def build_creator(  # pragma: no cover - Flet view glue
                         on_change=_on_sd,
                         autofocus=True,
                     ),
-                    ft.TextField(
-                        label=CREATOR_NAME_FIELD_LABEL,
-                        value=str(st["name_text"]),
-                        expand=True,
-                        max_length=120,
-                        on_change=_on_name,
-                    ),
+                    st["name_field"],  # type: ignore[list-item]
                 ],
             ),
-            ft.TextField(
-                label=CREATOR_DOMAINS_FIELD_LABEL,
-                value=str(st["domains_text"]),
-                helper=CREATOR_DOMAINS_HELPER,  # TextField's helper field is `helper` on 0.85.3
-                on_change=_on_domains,
-            ),
+            st["domains_field"],  # type: ignore[list-item]
         ]
 
         ticks: set[str] = st["entities"]  # type: ignore[assignment]
@@ -1463,8 +1641,17 @@ def build_creator(  # pragma: no cover - Flet view glue
                 icon=ft.Icons.PLAY_ARROW_ROUNDED,
             )
         )
-        actions.append(components.text_button(CREATOR_DISCARD_LABEL, _discard, icon=ft.Icons.DELETE_OUTLINE_ROUNDED))
+        if not st["discard_prompt"]:
+            actions.append(
+                components.text_button(CREATOR_DISCARD_LABEL, _discard, icon=ft.Icons.DELETE_OUTLINE_ROUNDED)
+            )
         test_rows.append(ft.Row(spacing=tokens.space_lg, controls=actions))
+        # An armed confirm (or a refusal) goes BELOW the action row rather than inside it: the
+        # question and its two answers are one block, and threading them through a row that
+        # also holds the test and activation buttons would put "Yes, discard it" beside "Save
+        # district settings". Same control as the forms surface, so the two cannot diverge.
+        if st["discard_prompt"]:
+            test_rows.append(_discard_row())
         if already:
             test_rows.append(
                 ft.Row(
@@ -1508,6 +1695,62 @@ def _shipped_district_number(text: str) -> str:
     except Exception:  # noqa: BLE001 - total: no recommendation is better than a wrong one
         return ""
     return digits if shipped else ""
+
+
+def _advisory_line(text: str, *, color: str, icon: str) -> ft.Control:
+    """One advisory line — never colour-alone (a glyph rides beside the words).
+
+    Module-local rather than a ``components.py`` factory: ``screens/mapping.py`` has its own
+    ``_note_line`` of the same shape, so the honest generalisation is one factory and two
+    migrated screens — worth doing, but not inside a review-fix round (ROADMAP). This exists
+    because THIS file now paints two of them (the shared note slot and the discard refusal),
+    and two copies in one module is where the drift starts.
+    """
+    return ft.Row(
+        spacing=tokens.space_sm,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
+            ft.Icon(icon, size=18, color=color),
+            ft.Text(text, size=tokens.type_body, color=color, expand=True),
+        ],
+    )
+
+
+def _paint_field(field: object, value: str) -> None:
+    """Set a ``TextField``'s value and repaint it, tolerating a control not on the page yet.
+
+    ``BaseControl.update()`` RAISES ``RuntimeError("Control must be added to the page
+    first")`` on 0.85.3 whenever the control is not mounted — which is every render before
+    the first ``page.add``, and every rendered-tree test. The value assignment is the part
+    that matters (the next render reads it back, and so does the write), so the repaint is
+    suppressed on its own rather than being allowed to abandon the assignment beside it.
+    """
+    if field is None:
+        return
+    field.value = value  # type: ignore[attr-defined]
+    with contextlib.suppress(Exception):
+        field.update()  # type: ignore[attr-defined]
+
+
+def _shipped_district_names(sd_number: int) -> tuple[str, ...]:
+    """The ``district_name`` of every config we SHIP for that district number. TOTAL.
+
+    The I/O half of the name prefill; the rule is the pure
+    :func:`config_editor.district_name_seed`, which takes these as data.
+
+    Self-service ids are excluded (``authoring.is_custom_sis_id``) — the district being
+    authored right now may already have an overlay of its own on disk, and seeding the name
+    field from it would hand the admin back the value they are in the middle of replacing.
+    ``()`` on any failure and for a district we ship nothing for, which is the common case.
+    """
+    try:
+        from src.config.loader import available_configs
+
+        ids = [sis for sis in resolve_sd_number(str(sd_number), available_configs()) if not is_custom_sis_id(sis)]
+        return tuple(friendly_district_name(sis) for sis in ids)
+    except Exception:  # noqa: BLE001 - total: no prefill is better than a wrong one
+        logger.warning("Could not read the shipped district names for the name prefill.", exc_info=True)
+        return ()
 
 
 def pending_creator_sis(app_config: AppConfig) -> str:

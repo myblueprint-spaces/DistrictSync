@@ -340,12 +340,18 @@ class TestTheRealIndexResolvesAWrittenOverlay:
         visible = filtered_catalog("sd48.bc.ca", saved_sis="", picked_sis="")
         assert {s.sis_type for s in visible.summaries} == {"sd48custom", "sd48myedbc"}
 
-    def test_a_domain_less_custom_overlay_behaves_exactly_like_myedbc(self) -> None:
-        """Unclaimed (`district_domains=()`) → shown fail-open, hidden once someone else claims.
+    def test_a_domain_less_custom_overlay_matches_nobody_but_is_never_hidden(self) -> None:
+        """Unclaimed (`district_domains=()`) → it can never MATCH, and it is never HIDDEN.
 
-        Answers "does an unclaimed user config show everywhere?": it does not — it is
-        absent from a MATCHED admin's list unless it is the saved/picked district, exactly
-        like the unclaimed bundled tiers (`myedbc`, `mbp_all`).
+        Two separate facts, and the second changed on 2026-09-03 (owner finding). Until then
+        an unclaimed user overlay behaved exactly like the unclaimed bundled tiers (`myedbc`,
+        `mbp_all`) and vanished from a MATCHED admin's list — which meant an admin whose
+        address matched a shipped district could not reach the mapping they had authored
+        themselves, on any of the four pickers, with the "Show all districts" escape retired a
+        month earlier. `origin == "user"` is now an unconditional keep.
+
+        What did NOT change is the MATCHING half: an unclaimed config still claims nobody, so
+        it can never scope another district's admin INTO it.
         """
         write_overlay(
             OverlaySpec(
@@ -364,13 +370,15 @@ class TestTheRealIndexResolvesAWrittenOverlay:
         no_match = filtered_catalog("gmail.com", saved_sis="", picked_sis="")
         assert "sd95custom" in {s.sis_type for s in no_match.summaries}
 
-        # tier (ii) — some OTHER config matches → the unclaimed row is NOT carried along...
-        matched_elsewhere = filtered_catalog("sd48.bc.ca", saved_sis="", picked_sis="")
-        assert "sd95custom" not in {s.sis_type for s in matched_elsewhere.summaries}
+        # tier (ii) — some OTHER config matches. The overlay rides the list on ORIGIN...
+        matched_elsewhere = {s.sis_type for s in filtered_catalog("sd48.bc.ca", saved_sis="").summaries}
+        assert "sd95custom" in matched_elsewhere
+        # ...and the twin that keeps this from being "the filter never fired": an unclaimed
+        # SHIPPED row in the same build is still narrowed away.
+        assert "myedbc" not in matched_elsewhere
 
-        # ...unless it is the SAVED district, exactly like a shipped unclaimed config would be.
-        as_saved = filtered_catalog("sd48.bc.ca", saved_sis="sd95custom", picked_sis="")
-        assert "sd95custom" in {s.sis_type for s in as_saved.summaries}
+        # It still matches nobody: an SD95 admin lands in tier (i), not in a one-row SD95 list.
+        assert matched_state("sd95.bc.ca", district_domain_index()).outcome is MatchOutcome.NO_MATCH
 
     def test_deleting_the_overlay_removes_the_match(self) -> None:
         """The negative twin: proves the index really read the overlay, not a stale build."""

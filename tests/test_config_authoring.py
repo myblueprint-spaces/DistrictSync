@@ -42,6 +42,7 @@ from src.config.authoring import (
     authored_with,
     build_overlay,
     current_digest,
+    custom_sd_number,
     delete_overlay,
     derive_sis_id,
     folded_filename,
@@ -128,6 +129,30 @@ class TestSisId:
     )
     def test_is_custom_sis_id(self, value, expected):
         assert is_custom_sis_id(value) is expected
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("sd48custom", 48),
+            ("sd048custom", 48),  # the id keeps the zeros; the NUMBER does not
+            ("sd7custom", 7),
+            ("sd40myedbc", None),
+            ("sdcustom", None),
+            ("SD48CUSTOM", None),
+            (None, None),
+            (48, None),
+        ],
+    )
+    def test_custom_sd_number(self, value, expected):
+        """The inverse of ``derive_sis_id``, and the reason both live in this module: the
+        ``sd<num>custom`` namespace is spelled once. Consumed by
+        ``humanize.friendly_district_name`` for the "SD## - " display prefix."""
+        assert custom_sd_number(value) == expected
+
+    @pytest.mark.parametrize("number", [1, 7, 48, 93, 9999])
+    def test_the_two_are_a_round_trip(self, number):
+        """The property that makes the pair worth having: nothing between them can drift."""
+        assert custom_sd_number(derive_sis_id(number)) == number
 
 
 # ---------------------------------------------------------------------------

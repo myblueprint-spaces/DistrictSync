@@ -68,6 +68,7 @@ from src.ui_flet.config_editor import (
     base_label,
     derive_domains,
     distinct_source_files,
+    district_name_seed,
     file_form_rows,
     file_label,
     files_continue_lock_reason,
@@ -267,6 +268,47 @@ class TestDeriveDomains:
     @pytest.mark.parametrize("bad_identity", ["", "  ", "someone@example.com", "SD93.BC.CA", None, 42])
     def test_an_unusable_identity_domain_is_dropped_not_prefilled(self, bad_identity):
         assert derive_domains(bad_identity, 48) == ("sd48.bc.ca",)
+
+
+class TestDistrictNameSeed:
+    """The name PREFILL (owner finding, 2026-09-03). Pure: the view feeds it the shipped
+    ``district_name``s for the number the admin typed, exactly as ``derive_domains`` is fed
+    the vendored table."""
+
+    def test_a_shipped_name_loses_its_SD_prefix(self):
+        """Every bundled ``district_name`` carries "SD## - "; the FIELD holds the bare name,
+        because ``humanize.friendly_district_name`` puts the prefix back for display. Seeding
+        the prefix would author "SD10 - SD10 - Arrow Lakes School District"."""
+        assert district_name_seed(["SD10 - Arrow Lakes School District"]) == "Arrow Lakes School District"
+
+    @pytest.mark.parametrize(
+        "shipped",
+        [
+            "SD51 - Boundary School District · Attendance",
+            "sd51 Boundary School District · Attendance",
+            "SD51: Boundary School District · Attendance",
+            "SD51 – Boundary School District · Attendance",
+        ],
+    )
+    def test_the_separator_may_be_any_of_the_ones_our_configs_use(self, shipped):
+        assert district_name_seed([shipped]).startswith("Boundary School District")
+
+    def test_the_first_non_blank_name_wins(self):
+        assert district_name_seed(["", "   ", "SD51 - Boundary School District"]) == "Boundary School District"
+
+    def test_nothing_shipped_means_an_empty_field_not_a_guess(self):
+        """The common case — most districts using this flow ship no mapping at all. An
+        invented name ("District 79") would land in the district list looking like something
+        the admin chose, with no way to tell it apart from one they typed."""
+        assert district_name_seed([]) == ""
+
+    def test_a_name_that_is_ONLY_a_prefix_yields_nothing_rather_than_a_blank_row(self):
+        assert district_name_seed(["SD79 -"]) == ""
+
+    def test_a_name_with_no_prefix_is_passed_through_whole(self):
+        """``unitychristianmyedbc`` is a real shipped row with no SD prefix — an independent
+        school, not a district."""
+        assert district_name_seed(["Unity Christian School (Chilliwack)"]) == "Unity Christian School (Chilliwack)"
 
 
 class TestValidateDomains:

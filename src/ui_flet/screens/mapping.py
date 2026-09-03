@@ -171,17 +171,24 @@ def _greeting_header(app_config: AppConfig) -> ft.Control:  # noqa: ARG001 - uni
 # still promises NOTHING about is a column-level report or a YAML text surface.
 CUSTOM_ORIGIN_NOTE = (
     "This mapping lives in this computer's DistrictSync folder — it wasn't shipped with "
-    "DistrictSync, so you can change how it's set up here."
+    "DistrictSync, so you can edit it here."
 )
 
 # ---- the two doors onto the creator (plan 0044 S6 §6.2) ------------------- #
 #: CREATE. Names the situation rather than the tool ("add a mapping" means nothing to an
 #: admin who has never seen one), and avoids "edit" — this is not a YAML editor.
 MAPPING_CREATE_LABEL = "Set up a district that isn't listed"
-#: CHANGE. Only ever on a card whose mapping was authored HERE.
-MAPPING_EDIT_LABEL = "Change this district's setup"
+#: CHANGE. Only ever on a card whose mapping was authored HERE. "Edit mapping" rather than
+#: the S6 wording "Change this district's setup" (owner finding, 2026-09-03): that phrase
+#: collided head-on with the rail's own Setup item, which is a DIFFERENT screen about folders
+#: and schedules — two doors, one word, and the one an admin reached from Mapping was the one
+#: they had not meant. It also drops "this district's": a district tech only ever has one
+#: district, so the possessive added length without adding a distinction. "Edit" is honest
+#: here in a way S6's note was right to avoid for the FILE — this opens the questions, not
+#: the YAML.
+MAPPING_EDIT_LABEL = "Edit mapping"
 #: RESUME — an unfinished creation, pickable up from this surface as well as the wizard.
-MAPPING_RESUME_LABEL = "Finish setting up the district you started"
+MAPPING_RESUME_LABEL = "Finish the mapping you started"
 #: The panel's way back, at text tier while the creator surface owns the primary...
 MAPPING_PANEL_BACK_LABEL = "Back to Mapping"
 #: ...promoted to the screen's ONE filled primary in the single state where the creator
@@ -191,14 +198,13 @@ MAPPING_PANEL_BACK_LABEL = "Back to Mapping"
 MAPPING_PANEL_DONE_LABEL = "Done"
 
 # ---- the verified-fact refusals (plan 0044 S6 §6.1) ---------------------- #
-MAPPING_NEEDS_TEST_HEADLINE = "This district needs a test conversion first"
+MAPPING_NEEDS_TEST_HEADLINE = "This mapping needs a test conversion first"
 #: Structural: no district name, no path, no digest. States the OUTCOME first ("nothing was
 #: changed"), then the reason, then the one act that fixes it — the label of the button
 #: rendered beside this very band.
 MAPPING_NEEDS_TEST_NOTE = (
-    "Nothing was changed. This district was set up on this computer, and it hasn't passed a "
-    "test conversion as it now reads. Choose “Change this district's setup” to run one, then "
-    "come back here."
+    "Nothing was changed. This mapping was set up on this computer, and it hasn't passed a "
+    "test conversion as it now reads. Choose “Edit mapping” to run one, then come back here."
 )
 
 # ---- the output-folder precondition on THIS host (§6.3) ------------------ #
@@ -218,26 +224,25 @@ OPEN_SETTINGS_LABEL = "Open Settings"
 #: again", which is right beside a test button and wrong on a card that has none. These name
 #: the fact and point at the change door.
 MAPPING_STALE_VERSION_NOTE = (
-    "A different version of DistrictSync set this district up. Change its setup to run a "
-    "test conversion against this version."
+    "A different version of DistrictSync set this mapping up. Edit it to run a test conversion against this version."
 )
 MAPPING_STALE_BASE_NOTE = (
-    "The standard mapping this district builds on has changed since it was set up. Change "
-    "its setup to run a test conversion against the new one."
+    "The standard mapping this one builds on has changed since it was set up. Edit it to run "
+    "a test conversion against the new one."
 )
 
 # ---- the export affordance (plan 0044 S7 §7.1) --------------------------- #
 #: The TRIGGER, text tier, on a user-authored CURRENT card only. "Show" rather than
 #: "export" (an admin asked for a file by support is not performing a data export), and it
 #: names the FILE, because that is the thing support asks for.
-MAPPING_EXPORT_LABEL = "Show this district's mapping file"
+MAPPING_EXPORT_LABEL = "Show mapping file"
 #: The revealed block's own small heading.
-MAPPING_EXPORT_TITLE = "This district's mapping file"
+MAPPING_EXPORT_TITLE = "Your mapping file"
 #: One sentence: what the file IS and why an admin would ever want it. Deliberately NOT an
 #: invitation to hand-edit it — the change door beside this control is the sanctioned way to
 #: change the setup, and a note that suggested a text editor would retire a promise S6 left
 #: standing (the app never rewrites a file an admin edited by hand).
-MAPPING_EXPORT_NOTE = "This is the whole of your district's setup — one small file. Support may ask you for it."
+MAPPING_EXPORT_NOTE = "This is your whole mapping — one small file. Support may ask you for it."
 #: Opens the CONTAINING FOLDER (never the file). Knowingly the same words as Convert's own
 #: inline "Open folder" (``convert.py:_output_folder_row``) — the two rows open DIFFERENT
 #: folders, so a shared factory label would imply one affordance; the duplication is named
@@ -247,7 +252,7 @@ MAPPING_EXPORT_OPEN_LABEL = "Open folder"
 #: The panel's own never-crash floor (the view has Mapping's). It says what is TRUE of a
 #: failed authoring surface — nothing was changed — and offers the way back, because a floor
 #: without one is a dead end in front of the screen the admin was on.
-MAPPING_PANEL_FLOOR_HEADLINE = "We couldn't open this district's setup"
+MAPPING_PANEL_FLOOR_HEADLINE = "We couldn't open this mapping"
 MAPPING_PANEL_FLOOR_DETAIL = "Nothing was changed. Your nightly sync keeps running in the background."
 
 

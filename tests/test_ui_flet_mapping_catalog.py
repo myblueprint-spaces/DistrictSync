@@ -30,6 +30,7 @@ from src.ui_flet.mapping_catalog import (
     can_apply,
     catalog,
     disambiguated_labels,
+    filtered_catalog,
     list_configs,
     post_apply_presentation,
     summarize_config,
@@ -850,6 +851,50 @@ class TestOrigin:
         """A miss is not a user file: the fallback direction is "unmarked", never a false claim
         that we did not ship a mapping we ship."""
         assert summarize_config("no_such_district_config").origin == "bundled"
+
+
+class TestAConfigAddedOnThisComputerRidesEveryList:
+    """Owner finding (2026-09-03): an admin whose address matched a shipped district could not
+    see the mapping they had authored themselves — the domain filter narrowed it away and the
+    "Show all districts" escape had been retired a month earlier, so their own file was
+    unreachable from every one of the four pickers.
+
+    These run against the REAL user-then-bundled pair (``config_dir=`` is "bundled" by
+    definition — see the block comment above ``TestOrigin``), so the ``origin`` the rule reads
+    is the one the loader really resolves.
+    """
+
+    def test_it_survives_a_match_that_excludes_it(self, custom_overlay: str) -> None:
+        """The rule, with its negative twin in the same assertion block: an unmatched SHIPPED
+        row IS dropped, so the filter demonstrably fired and the kept row is not just a filter
+        that never ran (CANDIDATES: no vacuous greens)."""
+        visible = {s.sis_type for s in filtered_catalog("sd48.bc.ca", saved_sis="sd48myedbc").summaries}
+
+        assert custom_overlay in visible, "the admin's own mapping was filtered out of their picker"
+        assert "sd48myedbc" in visible, "premise: the matched district is present"
+        assert "sd51myedbc" not in visible, "the twin: an unmatched shipped row is still narrowed away"
+
+    def test_it_is_kept_by_ORIGIN_and_not_by_its_own_domain(self, custom_overlay: str, monkeypatch) -> None:
+        """``custom_overlay`` declares ``sd93.bc.ca``, so a rule that only ever kept CLAIMED
+        rows would pass the row above for the wrong reason. Here the overlay claims nothing at
+        all — and is still there."""
+        import sys
+
+        from src.config.authoring import OverlaySpec, write_overlay
+        from src.ui_flet import mapping_catalog
+
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+        write_overlay(
+            OverlaySpec(sd_number=94, district_name="SD94 - Unclaimed", district_domains=(), base="myedbc"),
+            overwrite=False,
+        )
+        mapping_catalog.reset_catalog_cache()
+
+        visible = {s.sis_type for s in filtered_catalog("sd48.bc.ca", saved_sis="sd48myedbc").summaries}
+
+        assert "sd94custom" in visible
+        assert "sd51myedbc" not in visible, "the twin: the filter is still narrowing shipped rows"
 
 
 class TestTheProvenanceMarkerOnALabel:

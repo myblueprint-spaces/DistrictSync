@@ -337,7 +337,7 @@ def district_auto_seeded_note(district: str) -> str:
 #: conversion lives (and where the setup of a district added here can be changed); the rail
 #: carries Mapping in every state, D7, so the note alone is never a dead end.
 WIZARD_DISTRICT_NEEDS_TEST_NOTE = (
-    "Nothing was saved. This district was set up on this computer, and it hasn't passed a "
+    "Nothing was saved. This mapping was set up on this computer, and it hasn't passed a "
     "test conversion as it now reads. Run one under Mapping, then come back and continue."
 )
 
@@ -1627,7 +1627,7 @@ def _build_identity_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
 #: admin would otherwise discover a night later. Structural: no district name, no path, no
 #: digest. It names Mapping because that is where the test conversion lives.
 FOLDERS_NEEDS_TEST_NOTE = (
-    "Nothing was saved, and your nightly schedule was not updated. This district was set up "
+    "Nothing was saved, and your nightly schedule was not updated. This mapping was set up "
     "on this computer, and it hasn't passed a test conversion as it now reads. Run one under "
     "Mapping, then save again."
 )

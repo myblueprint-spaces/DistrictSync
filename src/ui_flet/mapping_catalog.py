@@ -501,6 +501,18 @@ def filtered_catalog(
       keyword-only parameter for exactly that reason (CLAUDE.md: no permissive default on a
       safety-relevant parameter) — the escape is a property of the choke point, not a thing
       each of the four call sites has to remember;
+    * **a config added on THIS computer is too.** ``origin == "user"`` rides every list
+      unconditionally (owner finding, 2026-09-03). A mapping in the per-user ``mappings/``
+      dir got there because somebody at this install put it there — the admin through the
+      creator flow, or support handing over a YAML — and it is the one row nothing else can
+      re-offer: a bundled district is always one Settings edit away (blank the stored
+      address and every list widens), while a hidden custom config is invisible with no way
+      back short of knowing to clear an unrelated field. Scoping is *presentation of the
+      catalogue we ship*; hiding an admin's own file from them is not a narrower view of our
+      list, it is losing their work. It also cannot mislead: such a row carries
+      :data:`CUSTOM_ORIGIN_LABEL` in every picker, so it never reads as a district we claim.
+      (This is NOT the retired "Show all districts" toggle: it widens by ONE structural
+      fact, not by a per-surface control that could be left in either state.);
     * **the WORKING pick is too.** ``picked_sis`` is the district the admin has selected on
       this surface but not yet committed — it unions in exactly like ``saved_sis``, so a
       dropdown can never end up pointing at a row it no longer offers. Its original job was
@@ -508,7 +520,7 @@ def filtered_catalog(
       guards the remaining re-scope paths (a mid-visit Settings/Mapping change under a
       surface that re-derives its list) and costs nothing where a surface has no pending pick.
 
-    Both escapes SELECT a catalog row and never fabricate one, so a hand-edited
+    All three keeps SELECT a catalog row and never fabricate one, so a hand-edited
     ``config.json`` (or a stale widget value) naming a district we do not ship cannot put a
     phantom option into what is structurally an allowlist.
 
@@ -521,8 +533,9 @@ def filtered_catalog(
 
     **There is no per-surface "Show all districts" escape any more** (2026-08-04, owner
     decision — see ``docs/claugentic-DECISIONS.md``). A matched admin sees their own
-    district's rows and no other district's, on all four pickers, so the scoping is a
-    property of the install rather than of whichever screen was last toggled. The escape
+    district's rows, plus anything added on this computer, and no OTHER district's shipped
+    rows, on all four pickers — so the scoping is a property of the install rather than of
+    whichever screen was last toggled. The escape
     that remains is the HONEST one and it is at the input, not the output: clearing the
     stored address in Settings ("Who looks after this sync" → blank → Save) removes the one
     input this filter has, and every list widens on the next mount.
@@ -555,20 +568,26 @@ def _matched_subset(
     saved_sis: str,
     picked_sis: str,
 ) -> tuple[ConfigSummary, ...]:
-    """Tier (ii)'s row set: the matching configs plus the saved and picked ones, in CATALOG order.
+    """Tier (ii)'s row set: the matching configs plus the saved, picked and locally-added ones.
 
-    Order is preserved rather than re-derived, so every surface lists a district in the same
-    relative position, and a scoped list reads as a shortened catalog rather than a re-sorted
-    one. Only configs whose domains RESOLVED (a non-empty ``district_domains``) are offered to the
-    matcher — an unreadable one (``None``) and a declared-empty one (``()``) both claim
-    nobody, and the ``if s.district_domains`` guard covers both because each is falsy.
+    In CATALOG order. Order is preserved rather than re-derived, so every surface lists a
+    district in the same relative position, and a scoped list reads as a shortened catalog
+    rather than a re-sorted one. Only configs whose domains RESOLVED (a non-empty
+    ``district_domains``) are offered to the matcher — an unreadable one (``None``) and a
+    declared-empty one (``()``) both claim nobody, and the ``if s.district_domains`` guard
+    covers both because each is falsy.
+
+    The three unconditional keeps are argued in :func:`filtered_catalog`'s docstring; each
+    can only ever WIDEN this set, so none of them can hide a district.
     """
     claimed = {s.sis_type: s.district_domains for s in summaries if s.district_domains}
     matched = set(resolve_domain(domain, claimed))
     if not matched:
         return tuple(summaries)  # tier (i) — no match, everything shows
     keep = {_normalise_sis(saved_sis), _normalise_sis(picked_sis)} - {""}
-    return tuple(s for s in summaries if s.sis_type in matched or _normalise_sis(s.sis_type) in keep)
+    return tuple(
+        s for s in summaries if s.sis_type in matched or _normalise_sis(s.sis_type) in keep or s.origin == "user"
+    )
 
 
 def disambiguated_labels(summaries: Sequence[ConfigSummary]) -> dict[str, str]:

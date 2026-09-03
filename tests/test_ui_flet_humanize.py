@@ -162,6 +162,53 @@ class TestFriendlyDistrictNameOverAWrittenOverlay:
         assert friendly_district_name("sd93custom") == "sd93custom"
 
 
+class TestTheSDPrefixOnASelfServiceName:
+    """Owner finding (2026-09-03): a config authored in-app sorted among the shipped rows by
+    its district number but rendered as the bare name the admin typed — "test" between
+    "SD27 - Cariboo-Chilcotin" and "SD38 - Richmond", identifying no district at all.
+
+    The rule lives in ``friendly_district_name`` because that is the ONE function every
+    surface already routes through (Mapping's card, all four pickers, Convert's caption, Run
+    History), so a single place decides how a district reads everywhere.
+    """
+
+    def _write(self, *, sd_number: int, name: str) -> None:
+        from src.config.authoring import OverlaySpec, write_overlay
+
+        write_overlay(
+            OverlaySpec(sd_number=sd_number, district_name=name, district_domains=(), base="myedbc"),
+            overwrite=False,
+        )
+
+    def test_a_bare_authored_name_gains_the_prefix(self) -> None:
+        self._write(sd_number=34, name="test")
+
+        assert friendly_district_name("sd34custom") == "SD34 - test"
+
+    def test_a_SHIPPED_name_is_untouched(self) -> None:
+        """The twin. Every bundled config bakes the prefix into its own YAML, so adding one
+        here would double it — and a hand-placed user-dir override is not ours to relabel."""
+        assert friendly_district_name("sd48myedbc") == "SD48 - Sea to Sky School District"
+
+    def test_an_admin_who_typed_the_prefix_keeps_THEIRS_verbatim(self) -> None:
+        """Idempotent over its own output, and over the near-misses an admin actually types."""
+        self._write(sd_number=34, name="SD34 - Abbotsford")
+
+        assert friendly_district_name("sd34custom") == "SD34 - Abbotsford"
+
+    def test_a_number_that_only_LOOKS_like_the_prefix_still_gets_one(self) -> None:
+        """``SD341`` is not district 34 — the guard is a word boundary, not a prefix match, so
+        a district whose name happens to open with a longer number is not silently swallowed."""
+        self._write(sd_number=34, name="SD341 Foo")
+
+        assert friendly_district_name("sd34custom") == "SD34 - SD341 Foo"
+
+    def test_the_raw_id_FALLBACK_never_gets_a_prefix(self) -> None:
+        """The state the owner's screenshot was in: an overlay that will not load. "SD70 -
+        sd70custom" is worse than the id alone, and this is exactly when it would fire."""
+        assert friendly_district_name("sd70custom") == "sd70custom"
+
+
 class TestFriendlyTimestamp:
     _NOW = datetime(2026, 7, 4, 12, 0, 0)
 

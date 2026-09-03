@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import flet as ft
@@ -664,6 +665,8 @@ class TestResume:
 # --------------------------------------------------------------------------- #
 class TestDiscard:
     def test_discard_deletes_clears_invalidates_and_says_so(self, page, monkeypatch, tmp_path) -> None:
+        """The full act — but only after the confirm. Owner finding (2026-09-03): one press
+        deleted a mapping already on disk with no warning at all."""
         _write_sd93()
         cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
         resets = _spy_reset(monkeypatch)
@@ -671,6 +674,11 @@ class TestDiscard:
         root = build_setup(page)
 
         _button(root, creator_screen.CREATOR_DISCARD_LABEL).on_click(None)
+
+        assert overlay_path("sd93custom").exists(), "the FIRST press must only ask"
+        assert creator_screen.CREATOR_DISCARD_CONFIRM_NOTE in _texts(root)
+
+        _button(root, creator_screen.CREATOR_DISCARD_CONFIRM_LABEL).on_click(None)
 
         assert not overlay_path("sd93custom").exists(), "the overlay was left behind"
         assert cfg.creator_pending_sis == ""
@@ -680,9 +688,52 @@ class TestDiscard:
         assert "Step 1 of 5" in texts, "the standard walk is back"
         assert _dropdown(root, "District") is not None
 
+    def test_keeping_it_leaves_the_overlay_and_the_token_alone(self, page, monkeypatch, tmp_path) -> None:
+        """The cancel is a real no-op, not just a re-render: the file, the token and the
+        catalog are all untouched — which is what makes the confirm above worth pressing."""
+        _write_sd93()
+        cfg = _cfg(creator_pending_sis="sd93custom", **_valid_folders(tmp_path))
+        resets = _spy_reset(monkeypatch)
+        _pin(monkeypatch, cfg)
+        root = build_setup(page)
+
+        _button(root, creator_screen.CREATOR_DISCARD_LABEL).on_click(None)
+        _button(root, creator_screen.CREATOR_DISCARD_KEEP_LABEL).on_click(None)
+
+        assert overlay_path("sd93custom").exists()
+        assert cfg.creator_pending_sis == "sd93custom"
+        assert resets == [], "nothing changed, so no picker needed rebuilding"
+        assert creator_screen.CREATOR_DISCARD_CONFIRM_NOTE not in _texts(root), "the question stayed armed"
+        assert _button(root, creator_screen.CREATOR_DISCARD_LABEL) is not None, "the escape came back"
+
+    def test_the_ACTIVE_district_is_REFUSED_rather_than_confirmed(self, page, monkeypatch, tmp_path) -> None:
+        """Owner finding (2026-09-03): discarding the mapping this computer converts with
+        deleted the file and left ``sis_type`` pointing at it, so Mapping came back showing an
+        unreadable "current mapping". ``sis_type`` has five writer surfaces and this is not
+        one of them, so the discard is refused and names the act that unblocks it."""
+        _write_sd93()
+        cfg = _cfg(creator_pending_sis="sd93custom", sis_type="sd93custom", **_valid_folders(tmp_path))
+        resets = _spy_reset(monkeypatch)
+        _pin(monkeypatch, cfg)
+        root = build_setup(page)
+
+        _button(root, creator_screen.CREATOR_DISCARD_LABEL).on_click(None)
+
+        assert creator_screen.CREATOR_DISCARD_ACTIVE_NOTE in _texts(root)
+        assert creator_screen.CREATOR_DISCARD_CONFIRM_NOTE not in _texts(root), "a refusal must not also ask"
+        assert _button(root, creator_screen.CREATOR_DISCARD_LABEL) is not None, (
+            "the refusal is about this mapping's STATE, not the affordance — the button stays"
+        )
+        assert overlay_path("sd93custom").exists()
+        assert cfg.creator_pending_sis == "sd93custom"
+        assert cfg.sis_type == "sd93custom", "the refusal must not rewrite the district either"
+        assert resets == []
+
     def test_a_discard_with_nothing_written_yet_is_idempotent_success(self, page, monkeypatch) -> None:
         """The positive twin for the deletion above: pressing discard BEFORE the first write
-        clears the surface without an error (``delete_overlay``'s ``False`` is not a failure)."""
+        clears the surface without an error (``delete_overlay``'s ``False`` is not a failure)
+        and without a confirm — a confirm over nothing to lose is the speed bump that teaches
+        admins to click through confirms."""
         cfg = _cfg()
         root = _open_creator(page, monkeypatch, cfg)
 
@@ -695,6 +746,120 @@ class TestDiscard:
 # --------------------------------------------------------------------------- #
 # 5. The D9 auto-seed must not answer the question the admin is mid-way through #
 # --------------------------------------------------------------------------- #
+class TestTheDistrictDetailPrefill:
+    """Owner finding (2026-09-03): the district NUMBER is the one thing an admin always
+    knows, and the two fields beside it stayed blank even where the answer is in the vendored
+    domain table or in a mapping DistrictSync already ships.
+
+    ``_cfg`` seeds ``identity_email`` at ``sd93.bc.ca``, which is what ``derive_domains``
+    puts FIRST — so every domain assertion below states the whole field, never a substring.
+    """
+
+    def _sd(self, root: ft.Control, digits: str) -> None:
+        _type(_field(root, creator_screen.CREATOR_SD_FIELD_LABEL), digits)
+
+    def test_a_district_we_ship_fills_both_fields(self, page, monkeypatch) -> None:
+        root = _open_creator(page, monkeypatch, _cfg())
+
+        self._sd(root, "10")
+
+        assert _field(root, creator_screen.CREATOR_NAME_FIELD_LABEL).value == "Arrow Lakes School District"
+        assert _field(root, creator_screen.CREATOR_DOMAINS_FIELD_LABEL).value == "sd93.bc.ca, sd10.bc.ca"
+
+    def test_a_district_we_do_NOT_ship_still_gets_its_domains(self, page, monkeypatch) -> None:
+        """SD22 is in the vendored table and ships no mapping — the common shape for an admin
+        who needs this flow at all. The name stays EMPTY rather than invented."""
+        root = _open_creator(page, monkeypatch, _cfg())
+
+        self._sd(root, "22")
+
+        assert _field(root, creator_screen.CREATOR_NAME_FIELD_LABEL).value == ""
+        assert _field(root, creator_screen.CREATOR_DOMAINS_FIELD_LABEL).value == "sd93.bc.ca, sd22.bc.ca"
+
+    def test_a_CORRECTED_number_replaces_its_own_prefill(self, page, monkeypatch) -> None:
+        """The rule that "only fill an empty field" gets wrong on every multi-digit number:
+        typing "2" then "22" would otherwise strand SD2's answer under district 22."""
+        root = _open_creator(page, monkeypatch, _cfg())
+
+        self._sd(root, "22")
+        assert _field(root, creator_screen.CREATOR_DOMAINS_FIELD_LABEL).value == "sd93.bc.ca, sd22.bc.ca"
+
+        self._sd(root, "10")
+
+        assert _field(root, creator_screen.CREATOR_DOMAINS_FIELD_LABEL).value == "sd93.bc.ca, sd10.bc.ca"
+        assert _field(root, creator_screen.CREATOR_NAME_FIELD_LABEL).value == "Arrow Lakes School District"
+
+    def test_the_LAUNCH_PAGE_prefill_is_replaceable_too(self, page, monkeypatch) -> None:
+        """A fresh form opens carrying the not-listed SD number's domains. Treating those as
+        the admin's answer would strand the launch page's district under a different one —
+        the same defect one step earlier."""
+        root = _open_creator(page, monkeypatch, _cfg())
+        assert _field(root, creator_screen.CREATOR_DOMAINS_FIELD_LABEL).value == "sd93.bc.ca, csf.bc.ca"
+
+        self._sd(root, "10")
+
+        assert _field(root, creator_screen.CREATOR_DOMAINS_FIELD_LABEL).value == "sd93.bc.ca, sd10.bc.ca"
+
+    def test_what_the_ADMIN_typed_is_never_overwritten(self, page, monkeypatch) -> None:
+        """The one thing a prefill may never do. Both fields, because they carry the flag
+        independently and a per-field bug would hide behind a single-field assertion."""
+        root = _open_creator(page, monkeypatch, _cfg())
+        _type(_field(root, creator_screen.CREATOR_NAME_FIELD_LABEL), "My Own Name")
+        _type(_field(root, creator_screen.CREATOR_DOMAINS_FIELD_LABEL), "mine.example.ca")
+
+        self._sd(root, "10")
+
+        assert _field(root, creator_screen.CREATOR_NAME_FIELD_LABEL).value == "My Own Name"
+        assert _field(root, creator_screen.CREATOR_DOMAINS_FIELD_LABEL).value == "mine.example.ca"
+
+    def test_the_prefilled_values_are_what_gets_WRITTEN(self, page, monkeypatch) -> None:
+        """The prefill is on the CONTROL and in the surface's own state; this proves the two
+        agree, so a painted value can never be a different value from the one saved."""
+        cfg = _cfg()
+        root = _open_creator(page, monkeypatch, cfg)
+
+        self._sd(root, "10")
+        _button(root, creator_screen.CREATOR_CONTINUE_LABEL).on_click(None)
+
+        assert overlay_path("sd10custom").exists()
+        written = yaml.safe_load(overlay_path("sd10custom").read_text(encoding="utf-8"))
+        assert written["district_name"] == "Arrow Lakes School District"
+        assert written["district_domains"] == ["sd93.bc.ca", "sd10.bc.ca"]
+
+
+class TestTheGradeGrids:
+    def test_both_grids_render_in_five_columns(self, page, monkeypatch) -> None:
+        """Owner finding (2026-09-03, round 2): two columns still ran the 21-code CEDS
+        vocabulary eleven rows deep and pushed the card's primary below the fold."""
+        root = _open_creator(page, monkeypatch, _cfg())
+        _tick(_checkbox(root, creator_screen.CREATOR_GRADES_INHERIT_LABEL), False)
+
+        grids = [
+            row
+            for row in _walk(root)
+            if isinstance(row, ft.Row)
+            and row.controls
+            and all(isinstance(c, ft.Column) for c in row.controls)
+            and any(isinstance(b, ft.Checkbox) for c in row.controls for b in (c.controls or []))
+        ]
+        assert len(grids) == 2, "expected the rostered grid and the homeroom grid"
+        for grid in grids:
+            assert len(grid.controls) <= 5
+            assert all(column.controls for column in grid.controls), "an empty column is a gap nobody put there"
+
+    def test_every_CEDS_code_is_present_exactly_once(self, page, monkeypatch) -> None:
+        """The twin that makes the column count safe to change: reshaping the grid must never
+        drop a grade, and a column-major fill is easy to get off by one."""
+        from src.ui_flet.config_editor import CEDS_GRADE_ORDER
+
+        root = _open_creator(page, monkeypatch, _cfg())
+        _tick(_checkbox(root, creator_screen.CREATOR_GRADES_INHERIT_LABEL), False)
+
+        labels = [c.label for c in _walk(root) if isinstance(c, ft.Checkbox) and c.label in set(CEDS_GRADE_ORDER)]
+        rostered = labels[: len(CEDS_GRADE_ORDER)]
+        assert rostered == list(CEDS_GRADE_ORDER), "the vocabulary must still read in CEDS order, top to bottom"
+
+
 class TestTheAutoSeedAndAPendingCreator:
     def test_the_seed_does_NOT_fire_while_a_creator_setup_is_pending(self, page, monkeypatch) -> None:
         """Obligation #8. The seed would satisfy the District step with a BUNDLED district and
@@ -2135,11 +2300,24 @@ def _configured(tmp_path: Path, **over) -> AppConfig:  # noqa: ANN003
 
 
 def _mapping(monkeypatch: pytest.MonkeyPatch, cfg: AppConfig, *, page=None) -> ft.Control:  # noqa: ANN001
-    """Mount the REAL Mapping surface (its handlers all take a FRESH ``AppConfig.load()``)."""
+    """Mount the REAL Mapping surface (its handlers all take a FRESH ``AppConfig.load()``).
+
+    The post-Apply schedule READ-BACK is pinned OFF (``supports_read_schedule=False``), which
+    is Mapping's own documented non-Windows behaviour: the hedged initial paint is then the
+    final state, so the stale-schedule notice is decided by ``schedule_registered`` alone.
+
+    Without this the surface probes the REAL Windows Task Scheduler, and the notice appears
+    only on a machine that happens to have a live ``DistrictSync_Daily`` task — passing on the
+    developer box that registered one during a QA walk and failing everywhere else, this repo's
+    three-OS CI included. These tests are about the creator DOOR; the schedule read-back has its
+    own coverage in ``tests/test_ui_flet_schedule_probe.py`` and ``test_ui_flet_mapping.py``.
+    """
     from src.ui_flet.mapping_catalog import reset_catalog_cache
+    from src.ui_flet.screens import mapping as mapping_module
     from src.ui_flet.screens.mapping import build_mapping
 
     _pin(monkeypatch, cfg)
+    monkeypatch.setattr(mapping_module, "get_scheduler", lambda: SimpleNamespace(supports_read_schedule=False))
     reset_catalog_cache()
     return build_mapping(page or _driving_page(), app_config=cfg, on_navigate=lambda _dest: None)
 
@@ -2185,7 +2363,10 @@ class TestTheCreateDoorOnMapping:
         assert "sd93custom" in [option.key for option in _dropdown(root, "Roster mapping").options]
         # (c) ...carrying the SAME post-switch presentation Apply paints, naming the OLD district.
         blob = _blob(root)
-        assert "Now using Sunny Ridge" in blob
+        # "SD93 - " is `humanize.friendly_district_name`'s prefix for a self-service district
+        # (owner finding, 2026-09-03): the admin types the bare name and the label reads like
+        # every shipped row does.
+        assert "Now using SD93 - Sunny Ridge" in blob
         assert "Sea to Sky" in blob, "the stale-schedule notice does not name the district the nightly still runs"
         assert "Open Settings" in labels, "Mapping never re-registers — it routes to the one flow that does"
 
@@ -2210,6 +2391,8 @@ class TestTheCreateDoorOnMapping:
         assert overlay_path("sd93custom").exists(), "the positive twin: there was something to discard"
 
         _button(root, creator_screen.CREATOR_DISCARD_LABEL).on_click(None)
+        assert overlay_path("sd93custom").exists(), "the FIRST press must only ask, on this host too"
+        _button(root, creator_screen.CREATOR_DISCARD_CONFIRM_LABEL).on_click(None)
 
         assert overlay_path("sd93custom").exists() is False
         assert cfg.creator_pending_sis == ""

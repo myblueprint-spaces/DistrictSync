@@ -948,12 +948,25 @@ def open_url(page: ft.Page, url: str) -> None:
     """Open ``url`` in the system browser/mail client — the ONE way to call ``page.launch_url``.
 
     ``ft.Page.launch_url`` is ``async def`` on flet 0.85.3, wrapped in a ``@deprecated``
-    decorator that hides that from ``inspect.iscoroutinefunction``. A plain
-    ``lambda _e: page.launch_url(url)`` therefore builds a coroutine nobody awaits — the
-    console prints ``RuntimeWarning: coroutine 'Page.launch_url' was never awaited`` and
-    the click does NOTHING (owner finding, 2026-09-03: every Help-page link was dead).
-    Scheduling it on the page's event loop is the fix; ``page.run_task`` is the sanctioned
-    bridge from a sync handler (see ``docs/FLET_1.0_CONVENTIONS.md``). Pinned by
-    ``tests/test_ui_flet_help.py`` (no direct ``page.launch_url(`` call outside this helper).
+    decorator. That combination breaks BOTH obvious spellings, which is why this helper
+    exists and why it wraps rather than forwards:
+
+    * ``lambda _e: page.launch_url(url)`` builds a coroutine nobody awaits — the console
+      prints ``RuntimeWarning: coroutine 'Page.launch_url' was never awaited`` and the click
+      does NOTHING (owner finding, 2026-09-03: every Help-page link was dead);
+    * ``page.run_task(page.launch_url, url)`` RAISES. ``run_task`` gates on
+      ``inspect.iscoroutinefunction(handler)``, and the ``@deprecated`` wrapper is a plain
+      sync function that RETURNS the coroutine — so the check answers ``False`` and the
+      handler dies with ``TypeError: handler must be a coroutine function`` (owner finding,
+      2026-09-03, round 2: the first fix turned a silent dead click into a visible crash).
+
+    Scheduling a genuine ``async def`` closure satisfies the gate and awaits the coroutine
+    the deprecated wrapper hands back. Pinned by ``tests/test_ui_flet_help.py``, whose fake
+    page re-implements ``run_task``'s ``iscoroutinefunction`` guard — a fake more permissive
+    than the API it stands in for is what let the crashing form ship green.
     """
-    page.run_task(page.launch_url, url)
+
+    async def _launch() -> None:
+        await page.launch_url(url)
+
+    page.run_task(_launch)

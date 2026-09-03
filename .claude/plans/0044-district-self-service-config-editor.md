@@ -2719,3 +2719,55 @@ _Spec self-check:_
 - **Owner-driven changes folded in during the build:** S6 before S5 + the Mapping CREATE door; the Files-step decision copy ("Save district settings", verdict-first group, locked-Continue captions, district chip); Family no-email exclusion + Students no-email WARN (separate change, contract 2.2.0).
 - **OWED (owner + PR time):** (1) the owner's local test of the branch and their review findings; (2) the ONE feature PR → **CI read and quoted here** (the 2026-07-30 land gate; no CI run exists for the branch); (3) the **certification disposition** (D-0037-6: audit pass · product-gap pass · QA walk on a BUILT exe) — run before the release, or a dated DECISIONS deferral; S7 wrote no "audited" claim anywhere; (4) Stage 9 retrospect + the plan-file lifecycle disposition.
 - **Flags for the owner (all in the `Flags:` list):** overlays inherit `sis`; `build_creator` seam additions (`stage`, `on_written(note)`, `pending`, `continue_lock_note`); creator in `screens/creator.py`; five writer surfaces; SD58/SD70 prefill-table rows; "Added on this computer" wording; the two tier-gap residuals (footer/Done a press behind on a pick); the `mbponly` grades-card edge.
+
+## Owner review round 2 (2026-09-03)
+
+The owner ran the branch on Windows and reported eight findings. All fixed inline on the branch (no
+subagents — owner's standing instruction for finding rounds). Round 1's fixes are commits `cf4e521`
+and `392343d`; this is round 2.
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | Every Help link **crashed** — `TypeError: handler must be a coroutine function` | `components.open_url` schedules an `async def` CLOSURE. `run_task` gates on `inspect.iscoroutinefunction`, and `Page.launch_url`'s `@deprecated` wrapper is a SYNC function returning the coroutine — so round 1's `run_task(page.launch_url, url)` turned a silent dead click into a visible crash. The test's fake `run_task` had no such guard: it is now the real one, plus a positive twin that AWAITS the scheduled handler. |
+| 2 | Discard deleted an already-saved mapping with no warning, and the deleted district still showed as Mapping's current | Two-press in-place confirm; and the **active district is REFUSED**, not confirmed (`CREATOR_DISCARD_ACTIVE_NOTE`) — no sixth `sis_type` writer, so a discard can never leave the install pointed at a file that is gone. An unwritten draft still discards on one press. |
+| 3 | "Change this district's setup" collided with the rail's **Setup** item | `MAPPING_EDIT_LABEL` → "Edit mapping"; `MAPPING_EXPORT_LABEL` → "Show mapping file"; plus every note that quoted them, and the doc copies the parity pin watches. |
+| 4 | Custom configs sorted by SD number but displayed the bare name | `humanize.friendly_district_name` prefixes `SD<num> - ` for a `sd<num>custom` id (`authoring.custom_sd_number`). READ-time, so the stored name stays bare, existing overlays are fixed with no migration, and all four pickers + Mapping + Convert + Run History inherit it. |
+| 5 | The district number prefilled nothing | `_prefill_from_sd` fills name + domains on change: `config_editor.district_name_seed` (pure, over the bundled names) beside the existing `derive_domains`. Replaceable while untouched — **including the launch page's own opening prefill** — never overwriting a typed answer. Controls are painted in place (no re-render of the field being typed into). |
+| 6 | A custom config was invisible once the admin's email matched a shipped district | `origin == "user"` is an unconditional keep in `filtered_catalog`. Argued in DECISIONS as NOT a reversal of 2026-08-04: it widens by one structural fact, not by a per-surface control. |
+| 7 | Grade checklists still too tall at two columns | Five columns, column-major, empty trailing columns dropped. |
+| 8 | "this district" reads oddly to a district tech; Setup/Settings/Mapping are confusable | (a) fixed: the creator's vocabulary is MAPPING throughout. (b) **NOT fixed — ROADMAP proposal.** Renaming the rail's Setup item is a D7 decision with three candidate answers costed; not taken unilaterally. |
+
+**Also fixed en route (pre-existing, would have failed CI):**
+`tests/test_ui_flet_creator_flow.py::TestTheCreateDoorOnMapping` mounted Mapping without pinning the
+schedule read-back, so it probed the REAL Windows Task Scheduler — the stale-schedule assertion passed
+only on a machine that happened to hold a live `DistrictSync_Daily` task. `_mapping` now pins
+`supports_read_schedule=False` (Mapping's own documented non-Windows behaviour).
+
+**Tests added:** the `run_task` guard + awaited twin · discard confirm / cancel-is-a-no-op / active
+refusal · `district_name_seed` (6) · the SD prefix (5, incl. the shipped-name and raw-id-fallback
+twins) · `custom_sd_number` + a round-trip property · the prefill (5, incl. what-the-admin-typed and
+the written-YAML twin) · the five-column grids + a "no grade was dropped" twin · `origin == "user"`
+survives a match that excludes it, kept by ORIGIN not by its own domain (both with narrowed-shipped-row
+twins; both verified RED with the fix removed).
+
+**Deterministic gates (local, Windows, after round 2) — run on Python 3.13, the interpreter
+`requires-python` and `ci.yml` both name.** A dev-machine 3.10 was in use earlier in this round and
+CANNOT run `tests/test_cli_entry.py` at all (`tomllib` is 3.11+), so a 3.13 environment was installed
+and every gate below re-run under it; the numbers are the 3.13 ones.
+
+- full suite + coverage: **5,639 passed / 41 skipped / 1 deselected**, `TOTAL 7637 stmts, 276 miss,
+  96%` against the 80% gate (13m12s);
+- `ruff check src/ tests/` + `ruff format --check` clean (221 files);
+- `py -3.13 -m mypy src/ --exclude src/ui_flet` clean (55 files);
+- `bandit -r src/ -q -c pyproject.toml` exit 0 · `scripts/check_no_emails.py` OK (342 files) ·
+  `make validate-config` 20/20 · tree-check OK (101 files) · SD74 golden byte-identical.
+
+**Verified against a real scratch profile** (`DISTRICTSYNC_DATA_DIR`), not only in tests: the
+`SD34 - test` label; a user-authored row riding an SD48-matched admin's picker while every other
+district's shipped rows are narrowed away; and both discard states rendering their intended copy.
+
+**Still OWED, unchanged:** the ONE feature PR → **CI read and quoted into a land record** (no CI run
+exists for this branch; `ci.yml` fires only on push/PR to `main`, and `flet-verify.yml`'s three-OS pack
+matrix fires on a PR touching `src/ui_flet/**`, which this does); the **certification disposition**
+(D-0037-6 — audit pass · product-gap pass · QA walk on a BUILT exe), to be recorded in DECISIONS when
+the PR opens, as a plan, not a deferral; Stage 9 retrospect.

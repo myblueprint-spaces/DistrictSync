@@ -181,7 +181,7 @@ the file names this district's export actually uses.
 - **Flow**
   1. Two doors onto the same surface: the first-run wizard's District step ("Set up my district"),
      or — on an install that is already running — Mapping ("Set up a district that isn't listed",
-     and "Change this district's setup" on a mapping that was added here).
+     and "Edit mapping" on a mapping that was added here).
   2. Four short forms: a starting point (one of the four standard MyEd BC mappings), the district's
      number / name / staff email domains, which CSV files to produce, and which grades to roster
      (with the homeroom grades chosen inside that set, so the scope chain is valid by construction).
@@ -887,6 +887,8 @@ The checkable projection of the Features above. All checks are `manual` — Dist
       "the test conversion writes no CSV and sends nothing, and reports a row count per file",
       "'Save district settings' is refused while a file name is unsaved or no passing test matches the mapping as it reads, and every refusal says what to do next",
       "after it succeeds, config.json names the new district and the district pickers list it as 'Added on this computer'",
+      "the district reads as 'SD<number> - <the name you gave>' everywhere, the same shape as a district that ships with DistrictSync",
+      "typing the district number fills in the name and the staff domains where DistrictSync knows them; correcting the number replaces them, and anything typed by hand is never overwritten",
       "the wizard continues to Delivery and Schedule as usual — nothing about the self-service path skips them"
     ],
     "states": ["error"],
@@ -907,7 +909,10 @@ The checkable projection of the Features above. All checks are `manual` — Dist
       "the FIRST folders-card Save lands, because a shipped district is never gated; config.json is unchanged after each refusal, and the nightly scheduled task is not re-registered by a refused press",
       "the change door on Mapping runs the same test conversion, and only that path can re-activate the district",
       "a district that ships with DistrictSync offers no change door and no reveal in the same look",
-      "the reveal names the overlay's real path inside the scratch profile, lets it be copied, and opens the containing mappings folder"
+      "the reveal names the overlay's real path inside the scratch profile, lets it be copied, and opens the containing mappings folder",
+      "discarding a mapping already saved on this computer asks before it deletes anything, and keeping it leaves both the file and the district list untouched",
+      "discarding the mapping this computer is currently converting with is refused outright — nothing is deleted and the district is not changed — with a note pointing at switching mapping first",
+      "a mapping added on this computer stays in every district picker even when the stored address matches a district that ships with DistrictSync"
     ],
     "states": ["error"],
     "check": "manual"

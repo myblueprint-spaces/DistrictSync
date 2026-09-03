@@ -81,7 +81,10 @@ CREATOR_ENTITIES: tuple[str, ...] = (
 #: ``validators._SIS_TYPE_RE`` and ``identity_gate._SD_CONFIG_RE`` unchanged.
 #: Lowercase-only: this id becomes a filename stem and a ``--sis`` argument, and a
 #: case-variant twin on a case-insensitive filesystem would shadow the original.
-CUSTOM_SIS_ID_RE = re.compile(r"^sd\d+custom$")
+#: The district number is a CAPTURE GROUP so :func:`custom_sd_number` can read it back
+#: without a second spelling of the shape (or a slice that would silently follow a
+#: changed suffix length).
+CUSTOM_SIS_ID_RE = re.compile(r"^sd(\d+)custom$")
 
 
 def _file_header(sis_id: str) -> str:
@@ -138,6 +141,26 @@ def is_custom_sis_id(sis_id: object) -> bool:
     catalog row carries.
     """
     return isinstance(sis_id, str) and CUSTOM_SIS_ID_RE.match(sis_id) is not None
+
+
+def custom_sd_number(sis_id: object) -> int | None:
+    """The district NUMBER inside a self-service config id, or ``None``. TOTAL, over any object.
+
+    The inverse of :func:`derive_sis_id`, and the reason both live here: the
+    ``sd<num>custom`` namespace is spelled ONCE (:data:`CUSTOM_SIS_ID_RE`), so a
+    presentation layer that needs the number back cannot drift from the layer that
+    minted it. Its consumer is ``ui_flet.humanize.friendly_district_name``, which
+    prefixes a self-service district's label with ``SD<num>`` so it reads like every
+    shipped row does (owner finding, 2026-09-03).
+
+    ``None`` for anything that is not a self-service id — a shipped ``sd48myedbc``, a
+    hand-placed user-dir override, a non-string. That is what keeps the prefix off a
+    row whose name we did not author.
+    """
+    if not is_custom_sis_id(sis_id):
+        return None
+    match = CUSTOM_SIS_ID_RE.match(str(sis_id))
+    return int(match.group(1)) if match else None
 
 
 def derive_sis_id(sd_number: int) -> str:

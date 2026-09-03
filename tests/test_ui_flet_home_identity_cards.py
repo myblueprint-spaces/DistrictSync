@@ -631,10 +631,19 @@ class TestTheNotListedCard:
 
         _button(view, home.NOT_LISTED_EMAIL_LABEL).on_click(None)
 
-        # `page.launch_url` is a coroutine on 0.85.3, so the click SCHEDULES it through
-        # `components.open_url` -> `page.run_task(page.launch_url, url)` (owner finding 2026-09-03).
-        (fn, url), _kw = page.run_task.call_args
-        assert fn is page.launch_url
+        # `page.launch_url` is a coroutine behind a `@deprecated` wrapper on 0.85.3, so the
+        # click schedules an async CLOSURE through `components.open_url` — passing the bound
+        # method straight to `run_task` raises `TypeError` (owner finding 2026-09-03 r2).
+        # Awaited here so the assertion reads the url actually launched, not one inferred.
+        (handler,), _kw = page.run_task.call_args
+        launched: list[str] = []
+
+        async def _fake_launch(target: str) -> None:
+            launched.append(target)
+
+        page.launch_url = _fake_launch
+        asyncio.run(handler())
+        (url,) = launched
         assert url.startswith("mailto:")
         assert "body=" not in url
         assert "admin@x.example.com" not in url
