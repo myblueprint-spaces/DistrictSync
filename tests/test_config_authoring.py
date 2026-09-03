@@ -1286,3 +1286,38 @@ class TestExeSmokeOverlayLiteralMatchesTheAuthoringLayer:
         phases = list(ci_smoke_module.CLI_SMOKE_PHASES)
         assert phases.index("write-run") < phases.index("user-overlay") < phases.index("corrupt-profile")
         assert phases[-1] == "corrupt-profile"
+
+
+class TestNonAsciiNamesSurviveTheRoundTrip:
+    """A district name with an accent, a curly apostrophe or its own orthography.
+
+    REGRESSION (2026-09-03). ``_atomic_write_text`` has always pinned ``utf-8``, but
+    ``loader._load_yaml`` opened with the PLATFORM LOCALE — so the creator wrote UTF-8 and
+    the loader read it back as ``cp1252`` on Windows. cp1252 maps almost every byte, so
+    nothing raised: the name simply came back MOJIBAKE, into every picker, Mapping,
+    Convert and Run History, with no error anywhere. Found while vendoring the district
+    NAME table, whose SD83 row is the first non-ASCII district name this product ships.
+
+    Pinned at the seam an admin actually crosses, not just at the reader: these two halves
+    are written by different modules and were allowed to disagree for exactly that reason.
+    """
+
+    NAME = "K̓wsaltktnéws ne Secwepemcúl’ecw"
+
+    def test_an_authored_overlay_reads_back_byte_for_byte(self):
+        write_overlay(_spec(district_name=self.NAME), overwrite=True)
+
+        assert load_config("sd93custom").district_name == self.NAME
+
+    def test_the_bytes_on_disk_are_utf8_not_escapes(self):
+        """The write side must emit real UTF-8, not ASCII escape sequences that hide the bug.
+
+        A YAML dumper left at its default (`allow_unicode=False`) would write pure ASCII
+        escapes — the overlay would round-trip green under ANY read encoding, and the
+        test above would be vacuous. This is its positive twin: the file really does
+        contain the non-ASCII bytes the reader has to decode.
+        """
+        path = write_overlay(_spec(district_name=self.NAME), overwrite=True)
+
+        assert self.NAME in path.read_text(encoding="utf-8")
+        assert not path.read_bytes().isascii()

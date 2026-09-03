@@ -270,7 +270,22 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
-    with open(path) as f:
+    """Read ONE mapping YAML. UTF-8 EXPLICITLY — never the platform locale.
+
+    Every config this function reads is written UTF-8: the bundled ``config/mappings/``
+    files are UTF-8 in the repo, and a self-service overlay is written by
+    ``config.authoring._atomic_write_text``, which pins ``encoding="utf-8"``. Reading
+    them back at the locale encoding made the two halves disagree.
+
+    The failure was SILENT, which is why this is spelled out. On Windows the locale
+    encoding is ``cp1252``, which maps almost every byte, so a UTF-8 name did not raise
+    ``UnicodeDecodeError`` — it DECODED, into mojibake. An admin who typed a district
+    name with any non-ASCII character (an accent, a curly apostrophe, a BC district's
+    own orthography) got it back mangled in every picker, on Mapping, on Convert and in
+    Run History, with nothing anywhere reporting a fault. Found 2026-09-03 while
+    vendoring the district-name table; the write side was already correct.
+    """
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
