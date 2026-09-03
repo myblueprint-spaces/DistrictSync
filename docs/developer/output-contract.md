@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **contract_version** | `2.2.0` |
-| **emitted_by** | DistrictSync v3.14.0 |
+| **emitted_by** | DistrictSync — `2.2.0` is UNRELEASED; the newest tagged build (v3.16.0) still emits `2.1.0`, unchanged since v3.14.0 |
 | **published_reference** | SpacesEDU *Advanced CSV* v1.0 (2025-07-23) — [Google Doc `1BePvuk5rg-YjUUvdwjb3X3Z0JWEUc5AtVjDfR3nub0U`](https://docs.google.com/document/d/1BePvuk5rg-YjUUvdwjb3X3Z0JWEUc5AtVjDfR3nub0U) |
 | **status** | Maintained mirror. **Confirmation is recorded PER ROW — there is no doc-wide confirmation stamp.** |
 | **mechanical mirror** | `tests/contract_schema.py` (the data) · `tests/test_contract.py` (the sweep) · `tests/test_output_contract_doc.py` (this doc ↔ that data) |

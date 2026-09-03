@@ -9,6 +9,73 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-09-02
+
+The Windows download is now code-signed as **myBlueprint Corp.** Districts
+downloading DistrictSync see a named publisher instead of an unknown one, and
+district IT can verify where the file came from before allowing it onto a
+server. Nothing about how the tool converts or delivers data changed — this
+release is entirely about the first mile, getting the app onto the machine.
+
+**Windows only.** The macOS and Linux downloads are unchanged and still
+unsigned. Signing those needs an Apple Developer ID and notarization, which is
+a separate enrolment.
+
+**One honest limit:** the signature covers the file you download. On first
+launch the app still unpacks an unsigned helper into your user profile, so a
+district antivirus that inspects behaviour rather than publisher can still
+object. Signing narrows the "unknown publisher" problem; it does not by itself
+close the antivirus one.
+
+### Added
+
+- **The Windows download is code-signed.** `DistrictSync-windows.exe` is now
+  signed as **myBlueprint Corp.** through Azure Trusted Signing, so Windows names
+  the publisher on first run instead of warning about an unknown one, and district
+  IT can verify where the file came from before allowing it. SmartScreen builds its
+  download reputation separately, so a brand-new version can still show a warning
+  for a while — the signature is what lets that reputation accumulate against a
+  real identity rather than starting from nothing every release.
+- The signed executable is verified in CI before it is published (`signtool verify`
+  plus an explicit timestamp check), and the conversion and window smokes are
+  re-run against the **signed** bytes, so what is tested is what districts download.
+
+### Changed
+
+- The macOS and Linux downloads are **still unsigned** — signing those needs an
+  Apple Developer ID and notarization, which is a separate purchase. The release
+  page now says which platforms are signed instead of stating that none are.
+
+## [3.15.0] - 2026-09-02
+
+A distribution fix, a new school, and a guard against a silent class merge.
+Mac districts could not open the app at all — the download arrived as a bare
+file that macOS opened in a text editor — and now get a normal `.dmg` to drag
+into Applications. Unity Christian School (Chilliwack) ships built in, the
+first configuration built from a real MyEd BC extract rather than assumed file
+naming. And when one school has two homerooms with the same label but
+different teachers, the run now reports the clash instead of merging them
+without a word.
+
+**No CSV output changes for existing districts** — the output contract stays
+`2.1.0` and the SD74 reference output is byte-identical.
+
+### Added
+
+- **Unity Christian School (Chilliwack) ships built in** as
+  `unitychristianmyedbc` — the 20th bundled configuration, and the first built
+  against a real MyEd BC extract instead of assumed file naming. Homerooms
+  cover kindergarten through grade 8, because the school's timetable export
+  only covers grades 9-12 and without it the grade-8 pupils would arrive with
+  no classes at all. Student emails are generated as
+  `<student number>@unitychristian.ca`, since the extract carries no student
+  email column. The family file is deliberately **not** produced: the school's
+  emergency-contact export has no email column whatsoever, so it could only
+  have emitted contact details for roughly 1,700 non-guardians — doctors,
+  aunts, friends of the family — with the one field a SpacesEDU family account
+  needs left blank on every row. It turns on once the school exports Parent
+  Information.
+
 ### Fixed
 
 - **macOS downloads open the app instead of a text editor.** The macOS release now
@@ -16,6 +83,16 @@ Per-release download links and auto-generated commit notes live on the
   **Applications**. The previous macOS asset was a bare, extension-less binary that
   Finder could only open as text, because a browser download does not carry the
   executable bit and there was no file extension to go on. Reported by a district.
+- **A homeroom class-ID clash is reported instead of passing silently.** When one
+  school has two homerooms with the same label but different teachers, both
+  collapse onto a single class ID: one teacher's class never reaches
+  `Classes.csv`, and both cohorts of students are enrolled into the one that
+  survives. Nothing said so. The merge itself is unchanged — widening the class
+  ID with the teacher would re-key every homeroom in every district and make
+  SpacesEDU treat them all as brand-new classes — but the run now records the
+  clash as a data error, visible in the log and in Run History, so it can be
+  corrected in the source roster instead of going unnoticed. Districts with no
+  such clash see no change.
 
 ### Changed
 
