@@ -64,7 +64,7 @@ Inside that folder:
 | `config.json` | Wizard settings (input/output paths, SFTP host, schedule) |
 | `history.db` | Run-history database — every wizard, scheduled, and CLI run is recorded here; the **Run History** surface reads it |
 | `etl_tool.log` | Diagnostic log (rotates at 5 MB, keeps 3 backups) — detailed messages for troubleshooting |
-| `mappings/*.yaml` | Any custom district mapping YAML provided by the DistrictSync team (persists across exe upgrades) |
+| `mappings/*.yaml` | Custom district mapping YAML — provided by the DistrictSync team, **or added by you in the app** — one small readable text file per district, `sd<number>custom_mapping.yaml` for the ones you add (persists across exe upgrades) |
 | OS credential store | SFTP password (Windows Credential Manager / macOS Keychain / Linux Secret Service) |
 
 You can back up or inspect this folder at any time. Deleting it resets
@@ -111,7 +111,7 @@ again, which opens a second copy.
 
 ### Wizard Step 1 — District Configuration
 
-Select your district from the dropdown. If your district is not listed, contact SpacesEDU support.
+Select your district from the dropdown. If your district is not listed, you can set it up yourself — press **"Set up my district"** on this step and answer four short questions (you can also reach it later from the **Mapping** surface). Contact SpacesEDU support if you would rather have the mapping built for you, or if your files do not convert cleanly.
 
 No district is pre-selected — you pick yours explicitly, so a district is never chosen for you by accident.
 

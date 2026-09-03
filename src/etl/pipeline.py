@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import pandas as pd
+import yaml
 
 from src.config.app_config import AppConfig
 from src.config.loader import load_config
@@ -747,21 +748,24 @@ def run_pipeline(
             sys.exit(1)
         logger.info(f"Input directory: {input_dir.resolve()}")
 
-        # Load and validate config
+        # Load and validate config.
+        #
+        # ONE except clause for all three failure types, because the DISPOSITION is one
+        # thing — this is a config problem, so record the bounded `config` category and
+        # exit 1 — and two identical bodies invited a third that differed. The types:
+        # `FileNotFoundError` (an absent config or an absent `_base`), `ValueError` (the
+        # version gate and every Pydantic validation failure), and `yaml.YAMLError` — a
+        # file that does not PARSE, which reaches here only from a hand-edited or
+        # half-written file and is the one shape a USER-authored overlay can arrive in
+        # that no CI gate ever sees (plan 0044 S7). Without it a torn overlay recorded
+        # the `unknown` category and re-raised through the generic sink, so the admin's
+        # Run History said nothing about their own mapping file. The loader's exception
+        # TYPE is deliberately preserved (`ui_flet/config_editor.humanize_config_error`
+        # reads `yaml.YAMLError` to say "we couldn't read the file") — the mapping to a
+        # category happens here, at the call site that knows the read was a config read.
         try:
             config = load_config(sis_type)
-        except FileNotFoundError as e:
-            logger.error(str(e))
-            _record_early_failure(
-                t0,
-                source=resolved_source,
-                sis_type=sis_type,
-                error=str(e),
-                category=RunErrorCategory.CONFIG.value,
-                dry_run=dry_run,
-            )
-            sys.exit(1)
-        except ValueError as e:
+        except (FileNotFoundError, ValueError, yaml.YAMLError) as e:
             logger.error(str(e))
             _record_early_failure(
                 t0,

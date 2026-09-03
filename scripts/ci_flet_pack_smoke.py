@@ -42,16 +42,17 @@ windowed) — so a failure prints that file, probing the retired legacy
 ``~/.districtsync`` as a secondary fallback.
 
 The same artifact has a SECOND branch — ``--sis/--input/--output``, the one every
-district runs nightly — which no CI job exercised at all. ``--cli-smoke`` adds four
-phases against the real exe (``--version`` · a dry run · a real write run · a boot
-on a corrupt profile); see the CLI-smokes section below for what each proves. Exactly
-ONE of the four (``write-run``) converts the fixture end-to-end and writes CSVs; the
-other three assert version/preview/degradation behaviour.
+district runs nightly — which no CI job exercised at all. ``--cli-smoke`` adds five
+phases against the real exe (``--version`` · a dry run · a real write run · a
+conversion through a planted USER-DIR mapping overlay · a boot on a corrupt profile);
+see the CLI-smokes section below for what each proves. Exactly ONE of the five
+(``write-run``) converts the fixture end-to-end and writes CSVs; the other four assert
+version/preview/user-overlay/degradation behaviour.
 
 ``--cli-smoke`` REFUSES to run without ``DISTRICTSYNC_DATA_DIR`` (the throwaway-profile
 seam) unless ``--allow-real-profile`` is passed — the phases write logs, a run store and
-(in phase 4) a corrupt ``config.json``, so an unset seam would silently exercise the
-operator's real profile.
+(in phases 4 and 5) a corrupt ``config.json`` and a mapping overlay, so an unset seam
+would silently exercise the operator's real profile.
 
 Usage::
 
@@ -707,11 +708,12 @@ def run_smoke(dist: Path, name: str, require_close: bool, kind: ArtifactKind = "
 # ===========================================================================
 #
 # The GUI smoke above proves the exe opens a window. Nothing proved the same exe
-# still CONVERTS — the branch every district actually runs nightly. These four
+# still CONVERTS — the branch every district actually runs nightly. These five
 # phases run the real artifact against the committed SD74 snapshot extract and assert
 # EXIT CODES first, strings second. Only `write-run` converts end-to-end and writes
-# CSVs; `version` starts the exe, `dry-run` previews without writing, and
-# `corrupt-profile` boots on a planted config.
+# CSVs; `version` starts the exe, `dry-run` previews without writing, `user-overlay`
+# converts through a mapping config planted in the profile (never bundled in the exe),
+# and `corrupt-profile` boots on a planted config.
 #
 # Every phase is pointed at a throwaway profile via DISTRICTSYNC_DATA_DIR (the
 # `src/utils/paths` step-0 seam): platformdirs ignores LOCALAPPDATA on Windows, so
@@ -961,6 +963,121 @@ def _smoke_write_run(art: Path, ctx: CliSmokeContext) -> bool:
     return all(checks)
 
 
+# The user-dir overlay phase 5 plants (plan 0044 S7 §7.2). TWO constants, one fact:
+# `_SD93_OVERLAY_SPEC` is the district FACTS as the kwargs `src.config.authoring.OverlaySpec`
+# takes, and `_SD93_OVERLAY_YAML` is what the authoring layer emits for them. This script
+# never imports `src` (it runs against a FROZEN artifact, not this checkout), so the YAML is
+# a literal — and `tests/test_config_authoring.py` ties the literal back to
+# `authoring.build_overlay` for that very spec, so it cannot drift into a shape the app would
+# never write. The renames reproduce the SD74 snapshot extract's real filenames, which is
+# what makes the fixture in `DEFAULT_SMOKE_INPUT` loadable through a `myedbc` base.
+_SD93_OVERLAY_SIS = "sd93custom"
+_SD93_OVERLAY_SPEC: dict[str, Any] = {
+    "sd_number": 93,
+    "district_name": "SD93 - Packed exe smoke",
+    "district_domains": ("sd93.bc.ca",),
+    "base": "myedbc",
+    "source_file_renames": {
+        "StaffInformationEnhanced.txt": "StaffInformation.txt",
+        "EmergencyContactInformation.txt": "ParentInformation.txt",
+        "StudentSchedule.txt": "studentcourseselection.txt",
+        "ClassInformationEnh.txt": "ClassInfoEnhanced.txt",
+    },
+}
+_SD93_OVERLAY_YAML = """_base: myedbc
+district_name: SD93 - Packed exe smoke
+district_domains:
+- sd93.bc.ca
+global_config:
+  school_year_sources:
+    student_schedule: studentcourseselection.txt
+mappings:
+  Classes:
+    source_files:
+      student_schedule: studentcourseselection.txt
+      staff_info: StaffInformation.txt
+      class_info: ClassInfoEnhanced.txt
+  Enrollments:
+    source_files:
+      student_schedule: studentcourseselection.txt
+  Family:
+    source_files:
+      emergency_contacts: ParentInformation.txt
+  Staff:
+    source_files:
+      staff_info: StaffInformation.txt
+"""
+
+
+def _smoke_user_overlay(art: Path, ctx: CliSmokeContext) -> bool:
+    """5 — a USER-DIR mapping overlay: the frozen exe reads one and converts through it.
+
+    **What this phase claims:** the MECHANISM — a packed one-file exe resolves
+    ``paths.user_mappings_dir()`` inside the profile seam, finds a district config that is
+    NOT bundled in the exe, deep-merges its ``_base:`` against the bundled base, and runs
+    the real conversion through the result. That is the whole of plan 0044's promise that a
+    district can add its own mapping without a release.
+
+    **What it does NOT claim:** anything about a district's own content. No CI gate ever
+    validates a user-dir config (that is why the FAILED-run floor in
+    ``tests/test_pipeline_run_store.py`` exists) — this proves only that the path works.
+
+    Shaped like phase 4, for the same reason: it plants bytes, so it REFUSES without
+    ``DISTRICTSYNC_DATA_DIR`` and ``--allow-real-profile`` does not extend to it. The
+    NEGATIVE CONTROL runs BEFORE the plant — the exe must not already know
+    ``sd93custom`` — so the exit 0 afterwards cannot be true for any other reason.
+    """
+    if ctx.seam_dir is None:
+        print("   FAIL requires DISTRICTSYNC_DATA_DIR — refusing to plant a mapping config in a real profile")
+        return False
+
+    overlay = ctx.seam_dir / "mappings" / f"{_SD93_OVERLAY_SIS}_mapping.yaml"
+    args = ["--sis", _SD93_OVERLAY_SIS, "--input", str(ctx.input_dir)]
+    try:
+        control_out = ctx.new_output("user-overlay-control")
+        control = _run_cli(art, [*args, "--output", str(control_out), "--dry-run"])
+
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        overlay.write_text(_SD93_OVERLAY_YAML, encoding="utf-8")
+
+        out = ctx.new_output("user-overlay")
+        before_log = len(ctx.log_text())
+        proc = _run_cli(art, [*args, "--output", str(out), "--dry-run"])
+        tail = ctx.log_text()[before_log:]
+        missing = [name for name in _ROSTERING_ENTITIES if name not in proc.stdout]
+
+        checks = [
+            _expect(
+                control.returncode != 0,
+                "the un-planted id exits NON-ZERO (the exe does not already know it)",
+                f"got {control.returncode}",
+            ),
+            _expect(proc.returncode == 0, "exit 0 with the overlay in the profile", f"got {proc.returncode}"),
+            _expect("=== DRY RUN" in proc.stdout, "'=== DRY RUN' banner on stdout"),
+            _expect(
+                not missing,
+                "all 5 rostering entities previewed through the overlay",
+                f"missing {missing}" if missing else "",
+            ),
+            _expect(
+                _SD93_OVERLAY_SIS in tail,
+                "this run's log slice names the user-dir district",
+                f"looked for {_SD93_OVERLAY_SIS!r} in {len(tail)} new log chars",
+            ),
+            _expect(not list(out.glob("*.csv")), "no CSV written by the preview"),
+        ]
+        if not all(checks):
+            _dump(proc)
+            print(f"   --- {ctx.log_path} (this phase's new log lines) ---")
+            for line in tail.splitlines()[-40:]:
+                print(f"      {line}")
+        return all(checks)
+    finally:
+        # ONLY the planted YAML. The `mappings/` dir it needed is left in place — an empty
+        # dir is not a config, and the profile dir is the caller's ($RUNNER_TEMP in CI).
+        overlay.unlink(missing_ok=True)
+
+
 def _smoke_corrupt_profile(art: Path, ctx: CliSmokeContext) -> bool:
     """4 — boot on a CORRUPT ``config.json``: degrade honestly, and never overwrite it.
 
@@ -1030,13 +1147,16 @@ def _smoke_corrupt_profile(art: Path, ctx: CliSmokeContext) -> bool:
 
 
 # Ordered — and this dict is the ONLY place the order lives. The workflow runs a single
-# `--phase all` invocation precisely so CI cannot disagree with it. Two ordering facts:
+# `--phase all` invocation precisely so CI cannot disagree with it. Three ordering facts:
 # `dry-run` pins history.db ABSENT, which is what makes `write-run`'s "the store was
-# created" check unambiguous; and `corrupt-profile` plants a config.json, so it runs LAST.
+# created" check unambiguous; `user-overlay` sits after `write-run` because its own
+# negative control needs the profile to be a working one, not a bare dir; and
+# `corrupt-profile` plants a config.json every later phase would read, so it runs LAST.
 CLI_SMOKE_PHASES: dict[str, Callable[[Path, CliSmokeContext], bool]] = {
     "version": _smoke_version,
     "dry-run": _smoke_dry_run,
     "write-run": _smoke_write_run,
+    "user-overlay": _smoke_user_overlay,
     "corrupt-profile": _smoke_corrupt_profile,
 }
 

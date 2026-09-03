@@ -457,7 +457,13 @@ That the importer appears to accept both spellings is **importer leniency — TO
 
 ## Config schema — the other contract
 
-The output CSVs are one contract; the **mapping YAML schema** is the other. Phase 2's mapping creator will generate configs against it, so the compatibility rules are stated here rather than rediscovered later.
+The output CSVs are one contract; the **mapping YAML schema** is the other. The in-app mapping creator generates configs against it, so the compatibility rules are stated here rather than rediscovered later.
+
+### Two authors, one schema
+
+Config YAML now has **two authors**, and the difference is entirely in what gates them. The vendor's bundled files in `config/mappings/` are validated by `make validate-config` in CI before a release, where a loud failure costs nothing. A district admin's **user-dir overlay** (`src/config/authoring.py` → `paths.user_mappings_dir()`; see [`adding-district.md`](adding-district.md) → *Self-service overlays*) is gated only where it can be: a build-then-load-back at authoring time, a required passing test conversion before it becomes the active district, and the real loader every night after that. **No CI gate ever sees it.**
+
+That is why the additive-key rule below binds harder than it used to. A repurposed key, a renamed `global_config` key or a dropped entity changes what an already-written overlay MEANS, on a machine no release process can inspect — and the district finds out as a failed nightly run rather than as a red build. Overlays carry no `version:` of their own (they inherit the base's), so the two-direction matrix below is still the whole compatibility story for them.
 
 ### The additive-key rule
 
@@ -477,7 +483,7 @@ Version is `<major>.<minor>` as a **quoted string** (`'1.9'`). A bare YAML float
 | Same major, **newer** minor | Loads, with a loud **WARNING** naming both versions. | Same-major semantics are safe; the config may use features this build ignores. |
 | **Different major** (older *or* newer) | **Fails loud** (`ValueError`), naming the supported major. | An out-of-major-range config must never silently drive a conversion. |
 | Unknown **top-level** key (`MappingConfig`) | **Ignored.** | Forward compatibility — the Pydantic default, declared deliberately. |
-| Unknown key in **`global_config`** or in an **entity block** | **Ignored** (`GlobalConfig` / `EntityConfig` declare no `model_config`, so they inherit `extra="ignore"`). | Forward compatibility again — but note the cost: **typos here are silent.** A mistyped `enabled_entities` (e.g. `enabled_entites:`) is dropped, leaving the field at its `[]` default, and empty `enabled_entities` means **ALL defined mappings are enabled** — so a one-character typo can widen a config's output rather than narrow it. Phase 2's creator should validate key names on the way in rather than rely on the loader. |
+| Unknown key in **`global_config`** or in an **entity block** | **Ignored** (`GlobalConfig` / `EntityConfig` declare no `model_config`, so they inherit `extra="ignore"`). | Forward compatibility again — but note the cost: **typos here are silent.** A mistyped `enabled_entities` (e.g. `enabled_entites:`) is dropped, leaving the field at its `[]` default, and empty `enabled_entities` means **ALL defined mappings are enabled** — so a one-character typo can widen a config's output rather than narrow it. The creator's forms only ever emit key names the authoring layer spells (`src/config/authoring.py`), which is what keeps a self-authored overlay clear of this trap — a hand edit to one is not protected. |
 | Unknown key in one of the **five leaf models** — `EmailDerivedDate`, `FieldEmailFormat`, `FieldEnrollStatus`, `RowFilter`, `CrossEnrollmentConfig` | **Rejected** (`extra="forbid"`). | These are small closed value objects where a typo is far more likely than a forward-compat key, so typo-catching wins. |
 
 `_base:` inheritance is a recursive deep merge with cycle detection. **Only dicts merge key-by-key; every other value — including lists — REPLACES wholesale.** An override that wants to extend a list must restate the whole list. A user-dir YAML shadows a same-named bundled config entirely (logged at INFO, never silent).

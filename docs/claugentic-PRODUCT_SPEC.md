@@ -171,6 +171,37 @@ Review the active district configuration and switch to a different pre-built one
 - **States** — **error** (a broken partner-authored config renders as a calm degraded summary with Apply disabled — never a raw Pydantic/OS error; the raw `sis_type` appears only as a muted secondary hint).
 - **What good feels like** — Honest about consequences. After switching, the confirmation says "Your folders are unchanged" and, when a nightly schedule exists, tells the admin the schedule still points at the old district until they open Settings and Save (which re-registers the task with the new district). It never claims the schedule silently followed the switch.
 
+### Self-service district setup
+
+A district whose mapping DistrictSync does not ship can author its own — in the app, with no
+vendor PR and no release. It is deliberately a **district-shape** editor, not a column editor:
+a starting point, the district's identity, which CSVs to produce, which grades to roster, and
+the file names this district's export actually uses.
+
+- **Flow**
+  1. Two doors onto the same surface: the first-run wizard's District step ("Set up my district"),
+     or — on an install that is already running — Mapping ("Set up a district that isn't listed",
+     and "Change this district's setup" on a mapping that was added here).
+  2. Four short forms: a starting point (one of the four standard MyEd BC mappings), the district's
+     number / name / staff email domains, which CSV files to produce, and which grades to roster
+     (with the homeroom grades chosen inside that set, so the scope chain is valid by construction).
+  3. "Your files" — one row per file DistrictSync looks for, the standard name pre-filled and this
+     district's own name set beside it where it differs, saved with "Save these file names".
+  4. "Run a test conversion" — a real conversion that writes nothing and sends nothing, reporting
+     how many rows each file would hold, plus any mapped column that is not in the files at all.
+  5. "Save district settings" — the one act that makes this the district this computer converts.
+- **States** — **error** (a mapping that will not load, or a write that fails, is reported as a
+  bounded plain-language category and changes nothing), **refused / needs a test** (the activation
+  is refused while a file name is unsaved or no passing test conversion matches the mapping as it
+  now reads — every refusal says what to do next and leaves the saved district alone), **stale
+  provenance** (a different app version, or a changed standard mapping underneath, asks for the
+  test again rather than trusting the old one).
+- **What good feels like** — Nothing becomes the active district untested. A shipped mapping is
+  never editable (only a mapping added on this computer offers the change door), the rows in every
+  district picker say "Added on this computer" so provenance is never a mystery, and support can
+  always be given the one small file this produces. A refusal never touches what already works: the
+  nightly sync keeps running the district it was already running.
+
 ### Help
 
 A calm off-ramp to answers and a human.
@@ -233,7 +264,7 @@ The checkable projection of the Features above. All checks are `manual` — Dist
       "the format error appears only AFTER leaving the field, never while typing, and never quotes what was typed",
       "the no-match state reads calm and grey ('no problem'), never red, and never says we don't have that ADDRESS on file",
       "SD99 reports no mapping yet and still offers a way forward",
-      "the not-listed note says we'll need to build a mapping and points at Help — it never suggests choosing the closest district",
+      "the not-listed note says we may need to set up a custom mapping, points at the support address, and offers setting the district up in the app — it never suggests choosing the closest district",
       "'That's not my address - try again' returns to the email field with the typed value intact"
     ],
     "states": ["error"],
@@ -837,6 +868,47 @@ The checkable projection of the Features above. All checks are `manual` — Dist
     ],
     "states": [],
     "check": "manual"
+  },
+  {
+    "id": "AC-selfserve-1",
+    "feature": "Self-service district setup",
+    "flow": [
+      "Point DISTRICTSYNC_DATA_DIR at an empty folder and launch the app",
+      "Past the launch page, on the wizard's District step press 'Set up my district'",
+      "Fill the four forms (starting point, district number/name/staff domains, which files, which grades) and Continue",
+      "Set the input and output folders, reach 'Your files', correct one file name and press 'Save these file names'",
+      "Press 'Run a test conversion', then 'Save district settings'",
+      "Open the profile folder's mappings subfolder and config.json"
+    ],
+    "expect": [
+      "the district's mapping is written as one small YAML in the profile's mappings folder, named sd<number>custom_mapping.yaml",
+      "the test conversion writes no CSV and sends nothing, and reports a row count per file",
+      "'Save district settings' is refused while a file name is unsaved or no passing test matches the mapping as it reads, and every refusal says what to do next",
+      "after it succeeds, config.json names the new district and the district pickers list it as 'Added on this computer'",
+      "the wizard continues to Delivery and Schedule as usual — nothing about the self-service path skips them"
+    ],
+    "states": ["error"],
+    "check": "manual"
+  },
+  {
+    "id": "AC-selfserve-2",
+    "feature": "Self-service district setup",
+    "flow": [
+      "On the profile from AC-selfserve-1, hand-edit the overlay YAML in the mappings folder (change the district name)",
+      "Open Mapping, select that district and press Apply",
+      "Open Settings > Folders & district, change the district to that one and Save",
+      "Read config.json after each press",
+      "On Mapping's card for that district, open the mapping-file reveal"
+    ],
+    "expect": [
+      "both presses are REFUSED with a plain-language note: the district was set up on this computer and has not passed a test conversion as it now reads",
+      "config.json is unchanged after each refusal, and the nightly scheduled task is not re-registered",
+      "the change door on Mapping runs the same test conversion, and only that path can re-activate the district",
+      "a district that ships with DistrictSync offers no change door and no reveal in the same look",
+      "the reveal names the overlay's real path inside the scratch profile, lets it be copied, and opens the containing mappings folder"
+    ],
+    "states": ["error"],
+    "check": "manual"
   }
 ]
 ```
@@ -845,7 +917,7 @@ The checkable projection of the Features above. All checks are `manual` — Dist
 
 Listed so a gap review never flags these as missing — they are decided scope boundaries, not gaps.
 
-- **The full column-mapping editor.** Mapping reviews and switches between *pre-built* district configs; authoring a brand-new column mapping in-app (the visual field-mapping editor) is scope-locked to a later epic on the ROADMAP. New configs are added by hand in `config/mappings/`.
+- **The full column-mapping editor.** Authoring a brand-new *column* mapping in-app (the visual field-mapping editor, `row_filters`, headerless `headers` blocks, StudentAttendance) is scope-locked to a later epic on the ROADMAP. What is NOT out any more: a district's own **district-shape** mapping — starting point, identity, which CSVs, which grades, and its file names — is authored in the app (see *Self-service district setup*) and written to the user profile, so "new configs are added by hand in `config/mappings/`" is now true only of the vendor's bundled ones.
 - **Bundled offline docs in Help.** Help links out to the SpacesEDU Help Centre rather than rendering the bundled `docs/` markdown in-app.
 - **Management / multi-district (fleet) views.** DistrictSync is a single-district admin's cockpit. Aggregate or fleet-management views are out of scope.
 - **Email / push alerting on failed or missed runs.** The product surfaces run health *inside the app* (Home verdict, missed-run warning, Run History). Proactive out-of-band alerting is owner-deferred (2026-07-15), not a current promise. **The deliberate mitigation, stated:** an admin who opens the app 2–3 times a year is not the only line of defence — the documented **exit-code contract** makes every run machine-readable by the district's own scheduler or monitoring (a non-zero exit is theirs to alert on), and a roster that stops arriving is visible to SpacesEDU ops from the other end. This is a *pull* cockpit by choice; the boundary is named, not unacknowledged.

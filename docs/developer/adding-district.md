@@ -504,6 +504,106 @@ Then without `--dry-run` to verify the output CSVs, and with `--quality` to spot
 
 ---
 
+## Self-service overlays (plan 0044)
+
+Everything above is the **vendor** path: you author a config into `config/mappings/`, `make validate-config` gates it in CI, and it ships inside the executable. Since plan 0044 there is a **second author** — a district admin, in the app, with no release involved. This section exists so that a change you make to a *base* config does not quietly break a file you will never see.
+
+**Where it lives.** One small YAML per district in the user profile's `mappings/` directory (`src/utils/paths.user_mappings_dir()`):
+
+| OS | Path |
+|----|------|
+| Windows | `%LOCALAPPDATA%\DistrictSync\mappings\sd<num>custom_mapping.yaml` |
+| macOS | `~/Library/Application Support/DistrictSync/mappings/sd<num>custom_mapping.yaml` |
+| Linux | `~/.local/share/DistrictSync/mappings/sd<num>custom_mapping.yaml` |
+
+The user dir is searched **before** the bundled one, it survives exe upgrades, and `sd<num>custom` is a **reserved namespace** (`authoring.CUSTOM_SIS_ID_RE`) kept deliberately distinct from the vendor's `sd<num>myedbc` ids, so a district that later gets a vendor config never collides with its own.
+
+### The emitted shape (frozen)
+
+`src/config/authoring.py` is the only writer. It emits a **thin overlay** — only what DIFFERS from the resolved base — in `authoring._ROOT_KEY_ORDER` order:
+
+| Key | Content |
+|-----|---------|
+| `_base` | One of `authoring.ALLOWED_BASES` — `myedbc`, `mbp_all`, `mbp_core`, `mbponly`. Never another district's config (that would inherit its column renames, email formats and grade policy invisibly). |
+| `district_name` | Presentation only. |
+| `district_domains` | The district's public **staff** email domains; emitted even when EMPTY (an explicit "this district claims none"). |
+| `global_config` | **Diff-only.** Any of `enabled_entities`, `homeroom_grades`, `class_rostering_grades`, `student_rostering_grades` that differs from the resolved base, plus `school_year_sources` when a rename touches that file. |
+| `mappings` | Per-entity `source_files` **filename renames only** — no column mappings, no `headers`, no `row_filters`. |
+| `authored_with` | Machine-written provenance: app version, base id, and the base's resolved digest. `MappingConfig` is `extra="ignore"`, so the loader never reads it; the UI uses it to say "a different version set this up". |
+
+Two keys are **deliberately absent**, and both must stay that way:
+
+- **`version:`** — inherited through `_base`, so an overlay never claims a config minor it does not use and the declared-range parity test (`tests/test_config_version_gate.py::TestDeclaredRangeVersusSupported`) stays a **bundled-only** concern.
+- **`sis:`** — that field is the SIS *product* name (`MyEducationBC`), not the config id. The id is the filename stem and the `--sis` argument; it is carried in the file's header comment (see `authoring._file_header`).
+
+**The chain-companion rule.** Whenever the emission carries `class_rostering_grades` or `student_rostering_grades` it ALSO emits `homeroom_grades` — even when that value is identical to the base's, which minimality would otherwise omit. `_base:` deep merge **REPLACES lists**, while the chain `homeroom_grades ⊆ class_rostering_grades ⊆ student_rostering_grades` validates on the RESOLVED config, so a narrower scope emitted alone would leave the chain's lower bound inherited — and the district's rostering scope would silently change (or stop loading) the day a base's homeroom list moved, naming a key their file never set.
+
+**File roles never diverge.** A rename is keyed by the ORIGINAL base filename, because the unit an admin renames is the FILE — and one file is named by up to three entity roles plus `global_config.school_year_sources`. The propagation reaches every reference or the emission is REFUSED (`authoring._assert_no_divergence`); a rename target may not also be another rename's original (case-folded), and two files may not collapse onto one name.
+
+A real emission — one rename of `StudentSchedule.txt`, fanned out to every role that names it (note `Classes`, `Enrollments` AND `school_year_sources` for the ONE renamed file):
+
+```yaml
+# DistrictSync self-service mapping config 'sd93custom' — generated; edits are validated on next load.
+# Safe to read and to hand-edit — anything this file does not set is inherited from its `_base:` config.
+_base: myedbc
+district_name: SD93 - Example District
+district_domains:
+- sd93.bc.ca
+global_config:
+  school_year_sources:
+    student_schedule: studentcourseselection.txt
+mappings:
+  Classes:
+    source_files:
+      student_schedule: studentcourseselection.txt
+  Enrollments:
+    source_files:
+      student_schedule: studentcourseselection.txt
+authored_with:
+  app_version: 3.14.0
+  base: myedbc
+  base_digest: <sha-256 of the resolved base>
+```
+
+### Before you change a base config
+
+**No CI gate ever validates a user-dir config.** `make validate-config` and the pinned config count run on a CI machine that has no user profile, so the only configs they ever see are the bundled ones in `config/mappings/`. A base change that breaks an overlay surfaces on the district's own machine, unattended — as a FAILED run with the bounded `config` error category in Run History and exit 1 that night (pinned in `tests/test_pipeline_run_store.py::TestCorruptUserOverlayRecordsAFailedRun`), plus a Mapping screen that renders the district's setup as degraded rather than crashing. That floor plus this frozen shape IS the mitigation, so five checks are on you:
+
+1. **Never rename or repurpose a `global_config` key an overlay can name literally** — the five above. A repurposed key changes what a district's own file means without anyone editing it.
+2. **A changed list default REPLACES, never merges — and reaches every overlay that did not pin that list.** If you move a base's `homeroom_grades`, `class_rostering_grades` or `student_rostering_grades`, re-check that the chain still resolves for an overlay that pinned only ONE of them. The chain-companion rule pins `homeroom_grades` beside a scope key, but not the reverse: an overlay carrying `homeroom_grades: []` alone still INHERITS both scopes, and your new base value is what it will resolve against.
+3. **Do not rename a bundled `source_files` filename** an overlay may key a rename to, and do not remove a `source_files` ROLE. Two different costs, both worth knowing: the WRITTEN overlay overrides roles by name, so a removed role leaves a silently dead override (nothing fails — the district's own filename simply stops being used, and that entity reads the base's name), while RE-EDITING that district's setup fails loud, because `_build_renames` refuses a rename whose ORIGINAL filename is no longer in the base. The loud half is the good half; the quiet half is why this is on the list.
+4. **Do not remove an entity** the base defines: an overlay's `enabled_entities` can name any of `authoring.CREATOR_ENTITIES` (the 7 authorable entities — `StudentAttendance` stays vendor-only), and a removed entity breaks its selection.
+5. **Re-check the `ALLOWED_BASES` four specifically.** Only `myedbc`, `mbp_all`, `mbp_core` and `mbponly` can be a `_base:`, so those four are the blast radius. A district config change cannot break an overlay; a base change can.
+
+Any change to a base also **invalidates every overlay's tested fact** by construction: the app stores the digest of the whole RESOLVED config (`authoring.resolved_digest`) at the moment the admin's test conversion passed, so a base change makes the digest stop matching and the district is asked to re-run its test before anything is re-activated. That is the intended cost — it can only ever ask for another test run, never lock a district out of a sync that already works.
+
+### Reproducing one locally
+
+```python
+from src.config.authoring import OverlaySpec, write_overlay
+
+write_overlay(
+    OverlaySpec(
+        sd_number=93,
+        district_name="SD93 - Example District",
+        district_domains=("sd93.bc.ca",),
+        base="myedbc",
+        source_file_renames={"StudentSchedule.txt": "studentcourseselection.txt"},
+    ),
+    overwrite=False,
+)
+```
+
+Then run it like any other config (point `DISTRICTSYNC_DATA_DIR` at a scratch profile first — a bare run writes the real one):
+
+```bash
+python -m src.main --sis sd93custom --input tests/snapshots/input --output data/output --dry-run
+```
+
+`write_overlay` builds → load-backs through the real `validate_overlay` → only then writes, atomically, so the user dir never holds a file the app cannot read. The packed-exe path has its own gate: the `user-overlay` phase of `scripts/ci_flet_pack_smoke.py` plants an overlay in a throwaway profile and converts through it, with a pre-plant negative control.
+
+---
+
 ## District config reference
 
 | Config name | `_base` | Purpose |

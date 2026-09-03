@@ -536,10 +536,18 @@ def test_corrupt_profile_phase_prints_the_log_before_it_cleans_up(
 
 def test_cli_smoke_phase_order_puts_the_plant_last() -> None:
     # This dict is the ONLY definition of the order, and the workflow runs one
-    # `--phase all` invocation so CI cannot hold a second, drifting copy. Two facts
+    # `--phase all` invocation so CI cannot hold a second, drifting copy. Three facts
     # are load-bearing: dry-run pins history.db ABSENT before write-run asserts it was
-    # created, and corrupt-profile plants a config.json so it must go last.
-    assert list(smoke.CLI_SMOKE_PHASES) == ["version", "dry-run", "write-run", "corrupt-profile"]
+    # created; user-overlay (plan 0044 S7) plants a mapping YAML and needs a working
+    # profile for its own negative control, so it follows write-run; and corrupt-profile
+    # plants a config.json every later phase would read, so it must go last.
+    assert list(smoke.CLI_SMOKE_PHASES) == [
+        "version",
+        "dry-run",
+        "write-run",
+        "user-overlay",
+        "corrupt-profile",
+    ]
 
 
 def test_cli_smoke_missing_artifact_fails_without_launching(tmp_path: Path) -> None:
@@ -556,7 +564,7 @@ def _dist_with_artifact(tmp_path: Path) -> Path:
     return dist
 
 
-@pytest.mark.parametrize("phase", ["version", "dry-run", "write-run", "corrupt-profile", "all"])
+@pytest.mark.parametrize("phase", ["version", "dry-run", "write-run", "user-overlay", "corrupt-profile", "all"])
 def test_cli_smoke_refuses_every_phase_without_the_seam(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], phase: str
 ) -> None:

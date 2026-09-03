@@ -1171,3 +1171,93 @@ class TestReadAuthoredWith:
         )
         block = read_authored_with("sd93custom")
         assert block == AuthoredWith(app_version="1.0", base="myedbc", base_digest="a" * 64)
+
+
+# ---------------------------------------------------------------------------
+# The packed-exe smoke's planted overlay (plan 0044 S7 §7.2 — literal tie-back)
+# ---------------------------------------------------------------------------
+
+
+class TestExeSmokeOverlayLiteralMatchesTheAuthoringLayer:
+    """``scripts/ci_flet_pack_smoke.py`` plants a REAL overlay into a throwaway profile to
+    prove a frozen exe reads ``user_mappings_dir()`` and converts through a ``_base:``
+    deep merge. That script never imports ``src`` (it runs against a packed artifact, not
+    this checkout), so the YAML it plants is a LITERAL — and a literal copied out of
+    ``src/`` needs a parity test tying it back, or the exe phase can keep passing against
+    a shape the app would never write.
+
+    "Equals" is defined honestly here as the PARSED DOCUMENT, not the bytes: the emitted
+    file also carries ``_file_header``'s comment (which YAML discards) and an
+    ``authored_with`` block whose ``app_version`` differs per build, so a byte comparison
+    could only ever be pinned to one release. So: the literal parses to exactly what
+    ``build_overlay`` emits for the script's own spec facts, in the same key ORDER, and it
+    loads cleanly from a real user dir — with the twin below showing that the ONLY thing a
+    real ``write_overlay`` adds to it is that provenance block.
+    """
+
+    @pytest.fixture
+    def smoke_spec(self, ci_smoke_module) -> OverlaySpec:
+        """The script's own spec FACTS, as the authoring layer's spec object.
+
+        Built from ``_SD93_OVERLAY_SPEC`` rather than restated here: the facts have one
+        home, and this test's job is the YAML beside them.
+        """
+        return OverlaySpec(**ci_smoke_module._SD93_OVERLAY_SPEC)
+
+    def test_the_planted_yaml_is_what_build_overlay_emits(self, ci_smoke_module, smoke_spec, base_config) -> None:
+        planted = yaml.safe_load(ci_smoke_module._SD93_OVERLAY_YAML)
+        expected = build_overlay(smoke_spec, resolved_base=base_config)
+
+        assert planted == expected
+        # ORDER too — the emission order is content (see ``_ROOT_KEY_ORDER``), so a
+        # literal that agreed as a dict but read in another order would still have
+        # drifted from what an admin's own file looks like.
+        assert list(planted) == list(expected)
+
+    def test_the_planted_yaml_carries_the_renames_that_make_the_fixture_loadable(
+        self, ci_smoke_module, smoke_spec
+    ) -> None:
+        """Non-vacuous: the phase only proves anything because the renames are real.
+
+        The script's spec renames the four files the committed SD74 snapshot extract
+        actually ships, so a ``myedbc`` base can read it. An empty rename map would make
+        the exe phase pass for the wrong reason (an unrenamed overlay converts too, just
+        with empty entities), so the FACTS are asserted here rather than assumed.
+        """
+        planted = yaml.safe_load(ci_smoke_module._SD93_OVERLAY_YAML)
+        assert dict(smoke_spec.source_file_renames) == SD74_RENAMES
+        targets = {filename for entity in planted["mappings"].values() for filename in entity["source_files"].values()}
+        assert set(SD74_RENAMES.values()) <= targets
+        # And the propagation the overlay must carry beyond `mappings`.
+        assert (
+            planted["global_config"]["school_year_sources"]["student_schedule"] == SD74_RENAMES["StudentSchedule.txt"]
+        )
+
+    def test_the_planted_yaml_validates_and_loads_from_a_real_user_dir(self, ci_smoke_module) -> None:
+        """The load-back the exe itself performs, in process."""
+        planted = yaml.safe_load(ci_smoke_module._SD93_OVERLAY_YAML)
+        validate_overlay(planted, label=ci_smoke_module._SD93_OVERLAY_SIS)
+
+        target = overlay_path(ci_smoke_module._SD93_OVERLAY_SIS)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(ci_smoke_module._SD93_OVERLAY_YAML, encoding="utf-8")
+
+        config = load_config(ci_smoke_module._SD93_OVERLAY_SIS)
+        assert config.district_name == ci_smoke_module._SD93_OVERLAY_SPEC["district_name"]
+        assert config.sis == load_config("myedbc").sis  # inherited, never emitted
+        assert ci_smoke_module._SD93_OVERLAY_SIS in available_configs()
+
+    def test_the_only_difference_from_a_real_write_is_the_provenance_block(self, ci_smoke_module, smoke_spec) -> None:
+        """The twin for the ``authored_with`` exemption above — it is the whole delta."""
+        written = yaml.safe_load(write_overlay(smoke_spec, overwrite=False).read_text(encoding="utf-8"))
+        planted = yaml.safe_load(ci_smoke_module._SD93_OVERLAY_YAML)
+
+        assert "authored_with" in written, "write_overlay must always stamp provenance"
+        assert {key: value for key, value in written.items() if key != "authored_with"} == planted
+
+    def test_the_phase_is_registered_between_write_run_and_corrupt_profile(self, ci_smoke_module) -> None:
+        """Order is behaviour: the plant needs a working profile, and the corrupt-config
+        phase must stay LAST because every later phase would read what it plants."""
+        phases = list(ci_smoke_module.CLI_SMOKE_PHASES)
+        assert phases.index("write-run") < phases.index("user-overlay") < phases.index("corrupt-profile")
+        assert phases[-1] == "corrupt-profile"

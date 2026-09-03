@@ -56,7 +56,8 @@ SHIPPED_DOMAINS: dict[str, str] = {
     "unitychristian.ca": "unitychristianmyedbc",
 }
 
-# Configs that deliberately carry NO domains — "unclaimed", shown in every state.
+# Configs that deliberately carry NO domains — "unclaimed", shown in every UNMATCHED state.
+# (Filter tier (ii) carries no unclaimed row unless it is the saved or the picked district.)
 UNCLAIMED_CONFIGS: frozenset[str] = frozenset({"myedbc", "mbp_all", "mbp_core", "mbponly"})
 
 # The one config that inherits its list rather than declaring it.
