@@ -308,7 +308,14 @@ def build_app_body(
             with contextlib.suppress(Exception):
                 page.run_thread(_refresh_setup_badge)
 
-    screens["setup"] = lambda: build_setup(page, on_schedule_changed=_on_schedule_changed)
+    # `on_navigate` (plan 0044 S6) is the folders card's ONE route out: its Save can be
+    # REFUSED for a district set up on this computer that has not passed a test conversion,
+    # and the test lives on Mapping. Same lambda, same rail-follow, as Mapping/Convert/Home.
+    screens["setup"] = lambda: build_setup(
+        page,
+        on_schedule_changed=_on_schedule_changed,
+        on_navigate=lambda dest: select_by_id(dest),
+    )
     # Swap the `home` placeholder for the three-way Home surface UNCONDITIONALLY —
     # `build_home` owns the branch decision itself (branch (a) HOSTS the setup wizard when
     # `nav.needs_setup(...)`, (b)/(c) render the verdict-first dashboard). The `on_navigate`

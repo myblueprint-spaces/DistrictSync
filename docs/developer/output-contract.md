@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **contract_version** | `2.1.0` |
-| **emitted_by** | DistrictSync >= v3.14.0 (contract `2.1.0` unchanged in v3.15.0) |
+| **contract_version** | `2.2.0` |
+| **emitted_by** | DistrictSync — `2.2.0` is UNRELEASED; the newest tagged build (v3.16.0) still emits `2.1.0`, unchanged since v3.14.0 |
 | **published_reference** | SpacesEDU *Advanced CSV* v1.0 (2025-07-23) — [Google Doc `1BePvuk5rg-YjUUvdwjb3X3Z0JWEUc5AtVjDfR3nub0U`](https://docs.google.com/document/d/1BePvuk5rg-YjUUvdwjb3X3Z0JWEUc5AtVjDfR3nub0U) |
 | **status** | Maintained mirror. **Confirmation is recorded PER ROW — there is no doc-wide confirmation stamp.** |
 | **mechanical mirror** | `tests/contract_schema.py` (the data) · `tests/test_contract.py` (the sweep) · `tests/test_output_contract_doc.py` (this doc ↔ that data) |
@@ -12,6 +12,7 @@
 
 | contract_version | Date | Change |
 |---|---|---|
+| 2.2.0 | 2026-09-02 | **Rows removed from `Family.csv`.** A contact row whose `Email` is blank is no longer emitted: SpacesEDU does not import a family contact without an email address, so the row could only ever be rejected on ingest, and shipping it inflated the delivered contact count. The exclusion is counted in ONE run-log WARNING per run (counts only — no name, address or pupil number). Applies to every district; a district whose extract carries an email for every contact is unaffected (the SD74 reference output is byte-identical). `Students.csv` is unchanged: a student with no `Email Address` is still emitted — SpacesEDU imports them — and is now merely counted in its own run-log WARNING. No column, order, filename or encoding changed, and no owner-**confirmed** row is invalidated (every `Family.csv` row is `pending owner confirmation`; `EnrollStatus` and `SchoolCode` are untouched) — MINOR under the row-set rule below, no importer re-confirmation needed. |
 | 2.1.0 | 2026-08-31 | **Row values and row sets change in `StudentCourses.csv` and `CourseInfo.csv`** (three fixes from the owner's live-data review, all in v3.14.0): (1) hyphen runs in course codes are treated as MyEd BC's fixed-width **padding**, not a course flavor — trailing runs are stripped everywhere (`MAPPR12---` → `MAPPR12`) and distinct module courses sharing a base code (`MADGE09---EX1`/`EX2`/…) are no longer collapsed to one code, which removes their duplicate transcript rows; `CourseInfo.csv` padded/unpadded rows of one course now de-duplicate. (2) `SG` (Standing Granted) and `TS` (Transfer Standing) marks score as **passing** on grade-10+ courses per the BC transcript legend, so those rows gain `Credits Earned` values (grade ≤ 9 and unreadable grades stay non-credit). (3) Selection-sourced rows resolve `Course Name` through the same exact-then-prefix catalog chain as history rows, so courses cataloged under a padded code or another school are no longer nameless. No column, order, filename or encoding changed, and no owner-**confirmed** row is invalidated (`EnrollStatus` and `SchoolCode` untouched) — MINOR under the row-set rule below, no importer re-confirmation needed. |
 | 2.0.0 | 2026-08-26 | **The two myBlueprint+ course feeds left the rostering zip.** `CourseInfo.csv` and `StudentCourses.csv` now arrive as **standalone CSVs** in the remote directory, alongside `StudentAttendance.csv`, instead of riding inside `districtsync_<district>_<date>.zip`; the five SpacesEDU rostering CSVs still zip together under the unchanged name. A course-only config (`mbponly`) therefore delivers two files and **no zip at all**. No column, order, filename or encoding changed — but the **delivery envelope** is a named re-confirmation trigger below, so this is MAJOR by the rule rather than by blast radius. Owner decision, 2026-08-26. **The importer re-confirmation this MAJOR requires was completed by the owner on 2026-08-27**, and it found the OLD shape to be silently broken: delivered standalone the course files import, while delivered inside the rostering zip **nothing is imported from `StudentCourses.csv` and no error is raised**. So this release is a *fix* for silent data loss on the myBlueprint+ tier, not a repackaging — every myBlueprint+ district on `<= v3.13.0` has been delivering transcript data that never landed. The check is stamped on the course-feeds row below and covers that row only; the other envelope rows keep their existing status. |
 | 1.2.0 | 2026-08-18 | **Rows added to `Enrollments.csv` for districts with no student timetable.** A district whose export has an empty or absent `StudentSchedule.txt` was emitting a completely EMPTY `Enrollments.csv` — homeroom rows and `ClassInformationEnh.txt` co-teacher rows included, neither of which is derived from the timetable. All three enrollment kinds are now built regardless of whether a timetable is present. Districts whose export DOES carry a timetable are unaffected (the SD74 golden is byte-identical). No column, order, filename or encoding changed, and no owner-**confirmed** row is invalidated — every `Enrollments.csv` row is `pending owner confirmation`, and the two confirmed semantics (`EnrollStatus`, `SchoolCode`) are untouched — so this is MINOR under the row-set rule below and needs no importer re-confirmation. |
@@ -200,6 +201,8 @@ The status column is auto-resolved from the alias list `("enrollment status", "e
 
 **Rows that reach the file:** only rows whose label is not `Inactive`. A pupil enrolled at several schools produces one row per school unless the district enables `cross_enrollment.collapse`, which keeps the home-school row (first wins) — SD60 today. When it is enabled the student still keeps their enrollments and classes at **every** school (see `Enrollments.csv`); when it is not, `Students.csv` legitimately carries one row per school and the quality report will flag those as duplicates on `User ID`.
 
+**A blank `Email Address` is KEPT.** SpacesEDU imports a student without an email address, so the row is emitted as-is; the run log carries one WARNING counting how many students in the run have none, because such a student cannot be invited by email. It is a count only (no names or ids) and it is not a data error — the run status is unaffected. Contrast `Family.csv`, where a blank email EXCLUDES the row.
+
 **Zero-orphan invariant:** the surviving `User ID` set is published as the active roster and every student row in `Family.csv`, `Classes.csv` and `Enrollments.csv` is filtered against it, so no other feed can reference a student absent from this file.
 
 ### 2. `Staff.csv`
@@ -225,6 +228,8 @@ The status column is auto-resolved from the alias list `("enrollment status", "e
 | 2 | Last Name | Contact surname. | pending owner confirmation | emitted | GUARANTEED |
 | 3 | Email | Contact email address. | pending owner confirmation | emitted | GUARANTEED |
 | 4 | Student User ID | The pupil number this contact belongs to — must exist in `Students.csv`. | pending owner confirmation | emitted | GUARANTEED |
+
+**A contact row whose `Email` is blank (empty or whitespace-only) is EXCLUDED from this file**, and the run log carries one WARNING counting how many were left out (a count only — never a name, address or pupil number). SpacesEDU does not import a family contact without an email address, so such a row can only be rejected on ingest; excluding it here makes the loss visible instead of silent. A config that maps no `Email` at all cannot be filtered — that is a config fault against this contract and is logged as its own WARNING, with the rows passed through untouched. Contrast `Students.csv`, where a blank address is kept and merely counted.
 
 A district may narrow the source rows with `row_filters` before mapping — SD60 keeps only rows whose `Parent Auth / Guardian` is `Y`, excluding non-guardian emergency contacts. A `row_filters` column missing from the extract fails **loud** rather than silently keeping everyone.
 
@@ -452,7 +457,13 @@ That the importer appears to accept both spellings is **importer leniency — TO
 
 ## Config schema — the other contract
 
-The output CSVs are one contract; the **mapping YAML schema** is the other. Phase 2's mapping creator will generate configs against it, so the compatibility rules are stated here rather than rediscovered later.
+The output CSVs are one contract; the **mapping YAML schema** is the other. The in-app mapping creator generates configs against it, so the compatibility rules are stated here rather than rediscovered later.
+
+### Two authors, one schema
+
+Config YAML now has **two authors**, and the difference is entirely in what gates them. The vendor's bundled files in `config/mappings/` are validated by `make validate-config` in CI before a release, where a loud failure costs nothing. A district admin's **user-dir overlay** (`src/config/authoring.py` → `paths.user_mappings_dir()`; see [`adding-district.md`](adding-district.md) → *Self-service overlays*) is gated only where it can be: a build-then-load-back at authoring time, a required passing test conversion before it becomes the active district, and the real loader every night after that. **No CI gate ever sees it.**
+
+That is why the additive-key rule below binds harder than it used to. A repurposed key, a renamed `global_config` key or a dropped entity changes what an already-written overlay MEANS, on a machine no release process can inspect — and the district finds out as a failed nightly run rather than as a red build. Overlays carry no `version:` of their own (they inherit the base's), so the two-direction matrix below is still the whole compatibility story for them.
 
 ### The additive-key rule
 
@@ -472,7 +483,7 @@ Version is `<major>.<minor>` as a **quoted string** (`'1.9'`). A bare YAML float
 | Same major, **newer** minor | Loads, with a loud **WARNING** naming both versions. | Same-major semantics are safe; the config may use features this build ignores. |
 | **Different major** (older *or* newer) | **Fails loud** (`ValueError`), naming the supported major. | An out-of-major-range config must never silently drive a conversion. |
 | Unknown **top-level** key (`MappingConfig`) | **Ignored.** | Forward compatibility — the Pydantic default, declared deliberately. |
-| Unknown key in **`global_config`** or in an **entity block** | **Ignored** (`GlobalConfig` / `EntityConfig` declare no `model_config`, so they inherit `extra="ignore"`). | Forward compatibility again — but note the cost: **typos here are silent.** A mistyped `enabled_entities` (e.g. `enabled_entites:`) is dropped, leaving the field at its `[]` default, and empty `enabled_entities` means **ALL defined mappings are enabled** — so a one-character typo can widen a config's output rather than narrow it. Phase 2's creator should validate key names on the way in rather than rely on the loader. |
+| Unknown key in **`global_config`** or in an **entity block** | **Ignored** (`GlobalConfig` / `EntityConfig` declare no `model_config`, so they inherit `extra="ignore"`). | Forward compatibility again — but note the cost: **typos here are silent.** A mistyped `enabled_entities` (e.g. `enabled_entites:`) is dropped, leaving the field at its `[]` default, and empty `enabled_entities` means **ALL defined mappings are enabled** — so a one-character typo can widen a config's output rather than narrow it. The creator's forms only ever emit key names the authoring layer spells (`src/config/authoring.py`), which is what keeps a self-authored overlay clear of this trap — a hand edit to one is not protected. |
 | Unknown key in one of the **five leaf models** — `EmailDerivedDate`, `FieldEmailFormat`, `FieldEnrollStatus`, `RowFilter`, `CrossEnrollmentConfig` | **Rejected** (`extra="forbid"`). | These are small closed value objects where a typo is far more likely than a forward-compat key, so typo-catching wins. |
 
 `_base:` inheritance is a recursive deep merge with cycle detection. **Only dicts merge key-by-key; every other value — including lists — REPLACES wholesale.** An override that wants to extend a list must restate the whole list. A user-dir YAML shadows a same-named bundled config entirely (logged at INFO, never silent).

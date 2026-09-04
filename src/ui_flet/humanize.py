@@ -14,9 +14,12 @@ reaches an admin card). Kept minimal by design (YAGNI) — total functions, not 
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
+
+from src.config.authoring import custom_sd_number
 
 logger = logging.getLogger(__name__)
 
@@ -177,10 +180,41 @@ def friendly_district_name(sis_type: str, *, config_dir: Path | None = None) -> 
 
         cfg = load_config(sis, config_dir)
         name = (cfg.district_name or "").strip()
-        return name if name else sis
+        return _with_sd_prefix(sis, name) if name else sis
     except Exception as exc:  # noqa: BLE001 - total: any load failure falls back to the raw id
         logger.warning("friendly_district_name(%r) fell back to the raw id: %s", sis, exc)
         return sis
+
+
+def _with_sd_prefix(sis: str, name: str) -> str:
+    """``"SD34 - test"`` for a SELF-SERVICE district; ``name`` unchanged for every other. PURE.
+
+    Owner finding (2026-09-03): a config authored in-app sorted among the shipped rows by its
+    district number but rendered as the bare name the admin typed, so "test" sat between
+    "SD27 - Cariboo-Chilcotin" and "SD38 - Richmond" with nothing saying which district it
+    was. Every shipped config bakes the ``SD## - `` prefix into its own ``district_name``
+    line; an admin filling in a "District name" field has no reason to, and asking them to
+    would be asking them to hand-maintain a convention.
+
+    Three rules, each keeping the prefix off a name that should not have one:
+
+    * only a self-service id gets it (``authoring.custom_sd_number`` — the ``sd<num>custom``
+      namespace spelled once, at the layer that mints it). A shipped row already carries the
+      prefix in its YAML and a hand-placed user-dir override is not ours to relabel;
+    * an ADMIN who typed the prefix themselves keeps theirs verbatim, so this is idempotent
+      over its own output and over "SD34 – Foo" / "sd34 foo" alike (the guard is a
+      case-insensitive ``sd<digits>`` at the head, not an equality against what we would
+      have built);
+    * it is applied to the config's OWN ``district_name`` only, never to
+      :func:`friendly_district_name`'s raw-id fallback — "SD70 - sd70custom" is worse than
+      the id alone, and that fallback is exactly the state a broken overlay renders in.
+    """
+    number = custom_sd_number(sis)
+    if number is None:
+        return name
+    if re.match(rf"^sd\s*{number}\b", name, flags=re.IGNORECASE):
+        return name
+    return f"SD{number} - {name}"
 
 
 def friendly_timestamp(iso: str, *, now: datetime | None = None) -> str:

@@ -7,6 +7,19 @@ the ``task_args_changed`` reconcile predicate, district auto-select), ``filepick
 (the tri-state schedule truth), ``sftp_copy`` (Test provenance copy). This file only wires
 them to controls.
 
+**The creator surface is its own module** (``screens/creator.py``, plan 0044 S3): this file
+HOSTS it — the District step's creator branch and the creator-only "Your files" step both
+mount ``build_creator`` and own what happens after each payoff — and imports every creator
+constant and helper it needs from there. The dependency runs ONE WAY, wizard → creator, so
+S6's Mapping surface can become the second host without dragging the wizard along.
+
+**Two verified-fact refusals live on this surface** (plan 0044 S6 + its review): the
+Settings folders card's Save and the wizard's STANDARD District step's Continue both write
+``sis_type``, and both consult the pure ``config_editor.activation_allowed`` first, so
+neither can switch this install onto a district it set up itself and never tested. Each
+refuses whole — nothing written, nothing advanced, nothing re-registered — says so, and
+routes to Mapping, where the test conversion lives.
+
 **Two modes, one build entry (``build_setup``):**
 
 * **Wizard mode** — while ``not cfg.has_completed_setup()``: a five-step guided path
@@ -58,9 +71,15 @@ from pathlib import Path
 import flet as ft
 
 from src.config.app_config import AppConfig
+from src.config.authoring import current_digest
 from src.scheduler import get_scheduler, windows
 from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
 from src.ui_flet import components, tokens
+from src.ui_flet.config_editor import (
+    CreatorForm,
+    activation_allowed,
+    has_unsaved_renames,
+)
 from src.ui_flet.filepicker import (
     ValidationResult,
     setup_state,
@@ -87,16 +106,28 @@ from src.ui_flet.schedule_status import (
     interpret_unregister,
     is_transient_location,
 )
+from src.ui_flet.screens.creator import (
+    CREATOR_DISCARDED_NOTE,
+    CREATOR_ENTRY_LABEL,
+    CREATOR_FINISH_NEEDS_GATE_NOTE,
+    FILES_STEP_TITLE,
+    CreatorStage,
+    build_creator,
+    creator_form_for_new,
+    creator_form_from_overlay,
+    creator_gate_current,
+    pending_creator_sis,
+)
 from src.ui_flet.screens.identity import NOT_LISTED_NOTE_TAIL as UNMATCHED_DISTRICT_NOTE
 from src.ui_flet.screens.identity import log_resolve, matched_headline
 from src.ui_flet.setup_errors import classify_schedule_error
 from src.ui_flet.setup_flow import (
-    TOTAL_STEPS,
     TRANSITION_CUE,
     DeliveryFact,
     DowngradeInterrupt,
     FinishSummaryRow,
     FlowInputs,
+    FlowMode,
     ReconcileOutcome,
     RegisteredSchedule,
     ScheduleReconcile,
@@ -123,6 +154,7 @@ from src.ui_flet.setup_flow import (
     task_args_changed,
     task_args_from_persisted,
     task_args_to_persisted,
+    total_steps,
 )
 from src.ui_flet.setup_gates import (
     can_register_schedule,
@@ -203,25 +235,19 @@ _RUN_TIME_ERROR_DETAIL = "Enter the time as HH:MM in 24-hour form, e.g. 03:00."
 # month-day. Plain-language, no jargon — mirrors the run-time error's shape.
 _WINDOW_ERROR = "Enter each date as MM-DD (month then day), e.g. 08-11."
 
-# Plain-language titles for the five wizard steps (the "Step N of 5 · <title>" indicator).
+# Plain-language titles for the wizard steps (the "Step N of M · <title>" indicator).
 _STEP_TITLES: dict[SetupStep, str] = {
     SetupStep.FOLDERS: "Choose your folders",
     SetupStep.DISTRICT: "Choose your district",
     SetupStep.SCHEDULE: "Set a nightly schedule",
     SetupStep.DELIVERY: "Set up delivery",
+    # The creator-only gate step (plan 0044 S3) — titled from the ONE constant, which lives
+    # in ``screens/creator.py`` with the rest of the creator copy it belongs to.
+    SetupStep.FILES: FILES_STEP_TITLE,
     # #5: the step title is a neutral marker so the adaptive banner headline owns the peak moment
     # (avoids stacking "You're all set" twice — step title + banner).
     SetupStep.FINISH: "Finish",
 }
-
-
-def _inflight_row(text: str) -> ft.Control:
-    """A spinner + honest waiting line shown while an off-thread schedule op is in flight (D5)."""
-    return ft.Row(
-        spacing=10,
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        controls=[ft.ProgressRing(width=18, height=18), ft.Text(text, size=13, color=tokens.color_muted)],
-    )
 
 
 def _schedule_readout_line(status: ScheduleStatus) -> ft.Control:
@@ -299,6 +325,21 @@ DISTRICT_PICK_PROMPT = (
 
 def district_auto_seeded_note(district: str) -> str:
     return f"We've picked {district} from your email's domain — change it if that's wrong."
+
+
+# ---- the verified-fact refusal on the wizard's District step (S6 review) - #
+#: The FIFTH writer of ``sis_type`` (plan 0044 S6 review, BLOCKING 2): this step's Continue
+#: persists the district, and the finish line then bakes it into the nightly task — so a
+#: district set up on THIS computer that has not passed a test conversion as it now reads is
+#: refused here too. Same wording pattern as :data:`FOLDERS_NEEDS_TEST_NOTE`: the OUTCOME
+#: first ("nothing was saved"), then the reason, then the one act that fixes it. Structural —
+#: no district name, no path, no digest. It names Mapping because that is where the test
+#: conversion lives (and where the setup of a district added here can be changed); the rail
+#: carries Mapping in every state, D7, so the note alone is never a dead end.
+WIZARD_DISTRICT_NEEDS_TEST_NOTE = (
+    "Nothing was saved. This mapping was set up on this computer, and it hasn't passed a "
+    "test conversion as it now reads. Run one under Mapping, then come back and continue."
+)
 
 
 def _district_catalog(cfg: AppConfig, *, picked_sis: str = "") -> FilteredCatalog:
@@ -409,6 +450,7 @@ def build_setup(
     *,
     on_schedule_changed: Callable[[], None] | None = None,
     on_complete: Callable[[], None] | None = None,
+    on_navigate: Callable[[str], None] | None = None,
 ) -> ft.Control:  # pragma: no cover - Flet view glue
     """Build the Setup surface — the first-run wizard, or the Settings page once completed.
 
@@ -427,13 +469,36 @@ def build_setup(
     always has: `_mount_settings(..., transition_cue=True)` in place. That equivalence is
     the point of the seam and is pinned by a test, because a rail item and a hosted wizard
     that quietly diverge are two wizards.
+
+    ``on_navigate`` (plan 0044 S6, the shell's rail-follow lambda — Mapping/Convert/Home's
+    exact pattern) is the ONE route out of this surface, for BOTH of its verified-fact
+    refusals: the folders card's Save and — since the S6 review's BLOCKING 2 — the wizard
+    District step's Continue can each be REFUSED for a district set up on this computer that
+    has not passed a test conversion as it currently reads, and the test lives on Mapping.
+    ``None`` (the default, and what Home's wizard host passes) renders each refusal note
+    with no button rather than a dead one; the rail still carries Mapping either way, so a
+    note alone is never a dead end.
     """
     cfg = AppConfig.load()
     root = ft.Column(spacing=22)
     if not cfg.has_completed_setup():
-        _mount_wizard(page, cfg, root, on_schedule_changed=on_schedule_changed, on_complete=on_complete)
+        _mount_wizard(
+            page,
+            cfg,
+            root,
+            on_schedule_changed=on_schedule_changed,
+            on_complete=on_complete,
+            on_navigate=on_navigate,
+        )
     else:
-        _mount_settings(page, cfg, root, transition_cue=False, on_schedule_changed=on_schedule_changed)
+        _mount_settings(
+            page,
+            cfg,
+            root,
+            transition_cue=False,
+            on_schedule_changed=on_schedule_changed,
+            on_navigate=on_navigate,
+        )
     return root
 
 
@@ -447,14 +512,22 @@ def _mount_wizard(
     *,
     on_schedule_changed: Callable[[], None] | None = None,
     on_complete: Callable[[], None] | None = None,
+    on_navigate: Callable[[str], None] | None = None,
 ) -> None:  # pragma: no cover - Flet view glue
-    """Render the five-step first-run wizard into ``root`` (resume derived from real state)."""
-    # D9, re-scoped to the VISIBLE list (0038 S5 — see the dated DECISIONS entry): the seed
-    # reads the FILTERED catalog, so a matched admin whose domain resolves to exactly one
-    # district gets it pre-selected on the District step. That keeps D9's rule intact
-    # ("auto-select only when there is no meaningful choice to make") while making the launch
-    # page's promise — "you'll confirm it on the next step" — literally true.
-    visible_ids = [s.sis_type for s in _district_catalog(cfg).summaries]
+    """Render the first-run wizard into ``root`` (resume derived from real state).
+
+    Two shapes, ONE mount (plan 0044 S3): the shipped five-step STANDARD walk, and the
+    six-step CREATOR walk an admin takes while a self-service district of their own is still
+    being set up. The mode is decided FIRST, from real state — a pending resume token whose
+    overlay is actually on disk — because it decides the step tuple every later derivation
+    reads (``step_order(mode)``), and because the D9 auto-seed must not fire inside it.
+    """
+    # The creator resume decision, before anything else derives from it. A token whose overlay
+    # is GONE (an admin deleted the file by hand, or a discard's settings write was refused)
+    # self-heals: the token is cleared and the standard walk resumes, rather than opening a
+    # six-step flow around a district that does not exist.
+    creator_sis = pending_creator_sis(cfg)
+    mode: FlowMode = "creator" if creator_sis else "standard"
 
     # Shared mutable wizard state. Folders/district selections mirror the config; the schedule
     # status + delivery fact are the injected verification results the finish line + resume read.
@@ -466,6 +539,9 @@ def _mount_wizard(
         # below, deliberately. See the comment there.
         "sis": cfg.sis_type,
         "auto_seeded": False,  # set below iff D9's seed actually fired (drives the step's caption)
+        # The District step's verified-fact refusal (plan 0044 S6 review, BLOCKING 2) — a
+        # fact about the LAST Continue press, cleared the moment the pick changes.
+        "district_refused": False,
         "schedule_skipped": False,
         "schedule_status": None,  # latest ScheduleStatus from the section's read-back
         "window_valid": True,  # the seasonal-window gate (B): enabled+invalid closes Continue
@@ -476,7 +552,41 @@ def _mount_wizard(
         "forward_btn": None,  # the current step's forward button (re-gated in place on input change)
         "finish_error": "",  # set ONLY when the finish line's save raised (0038 S6)
         "finishing": False,  # the finish press is latched until it fails (0038 S6)
+        # ---- creator mode (plan 0044 S3) ---------------------------------- #
+        "mode": mode,
+        "creator_sis": creator_sis,  # "" until the first overlay write
+        "creator_form": creator_form_from_overlay(creator_sis) if creator_sis else None,
+        "creator_note": "",  # a one-surface note (token refused / discarded), cleared on the next hop
+        # The FILES gate fact is I/O (the overlay + the resolved digest), so it is probed once
+        # and memoised per act rather than on every footer re-gate. ``None`` = not yet probed.
+        "files_ok": None,
+        # The filename form's pending rename map, HELD HERE and mutated in place by the
+        # creator surface (plan 0044 S4 review, BLOCKING 2). It has to outlive a re-mount:
+        # this wizard rebuilds the step body on every hop, and a surface that forgot what
+        # was picked while this footer's Continue stayed open advanced past unsaved names.
+        "files_pending": {},
+        # The FILES footer's locked-Continue caption, created lazily by ``_files_lock_note``
+        # and FILLED by the creator surface (never a second computation of the same reason).
+        "files_lock_note": None,
     }
+
+    def _files_step_satisfied() -> bool:
+        """The injected "Your files" fact: the overlay exists AND what was tested still matches.
+
+        Probed at most once per act (write / activate / discard / render), because
+        ``current_digest`` loads and validates the resolved config — ``_inputs()`` is called
+        several times per render and standard mode must pay nothing at all for this.
+        """
+        if ws["mode"] != "creator":
+            return False
+        if ws["files_ok"] is None:
+            ws["files_ok"] = creator_gate_current(cfg, str(ws["creator_sis"]))
+        return bool(ws["files_ok"])
+
+    def _creator_activated() -> bool:
+        """``sis_type`` IS this district and the resume token is cleared (the activation fact)."""
+        sis = str(ws["creator_sis"]).strip()
+        return bool(sis) and cfg.sis_type == sis and not cfg.creator_pending_sis.strip()
 
     def _inputs() -> FlowInputs:
         return FlowInputs(
@@ -487,6 +597,12 @@ def _mount_wizard(
             delivery=ws["delivery"],  # type: ignore[arg-type]
             window_valid=bool(ws["window_valid"]),
             schedule_busy=bool(ws["schedule_busy"]),
+            mode=ws["mode"],  # type: ignore[arg-type]
+            # A creator's district is CHOSEN once their overlay is on disk — a creator picks no
+            # bundled district, so the standard fact could never satisfy the step for them.
+            creator_district_chosen=bool(str(ws["creator_sis"]).strip()),
+            files_step_satisfied=_files_step_satisfied(),
+            creator_activated=_creator_activated(),
         )
 
     # Resume: land on the first step real state says is unsatisfied (no stored cursor).
@@ -499,7 +615,21 @@ def _mount_wizard(
     # "correctable pre-selection" would be neither confirmed nor correctable. Resume derives
     # from PERSISTED state (what the admin actually chose); the auto-selection is a
     # pre-selection ON that step, which is what D9 always meant.
-    if not str(ws["sis"]).strip():
+    # ...and NEVER in creator mode (plan 0044 S3, obligation #8): seeding a bundled district
+    # into a pending creator flow would satisfy the District step with the wrong answer and
+    # resume the admin PAST the step they are half-way through.
+    if mode == "standard" and not str(ws["sis"]).strip():
+        # D9, re-scoped to the VISIBLE list (0038 S5 — see the dated DECISIONS entry): the seed
+        # reads the FILTERED catalog, so a matched admin whose domain resolves to exactly one
+        # district gets it pre-selected on the District step. That keeps D9's rule intact
+        # ("auto-select only when there is no meaningful choice to make") while making the launch
+        # page's promise — "you'll confirm it on the next step" — literally true.
+        #
+        # Built INSIDE this branch, not at mount: the catalog is a 21-YAML ``load_config`` sweep
+        # (session-memoised, but somebody pays for the first build) and it is the ONLY consumer.
+        # A creator mount — which can never seed — used to pay for all 21 to compute a list it
+        # then discarded.
+        visible_ids = [summary.sis_type for summary in _district_catalog(cfg).summaries]
         ws["sis"] = auto_selected_district(visible_ids)  # D9: auto-select iff exactly one VISIBLE
         # Drives the acknowledging caption on the step: a choice made FOR the admin says so.
         ws["auto_seeded"] = bool(ws["sis"])
@@ -525,7 +655,11 @@ def _mount_wizard(
         if btn is None:
             return
         step = ws["step"]
-        if step in (SetupStep.FOLDERS, SetupStep.DISTRICT):
+        if step is SetupStep.FILES:
+            # Same gate as the render above (``can_advance`` AND nothing pending), so an
+            # in-place re-gate can never disagree with a freshly built footer.
+            btn.disabled = not (can_advance(step, _inputs()) and not _files_names_pending())  # type: ignore[union-attr]
+        elif step in (SetupStep.FOLDERS, SetupStep.DISTRICT):
             btn.disabled = not can_advance(step, _inputs())  # type: ignore[union-attr]
         elif is_skippable(step):
             # SCHEDULE is skippable but window-gated (an enabled+invalid window closes Continue);
@@ -534,21 +668,90 @@ def _mount_wizard(
             btn.content = "Continue" if _step_addressed(step) else "Set up later"  # type: ignore[union-attr]
         page.update()
 
-    def _go(step: SetupStep) -> None:
+    def _go(step: SetupStep, *, note: str = "") -> None:
+        """Move to ``step``, carrying at most ONE creator note onto the surface it lands on.
+
+        The note defaults to ``""``, so every ordinary hop CLEARS whatever was showing — a
+        "we couldn't remember where you got to" line has one surface's worth of life, and
+        leaving it standing over a later step would make it read as that step's problem.
+        """
         ws["step"] = step
+        ws["creator_note"] = note
         _render()
+
+    def _district_activation_allowed(picked: str) -> bool:
+        """The verified-fact check on the wizard's STANDARD District step. TOTAL.
+
+        This step's Continue is the FIFTH writer of ``sis_type`` (plan 0044 S6 review,
+        BLOCKING 2), and the one the wizard's own finish line bakes into the nightly task.
+        Its dropdown lists districts set up on THIS computer — ``_district_catalog`` is the
+        same scoped build every picker uses — so it consults the SAME pure
+        ``config_editor.activation_allowed`` Mapping's Apply, the folders card and the
+        creator's own confirm do. One rule, one comparison, five writers.
+
+        The origin comes from that catalog (the build is session-memoised, so this is a
+        projection over what the dropdown was just built from, not a second parse), and an id
+        missing from it reads as ``"bundled"`` — the fail-OPEN direction ``mapping_catalog``
+        documents for itself, and the one this threat model requires: the check exists to
+        stop an admin MISTAKE and may never strand an admin whose provenance we could not
+        read. Read through a FRESH ``AppConfig`` for the same reason Mapping's Apply does:
+        the digest it looks for is written by the creator panel on another surface, which
+        this mount's instance would not have seen.
+        """
+        if not picked.strip():
+            return True  # nothing chosen to check — ``can_advance`` already closed Continue
+        origins = {summary.sis_type: summary.origin for summary in _district_catalog(cfg, picked_sis=picked).summaries}
+        origin = origins.get(picked, "bundled")
+        return activation_allowed(
+            AppConfig.load(),
+            sis_id=picked,
+            origin=origin,
+            # ``None`` on the bundled branch deliberately — the rule never reads it there, so
+            # the shipped rows pay no config load.
+            current_digest=current_digest(picked) if origin == "user" else None,
+        ).allowed
 
     def _forward() -> None:
         step = ws["step"]
+        if step is SetupStep.FILES and _files_names_pending():
+            # The load-bearing half of the two-primaries fix (plan 0044 S4 review, BLOCKING
+            # 2): advancing here would carry the district forward under file names that were
+            # never written, and the write it skipped is the only record of them. Re-renders
+            # rather than returning silently, because the button that was pressed was built
+            # before the pick and is now painting the wrong tier — one press and the step
+            # reads its own truth (the body's Save takes the primary tier, this Continue
+            # drops to outlined and disabled, and the unsaved warning is on screen).
+            _go(SetupStep.FILES)
+            return
         if not can_advance(step, _inputs()):
             return  # gate closed (folders/district) — Enter/Continue is a no-op, matching the disabled button
+        creator = ws["mode"] == "creator"
         if step is SetupStep.FOLDERS:
             cfg.input_dir = str(ws["input"])
             cfg.output_dir = str(ws["output"])
             cfg.save()
+        elif step is SetupStep.DISTRICT and creator:
+            # A creator's District step persists NOTHING here: its Continue lives in the
+            # creator surface, where it writes the overlay and stores the resume token (and
+            # ``sis_type`` is only ever set by the validated activation). Reachable via Enter,
+            # so it is a deliberate no-op rather than an unreachable branch.
+            pass
         elif step is SetupStep.DISTRICT:
-            cfg.sis_type = str(ws["sis"])
+            picked = str(ws["sis"])
+            if not _district_activation_allowed(picked):
+                # Nothing written, no advance (plan 0044 S6 review, BLOCKING 2): the standard
+                # walk offers a district added on this computer like any other, and this press
+                # is what would carry an untested one to a finish line that registers it as a
+                # nightly task. Re-renders the step so the refusal is on screen beside the
+                # dropdown that corrects it — the same shape as the FILES branch above.
+                ws["district_refused"] = True
+                _go(SetupStep.DISTRICT)
+                return
+            ws["district_refused"] = False
+            cfg.sis_type = picked
             cfg.save()
+        elif step is SetupStep.FILES:
+            pass  # the gate + activation already persisted everything this step decides
         elif is_skippable(step) and not _step_addressed(step):
             # Advancing an unaddressed skippable step defers it ("Set up later") — marked skipped
             # so it counts as satisfied for the finish line WITHOUT asserting anything false.
@@ -556,12 +759,12 @@ def _mount_wizard(
                 ws["schedule_skipped"] = True
             else:
                 ws["delivery"] = DeliveryFact.SKIPPED
-        nxt = next_step(step)
+        nxt = next_step(step, mode=ws["mode"])  # type: ignore[arg-type]
         if nxt is not None:
             _go(nxt)
 
     def _back() -> None:
-        prev = prev_step(ws["step"])  # type: ignore[arg-type]
+        prev = prev_step(ws["step"], mode=ws["mode"])  # type: ignore[arg-type]
         if prev is not None:
             _go(prev)
 
@@ -634,7 +837,17 @@ def _mount_wizard(
             # and a leftover task firing with no record stays invisible until a restart. Same
             # guard as the register/unregister callers: advisory, never breaks the graduation.
             _fire_schedule_changed()
-            _mount_settings(page, AppConfig.load(), root, transition_cue=True, on_schedule_changed=on_schedule_changed)
+            # ``on_navigate`` rides the graduation too (plan 0044 S6): the Settings scroll this
+            # finish line mounts IN PLACE is the same scroll the rail item mounts, and a folders
+            # card whose refusal could route on one mount and not the other is two cards.
+            _mount_settings(
+                page,
+                AppConfig.load(),
+                root,
+                transition_cue=True,
+                on_schedule_changed=on_schedule_changed,
+                on_navigate=on_navigate,
+            )
             page.update()
         except Exception:
             # The save SUCCEEDED and the hand-off did not. Re-open the latch so the button
@@ -704,12 +917,162 @@ def _mount_wizard(
         )
         return ft.Column(spacing=22, controls=[input_field, output_field])
 
+    # ---- creator mode: the host callbacks (plan 0044 S3 §3.5) ----------- #
+    def _files_pending() -> dict[str, str]:
+        """The creator surface's pending rename map (created once, then mutated in place)."""
+        names = ws.setdefault("files_pending", {})
+        if not isinstance(names, dict):  # defensive: the surface mutates whatever it is handed
+            names = {}
+            ws["files_pending"] = names
+        return names
+
+    def _files_lock_note() -> ft.Text:
+        """The FILES footer's "why is Continue locked?" caption — created ONCE, host-owned.
+
+        The owner's report (2026-09-02): the gate step's Continue sat disabled with no
+        indication of why or what would open it. The host owns the control because it owns
+        the footer and the Continue being explained (S6's Mapping host has neither, passes
+        no note, and gets no caption); the creator surface FILLS it, because it holds every
+        input the reason is a function of — see ``build_creator``'s ``continue_lock_note``.
+
+        One control for this mount's lifetime, re-parented into each footer it is rendered
+        into (``ws["forward_btn"]``'s neighbour), so the surface never has to be handed a
+        fresh object it did not ask for.
+        """
+        note = ws.get("files_lock_note")
+        if not isinstance(note, ft.Text):
+            note = ft.Text("", size=tokens.type_caption, color=tokens.color_muted, visible=False)
+            ws["files_lock_note"] = note
+        return note
+
+    def _files_names_pending() -> bool:
+        """Whether the FILES step has file names the config on disk does not have.
+
+        Read from the SAME pure comparison the surface tiers its Save on
+        (``config_editor.has_unsaved_renames``), never a second spelling: a footer that
+        disagreed with the body would put a second filled primary on the step and — worse —
+        advance past names that were never written.
+        """
+        form = ws["creator_form"]
+        saved = form.renames if isinstance(form, CreatorForm) else {}
+        return has_unsaved_renames(_files_pending(), saved)
+
+    def _on_creator_written(new_sis: str, form: CreatorForm, note: str) -> None:
+        """The overlay is on disk and the token is stored — advance to the next step."""
+        ws["creator_sis"] = new_sis
+        ws["creator_form"] = form
+        ws["files_ok"] = None  # the gate fact must be re-probed against the file just written
+        nxt = next_step(SetupStep.DISTRICT, mode="creator")
+        _go(nxt if nxt is not None else SetupStep.DISTRICT, note=note)
+
+    def _on_creator_files_saved(form: CreatorForm, note: str) -> None:
+        """The file names are on disk — re-render THIS step against what it now says.
+
+        Never an advance (plan 0044 S4): a save is not a step being passed. The memoised
+        gate fact is dropped because the saved config is a different config from the one any
+        earlier test conversion ran — ``files_step_satisfied`` has to be re-probed, and it
+        will now be False until another test run, which is what re-closes Continue.
+        """
+        ws["creator_form"] = form
+        ws["files_ok"] = None
+        _go(SetupStep.FILES, note=note)
+
+    def _on_creator_activated() -> None:
+        """``sis_type`` is now this district — move on, exactly as a passed step would."""
+        ws["files_ok"] = None
+        ws["sis"] = cfg.sis_type
+        nxt = next_step(SetupStep.FILES, mode="creator")
+        _go(nxt if nxt is not None else SetupStep.FILES)
+
+    def _on_creator_discarded() -> None:
+        """Back to the STANDARD walk, on the District step, saying what happened."""
+        ws["mode"] = "standard"
+        ws["creator_sis"] = ""
+        ws["creator_form"] = None
+        ws["files_ok"] = None
+        ws["files_pending"] = {}  # the district is gone; its rows must not outlive it
+        _go(SetupStep.DISTRICT, note=CREATOR_DISCARDED_NOTE)
+
+    def _enter_creator(_e: ft.ControlEvent | None = None) -> None:
+        """Switch the District step to the creator surface (nothing is written yet)."""
+        ws["mode"] = "creator"
+        ws["creator_sis"] = ""
+        ws["creator_form"] = creator_form_for_new(cfg)
+        ws["files_ok"] = None
+        ws["files_pending"] = {}
+        _go(SetupStep.DISTRICT)
+
+    def _creator_body(stage: CreatorStage) -> ft.Control:
+        form = ws["creator_form"]
+        if not isinstance(form, CreatorForm):  # defensive: a creator surface always has a form
+            form = creator_form_for_new(cfg)
+            ws["creator_form"] = form
+        return build_creator(
+            page,
+            cfg=cfg,
+            sis_id=str(ws["creator_sis"]),
+            form=form,
+            on_written=_on_creator_written,
+            on_files_saved=_on_creator_files_saved,
+            on_activated=_on_creator_activated,
+            on_discarded=_on_creator_discarded,
+            stage=stage,
+            pending=_files_pending(),
+            continue_lock_note=_files_lock_note(),
+        )
+
     def _district_body() -> ft.Control:
+        if ws["mode"] == "creator":
+            return _creator_body("forms")
+
         def _instruction_text() -> str:
             picked_now = str(ws["sis"])
             if ws["auto_seeded"] and picked_now:
                 return district_auto_seeded_note(friendly_district_name(picked_now) or picked_now)
             return DISTRICT_PICK_PROMPT
+
+        def _refusal_controls() -> list[ft.Control]:
+            """The refused-Continue note, plus the route to where the test conversion lives.
+
+            Never colour-alone (the glyph rides beside the words), and never a dead
+            affordance: with no ``on_navigate`` (Home's wizard host passes none) the note
+            renders alone and the rail still carries Mapping.
+            """
+            controls: list[ft.Control] = [
+                ft.Row(
+                    spacing=tokens.space_sm,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, size=18, color=tokens.color_status_warning),
+                        ft.Text(
+                            WIZARD_DISTRICT_NEEDS_TEST_NOTE,
+                            size=tokens.type_body,
+                            color=tokens.color_status_warning,
+                            expand=True,
+                        ),
+                    ],
+                )
+            ]
+            if on_navigate is not None:
+                controls.append(
+                    ft.Row(
+                        controls=[
+                            components.text_button(
+                                # ONE label for both refusal sites — the folders card and this
+                                # step send an admin to the same screen for the same reason.
+                                FOLDERS_NEEDS_TEST_LINK_LABEL,
+                                lambda _e: on_navigate("mapping"),
+                                icon=ft.Icons.ARROW_FORWARD_ROUNDED,
+                            )
+                        ]
+                    )
+                )
+            return controls
+
+        refusal_slot = ft.Column(
+            spacing=tokens.space_sm,
+            controls=_refusal_controls() if ws["district_refused"] else [],
+        )
 
         def _on_pick(e: ft.ControlEvent) -> None:
             ws["sis"] = e.control.value or ""
@@ -719,6 +1082,12 @@ def _mount_wizard(
             # mid-interaction and take the focus with it.
             ws["auto_seeded"] = False
             instruction_line.value = _instruction_text()
+            # ...and the refusal goes with it: it named the district that was picked when
+            # Continue was pressed, so leaving it standing over a NEW pick would report a
+            # fault about a district it was never about. Cleared in place for the same reason
+            # the caption is (the focus stays in the control the admin is using).
+            ws["district_refused"] = False
+            refusal_slot.controls = []
             _refresh_footer()
 
         picked = str(ws["sis"])
@@ -747,6 +1116,19 @@ def _mount_wizard(
                 ),
                 instruction_line,
                 dropdown,
+                # The refusal sits directly under the control that corrects it (and directly
+                # above the footer Continue that was refused).
+                refusal_slot,
+                # The creator door (plan 0044 S3): TEXT tier, so the step keeps its ONE filled
+                # primary (Continue). It sits UNDER the dropdown because picking a shipped
+                # district is the right answer for almost everyone who reaches this step.
+                ft.Row(
+                    controls=[
+                        components.text_button(
+                            CREATOR_ENTRY_LABEL, _enter_creator, icon=ft.Icons.ADD_CIRCLE_OUTLINE_ROUNDED
+                        )
+                    ]
+                ),
             ],
         )
 
@@ -826,6 +1208,26 @@ def _mount_wizard(
             components.HealthVerdictBanner(verdict, headline=headline, detail=detail),
             _finish_summary_card(rows),
         ]
+        if ws["mode"] == "creator" and not _creator_activated():
+            # ``derive_flow`` can land a creator here with ``can_finish`` False (every other
+            # step satisfied, the district never switched over) — the Finish button is
+            # disabled, and a disabled button with no reason beside it is a dead end. Says
+            # what is missing and where to do it; never a silent flip of the precondition.
+            controls.append(
+                ft.Row(
+                    spacing=tokens.space_sm,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, size=18, color=tokens.color_status_warning),
+                        ft.Text(
+                            CREATOR_FINISH_NEEDS_GATE_NOTE,
+                            size=tokens.type_body,
+                            color=tokens.color_status_warning,
+                            expand=True,
+                        ),
+                    ],
+                )
+            )
         if ws["finish_error"]:
             # Never colour-alone: the glyph rides beside words that say what happened.
             controls.append(
@@ -843,6 +1245,7 @@ def _mount_wizard(
     _BODIES: dict[SetupStep, Callable[[], ft.Control]] = {
         SetupStep.FOLDERS: _folders_body,
         SetupStep.DISTRICT: _district_body,
+        SetupStep.FILES: lambda: _creator_body("files"),
         SetupStep.SCHEDULE: _schedule_body,
         SetupStep.DELIVERY: _delivery_body,
         SetupStep.FINISH: _finish_body,
@@ -854,13 +1257,52 @@ def _mount_wizard(
         # unnumbered" count fix is 0032 Tier-1 #10, a separate slice — not folded in here.)
         return components.page_header(
             _STEP_TITLES[step],
-            f"Step {step_number(step)} of {TOTAL_STEPS}",
+            # Mode-aware denominator (plan 0044 S3): 5 on the standard walk, 6 on the creator
+            # walk — both DERIVED from the one step tuple, never typed.
+            f"Step {step_number(step, mode=ws['mode'])} of {total_steps(ws['mode'])}",  # type: ignore[arg-type]
         )
 
     def _step_footer(step: SetupStep) -> ft.Control:
         controls: list[ft.Control] = []
-        if prev_step(step) is not None:
+        creator = ws["mode"] == "creator"
+        if prev_step(step, mode=ws["mode"]) is not None:  # type: ignore[arg-type]
             controls.append(components.secondary_button("Back", lambda _e: _back(), icon=ft.Icons.ARROW_BACK_ROUNDED))
+
+        if creator and step is SetupStep.DISTRICT:
+            # The creator surface owns this step's ONE filled primary (its Continue IS the
+            # overlay write), so the footer contributes no forward button at all — two filled
+            # primaries on one step is a bug, and a second "Continue" that skipped the write
+            # would be worse than one.
+            ws["forward_btn"] = None
+            return ft.Row(spacing=16, controls=controls)
+
+        if creator and step is SetupStep.FILES:
+            # The gate step's tiers: while there is still a test to run or a district to
+            # confirm, the BODY holds the filled primary and this Continue is the outlined
+            # supporting action (disabled until the gate is genuinely passed — Enter can't
+            # bypass it either). Once the district is active, the body has no primary left and
+            # Continue becomes the screen's one filled action.
+            # ...and CLOSED while a file name on screen is not in the config on disk (plan
+            # 0044 S4 review, BLOCKING 2): the body's Save owns the primary tier then, and a
+            # Continue that advanced would carry the district forward under names it never
+            # wrote — silently, since the write it skipped is the only record of them.
+            open_gate = can_advance(SetupStep.FILES, _inputs()) and not _files_names_pending()
+            factory = components.primary_button if open_gate else components.secondary_button
+            forward = factory(
+                "Continue",
+                lambda _e: _forward(),
+                disabled=not open_gate,
+                disabled_bgcolor=tokens.color_border,
+                icon=ft.Icons.ARROW_FORWARD_ROUNDED,
+            )
+            ws["forward_btn"] = forward
+            controls.append(forward)
+            # ...and UNDER it, the caption saying why it is closed and what opens it — filled
+            # by the creator surface on every render, hidden the moment Continue opens.
+            return ft.Column(
+                spacing=tokens.space_sm,
+                controls=[ft.Row(spacing=16, controls=controls), _files_lock_note()],
+            )
 
         if step is SetupStep.FINISH:
             forward = components.primary_button(
@@ -892,7 +1334,22 @@ def _mount_wizard(
 
     def _render() -> None:
         step = ws["step"]  # type: ignore[assignment]
-        root.controls = [_step_header(step), _BODIES[step](), _step_footer(step)]  # type: ignore[index]
+        controls: list[ft.Control] = [_step_header(step)]  # type: ignore[arg-type]
+        if ws["creator_note"]:
+            # ONE creator note, above the step it belongs to (a discard's confirmation, or a
+            # stored-progress refusal). Never colour-alone — the glyph rides beside the words.
+            controls.append(
+                ft.Row(
+                    spacing=tokens.space_sm,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, size=18, color=tokens.color_muted),
+                        ft.Text(str(ws["creator_note"]), size=tokens.type_body, color=tokens.color_muted, expand=True),
+                    ],
+                )
+            )
+        controls.extend([_BODIES[step](), _step_footer(step)])  # type: ignore[index]
+        root.controls = controls
         page.update()
 
     _render()
@@ -923,6 +1380,7 @@ def _mount_settings(  # pragma: no cover - Flet view glue
     *,
     transition_cue: bool,
     on_schedule_changed: Callable[[], None] | None = None,
+    on_navigate: Callable[[str], None] | None = None,
 ) -> None:
     """Render the completed-install Settings scroll into ``root`` (folders + schedule + SFTP)."""
     # The ONE reconcile the folders Save AND the SFTP Save both drive (D8/F1): any change to a
@@ -971,7 +1429,7 @@ def _mount_settings(  # pragma: no cover - Flet view glue
         return ReconcileOutcome.NONE
 
     sftp_card = _build_sftp_section(page, cfg, on_saved=_reconcile)
-    folders_card = _build_settings_folders(page, cfg, reconcile=_reconcile)
+    folders_card = _build_settings_folders(page, cfg, reconcile=_reconcile, on_navigate=on_navigate)
 
     # Direction B (0033 Slice 2): the Settings gradient hero demotes to a slim page header.
     header = components.page_header(
@@ -1163,8 +1621,25 @@ def _build_identity_section(page: ft.Page, cfg: AppConfig) -> ft.Control:  # pra
     return components.card(content=body)
 
 
+# ---- the verified-fact refusal on this Save (plan 0044 S6 §6.1) ---------- #
+#: A Save that changes nothing has to SAY it changed nothing — and this Save also drives the
+#: reconcile, so the second fact ("your nightly schedule was not updated") is the one an
+#: admin would otherwise discover a night later. Structural: no district name, no path, no
+#: digest. It names Mapping because that is where the test conversion lives.
+FOLDERS_NEEDS_TEST_NOTE = (
+    "Nothing was saved, and your nightly schedule was not updated. This mapping was set up "
+    "on this computer, and it hasn't passed a test conversion as it now reads. Run one under "
+    "Mapping, then save again."
+)
+FOLDERS_NEEDS_TEST_LINK_LABEL = "Open Mapping"
+
+
 def _build_settings_folders(  # pragma: no cover - Flet view glue
-    page: ft.Page, cfg: AppConfig, *, reconcile: Callable[[], ReconcileOutcome]
+    page: ft.Page,
+    cfg: AppConfig,
+    *,
+    reconcile: Callable[[], ReconcileOutcome],
+    on_navigate: Callable[[str], None] | None = None,
 ) -> ft.Control:
     """The Settings folders/district card with the ONE reconciling Save (D8).
 
@@ -1172,8 +1647,30 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
     the task when a task-baked field changed AND a schedule is registered — the SAME reconcile the
     SFTP Save uses, so the nightly action can never go stale). The Save is still structurally gated
     on valid folders.
+
+    **This Save can now be REFUSED** (plan 0044 S6): it is one of the writers of
+    ``sis_type``, and for a district set up on THIS computer the pure
+    ``config_editor.activation_allowed`` is consulted BEFORE any write. Refused ⇒ no
+    ``cfg.save()`` and no ``reconcile()`` at all — not a partial save that keeps the folders
+    and drops the district, because "Saved." would then be a lie about the field that
+    matters — plus :data:`FOLDERS_NEEDS_TEST_NOTE` and, when ``on_navigate`` is given, a
+    text-tier hop to Mapping (where the test lives). SHIPPED districts are untouched by the
+    check: the ``origin`` map comes from the SAME memoised catalog build the dropdown options
+    do, and an id missing from it reads as ``"bundled"`` (fail OPEN — this prevents a mistake
+    and may never strand an admin whose provenance we could not read).
+
+    **Only a district CHANGE is gated** (plan 0044 S6 review, SHOULD 2): a folders-only edit
+    on the district this install already converts activates nothing, so it saves and
+    reconciles exactly as it always has — even while that district's own test is out of date.
+    And both halves of the decision are read from a FRESH ``AppConfig`` (SHOULD 3), because
+    the test conversion that records the digest runs on Mapping, not here.
     """
     state = {"input": cfg.input_dir, "output": cfg.output_dir, "sis": cfg.sis_type}
+    # ONE catalog build for BOTH the options and the provenance map — no second parse, and no
+    # second source of "where did this mapping come from?". Every id the dropdown can hold is
+    # a row of this catalog by construction, so the map answers for every reachable pick.
+    district_catalog = _district_catalog(cfg, picked_sis=cfg.sis_type)
+    origins = {summary.sis_type: summary.origin for summary in district_catalog.summaries}
     save_btn = components.primary_button(
         # Scope-accurate label (0034 S3-c): this button saves the folders + district (and runs
         # the shared reconcile) — "Save settings" over-claimed the whole surface.
@@ -1186,6 +1683,9 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
         text_weight=ft.FontWeight.W_700,
     )
     saved_note = ft.Text("", size=13, weight=ft.FontWeight.W_600)
+    # The refusal lives in its own slot rather than in ``saved_note``: it is two sentences and
+    # a route, not a status word, and it must be clearable independently of the "Saved." line.
+    refusal_slot = ft.Column(spacing=tokens.space_sm, controls=[])
 
     def _refresh_gate() -> None:
         save_btn.disabled = not setup_state(state["input"], state["output"], state["sis"]).can_save
@@ -1205,9 +1705,65 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
         _refresh_gate()
         page.update()
 
+    def _refuse_needs_test() -> None:
+        """Say what did NOT happen (both halves), and put the fix one click away."""
+        saved_note.value = ""  # a stale "Saved." beside a refusal is the worst of both
+        row: list[ft.Control] = [
+            ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, size=18, color=tokens.color_status_warning),
+            ft.Text(FOLDERS_NEEDS_TEST_NOTE, size=tokens.type_body, color=tokens.color_status_warning, expand=True),
+        ]
+        controls: list[ft.Control] = [
+            ft.Row(spacing=tokens.space_sm, vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=row)
+        ]
+        if on_navigate is not None:
+            controls.append(
+                ft.Row(
+                    controls=[
+                        components.text_button(
+                            FOLDERS_NEEDS_TEST_LINK_LABEL,
+                            lambda _e: on_navigate("mapping"),
+                            icon=ft.Icons.ARROW_FORWARD_ROUNDED,
+                        )
+                    ]
+                )
+            )
+        refusal_slot.controls = controls
+        page.update()
+
     def _save(_e: ft.ControlEvent | None = None) -> None:
         if not setup_state(state["input"], state["output"], state["sis"]).can_save:
             return  # structural gate (matches the disabled button)
+        # The verified-fact check, BEFORE any write (plan 0044 S6): this Save both sets the
+        # district and re-registers the nightly, so letting an untested one through would bake
+        # it into a scheduled task.
+        #
+        # A FRESH instance for BOTH halves (plan 0044 S6 review, SHOULD 3 — Mapping's Apply
+        # already did this): the digest the rule looks for is recorded by the creator panel on
+        # ANOTHER surface, so this mount's shared instance may not have seen the very test
+        # conversion the admin has just run, and "is the district changing?" has to be asked
+        # of what is on DISK now rather than of a snapshot. Only READ from here — the write
+        # still goes through the shared ``cfg`` every other section on this scroll holds.
+        persisted = AppConfig.load()
+        picked = str(state["sis"])
+        # ...and the check applies only to a district CHANGE (plan 0044 S6 review, SHOULD 2):
+        # a folders-only edit on the district this install ALREADY converts activates nothing
+        # — it is what the nightly runs either way — and refusing to let an admin fix a folder
+        # path prevents nothing while blocking the repair. The refusal belongs to the act that
+        # would switch districts.
+        if picked != persisted.sis_type:
+            origin = origins.get(picked, "bundled")
+            verdict = activation_allowed(
+                persisted,
+                sis_id=picked,
+                origin=origin,
+                # ``None`` on the bundled branch deliberately — the rule never reads it there,
+                # so the shipped rows pay no config load.
+                current_digest=current_digest(picked) if origin == "user" else None,
+            )
+            if not verdict.allowed:
+                _refuse_needs_test()
+                return
+        refusal_slot.controls = []  # a Save that lands clears the refusal it replaces
         cfg.input_dir = state["input"]
         cfg.output_dir = state["output"]
         cfg.sis_type = state["sis"]
@@ -1247,7 +1803,7 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
         # `picked_sis` carries the saved district unconditionally, so the control can never
         # point at a row it does not offer. Built ONCE: with the show-all toggle retired the
         # option list no longer changes during a visit.
-        options=_district_options(_district_catalog(cfg, picked_sis=cfg.sis_type)),
+        options=_district_options(district_catalog),
         on_select=_on_district_change,
         border_color=tokens.color_border,
     )
@@ -1263,6 +1819,7 @@ def _build_settings_folders(  # pragma: no cover - Flet view glue
                 output_field,
                 district_dropdown,
                 ft.Row(spacing=16, controls=[save_btn, saved_note]),
+                refusal_slot,
             ],
         )
     )
@@ -1604,7 +2161,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         register_btn.disabled = True
         unregister_btn.disabled = True
         result_slot.controls = [
-            _inflight_row(
+            components.inflight_row(
                 "Asking Windows for permission and scheduling the nightly sync…"
                 if uac_path
                 else "Scheduling the nightly sync…"
@@ -1666,7 +2223,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 
         register_btn.disabled = True
         unregister_btn.disabled = True
-        result_slot.controls = [_inflight_row("Removing the nightly sync…")]
+        result_slot.controls = [components.inflight_row("Removing the nightly sync…")]
         page.update()
         _dispatch(_work)
 

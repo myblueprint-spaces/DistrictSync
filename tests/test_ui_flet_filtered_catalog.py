@@ -492,6 +492,10 @@ class TestDisambiguatedLabels:
                 source_file_count=0,
                 loaded_ok=True,
                 district_domains=(),
+                # A SHIPPED row: the provenance marker is `mapping_catalog`'s own axis and is
+                # exercised in `tests/test_ui_flet_mapping_catalog.py` through the real
+                # two-dir pair. These rows keep it off so the collision rule is read alone.
+                origin="bundled",
             )
             for sis, name in pairs
         )

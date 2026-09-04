@@ -277,6 +277,12 @@ can never disagree with what actually ships) — and can switch to a different *
 disabled), never a raw Pydantic/OS error. The raw `sis_type` appears only as a muted secondary
 technical hint, never the primary label.
 
+Since plan 0044 this surface is also the way into **self-service district setup** on an install that
+is already running: one door to set up a district that isn't listed, and — only on a mapping that was
+added on this computer — one to change how it is set up. Switching to a district that was added here
+is gated on a passing test conversion of the mapping as it currently reads, so a hand-edited file
+cannot become the active district by way of Apply.
+
 States:
 - **Degraded config** — a broken YAML renders as a safe degraded summary, calmly.
 - **No-op / broken Apply** — the Apply button is disabled when there's nothing valid to switch to.
@@ -364,9 +370,10 @@ string.
 
 ## What's deliberately out (today)
 
-- **The full column-mapping editor.** The Mapping surface reviews and switches between *pre-built*
-  district configs; authoring a brand-new column mapping in-app (the visual field-mapping editor) is
-  scope-locked to a later epic (IA-8b) on the ROADMAP.
+- **The full column-mapping editor.** Authoring a brand-new *column* mapping in-app (the visual
+  field-mapping editor, row filters, headerless files, attendance) is scope-locked to a later epic
+  (IA-8b) on the ROADMAP. A district's own **district-shape** mapping is no longer out — see
+  *self-service district setup* — but the column layer stays vendor-authored.
 - **Bundled offline docs in Help.** Help links out to the SpacesEDU Help Centre rather than rendering
   the bundled `docs/` markdown in-app. In-app offline docs are a future consideration, not shipped.
 - **Management / multi-district views.** DistrictSync is a single-district admin's cockpit. Aggregate
@@ -467,6 +474,14 @@ permanently into Settings when declined. The non-regression guarantee is the fea
 
 **Deliberately out of this batch.** The structured mapping creator is the next phase — until it
 lands, "my district isn't listed" routes to a human (a prefilled support path) and never dead-ends.
+
+**Landed since (plan 0044 — the self-service district editor).** That dead end became a door. "My
+district isn't listed" still routes to a human, and now also offers the admin the option of setting
+their district up themselves: a starting point, their district's identity, which CSVs to produce,
+which grades to roster, and the file names their export actually uses — written as one small YAML in
+their own profile, nothing becoming the active district until a real test conversion has passed
+against it. The two doors are the first-run wizard's District step and the Mapping surface (which is
+what makes it reachable on an install that is already running); the *column*-level editor stays out.
 An updatable/served allowlist is out (changing a listed address needs a release; acceptable at this
 district count). Failure notifications stay deferred: Run History and the Home verdict remain the
 in-app truth.

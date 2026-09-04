@@ -22,11 +22,15 @@ district_name: SD60 - Peace River North School District
 # sees this district plus their saved one, with "Show all districts" one click
 # away. Presentation metadata, not access control and not personal data;
 # structurally invisible to the ETL.
-# NOTE: this is the STAFF domain, deliberately NOT the generated STUDENT
+# NOTE: prn.bc.ca is the STAFF domain, deliberately NOT the generated STUDENT
 # domain used by the email template below. The domain rows come from the
 # owner's verified staff-contact sheet, never from a student template — a
 # district's students and its staff are on different domains here.
-district_domains: ["prn.bc.ca"]
+# sd60.bc.ca rides alongside it per the owner's 2026-09-03 rule: a district with
+# its own custom domain STILL matches the conventional sd<N>.bc.ca form, because
+# matching is EXACT equality and an admin on the conventional address would
+# otherwise match no district at all.
+district_domains: ["prn.bc.ca", "sd60.bc.ca"]
 
 global_config:
   school_year_sources:

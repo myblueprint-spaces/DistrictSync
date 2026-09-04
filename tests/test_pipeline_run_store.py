@@ -22,6 +22,7 @@ import pandas as pd
 import pytest
 
 from src.config.app_config import AppConfig
+from src.config.authoring import OverlaySpec, overlay_path, write_overlay
 from src.etl import pipeline
 from src.etl.pipeline import PipelineResult, run_pipeline
 from src.history.store import read_run_records
@@ -617,3 +618,129 @@ class TestEarlyExitRecording:
         cfg = AppConfig(input_dir=str(missing), output_dir=str(gde_output), sis_type="myedbc")
         status = derive_home_status(records, cfg)
         assert status.verdict.name == "FAILED"
+
+
+# --------------------------------------------------------------------------- #
+# a CORRUPT USER-DIR overlay (plan 0044 S7 §7.2 — the breaking-base floor)      #
+# --------------------------------------------------------------------------- #
+class TestCorruptUserOverlayRecordsAFailedRun:
+    """The floor under plan 0044's sharpest cost: **no CI gate ever validates a
+    user-authored overlay**, so a vendor base change (or a hand edit) that breaks one
+    surfaces for the first time on a district's own machine, at 2 a.m., unattended.
+
+    What must hold that night: exit 1, a FAILED run in the ledger with the bounded
+    ``config`` category and no free text, and NEVER a crash before the record — the
+    admin has to be able to open Run History the next morning and be told it was their
+    mapping. The existing ``config``-category coverage above is an unknown id and a
+    monkeypatched ``load_config`` raise; neither is a real file, and a real file is
+    exactly what this claim is about.
+
+    Two corruption shapes, because they take different code paths: YAML that does not
+    PARSE (``yaml.YAMLError`` — a hand edit or a half-written file) and YAML that parses
+    but fails validation (``ValueError`` — the shape a base change produces, e.g. a grade
+    chain that no longer resolves). The SUCCESS twin writes the same id PROPERLY through
+    ``authoring.write_overlay``, so a red half is the corruption and not the harness.
+
+    Nothing here asserts repair: the app never rewrites a district's own file.
+
+    The spec built locally on purpose — importing ``tests/test_config_authoring.py``
+    would invert the test dependency (the S2b lesson).
+    """
+
+    SIS = "sd93custom"
+
+    def _spec(self) -> OverlaySpec:
+        """A minimal valid SD93 overlay spec — no renames, so the standard-named
+        ``gde_input`` fixture files are exactly what it expects."""
+        return OverlaySpec(
+            sd_number=93,
+            district_name="SD93 - Run store pin",
+            district_domains=("sd93.bc.ca",),
+            base="myedbc",
+        )
+
+    def _plant(self, text: str) -> Path:
+        """Write real bytes into the isolated ``user_mappings_dir()`` as the overlay."""
+        target = overlay_path(self.SIS)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        return target
+
+    def _only_record(self) -> dict:
+        records = read_run_records()
+        assert records is not None and records, "the nightly run left NO record at all"
+        return records[0]
+
+    def test_unparseable_overlay_exits_1_and_records_the_config_category(
+        self, gde_input: Path, gde_output: Path
+    ) -> None:
+        # A truncated flow sequence — what a half-written file or a bad hand edit looks
+        # like. `yaml.safe_load` raises, so this never reaches Pydantic at all.
+        planted = self._plant("_base: myedbc\ndistrict_name: [SD93 - torn\n")
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_pipeline(self.SIS, str(gde_input), str(gde_output), source="scheduled")
+
+        assert exc_info.value.code == 1
+        stored = self._only_record()
+        assert stored["status"] == "failed"
+        assert stored["error_category"] == "config"
+        assert stored["sis_type"] == self.SIS
+        assert stored["source"] == "scheduled"
+        assert "error" not in stored  # privacy split: free text stays in the log line
+        # The app never repairs or removes the district's own file.
+        assert planted.read_text(encoding="utf-8").startswith("_base: myedbc")
+
+    def test_schema_invalid_overlay_exits_1_and_records_the_config_category(
+        self, gde_input: Path, gde_output: Path
+    ) -> None:
+        # Parses fine; fails validation. `student_rostering_grades: []` is the honest
+        # stand-in for a base change that leaves an overlay's grade chain unresolvable.
+        self._plant(
+            "_base: myedbc\n"
+            "district_name: SD93 - Invalid\n"
+            "district_domains: []\n"
+            "global_config:\n"
+            "  student_rostering_grades: []\n"
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_pipeline(self.SIS, str(gde_input), str(gde_output), source="scheduled")
+
+        assert exc_info.value.code == 1
+        stored = self._only_record()
+        assert stored["status"] == "failed"
+        assert stored["error_category"] == "config"
+        assert stored["sis_type"] == self.SIS
+        assert "error" not in stored
+
+    def test_a_properly_written_overlay_for_the_same_id_records_success(
+        self, gde_input: Path, gde_output: Path
+    ) -> None:
+        """The twin: the SAME id, authored properly, converts and records success."""
+        write_overlay(self._spec(), overwrite=False)
+
+        result = run_pipeline(self.SIS, str(gde_input), str(gde_output), source="scheduled")
+
+        assert result.entity_counts["Students"] > 0
+        stored = self._only_record()
+        assert stored["status"] == "success"
+        assert stored["error_category"] == "none"
+        assert stored["sis_type"] == self.SIS
+
+    def test_the_torn_file_is_read_as_this_district_not_as_a_missing_config(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The overlay really SHADOWED a load — the failure is a parse, not a not-found.
+
+        Without this, a run that never found the file at all would satisfy every
+        assertion above (an unknown id records `config` + exit 1 too).
+        """
+        self._plant("_base: myedbc\ndistrict_name: [SD93 - torn\n")
+
+        with caplog.at_level(logging.ERROR, logger="src.etl.pipeline"), pytest.raises(SystemExit):
+            run_pipeline(self.SIS, str(gde_input), str(gde_output), source="scheduled")
+
+        errors = "\n".join(r.getMessage() for r in caplog.records)
+        assert f"{self.SIS}_mapping.yaml" in errors, errors
+        assert "not found" not in errors.lower(), errors

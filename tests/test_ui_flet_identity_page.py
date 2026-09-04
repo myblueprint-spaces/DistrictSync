@@ -108,6 +108,13 @@ def _field(control, label: str) -> ft.TextField:  # noqa: ANN001 - untyped Flet 
 
 
 def _assert_no_banned_vocabulary(text: str, where: str) -> None:
+    """No identity-page string may use authentication vocabulary. ONE list, ONE implementation.
+
+    There is NO per-caller allowance, deliberately: a copy exemption is a hole the next edit
+    inherits silently. Every caller — the launch page, the Settings section, the Help echo,
+    the Home cards and the district creator — faces the whole list, and a string that needs
+    an exemption gets rewritten instead (plan 0044 S6 removed the one that existed).
+    """
     lowered = text.lower()
     for word in BANNED_WORDS:
         assert not re.search(rf"\b{re.escape(word)}\b", lowered), f"banned word {word!r} in {where}: {text!r}"
