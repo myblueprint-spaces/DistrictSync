@@ -1,12 +1,14 @@
-"""The self-service creator's copy is quoted in four docs — this ties it back (plan 0044 S7).
+"""The self-service creator's copy is quoted in five docs — this ties it back (plan 0044 S7).
 
 CLAUDE.md's testing conventions: *any literal copied out of ``src/`` into a standalone
 script/CI/doc needs a parity test tying it back*. Plan 0044 put nine authored button
 labels and step titles into the QA checklist, PRODUCT_SPEC (prose AND its machine-readable
 AC block) and the partner installation guide, where a release-day tester and a district
-admin are told to look for them word-for-word. Nothing connected them to the modules —
-which is exactly how brief 0037's S6 inherited FOUR stale doc quotes of a string a blocker
-had already deleted, every one of them green the whole time.
+admin are told to look for them word-for-word; since 2026-09-03 the Help Centre article
+draft quotes all nine too — the PUBLIC page an admin reads on the vendor's knowledge base,
+where a label the app has since renamed is worst of all. Nothing connected them to the
+modules — which is exactly how brief 0037's S6 inherited FOUR stale doc quotes of a string
+a blocker had already deleted, every one of them green the whole time.
 
 Shaped after ``tests/test_ui_flet_band_copy_parity.py`` and pinned in BOTH directions, per
 the declared-gap discipline in ``docs/claugentic-standards/CANDIDATES.md``:
@@ -71,9 +73,9 @@ _QA_ALL = frozenset(
     }
 )
 
-#: Quoted by the QA CHECKLIST alone (row 8g). PRODUCT_SPEC's AC block describes the export
-#: reveal functionally, so the string must be ABSENT there — which the undeclared-quote
-#: direction below is what enforces.
+#: Quoted by the QA CHECKLIST (row 8g) and the Help Centre article, NOT by PRODUCT_SPEC —
+#: whose AC block describes the export reveal functionally, so the string must be ABSENT
+#: there, which the undeclared-quote direction below is what enforces.
 _QA_ONLY = frozenset({"mapping.MAPPING_EXPORT_LABEL"})
 
 # doc -> the constants that doc is DECLARED to quote. Anything not listed must be absent.
@@ -82,6 +84,9 @@ _QA_ONLY = frozenset({"mapping.MAPPING_EXPORT_LABEL"})
 _DOC_QUOTES: dict[str, frozenset[str]] = {
     "docs/developer/qa-checklist.md": _QA_ALL | _QA_ONLY,
     "docs/claugentic-PRODUCT_SPEC.md": _QA_ALL,
+    # The Help Centre draft is the one PUBLIC doc here: a district admin reads it on the
+    # vendor KB and looks for these labels word-for-word, so it declares every one.
+    "docs/partner/help-centre-myedbc-districtsync-guide.md": _QA_ALL | _QA_ONLY,
     "docs/partner/installation.md": frozenset({"creator.CREATOR_ENTRY_LABEL"}),
     "docs/developer/adding-district.md": frozenset(),
     "docs/claugentic-PRODUCT.md": frozenset(),
@@ -91,6 +96,7 @@ _DOC_QUOTES: dict[str, frozenset[str]] = {
 _QA_CHECKLIST = "docs/developer/qa-checklist.md"
 _VENDOR_DOC = "docs/developer/adding-district.md"
 _PARTNER_DOC = "docs/partner/installation.md"
+_HELP_CENTRE_DOC = "docs/partner/help-centre-myedbc-districtsync-guide.md"
 
 #: The prose check-count words the checklist has used. Written out because the doc says
 #: "thirty-four checks", not "34" — the count is prose, and prose is what drifts.
@@ -167,10 +173,10 @@ def test_an_undeclared_quote_is_absent(relative: str) -> None:
 
 @pytest.mark.parametrize(
     ("relative", "placeholder"),
-    [(_PARTNER_DOC, "<number>"), (_VENDOR_DOC, "<num>")],
+    [(_PARTNER_DOC, "<number>"), (_HELP_CENTRE_DOC, "<number>"), (_VENDOR_DOC, "<num>")],
 )
 def test_the_overlay_filename_shape_the_docs_promise_is_the_real_one(relative: str, placeholder: str) -> None:
-    """Both docs tell a district which file to look for. DERIVED from ``overlay_path``.
+    """All three docs tell a district which file to look for. DERIVED from ``overlay_path``.
 
     The real name for a known id is turned into the doc's placeholder form, so renaming
     the emitted file (or the ``sd<num>custom`` namespace) goes red in the two places a
