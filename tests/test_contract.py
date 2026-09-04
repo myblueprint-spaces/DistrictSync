@@ -1165,6 +1165,26 @@ class TestDistrictQuirks:
         name = classes[classes["Class ID"].astype(str).str.startswith("MT002_")]["Name"].iloc[0]
         assert name == "Liu Math 10 (A) 2026", name
 
+    # ---- SD75: generated learn75.ca emails REPLACING the demographic column ----
+
+    @pytest.mark.parametrize("district_output", ["sd75myedbc"], indirect=True)
+    def test_sd75_generated_learn75_emails_replace_the_demographic_column(self, district_output):
+        """MyEd BC holds non-district addresses for some Mission students, so the
+        `Student email address` column is overridden by a generated one.
+
+        Asserted as a dict against the User ID, not a set: the point is that
+        EVERY row is re-keyed to the district domain. The fixture's demographic
+        column carries `alice@test.ca` / `bob@test.ca` / `charlie@test.ca`, so a
+        template that silently fell back to the source column would fail here.
+        """
+        _, out = district_output
+        students = _read_output(out, "Students")
+        assert dict(zip(students["User ID"], students["Email Address"])) == {
+            "S001": "s001@learn75.ca",
+            "S002": "s002@learn75.ca",
+            "S003": "s003@learn75.ca",
+        }
+
     # ---- SD83: class_rostering_grades: "homeroom" (K-8 SpacesEDU, 9-12 mbp+) ----
 
     @pytest.mark.parametrize("district_output", ["sd83myedbc"], indirect=True)
