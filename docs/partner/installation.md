@@ -336,6 +336,7 @@ The number of output files depends on which config you're using — see the [Out
 | SD51 – Boundary | `sd51myedbc` | Contact SpacesEDU for file naming |
 | SD60 – Peace River North | `sd60myedbc` | Guardians-only family import; dual-school students rostered under home school; student emails generated as `firstname+lastname+admission-year@learn60.ca`; `Active No Primary` excluded |
 | SD74 – Gold Trail | `sd74myedbc` | Uses `studentcourseselection.txt`, `StaffInformation.txt`, `ParentInformation.txt` |
+| SD75 – Mission | `sd75myedbc` | Standard filenames. Student emails are generated as `<student number>@learn75.ca` — MyEducation BC holds non-district addresses for some Mission students, so the address in the demographic export is not used. |
 | Unity Christian School (Chilliwack) | `unitychristianmyedbc` | Standard filenames. Student emails are generated as `<student number>@unitychristian.ca`. Grade 8 is rostered by homeroom (the schedule export covers grades 9-12 only). Family/parent import is off until a Parent Information export with guardian email addresses is supplied. |
 
 ---
