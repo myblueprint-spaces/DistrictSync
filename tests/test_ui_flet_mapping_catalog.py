@@ -24,9 +24,13 @@ from pathlib import Path
 import pytest
 
 from src.ui_flet.mapping_catalog import (
+    CUSTOM_ORIGIN_LABEL,
     ConfigSummary,
     active_output_entities,
     can_apply,
+    catalog,
+    disambiguated_labels,
+    filtered_catalog,
     list_configs,
     post_apply_presentation,
     summarize_config,
@@ -253,6 +257,10 @@ def test_missing_config_id_degrades_never_raises(tmp_path: Path) -> None:
         # UNRESOLVABLE, not declared-empty (0038 S5): we could not read the config, so it
         # claims nobody and can never narrow anyone's district list to itself.
         district_domains=None,
+        # A single explicit `config_dir` cannot express a tier, so the loader defines it as
+        # "bundled"-equivalent and `_origin_of` re-uses that definition — asserted, not
+        # assumed, by `TestOrigin.test_an_explicit_config_dir_reports_bundled`.
+        origin="bundled",
     )
 
 
@@ -462,6 +470,7 @@ def _summary(sis: str, *, loaded_ok: bool) -> ConfigSummary:
         source_file_count=0,
         loaded_ok=loaded_ok,
         district_domains=() if loaded_ok else None,
+        origin="bundled",  # the gate does not read origin; a shipped row keeps this axis quiet
     )
 
 
@@ -711,3 +720,297 @@ def test_every_bundled_config_can_name_its_own_roster_size(bundle_dir: Path) -> 
         assert f"{counts[leading]:,}" in clause, f"{sis_type} named the wrong entity: {clause}"
         if "Students" not in entities:
             assert "student" not in clause, f"{sis_type} does not emit Students but the clause says {clause!r}"
+
+
+# --------------------------------------------------------------------------- #
+# ORIGIN — which TIER a config's YAML came out of (plan 0044 S2)                #
+#                                                                             #
+# Every case here runs against the REAL user-then-bundled pair, via the autouse #
+# `isolated_user_profile` redirect + `authoring.write_overlay`. That is not     #
+# ceremony: a single-dir fixture is "bundled"-equivalent BY DEFINITION           #
+# (`loader._require_search_pair` refuses a one-dir seam for exactly this        #
+# reason), so an origin assertion made through `config_dir=` would be vacuous.   #
+# Each "is marked" therefore carries a shipped-row TWIN in the same build.       #
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def custom_overlay(monkeypatch) -> str:
+    """Write a REAL ``sd93custom`` overlay into the isolated user mappings dir. Returns its id.
+
+    Goes through ``authoring.write_overlay`` (which load-backs through the real loader), so
+    the row these tests read is a config the app could genuinely run — not a hand-planted file
+    that only looks like one. Clears any leaked ``sys.frozen`` / ``sys._MEIPASS`` first so
+    ``bundle_mappings_dir()`` resolves to the project's ``config/mappings``.
+    """
+    import sys
+
+    from src.config.authoring import OverlaySpec, write_overlay
+
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    write_overlay(
+        OverlaySpec(
+            sd_number=93,
+            district_name="SD93 - Origin Test",
+            district_domains=("sd93.bc.ca",),
+            base="myedbc",
+        ),
+        overwrite=False,
+    )
+    from src.ui_flet import mapping_catalog
+
+    mapping_catalog.reset_catalog_cache()  # the write happened after the fixture's own reset
+    return "sd93custom"
+
+
+class TestOrigin:
+    def test_a_user_dir_config_reports_user_and_a_shipped_one_reports_bundled(self, custom_overlay: str) -> None:
+        """The pair that makes either half mean anything — same build, same call, two tiers."""
+        added = summarize_config(custom_overlay)
+        shipped = summarize_config("myedbc")
+
+        assert added.origin == "user"
+        assert added.loaded_ok is True, "the overlay must be a config the app can really load"
+        assert shipped.origin == "bundled"
+        assert shipped.loaded_ok is True
+
+    def test_every_row_of_a_real_catalog_build_carries_an_origin(self, custom_overlay: str) -> None:
+        """The acceptance criterion: ``origin`` is populated on EVERY row, ``"user"`` exactly
+        for the file in the user dir."""
+        rows = {s.sis_type: s.origin for s in list_configs()}
+
+        assert set(rows.values()) <= {"user", "bundled"}
+        assert rows[custom_overlay] == "user"
+        assert [sis for sis, origin in rows.items() if origin == "user"] == [custom_overlay]
+        assert len(rows) == 21, f"the shipped 20 plus the overlay; got {sorted(rows)}"
+
+    def test_an_explicit_config_dir_reports_bundled(self, custom_overlay: str) -> None:
+        """The loader's own rule, ASSERTED rather than assumed: one dir cannot express a tier.
+
+        The dir handed in here is literally the USER mappings dir holding the overlay — so a
+        path-parent-derived origin would say ``"user"``. It must say ``"bundled"``, because
+        that is what ``load_config`` does with a single ``config_dir`` (no user-dir domains
+        floor, an invalid domain row keeps its loud raise), and two spellings of one rule that
+        could disagree is the defect this pins.
+
+        The TWIN is the same id read through the real PAIR, in the same test: the file is
+        identical, so only the seam can explain the two answers. (Through the single dir the
+        overlay also DEGRADES — its ``_base: myedbc`` is unreachable when the bundled dir is
+        not searched — which is the same "one dir cannot express a tier" fact from the other
+        side, and shows origin is resolved before any load is attempted.)
+        """
+        from src.utils.paths import user_mappings_dir
+
+        user_dir = user_mappings_dir()
+        assert (user_dir / f"{custom_overlay}_mapping.yaml").exists(), "the file really is in that dir"
+
+        assert summarize_config(custom_overlay, config_dir=user_dir).origin == "bundled"
+        assert summarize_config(custom_overlay).origin == "user", "the twin: the real pair still sees the tier"
+
+    def test_a_MALFORMED_user_overlay_degrades_and_STILL_reports_user(self, monkeypatch) -> None:
+        """The row most likely to need the marker is the one that cannot be read.
+
+        Origin is resolved BEFORE the load is attempted, so a broken YAML in the user dir
+        still renders as "Added on this computer" — which is precisely the fact that tells an
+        admin the file is theirs to fix or remove. A degraded row that claimed ``"bundled"``
+        would read as a fault in the shipped product.
+        """
+        import sys
+
+        from src.utils.paths import user_mappings_dir
+
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+        (user_mappings_dir() / "sd94custom_mapping.yaml").write_text(
+            "mappings: [this is not a valid mappings dict\n", encoding="utf-8"
+        )
+
+        summary = summarize_config("sd94custom")
+
+        assert summary.loaded_ok is False
+        assert summary.origin == "user"
+        assert summary.district_name == "sd94custom"  # the raw-id fallback, unchanged
+
+    def test_origin_is_TOTAL_over_a_raising_resolver(self, monkeypatch) -> None:
+        """``user_mappings_dir()`` mkdir-s, so a locked-down profile can raise inside the
+        lookup. Nothing may escape: origin is a presentation fact, and losing it must cost a
+        marker, never a district row."""
+        from src.ui_flet import mapping_catalog
+
+        monkeypatch.setattr(
+            mapping_catalog,
+            "resolve_config_path",
+            lambda *_a, **_kw: (_ for _ in ()).throw(OSError("locked-down profile")),
+        )
+
+        summary = summarize_config("myedbc")
+
+        assert summary.origin == "bundled"
+        assert summary.loaded_ok is True, "the load itself was untouched — only origin degraded"
+
+    def test_a_config_that_exists_NOWHERE_reports_bundled(self) -> None:
+        """A miss is not a user file: the fallback direction is "unmarked", never a false claim
+        that we did not ship a mapping we ship."""
+        assert summarize_config("no_such_district_config").origin == "bundled"
+
+
+class TestAConfigAddedOnThisComputerRidesEveryList:
+    """Owner finding (2026-09-03): an admin whose address matched a shipped district could not
+    see the mapping they had authored themselves — the domain filter narrowed it away and the
+    "Show all districts" escape had been retired a month earlier, so their own file was
+    unreachable from every one of the four pickers.
+
+    These run against the REAL user-then-bundled pair (``config_dir=`` is "bundled" by
+    definition — see the block comment above ``TestOrigin``), so the ``origin`` the rule reads
+    is the one the loader really resolves.
+    """
+
+    def test_it_survives_a_match_that_excludes_it(self, custom_overlay: str) -> None:
+        """The rule, with its negative twin in the same assertion block: an unmatched SHIPPED
+        row IS dropped, so the filter demonstrably fired and the kept row is not just a filter
+        that never ran (CANDIDATES: no vacuous greens)."""
+        visible = {s.sis_type for s in filtered_catalog("sd48.bc.ca", saved_sis="sd48myedbc").summaries}
+
+        assert custom_overlay in visible, "the admin's own mapping was filtered out of their picker"
+        assert "sd48myedbc" in visible, "premise: the matched district is present"
+        assert "sd51myedbc" not in visible, "the twin: an unmatched shipped row is still narrowed away"
+
+    def test_it_is_kept_by_ORIGIN_and_not_by_its_own_domain(self, custom_overlay: str, monkeypatch) -> None:
+        """``custom_overlay`` declares ``sd93.bc.ca``, so a rule that only ever kept CLAIMED
+        rows would pass the row above for the wrong reason. Here the overlay claims nothing at
+        all — and is still there."""
+        import sys
+
+        from src.config.authoring import OverlaySpec, write_overlay
+        from src.ui_flet import mapping_catalog
+
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+        write_overlay(
+            OverlaySpec(sd_number=94, district_name="SD94 - Unclaimed", district_domains=(), base="myedbc"),
+            overwrite=False,
+        )
+        mapping_catalog.reset_catalog_cache()
+
+        visible = {s.sis_type for s in filtered_catalog("sd48.bc.ca", saved_sis="sd48myedbc").summaries}
+
+        assert "sd94custom" in visible
+        assert "sd51myedbc" not in visible, "the twin: the filter is still narrowing shipped rows"
+
+
+class TestTheProvenanceMarkerOnALabel:
+    def _row(self, sis: str, name: str, origin: str) -> ConfigSummary:
+        return ConfigSummary(
+            sis_type=sis,
+            district_name=name,
+            output_entities=(),
+            output_labels=(),
+            source_file_count=0,
+            loaded_ok=True,
+            district_domains=(),
+            origin=origin,  # type: ignore[arg-type]
+        )
+
+    def test_the_added_row_is_marked_and_the_shipped_row_is_NOT(self) -> None:
+        labels = disambiguated_labels(
+            (self._row("sd93custom", "SD93", "user"), self._row("sd48myedbc", "Sea to Sky", "bundled"))
+        )
+
+        assert labels["sd93custom"] == f"SD93 — {CUSTOM_ORIGIN_LABEL}"
+        assert labels["sd48myedbc"] == "Sea to Sky"
+        assert CUSTOM_ORIGIN_LABEL not in labels["sd48myedbc"]
+
+    def test_a_same_name_collision_carries_BOTH_the_id_suffix_and_the_marker(self) -> None:
+        """The shape the ``sd<num>custom``-beside-``sd<num>myedbc`` namespace anticipates: an
+        added config named exactly like the shipped one. The ID is what separates the two rows
+        (so BOTH keep their suffix, not just the later one); the marker only says which of
+        them lives on this computer — it is appended AFTER, and it never joins detection.
+        """
+        labels = disambiguated_labels(
+            (self._row("sd48custom", "Sea to Sky", "user"), self._row("sd48myedbc", "Sea to Sky", "bundled"))
+        )
+
+        assert labels["sd48custom"] == f"Sea to Sky (sd48custom) — {CUSTOM_ORIGIN_LABEL}"
+        assert labels["sd48myedbc"] == "Sea to Sky (sd48myedbc)"
+        assert len(set(labels.values())) == 2
+
+    def test_the_marker_does_not_CREATE_a_collision_between_two_added_configs(self) -> None:
+        """Two added configs sharing a district name must still be told apart by their ids —
+        the marker is on both, so it cannot be the thing that separates them."""
+        labels = disambiguated_labels(
+            (self._row("sd93custom", "Same Name", "user"), self._row("sd94custom", "Same Name", "user"))
+        )
+
+        assert labels["sd93custom"] == f"Same Name (sd93custom) — {CUSTOM_ORIGIN_LABEL}"
+        assert labels["sd94custom"] == f"Same Name (sd94custom) — {CUSTOM_ORIGIN_LABEL}"
+        assert len(set(labels.values())) == 2
+
+    def test_the_marker_reaches_a_REAL_catalog_row(self, custom_overlay: str) -> None:
+        """The synthetic rows above pin the rule; this proves it fires on a config actually
+        written to disk, with a shipped twin in the same label map."""
+        labels = disambiguated_labels(list_configs())
+
+        assert labels[custom_overlay].endswith(f" — {CUSTOM_ORIGIN_LABEL}")
+        assert CUSTOM_ORIGIN_LABEL not in labels["myedbc"]
+
+    def test_the_label_is_the_SINGLE_source_of_the_marker_words(self) -> None:
+        """The words live in one constant — owner-approved, PII-free, and making no claim
+        about who authored the file or whether it can be edited."""
+        assert CUSTOM_ORIGIN_LABEL == "Added on this computer"
+        lowered = CUSTOM_ORIGIN_LABEL.lower()
+        for banned in ("edit", "soon", "later", "unsupported", "invalid", "you"):
+            assert banned not in lowered, CUSTOM_ORIGIN_LABEL
+
+
+class TestTheCatalogInvalidationRule:
+    def test_a_freshly_written_overlay_is_STALE_until_the_cache_is_dropped(self, monkeypatch) -> None:
+        """The rule that keeps ``src/config/`` from importing ``src/ui_flet/``: the UI caller
+        invalidates after a successful write.
+
+        Both halves are here on purpose. The STALE half asserts an ABSENCE and would pass for
+        the wrong reason if memoisation were ever removed — it pins a documented residual
+        (``catalog``'s docstring), not a guarantee. The FRESH half is what makes it mean
+        something: ``reset_catalog_cache()`` really is the invalidation, not a comment.
+        """
+        import sys
+
+        from src.config.authoring import OverlaySpec, write_overlay
+        from src.ui_flet import mapping_catalog
+
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+
+        before = {s.sis_type for s in catalog()}
+        assert "sd93custom" not in before
+        assert len(before) == 20, "the positive twin: the build really did read the shipped catalog"
+
+        write_overlay(
+            OverlaySpec(
+                sd_number=93,
+                district_name="SD93 - Invalidation Test",
+                district_domains=("sd93.bc.ca",),
+                base="myedbc",
+            ),
+            overwrite=False,
+        )
+
+        assert "sd93custom" not in {s.sis_type for s in catalog()}, "the memo is stale, as documented"
+
+        mapping_catalog.reset_catalog_cache()
+
+        after = {s.sis_type for s in catalog()}
+        assert "sd93custom" in after
+        assert len(after) == 21
+
+    def test_a_deleted_overlay_also_needs_the_invalidation(self, custom_overlay: str) -> None:
+        """The same rule on the delete side — ``delete_overlay`` does not clear the memo
+        either, so an offered district would outlive its file until the UI caller invalidates."""
+        from src.config.authoring import delete_overlay
+        from src.ui_flet import mapping_catalog
+
+        assert custom_overlay in {s.sis_type for s in catalog()}
+
+        assert delete_overlay(custom_overlay) is True
+
+        assert custom_overlay in {s.sis_type for s in catalog()}, "stale until invalidated"
+        mapping_catalog.reset_catalog_cache()
+        assert custom_overlay not in {s.sis_type for s in catalog()}

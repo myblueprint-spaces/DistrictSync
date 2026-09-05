@@ -106,6 +106,9 @@ Never inline a hex or a px size in a screen or a factory arg; add a token, then 
 | `text_button(...)` | tertiary / dismiss | MB_PRIMARY text; `color` overridable for coloured grounds |
 | `card(content, gradient=None, ...)` | a surface | white `radius_lg` + 1dp shadow; `gradient` = the LAUNCH PAGE hero only (0038, exclusive since S6) |
 | `district_chip(label)` | district identity | rounded `color_chip_bg` pill in the header right-slot |
+| `origin_badge(label)` | file provenance ("Added on this computer") | same pill body as `district_chip` via the private `_chip`, NEUTRAL computer glyph — never a district-identity or status claim (0044 S2) |
+| `check_row(label, *, value, on_toggle)` | a tick-list row (entities, grades) | `ft.Checkbox` with token `active_color`, `on_change` adapted to `on_toggle(bool)`; the ONE checkbox spelling (0044 S3) |
+| `inflight_row(text)` | "working…" caption beside a spinner | 18dp ring + `type_body` caption; shared by Setup's schedule/SFTP/creator gate (0044 S3) |
 | `status_pill(label, status)` | a compact status marker | toned per `Verdict`; icon + text (never colour-alone) |
 | `FileChip` · `run_table` · `ErrorCard` | file chip · run table · never-crash error surface | unchanged intent |
 

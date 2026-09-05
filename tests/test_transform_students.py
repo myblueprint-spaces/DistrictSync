@@ -393,3 +393,119 @@ class TestStudentEmailGeneration:
         email_cfg = {"format": "{legal surname}.{legal first name}@sd54.bc.ca"}
         result = self._run(email_cfg, self._df("Mary", "O'Brien", "15-Sep-2018"))
         assert result["Email Address"].iloc[0] == "o'brien.mary@sd54.bc.ca"
+
+
+class TestStudentsNoEmailWarning:
+    """A student with no email address is KEPT and counted (never dropped).
+
+    WHY: SpacesEDU imports a student without an email address — unlike a family
+    contact, which it rejects — but such a student cannot be invited by email.
+    So the row stays and the district is told ONCE, in counts only (never a
+    name, an id or an address), and it is NOT a data error.
+    """
+
+    _MAPPING = {
+        "source_files": {"student_demographic": "Demo.txt"},
+        "field_map": {
+            "User ID": "Student Number",
+            "First Name": "Legal First Name",
+            "Last Name": "Legal Surname",
+            "SchoolCode": "School Number",
+            "EnrollStatus": None,
+            "Email Address": "Student Email Address",
+        },
+    }
+    _GC = {"academic_start_month_day": "08-25", "academic_end_month_day": "07-25"}
+    #: Literals the log must never echo (PII rule).
+    _PII = ["alice@sd51.bc.ca", "diana@sd51.bc.ca", "Alice", "Bob", "Charlie", "Diana", "S001", "S004"]
+
+    def setup_method(self):
+        self.transformer = DataTransformer()
+        self.transformer.set_school_year(2025, "08-25", "07-25")
+
+    def _df(self, emails):
+        names = ["Alice", "Bob", "Charlie", "Diana"][: len(emails)]
+        return pd.DataFrame(
+            {
+                "student number": [f"S00{i + 1}" for i in range(len(emails))],
+                "legal first name": names,
+                "legal surname": ["Smith", "Jones", "Brown", "White"][: len(emails)],
+                "school number": ["100"] * len(emails),
+                "student email address": emails,
+                "enrolment status": ["Active"] * len(emails),
+            }
+        )
+
+    def _run(self, df, mapping=None):
+        return self.transformer.transform(df, mapping or self._MAPPING, "Students", {"Demo.txt": df}, self._GC)
+
+    @staticmethod
+    def _no_email_records(caplog):
+        return [r for r in caplog.records if "have no email address" in r.message]
+
+    def _assert_no_pii(self, caplog):
+        for record in caplog.records:
+            for literal in self._PII:
+                assert literal not in record.message, f"PII leaked into the log: {literal!r}"
+
+    def test_students_without_email_are_kept_and_counted_once(self, caplog):
+        """2 of 4 blank (NaN + whitespace) → all 4 rows kept, ONE warning."""
+        df = self._df(["alice@sd51.bc.ca", float("nan"), "   ", "diana@sd51.bc.ca"])
+        with caplog.at_level("WARNING"):
+            result = self._run(df)
+        assert len(result) == 4  # nothing dropped
+        records = self._no_email_records(caplog)
+        assert len(records) == 1, [r.message for r in records]
+        assert "2 of 4" in records[0].message
+        assert records[0].levelname == "WARNING"
+        assert records[0].message == (
+            "[Students] 2 of 4 student row(s) have no email address — "
+            "kept (SpacesEDU imports them), but they cannot be invited by email."
+        )
+        self._assert_no_pii(caplog)
+
+    def test_no_email_is_not_a_data_error(self, caplog):
+        """A missing address is a data FACT, not a transform failure."""
+        df = self._df(["alice@sd51.bc.ca", "", "", "diana@sd51.bc.ca"])
+        with caplog.at_level("WARNING"):
+            self._run(df)
+        assert self._no_email_records(caplog)
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+    def test_all_students_with_email_is_silent(self, caplog):
+        """Positive twin: every address present → no warning."""
+        df = self._df(["a@sd51.bc.ca", "b@sd51.bc.ca", "c@sd51.bc.ca", "d@sd51.bc.ca"])
+        with caplog.at_level("WARNING"):
+            result = self._run(df)
+        assert len(result) == 4
+        assert self._no_email_records(caplog) == []
+
+    def test_generated_email_counts_as_present(self, caplog):
+        """The `email format` path fills every address → no warning.
+
+        The count runs on the OUTPUT frame, after generation, so a district that
+        synthesises addresses from a template is never told its students have
+        none.
+        """
+        mapping = dict(self._MAPPING)
+        mapping["field_map"] = dict(self._MAPPING["field_map"])
+        mapping["field_map"]["Email Address"] = {"format": "{student number}@test.ca"}
+        df = self._df(["", "", "", ""])  # no source addresses at all
+        with caplog.at_level("WARNING"):
+            result = self._run(df, mapping)
+        assert result["Email Address"].tolist() == [f"s00{i + 1}@test.ca" for i in range(4)]
+        assert self._no_email_records(caplog) == []
+
+    def test_config_without_email_column_warns_and_keeps_every_row(self, caplog):
+        """No Email Address in the field_map → the count cannot be taken; say so."""
+        mapping = dict(self._MAPPING)
+        mapping["field_map"] = {k: v for k, v in self._MAPPING["field_map"].items() if k != "Email Address"}
+        with caplog.at_level("WARNING"):
+            result = self._run(self._df(["", "", "", ""]), mapping)
+        assert len(result) == 4
+        assert "Email Address" not in result.columns
+        no_column = [r for r in caplog.records if "no-email count could not be" in r.message]
+        assert len(no_column) == 1
+        assert "[Students] No 'Email Address' output column" in no_column[0].message
+        assert self._no_email_records(caplog) == []
+        self._assert_no_pii(caplog)

@@ -21,6 +21,8 @@ from typing import Any
 
 import pandas as pd
 
+from src.etl.column_names import normalize_column_name
+
 # Every in-box Windows binary this app shells out to, mapped to its path RELATIVE to
 # ``%SystemRoot%\System32``. An ALLOWLIST rather than a free-form path joiner: an
 # unrecognized name is a programming error and fails loud (see :func:`system_binary`)
@@ -109,8 +111,16 @@ def ensure_directory(path: Path) -> Path:
 
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Strip whitespace and lowercase all column names. Returns a copy."""
-    return df.rename(columns=lambda c: c.strip().lower())
+    """Strip whitespace and lowercase all column names. Returns a copy.
+
+    Delegates the per-NAME rule to
+    :func:`src.etl.column_names.normalize_column_name` — the single source of
+    "what a source column name is", shared with the pre-flight expected-column
+    derivation (``src.etl.preflight``), which has no frame to hand this
+    function. Behaviour is unchanged (strip + lower, non-``str`` label still
+    raises).
+    """
+    return df.rename(columns=normalize_column_name)
 
 
 # ---------------------------------------------------------------------------

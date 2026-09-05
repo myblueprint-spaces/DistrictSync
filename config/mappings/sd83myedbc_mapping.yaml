@@ -1,4 +1,4 @@
-# SD83 - North Okanagan-Shuswap: inherits from standard MyEducation BC
+# SD83 - K̓wsaltktnéws ne Secwepemcúl’ecw (formerly North Okanagan-Shuswap): inherits from standard MyEducation BC
 # mapping, with the myBlueprint+ course entities enabled and district-specific
 # grade overrides. Standard MyEd BC GDE file naming is assumed (no
 # source_files overrides here) — adjust once real GDE exports are available
@@ -8,7 +8,13 @@ _base: myedbc
 # version gate would silently read as minor 1 (see src/config/loader.py).
 version: '1.10'
 sis: MyEducationBC
-district_name: SD83 - North Okanagan-Shuswap School District
+# Renamed 2026-09-03 (owner) to the district's own Secwepemc name, exactly as its
+# 2026-09-03 sheet spells it: K + U+0313 COMBINING COMMA ABOVE, then e-acute,
+# u-acute, and U+2019 RIGHT SINGLE QUOTATION MARK. Formerly "North
+# Okanagan-Shuswap School District". This file is UTF-8 and is READ as UTF-8
+# (src/config/loader._load_yaml pins the encoding — before 2026-09-03 it used the
+# platform locale, which on Windows decoded this line into mojibake in silence).
+district_name: SD83 - K̓wsaltktnéws ne Secwepemcúl’ecw
 # The district's PUBLIC staff email domain. Scopes which district rows this
 # district's admins see in the pickers (plan 0038 S4a/S5) — presentation
 # metadata, not access control and not personal data; structurally invisible

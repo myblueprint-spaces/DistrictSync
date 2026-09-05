@@ -8,9 +8,14 @@ import pandas as pd
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
 from src.etl.transformers.grades import filter_to_grade_scope, resolve_student_scope
-from src.etl.transformers.ids import normalize_id_series
+from src.etl.transformers.ids import clean_invalid_ids, normalize_id_series
 
 logger = logging.getLogger(__name__)
+
+#: The OUTPUT column name from the Advanced CSV contract
+#: (``docs/developer/output-contract.md`` → ``Students.csv``). Output names ARE
+#: the contract; the SOURCE spelling stays configurable through the field_map.
+EMAIL_OUTPUT_COLUMN = "Email Address"
 
 
 class StudentTransformer(BaseTransformer):
@@ -30,6 +35,7 @@ class StudentTransformer(BaseTransformer):
         if "Date of Birth" in result.columns:
             result["Date of Birth"] = result["Date of Birth"].apply(self.normalize_iso_date)
         self._coalesce_required_names(result)
+        self._warn_rows_without_email(result)
 
         # Publish the active roster (zero-orphan invariant). `result` is already
         # filtered to active-only, so this IS the Students.csv `User ID` set by
@@ -60,6 +66,44 @@ class StudentTransformer(BaseTransformer):
                 continue
             is_blank = result[primary].isna() | normalize_id_series(result[primary]).str.lower().isin(["", "nan"])
             result.loc[is_blank, primary] = result.loc[is_blank, fallback]
+
+    @staticmethod
+    def _warn_rows_without_email(result: pd.DataFrame) -> None:
+        """Count students with no ``Email Address`` and warn once — never drop.
+
+        WHY (importer behaviour): SpacesEDU DOES import a student without an
+        email address — unlike a family contact, which it rejects — so the row
+        is KEPT. What the district loses is the ability to invite that student by
+        email, which it can only act on if it is told, hence one aggregate
+        WARNING. A missing address is a data FACT, not a transform failure, so it
+        is deliberately NOT recorded in ``context.data_errors`` (that axis is for
+        a mapping/transform that raised) and it never affects the run status.
+
+        Blank = NaN / empty / whitespace-only, via the shared blank-value
+        semantics of :func:`~src.etl.transformers.ids.clean_invalid_ids`.
+
+        Runs on the OUTPUT frame (after ``apply_field_map``, so a generated
+        ``email format`` address counts as present) and resolves the column by
+        its CONTRACT OUTPUT name (:data:`EMAIL_OUTPUT_COLUMN`), never a
+        hardcoded source column. A config that maps no ``Email Address`` cannot
+        be counted; the contract requires the column, so that is surfaced as its
+        own WARNING rather than hidden.
+
+        PII rule: counts only — never a student name, id or address.
+        """
+        if EMAIL_OUTPUT_COLUMN not in result.columns:
+            logger.warning(
+                f"[Students] No '{EMAIL_OUTPUT_COLUMN}' output column — the no-email count could not be "
+                f"taken. The Advanced CSV contract requires it for Students.csv; check the config field_map."
+            )
+            return
+        total = len(result)
+        missing = total - len(clean_invalid_ids(result, EMAIL_OUTPUT_COLUMN))
+        if missing > 0:
+            logger.warning(
+                f"[Students] {missing} of {total} student row(s) have no email address — "
+                f"kept (SpacesEDU imports them), but they cannot be invited by email."
+            )
 
     def _collapse_cross_enrollment(
         self, working: pd.DataFrame, field_map: dict[str, Any], context: TransformContext

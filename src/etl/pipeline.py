@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import pandas as pd
+import yaml
 
 from src.config.app_config import AppConfig
 from src.config.loader import load_config
@@ -86,12 +87,38 @@ class RunErrorCategory(str, Enum):
 
 @dataclass
 class PipelineResult:
-    """Structured return value from run_pipeline."""
+    """Structured return value from run_pipeline.
+
+    ``input_columns`` is the run's RAW OBSERVATION of its input headers — no
+    derivation, no judgement: ``{ configured filename -> the normalised column
+    names the extractor saw, in file order }``. Keys are the CONFIG's spelling
+    of each file (what ``extractor.load_data`` returns, even when the
+    case-insensitive second look matched a differently-cased file on disk), and
+    a file that was not on disk KEEPS its key with an EMPTY tuple — the
+    extractor yields an empty frame for it, and dropping the key would make
+    this a second, quieter missing-FILE report able to disagree with the one
+    that owns that fact. Values are already strip+lower-cased: the extractor
+    normalises every frame it loads (``helpers.normalize_columns`` ->
+    ``column_names.normalize_column_name``), so no consumer re-normalises.
+
+    It exists for the pre-flight missing-column report (``src.etl.preflight``),
+    which turns it into a claim only in combination with a config; the
+    interpretation deliberately lives there, not here.
+
+    Only the SUCCESS path constructs a ``PipelineResult``, so the early-exit
+    paths (a config that fails to load, ``ExtractionError``, any transformer
+    raise) return no result at all and carry no observation — by design: those
+    failures name the offending column themselves and fail loudly, while an
+    absent mapped column is an *intended blank* that nothing else reports.
+    """
 
     entity_counts: dict[str, int] = field(default_factory=dict)
     sftp_attempted: bool = False
     sftp_ok: bool = False
     anomalies: list[str] = field(default_factory=list)
+    # `field(default_factory=dict)` per the `entity_counts` precedent above — a bare
+    # `{}` default raises `ValueError: mutable default` at class definition.
+    input_columns: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def extract_required_files(config) -> list[str]:
@@ -721,21 +748,24 @@ def run_pipeline(
             sys.exit(1)
         logger.info(f"Input directory: {input_dir.resolve()}")
 
-        # Load and validate config
+        # Load and validate config.
+        #
+        # ONE except clause for all three failure types, because the DISPOSITION is one
+        # thing — this is a config problem, so record the bounded `config` category and
+        # exit 1 — and two identical bodies invited a third that differed. The types:
+        # `FileNotFoundError` (an absent config or an absent `_base`), `ValueError` (the
+        # version gate and every Pydantic validation failure), and `yaml.YAMLError` — a
+        # file that does not PARSE, which reaches here only from a hand-edited or
+        # half-written file and is the one shape a USER-authored overlay can arrive in
+        # that no CI gate ever sees (plan 0044 S7). Without it a torn overlay recorded
+        # the `unknown` category and re-raised through the generic sink, so the admin's
+        # Run History said nothing about their own mapping file. The loader's exception
+        # TYPE is deliberately preserved (`ui_flet/config_editor.humanize_config_error`
+        # reads `yaml.YAMLError` to say "we couldn't read the file") — the mapping to a
+        # category happens here, at the call site that knows the read was a config read.
         try:
             config = load_config(sis_type)
-        except FileNotFoundError as e:
-            logger.error(str(e))
-            _record_early_failure(
-                t0,
-                source=resolved_source,
-                sis_type=sis_type,
-                error=str(e),
-                category=RunErrorCategory.CONFIG.value,
-                dry_run=dry_run,
-            )
-            sys.exit(1)
-        except ValueError as e:
+        except (FileNotFoundError, ValueError, yaml.YAMLError) as e:
             logger.error(str(e))
             _record_early_failure(
                 t0,
@@ -898,6 +928,11 @@ def run_pipeline(
             sftp_attempted=sftp_attempted,
             sftp_ok=sftp_ok,
             anomalies=anomalies,
+            # The observed headers, carried verbatim (see PipelineResult): the
+            # extractor already normalised them, so this is a copy — never a
+            # re-read, a second normalisation or a new extractor seam. `str()` so
+            # nothing but `str` leaves the pipeline.
+            input_columns={filename: tuple(str(column) for column in df.columns) for filename, df in raw_data.items()},
         )
 
     except SystemExit:

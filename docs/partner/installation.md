@@ -64,7 +64,7 @@ Inside that folder:
 | `config.json` | Wizard settings (input/output paths, SFTP host, schedule) |
 | `history.db` | Run-history database — every wizard, scheduled, and CLI run is recorded here; the **Run History** surface reads it |
 | `etl_tool.log` | Diagnostic log (rotates at 5 MB, keeps 3 backups) — detailed messages for troubleshooting |
-| `mappings/*.yaml` | Any custom district mapping YAML provided by the DistrictSync team (persists across exe upgrades) |
+| `mappings/*.yaml` | Custom district mapping YAML — provided by the DistrictSync team, **or added by you in the app** — one small readable text file per district, `sd<number>custom_mapping.yaml` for the ones you add (persists across exe upgrades) |
 | OS credential store | SFTP password (Windows Credential Manager / macOS Keychain / Linux Secret Service) |
 
 You can back up or inspect this folder at any time. Deleting it resets
@@ -133,7 +133,7 @@ again, which opens a second copy.
 
 ### Wizard Step 1 — District Configuration
 
-Select your district from the dropdown. If your district is not listed, contact SpacesEDU support.
+Select your district from the dropdown. If your district is not listed, you can set it up yourself — press **"Set up my district"** on this step and answer four short questions (you can also reach it later from the **Mapping** surface). Contact SpacesEDU support if you would rather have the mapping built for you, or if your files do not convert cleanly.
 
 No district is pre-selected — you pick yours explicitly, so a district is never chosen for you by accident.
 
@@ -349,6 +349,7 @@ The number of output files depends on which config you're using — see the [Out
 | SD51 – Boundary | `sd51myedbc` | Contact SpacesEDU for file naming |
 | SD60 – Peace River North | `sd60myedbc` | Guardians-only family import; dual-school students rostered under home school; student emails generated as `firstname+lastname+admission-year@learn60.ca`; `Active No Primary` excluded |
 | SD74 – Gold Trail | `sd74myedbc` | Uses `studentcourseselection.txt`, `StaffInformation.txt`, `ParentInformation.txt` |
+| SD75 – Mission | `sd75myedbc` | Standard filenames. Student emails are generated as `<student number>@learn75.ca` — MyEducation BC holds non-district addresses for some Mission students, so the address in the demographic export is not used. |
 | Unity Christian School (Chilliwack) | `unitychristianmyedbc` | Standard filenames. Student emails are generated as `<student number>@unitychristian.ca`. Grade 8 is rostered by homeroom (the schedule export covers grades 9-12 only). Family/parent import is off until a Parent Information export with guardian email addresses is supplied. |
 
 ---

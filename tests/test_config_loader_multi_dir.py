@@ -117,3 +117,46 @@ class TestMissingConfig:
     def test_raises_with_search_path_hint(self, redirect_home):
         with pytest.raises(FileNotFoundError, match="not found in any of"):
             load_config("nonexistent_sis")
+
+
+class TestYamlIsReadAsUtf8:
+    """`_load_yaml` pins `encoding="utf-8"` — never the platform locale.
+
+    REGRESSION (2026-09-03): it used the locale encoding, which on Windows is `cp1252`.
+    Because cp1252 maps almost every byte, a UTF-8 config did not fail to load — it
+    loaded WRONG, silently, and shipped mojibake to every surface that shows a district
+    name. Every config this reader sees is written UTF-8 (the repo's own files, and
+    `config.authoring._atomic_write_text` for an authored overlay), so the reader had no
+    business consulting the machine's locale at all.
+
+    Written with raw bytes rather than `yaml.safe_dump`, whose default escapes non-ASCII
+    into ASCII Unicode-escape sequences — an ASCII file cannot exercise a decoding bug.
+    """
+
+    NON_ASCII_NAME = "K̓wsaltktnéws ne Secwepemcúl’ecw"
+
+    def _write(self, redirect_home, text: str):
+        target = redirect_home / "sd83myedbc_mapping.yaml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        return target
+
+    def test_a_non_ascii_district_name_loads_unchanged(self, redirect_home):
+        self._write(
+            redirect_home,
+            f'_base: myedbc\nversion: "1.0"\nsis: MyEducationBC\ndistrict_name: "{self.NON_ASCII_NAME}"\n',
+        )
+
+        assert load_config("sd83myedbc").district_name == self.NON_ASCII_NAME
+
+    def test_the_fixture_file_really_is_non_ascii(self, redirect_home):
+        """The positive twin: prove the bytes under test could break a locale reader.
+
+        Without this, a future edit that ASCII-fied the fixture would leave the test above
+        green while testing nothing — the vacuous-green failure mode CLAUDE.md names.
+        """
+        target = self._write(redirect_home, f'district_name: "{self.NON_ASCII_NAME}"\n')
+
+        raw = target.read_bytes()
+        assert not raw.isascii()
+        assert raw.decode("utf-8") != raw.decode("cp1252"), "cp1252 must genuinely mis-decode these bytes"

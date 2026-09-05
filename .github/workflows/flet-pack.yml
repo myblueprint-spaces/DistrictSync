@@ -227,14 +227,16 @@ jobs:
       # ---------------------------------------------------------------------
       # The GUI smoke below proves a window opens. Nothing proved the same exe still
       # CONVERTS — the branch every district actually runs nightly — so a packaging
-      # regression in the ETL path could ship. Four phases against the real artifact,
+      # regression in the ETL path could ship. Five phases against the real artifact,
       # exit codes primary and strings secondary. Only phase 3 (`write-run`) converts
-      # the fixture end-to-end; 1 starts the exe, 2 previews, 4 boots on a plant.
+      # the fixture end-to-end; 1 starts the exe, 2 previews, 4 converts through a
+      # mapping config planted in the profile (never bundled in the exe), 5 boots on a
+      # corrupt config plant.
       #
       # ONE invocation, `--phase all`: the phase ORDER is load-bearing (phase 2 pins
       # history.db absent so phase 3's "the store was created" check is unambiguous;
-      # phase 4 plants a config.json and so must run last) and it lives in exactly one
-      # place — CLI_SMOKE_PHASES in the script. Four separate workflow steps would have
+      # phase 5 plants a config.json and so must run last) and it lives in exactly one
+      # place — CLI_SMOKE_PHASES in the script. Five separate workflow steps would have
       # been a second, hand-kept copy of that order, free to drift silently. The script
       # prints `-- <phase> --` per phase and `cli smoke: FAIL (<phase>)`, so which phase
       # failed stays obvious in the log.
@@ -246,9 +248,10 @@ jobs:
       # (src/utils/paths.user_data_dir step 0 — platformdirs ignores LOCALAPPDATA on
       # Windows, so this env var is the only way to keep a frozen exe off the runner's
       # real profile); the script REFUSES to run any phase without it. The profile dir
-      # lives under $RUNNER_TEMP and is discarded with the runner — phase 4 removes only
-      # the config.json it planted, so the log survives for the failure diagnostics.
-      - name: CLI smokes — version, dry run, write run, corrupt profile
+      # lives under $RUNNER_TEMP and is discarded with the runner — phases 4 and 5 remove
+      # only what they planted (an overlay YAML, a config.json), so the log survives for
+      # the failure diagnostics.
+      - name: CLI smokes — version, dry run, write run, user overlay, corrupt profile
         shell: bash
         env:
           DISTRICTSYNC_DATA_DIR: ${{ runner.temp }}/dsync-smoke-profile

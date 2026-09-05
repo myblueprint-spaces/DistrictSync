@@ -124,3 +124,62 @@ def test_real_help_wins_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     assert callable(route)
     assert route() == "HELP_SURFACE"  # routes to the real build_help
     assert len(seen) == 1 and isinstance(seen[0], AppConfig)  # a fresh config per mount (D1)
+
+
+def test_launch_url_is_a_coroutine_so_every_click_routes_through_open_url() -> None:
+    """Owner finding (2026-09-03): every Help-page link was a dead click with
+    ``RuntimeWarning: coroutine 'Page.launch_url' was never awaited`` in the console; the
+    first fix then CRASHED the handler with ``TypeError: handler must be a coroutine
+    function``, because ``run_task`` gates on ``inspect.iscoroutinefunction`` and the
+    ``@deprecated`` wrapper around ``Page.launch_url`` is a sync function returning the
+    coroutine. Three halves: the premise (it IS a coroutine once unwrapped, and is NOT one
+    while wrapped — if a future flet changes either, this row says so), the rule (no
+    ``page.launch_url(`` call anywhere in ``src/ui_flet`` outside the helper), and the
+    positive twin — the scheduled handler, awaited, actually launches the url.
+
+    The fake page re-implements ``run_task``'s real guard on purpose. The permissive fake it
+    replaces is exactly what let the crashing form ship green (CANDIDATES: no vacuous
+    greens)."""
+    import asyncio
+    import inspect
+    import re
+
+    import flet as ft
+
+    unwrapped = inspect.unwrap(ft.Page.launch_url)
+    assert inspect.iscoroutinefunction(unwrapped), "premise: launch_url is a coroutine on this flet"
+    assert not inspect.iscoroutinefunction(ft.Page.launch_url), (
+        "premise: the @deprecated wrapper hides that from run_task's guard"
+    )
+
+    root = Path(__file__).resolve().parents[1] / "src" / "ui_flet"
+    offenders = []
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith("#") or stripped.startswith("``") or "launch_url`" in stripped:
+                continue
+            if re.search(r"\bpage\.launch_url\(", line) and path.name != "components.py":
+                offenders.append(f"{path.name}:{lineno}")
+    assert offenders == [], offenders
+
+    scheduled: list = []
+    launched: list[str] = []
+
+    class _Page:
+        def run_task(self, fn, *args):
+            # flet 0.85.3's own guard, verbatim — a fake without it cannot see the bug.
+            if not inspect.iscoroutinefunction(fn):
+                raise TypeError("handler must be a coroutine function")
+            scheduled.append((fn, args))
+
+        async def launch_url(self, url):
+            launched.append(url)
+
+    page = _Page()
+    components.open_url(page, "https://example.invalid/x")  # type: ignore[arg-type]
+    assert scheduled, "open_url scheduled nothing"
+    handler, args = scheduled[0]
+    asyncio.run(handler(*args))
+    assert launched == ["https://example.invalid/x"]

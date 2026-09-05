@@ -343,6 +343,52 @@ def open_log_folder(_e: object | None = None) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Checkbox row — the ONE tick-box form (entities, grade scopes)                  #
+# --------------------------------------------------------------------------- #
+def check_row(label: str, *, value: bool, on_toggle: Callable[[bool], None]) -> ft.Control:
+    """One labelled tick box in the brand's action colour.
+
+    The ONE checkbox factory (plan 0044 S3 review): the creator's entity list and its two
+    grade rows hand-rolled ~50 ``ft.Checkbox``es with the same ``active_color`` repeated at
+    each site, which is exactly the inline styling a screen must not own.
+
+    ``on_toggle`` takes the new BOOLEAN, not the event: ``ft.Checkbox`` reports a change via
+    ``on_change`` on 0.85.3 (not ``on_toggle``/``on_select``), and every caller was already
+    unwrapping ``bool(e.control.value)`` by hand. The factory adapts it once, so no screen
+    reads the event object and none can read the stale value by mistake.
+    """
+
+    def _adapt(event: ft.ControlEvent) -> None:
+        on_toggle(bool(event.control.value))
+
+    return ft.Checkbox(
+        label=label,
+        value=value,
+        active_color=tokens.color_action_primary,
+        on_change=_adapt,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# In-flight row — a spinner beside an honest waiting line                        #
+# --------------------------------------------------------------------------- #
+def inflight_row(text: str) -> ft.Control:
+    """A spinner + honest waiting line shown while an off-thread operation is in flight (D5).
+
+    Moved out of ``screens/setup.py`` by plan 0044 S3's review so the creator surface
+    (``screens/creator.py``) can show the same waiting line without importing the wizard —
+    the dependency runs wizard → creator, never back. Pixel-identical to the row it
+    replaces: the ring's 18dp and the row's 10dp gap are the moved literals (no token sits
+    on either value, and a token pair would have moved the pixels).
+    """
+    return ft.Row(
+        spacing=10,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[ft.ProgressRing(width=18, height=18), ft.Text(text, size=tokens.type_body, color=tokens.color_muted)],
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Cards                                                                          #
 # --------------------------------------------------------------------------- #
 def card(
@@ -506,12 +552,13 @@ def page_header(
 # --------------------------------------------------------------------------- #
 # Chips & pills — rounded identity / status markers                             #
 # --------------------------------------------------------------------------- #
-def district_chip(label: str) -> ft.Container:
-    """A rounded district-identity pill: a small building glyph + the friendly district.
+def _chip(label: str, *, icon: str) -> ft.Container:
+    """ONE body for the two pill factories (:func:`district_chip`, :func:`origin_badge`).
 
-    Direction B's page-header right-slot marker (``color_chip_bg`` fill, MB_BORDER
-    border, fully rounded). The label is a config-derived friendly district name (never
-    PII), shown verbatim.
+    ``color_chip_bg`` fill, MB_BORDER border, fully rounded, AA-gated ``color_text`` on the
+    chip tint. The two public factories differ ONLY in the glyph, and each carries its own
+    docstring for WHY that glyph — this helper exists so a geometry/token tweak lands once
+    (S3 review: the badge had duplicated the chip's whole body).
     """
     return ft.Container(
         bgcolor=tokens.color_chip_bg,
@@ -525,11 +572,38 @@ def district_chip(label: str) -> ft.Container:
             tight=True,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
-                ft.Icon(ft.Icons.APARTMENT_ROUNDED, size=tokens.type_emphasis, color=tokens.color_action_primary),
+                ft.Icon(icon, size=tokens.type_emphasis, color=tokens.color_action_primary),
                 ft.Text(label, size=tokens.type_caption, weight=ft.FontWeight.W_600, color=tokens.color_text),
             ],
         ),
     )
+
+
+def district_chip(label: str) -> ft.Container:
+    """A rounded district-identity pill: a small building glyph + the friendly district.
+
+    Direction B's page-header right-slot marker (``color_chip_bg`` fill, MB_BORDER
+    border, fully rounded). The label is a config-derived friendly district name (never
+    PII), shown verbatim.
+    """
+    return _chip(label, icon=ft.Icons.APARTMENT_ROUNDED)
+
+
+def origin_badge(label: str) -> ft.Container:
+    """A rounded PROVENANCE pill: a neutral computer glyph + where a config came from.
+
+    The same body as :func:`district_chip` (``color_chip_bg`` fill, MB_BORDER border, fully
+    rounded, AA-gated ``color_text`` on the chip tint) with one difference that is the whole
+    point: the glyph. ``district_chip``'s building icon means *this is the district* — reusing
+    it for ``mapping_catalog.CUSTOM_ORIGIN_LABEL`` ("Added on this computer") would read as a
+    district-identity marker rather than as a statement about where a file lives. The computer
+    glyph carries the same fact the words do, and it is NEUTRAL: it makes no status claim (a
+    locally-added config is not a fault) and no editability claim.
+
+    Used by Mapping's summary card. Never PII: the label is a structural fact about a file's
+    directory — no path, no author, no address (plan 0044 S2).
+    """
+    return _chip(label, icon=ft.Icons.COMPUTER_ROUNDED)
 
 
 def status_pill(label: str, status: Verdict) -> ft.Container:
@@ -868,3 +942,31 @@ def build_design_demo() -> ft.Control:
             ),
         ],
     )
+
+
+def open_url(page: ft.Page, url: str) -> None:
+    """Open ``url`` in the system browser/mail client — the ONE way to call ``page.launch_url``.
+
+    ``ft.Page.launch_url`` is ``async def`` on flet 0.85.3, wrapped in a ``@deprecated``
+    decorator. That combination breaks BOTH obvious spellings, which is why this helper
+    exists and why it wraps rather than forwards:
+
+    * ``lambda _e: page.launch_url(url)`` builds a coroutine nobody awaits — the console
+      prints ``RuntimeWarning: coroutine 'Page.launch_url' was never awaited`` and the click
+      does NOTHING (owner finding, 2026-09-03: every Help-page link was dead);
+    * ``page.run_task(page.launch_url, url)`` RAISES. ``run_task`` gates on
+      ``inspect.iscoroutinefunction(handler)``, and the ``@deprecated`` wrapper is a plain
+      sync function that RETURNS the coroutine — so the check answers ``False`` and the
+      handler dies with ``TypeError: handler must be a coroutine function`` (owner finding,
+      2026-09-03, round 2: the first fix turned a silent dead click into a visible crash).
+
+    Scheduling a genuine ``async def`` closure satisfies the gate and awaits the coroutine
+    the deprecated wrapper hands back. Pinned by ``tests/test_ui_flet_help.py``, whose fake
+    page re-implements ``run_task``'s ``iscoroutinefunction`` guard — a fake more permissive
+    than the API it stands in for is what let the crashing form ship green.
+    """
+
+    async def _launch() -> None:
+        await page.launch_url(url)
+
+    page.run_task(_launch)
