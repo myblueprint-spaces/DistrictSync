@@ -1,9 +1,9 @@
 # SD75 - Mission: inherits from standard MyEducation BC mapping, with the
 # full myBlueprint+ tier enabled (phase-2 migration; K-12 students, 10-12
 # HS course feeds — both are the base defaults, so only the entity tier is
-# stated). Standard MyEd BC GDE file naming is assumed (no source_files
-# overrides here) — adjust once real GDE exports are available (see
-# docs/developer/adding-district.md, Steps 1-2).
+# stated) and generated `learn75.ca` student emails. Standard MyEd BC GDE
+# file naming is assumed (no source_files overrides here) — confirmed
+# working by the district (2026-09-04), including the homeroom split.
 #
 # NOTE (2026-08-31): SD75 reported "selecting the sd75myedbc configuration"
 # BEFORE this file shipped — almost certainly a user-dir config the retired
@@ -14,10 +14,13 @@
 _base: myedbc
 sis: MyEducationBC
 district_name: SD75 - Mission School District
-# The district's PUBLIC staff email domain (presentation metadata — see
-# sd27myedbc's comment on this same key). Mission's staff domain is mpsd.ca,
-# NOT sd75.bc.ca (owner-supplied BC district domains sheet, 2026-08-27).
-district_domains: ["mpsd.ca"]
+# The district's PUBLIC staff email domains (presentation metadata — see
+# sd27myedbc's comment on this same key). Mission's own staff domain is mpsd.ca
+# (owner-supplied BC district domains sheet, 2026-08-27); sd75.bc.ca rides
+# alongside it per the owner's 2026-09-03 rule that a district with a custom
+# domain still matches the conventional sd<N>.bc.ca form. Order matters only for
+# reading: mpsd.ca is the verified one.
+district_domains: ["mpsd.ca", "sd75.bc.ca"]
 
 global_config:
   # Full myBlueprint+ tier. Deep-merge REPLACES lists (see sd51myedbc's
@@ -30,3 +33,17 @@ global_config:
     - Enrollments
     - CourseInfo
     - StudentCourses
+
+mappings:
+  Students:
+    field_map:
+      # Mission reported (2026-09-04) that MyEd BC holds NON-district email
+      # addresses for some of their students, so the demographic export's
+      # `Student email address` column cannot be the key a SpacesEDU account
+      # is created against. Generate the district's own address from the
+      # student number instead — the sd10/sd51/sd74 pattern. The domain is
+      # `learn75.ca`, the district's STUDENT domain, NOT either of the staff
+      # domains in `district_domains` above (the SD60 split — see
+      # sd60myedbc's `learn60.ca`).
+      "Email Address":
+        format: "{student number}@learn75.ca"

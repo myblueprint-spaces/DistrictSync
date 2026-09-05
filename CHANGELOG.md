@@ -9,6 +9,118 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+A district can now set itself up. Until now, a district DistrictSync did not
+ship a mapping for had to wait for one to be built, reviewed and released.
+Now a district technician answers a few questions in the app, tests the
+result against their own export, and switches the computer over themselves —
+no ticket and no new version. Around it: every link on the Help screen did
+nothing when clicked, mapping files with non-ASCII district names were
+garbled on Windows, and one output change carried over from the owner's
+live-data review lands here rather than in 3.14.0 where it was first noted.
+
+**One output change, for every district** (output contract `2.2.0`): family
+contacts with no email address are no longer written to `Family.csv`. No
+column, order, filename or encoding changed, and the SD74 reference output is
+byte-identical.
+
+### Added
+
+- **Set up a district that isn't listed — in the app.** Two ways in: the
+  first-run wizard's District step (**Set up my district**) and, on an
+  installation that is already running, the Mapping screen (**Set up a district
+  that isn't listed**). Four short questions — a starting point among the
+  standard MyEd BC mappings, the district's number, name and staff email
+  domains, which CSV files to produce, and which grades to roster (with which
+  of those get a homeroom class instead of timetable classes) — then a
+  **Your files** step where the district gives its own name for any MyEd BC
+  file it receives under a non-standard one. **Run a test conversion** reads
+  the real input folder, writes nothing and sends nothing, and shows how many
+  rows each file would hold; **Save district mapping** then makes it the
+  district this computer converts. The result is one small text file,
+  `sd<number>custom_mapping.yaml`, in the `mappings` folder of the DistrictSync
+  data folder. It carries only what differs from the standard mapping it builds
+  on, so fixes shipped to that mapping in later versions apply to it too.
+  - **Marked, editable, and showable.** A mapping added this way is labelled
+    **Added on this computer** in every district list and on Mapping's card,
+    which also offers **Edit mapping** (re-opens the same questions) and
+    **Show mapping file** (the path, a copy button, and Open folder — support
+    may ask for the file).
+  - **Nothing switches onto an untested mapping.** Every place that can make a
+    district the active one — the wizard's District step, the self-service
+    finish, Mapping's Apply, and the Settings folders-card Save — refuses a
+    mapping added on this computer until it has passed a test conversion as it
+    currently reads. Editing it, or an update that changes the standard mapping
+    it builds on, asks for the test again; the refusal says so and points at the
+    fix. Convert is deliberately unaffected — it converts whatever you pick and
+    never changes your district. This guards against a mistake, not tampering:
+    a hand-edited settings file or mapping file is outside it.
+  - **Missing columns are named before you commit.** If a column the mapping
+    expects is in none of your files — usually a renamed header in a
+    pre-processed export — the test conversion lists it, under a heading that
+    says the test still passed, so the fault is found at setup rather than as a
+    blank column in SpacesEDU months later.
+  - **Discarding asks first**, and is refused while the mapping is the one this
+    computer converts with. An unwritten draft still goes on one press.
+  - **What it does not do:** change column names. The column layer stays with
+    the standard mappings; a district whose export uses different headers is
+    told which ones and can still ask for a mapping built to its files.
+  - The launch page's "My district isn't listed yet" path, which used to end at
+    a support card, now leads here.
+- **The district number does the typing.** Entering a BC district number fills
+  in its name and public staff email domain from a table of 60 districts
+  shipped with the program (placeholder-quality prefill, correctable, never
+  overwriting something you typed). A district in neither the table nor a
+  shipped mapping opens blank rather than guessed.
+- **Family contacts without an email address are no longer sent.** SpacesEDU does
+  not import a family contact without an email address, so those rows are now
+  excluded from `Family.csv` and the run log records how many were left out — a
+  count only, never a name or an address. A district that supplies an email for
+  every contact sees no change; the SD74 reference output is byte-identical.
+- **A count of students with no email address** is now written to the run log
+  after every conversion. Those students are still sent — SpacesEDU imports
+  them — but they cannot be invited by email, so the number is visible instead
+  of silent. A count only, with no student details.
+
+### Fixed
+
+- **Every link on the Help screen did nothing when clicked** — "Open the Help
+  Centre", the support email button, "See what's new" — and so did Home's
+  support button. The UI toolkit's link-opening call is asynchronous, so each
+  click built the request without ever sending it (the first fix attempt turned
+  the silent dead click into a visible error, which is how it was caught). All
+  of them open now, and a test pins the working form.
+- **Mapping files are read as UTF-8.** They were written as UTF-8 and read back
+  in the platform's own encoding, which on Windows silently turned any non-ASCII
+  district name into garbage in every district list.
+- **A mapping file that will not parse now records a failed run with a
+  configuration reason** in Run History, instead of an unexplained failure. This
+  is the shape a half-written or hand-edited self-service mapping can arrive in
+  at 2 a.m., where no release check can see it.
+- **Staff on the conventional `sd##.bc.ca` address now match their district**
+  even where the district's shipped mapping lists only its own custom staff
+  domain — SD60 (`prn.bc.ca`) and SD75 (`mpsd.ca`) both gain `sd60.bc.ca` /
+  `sd75.bc.ca`. Matching stays exact: never a subdomain or a suffix.
+
+### Changed
+
+- **Mission (SD75) student email addresses are now generated by DistrictSync**
+  as `<student number>@learn75.ca`, instead of being read from the MyEducation
+  BC demographic export. MyEd BC holds non-district addresses for some of
+  Mission's students, and an address the district does not control cannot be
+  the key a SpacesEDU student account is created against. Nothing else about
+  the district changes — its homeroom split and its file names are untouched —
+  and no other district is affected.
+- **SD83 is named K̓wsaltktnéws ne Secwepemcúl’ecw** (formerly North
+  Okanagan-Shuswap) in every district list, spelled as the district spells it.
+- **A mapping added on this computer is always shown** in the wizard, Settings,
+  Convert and Mapping district lists — even when the stored work email matches a
+  different district and the list is otherwise scoped to that one. Previously
+  an admin could author a mapping and then not be able to see it.
+- **The self-service vocabulary is "mapping" throughout** — "Edit mapping",
+  "Show mapping file", "Discard this mapping", "Save district mapping" — because
+  the earlier wording ("Change this district's setup") read as the rail's
+  **Setup** item, which is a different screen about folders and schedules.
+
 ## [3.16.0] - 2026-09-02
 
 The Windows download is now code-signed as **myBlueprint Corp.** Districts

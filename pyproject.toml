@@ -80,6 +80,7 @@ omit = [
     "src/ui_flet/launcher.py",
     "src/ui_flet/picker_field.py",
     "src/ui_flet/components.py",
+    "src/ui_flet/screens/creator.py",
     "src/ui_flet/screens/setup.py",
     "src/ui_flet/screens/identity.py",
     "src/ui_flet/screens/home.py",

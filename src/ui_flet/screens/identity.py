@@ -132,9 +132,19 @@ SEVERAL_DETAIL = "You'll choose the right one in a moment."
 # the true thing: the shipped configurations may well work, and there is a person to write to if
 # they don't. That is why it is phrased around ERRORS the admin might hit rather than around a
 # vendor commitment nobody has made — the same honesty rule `unmapped_sd_number` follows.
+#
+# THIRD SENTENCE (plan 0044 S7, owner-driven): the note used to dead-end at support, which was
+# the honest answer only while a district's mapping could come from nowhere else. It can now be
+# authored in the app, so the note names that door — both of them, because the two hosts of
+# `screens/creator.py` are the wizard's District step (a fresh install) and Mapping (an install
+# that is already set up), and this ONE sentence is read on both. It stays a CAPABILITY
+# statement, never an instruction to prefer it over writing to a human: an admin who would
+# rather have a mapping built for them has the address in the sentence before it.
 NOT_LISTED_NOTE_TAIL = (
     "If one of the default configurations doesn't match your input data, we may need to set up "
-    f"a custom mapping for you. Contact {SUPPORT_EMAIL} with the details if you encounter errors."
+    f"a custom mapping for you. Contact {SUPPORT_EMAIL} with the details if you encounter errors. "
+    "You can also set your district up yourself — from the District step in Setup, or later "
+    "under Mapping."
 )
 
 NO_MATCH_HEADLINE = "We don't have a district on file for that address yet — no problem."
@@ -198,10 +208,10 @@ def sd_unknown_note(digits: str) -> str:
 def not_listed_note(digits: str) -> str:
     """Honest about what "noted" means TODAY: it is written to this computer's settings.
 
-    It does not promise an email, a ticket, or a build — S4b adds the durable Home card
-    that offers the support path, and Phase 2 adds "Build my mapping". Until then the admin
-    gets the shared unmatched-district note, which points at a real address and at the
-    default configurations that may already work.
+    It does not promise an email, a ticket, or a build — S4b added the durable Home card
+    that offers the support path, and plan 0044 added the self-service creator. The admin
+    gets the shared unmatched-district note, which points at a real address, at the default
+    configurations that may already work, and at setting the district up in the app.
     """
     subject = f"SD{digits}" if digits else "that"
     return f"Thanks — we've made a note of {subject}. {NOT_LISTED_NOTE_TAIL}"

@@ -377,3 +377,85 @@ class TestRunTransformAllSourcesEmptySkip:
         result = run_transform(raw_data, mappings, global_config)
 
         assert "Enrollments" not in result.outputs
+
+
+# ---------------------------------------------------------------------------
+# The run's OBSERVATION of its input headers (PipelineResult.input_columns)
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineResultInputColumns:
+    """``input_columns`` carries what the extractor SAW — raw observation, no derivation.
+
+    Consumed by ``src.etl.preflight`` to report a mapped column that is in no file at
+    all (an *intended blank*, which nothing else reports). Tested here rather than
+    there because only a real run can prove the keys, the normalisation and the
+    empty-tuple-for-an-absent-file contract.
+    """
+
+    def test_a_full_run_carries_every_required_file_and_its_normalised_headers(
+        self, tmp_path: Path, gde_output: Path
+    ) -> None:
+        from src.config.loader import load_config
+        from src.etl.pipeline import extract_required_files
+
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        _write_full_rostering_input(input_dir)
+
+        result = run_pipeline("myedbc", str(input_dir), str(gde_output))
+
+        assert set(result.input_columns) == set(extract_required_files(load_config("myedbc")))
+        demographic = result.input_columns["StudentDemographicInformation.txt"]
+        # Already strip+lower-cased by the extractor — no consumer re-normalises.
+        assert "legal surname" in demographic
+        assert "date of birth" in demographic  # written as "Date of birth"
+        assert all(name == name.strip().lower() for name in demographic)
+        assert all(isinstance(name, str) for name in demographic)
+
+    def test_a_file_that_is_not_on_disk_keeps_its_key_with_an_empty_tuple(
+        self, tmp_path: Path, gde_output: Path
+    ) -> None:
+        """The extractor yields an empty frame for an absent file and this carries that
+        verbatim: dropping the key would make ``input_columns`` a second, quieter
+        missing-FILE report able to disagree with the one that owns that fact. Twin: the
+        file that IS present carries a non-empty tuple in the same run."""
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        pd.DataFrame(
+            {
+                "Student Number": ["S001"],
+                "Legal First Name": ["Alice"],
+                "Legal Surname": ["Smith"],
+                "Date of birth": ["2010-01-15"],
+                "Grade": ["10"],
+                "School Number": ["100"],
+                "Homeroom": ["A1"],
+                "Enrolment Status": ["Active"],
+            }
+        ).to_csv(input_dir / "StudentDemographicInformation.txt", index=False)
+
+        result = run_pipeline("myedbc", str(input_dir), str(gde_output))
+
+        assert result.input_columns["StudentSchedule.txt"] == ()  # absent from disk
+        assert result.input_columns["StudentDemographicInformation.txt"]
+
+    def test_it_defaults_to_empty_so_no_construction_site_had_to_change(self) -> None:
+        """The field is appended + defaulted, so the stub constructions elsewhere
+        (``tests/test_ui_flet_routing.py``, ``tests/test_ui_flet_config_editor.py``) and
+        the ``hasattr`` shape test in ``tests/test_sftp_exit.py`` stay untouched. An
+        empty observation is exactly what makes ``preflight`` claim nothing."""
+        from src.etl.pipeline import PipelineResult
+
+        assert PipelineResult().input_columns == {}
+        assert PipelineResult(entity_counts={"Students": 3}).input_columns == {}
+
+    def test_a_run_that_never_completes_carries_no_observation_at_all(self, tmp_path: Path, gde_output: Path) -> None:
+        """The early-exit division of labour: only the success path builds a
+        ``PipelineResult``, so a run with no usable input returns none — the report is
+        absent exactly where the failure names the problem itself."""
+        empty_input = tmp_path / "input"
+        empty_input.mkdir()
+
+        with pytest.raises(RuntimeError, match="No usable required input"):
+            run_pipeline("myedbc", str(empty_input), str(gde_output))

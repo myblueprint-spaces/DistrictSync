@@ -1,14 +1,19 @@
 # 0044 — District self-service config editor (Phase 2, re-scoped)
 
-- **Status:** Spec'd (S1) — Stage-3 PASS round 3; five flags owner-ratified 2026-08-27; S1 spec written
-- **Resumable from:** Stage 5 — the owner approval gate on the S1 spec (no implementation before it)
+- **Status:** S1–S7 ALL LANDED on `claude/plan-0044-implementation-nrdj2z` (2026-09-03; closing Stage-7 pass: no BLOCKING, 3 SHOULD fixed). OWED: the owner's local test + review findings → PR → CI read and quoted → certification disposition (D-0037-6) recorded
+- **Resumable from:** Stage 8 (Land) — after the owner's local test: address review findings, open the ONE feature PR, read + quote CI here, record the certification disposition in DECISIONS, then Stage 9 retrospect and the plan-file lifecycle disposition
 - **Blockers:** none
 - **Flags:**
-  - `#3+R2-1 activation scope: ALL THREE sis_type writers gated for user-authored configs (wizard creator flow · Mapping Apply · Settings folders-card Save); Convert has no writer and stays explicit-manual` — reviewable at the spec gate.
+  - `#3+R2-1 activation scope: ALL THREE sis_type writers gated for user-authored configs (wizard creator flow · Mapping Apply · Settings folders-card Save); Convert has no writer and stays explicit-manual` — reviewable at the spec gate. **— superseded: FIVE surfaces (S6 review), all gated** (wizard standard District pick · wizard creator activation · Mapping Apply · Mapping-panel activation · Settings folders-card Save), reached through FOUR `activation_allowed` call sites.
   - `#8 domains persistence: chose PERSIST — the matched-tier collapse is the same behavior every shipped district already has; consequence named, D9 auto-seed interplay pinned` — reviewable at the spec gate.
   - `#5 version emission: chose emit-NO-version (inherit the base's) — already supported and pinned` — reviewable at the spec gate.
   - `R2-2 advisory writer: chose extract-the-discipline — the five shared obligations move to a private helper; identity_save and the new creator_save become thin named wrappers, each with its own prefix-derived allowlist; creator_ registered in _ADVISORY_FIELD_PREFIXES with its rationale in the module comment` — reviewable at the spec gate.
   - `R2-4 column sets: chose one ADDITIVE defaulted PipelineResult field (input_columns) over a second parse or an extractor header seam` — reviewable at the spec gate.
+  - `S1 sis-emission deviation: the overlay INHERITS sis: MyEducationBC instead of emitting the config id (reviewer finding; DECISIONS 2026-09-02)` — reviewable at the S2 gate.
+  - `S1 CI gate: ci.yml runs only on push-to-main / PRs to main, so no CI run exists for the branch yet — the land-gate CI read is OWED at PR time` — owner decides when to open the PR.
+  - `S2 marker rule: the "added on this computer" marker keys on FILE PROVENANCE (ConfigSummary.origin == "user"), NOT on the sd<num>custom id — so a YAML support hands a district is marked the same way, which is why the wording must stay true for a file the admin did not author` — reviewable at the S2 gate (wording alternatives in the S2 spec's Open questions).
+  - `S3 staleness + activation writer: chose a digest of the RESOLVED config (sha256 over the validated `MappingConfig.model_dump(mode="json")`) over the plan's overlay-BYTES hash — a vendor base change on app update leaves overlay bytes unchanged while what converts differs — plus an advisory `authored_with` root key (app version + base digest) the loader ignores; and ONE atomic activation writer (`AppConfig.activate_creator_config`), which makes `sis_type` write sites four, not three` — reviewable at the S3 gate.
+  - `S6 scope addition (owner, 2026-09-02): a CREATE door — "Set up a district that isn't listed" — on the Mapping screen, because a configured install otherwise has no way into the creator; S6 reordered ahead of S5` — ratified by the owner in the same message.
 - **Disposition at close:** per `docs/claugentic-WORKFLOW.md` plan-file lifecycle.
 - **Roadmap item:** `docs/claugentic-ROADMAP.md` → "Brief 0037 … Phase 2 = the district self-service config editor" (updated 2026-08-27)
 - **References:** `docs/claugentic-ARCHITECTURE_TREE.md` · `docs/claugentic-DECISIONS.md` (2026-08-27 re-scope entry — the authority for everything this plan builds) · `.claude/plans/0037-brief-front-door-district-identity-mapping-creator.md` (superseded scope, retained safety rails) · plan 0038 (Phase 1, landed)
@@ -473,18 +478,18 @@ halves pinned together. Any new sink keeps `dry_run` a REQUIRED keyword
 
 ## Decomposition (slices) — reviewer's re-cut adopted
 
-- [ ] **S1 — authoring core + domain table + loader seam + user-dir domains floor (no UI).**
+- [x] **S1 — authoring core + domain table + loader seam + user-dir domains floor (no UI).** _(LANDED 2026-09-02 — see the S1 land record at the end of this file.)_
   `authoring.py` (incl. the version rule and the chain-companion emission rule),
   `bc_district_domains.py`, `resolve_config_path` + origin, the origin-aware
   `district_domains` WARN-and-drop, tests. Lands complete: a hand-driven
   `authoring.create(...)` call produces a config the CLI can run — the feature exists
   headless before any form does. (Closes ROADMAP "Spotted at S3's Stage-7 gate (b)".)
-- [ ] **S2 — catalog + identity integration.** `ConfigSummary.origin` (through the
+- [x] **S2 — catalog + identity integration.** _(LANDED 2026-09-02.)_ `ConfigSummary.origin` (through the
   non-vacuous seam), visually distinct rows in all four pickers + Mapping, invalidation
   call sites, `unmapped_sd_number`/matched-state/friendly-name pins, the #8 auto-seed
   pin, the #12 pick-path behavioural twin. Lands complete: a hand-authored user config
   renders distinctly everywhere and the not-listed card retires itself.
-- [ ] **S3 — creator flow, activatable end-to-end with inherited filenames.** Creator
+- [x] **S3 — creator flow, activatable end-to-end with inherited filenames.** _(LANDED 2026-09-02 — grades form INCLUDED, S3b hatch not taken.)_ Creator
   forms (starting point · derived-identity confirm · entities · grades over resolved
   seeds) + `config_editor.py` + the `setup_flow` creator mode + overlay write + pending
   token + **the dry-run gate and the `sis_type` activation write + finish precondition**.
@@ -496,15 +501,15 @@ halves pinned together. Any new sink keeps `dry_run` a REQUIRED keyword
   gate's existing missing-FILE report with no false copy. **Escape hatch if one session
   can't hold it:** split the grades form to S3b (grades default to inherited in S3a);
   both halves stay vertically complete.
-- [ ] **S4 — the Files step.** Role/file-keyed filename form, input-dir-aware dropdowns,
+- [x] **S4 — the Files step.** _(LANDED 2026-09-02.)_ Role/file-keyed filename form, input-dir-aware dropdowns,
   propagation to every reference incl. `school_year_sources`, the no-divergence invariant
   wiring, FILES-step satisfaction. Lands complete: non-standard-filename districts now
   self-onboard.
-- [ ] **S5 — pre-flight column check (shrunk per R2-4).** Pure `src/etl/preflight.py` +
+- [x] **S5 — pre-flight column check (shrunk per R2-4).** _(LANDED 2026-09-03, after S6 by owner decision.)_ Pure `src/etl/preflight.py` +
   plain-language "not present in any file" report + the additive
   `PipelineResult.input_columns` field, wired into the gate beside the dry-run. Lands
   complete: the pre-processing-district trap is caught at setup, not at 2 a.m.
-- [ ] **S6 — Mapping edit + re-gate (+ the folders-card call site, R2-1).** Edit
+- [x] **S6 — Mapping edit + re-gate (+ the folders-card call site, R2-1).** _(LANDED 2026-09-03 — plus the owner's CREATE door on Mapping; reordered ahead of S5.)_ Edit
   affordance on user configs (the second host of the creator forms — the
   `build_setup(on_complete=…)` host pattern is the precedent, settled in S3's spec as a
   design obligation), verified-fact check on Mapping's Apply AND the Settings
@@ -512,7 +517,7 @@ halves pinned together. Any new sink keeps `dry_run` a REQUIRED keyword
   edit-invalidates-fact, the gate's output-dir refusal exercised on this host (the wizard
   ordering doesn't protect it here), UNREADABLE-provenance acceptance test for the new
   writer. Lands complete: lifecycle closed for edits.
-- [ ] **S7 — export + docs + certification disposition.** Export affordance (reveal/copy
+- [x] **S7 — export + docs + certification disposition.** _(LANDED 2026-09-03 — certification disposition + the CI read remain OWNER items at PR time; see the S7 land record.)_ Export affordance (reveal/copy
   the file), `adding-district.md` self-service section (freezing the overlay shape the
   vendor tests base changes against), `output-contract.md` authorship note, PRODUCT_SPEC,
   qa-checklist rows for every new surface, ARCHITECTURE_TREE, INVARIANTS (FOUR entries,
@@ -885,7 +890,1982 @@ just-in-time per slice; S1 below awaits the owner approval gate._
   `sis`/`district_name`/`district_domains`; (3) a user-dir config with one bad domain
   row loads with a WARN and an empty/reduced domain list — the same row in a bundled
   config still raises; (4) no existing test flips; SD74 golden byte-identical; all
-  gates green (ruff/format, mypy, bandit, tree-check, email scan, 12-config pin).
+  gates green (ruff/format, mypy, bandit, tree-check, email scan, 20-config pin).
 
-### Slices 2–7
-_Spec'd just-in-time, each after the prior slice lands (S2 next)._
+### Slice 2 — catalog + identity integration
+
+- **In plain English (the approval gate):** S1 built the engine; this slice makes what it
+  writes VISIBLE and HONEST, with no new screens and no new writers. Three effects. (1) A
+  config that lives in this computer's DistrictSync folder — added by the admin or handed over
+  by support — is **marked** everywhere a district is chosen (wizard District step, Settings
+  folders card, Convert, Mapping's switch list) plus Mapping's summary card, so an install
+  holding both `sd48myedbc` (shipped) and `sd48custom` (added here) is never a coin flip.
+  (2) An added district's email domain now RESOLVES like a shipped one — the launch page
+  matches its own admin. (3) Home's "we don't have a mapping for SD93 yet" card **retires
+  itself** once an SD93 config exists, shipped or added — no new rule, just a currently
+  accidental fact, now pinned. **What "done" means:** a hand-authored overlay renders
+  distinctly on all five surfaces, resolves by domain, and silences the not-listed card —
+  proven against the REAL two-directory search, not a single-dir fixture. **What you're accepting:** one marker wording beside district names; the
+  marker keying on *where the file lives*, so a support-supplied YAML is marked the same way
+  (flagged); and Approach #8's consequence becoming observable — a matched custom district
+  narrows that admin's pickers to their own rows, exactly as a shipped district already does.
+- **Files & changes:**
+  - `src/ui_flet/mapping_catalog.py`:
+    - `ConfigSummary` gains **`origin: ConfigOrigin`** (the `Literal["user","bundled"]` alias
+      imported from `src.config.loader`, never re-spelled). **Required, no default:** a
+      defaulted `"bundled"` would let a future construction site silently claim vendor
+      provenance for a hand-authored file — the exact claim the marker exists to prevent. Three
+      keyword-only construction sites, all in tests, take the field.
+    - new private `_origin_of(sis_type, config_dir) -> ConfigOrigin` — **exactly one**
+      `resolve_config_path` call per summary (a path lookup, never a second YAML parse),
+      computed BEFORE the existing `try` so a config that fails to LOAD still carries its
+      origin (a broken overlay is the row most likely to need the marker). Two documented
+      rules: an explicit single `config_dir` is `"bundled"`-equivalent, re-using `load_config`'s
+      own definition verbatim ("one dir cannot express a tier", `loader.py:498-501`) — which is
+      *why* origin tests must go through the real pair; and it is TOTAL (any raise, e.g.
+      `user_mappings_dir()`'s mkdir on a locked-down profile, → `"bundled"`) and SILENT, since
+      that root cause already surfaces in `summarize_config`'s load WARN and 11 duplicates per
+      mount would bury it. Fallback direction argued: an unmarked row loses a distinction; a
+      wrongly-`"user"` row would deny shipping a mapping we ship.
+    - `_degraded(...)` takes `origin` (passed through, never re-derived).
+    - new constant **`CUSTOM_ORIGIN_LABEL = "Added on this computer"`** — the SINGLE source of
+      the marker words: PII-free, true whoever authored the file, and no claim about
+      editability or vendor work.
+    - `disambiguated_labels` (already "the label a picker row renders") appends
+      ` — {CUSTOM_ORIGIN_LABEL}` when `origin == "user"`, AFTER the collision-id suffix; the
+      marker does not join collision detection (the id suffix already separates a same-named
+      pair). **This is the entire four-picker change** — all four render `labels[s.sis_type]`
+      (`setup.py:332-333`, `setup.py:1250`, `convert.py:630-634`, `mapping.py:73-76`), so
+      **setup.py, convert.py and Mapping's dropdown need no edit**; the picker tests therefore
+      assert on rendered trees, not on the helper.
+    - `reset_catalog_cache` docstring gains the invalidation rule (below).
+  - `src/ui_flet/screens/mapping.py`: `_summary_card` renders
+    `components.district_chip(CUSTOM_ORIGIN_LABEL)` beside the district name when
+    `origin == "user"`; `_summary_lines` appends a screen-local `CUSTOM_ORIGIN_NOTE` ("This
+    mapping lives in this computer's DistrictSync folder — it wasn't shipped with
+    DistrictSync."). **The copy says nothing about editing:** Mapping is review-and-switch for
+    every row today, a custom row is no different yet, and "read-only for now" would promise
+    S6. No new button, so "Use this mapping" stays the one filled primary. Factories only,
+    tokens only; the `districtsync-design` skill runs on this change. If that pass rejects
+    `district_chip`'s building glyph for a provenance badge, the pre-authorised fallback is
+    `components.origin_badge(label)` — the same body, a neutral glyph — and nothing else moves.
+  - **Catalog invalidation — the seam decision.** `authoring.write_overlay`/`delete_overlay`
+    must NOT call `reset_catalog_cache()`: `src/config/` importing `src/ui_flet/` inverts the
+    layer isolation CLAUDE.md states as a principle and drags a UI module into the CLI's import
+    graph. **The UI caller invalidates**, right after a successful write/delete. S2 has no UI
+    writer (S3 is the first), so it lands the RULE, not a wrapper — written into
+    `reset_catalog_cache`'s docstring and into `write_overlay`/`delete_overlay`'s (comment-only,
+    no behaviour), with the hazard pinned both ways below. A `note_config_written()` wrapper is
+    rejected as dead code with one caller.
+  - `identity_gate.py`, `humanize.py`, `screens/home.py`, `screens/setup.py`,
+    `screens/convert.py`: **no code change.** `unmapped_sd_number(cfg, available_configs())`
+    already counts user-dir ids and `_SD_CONFIG_RE` already matches `sd48custom` (verified:
+    `^sd0*48(?!\d)` matches it; `SD4` matches neither); `friendly_district_name` already
+    resolves user-dir names; the auto-seed already reads the VISIBLE list. S2's job here is to
+    pin behaviour that is currently accidental.
+- **In-scope standards dimensions:** `product-ux` (the marker separates two rows that decide
+  which roster ships — words, never colour alone) · `maintainability-structure` (one label
+  rule for four pickers; origin's single-dir definition re-used from the loader; the
+  invalidation seam keeps the config→UI direction) · `reliability-resilience` (`_origin_of`
+  TOTAL, degraded rows still carry origin, fallback direction argued) · `testing` (origin is
+  non-vacuous only through the real two-dir pair; every "marker shows" has a shipped-row twin
+  in the same list) · `privacy` (marker + note are structural facts — no address, path or SD
+  number; nothing new logged) · `api-and-contracts` (`ConfigSummary` is the catalog's published
+  shape; a required field is a once-only break with three test sites).
+- **Tests to add:**
+  - `tests/test_ui_flet_mapping_catalog.py` — origin through the REAL pair (autouse
+    `isolated_user_profile` gives the tmp user dir; `authoring.write_overlay` puts a real
+    `sd93custom` in it): `"user"` for it, **twin** `"bundled"` for `myedbc` (the pair is what
+    makes either non-vacuous) · an explicit `config_dir` reports `"bundled"` for a file in that
+    dir (the loader's stated rule, asserted not assumed) · a MALFORMED user overlay degrades
+    AND still reports `"user"` · `_origin_of` totality (patched `resolve_config_path` raise →
+    `"bundled"`, nothing escapes) · `disambiguated_labels`: user row marked, bundled row not,
+    a same-`district_name` collision carrying BOTH id suffix and marker · **memo staleness
+    both ways** — after `write_overlay` an already-built `catalog()` lacks the new id (the
+    documented residual) and after `reset_catalog_cache()` has it (the twin proving the
+    invalidation is real, not a comment).
+  - `tests/test_ui_flet_filtered_pickers.py` — the marker on screen, one test per picker,
+    each asserting the custom row's option text carries `CUSTOM_ORIGIN_LABEL` **and** that a
+    shipped row in the same `_texts()` list does not · Mapping's card shows chip + note for a
+    custom current mapping and neither for a shipped one · the note promises nothing (substring
+    ban on "edit"/"soon"/"later") · new `TestTheNonCreatorPickPathStillWorks` — the **#12
+    behavioural twin**: from `setup_completed=False, sis_type=""`, pick + Continue (a) leaves
+    the picked id in the isolated profile's on-disk `config.json`, (b) renders the FOLDERS body
+    (District dropdown gone), and a fresh `build_setup(page)` lands on FOLDERS — the actual
+    persist-and-advance path S3 branches, not a render smoke. Lives here for the mount helpers.
+  - `tests/test_ui_flet_identity_resolve.py` — a class over the REAL index
+    (`district_domain_index()` after `write_overlay`): a custom overlay claiming `sd93.bc.ca`
+    → MATCHED_ONE `("sd93custom",)` · one claiming a SHIPPED district's domain (`sd48.bc.ca` —
+    the `sd<num>custom`-beside-`sd<num>myedbc` case the id decision anticipates) →
+    MATCHED_SEVERAL with both ids, and `filtered_catalog` returns both rows with only the
+    custom one marked · a domain-LESS user overlay behaves exactly like `myedbc` (shown
+    unmatched, absent for a matched admin unless saved/picked — the answer to "does an
+    unclaimed user config show everywhere?": it does not; the CLAUDE.md phrase fix is S7's).
+  - `tests/test_ui_flet_home_identity_cards.py` — the not-listed card RETIRES with an
+    `sd93custom` overlay present (`identity_sd_number="93"`), **twin** the same config without
+    the overlay still renders it · `sd48custom` retires an SD48 ask while `SD4` does not.
+    `tests/test_ui_flet_humanize.py` — `friendly_district_name("sd93custom")` returns the
+    overlay's `district_name`; **twin** the raw id once it is deleted.
+  - Regression: full suite + SD74 golden byte-identical; `make validate-config` still 20/20
+    (test overlays live only in the isolated profile, so the pinned count cannot move).
+- **Acceptance criteria:** (1) `origin` is populated on every row of a real `catalog()` build,
+  `"user"` exactly for files in `user_mappings_dir()`, proven through the two-dir pair
+  (single-dir fixtures asserted to report `"bundled"`); (2) an `sd93custom` overlay renders with
+  `CUSTOM_ORIGIN_LABEL` in all four pickers and as chip + note on Mapping's card while shipped
+  rows stay unmarked, `screens/mapping.py` the only view file changed; (3) it resolves by domain
+  through the real index (MATCHED_ONE alone; MATCHED_SEVERAL beside a shipped district sharing
+  its domain) and retires Home's not-listed card, each with its negative twin; (4) the
+  invalidation rule is documented at all three sites and pinned stale-then-fresh, with no
+  `src/config/` → `src/ui_flet/` import; (5) the non-creator District step still persists
+  `sis_type` and still advances/resumes past DISTRICT (behavioural); (6) no existing test flips,
+  SD74 golden byte-identical, all gates green (ruff/format, mypy, bandit, tree-check, email
+  scan, 20-config pin), `districtsync-design` pass clean.
+- **Open questions for the owner:**
+  - **Marker wording.** Default `"Added on this computer"`, chosen to stay true when support
+    authored the file (see the flag). Alternatives weighed: `"Your district (custom)"` (false
+    in that case), `"Custom"` (technical). One constant, one line to change.
+  - **Should the marker follow a district OUTSIDE the pickers** — Convert's "This run: <x>"
+    pill, page-header district chips, Home's copy? S2 says NO (its job is separating two rows
+    at a decision point; a header naming one district has nothing to be confused with), so a
+    custom district reads exactly like a shipped one wherever it is merely named. Reversible
+    later at the cost of noise on the common path.
+
+_Spec self-check:_
+- **Single-lever risk (buildable, but fragile).** `disambiguated_labels` is the ONLY four-picker
+  lever; a future picker that stops routing through it, or a designer who wants a non-text badge
+  inside a dropdown, silently loses the marker there. The per-picker rendered-tree tests are the
+  only guard, and text is a platform constraint (`ft.dropdown.Option(key=,text=)` is the pinned
+  0.85.3 form — richer option content is unpinned and the `on_change` class of trap is expensive
+  to discover), not a design preference. Named rather than designed around.
+- **The required `origin` field is a real, if tiny, contract break.** Five `ConfigSummary(`
+  construction sites exist (two in `mapping_catalog`, three in tests); all are keyword-only, so
+  the break is three test lines — but it IS a break, chosen over a default that could claim
+  vendor provenance falsely. An out-of-repo consumer would see it.
+- **One near-vacuous pair, deliberately kept.** The memo-staleness test asserts an ABSENCE (a
+  freshly written overlay is missing from an already-built `catalog()`); its post-reset twin is
+  what makes it mean anything. If memoisation were ever removed, the stale half would pass for
+  the wrong reason — it pins a documented residual, not a guarantee.
+- **No S3+ behaviour is promised.** No pending token, no Edit affordance, no activation gate;
+  Mapping's note deliberately omits editability. The one hand-off risk is misreading "a user
+  config is seed-eligible like any other" as licence to seed INTO a creator flow — S3 owns
+  token-aware seed suppression and creator-mode `district_chosen`, and S2 pins only the
+  pre-token half (seed reads the VISIBLE list, fires only when nothing is saved, applied AFTER
+  `derive_flow`).
+- **Layering holds, with one accepted duplicate lookup.** The config layer gains no UI import
+  (the UI caller invalidates), and reading a loader `Literal` from a UI module matches the
+  existing `filtered_catalog` layer note. `_origin_of` does repeat a path resolution
+  `load_config` performs internally — two extra stats per row, no second parse — which is only
+  removable by widening `load_config`'s return type; not worth it for a presentation fact.
+
+### Slice 3 — creator flow, activatable end-to-end with inherited filenames
+
+- **In plain English (the approval gate):** S1 built the engine, S2 made its output visible; this
+  slice gives it a FRONT DOOR. An admin whose district isn't listed picks "Set up my district" on
+  the wizard's first step, confirms four things on forms (which shipped mapping to start from ·
+  district name/number/email domains · which CSVs to produce · which grades are rostered), then on a
+  creator-only **"Your files"** step presses one button that runs a **test conversion writing
+  nothing**, shows how many rows each CSV would hold, and only THEN offers "Use this district". That
+  press is the ONLY thing here that makes the new district the one this install converts; everything
+  before it is a file in the admin's own DistrictSync folder that changes nothing. Abandon halfway
+  and the wizard reopens where you were, with a way to discard. **What "done" means:** a district
+  shipping NO mapping today can be set up, tested and activated in-app, with the nightly then
+  running it — on the base's STANDARD MyEd BC filenames (a district whose export renames files is
+  stopped honestly by the test's missing-file list; S4 adds the rename form). **What you're
+  accepting:** three new persisted values (a resume token, a record of what was tested, and — S3's
+  addition — the app version + base fingerprint written INTO the overlay); a test run that creates
+  the output folder and writes a diagnostic log line but no Run History row; and the plan's honest
+  limit — the gate stops an admin *mistake*, not a hand-edited settings file.
+
+#### 3.1 The `creator_` advisory family (spec'd FIRST — S3's riskiest element)
+
+- **Registration.** `_ADVISORY_FIELD_PREFIXES` (`app_config.py:97`) gains `_CREATOR_FIELD_PREFIX =
+  "creator_"`, and the module comment at `:82-96` gains its rationale in the SAME change (that
+  comment IS the contract — R2-2). The sentences, argued against the comment's own definition
+  ("persisted, but NOT settings that make the sync work"): *"`creator_` — the in-progress state of a
+  self-service district (plan 0044). Nothing in the ETL, CLI or scheduler reads either field: the
+  sync runs off `sis_type` + the YAML. The token is resume convenience; the tested-fact only decides
+  whether the UI OFFERS activation, and it is keyed on a digest of the RESOLVED config, so losing it
+  can only force another test run — never unlock one. Both degrade to 'ask again', the property that
+  put `identity_` here: the write must be refusable on a profile we failed to read without trapping
+  the admin."* What the prefix does NOT cover: `activate_creator_config` (3.1.4), which writes
+  `sis_type` beside them and is deliberately non-advisory.
+- **The two fields** (additive, safe defaults — a v3.9.x `config.json` loads unchanged):
+  `creator_pending_sis: str = ""` and `creator_verified: dict[str, str] =
+  field(default_factory=dict)` — never `{}`, which raises `ValueError: mutable default` at
+  class-definition time (round-3 correction 1; `pipeline.py:91` is the precedent).
+- **3.1.1 The extracted write-discipline helper.** `AppConfig._guarded_field_write(self, updates:
+  dict[str, object], *, allowed: frozenset[str], refuse_when_unreadable: bool, subject: str) ->
+  bool` discharges the five obligations `identity_save` documents at `:455-501`: (1) validate KEY
+  (membership in `allowed` — never `hasattr`, which would let `identity_save=…` shadow the bound
+  method) AND VALUE (`_value_fits` against `_settings_field_types()`) for every update before any
+  `setattr`; (2) re-check `settings_unreadable()` on THIS instance at write time, before any
+  mutation, when `refuse_when_unreadable`; (3) apply, then `save()`; (4) swallow + log
+  `SettingsOverwriteRefused`/`OSError`; (5) `_restore` the snapshot on ANY failure and return a
+  bool. `refuse_when_unreadable` is REQUIRED keyword-only with no default
+  (`write_overlay(overwrite=)`, `_store_run_record(dry_run=)`). `subject` is the log noun, so
+  identity's WARNING strings stay byte-identical.
+- **3.1.2 The wrappers.** `identity_save` and the new `creator_save(**updates) -> bool` become thin
+  named wrappers, each passing its own prefix-derived allowlist (`_IDENTITY_FIELD_NAMES` at
+  `:625-627`; a new `_CREATOR_FIELD_NAMES` derived the same way from `fields(AppConfig)`), both
+  `refuse_when_unreadable=True`; `creator_save` also prunes (3.1.5). `identity_save`'s public
+  behaviour — raise shapes, messages, returns, rollback, log text — stays byte-identical under
+  `tests/test_app_config_identity.py` (25 tests, unchanged). Generalising the public seam stays
+  rejected (R2-2).
+- **3.1.3 The digest is over the RESOLVED config, not the overlay's bytes** (S3 correction to
+  Approach `:184`, flagged): a vendor base change on app update leaves the overlay bytes — and a
+  byte-keyed hash — UNCHANGED while what converts differs, so the gate would never re-fire.
+  `authoring.resolved_digest(config: MappingConfig) -> str` = sha256 over
+  `json.dumps(config.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+  ensure_ascii=False)`, lowercase hex. Whole validated model, not a subset: `to_raw_dict()` is the
+  trap (only `mappings` + `global_config`, so `district_domains`/`version` changes are invisible),
+  and a hand-maintained "fields that matter" list is a second spelling that will drift. Cost named:
+  a cosmetic `district_name` fix also invalidates — the safe direction, since over-firing only
+  re-asks while under-firing activates something untested. Fail-safe both ways: an edit to the
+  overlay OR the base moves the dump, and a REFUSED invalidation write leaves a non-matching stored
+  digest, so the fact never depends on its own write succeeding. `authored_with` (3.1.6) is
+  invisible to it (`extra="ignore"`), so re-writing provenance cannot self-invalidate. Shape is
+  validated at ONE boundary — `validators.is_config_digest(value: object) -> bool` (TOTAL, 64
+  lowercase hex) — read by both `app_config` (deferred import, its existing pattern) and
+  `config_editor`; `app_config` must NOT import `authoring`, which would drag yaml + pydantic +
+  loader into the settings module. Effectful companion `authoring.current_digest(sis_id) -> str |
+  None` loads through the real `load_config` and digests it; TOTAL — any load failure is `None`,
+  which can only mean "not current".
+- **3.1.4 Activation is ONE save through a third named wrapper.**
+  `AppConfig.activate_creator_config(*, sis_type: str, digest: str) -> bool` — allowlist exactly
+  `{"sis_type", "creator_pending_sis", "creator_verified"}`, `refuse_when_unreadable=False`,
+  validating `sis_type` (`validators.validate_sis_type`) and `digest` (`is_config_digest`) before
+  applying anything. Rejected: routing through `creator_save` (it must refuse non-`creator_*` keys
+  or become the `sis_type` back door obligation 3 exists to prevent); TWO saves (a torn state where
+  the district is active while the token still stands — and the resumed flow's Discard would then
+  delete a LIVE config); a bare `cfg.sis_type = …; cfg.save()` as at `setup.py:550` (drops
+  validation + rollback on the write that matters most). Non-advisory *because* it carries a chosen
+  setting: `sis_type` off its default is what `_carries_chosen_settings` (`:377-407`) counts, so
+  `save()`'s UNREADABLE branch — write, after quarantining the predecessor — applies exactly as for
+  the standard District step. That parity is the claim and the UNREADABLE-provenance acceptance
+  test's subject. **Record at land:** `sis_type` write sites go three → FOUR — verified today at
+  `setup.py:550` (wizard), `setup.py:1213` (folders card; the plan cites `:1198`, moved),
+  `mapping.py:293` (Apply; the plan cites `:257`, moved), plus this gated one. Goals' "exactly
+  three" is restated at S3 land; the invariant it stood for is unharmed, since the new site is the
+  gated one.
+- **3.1.5 Read-time validation + prune.** `creator_verified` is AppConfig's first non-scalar
+  persisted field and `_value_fits`'s generic branch checks only the CONTAINER
+  (`app_config.py:661-662`), so `{"sd93custom": 123}` loads clean. (i) **Read — pure, no I/O, in
+  `config_editor.py`** (the `identity_gate.stored_identity_email` precedent):
+  `stored_verified_digest(cfg, sis_id) -> str | None` returns the stored value only when the map is
+  a dict, the KEY passes a total `validate_sis_type` wrapper and the VALUE passes
+  `is_config_digest`; anything malformed (wrong type, nested dict, 63 chars, uppercase) reads as
+  ABSENT ⇒ re-test. Deliberately NOT gated on `authoring.is_custom_sis_id`: S6 gates activation on
+  ORIGIN (`ConfigSummary.origin == "user"`, S2's landed rule), so a support-handed user-dir override
+  of a shipped id (`sd40myedbc`) must stay activatable after passing the same gate. Companion
+  `verified_is_current(stored, current) -> bool` = both present and equal (two `None`s never read as
+  "fine"). (ii) **Prune** on every `creator_save` and `activate_creator_config`: drop entries whose
+  id no longer resolves via `loader.resolve_config_path(id)` to a `"user"` file, bounding the map by
+  the user-dir config count. Deferred import inside the method, and TOTAL — any raise prunes nothing
+  and never blocks the write.
+- **3.1.6 `authored_with` — provenance IN the overlay (S3 addition, flagged).** `MappingConfig`
+  declares `extra="ignore"`, so a root key the loader never reads is free and durable.
+  `build_overlay(spec, *, resolved_base, authored_with: Mapping[str, str] | None = None)` emits it
+  verbatim when given and omits it when `None` — so `build_overlay` stays PURE (no version lookup,
+  no file read) and S1's emission goldens pass untouched; `write_overlay` ALWAYS supplies it via the
+  pure `authoring.authored_with(resolved_base, *, app_version) -> dict[str, str]` = `{"app_version":
+  …, "base": <id>, "base_digest": resolved_digest(resolved_base)}`, with the version from
+  `src.utils.version.app_version()` (THE version lookup — build-stamped `src/_version.py`, else
+  installed metadata, else `"dev"`; `version.py:28-40`). The `None` default is legitimate because
+  provenance is ADVISORY: activation safety is 3.1.3's digest, so this key can never permit a run.
+  `_ROOT_KEY_ORDER` gains `authored_with` LAST. Read back by `authoring.read_authored_with(sis_id)
+  -> AuthoredWith | None` (frozen dataclass; reads the YAML through `resolve_config_path`, since the
+  validated model DROPS the key; TOTAL → `None`). **Surfacing:** the pure
+  `config_editor.overlay_staleness(authored_with, *, running_version, current_base_digest) ->
+  StalenessFact` (`version_differs`, `base_changed`) lands in S3 WITH its caller — the Files step's
+  note, where an admin resuming a district set up by an older build needs to know why another test
+  run is asked for. The Mapping-card / picker note is an **S6 obligation** (S6 owns that card's copy
+  and its Apply gate); S3's emission + reader make it view glue there. Existing coverage cited, not
+  duplicated: a user-dir config declaring an OLD `version:` already hits the loader gate (different
+  major → raise, `loader.py:234-241`; newer minor → WARN, `:242-250`), and an overlay with no
+  `version` inherits its base's (`test_config_version_gate.py::TestInheritedVersion`).
+
+#### 3.2 `config_editor.py` (NEW — pure, COUNTED, no flet)
+
+- **Form state over RESOLVED values.** Frozen `CreatorForm` + `with_*` returns (a step can never
+  half-mutate shared state): `base` (one of `authoring.ALLOWED_BASES`, rendered through
+  `BASE_LABELS: Mapping[str, str]` — plain-language names declared HERE so no picker shows a raw
+  id), `sd_number`, `district_name`, `domains`, `entities` (seeded from the resolved base's
+  `enabled_entities` over the seven `authoring.CREATOR_ENTITIES`; `StudentAttendance` absent by
+  construction), and the grade fields.
+- **Domains:** `derive_domains(identity_domain: str, sd_number: int)` = the stored identity domain
+  (`identity_gate.stored_identity_domain`, computed by the view) ∪
+  `bc_district_domains.domains_for(sd)`, order-stable and de-duplicated; ONLY when both are empty,
+  `(presumptive_domain(sd),)`. Correctable; every kept/entered value passes
+  `models.is_valid_district_domain` (S1's single source) at the boundary, and an invalid entry is
+  reported WITHOUT echoing the value (the likeliest bad paste is a personal address —
+  `OverlaySpec.__post_init__`'s existing rule).
+- **Grades — invalid chain states unrepresentable POST-RESOLUTION by construction, not by
+  validation.** Vocabulary and ORDER derive from `CEDS_MAPPING`'s values
+  (`tuple(dict.fromkeys(CEDS_MAPPING.values()))` — `CEDS_GRADE_CODES` is an unordered frozenset and
+  `"Other"` is its one mixed-case member, so nothing case-normalises). The form asks ONE question —
+  "which grades are rostered?" (`rostered`) — plus "which of those get a homeroom class instead of a
+  timetable?" (`homeroom`, offered ONLY from `rostered`). `to_overlay_spec()` derives
+  `student_rostering_grades = rostered`, `class_rostering_grades = rostered` (or
+  `models.CLASS_ROSTERING_HOMEROOM_SENTINEL` exactly when `homeroom == rostered`) and
+  `homeroom_grades = homeroom`, so `homeroom ⊆ class ⊆ student` holds by derivation and
+  `check_rostering_grade_scopes` (`models.py:699`) can only confirm it. Rejected: three independent
+  multi-selects validated on Continue — that makes the admin reconstruct a chain rule from an error
+  message. Untouched fields emit `None` (minimal emission stays the authoring layer's job);
+  `source_file_renames={}` in S3.
+- **Gate state:** `GateState = NOT_RUN | RUNNING | PASSED | FAILED | REFUSED_NO_OUTPUT_DIR` + frozen
+  `GateOutcome(state, counts, missing_files, note)`, derived by `gate_outcome_for(...)` from
+  injected facts (the worker's `PipelineResult` or exception, the output-dir-valid bool, the
+  expected/present filename lists). `humanize_config_error(exc) -> str` maps
+  `validate_overlay`/`load_config` failures to a BOUNDED category (bad grades / bad domain / missing
+  base / unreadable / other) — never the raw message, since Pydantic errors carry values and a
+  domain must never be echoed. The missing-file list derives pure from
+  `pipeline.advisory_expected_files(config)` vs the folder's GDE names (Convert's precedent,
+  `convert.py:1414-1480`) — never scraped from log text.
+
+#### 3.3 `setup_flow.py` — creator mode (two fixed tuples, one selector; still no step engine)
+
+- `SetupStep` gains `FILES = "files"`; `FlowMode = Literal["standard", "creator"]`. `STEP_ORDER`
+  UNCHANGED; `CREATOR_STEP_ORDER = (DISTRICT, FOLDERS, FILES, DELIVERY, SCHEDULE, FINISH)` — six:
+  FILES after FOLDERS because the gate needs the input folder, DELIVERY still before SCHEDULE (F1 —
+  `--sftp` is baked at registration). One selector `step_order(mode)`; `_PRE_FINISH_STEPS` →
+  `_pre_finish_steps(mode)`; `TOTAL_STEPS` stays the module constant (`== 5`, pinned by
+  `TestStepScaffolding`) with a mode-aware companion `total_steps(mode)` for the "Step N of M"
+  denominator; `step_number`/`next_step`/`prev_step` gain `*, mode: FlowMode = "standard"` —
+  keyword-only with the standard default, so every existing call and all 116 tests stay
+  byte-identical.
+- **Four NEW injected `FlowInputs` fields, each defaulting to the SAFE value and consulted only in
+  creator mode** (so no default can loosen standard mode): `mode: FlowMode = "standard"`,
+  `creator_district_chosen: bool = False` (a pending token is present, or a form has been written),
+  `files_step_satisfied: bool = False` (the overlay exists AND `verified_is_current(stored,
+  current)`), `creator_activated: bool = False` (`sis_type` is the creator id AND the token is
+  cleared). The VIEW computes all of them — `folders_valid` (`setup.py:481-491`) is the precedent —
+  so **no `AppConfig`, `Path`, `authoring` or `config_editor` import enters `setup_flow`**, asserted
+  structurally by an AST import test in the shape of `test_ui_flet_identity_gate.py:328-342`,
+  extended to ban `pathlib`, `src.config` and `config_editor` alongside `flet`.
+- `_satisfied_steps` adds FILES (creator only, from `files_step_satisfied`) and in creator mode
+  reads `creator_district_chosen` for DISTRICT. `can_advance` gates FILES on `files_step_satisfied`
+  (NOT skippable — it IS the activation gate). `derive_flow` in creator mode ANDs
+  `creator_activated` into `can_finish`, so a creator who never passes the gate cannot flip
+  `setup_completed` into the `has_completed_setup() == True` / `is_complete() == False` state the
+  reviewer constructed (`app_config.py:425-444`). `FlowState` gains NO field — the `set(vars(state))
+  == {"resume_step","satisfied","can_finish"}` pin (`test_ui_flet_setup_flow.py:432`) stays green by
+  design.
+- **S3 ships FILES as the GATE step ONLY.** Body: the inherited standard filenames as READ-ONLY text
+  (the resolved config's `source_files`, grouped by file, no inputs) · the missing-file list · the
+  gate button · the counts · the activation confirm. S4's filename FORM lands in this same step
+  ABOVE the gate, so S4 adds controls and moves nothing, and `files_step_satisfied` keeps its
+  meaning.
+
+#### 3.4 `screens/setup.py` — creator branch, Files step, resume, discard
+
+- **Mount.** `_mount_wizard` reads `pending = cfg.creator_pending_sis.strip()` FIRST. Non-blank +
+  `authoring.overlay_path(pending).exists()` ⇒ `mode="creator"`, form state rehydrated from the
+  overlay (`load_config` + `read_authored_with`), and **the D9 auto-seed at `setup.py:503` is
+  SKIPPED** (the #8 obligation): seeding a bundled district into a pending creator flow would
+  satisfy the District step with the wrong answer and resume past the step the admin is mid-way
+  through. A token whose overlay is GONE clears itself via `creator_save(creator_pending_sis="")`
+  and falls back to standard mode.
+- **District step, standard branch untouched** — plus one text-tier `CREATOR_ENTRY_LABEL = "Set up
+  my district"` under the dropdown (text tier keeps the step's ONE filled primary), prefilled from
+  `identity_sd_number` when the launch page stored one (`identity_gate.sd_number_digits`). The
+  non-creator path (`_forward` → `cfg.sis_type = ws["sis"]; cfg.save()`, `:549-551`) is unchanged —
+  S2's `TestTheNonCreatorPickPathStillWorks` (#12 twin) must stay green.
+- **The creator forms live on the District step**, one card sequence in the step body (starting
+  point → identity confirm → entities → grades), built ONLY via `components.py` factories +
+  `tokens`, verdict-first, ONE filled primary ("Continue"). `ft.Dropdown` uses `on_select`;
+  `ft.Checkbox`/`ft.Switch` use `on_change`; `ft.TextField` uses `helper`
+  (`docs/FLET_1.0_CONVENTIONS.md:33-34`). There is no checkbox factory today — the seven entity rows
+  use bare `ft.Checkbox` with token colours, and the `districtsync-design` pass decides whether that
+  earns a `components.check_row(...)` (either outcome is one reviewed line).
+- **Continue on the creator District step IS the write**, in order: `form.to_overlay_spec()` →
+  `authoring.write_overlay(spec, overwrite=True)` (its load-back refuses anything invalid before
+  bytes land) → `cfg.creator_save(creator_pending_sis=sis_id)` →
+  `mapping_catalog.reset_catalog_cache()` (S2's rule — the UI caller invalidates, right after a
+  successful write) → advance. A raised write shows `CREATOR_WRITE_FAILED_NOTE` +
+  `humanize_config_error(exc)` and advances NOTHING; a `False` from `creator_save` shows
+  `CREATOR_TOKEN_REFUSED_NOTE` and still advances (the file is on disk and re-visitable — only
+  resume convenience was lost). `overwrite=True` is right here and only here: a creator re-visiting
+  their own step is the edit case that flag exists for. **Discard** (secondary, on every creator
+  step): `delete_overlay(sis_id)` → `creator_save(creator_pending_sis="")` → `reset_catalog_cache()`
+  → re-mount standard mode with `CREATOR_DISCARDED_NOTE`; a `False` from `delete_overlay` is
+  idempotent success, not an error.
+- **The gate.** `GATE_RUN_LABEL = "Run a test conversion"` is the step's ONE filled primary until it
+  passes; then per-entity counts and either `GATE_PASSED_HEADLINE` + `GATE_CONFIRM_LABEL = "Use this
+  district"` (now the filled primary, the run button demoting to secondary `GATE_RERUN_LABEL`) or
+  `GATE_FAILED_HEADLINE` + bounded copy. It runs through `JobRunner` exactly as Convert's
+  `_start_convert` (`convert.py:749-802`), so `route()`'s `SystemExit`-vs-`Exception` asymmetry
+  covers `run_pipeline`'s `sys.exit(1)` config paths (`pipeline.py:726-748`); `on_error` logs the
+  trace and renders category copy only. **`creator_gate_job(sis_id, *, input_dir, output_dir) ->
+  PipelineResult` lives in `src/ui_flet/job_runner.py`** (the plan's stated home) with a DEFERRED
+  `from src.etl.pipeline import run_pipeline` so nothing new loads on a UI mount; being COUNTED is
+  what makes the refusal testable headless — **it raises `GateRefused` when the output path is blank
+  or `filepicker.validate_output_dir(output_dir).ok` is False**, because `DataLoader.__init__`
+  mkdirs unconditionally and falls back to a CWD-relative `data/output` on blank
+  (`loader.py:55-61`), and the wizard's step order protects this while S6's Mapping host will not
+  (R2-6). It calls `run_pipeline(..., dry_run=True, source="manual")` and NEVER Convert's
+  `_record_manual_run` (`convert.py:492`), the one ungated store writer.
+- **Activation.** Confirm → `digest = authoring.current_digest(sis_id)` →
+  `cfg.activate_creator_config(sis_type=sis_id, digest=digest)` (ONE save: `sis_type` set, token
+  cleared, `creator_verified[sis_id] = digest`, map pruned) → `reset_catalog_cache()` → advance. A
+  `None` digest or a `False` return keeps the admin on the step behind
+  `CREATOR_ACTIVATE_FAILED_NOTE` ("nothing was changed — please try again"), never a silent advance.
+  `_STEP_TITLES` gains `FILES: "Your files"`, `_BODIES` gains `SetupStep.FILES`, `_step_header`
+  reads `total_steps(mode)` so the denominator says 6. `_finish` is unchanged (save-then-verify,
+  `FINISH_SAVE_FAILED_NOTE`, the `on_complete` host seam); the finish precondition sits upstream in
+  `can_advance(FINISH, …)`.
+- **New copy constants** — module-level, one per string, PII-free, plain language, and screened
+  against the banned identity vocabulary: **"verify"/"verified" IS banned**
+  (`DESIGN_SYSTEM.md:40-47`), so every gate string says *test / test run / checked*.
+  `CREATOR_ENTRY_LABEL`, `CREATOR_START_TITLE`, `CREATOR_START_PROMPT`, `CREATOR_IDENTITY_PROMPT`,
+  `CREATOR_DOMAINS_HELPER`, `CREATOR_DOMAIN_INVALID_NOTE`, `CREATOR_ENTITIES_PROMPT`,
+  `CREATOR_GRADES_PROMPT`, `CREATOR_HOMEROOM_PROMPT`, `FILES_STEP_TITLE`, `FILES_INHERITED_NOTE`,
+  `FILES_MISSING_NOTE`, `GATE_RUN_LABEL`, `GATE_RUNNING_CAPTION`, `GATE_PASSED_HEADLINE`,
+  `GATE_PASSED_DETAIL`, `GATE_FAILED_HEADLINE`, `GATE_REFUSED_NO_OUTPUT_NOTE`,
+  `GATE_STALE_VERSION_NOTE`, `GATE_STALE_BASE_NOTE`, `GATE_CONFIRM_LABEL`, `GATE_RERUN_LABEL`,
+  `CREATOR_DISCARD_LABEL`, `CREATOR_DISCARDED_NOTE`, `CREATOR_WRITE_FAILED_NOTE`,
+  `CREATOR_TOKEN_REFUSED_NOTE`, `CREATOR_ACTIVATE_FAILED_NOTE` (+ `BASE_LABELS` in `config_editor`).
+  **No string mentions a column report (S5), an edit affordance (S6) or a filename form (S4).**
+
+#### 3.5 Gate side effects (R2-6) · and the S6 host obligation
+
+- The gate writes **no run-STORE record** on any path — `_store_run_record`'s `dry_run` gate
+  (`pipeline.py:552-586`) plus `_record_early_failure(..., dry_run=…)` cover success, failure and
+  every early exit — hence **no Run History row and no Home repaint**. It DOES emit the
+  `__DISTRICTSYNC_RUN__` diagnostic line (`_log_run_record` is not dry-run-gated,
+  `pipeline.py:879-880`) — accepted parity, not a leak. No CSVs, no anomaly check, no SFTP
+  (`pipeline.py:818-849`); it DOES create the output directory, which is why the refusal exists.
+  **Both halves are asserted in ONE test** (no store row + the log line present) — the
+  no-vacuous-greens twin.
+- **The host seam.** The creator forms must be mountable by a SECOND host in S6 (Mapping's Edit), so
+  S3 factors them behind `build_creator(page, *, cfg, sis_id, form, on_written, on_activated,
+  on_discarded) -> ft.Control` — the same shape and reasoning as `build_setup(page, *,
+  on_schedule_changed, on_complete)`: the host owns what happens after the payoff, the surface owns
+  the work. S3 wires the wizard host only; naming the callbacks now is what stops S6 becoming a
+  second wizard. Pinned by a test that the wizard passes exactly these callbacks and that
+  `build_creator` renders identically from both mounts (the `_finish` two-mount equivalence
+  precedent).
+
+#### In-scope standards dimensions
+
+`security`/`privacy` (counts only, never rows; no domain, name or path in any log or bounded error
+copy; id/domain/digest validated at every boundary; no new egress) · `data-and-persistence` (one
+atomic settings save per act; S1's load-back-before-write; the digest keyed on the RESOLVED config
+so an inherited change cannot go unnoticed) · `reliability-resilience` (every new read TOTAL and
+failing toward "test it again"; a refused advisory write rolls the SHARED instance back; the catalog
+stays fail-open) · `maintainability-structure` (one write-discipline helper + three reviewed
+allowlists; pure form/gate/flow logic outside the view; `setup_flow` I/O-free, asserted) ·
+`product-ux` (verdict-first, ONE filled primary per step, plain language, no promise of S4/S5/S6) ·
+`testing` (a positive twin for every negative) · `observability-ops` (a counts-only INFO line naming
+the id and entity counts, never a district name).
+
+#### Tests to add
+
+- `tests/test_app_config_creator.py` (NEW): three advisory prefixes registered AND the module
+  comment names `creator_` (source-substring parity — the "literal copied out of `src/`" rule) · a
+  creator-only save REFUSED under UNREADABLE with the instance rolled back, **twin** a readable
+  profile persists · a non-`creator_*` key refused loudly, incl. `sis_type` (the back-door pin) · a
+  wrong-typed value raises BEFORE any write, and a bad key late in a multi-field call leaves no
+  partial mutation · `False` + rollback on `OSError` / `SettingsOverwriteRefused` ·
+  `activate_creator_config` writes all three fields in ONE `save()` (patched call count == 1),
+  validates `sis_type`/`digest` first, and — the deliberate asymmetry — is NOT refused under
+  UNREADABLE while the predecessor bytes ARE quarantined (the ROADMAP 2026-07-21 acceptance shape:
+  `sftp_host` recoverable from the `config.corrupt-*.json` copy, nothing silently blanked) · prune
+  drops a vanished id, **twin** keeps a live one, and a raising `resolve_config_path` prunes nothing
+  and still writes. `tests/test_app_config_identity.py` unchanged (the shared-helper equivalence
+  proof).
+- `tests/test_config_authoring.py` (EXTEND): `resolved_digest` stable across two loads; DIFFERENT
+  for a changed `district_domains` (the `to_raw_dict`-only trap) and for an edited BASE in a tmp
+  bundled dir, **twin** unchanged base ⇒ identical · a re-write that only bumps `authored_with`
+  leaves the digest UNCHANGED · `write_overlay` ALWAYS emits `authored_with` carrying the running
+  `app_version()` + base digest, **twin** `build_overlay` without provenance emits no such key (S1
+  goldens unchanged) · `read_authored_with` totality (absent / not-a-dict / wrong value types /
+  unreadable ⇒ `None`) · `is_config_digest` accept/reject table in `tests/test_validators.py`.
+- `tests/test_ui_flet_config_editor.py` (NEW): domain derivation (identity ∪ table; presumptive ONLY
+  when both empty; de-dup + order; SD63's multi-domain row) · an invalid domain reported without
+  echoing it · entity seeding from each of the four bases · grade derivation fed through the REAL
+  `check_rostering_grade_scopes` via `validate_overlay` for every reachable form state (incl.
+  `homeroom == rostered` ⇒ the sentinel, and `homeroom == ()`) · CEDS order + `"Other"` case ·
+  `to_overlay_spec` emits `None` for untouched fields · `gate_outcome_for` table incl.
+  `REFUSED_NO_OUTPUT_DIR` · `humanize_config_error` bounded categories with a substring ban on a
+  planted domain + path · `stored_verified_digest` hostile-value table (non-dict, bad key, 63 chars,
+  uppercase, nested) ⇒ `None`, **twin** a well-formed entry returns it · `verified_is_current`
+  refuses two `None`s · `overlay_staleness` both flags and neither · missing-file derivation,
+  **twin** a complete folder reports none.
+- `tests/test_ui_flet_setup_flow.py` (EXTEND — the 116 existing tests byte-identical): the creator
+  tuple + six-step denominators · `step_number(step, mode="creator")` · FILES satisfaction from the
+  injected bool only · creator DISTRICT satisfied by `creator_district_chosen` · `can_finish`
+  BLOCKED with FILES satisfied but `creator_activated=False`, OPEN with both · `can_advance(FILES)`
+  closed then open · the purity AST test.
+- `tests/test_ui_flet_creator_flow.py` (NEW, view glue): the creator branch renders and Continue
+  writes overlay + token + calls `reset_catalog_cache` (spy), **twin** a failed load-back writes
+  nothing and does not advance · resume from a token lands in creator mode at the right step, and a
+  token with no file self-heals to standard · Discard deletes + clears + invalidates · the D9 seed
+  does NOT fire while a token is pending, **twin** it still fires with no token and one visible
+  district · the gate REFUSES a blank output dir with NO `run_pipeline` call (spy), **twin** a
+  validated dir calls it once with `dry_run=True` · a gate run writes NO `history.db` row while the
+  `__DISTRICTSYNC_RUN__` line IS logged (one test, both halves) · activation writes `sis_type` +
+  clears the token + records the digest in one save, and a hand-edit of the overlay re-closes the
+  FILES gate (hash staleness) · `can_finish` blocked pre-gate / open post-gate through the real
+  mount · the banned-vocabulary sweep (`test_ui_flet_identity_page.py:32-50`'s `BANNED_WORDS` +
+  `BANNED_DESCRIPTIONS`, word-boundary matched, with its existing falsification twin) over EVERY new
+  copy constant and every creator/Files body · no rendered string contains "column", "edit", "soon"
+  or "later".
+- Regression: full suite + SD74 golden byte-identical; `make validate-config` still 20/20 (test
+  overlays live only in the isolated profile); render smoke covers the new step bodies.
+
+#### S3b escape hatch (a concrete cut line)
+
+S3a ships everything above EXCEPT the grades form: `config_editor` keeps `CreatorForm`'s
+`rostered`/`homeroom` fields and the derivation, but no view builds them and `to_overlay_spec()`
+returns all three grade fields `None` (fully inherited — a correct config for the K-12 districts the
+base was written for). Moving to S3b: the `_creator_grades_body` card,
+`CREATOR_GRADES_PROMPT`/`CREATOR_HOMEROOM_PROMPT`, exactly the grade rows of
+`tests/test_ui_flet_config_editor.py` (the chain-derivation table) and the grade assertions in the
+creator-flow mount test. Nothing in the step machinery moves — every form sits on the DISTRICT step
+— so both halves stay vertically complete and S3b is additive view glue over an already-tested
+derivation.
+
+#### Acceptance criteria
+
+1. On a profile with no SD93 config an admin completes District → "Set up my district" → the four
+   forms → Continue (an overlay exists in the profile's `mappings/`, the token is stored, the
+   catalog is invalidated) → Folders → Your files → test conversion → counts → "Use this district" →
+   Delivery/Schedule → Finish; afterwards `sis_type == "sd93custom"`, `creator_pending_sis == ""`,
+   `creator_verified["sd93custom"] == authoring.current_digest("sd93custom")`, `setup_completed`
+   True.
+2. The finish line is UNREACHABLE until activation: `can_finish` False with every other step
+   satisfied and `creator_activated=False`, True once activated (pinned both ways).
+3. The gate refuses without a validated output dir (no `run_pipeline` call) and with one runs
+   exactly once with `dry_run=True`, writes no store row, and emits the `__DISTRICTSYNC_RUN__` line.
+4. Staleness re-fires the gate: with `sd93custom` active, an edited BASE (or a hand-edited overlay)
+   makes `verified_is_current` False and re-closes the FILES step; an unchanged base leaves it
+   current (twin). A malformed `creator_verified` entry reads as absent.
+5. Every `write_overlay` output carries `authored_with` with the running `app_version()` + base
+   digest; `read_authored_with` is TOTAL; the digest is insensitive to that key.
+6. `identity_save` is byte-identical (its 25 tests unchanged); `creator_save` is refused on an
+   UNREADABLE profile with the instance rolled back; no wrapper can write outside its own allowlist.
+7. All 116 `test_ui_flet_setup_flow.py` tests unchanged; `setup_flow` imports no `flet`, `pathlib`,
+   `src.config` or `config_editor`; S2's `TestTheNonCreatorPickPathStillWorks` green.
+8. No new copy promises S4/S5/S6 behaviour and none carries banned identity vocabulary; all gates
+   green (ruff/format, mypy, bandit, tree-check, email scan, 20-config pin), SD74 golden
+   byte-identical, `districtsync-design` pass clean, `ARCHITECTURE_TREE` updated for
+   `src/ui_flet/config_editor.py` in the same change.
+
+#### Open questions for the owner
+
+- **An admin at a district we DO ship (SD48) presses "Set up my district".** Default: ALLOW —
+  `sd48custom` is written and coexists with `sd48myedbc` (the id decision anticipates it, and S2's
+  marker + `disambiguated_labels` keep the rows distinguishable); the starting-point card names the
+  shipped mapping as the recommended choice FIRST, because in that case it usually is the right
+  answer. Rejected alternative: refuse when `resolve_sd_number` finds a shipped config — that blocks
+  the district whose export legitimately differs from the shipped assumption, the case support hits
+  most.
+- **Where the "written with an older version — run the test again" note appears.** S3: the Files
+  step only (where the re-test is being asked for). S6: the Mapping card / picker note. Should Home
+  carry it too? Default NO — Home answers "did the roster sync?", and a config that still converts
+  is not a fault.
+- **`GATE_CONFIRM_LABEL` wording:** "Use this district" (default) vs "Start using this district" vs
+  "Make this my district". One constant, one line.
+
+_Spec self-check:_
+- **Riskiest element: `activate_creator_config` as a fourth `sis_type` writer that is deliberately
+  NOT refused on an unreadable profile.** It is the right call (it carries a chosen setting, so
+  parity with `setup.py:550` is the honest posture), but it adds a writer to the
+  UNREADABLE-provenance hazard, and its acceptance test proves only that the predecessor is
+  quarantined — not that delivery settings survive inside `config.json`. Named, not solved; the
+  merge-onto-re-read fix stays that ROADMAP entry's item.
+- **The digest choice trades clicks for safety, knowingly.** Digesting the whole validated model
+  means a district-name typo fix re-closes the gate. Over-firing beats under-firing, but if the
+  owner reads it as friction the narrower subset (`mappings` + `global_config` + `district_domains`
+  + `version`) is a two-line change with a drift risk I would rather flag than hide.
+- **`build_creator`'s second host is unexercised until S6.** S3 pins the callback shape and a
+  both-mount render equality, so the seam's value is asserted by construction rather than by use —
+  the `on_complete` precedent carried the same gap for exactly one slice.
+- **Nothing promises S4+.** FILES ships gate-only with read-only filenames; no string says "column"
+  (S5), "edit" (S6) or "rename" (S4); the missing-file list derives from `advisory_expected_files`,
+  which exists today. The substring bans are the guard.
+- **Layering holds, with two accepted couplings.** `job_runner` gains a DEFERRED `src.etl.pipeline`
+  import (COUNTED — which is what makes the output-dir refusal testable headless), and
+  `config_editor` imports `src.etl.transformers.grades` for the CEDS vocabulary — the same problem
+  `models._ceds_grade_codes` documents; if that import proves circular at implementation the fix is
+  `models`' deferred-import pattern, never a copied table.
+- **Vacuous-green watch:** "no store row", "no `run_pipeline` call" and "the seed does not fire" are
+  all ABSENCE assertions; each is specified with its twin in the same test or the adjacent row, and
+  the vocabulary sweep inherits the existing falsification test that the word list is matched, not
+  merely iterated.
+
+#### S3 review ledger (Stage 7, foundations pass 2026-09-02 — carried into the S3 land record)
+
+Reviewed: S2 + S3 α/β/γ (commits `3902eac..81f43ec` + fixes). **No BLOCKING finding in the reviewed code**; one BLOCKING relayed to δ in flight (bandit B105 on a copy constant whose NAME carried `TOKEN` — rename, no nosec). Fixed at once: `CreatorForm.__post_init__` now refuses an explicit empty `rostered` (a direct construction bypassed `with_rostered`'s guard and emitted `class_rostering_grades: []`, which `humanize_config_error` mislabelled as a chain problem); the `config_editor` purity test bans `pathlib` too. **Owed once δ lands (components.py is δ's to touch until then):** fold `origin_badge` and `district_chip` onto one private `_chip(label, *, icon)` — the badge duplicates the chip's whole body. **Recorded, not fixed:** (1) `authoring.authored_with(resolved_base, *, base, app_version)` deviates from the spec's `(resolved_base, *, app_version)` — correct, a resolved `MappingConfig` carries no `_base` id — and the module function is shadowed by `build_overlay`'s `authored_with=` parameter (harmless today; a future line inside `build_overlay` would bind the parameter). (2) `resolved_digest` is ORDER-sensitive on `district_domains` (`sort_keys` orders dicts, never lists) — kept: a reorder is an authoring edit and over-firing only costs a re-test. (3) `can_advance(FILES, <standard>)` returns False while `step_number(FILES)` raises in standard mode — False is the safe answer; asymmetry noted in the docstring. (4) `read_authored_with` has no size cap on the YAML it reads — the same alias-bomb exposure `load_config` already has on the same file in the admin's own profile. (5) `humanize_config_error` maps `FileNotFoundError` → "missing base" by TYPE; a missing GDE reaches it only as the pipeline's `SystemExit` (→ OTHER), so the mapping is honest exactly because `run_pipeline` converts file errors — a dependency worth one docstring sentence.
+
+**δ (view glue) pass, 2026-09-02:** two BLOCKING, both reproduced on the real mount and FIXED in the follow-up commit — (1) un-ticking "Use my starting point's grades" seeded `rostered = homeroom = <base>.homeroom_grades`, so OPENING the question wrote a K-7-only roster with the sentinel (fix: seed `rostered = CEDS_GRADE_ORDER`, `homeroom = <base>.homeroom_grades`); (2) correcting the SD number on Continue wrote the new id without deleting the old overlay — `93 → 94` left BOTH in `mappings/`, both in every picker, and Discard's "Nothing was kept" became false (fix: delete the superseded id after the successful write). SHOULD, fixed alongside: Finish pressed end-to-end in the acceptance-1 test; the creator block moved to `screens/creator.py` (wizard → creator dependency, ready for S6's host); `split_domains`/`sd_number_from_text` moved to `config_editor` with direct tests (the 4-digit bound is safety-relevant); `components.check_row` factory for the ~50 hand-rolled checkboxes; one spelling of the FILES-satisfied fact; `visible_ids` computed lazily (creator mode no longer pays the catalog build). **Recorded, not fixed:** the gate's single-flight guard is per-`build_creator` instance, so Run → Back → Continue → Run yields a second concurrent dry run whose orphaned result paints a detached tree (harmless: dry-run writes nothing); `route` catches `SystemExit`/`Exception` only, so a hung `run_pipeline` latches "Testing your files…" until the admin navigates away (pre-existing, shared with Convert); `_on_base` discards entity ticks on a starting-point change and `_on_sd` does not re-render, so `creator_shipped_note` appears one render late; `creator_gate_job` validates the OUTPUT dir only — a blank input dir reaches `run_pipeline` and surfaces as FAILED (correct, nothing is created); §3.4's "Discard on every creator step" holds for the creator's own two surfaces only (FOLDERS renders Back/Browse/Continue) — the plan sentence, not the build, was imprecise. **Security/PII, spec conformance and the design system were clean** on the reviewer's planted-value probes (path + domain + column name in a worker exception never reached the rendered tree; exactly one filled primary in all five states).
+
+### Slice 4 — the Files step: role/file-keyed filename form
+
+#### In plain English (the approval gate)
+
+S3 ships "Your files" as a read-only list plus the test-conversion gate: a district using the
+standard MyEd BC filenames self-onboards today, one whose files are named differently is stopped
+honestly with nothing it can do about it. S4 adds the one thing that district needs — **beside
+each file DistrictSync looks for, the name their extract actually uses** — picked from the files in
+their input folder or typed in. The unit is the FILE, not the entity: setting `StudentSchedule.txt`
+to `studentcourseselection.txt` once fixes Classes, Enrollments **and** the school-year lookup
+together (SD74's real shape). **Done means:** an admin whose extract looks like
+`tests/snapshots/input/` gets an overlay in which every reference to a renamed file moved with it,
+a missing-file list answering against their names, and a test conversion that passes first try.
+**What you're accepting:** one more write through the same `write_overlay` load-back (no new
+persisted field — S4 writes NOTHING to `config.json`), and that changing a file name after
+activation re-closes the gate until the test is run again. **Two limits stay open**, both on
+ROADMAP: one file delivered under two names per ROLE has no expression (the map is keyed by
+original filename), and the absent-mapped-column report is S5's.
+
+#### 4.1 `config_editor.py` — the pure model (the view only assembles it)
+
+- **`FILE_LABELS: Mapping[str, str]`** — a plain-language name per distinct base filename (8 rows),
+  falling back to the filename itself. DATA, not derived: `ClassInformationEnh.txt` split on
+  capitals reads "Class Information Enh", and this is admin-facing copy. A parity test pins a row
+  for every distinct file of all four `ALLOWED_BASES`.
+- **`SourceFileSlot`** (frozen): `original` · `label` · `references: tuple[tuple[str, str], ...]`
+  (entity, role — KEYS; `setup._entity_label` owns the vocabulary) · `names_school_year: bool`.
+- **`distinct_source_files(resolved_base, *, expected) -> tuple[SourceFileSlot, ...]`** — walks
+  `resolved_base.mappings` in `CREATOR_ENTITIES` order (then any remaining entity key, sorted, so
+  nothing is silently dropped), keeps sites whose entity is in `active_entities()` and whose
+  filename is in `expected`, de-duplicating by filename first-seen. `expected` is INJECTED so
+  `pipeline.advisory_expected_files` (which the view already computes, and which already narrows a
+  fully homeroom-scoped config's inert `student_schedule`/`class_info` roles) stays the single
+  source for "which files matter". `names_school_year` is set when
+  `global_config.school_year_sources` also names the file; a school-year file no ACTIVE entity
+  reads gets NO slot — `extract_required_files` never loads it, so the row would offer a rename
+  that changes nothing. **Order is this walk, never `expected`'s:** `advisory_expected_files`
+  returns `list(set)`, whose order varies with `PYTHONHASHSEED`, and S4 replaces S3's inherited
+  instability with a deterministic row order.
+- **`FileFormRow`** (frozen; composition, not duplication): `slot` · `effective` (the renamed name
+  else the original) · `present`. Built by **`file_form_rows(slots, *, renames, present)`**, reusing
+  `missing_files`' case-INSENSITIVE fold so `studentcourseselection.txt` never reads absent against
+  `StudentCourseSelection.txt`. *Deviation from the brief:* no separate `present_files(...)` — it
+  would duplicate that fold to return its own input.
+- **`CreatorForm.renames: Mapping[str, str] = field(default_factory=dict)`** +
+  **`with_rename(original, new)`**: strips `new`, DROPS the entry when blank or equal to `original`
+  (a "rename" to the standard name is not one, and the emission must stay minimal), else validates
+  through `authoring.validate_source_filename` (§4.2). A blank `original` raises; an unknown
+  `original` is not rejected here (the form only passes slot originals, `_build_renames` fails loud
+  at write time, and the model holds no resolved base). `__post_init__` re-validates every entry,
+  so a direct construction cannot bypass `with_rename` (the `rostered` precedent).
+  `to_overlay_spec()` passes `self.renames` unless its existing `source_file_renames=` keyword
+  overrides it, so S3's call sites stay identical.
+- **`renames_from_resolved(resolved_base, resolved_current) -> dict[str, str]`** — the RESUME
+  inverse: where the current config names something else at a base reference site, record
+  `base_name → current_name`, first-seen per original, same walk. TOTAL. A hand-edited DIVERGENT
+  overlay collapses to its first-seen name and the next Save writes it consistently — a visible
+  repair, never a silent loss, because the rows on screen and the written map are ONE value.
+- **`files_primary_action(*, unsaved, passed, already) -> Literal["save","run","confirm","none"]`**
+  — lifts S3's in-view three-way branch into pure code and adds the fourth state, so "exactly ONE
+  filled primary" is asserted over all eight combinations rather than read off a render. `unsaved`
+  wins: a test against names the config on disk lacks reports on the wrong files.
+- **No `suggested_rename(...)`** — a folder holding both spellings has no derivable answer, and a
+  guessed pre-selection nobody is told about is the silent default D9 ruled against. YAGNI.
+
+#### 4.2 `authoring.py` — two boundary lines (closes ROADMAP S1-review item 2)
+
+- **`validate_source_filename(value, *, label="file name") -> str`** — a PUBLIC thin wrapper over
+  `_require_bare_filename`, so the form validates one field without building an `OverlaySpec` and
+  the product keeps ONE filename boundary. Every S1 call site unchanged.
+- **`OverlaySpec.__post_init__` gains the chain refusal:** a rename TARGET may not also be a rename
+  ORIGINAL. `{"A.txt": "B.txt", "B.txt": "C.txt"}` clears unknown-original, target-collision and
+  no-divergence today, and A's role then reads the base's B file — wrong data with every guard
+  green. Compared **case-folded** (`b.TXT`/`B.txt` are one file on Windows), and the same fold goes
+  onto `_build_renames`' two-originals-onto-one-target check, which is case-sensitive today and
+  would let `a.txt`/`A.txt` collapse two roles onto one Windows file: one private `_folded_name`,
+  two call sites, strictly-more-refusals. **Reachable from the form** — the dropdown offers folder
+  files and a folder may hold another slot's standard name — so the view pre-checks it with its own
+  sentence instead of leaving `CONFIG_ERROR_OTHER` to answer "can't be used as it stands".
+
+#### 4.3 `screens/setup.py` — the form ABOVE the gate (S3 moves nothing)
+
+- Inside `build_creator(..., stage="files")` the file card becomes ONE ROW PER SLOT, above every
+  gate control, in `distinct_source_files` order: the label + standard name (read-only) · a
+  `ft.Dropdown` (`on_select`; one option per file in `_folder_filenames(cfg.input_dir)` — ALL files
+  via S3's helper, since a rename target is whatever the district delivers and Convert's
+  `_GDE_SUFFIXES` is a display nicety, not a boundary) with `FILES_KEEP_STANDARD_LABEL` first and
+  the effective name selected · a `ft.TextField` (`helper=`) for a name the folder does not hold ·
+  `components.FileChip(effective, present=row.present)` · a "used for" caption from
+  `row.slot.references` through `_entity_label`, plus the school-year clause when
+  `names_school_year`, because that propagation silently moves every `append_year_to_id` Class ID.
+  **`ft.Dropdown(editable=True)` exists on 0.85.3 and is DECLINED:** typed text lives in
+  `text`/`on_text_change` while `value` stays the selected option's key, nothing here exercises it,
+  and filenames should not rest on an unproven two-field contract. One line into
+  `docs/FLET_1.0_CONVENTIONS.md` records that plus `Dropdown.helper_text` vs `TextField.helper` —
+  the only S4 doc change; S7 owns the rest.
+- **ONE write action: `FILES_SAVE_LABEL` ("Save these file names"), SECONDARY tier** — every write
+  load-backs through the real loader, so per-row writes would run it on each keystroke. Order:
+  pending map → `to_overlay_spec()` → `write_overlay(spec, overwrite=True)` →
+  `reset_catalog_cache()` → `on_files_saved`. Cheap local problems answer FIRST and attempt no
+  write (`FILES_NAME_INVALID_NOTE` · `FILES_NAME_DUPLICATE_NOTE` for two rows on one name ·
+  `FILES_NAME_IS_STANDARD_NOTE` for the chain shape); an authoring refusal reuses
+  `CREATOR_WRITE_FAILED_NOTE` + `humanize_config_error`, never an exception string.
+- **S4 writes NOTHING to `AppConfig`** — no token (re-storing it post-activation would flip
+  `creator_activated` back to False), no `sis_type`, no explicit `creator_verified` invalidation.
+  The stored digest simply stops matching, `_creator_gate_current` goes False and the step
+  re-closes: **the hash-keyed fail-safe working**, since the fact never depends on its own write
+  succeeding and its absence can only force a re-test. `GATE_RESAVED_NOTE` says so when a save
+  lands on an already-active district.
+- **`on_files_saved: Callable[[CreatorForm, str], None]` — a FIFTH required keyword callback** on
+  `build_creator`, not a stage-conditional reuse of `on_written` (which advances a step; a callback
+  whose meaning depends on the host's step is how a second wizard starts). The host sets
+  `ws["creator_form"]`, clears `ws["files_ok"]`, re-renders FILES in place; S6's Mapping host needs
+  the identical callback.
+- **ONE presence source:** rows, chips and the missing-file list all derive from the PENDING
+  effective names, so nothing on screen contradicts anything else; the gate's own
+  `GateOutcome.missing_files` (the config on disk, after a run) stays the authoritative report.
+- **Mount-time memo:** the resolved base and `expected` are I/O and cannot change while the step is
+  on screen, so each resolves ONCE per mount into `st` (the S4b "one memoised config read per
+  mount" cost note; `_resolved_base` is not memoised today).
+- **Copy re-read.** `FILES_INHERITED_NOTE`'s "the standard MyEd BC names your starting point uses"
+  becomes FALSE once a row is renamed → replaced by `FILES_INTRO_NOTE` ("DistrictSync looks for
+  these files in your input folder. If your district's files are named differently, set the name
+  yours uses beside each one."). `FILES_MISSING_NOTE` stays TRUE (it asserts absence, not naming)
+  and gains the now-available fix as its tail. New: `FILES_INTRO_NOTE` ·
+  `FILES_KEEP_STANDARD_LABEL` · `FILES_TYPED_NAME_LABEL` · `FILES_USED_FOR_PREFIX` ·
+  `FILES_SCHOOL_YEAR_CLAUSE` · `FILES_SAVE_LABEL` · `FILES_SAVED_NOTE` · `FILES_UNSAVED_NOTE` ·
+  `FILES_NAME_INVALID_NOTE` · `FILES_NAME_DUPLICATE_NOTE` · `FILES_NAME_IS_STANDARD_NOTE` ·
+  `GATE_RESAVED_NOTE`. **No admin-facing string uses "column" (S5), "edit" (S6) or even "rename"**
+  — the copy says what a file is *called* — so S3's `FORBIDDEN_PROMISES` stays byte-identical and
+  keeps guarding both later slices.
+
+#### In-scope standards dimensions
+
+`security` (every typed filename crosses the ONE public boundary — traversal, drive-relative, ADS,
+control chars, reserved devices — and the chain refusal closes the last way a fully validated map
+still reads the wrong file) · `privacy` (notes name the failed CHECK, never the typed value; logs
+stay counts-only) · `data-and-persistence` (one write path, load-back before bytes land, no new
+persisted field) · `reliability-resilience` (every derivation TOTAL, fail-safe toward "test it
+again") · `maintainability-structure` (pure slots/rows/tiering in `config_editor`, assembly in the
+screen, one filename boundary in `authoring`) · `product-ux` (one filled primary in all eight
+states, one presence source, deterministic order) · `testing` (a positive twin for every absence
+and refusal assertion).
+
+#### Tests to add
+
+- **`tests/test_ui_flet_config_editor.py`** — slot derivation for EACH of the four `ALLOWED_BASES`
+  (count, order, `references`; `names_school_year` true for `myedbc`/`mbp_all`'s
+  `StudentSchedule.txt`, the slot ABSENT for `mbponly`, whose active entities never read it) ·
+  order pinned against a hand-written tuple + a twin that a shuffled `expected` cannot change it ·
+  `FILE_LABELS` covers all four bases' distinct files, fallback returns the filename ·
+  `with_rename` drops on blank / whitespace-only / identical-after-strip, keeps a stripped value,
+  refuses each `validate_source_filename` shape (traversal, `:`, control char, reserved device,
+  >255) · `__post_init__` re-validates a directly constructed `renames` · `file_form_rows` presence
+  is case-insensitive both ways (twin: a genuinely absent file reads absent) · `to_overlay_spec()`
+  carries `renames`, the explicit keyword still wins · `renames_from_resolved` round-trips a written
+  SD74-shaped overlay and answers `{}` for an unrenamed one (twin) · `files_primary_action` over all
+  8 combinations, exactly-one-primary as a property.
+- **`tests/test_config_authoring.py`** — the chain refusal (`A→B`, `B→C`) with its case-folded twin
+  (`A→b.TXT`, `B.txt→C`) and the positive twin that SD74's real four-rename map still writes and
+  loads · the case-folded duplicate-target refusal (`a.txt`/`A.txt`) beside the existing exact one ·
+  `validate_source_filename` is the same boundary as `_require_bare_filename` (one sweep, both
+  entry points).
+- **`tests/test_ui_flet_creator_flow.py`** (extends S3's mount helpers) — one row per distinct file
+  with its standard name and caption · dropdown options == the folder's files, keep-standard first ·
+  **the headline flow:** an `sd93custom` overlay with NO renames, activated over
+  `tests/snapshots/input`, then `StudentSchedule.txt` set to `studentcourseselection.txt` (+ the
+  other three) → "Save these file names" → the WRITTEN overlay moves `Classes`, `Enrollments` **and**
+  `global_config.school_year_sources` → `verified_is_current` flips False and the FILES footer closes
+  (twin: True immediately before) → the REAL gate re-run over those inputs passes and "Use this
+  district" re-activates · the nothing-renamed panel names EXACTLY S3's files with the same
+  present/absent marking — equality on the name SET + marking, deliberately NOT byte-identical
+  ORDER, because S3's is `list(set)` and a byte-identical assertion would flake on `PYTHONHASHSEED`
+  rather than bind · each cheap refusal renders its note and attempts NO write (twin: a valid name
+  does write) · a save leaves `config.json` byte-identical (twin: activation still writes it) · the
+  name-derived copy sweep covers the twelve new constants and the rendered step carries no banned
+  vocabulary and no `FORBIDDEN_PROMISES` word.
+- **Regression:** full suite · SD74 golden byte-identical · render smokes · `make validate-config`
+  20/20 · S3's host-seam test extended to the five callbacks.
+
+#### Acceptance criteria
+
+1. "Your files" shows one row per source file the district's config reads — standard name, name in
+   force, what it is used for, whether it is in the input folder — in the same order every run.
+2. Setting `StudentSchedule.txt` to `studentcourseselection.txt` and saving produces an overlay in
+   which Classes' and Enrollments' `student_schedule` AND
+   `global_config.school_year_sources.student_schedule` all name it, every untouched role stays
+   inherited, and the file loads through the real `load_config`.
+3. A saved change on an already-active district re-closes the FILES step and reopens it after a
+   fresh test conversion + confirm; a district with nothing unsaved is unaffected (twin).
+4. `OverlaySpec` refuses a rename chain and a case-folded target collision, `write_overlay` refuses
+   both before any bytes reach the profile, and SD74's real map still writes.
+5. Every typed name passes `authoring.validate_source_filename`; each refusal answers with its own
+   bounded sentence, echoes nothing typed, and attempts no write.
+6. Exactly one filled primary renders in each of the eight `files_primary_action` states, and the
+   test-run button is never the primary while a change is unsaved.
+7. S4 performs no `AppConfig` write on any path (pinned by a byte-identical `config.json`), and no
+   new copy contains "column", "edit" or "rename" — `FORBIDDEN_PROMISES` unchanged.
+8. All gates green (ruff/format, mypy, bandit, tree-check, email scan, 20-config pin), SD74 golden
+   byte-identical, `districtsync-design` pass clean, ARCHITECTURE_TREE unchanged (no new module) —
+   and **CI's own result read and quoted** before the slice is called landed.
+
+#### Open questions for the owner
+
+- **Two rows pointing at ONE file.** `_build_renames` refuses it; S4 surfaces that as
+  `FILES_NAME_DUPLICATE_NOTE` rather than as the bounded write-failure copy. Default: KEEP the
+  refusal — two roles reading one file is a data question (which columns win?) the ETL has no answer
+  for, and a district genuinely shipping one combined file needs a mapping change, not a filename.
+  Should the note point at `help.SUPPORT_EMAIL`? One line either way.
+- **Offering names the folder does NOT contain** (the typed field). Default: YES — the folder can be
+  empty at setup time, the extract may arrive nightly, and refusing free text would strand exactly
+  the district S4 exists for; the honest consequence is on screen already (the chip reads absent and
+  the missing-file list names it — `FILES_MISSING_NOTE`'s "carries on without it" story).
+- **Should a saved change also explicitly clear `creator_verified[sis]`?** Default: NO — the hash
+  comparison already answers, and a refused clear could never make the gate LOOK passed. Named
+  because it is the one place a reader may expect an explicit invalidation.
+
+_Spec self-check:_
+- **Riskiest element: the post-activation save** — the one path that takes a working district and
+  re-closes its gate. Right (the file that converts changed) and safe with no settings write, but
+  the only S4 state whose recovery is three clicks; if the owner reads that as friction the answer
+  is copy, not a narrower digest.
+- **The chain refusal is REACHABLE from the form, so it needs copy, not just a raise.** I nearly
+  wrote it as unreachable-by-construction; the dropdown offers folder files, and a folder may hold
+  another slot's standard name.
+- **One deviation from the brief** (`present_files` → `file_form_rows`) and one declined API
+  (`Dropdown(editable=True)`), each with its reason in-line so a later slice does not re-derive it.
+- **Vacuous-green watch:** "no `config.json` write", "no overlay written", "the gate re-closed" and
+  "the sweep found nothing" are absence assertions, each with its twin — and the equivalence-with-S3
+  row is deliberately weakened from byte-identical to set+marking, because a strict-looking
+  assertion that flakes on `PYTHONHASHSEED` is worse than an honest one.
+- **Not promised here:** per-ROLE divergence (ROADMAP item 1, the model's honest limit) and the
+  missing-column report (S5). No S4 string implies either.
+
+#### S4 review ledger (Stage 7, 2026-09-02 — carried into the S4 land record)
+
+Two BLOCKING, both reproduced on the real mount and FIXED in the follow-up commit: (1) the TYPED-name path never re-tiered — typing a name (the only route when the extract has not landed yet) left "Run a test conversion" as the filled primary with no unsaved note, and pressing it tested the config ON DISK, so "Use this district" could activate a district whose typed name was silently dropped (fix: the gate and the confirm REFUSE while `_unsaved()`, plus `on_blur` re-render; a hiding test that typed-then-picked gained a type-only twin); (2) in the WIZARD host, an active district with a pending name edit showed TWO filled primaries — the body's Save and the footer's Continue — and Continue discarded the names (fix: the pending map crosses the existing seam as `build_creator(..., pending=)`, the host renders Continue disabled + secondary while it diverges from the saved form; the `_filled(root)[0] ==` assertion that hid it became list equality). SHOULD, fixed alongside: a homeroom-scoped district lost its `StudentSchedule.txt` row because `advisory_expected_files` drops the schedule while `extract_required_files` still loads it for the school year (`wanted` now unions `school_year_sources`); a hand-edited DIVERGENT overlay resumed as "saved" with no repair prompt (resume now seeds DIRTY on divergence); three spellings of "the same file" (`_folded_name` / `.lower()` / bare `.casefold()`) collapsed onto one public `authoring.folded_filename`; a REFUSED typed name was painted as the name in force (chip/dropdown now keep the last valid name). **Clean on the reviewer's probes:** every typed name crosses `validate_source_filename` before any write (traversal, ADS, reserved devices, control chars, >255 — one sweep over both entry points); all four cheap refusals leave the overlay byte-identical; notes name the check, never the value; `_folder_filenames` returns `()` on an unreadable/missing dir and excludes subdirectories; the write moves exactly `Classes`/`Enrollments`/`school_year_sources` and nothing else; rename-back restores the minimal overlay; the `FLET_1.0_CONVENTIONS.md` line verified against `dataclasses.fields(ft.Dropdown)`. The back-translation of `expected` to base names (implementer flag (a)) is load-bearing — without it a renamed row VANISHES and a saved rename could never be reverted — and is worth a direct test (covered transitively today).
+
+### Slice 6 — Mapping hosts the creator: set up / edit a district, re-gate on Apply and the folders-card Save
+
+#### In plain English (the approval gate)
+
+The owner tested S1–S4 on an install that was already set up and found the creator has exactly ONE
+door — the first-run wizard — so nobody past first run can reach it. S6 puts both doors on Mapping:
+**"Set up a district that isn't listed"** opens the same four forms and the same test conversion
+right there, and **"Change this district's setup"** re-opens them for a district added on this
+computer, so a wrong file name or grade range is fixable without starting over. Shipped mappings get
+no change door — they are ours. The second half is the promise in the plan's Goals: the two other
+places that can make a district the one this install converts — Mapping's "Use this mapping" and
+Settings' "Save folders & district" — now check that a district added HERE has passed a test
+conversion as it currently reads, and when it hasn't they change nothing, say so, and put the fix
+one click away. **What "done" means:** an
+already-configured install can create, test, activate, re-open and re-test a district of its own
+entirely from Mapping, and no app surface can switch onto an untested district it added itself.
+**What you're accepting:** Mapping stops being review-only for rows added here (its S2 "we say
+nothing about editing" copy retires deliberately); a folders-card Save can now be REFUSED, changing
+nothing and leaving the nightly un-re-registered until the test is run; and the plan's honest limit
+stands — a hand-edited `config.json` or a hand-dropped YAML still bypasses all of this, which exists
+to stop an admin MISTAKE, not tampering.
+
+#### 6.1 The verified-fact check — ONE pure predicate, THREE consumers
+
+- **`config_editor.activation_allowed(app_config, *, sis_id, origin, current_digest) ->
+  ActivationVerdict`** (pure, COUNTED, no I/O). `ActivationVerdict` is frozen with `allowed: bool` +
+  `needs_test: bool` (two fields, not one `Literal`, so a future third refusal reason cannot
+  silently read as "allowed"). The rule: `origin == "bundled"` ⇒ allowed and `current_digest` never
+  read (shipped configs untouched at every site — the Goals promise); `origin == "user"` ⇒ allowed
+  only when `verified_is_current(stored_verified_digest(app_config, sis_id), current_digest)`, else
+  `needs_test`.
+- **`current_digest` is a required keyword with NO default** (non-negotiable #4): it is the
+  effectful half, computed by the caller via `authoring.current_digest(sis_id)`. Callers pass `None`
+  deliberately on the bundled branch, so the 20 shipped rows never pay a config load.
+- **It takes `origin`, not the `ConfigSummary`** both call sites hold: that is the only field the
+  rule reads, and importing the catalog's published shape into the pure editor module would put a UI
+  type in front of a truth table.
+- **ONE comparison in the codebase.** `creator.creator_gate_current(cfg, sis)` is refactored to
+  `overlay_path(sis).exists() and activation_allowed(cfg, sis_id=sis, origin="user",
+  current_digest=current_digest(sis)).allowed`, so the wizard's `files_step_satisfied`, Mapping's
+  Apply and the folders card all reduce to the same `verified_is_current` call. A second spelling of
+  "has this been tested?" is how one surface activates what another refuses.
+- **Mapping's Apply** consults it in `_on_apply`, after the existing `can_apply` re-check and BEFORE
+  `cfg.sis_type = …`. Refused ⇒ nothing written, no `save()`, no confirmation banner: a WARNING
+  `HealthVerdictBanner` carrying `MAPPING_NEEDS_TEST_NOTE`, plus a secondary "Change this district's
+  setup" that opens the hosted panel at `stage="files"` for the pending id (6.2) — the fix is one
+  press from the refusal.
+- **The Settings folders card** (`_build_settings_folders._save`) consults it before ANY write.
+  Refused ⇒ **no `cfg.save()` and no `reconcile()` at all** — not a partial save that keeps the
+  folders and drops the district, because "Saved." would then be a lie about the field that matters.
+  `FOLDERS_NEEDS_TEST_NOTE` states both facts in the admin's terms: nothing was saved, **and the
+  nightly schedule was not re-registered**. Beside it, a text-tier hop to Mapping (where the test
+  lives) through a NEW `on_navigate: Callable[[str], None] | None = None` threaded `build_setup` →
+  `_mount_settings` → `_build_settings_folders`, passed by the shell's `screens["setup"]` lambda
+  exactly as Mapping/Convert/Home already receive it; `None` renders the note with no button (never
+  a dead affordance), and the rail still carries Mapping, so a note alone is not a dead end. Home's
+  wizard host passes nothing and is unaffected (the folders card is a Settings-scroll control).
+- **Origin at both sites, with no second parse:** each already builds a memoised `filtered_catalog`,
+  so each derives a `{sis_type: origin}` map ONCE per mount from `catalog.summaries`. An id absent
+  from the map is treated as `"bundled"` — the same fail-OPEN direction `_origin_of` documents for
+  itself, and consistent with the threat model: this prevents a mistake and may never strand an
+  admin whose provenance we could not read.
+- **PII:** no note names a district, path, digest or address; nothing new is logged.
+
+#### 6.2 Mapping hosts `build_creator` — two doors, one panel
+
+- **Door (a), CREATE — `MAPPING_CREATE_LABEL = "Set up a district that isn't listed"`**, text tier
+  at the foot of the Switch card so "Use this mapping" stays that card's one filled primary. Opens
+  the panel at `stage="forms"` with `sis_id=""` and `form=creator_form_for_new(cfg)` — the same
+  prefill the wizard uses, so the launch page's `identity_sd_number` and the stored identity domain
+  seed it here too. Offered in every state (Mapping is on the rail in every state, D7).
+- **Door (b), CHANGE — `MAPPING_EDIT_LABEL = "Change this district's setup"`**, secondary tier on
+  the CURRENT card when `summary.origin == "user"` and on the "Switch to" card when the PENDING row
+  is user-authored. Opens the panel at `stage="forms"` with `form=creator_form_from_overlay(sis)`. A
+  `"bundled"` row gets no door on either card (pinned with a shipped twin in the same render).
+- **Resume — Mapping resumes a pending creation too** (recommended and specified): it reads
+  `pending_creator_sis(cfg)` on mount, as the wizard does, and offers a text-tier
+  `MAPPING_RESUME_LABEL` opening the panel at `stage="files"`. The token is a fact about the install,
+  not about the wizard, and an abandoned creation only one surface can pick up is how an overlay
+  becomes invisible litter. It stays single: both hosts hold the same id, the panel's Discard clears
+  it for both, and activation clears it — so a later `build_setup` on a configured install sees no
+  token, while a not-yet-configured one still resumes the wizard's own creator walk
+  (`_mount_wizard`'s mode decision untouched).
+- **A multi-stage surface without the wizard's step machinery.** `_surface` returns a `body_host`
+  container whose `content` swaps between the Mapping view column (header + current card + switch
+  card) and the panel — the `shell.root_host` pattern, in-screen, so the view's controls are OUT of
+  the tree while the panel is open and cannot contribute a second filled primary. The panel is: the
+  Mapping page header · a tier-switching Back control (`MAPPING_PANEL_BACK_LABEL = "Back to
+  Mapping"`) · the host's output-folder precondition notice when it applies (6.3) ·
+  `build_creator(...)`. No step numbers, no footer Continue, no `setup_flow` import.
+- **Host state = the same three things the wizard holds** (`panel = {"sis", "form", "pending"}`, the
+  `pending` dict passed through so a re-render cannot forget picked file names — S4 BLOCKING 2), and
+  the `cfg` handed to `build_creator` is a FRESH `AppConfig.load()` taken at panel OPEN, never the
+  mount instance (`_on_apply`'s reason: another surface may have written). **Callbacks**, the S3/S4
+  seam unchanged: `on_written` → store both, move to `stage="files"`, stay on the panel, show the
+  note; `on_files_saved` → store the form, re-render at `stage="files"` with the note;
+  `on_activated` → `reset_catalog_cache()`, close the panel, route through the shared post-switch
+  path below; `on_discarded` → the same, re-rendering the view with `CREATOR_DISCARDED_NOTE`.
+- **One post-switch presentation for both writers.** `_on_apply`'s banner + probe tail is extracted
+  to `_after_switch(*, old_district_name, new_district_name)` and called by BOTH Apply and
+  `on_activated`, so an activation from the panel paints the identical "Now using …" band and the
+  identical `post_apply_presentation` stale-schedule notice with its "Open Settings" route.
+  **Mapping still never re-registers the nightly and never collects credentials** (owner decision
+  2026-07-15) — which is exactly why activation may not skip that notice, and why
+  `FOLDERS_NEEDS_TEST_NOTE` names the un-re-registered nightly out loud.
+- **ONE filled primary in every Mapping state**, pinned as list equality: view → `["Use this
+  mapping"]`; panel/forms → the creator's Continue; panel/files → whichever of Save · Run · Confirm
+  `files_primary_action` names; panel/files with the district already active AND current (that
+  function's `"none"`) → the Back control promotes to a filled `MAPPING_PANEL_DONE_LABEL` ("Done"),
+  the host's stand-in for the wizard footer's Continue, decided from the same two facts the wizard
+  uses (`cfg.sis_type == panel["sis"]` and `creator_gate_current`) rather than a second spelling.
+  Mapping owns no step footer, so `files_continue_lock_reason` (the wizard footer's explanation of a
+  locked Continue) has NO consumer here — this promotion is the equivalent, and the panel must not
+  render a disabled control it has nothing to unlock.
+- **Design + layering:** factories + `tokens` only, verdict-first (the refusal band above the card
+  that caused it), never colour-alone; `districtsync-design` runs on this change. `mapping.py`
+  imports `screens/creator.py`; creator imports NO host — S3's one-way rule widens from "may not
+  name the wizard" to "may not name a host".
+
+#### 6.3 The output-dir refusal, exercised on this host (R2-6)
+
+`creator_gate_job` already raises `GateRefused` for a blank/unusable output dir before importing the
+pipeline, and Mapping has no Folders step to protect it. Two copy-level changes:
+
+- `GATE_REFUSED_NO_OUTPUT_NOTE` is reworded HOST-NEUTRALLY — its "on the step before this one" is
+  false on Mapping. It names the folder and where it is set, not a step ("DistrictSync needs an
+  output folder before it can run a test conversion. Set one in your folders settings, then come
+  back."). Pinned by a test that the note names no step.
+- The HOST owns the ROUTE, because routing is host business: while the panel is open and
+  `filepicker.validate_output_dir(cfg.output_dir).ok` is False, Mapping renders
+  `MAPPING_PANEL_NEEDS_OUTPUT_NOTE` above the surface with a text-tier "Open Settings"
+  (`on_navigate("setup")`; absent ⇒ note only). The admin is told BEFORE pressing, and the surface's
+  own bounded refusal still renders if they press anyway. No sixth seam parameter.
+
+#### 6.4 The "written with an older version" note on Mapping's card (S3's S6 obligation)
+
+- For a user-authored CURRENT mapping, `_summary_lines` appends the notes derived from
+  `overlay_staleness(read_authored_with(sis), running_version=app_version(),
+  current_base_digest=base_digest_for(sis))`; `creator._base_digest_for` is promoted to a public
+  `base_digest_for` (the creator module owns provenance surfacing, Mapping is one more host).
+  Derived ONCE per mount and only on the `origin == "user"` branch, so a shipped-only install never
+  pays a YAML read for it (the S4b cost note).
+- **A card-specific pair, not the gate's copy:** `MAPPING_STALE_VERSION_NOTE` /
+  `MAPPING_STALE_BASE_NOTE`. `GATE_STALE_*` says "please run the test again", which is right beside
+  a test button and wrong on a screen with none — these name the fact and point at the change door.
+- **`CUSTOM_ORIGIN_NOTE`'s "no editing copy" promise RETIRES here, deliberately** — the note may now
+  say the setup is changeable, because it now is.
+  `TestMappingsSummaryCard::test_the_note_PROMISES_NOTHING` is updated in the same change to ban
+  only S5's `"column"` (its positive twin — the note does state where the file lives — stays), with
+  the vague-future words moved to a shared `BANNED_COPY_WORDS = ("soon", "later", "coming")` applied
+  by the same sweep, so shrinking the promise list to the truth costs no guard.
+
+#### 6.5 UNREADABLE-provenance: the new writer at surface (a) (ROADMAP 2026-07-21)
+
+Activation from the Mapping host is a NEW writer at that entry's surface (a). It routes through
+`activate_creator_config`, deliberately non-advisory, so `save()`'s UNREADABLE branch applies: the
+predecessor bytes are quarantined as `config.corrupt-*.json` before the write. S6 carries the
+entry's acceptance shape FROM THIS HOST — with `load_state=UNREADABLE` and a disk `config.json`
+carrying delivery settings, activating from the panel must leave those bytes recoverable in a
+quarantine sibling and must never report success for something it did not write. The unmerged
+single-section residual stays that entry's own item: S6 must not make it worse, and amends the entry
+to name the new writer in this change.
+
+#### In-scope standards dimensions
+
+`security` (the last of the FOUR `sis_type` writers gated; every id still crosses
+`validate_sis_type` at the activation boundary; no new egress) · `privacy` (both refusal notes and
+both card notes are structural — no district name in a log, no address, path or digest) ·
+`reliability-resilience` (every new read TOTAL and failing toward "test it again"; origin fails OPEN
+as S2 documented; the panel keeps Mapping's never-crash `ErrorCard` floor) ·
+`maintainability-structure` (ONE predicate for three consumers; ONE post-switch presentation for two
+writers; the creator surface unchanged bar one reworded constant; creator imports no host) ·
+`data-and-persistence` (a refused folders Save writes nothing and reconciles nothing; activation
+stays one atomic save) · `product-ux` (exactly one filled primary in every Mapping state;
+verdict-first refusals; every refusal carries its fix) · `testing` (a positive twin for every
+refusal and every absence).
+
+#### Tests to add
+
+- **`tests/test_ui_flet_config_editor.py`** — `activation_allowed` truth table: bundled × (current /
+  stale / absent / `current_digest=None`) all allowed; user × current allowed; user × stale, ×
+  absent-stored, × `current_digest=None`, × malformed-stored all `needs_test` · the two flags are
+  never both true · `current_digest` is keyword-only with no default (signature assertion, the
+  `_store_run_record(dry_run=)` precedent) · `creator_gate_current` agrees with `activation_allowed`
+  on every row (the one-comparison pin).
+- **`tests/test_ui_flet_activation_gate.py` (NEW)** — BOTH refusal sites in one file, because they
+  are one rule and a file per screen is how two behaviours drift. Mapping's Apply REFUSED for a
+  stale user row: `MAPPING_NEEDS_TEST_NOTE` renders, the on-disk `sis_type` is unchanged,
+  `AppConfig.save` was never called (spy), the change route is present · **twins:** a SHIPPED row
+  applies (`sis_type` flips, no note) and a user row whose digest IS current applies. The
+  folders-card Save REFUSED for a stale user district: no `cfg.save()` and **no `reconcile()`**
+  (both spies), `FOLDERS_NEEDS_TEST_NOTE` rendered and naming the un-re-registered nightly, the
+  folder values on disk unchanged, the hop to Mapping present with `on_navigate` and absent without
+  it · **twins:** a shipped district saves and reconciles, and so does a current user one. Driven
+  through the real `build_mapping` / `build_setup` mounts in `isolated_user_profile`, reusing the
+  creator-flow overlay and tree helpers.
+- **`tests/test_ui_flet_filtered_pickers.py`** (already the Mapping-card home) — no change door on a
+  bundled current card, door present on a user one (twin in the same render) · the staleness note
+  both flags and neither (twin) · `test_the_note_PROMISES_NOTHING` updated to the `("column",)` ban
+  plus `BANNED_COPY_WORDS`, positive twin intact · ONE filled primary in the view state.
+- **`tests/test_ui_flet_creator_flow.py`** (S3/S4 helpers, plus a Mapping-host mount helper) — **the
+  CREATE door end to end on a configured install** (`setup_completed=True`, `sis_type="sd48myedbc"`,
+  folders on `tests/snapshots/input`): door → forms → Continue → panel at FILES → the four SD74
+  renames → Save → the REAL `creator_gate_job` → confirm ⇒ `sis_type == "sd93custom"`,
+  `creator_pending_sis == ""`, `creator_verified["sd93custom"] == current_digest("sd93custom")`,
+  `reset_catalog_cache` called (spy), the Mapping view back and carrying `post_apply_presentation`'s
+  stale-schedule notice naming the OLD district · **the EDIT door**: change door → a file/grade
+  change → Save ⇒ `creator_gate_current` False and the confirm gone (twin: True immediately before)
+  → re-run → re-activate · the blank-output-dir refusal on THIS host (host precondition note +
+  `GateRefused` with no `run_pipeline` call; twin: a validated dir runs once with `dry_run=True`) ·
+  `on_discarded` returns to the view with the discard note and no overlay left · resume: abandon on
+  Mapping → `build_setup` still lands in creator mode at FILES (twin: after activation it opens the
+  standard walk) · ONE filled primary in each of the four panel states (list equality, incl. the
+  promoted Done) · the banned-vocabulary sweep + `FORBIDDEN_PROMISES` (now `("column",)`) +
+  `BANNED_COPY_WORDS` over every new constant and every rendered panel/card body · the host-seam
+  test extended to assert Mapping passes exactly the same nine keywords.
+- **`tests/test_app_config_creator.py`** — activation from the Mapping host under
+  `load_state=UNREADABLE`: the predecessor `config.json` is quarantined, `sftp_host` is recoverable
+  from the copy, and a refused write returns False with the instance rolled back (twin: a readable
+  profile activates).
+- **Regression:** full suite · SD74 golden byte-identical · `make validate-config` 20/20 ·
+  ARCHITECTURE_TREE unchanged (no new module) · S2's `TestTheNonCreatorPickPathStillWorks` and every
+  S3/S4 creator-flow test unchanged except the two deliberate updates above (the reworded refusal
+  note, the promise ban) · **CI's own result read and quoted** before the slice is called landed.
+
+#### Acceptance criteria
+
+1. An already-configured install can create, test and ACTIVATE a district of its own entirely from
+  Mapping: door → forms → file names → test conversion → confirm, after which `sis_type`, the
+  cleared token, the recorded digest and the invalidated catalog all hold and the Mapping view
+  repaints with the stale-schedule notice.
+2. A user-authored mapping can be re-opened from Mapping, and a saved change re-closes the gate
+  until another test conversion + confirm. A bundled row offers no change door anywhere.
+3. All FOUR `sis_type` writers are gated for user-authored configs — the wizard's activation (S3),
+  Mapping's Apply, the folders-card Save, and the Mapping-host activation — and SHIPPED configs are
+  untouched at every one of them (a twin at each site).
+4. A refused folders-card Save writes nothing and reconciles nothing, and says both — including that
+  the nightly was not re-registered.
+5. The test conversion REFUSES on this host without a usable output folder, the note names no step,
+  and the host offers the route to Settings (twin: a validated folder runs once, `dry_run=True`).
+6. Mapping's card explains an overlay written by another build or over a changed base, with the
+  change door beside it; the S2 "nothing about editing" ban narrows to `("column",)` and no new copy
+  promises S5.
+7. Exactly one filled primary renders in every Mapping state (view + three panel states), Mapping
+  still never re-registers the nightly nor collects credentials, and the screen keeps its
+  never-crash floor.
+8. Activation from this host quarantines the predecessor `config.json` under UNREADABLE settings,
+  and the ROADMAP 2026-07-21 entry records the new writer.
+9. All gates green (ruff/format, mypy, bandit, tree-check, email scan, 20-config pin), SD74 golden
+  byte-identical, `districtsync-design` pass clean, CI read and quoted.
+
+#### Open questions for the owner
+
+- **Should the folders card's refusal offer to run the test RIGHT THERE?** Default **NO** — one host
+  for the gate. A dry run from a settings card would need the panel, the output-dir precondition and
+  the confirm to exist twice, and the second copy is where the two drift; the hop to Mapping is one
+  click onto the surface that owns the district.
+- **Should Convert get the marker/gate?** **NO**, per the plan: it has no `sis_type` writer, and
+  running a visible config there is an explicit manual act — as it is for the 20 shipped ones.
+- **Wording of the two doors** (`"Set up a district that isn't listed"` / `"Change this district's
+  setup"` — both avoid "edit", which reads like a YAML editor this is not). One constant each.
+- **Should the CREATE door be offered on an install that has NOT finished setup?** Default YES (the
+  rail carries Mapping in every state, and hiding it would make the door state-dependent for no
+  safety gain); activating there sets the district the wizard's District step then reads as chosen.
+
+_Spec self-check:_
+- **Riskiest element: the folders-card refusal is the first Save in this product that can decline.**
+  It is the right call — that Save also re-registers the nightly, so letting an untested district
+  through bakes it into a scheduled task — but it turns a button that always worked into one that
+  sometimes will not, and its safety rests on the note being read. The alternative (save and warn)
+  was rejected because the warning would be about a task already registered.
+- **Two hosts for one surface is where a second wizard starts.** Mitigated structurally: the seam's
+  nine keywords asserted identical from both hosts, no `setup_flow` in the panel, one-filled-primary
+  pinned as list equality per state. The residual is real — the wizard's footer facts
+  (`files_pending`, activation) now have a second holder — and `_after_switch` is the only place I
+  collapsed duplication rather than testing both copies.
+- **`activation_allowed` deviates from the brief's `(cfg, summary, …)` signature** (it takes
+  `origin`). Named because the reason is layering, not taste: the pure editor module must not import
+  the catalog's published shape to read one string.
+- **Vacuous-green watch:** "no `sis_type` write", "no `reconcile()`", "no `run_pipeline` call", "no
+  change door" and "the sweep found nothing" are absence assertions; each is specified with its twin
+  in the same class, and the truth table's bundled rows are what keep the user rows meaningful.
+- **Not promised here:** S5's column report (no S6 string says "column"), a YAML text surface, and
+  the merge-onto-re-read fix for UNREADABLE provenance — S6 adds a writer to that hazard and says so
+  rather than pretending to bound it.
+
+#### S6 review ledger (Stage 7, 2026-09-03 — carried into the S6 land record)
+
+Two BLOCKING, both reproduced on the real mount and FIXED in the follow-up commit: (1) on Mapping's panel a CURRENT district's promoted filled "Done" was never re-evaluated after a file-name PICK, so two filled primaries showed and Done silently discarded the pending names — S4 BLOCKING 2 recurring on the new host (fix: Done REFUSES while `has_unsaved_renames` and re-renders the panel, the same load-bearing shape as the wizard's `_forward`); (2) **a FIFTH `sis_type` writer** — the wizard's STANDARD District step — offered user-dir rows in its dropdown and wrote the pick with no `activation_allowed` call, so with `setup_completed=False` a stale user overlay could be activated and then baked into the nightly by Finish (found independently by the S7 spec writer; fix: the standard branch consults the same predicate — refused ⇒ no write, no advance, `WIZARD_DISTRICT_NEEDS_TEST_NOTE`). The Goals' "exactly three" and S3's "four" are both superseded: FIVE writers, all consulting ONE comparison for user-authored configs. SHOULD, fixed alongside: the card's provenance staleness note survived the change door that re-wrote `authored_with` (per-surface memo never invalidated — cleared on return to the view); a folders-ONLY edit was refused when the ACTIVE district's digest had gone stale — decided: the folders card gates only when the district is CHANGING (a folder fix on the district the nightly already runs prevents nothing); the folders card read the MOUNT `cfg` for the digest while Apply read a fresh `AppConfig.load()` — aligned to fresh. NOTEs: the S6 copy sweep omitted `OPEN_SETTINGS_LABEL`/`FOLDERS_NEEDS_TEST_LINK_LABEL` (added to a sweep in the activation-gate test file); a provenance-read WARN names the config id (consistent with `summarize_config`, never a path); a third spelling of the advisory note row (`mapping._note_line` vs `setup._refuse_needs_test`) is a candidate `components` factory; the "tested, current, but not active" panel state offers no activation control — the admin returns and presses "Use this mapping" (accepted; Done keyed on `creator_gate_current` alone is what keeps exactly one filled primary there). **Clean:** the gate is real at both named sites on the real mounts (stale user row refused at Apply and at the folders Save with no save/reconcile; shipped + current-user twins pass); `_origin_of` runs BEFORE the load so a broken user overlay still reads `"user"` — no fail-open hole via the origin map; refusal and card notes are structural (no name/id/path/digest); hops go through `on_navigate` only, no dead button when `None`; the reviewer's own full run: 5,497 passed / the one root-container failure.
+
+### Slice 5 — the pre-flight missing-column report
+
+#### In plain English (the approval gate)
+
+A district whose MyEd BC export has been pre-processed can pass the test conversion and still ship a
+column of blanks — every row there, `Last Name` empty in all of them — because a mapped column that
+is not in the file is a DELIBERATE blank, not an error: `apply_field_map`'s own docstring says
+"**Intended blank** (the config column is simply absent from the frame) is NOT an error … NOT
+recorded" (`base.py:622-623`), and nothing in the product says a word about it. S5 adds that one
+sentence where the district is decided, before it is saved: **"The column “Legal Surname” (needed
+for Students) isn't in any of your files."** The verdict does not change — the test passed, "Save
+district settings" is still the button to press — because a district legitimately without an
+optional column must not be stopped by an app that only *suspects* something. **Done means:** an
+admin whose extract renames a header is told which header, for which output, at setup, not by
+finding blank cells in SpacesEDU in October. **What you're accepting:** a LENS, not a verdict; it can
+only speak about a test run that COMPLETED (a config error fails the run and carries its own
+message); and it says "not in ANY of your files", not "not in this file", because a mapping's column
+entry names no file (R2-4).
+
+#### 5.1 `PipelineResult.input_columns` — the observed headers, carried once
+
+- `input_columns: dict[str, tuple[str, ...]] = field(default_factory=dict)` appended LAST to
+  `PipelineResult` (`pipeline.py:87-94`), `field(default_factory=dict)` per the `entity_counts`
+  precedent at `:91` — a bare `{}` raises `ValueError: mutable default` at class definition
+  (round-3 correction 1, the trap `creator_verified` hit).
+- **Keys are the CONFIG's spelling of the file** — what `extractor.load_data` returns: its dict is
+  keyed by the configured name even when the case-insensitive second look matched a differently-cased
+  file on disk (`extractor.py:97-107`, "every downstream lookup uses the mapping's spelling"). Same
+  spelling the Files-step rows and `config_editor.missing_files` already show.
+- **Values are the ALREADY-normalised headers in file order** — `tuple(df.columns)` of the frames
+  the extractor returned, which `_load_bytes` put through `helpers.normalize_columns` (strip+lower,
+  `extractor.py:173`). No second normalisation, no re-read, no extractor seam, nothing but `str`
+  leaving the pipeline. Populated at the ONE construction site (`pipeline.py:896-901`) from
+  `raw_data`, which is in scope there.
+- **A missing file KEEPS its key with an EMPTY tuple** — `load_data` yields `pd.DataFrame()` for a
+  file not on disk (`extractor.py:104`) and S5 carries that verbatim: `input_columns` is *observed
+  data*, and a dropped key would be a second, quieter missing-FILE report able to disagree with the
+  fold-based one that owns that fact (`config_editor.missing_files`; ONE owner per fact, the S4
+  `folded_filename` rule). Union math unaffected, and `checked_files` counts only keys that
+  contributed a header.
+- **No consumer flips:** both construction sites (`pipeline.py:896`,
+  `tests/test_ui_flet_routing.py:51`) are keyword-only and the one shape test asserts via `hasattr`
+  (`tests/test_sftp_exit.py:145-156`), so an appended defaulted field cannot turn it red (round-3
+  (c), re-verified).
+- **The early-exit paths carry NOTHING, deliberately** (round-3 binding correction 2, settled here):
+  the single construction is on the success path, so a run that `sys.exit(1)`s on either config-load
+  failure (`pipeline.py:713-746`), raises `ExtractionError`, or raises out of a transformer returns
+  no result — the report is absent exactly there. That is the division of labour: the fail-loud
+  raises name the column and the available ones THEMSELVES
+  (`grades.filter_to_grade_scope`'s `KeyError`; `base.apply_row_filters`',
+  `students._generate_emails`' and `_collapse_cross_enrollment`'s `ValueError`) and the gate already
+  surfaces that path as FAILED through `humanize_config_error`; preflight owns the RESILIENT path,
+  the one with no other signal at all. No new sink and no `dry_run` change — the field rides the
+  existing return; `_store_run_record(..., *, dry_run)` and `_record_early_failure(..., dry_run=…)`
+  untouched.
+
+#### 5.2 `src/etl/preflight.py` (NEW — pure, COUNTED, zero I/O)
+
+- **Purity pinned by AST** — no `flet`, no `pathlib`, no `pandas` (banning pandas is what says this
+  module never handles a frame), in the shape of `test_ui_flet_config_editor.py::TestPurity`. It
+  imports `src.config.models` for the typed field variants and `src.etl.column_names` for the name
+  normaliser.
+- **ONE spelling of "the frame's column name."** `helpers.normalize_columns` is a DataFrame
+  function; S5 promotes its per-name half to `column_names.normalize_column_name(name: str) -> str`
+  (`return name.strip().lower()`) and `normalize_columns` becomes
+  `df.rename(columns=normalize_column_name)` — byte-identical semantics INCLUDING the raise on a
+  non-`str` label, so no ETL behaviour moves. `column_names.py` is the home CLAUDE.md designates for
+  shared column-name knowledge and imports nothing, so preflight stays pandas-free; preflight
+  coerces at ITS boundary (`normalize_column_name(str(v))`), where a hand-edited YAML value may not
+  be a string.
+- **`ExpectedColumn(entity, output_field, source_column)`** (frozen). `source_column` is the
+  CONFIG's own spelling, whitespace-trimmed — what a line quotes, since the admin compares it against
+  their header row; every comparison goes through `normalize_column_name`.
+- **`expected_columns(config: MappingConfig) -> tuple[ExpectedColumn, ...]`** walks
+  `config.active_entities()` (never `mappings.keys()` — `_base` leaves disabled entities there) in
+  `config.mappings` order, reading every `field_map` entry through `models.ensure_field_mapping` (the
+  single boundary, idempotent — never `classify_field` directly, whose re-entry hazard its docstring
+  names) plus every `row_filters[].column` and every `source_columns` VALUE. Per variant: bare `str`
+  → that name · `None` (auto-detected `EnrollStatus`) → **nothing** (the aliases are a SET; naming
+  one would be false) · `FieldTransform.column` / `FieldAppendYear.column` → the column ·
+  `FieldFixedValue` / `FieldAcademicYear` → **nothing** (a literal names no column) ·
+  `FieldEmailFormat` → the `{placeholders}` of `format` via `string.Formatter().parse` (the reading
+  `str.format` does, which is how `emails.generate_student_email` interpolates) MINUS the
+  `derived_dates` KEYS (pseudo fields `students._generate_emails` injects, not headers) PLUS each
+  `derived_dates[*].column` · `FieldNameConfig` → its four columns, blanks skipped ·
+  `FieldIdRolePair` → `student_id_col` **and** `staff_id_col` · `FieldEnrollStatus` →
+  `status_column` / `withdraw_date_column` when set (`active_values` are VALUES) · anything else,
+  incl. `classify_field`'s warn-passthrough dict → **nothing, never a raise**. TOTAL by
+  construction: a config the report cannot read yields a SHORTER report, never an error in front of
+  an admin.
+- **Two things it deliberately does not do**, both for the same reason (R2-4 + Configurable
+  Columns: no transformer knowledge here): it never resolves transformer DEFAULTS
+  (`base.resolve_column`'s `default=`) — so SD83's `Grade: {value: ""}` under a grade scope is a
+  fail-loud raise, not a report line (5.1 owns it) — and it never sorts references into resilient
+  and fail-loud (`row_filters`, `derived_dates`, `home_school_column` all raise), which costs
+  nothing: those runs never reach a `PipelineResult`, so their columns can only be reported when the
+  entity was skipped as empty and nothing else would have spoken either.
+- **`missing_columns(expected, input_columns) -> tuple[MissingColumn, ...]`** folds every observed
+  name into ONE set and keeps the expected columns absent from it — the file-agnostic claim, because
+  a `field_map` entry carries no file association (`Classes` declares five roles and names bare
+  columns). `MissingColumn(source_column, entities: tuple[str, ...])`: deduped on the NORMALISED
+  key, keeping the first-seen written spelling, listing every active entity that needs it in
+  first-seen order (one header often feeds several entities; a line each would read as several
+  problems). Output FIELD names ride `ExpectedColumn` but not `MissingColumn` — contract vocabulary
+  an admin never sees in a header row.
+- **No observed columns at all ⇒ NO claim.** An empty `input_columns`, or one whose every value is
+  empty, returns `()`: the premise is "we looked at your files", and without it a
+  default-constructed `PipelineResult` would report every column in the config as missing. The
+  fail-safe direction — an absent report under-reports and can never invent a wall of false ones.
+- **`preflight_report(config, input_columns) -> PreflightReport(missing, checked_files,
+  checked_columns)`** — `checked_files` = keys whose tuple is non-empty, `checked_columns` = distinct
+  normalised expected columns considered. Both exist so "nothing missing" is a MEASURED green:
+  `checked_columns == 0` is a derivation that found nothing, not an all-clear (no-vacuous-greens).
+- **`humanize_missing_columns(report, *, entity_label=None) -> tuple[str, ...]` lives in
+  `src/ui_flet/config_editor.py`**, beside `humanize_config_error`, `missing_files` and the
+  `CONFIG_ERROR_*` sentences. **Deviation from the plan's Affected-files line** (which put "+
+  plain-language report" in `preflight.py`): every admin-facing sentence here is a reviewed constant
+  on a module the copy sweeps see and `src/etl/*` carries none, so this leaves `preflight.py`
+  derivation-only and re-usable by a CLI surface that would word it its own way. One reviewed line,
+  reversible. `entity_label` is an INJECTED pure callable defaulting to identity (the
+  `distinct_source_files(expected=…)` precedent), so the screen passes `creator._entity_label` and
+  the pure layer never learns the vocabulary. The line template is a `config_editor` constant: `The
+  column “{column}” (needed for {entities}) isn't in any of your files.` — smart quotes per the house
+  style (`GATE_PASSED_DETAIL`), entities joined by the same and-list the rest of the surface reads.
+- **PII.** A reported column name is CONFIG vocabulary — the GDE HEADER, never a cell — and the
+  creator cannot author a `field_map` (field remapping is the plan's first non-goal), so every string
+  this report can print comes from a vendor-authored bundled base. It is the one place in the gate
+  where naming the value IS the answer; nothing else moves (`humanize_config_error` still echoes no
+  exception; the only new log line is counts-only).
+
+#### 5.3 The gate wiring — verdict → counts → report → actions
+
+- **`GateOutcome` gains `missing_columns: tuple[MissingColumn, ...] = ()`** (additive + defaulted, so
+  every S3/S4/S6 equality assertion on `GateOutcome(state=…)` stays green) and **`gate_outcome_for`
+  gains `preflight: PreflightReport | None = None`** — S3/S4/S6 call sites identical. That default is
+  NOT a permissive default on a safety-relevant parameter (non-negotiable #4): `None` means "no
+  report", it feeds no state decision and can only under-report. `_store_run_record(..., *,
+  dry_run)`'s required-keyword shape is right where the default would DO something; here it would say
+  nothing.
+- **The soundness rule lives in the pure reduction, not in a view.** `missing_columns` is carried
+  ONLY on `PASSED` **and only when `missing_files` is empty**: while an expected file is absent the
+  claim "not in any of your files" is false by premise — we did not read them all — and every column
+  of that file would be listed, burying the one real finding under the file report already on screen.
+  One pure decision, one truth table, so the wizard host and Mapping's panel cannot disagree.
+- **`creator_gate_job` is UNCHANGED** (still `-> PipelineResult`, still refuses a blank/unusable
+  output dir before importing the pipeline). The VIEW computes the report on the worker's success
+  callback — in `_run_gate`'s `_on_done`: `preflight_report(resolved, result.input_columns)` with
+  `resolved = _resolved_config(sis_id)` (already TOTAL; `None` ⇒ no report). **Correction to the
+  brief:** `_FilesModel` does not RETAIN the resolved config (it uses it and keeps
+  `slots`/`divergent`), so this is one bounded YAML read on the UI thread right after a whole dry
+  run — and it must be the config as it is NOW on disk, which is what the run itself read.
+- **Render.** In `_files_controls`'s `test_rows`, after the counts row and BEFORE the action row (the
+  admin reads the facts before pressing — S6's "told before pressing" reasoning):
+  `PREFLIGHT_MISSING_TITLE` (`type_body`/W_600/`color_text`), one `color_status_warning` line per
+  `MissingColumn`, then `PREFLIGHT_MISSING_NOTE` in `color_muted`. Deliberately NOT a second
+  `HealthVerdictBanner` — a warning band under a healthy band is two verdicts about one run, and the
+  rule is verdict-first, ONE verdict. Factories + `tokens` only; whether the block earns a
+  `components` factory is the `districtsync-design` pass's call (either outcome one reviewed line).
+  `files_primary_action` is UNTOUCHED and **the confirm stays the filled primary** — recommended and
+  specified: the admin decides with the facts in front of them, and demoting it would stop a district
+  whose export legitimately lacks an optional column (SD83 already ships `Date of Birth: {value:
+  ""}`) on a suspicion.
+- **New copy** (both swept): `PREFLIGHT_MISSING_TITLE = "Some columns aren't in your files"` ·
+  `PREFLIGHT_MISSING_NOTE = "A test conversion still passes — the rows are there, but this column
+  comes out blank in every one of them. It usually means your district's export uses a different
+  header, or you've picked a starting point that expects a column your extract doesn't have."` on
+  `screens/creator.py`, plus the line template on `config_editor`. No string uses
+  "verify"/"verified"/"access" or any other `BANNED_WORDS` member.
+- **The run-time twin.** The SETUP-time half of the `data_errors` → run-log summary → Run History
+  "Completed with N data errors" signal (`pipeline.py:791-799`) — complementary, not duplicate: that
+  axis only fires where something RAISED, and an absent mapped column raises nothing. Logs stay
+  counts-only on both.
+
+#### 5.4 Copy retirement — `FORBIDDEN_PROMISES` ends here
+
+S3 banned "column" from every creator string so no copy promised a report that did not exist; S5
+ships it, so the ban RETIRES rather than narrowing again. `FORBIDDEN_PROMISES` (as S6 leaves it —
+`("column",)`) and the three assertions that read it —
+`TestTheCopyDiscipline::test_no_constant_promises_a_later_slice`,
+`test_the_rendered_creator_forms_carry_neither` and
+`test_the_rendered_gate_step_carries_neither_before_or_after_a_run` (the last two keep their
+`_assert_no_banned_vocabulary` half and lose only the promises loop) — are DELETED, not emptied: a
+loop over an empty tuple is a vacuous green. `BANNED_COPY_WORDS = ("soon", "later", "coming")` — S6's shared
+vague-future list — STAYS and keeps sweeping both surfaces (if S6 landed without it, S5 creates it,
+since the retiring tuple must not take the vague-future guard with it), and `test_ui_flet_filtered_pickers.py::TestMappingsSummaryCard::
+test_the_note_PROMISES_NOTHING` narrows to `BANNED_COPY_WORDS` with its positive twin intact.
+Replacing the ban: a POSITIVE test that the rendered block names the missing column and carries
+`PREFLIGHT_MISSING_NOTE` — the guard becomes an assertion about what IS there.
+
+#### In-scope standards dimensions
+
+`privacy` (a config HEADER, never a cell — argued from the creator's inability to author a
+`field_map`; logs counts-only) · `security` (no new egress, write, persisted field or `sis_type`
+writer) · `maintainability-structure` (derivation pure in `src/etl`, wording pure in `ui_flet`,
+assembly in the screen; ONE column-name normaliser; the soundness rule in one reduction, not two
+hosts) · `reliability-resilience` (every derivation TOTAL; an unreadable field-map shape and an
+empty observation both yield NO claim) · `observability-ops` (one counts-only INFO;
+`__DISTRICTSYNC_RUN__` unchanged) · `product-ux` (ONE verdict, ONE filled primary, facts before the
+decision) · `performance` (no second parse and no second file read — why R2-4 rejected the extractor
+seam) · `testing` (a positive twin for every absence; a measured denominator).
+
+#### Tests to add
+
+- **`tests/test_etl_preflight.py` (NEW)** — purity by AST (twin: the sweep does see
+  `src.config.models`) · `expected_columns` over the REAL `myedbc`: non-empty, ACTIVE entities only
+  (an `mbponly` config yields no `Staff` row), a known column present · a SYNTHETIC config
+  exercising EVERY variant — bare string, `None`, `transform`, `append_year_to_id`, `value` (yields
+  NOTHING, twinned against a transform on the same entity), `use_academic_year`, `format` with
+  `{placeholders}` + `derived_dates` (pseudo key excluded, its `column` included), name-config (four
+  cols, blanks skipped), id-role pair (BOTH), enroll-status (`status_column`/`withdraw_date_column`,
+  not `active_values`), `row_filters[].column`, `source_columns` values, an unrecognised dict
+  (nothing, no raise) · normalisation parity: a padded mixed-case observed header matches a
+  title-case config entry, asserted against `normalize_column_name` itself so the sides cannot drift
+  · `missing_columns` — present in ANY ONE file is not reported (twin: absent from all IS), dedupe
+  keeps the first spelling and lists both entities · the empty-observation rule (`{}` and
+  `{"X.txt": ()}` ⇒ no claim; twin: real columns DO report) · `preflight_report` counts
+  (`checked_files` ignores empty tuples; `checked_columns > 0` on `myedbc`) · totality over a
+  malformed field_map (a list, a nested dict, a non-string column) · `humanize_missing_columns`
+  wording, entity grouping, the injected `entity_label` (default identity ⇒ raw keys;
+  `_entity_label` ⇒ "Families"), `()` for an empty report.
+- **`tests/test_pipeline_required_input.py`** (it already drives `run_pipeline` with
+  `_write_full_rostering_input`) — new `TestPipelineResultInputColumns`: a full rostering run's keys
+  == `extract_required_files(config)`, a known header present and already lower-cased · the
+  PARTIAL-input case keeps an absent file's key with an EMPTY tuple (twin: the present file's tuple
+  is non-empty) · `{}` by default on the `tests/test_ui_flet_routing.py` stub (one line, asserted
+  there) while `tests/test_sftp_exit.py:145-156`'s `hasattr` test is UNTOUCHED and green · the
+  existing no-usable-input test still returns no result at all (the early-exit half, unchanged).
+- **`tests/test_ui_flet_config_editor.py`** — `gate_outcome_for` WITHOUT `preflight` ⇒
+  `missing_columns == ()` (every S3/S4 row unchanged), WITH one ⇒ carried on `PASSED` · the soundness
+  rule: a report + a non-empty `missing_files` ⇒ `()` (twin: same report, every file present ⇒
+  carried) · FAILED / NOT_RUN / REFUSED never carry columns even with a report passed · the
+  `CONFIG_ERROR_*`-style copy assertions extended to the new line template.
+- **`tests/test_ui_flet_creator_flow.py`** — **the headline flow, honestly constructed:** copy
+  `tests/snapshots/input` into `tmp_path`, rename ONE header inside
+  `StudentDemographicInformation.txt` (`Legal Surname` → `Family Name`), point the config's folders
+  at the copy, run the REAL gate to PASSED, and assert the block names exactly `Legal Surname` for
+  Students, the counts still render, and "Save district settings" is still the ONE filled primary
+  (list equality) · **twin:** the unmodified copy reports nothing and renders no block · a run with a
+  file MISSING renders the file note and NO column block (the soundness rule at the surface) · the
+  new constants join the prefix sweep (`prefixes` gains `"PREFLIGHT_"`, plus an `S5_COPY_CONSTANTS`
+  tuple registering them by name — the S4 precedent that stops a sweep going quiet) and the sweep
+  extends to `config_editor`'s `PREFLIGHT_*` constants + one rendered line, so no admin-facing
+  sentence escapes it wherever it lives · `FORBIDDEN_PROMISES` and its three assertions gone, the
+  positive replacement in place.
+- **Regression:** full suite · SD74 golden byte-identical · `make validate-config` 20/20 ·
+  tree-check WITH the new `src/etl/preflight.py` entry (**S5's line, not S7's** — the pre-commit gate
+  aborts otherwise) · render smokes · ruff/format/mypy/bandit/email scan · **CI's own result read and
+  quoted** before the slice is called landed.
+
+#### Acceptance criteria
+
+1. `PipelineResult.input_columns` carries, for every file the run loaded, the normalised headers the
+   extractor observed — keyed by the config's spelling, empty tuple for a file not on disk — and
+   defaults to `{}` everywhere else, with no consumer or construction site changed.
+2. `src/etl/preflight.py` derives the expected source columns of a config's ACTIVE entities from
+   every field-map variant that names one (fixed values and the auto-detect sentinel name none), is
+   TOTAL over any malformed shape, and imports no `pandas`, `pathlib` or `flet`.
+3. A column absent from every loaded file is reported once, naming the config's spelling and every
+   entity that needs it; a column present in any one file is not reported; an empty observation
+   reports nothing at all.
+4. The report renders between the counts and the actions on a PASSED run with no missing files and
+   changes neither the verdict nor `files_primary_action` — the confirm stays the one filled primary.
+5. A run with a missing expected file renders the FILE report and no column report; a run that fails
+   before completing renders the bounded failure category and no column report.
+6. Preflight and the extractor agree on what one column name IS — one public `normalize_column_name`
+   used by both sides, `normalize_columns` delegating to it, no ETL behaviour change.
+7. `FORBIDDEN_PROMISES` and its three assertions are gone, replaced by a positive test that the
+   report renders its column and its note; `BANNED_COPY_WORDS` and the banned-vocabulary sweep still
+   cover every new string in both modules.
+8. All gates green (ruff/format, mypy, bandit, tree-check incl. the new module, email scan, 20-config
+   pin), SD74 golden byte-identical, `districtsync-design` pass clean, CI read and quoted.
+
+#### Open questions for the owner
+
+- **Should a missing column for a NON-required output field be reported at a lower tier?** Default
+  **NO — report all, one tier.** The contract's required/optional split
+  (`docs/developer/output-contract.md`) is about what SpacesEDU accepts, not what the district meant
+  to send: SD83 withholds `Date of Birth` on purpose, and an admin who mapped a preferred name wants
+  to know it lands blank. S5 is a lens, not a verdict, so a second tier would be a judgement it has
+  no standing to make — and the note already says the test conversion still passes.
+- **Should the report also appear on Convert?** Default **NO** — Convert is an explicit manual act
+  with no `sis_type` writer and no gate (the plan's standing answer); the check lives on the surface
+  that owns the district.
+- **Wording of the title** ("Some columns aren't in your files"). One constant; the note carries the
+  explanation and the two likely causes.
+
+_Spec self-check:_
+- **Riskiest element: the soundness gate, not the derivation.** A report rendered beside an absent
+  file would list that file's every column and read as twenty problems where the file report already
+  named one — so the "PASSED and no missing files" precondition sits in the pure reduction with a
+  truth table, not in a screen where a second host could spell it differently.
+- **The brief's premise on the resilient path is half right, and the spec says so.** An absent mapped
+  column is NOT recorded in `data_errors` at all (`apply_field_map`'s "intended blank"), so for this
+  case the report is not that signal's twin — it is the ONLY signal. That is the strongest argument
+  for the slice and should not soften into "setup-time duplicate".
+- **Two deviations, both named in-line:** `humanize_missing_columns` lives in `config_editor` rather
+  than `preflight` (copy belongs where the sweeps see it), and the resolved config is re-read in
+  `_on_done` rather than taken from a memo that does not hold it.
+- **Vacuous-green watch:** "not reported", "no block rendered", "no consumer flipped" and the retired
+  ban are absence assertions — each specified with its twin, the ban replaced by a POSITIVE assertion
+  rather than an empty tuple, and `checked_columns` exists precisely so a green report cannot be an
+  empty derivation.
+- **Not promised here:** any claim about WHICH file a column should have been in (R2-4's point), a
+  severity tier, a Convert surface, and the ETL's own `lower()`-without-`strip()` field-map lookups —
+  a padded config entry matches here while some lookup sites would blank it; that inconsistency is a
+  ROADMAP line, not something S5 papers over.
+
+### Slice 7 — export + docs + certification disposition
+
+#### In plain English (the approval gate)
+
+Everything the admin can do now exists; S7 makes it findable, supportable and honest on paper. **(1)** A district
+that added its own mapping can SEE the file: Mapping's card grows a text-tier "Show this district's mapping file"
+that reveals the path, lets them copy it and opens the folder — because when a conversion looks wrong support asks
+for that file and nothing in the app says where it lives. Deliberately NOT a YAML text dump: it is one small
+readable file, support wants the FILE, and `CUSTOM_ORIGIN_NOTE` still promises no text-editing surface. **(2)** The
+plan's sharpest cost — a vendor base change breaking a district's overlay at 2 a.m., where no CI gate can ever see
+it — gets its floor PINNED (that night records a FAILED run with the bounded `config` category, never a crash
+before the record) plus a positive twin in the packed-exe smoke proving a frozen exe really does read and run a
+user-dir overlay. **(3)** The docs catch up: the vendor doc FREEZES the overlay shape a base change must be tested
+against, the output contract admits a second config author, PRODUCT_SPEC gains the journey and stops saying new
+configs are added by hand, the QA checklist gains a row per new surface, CLAUDE.md gains one dense subsection.
+**Done means:** support can ask for the file, a vendor changing a base knows what will break, and the certification
+gate this release owes is a written decision rather than a forgotten one. **What you're accepting:** S7 RECORDS the
+certification disposition — it does not run the three passes (one is a manual walk on a Windows exe on your
+machine) — and the whole feature's CI result is read once, at the PR, as the plan's closing gate.
+
+#### 7.1 The export affordance — reveal the file, never dump its text
+
+- **Placement: the CURRENT-mapping card, `origin == "user"` only**, beneath S6's change door; the "Switch to" card
+  gets NO export door (you export the district this computer converts — two paths on screen are two answers to
+  "which file?"). `_summary_card`'s `action: ft.Control | None` widens to `actions: Sequence[ft.Control] = ()` (one
+  signature, both call sites, `_edit_door` untouched) so both controls ride one wrapping Row.
+- **Constants on `screens/mapping.py`** (prefix `MAPPING_`, joining the S6 sweep): `MAPPING_EXPORT_LABEL = "Show
+  this district's mapping file"` · `MAPPING_EXPORT_TITLE` · `MAPPING_EXPORT_NOTE` (one sentence — a small text file,
+  support may ask for it; no vague-future word, no `BANNED_WORDS` member, and **no invitation to edit it**, which
+  would retire a promise S6 deliberately left standing) · `MAPPING_EXPORT_OPEN_LABEL = "Open folder"`. That label
+  duplicates Convert's inline literal (`convert.py:_output_folder_row`) **knowingly** — the two rows open DIFFERENT
+  folders and a shared factory label would imply one affordance; declared here so the sweep sees it, duplication
+  named in a comment.
+- **Progressive disclosure, session-local.** The trigger swaps for a block inside the same card:
+  `MAPPING_EXPORT_TITLE` (`type_body`/W_600) · the path as `selectable=True` muted text ·
+  `components.copy_button(page, path)` (help.py's house pattern — a locked-down server may have no other route) · a
+  secondary `MAPPING_EXPORT_OPEN_LABEL` + `ft.Icons.FOLDER_OPEN_ROUNDED` · `MAPPING_EXPORT_NOTE`. Reveal state lives
+  in the view closure, **never in `config.json`** — a disclosure toggle is not a district's setting.
+- **Open folder opens the DIRECTORY**, `authoring.overlay_path(sis).parent`, through `convert_output.open_folder` —
+  the ONE per-OS dispatcher (best-effort, never raises), imported from `ui_flet/convert_output`, never from a screen.
+- **TOTAL, never a dead affordance.** `overlay_path` validates the id and can RAISE; the trigger renders only when
+  the path resolves AND `.is_file()` — one stat per mount on the user branch only (the S4b cost note), so a
+  hand-deleted overlay offers no path to nothing and a shipped row is never stat'ed. Any raise ⇒ nothing rendered.
+- **Design + PII.** Text tier, so the Switch card's "Use this mapping" stays the screen's ONE filled primary in the
+  revealed state too (S6's list-equality pin extends to it); factories + `tokens` only; `districtsync-design` runs.
+  The path carries the OS account name: shown and copied by the admin, **interpolated into no new log line**
+  (swept). `open_folder`'s pre-existing WARNING can echo an `OSError` filename — the same exposure Convert's row
+  already has, in a log whose startup banner already prints the profile dir. No new exposure, no write of any kind.
+
+#### 7.2 The breaking-base pin, and the exe-smoke positive twin
+
+- **The pin — `tests/test_pipeline_run_store.py`, new `TestCorruptUserOverlayRecordsAFailedRun`.** Today's
+  `config`-category coverage is an unknown id and a monkeypatched `load_config` raise; neither is a real user-dir
+  file. The new class writes bytes to `authoring.overlay_path("sd93custom")` (the autouse `isolated_user_profile`
+  puts `user_mappings_dir()` in `tmp_path`) in two shapes — YAML that does not parse, and YAML that parses but fails
+  Pydantic (`enabled_entities: [Nope]`) — and asserts, for `source="scheduled"`: `SystemExit(1)`, `status ==
+  "failed"`, `error_category == "config"`, the record's `sis_type` being the custom id, `"error" not in` it (the
+  privacy split). **Positive twin, same class:** the SAME id written properly (an `authoring.OverlaySpec` built
+  locally — **never** importing `tests/test_config_authoring.py`, which inverts the test dependency, the S2b lesson)
+  records `success`, so the red half is the corruption, not the harness. Nothing asserts repair — the app never
+  rewrites a user's file.
+- **The exe twin — `scripts/ci_flet_pack_smoke.py`, a FIFTH CLI phase `"user-overlay"`,** inserted between
+  `write-run` and `corrupt-profile` in `CLI_SMOKE_PHASES` (that dict is the only place order lives;
+  `corrupt-profile` stays LAST). Phase-4's shape verbatim: refuse without `DISTRICTSYNC_DATA_DIR` (it plants bytes;
+  `--allow-real-profile` does not extend to it) · **negative control FIRST** — `--sis sd93custom --dry-run` before
+  planting ⇒ non-zero (the exe does not already know the id) · plant `ctx.seam_dir / "mappings" /
+  "sd93custom_mapping.yaml"` from a module constant `_SD93_OVERLAY_YAML` whose renames reproduce the SD74 fixture's
+  filenames · re-run ⇒ exit 0, `"=== DRY RUN"` in stdout, the new log slice naming `sd93custom` · `finally` unlinks
+  ONLY the planted YAML. `ci.yml` needs NO change (it runs `--phase all`) and the script stays standalone — it
+  imports nothing from `src/`. **Literal tie-back** (no-vacuous-greens): a parity test asserts `_SD93_OVERLAY_YAML`
+  is EXACTLY `authoring.build_overlay(<the same spec>)`'s text and `load_config`s cleanly once written into a user
+  dir (the script is importable from the suite — `conftest` registers it). **What the phase claims**, in its
+  docstring so the plan's own sentence stays true: the MECHANISM (a frozen exe resolves `user_mappings_dir()`,
+  deep-merges a `_base`, converts) and **no district's content** — no CI gate ever validates a user-dir config.
+
+#### 7.3 The docs, file by file
+
+1. **`docs/developer/adding-district.md` — a new `## Self-service overlays` section** before `## District config
+   reference` (it is not a step in the vendor's own walk). It **FREEZES the shape**: the emitted keys in
+   `authoring._ROOT_KEY_ORDER` order — `_base` (one of `ALLOWED_BASES`), `district_name`, `district_domains`,
+   diff-only `global_config` (+ the chain-companion rule: a scope key always drags `homeroom_grades` out, because
+   deep merge REPLACES lists), per-entity `source_files` renames propagated to every role **and**
+   `school_year_sources`, `authored_with` — and what is deliberately absent (`version:`, `sis:`, both inherited).
+   Then **what a vendor must check before changing a base**: never rename/repurpose a `global_config` key an overlay
+   names literally · a changed list default is REPLACED, so re-check the grade chain resolves for a secondary-only
+   overlay · renaming a bundled `source_files` filename orphans a rename key (fail-loud ⇒ a `config`-category FAILED
+   run, §7.2) · removing an entity breaks an overlay's `enabled_entities` · **no CI gate ever sees a user-dir
+   config**, so this frozen shape plus the FAILED-run floor IS the mitigation. Closes with the local reproduction
+   (`authoring.write_overlay` + `--sis sd##custom --dry-run`) and `sd<num>custom` as the reserved namespace.
+2. **`docs/developer/output-contract.md` — an authorship note in `## Config schema — the other contract`.** Its two
+   future-tense sentences ("Phase 2's mapping creator will generate configs against it", "…should validate key names
+   on the way in") become present tense, and 2–3 sentences state that configs now have TWO authors — the vendor's
+   bundled files, gated by `make validate-config` in CI, and a district admin's user-dir overlay, gated only at load
+   plus the activation dry-run — which is why the additive-key rule binds harder. **No CSV contract change, no
+   changelog row, no `contract_version` bump, NO dated `confirmed` stamp**: the doc-wide stamp population stays at
+   exactly 6, a test S7 leaves green without editing.
+3. **`docs/claugentic-PRODUCT_SPEC.md` — a `### Self-service district setup` feature section** after `### Mapping
+   review & switch` (Flow: two doors → four forms → Your files → test conversion → "Save district settings"; States:
+   error · refused-needs-test · stale-provenance; What good feels like: nothing becomes the active district
+   untested, a shipped mapping is never editable, support can always be given the file), **two AC entries** in the
+   JSON block — `AC-selfserve-1` (create → test → activate on a scratch profile) and `AC-selfserve-2` (both re-gate
+   refusals change nothing; the export reveals a path in that profile) — and a **correction to `## What's
+   deliberately out (today)`**: the column-mapping editor stays out, but "New configs are added by hand in
+   `config/mappings/`" is now false for a district's own mapping. `docs/claugentic-PRODUCT.md` gets the matching
+   paragraph beside its "my district isn't listed" line (`:469`): the dead end became a door.
+4. **`docs/developer/qa-checklist.md` — EIGHT rows, prose count 26 → 34**, every one under
+   `DISTRICTSYNC_DATA_DIR`: `8` launch-page not-listed → wizard creator end to end · `8a` Mapping's CREATE door on
+   an already-configured install · `8b` the CHANGE door, with a shipped row's absence of one in the same look · `8c`
+   the Files step including three real renames (input pointed at a copy of `tests/snapshots/input`, whose filenames
+   are SD74's) · `8d` the test conversion and its three refusals (names unsaved · no output folder · a FAILED run's
+   bounded category) · `8e` the re-gate — hand-edit the overlay, then press Mapping's Apply and Settings' folders
+   Save: both change NOTHING (check `config.json` after each) and the nightly is not re-registered · `8f` the
+   "written with an older version" note (hand-bump `authored_with`) · `8g` the export (reveal, copy, Open folder
+   lands in the scratch profile's `mappings`).
+5. **`docs/partner/installation.md` — two touch-ups only.** The `mappings/*.yaml` table row stops attributing the
+   file to the DistrictSync team ("…or added by you in the app — one small readable text file per district,
+   `sd<number>custom_mapping.yaml`, kept across exe upgrades"), and Wizard Step 1's "If your district is not listed,
+   contact SpacesEDU support." names the in-app path, support still offered. No new section.
+6. **`docs/claugentic-ARCHITECTURE_TREE.md`** — refresh the `src/ui_flet/screens/mapping.py` line for the export;
+   every new module already has its own line (S1/S3/S5 added them). Verify with the pre-commit gate, not by eye.
+   **7. `CLAUDE.md`** — §7.5.
+- **Parity for every doc literal: `tests/test_creator_doc_copy_parity.py` (NEW)**, in
+  `tests/test_ui_flet_band_copy_parity.py`'s shape — a doc → constant-name map pinned BOTH ways (a declared quote
+  present verbatim; a doc declared not to quote it must not contain it). Covers
+  `creator.CREATOR_ENTRY_LABEL`/`GATE_RUN_LABEL`/`GATE_CONFIRM_LABEL`/`FILES_SAVE_LABEL`,
+  `mapping.MAPPING_CREATE_LABEL`/`MAPPING_EDIT_LABEL`/`MAPPING_EXPORT_LABEL`, `mapping_catalog.CUSTOM_ORIGIN_LABEL`,
+  plus two DERIVED rows rather than hand-listed ones — `authoring.overlay_path("sd93custom").name` for
+  installation.md's filename claim and `authoring._ROOT_KEY_ORDER` for adding-district.md's key list **in order** —
+  and the cheap row-count check that closes ROADMAP gate item (3) (the checklist's prose count equals its rows).
+
+#### 7.4 INVARIANTS — the three remaining entries (S1's floor-direction entry is (i) of four)
+
+File format: a bold one-line headline, `_(Plan 0044 S…, date · files.)_`, the why-it-bit paragraph, an explicit
+"do not" list.
+
+- **(ii) An emitted overlay can never name one source-file ROLE two ways: the rename map is keyed by ORIGINAL
+  filename, propagated to every reference including `school_year_sources`, and the emission is REFUSED rather than
+  shipped half-renamed.** _(Plan 0044 S1+S4 · `src/config/authoring.py` (`_build_renames`, `_assert_no_divergence`,
+  `OverlaySpec.__post_init__`) + `src/ui_flet/config_editor.py` (`distinct_source_files`, `file_form_rows`).)_ One
+  file is named by up to three entity roles; a partial propagation LOADS CLEANLY and silently drops an entity's
+  source. The chain refusal (a target may not also be an original, case-folded) and the ONE fold
+  (`folded_filename`) are part of the same rule. The honest limit — per-ROLE divergence is inexpressible on this
+  model — stays a ROADMAP line and may not be closed by weakening the check.
+- **(iii) The creator's resume token and its activation write are SEPARATE and each single-pathed:
+  `creator_pending_sis` is ADVISORY and may never activate anything, and `activate_creator_config` is the ONE
+  writer of `sis_type` for a user config — district and tested digest in ONE save.** _(Plan 0044 S3 ·
+  `src/config/app_config.py` (`creator_save`, `activate_creator_config`, `_ADVISORY_FIELD_PREFIXES`) +
+  `src/ui_flet/screens/creator.py` (`creator_gate_current`).)_ The `creator_` PREFIX is load-bearing — it is what
+  makes a creator-only save on an unreadable profile REFUSED; `creator_save` refuses every non-`creator_*` key,
+  `sis_type` most of all, so no creator path becomes a back door; one save means no crash leaves a district active
+  with no recorded test, or a test recorded against no district. Do not add a second activation path, widen
+  `creator_save`'s key rule, or drop the prefix.
+- **(iv) The verified fact is DIGEST-keyed and fails SAFE: a refused or failed invalidation still leaves a digest
+  that no longer matches, and a non-matching digest can only re-ASK for a test.** _(Plan 0044 S3+S6 ·
+  `src/ui_flet/config_editor.py` (`stored_verified_digest`, `verified_is_current`, `activation_allowed`) +
+  `src/config/authoring.py` (`resolved_digest`, `current_digest`).)_ The fact is keyed by the digest of the whole
+  RESOLVED config, so an edit invalidates it by construction rather than by anyone remembering to clear it — which
+  makes the dangerous direction (a stale PASS) structurally unreachable and prices the failure direction at one
+  extra test run. A bundled config never reads the digest at all. Do not key it on mtime or app version, do not
+  "repair" a mismatch by re-stamping, do not add a second spelling of the comparison.
+
+#### 7.5 CLAUDE.md — the subsection to paste
+
+In the **Desktop UI (`src/ui_flet/`)** section, immediately AFTER the `Pure COUNTED (tested) logic:` paragraph (so
+the pure-module list stays in one place); that paragraph gains `config_editor` and `preflight` to the COUNTED list
+and `screens/creator.py` to the coverage-omitted list. Also, in the `district_domains` paragraph, the phrase fix:
+**"unclaimed = shown in every state" → "unclaimed = shown in every UNMATCHED state"** (filter tier (ii) carries no
+unclaimed row unless it is the saved or picked district). Verified 2026-09-03:
+`tests/test_config_district_domains.py:59` repeats the phrase in a comment — correct it in the same change; no
+assertion quotes it.
+
+> **Self-service districts (plan 0044).** A district admin can author their OWN mapping in-app — no vendor PR, no
+> release. `src/config/authoring.py` writes a THIN overlay YAML into `paths.user_mappings_dir()`
+> (`sd<num>custom_mapping.yaml`): `_base` (one of `ALLOWED_BASES`) + `district_name` + `district_domains` +
+> diff-only `global_config` + per-entity `source_files` renames + `authored_with`; **no `version:`/`sis:`**
+> (inherited through `_base`, so the bundled-only declared-range parity stays intact) and the grade-chain COMPANION
+> rule (a scope key always emits `homeroom_grades` too — deep merge REPLACES lists).
+> `src/config/bc_district_domains.py` is a placeholder-quality PREFILL table (60 districts / 63 public staff
+> domains), never a source of truth. Surfaces: `screens/creator.py` (`build_creator` — the host seam; the wizard's
+> District step and Mapping's panel are its TWO hosts, and it may never import a host) over the pure
+> `ui_flet/config_editor.py` (`CreatorForm` — grade chain valid BY CONSTRUCTION — the files form,
+> `activation_allowed`, `overlay_staleness`, `humanize_config_error`) + the pure `src/etl/preflight.py`
+> (expected-column derivation over `PipelineResult.input_columns`; a column in NO file is REPORTED, never a
+> verdict). The `creator_` `AppConfig` family is ADVISORY BY PREFIX (`_ADVISORY_FIELD_PREFIXES`, beside
+> `identity_`/`window_`): `creator_save` is the ONE `creator_*` writer and refuses any other key — `sis_type` most
+> of all — while `activate_creator_config` is the ONE user-config activation, writing district + tested digest in
+> ONE save. **The verified fact is DIGEST-keyed** (`authoring.resolved_digest` over the resolved model), so an edit
+> invalidates it structurally and a mismatch can only re-ASK. FOUR `sis_type` writers (wizard District step ·
+> creator activation · Mapping Apply · Settings folders Save); the three that can select a USER config reduce to ONE
+> comparison (`creator.creator_gate_current` → `config_editor.activation_allowed`), so no surface activates what
+> another refuses. Provenance is visible everywhere: `ConfigSummary.origin` + `CUSTOM_ORIGIN_LABEL` in all four
+> pickers and on Mapping's card, which also carries the change door, the staleness notes and the export reveal
+> (`authoring.overlay_path` + `convert_output.open_folder` — the path is shown, never logged). Floors:
+> `district_domains` RAISES for a bundled config and WARNS-and-drops for a user-dir one (INVARIANTS — never
+> invert); **no CI gate ever validates a user-dir config**, so a base change that breaks an overlay surfaces as a
+> FAILED run with the bounded `config` category (pinned in `tests/test_pipeline_run_store.py`) plus a degraded
+> read-only Mapping — which is why `docs/developer/adding-district.md` FREEZES the overlay shape a vendor tests base
+> changes against. Threat model, stated: the gate stops an admin MISTAKE, not tampering (a hand-edited `config.json`
+> or a hand-dropped YAML bypasses it).
+
+#### 7.6 DECISIONS + ROADMAP closures
+
+- **DECISIONS — spec only what is still missing.** Verified 2026-09-03: none of the four ratified adjudications has
+  its own dated line (the 2026-08-27 owner entry records domain DERIVATION and the gate's existence; the 2026-09-02
+  lines record S1/S3/S4 DEVIATIONS). Re-check at implementation time — S6's land record may take (a) — then write
+  the missing ones, one dated line each: **(a) activation scope** (four `sis_type` writers, three consulting ONE
+  comparison, Convert deliberately ungated, the threat-model sentence); **(b) domains persistence** (confirmed
+  domains are PERSISTED into the overlay, so a self-served district scopes every picker exactly as a shipped one
+  does; the escape — blanking the stored address in Settings — stands; CLAUDE.md's phrase corrected); **(c) version
+  emission** (no `version:` in an overlay, keeping `TestDeclaredRangeVersusSupported` bundled-only, and what would
+  force a change: an overlay-only key); **(d) advisory-writer shape** (the `creator_` family behind
+  `_guarded_field_write`'s five obligations with two thin prefix-scoped wrappers, chosen over generalizing the
+  identity writer).
+- **ROADMAP — CLOSE exactly one item:** the Brief-0037 **"Phase 2 = the district self-service config editor"**
+  bullet, marked LANDED with the plan link and its certification sentence rewritten to point at §7.7's recorded
+  disposition. **LEAVE OPEN** (backlog, not debt): the S1-gate items (per-role divergence · SD58/SD70 table
+  quality), the S3-gate items (a) unlinted `scripts/` and (c) the un-gated `scripts/` tree section, the S3-review
+  items (the `mbponly` grades card; the per-instance gate single-flight), S4's two tier-gap residuals, S5's
+  padded-lookup line, the detailed-editor deferred phase, the partner-docs-surface item. S1-harvest item (3)
+  (checklist count drift) is CLOSED for this doc by §7.3's row-count test.
+
+#### 7.7 Certification disposition (D-0037-6) and the CI land gate
+
+- **The three components, and what each runs against.** (1) **Audit pass** — `/claugentic-dev-harness:audit` against
+  `docs/claugentic-standards/`, at RELEASE level over the accumulated S1–S7 set (each slice's own Stage-7
+  adversarial pass is already on record; the cross-set pass is what is missing). (2) **Product-gap pass** —
+  `/claugentic-dev-harness:product` in gap mode against `docs/claugentic-PRODUCT_SPEC.md` **as §7.3 leaves it**: the
+  new feature section and its two AC entries are what the pass reads, so the docs land BEFORE the pass, not after.
+  (3) **QA walk on a BUILT exe** — `make build-win` on the owner's Windows machine, walking
+  `docs/developer/qa-checklist.md` including the eight new rows; CI is structurally blind to all of them (native
+  dialogs, real profile state, whether anything renders).
+- **S7 records the disposition; it does not run the passes** — (3) needs the owner's Windows machine, and (1)/(2)
+  are release-gate work rather than slice work. Two acceptable outcomes, both explicit: **run all three before the
+  release that ships plan 0044** (the 2026-08-05 re-proposal condition as written, and the 2026-08-17 entry's
+  warning that a fourth silent override makes the rule nominal), or **an explicit dated DECISIONS entry** naming
+  which component is deferred, why, and what it does NOT prove — the 2026-08-31 v3.14.0 entry is the model for an
+  owner-driven substitution recorded honestly. If the owner says nothing, S7 lands a DECISIONS line stating the pass
+  is OWED and UNRUN; never an implied pass, and no "audited" claim in any doc S7 touches.
+- **The CI land gate — the plan's closing gate.** S1–S6 each landed with CI unread (`ci.yml` fires on push-to-main /
+  PRs to main only), owed at PR time under the owner's one-PR-for-the-feature decision. S7 discharges it: `gh pr
+  checks --watch` on that PR, the three-OS result READ and QUOTED in the plan's `## Land record — S7` before the
+  plan is called done. The 2026-07-30 rule's motivating incident was exactly this — a Linux-only failure sitting on
+  `main` for three consecutive pushes.
+
+#### In-scope standards dimensions
+
+`docs-and-traceability` (the primary axis: a frozen vendor-facing shape, a second config author named, every new
+surface walkable, four INVARIANTS entries, the decisions recorded) · `product-ux` (an export the admin can act on;
+text tier so ONE filled primary survives; progressive disclosure; no invitation to hand-edit) · `privacy` (a profile
+path shown and copied, never logged or persisted; no district content in CI) · `reliability-resilience` (the
+FAILED-run floor pinned on a REAL corrupt user file; the export TOTAL over a raise and a missing file) ·
+`observability-ops` (no new log line; the bounded `config` category is the nightly's only claim) · `testing` (a twin
+for every absence) · `maintainability-structure` (one signature widened, no new module, no cross-screen import, the
+script still standalone) · `security` (no new egress, write, subprocess shape or `sis_type` writer).
+
+#### Tests to add
+
+- **`tests/test_ui_flet_creator_flow.py`** — the export: rendered on a user-authored CURRENT card, **absent** on a
+  shipped card in the same render (the twin), absent when the overlay file does not exist, absent when
+  `overlay_path` raises · the revealed block carries the path text, a copy control and the Open-folder button ·
+  `convert_output.open_folder` monkeypatched and asserted to receive `overlay_path(sis).parent`, **never the file** ·
+  the ONE-filled-primary list equality extended to the revealed state · the new constants join the sweep via an
+  `S7_COPY_CONSTANTS` tuple (with `test_every_named_constant_exists`'s count bumped — a sweep going quiet is the S4
+  lesson) and the banned-vocabulary / promises-nothing rows · a log sweep asserting no new line interpolates the path.
+- **`tests/test_pipeline_run_store.py`** — `TestCorruptUserOverlayRecordsAFailedRun` (§7.2), both corruption shapes
+  plus the success twin. **`tests/test_config_authoring.py`** — the exe-smoke literal parity (the script's
+  `_SD93_OVERLAY_YAML` equals `build_overlay`'s text for the same spec, and loads cleanly from a user dir).
+  **`tests/test_creator_doc_copy_parity.py` (NEW)** — the doc→constant map both ways, the two DERIVED rows, the
+  checklist row-count check.
+- **Left green without editing:** `tests/test_output_contract_doc.py` (stamp count 6, the no-doc-wide-stamp
+  sentence) and `tests/test_config_district_domains.py` (its `:59` comment corrected in the same change).
+- **Regression:** full suite · SD74 golden byte-identical · `make validate-config` 20/20 · tree-check ·
+  ruff/format/mypy/bandit/email scan · the five-phase `--cli-smoke` run (locally against a built artifact if one is
+  at hand, else in CI) · `districtsync-design` pass on the Mapping change · **CI's own result read and quoted**.
+
+#### Acceptance criteria
+
+1. A user-authored CURRENT mapping offers "Show this district's mapping file"; revealing it names the real
+   `overlay_path`, allows copying it, and opens the containing folder through the one per-OS dispatcher. A shipped
+   mapping, a missing overlay file and an unresolvable id each offer nothing — never a dead control, never an error.
+2. Mapping still has exactly ONE filled primary in every state, revealed state included; the export writes nothing
+   to `config.json` and interpolates the path into no log line.
+3. A corrupt USER-DIR overlay driving a scheduled run exits 1 and records a FAILED run with `error_category ==
+   "config"` and no free text, with a success twin proving the mechanism.
+4. The packed exe converts through a planted user-dir overlay under `DISTRICTSYNC_DATA_DIR`, with a pre-plant
+   negative control, cleanup of only what it planted, `corrupt-profile` still last, and the planted YAML tied back
+   to `authoring.build_overlay`.
+5. `adding-district.md` states the emitted key set in `_ROOT_KEY_ORDER` order, what is absent and why, and the five
+   things a vendor must check before changing a base — pinned to the module rather than hand-copied.
+6. `output-contract.md` names the second author and the harder additive-key obligation, with no CSV contract change,
+   no `contract_version` bump, and the dated-stamp population still exactly 6.
+7. PRODUCT_SPEC carries the feature section plus two AC entries and no longer claims new configs are added only by
+   hand; PRODUCT carries the matching paragraph.
+8. The QA checklist carries the eight new rows, its prose count matches its table, and every row runs under
+   `DISTRICTSYNC_DATA_DIR`.
+9. CLAUDE.md carries §7.5's subsection verbatim, the pure/omitted lists include the new modules, and the
+   "unclaimed" phrase reads "every UNMATCHED state" in both the doc and the test comment quoting it.
+10. INVARIANTS carries entries (ii)–(iv) in the file's format; the missing DECISIONS adjudication lines exist; the
+    ROADMAP Phase-2 item is closed and nothing else is closed with it.
+11. The certification disposition is RECORDED (run-before-release, or a dated deferral naming what it does not
+    prove), and the feature PR's three-OS CI result is read and quoted in the S7 land record.
+12. All gates green: ruff/format, mypy, bandit, tree-check, email scan, 20-config pin, full suite, SD74 golden
+    byte-identical.
+
+#### Open questions for the owner
+
+- **Export = reveal the path, or copy the YAML text?** Default and recommendation: **reveal the path + Open folder +
+  copy the path**. The file is one small readable YAML, support asks for the FILE, a clipboard of YAML invites
+  hand-edits the app cannot validate, and `CUSTOM_ORIGIN_NOTE` still promises no text surface. A "copy the contents"
+  button is one reviewed line later if support actually asks.
+- **Is the qa-checklist walk owner-run or agent-run?** Default **owner-run** — a manual pass on a built Windows exe
+  is the one thing no agent here can do. S7 writes the rows; the walk is §7.7's component (3).
+- **Certification timing** — run all three before the release that ships this plan, or record a dated deferral? S7
+  writes whichever the owner chooses and will not imply a pass.
+- **Does PRODUCT_SPEC's `AC-identity-2` expectation need re-wording?** Its "the not-listed note says we'll need to
+  build a mapping" is still what the launch page says (`NOT_LISTED_NOTE_TAIL` is unchanged by this plan), so S7
+  leaves it alone — flagged because the self-service door arguably belongs in that copy, which is a copy change
+  beyond this slice.
+
+_Spec self-check:_
+- **The riskiest element is the docs' truth, not the button.** The export is ~40 lines behind one `is_file()`; what
+  can actually harm someone is a FROZEN shape a vendor trusts — so §7.3(1) pins the key list to `_ROOT_KEY_ORDER`
+  and §7.4(ii)–(iv) record the three rules a future "simplification" would break.
+- **The plan's sharpest cost gets a real pin, not a mock.** The existing `config`-category tests use an unknown id
+  and a monkeypatched raise; S7's writes actual bad bytes into `user_mappings_dir()` with a success twin beside it,
+  because the claim ("a broken overlay tells the admin next morning") is about a FILE, not a patch.
+- **One deviation named in-line:** the "Open folder" label is duplicated between Convert and Mapping deliberately
+  (two folders, two sentences) rather than hoisted into `components` — a label is copy, and copy lives on the
+  surface that speaks it.
+- **Vacuous-green watch.** "No trigger on a shipped row", "nothing logged", "no stamp added", "no contract bump" are
+  absence claims — each carries its twin (the user-row render, the sweep's positive index, the untouched stamp-count
+  test, the golden), and the exe phase's negative control runs BEFORE the plant so its exit 0 cannot be true for any
+  other reason.
+- **Not decided here:** whether the certification components run (owner's call, recorded either way), whether the
+  launch page's not-listed copy should mention the new door, and the per-ROLE divergence limit — all three stay
+  named rather than quietly resolved.
+
+---
+
+## Land record — S1 (2026-09-02)
+
+- **Commits (branch `claude/plan-0044-implementation-nrdj2z`):** `is_valid_district_domain` predicate · BC domain table (60 districts / 63 domains, both pinned) · `resolve_config_path` + `validate_overlay` + user-dir domains floor · `authoring.py` (OverlaySpec / build_overlay / write_overlay / delete_overlay) · harness docs (INVARIANTS floor-direction entry, ROADMAP (b) closed, DECISIONS) · reviewer fixes.
+- **Deterministic gates (local, Linux):** full suite 4,676 passed / 47 skipped / 1 PRE-EXISTING failure (`test_ui_flet_filepicker.py::TestCheckWritable::test_unwritable_dir_is_rejected` — the container runs as root; fails on a clean baseline too) · `ruff check` + `ruff format --check` clean · `python -m mypy src/ --exclude src/ui_flet` clean · bandit clean · `check_no_emails` OK · `make validate-config` 20/20 · SD74 golden byte-identical · `authoring.py` 100% covered.
+- **Acceptance:** (1) `write_overlay(SD93)` → `load_config("sd93custom")` → `python -m src.main --sis sd93custom --input tests/snapshots/input --dry-run` exit 0 (renames reproducing SD74's filenames; also pinned in-process with a no-renames twin); (2) all-defaults overlay `to_raw_dict`-equal to its base for all four `ALLOWED_BASES`; (3) user-dir bad domain row → WARN-and-drop, bundled → raise; (4) no existing test flipped.
+- **Reviewer sign-off (Stage 7, adversarial architect pass):** 1 BLOCKING fixed (`_require_bare_filename` accepted Windows drive-relative / ADS `:` names, embedded control chars and reserved device names) · 2 SHOULD fixed (`sis` emission — see the flagged deviation; the shipped-domain parity test enumerated the user dir) · 11 NOTEs: 3 promoted to ROADMAP (per-role divergence, rename chains, SD58/SD70 table quality), the rest accepted as documented.
+- **CI:** NOT read — `ci.yml` triggers only on push-to-main / PRs to main. Owed at PR time (flag above).
+- **Housekeeping landed alongside:** `.githooks/pre-commit` executable bit (the tree gate had never run on Linux/macOS) · a web `SessionStart` hook installing the toolchain.
+
+## Land record — S2 + S3 (2026-09-02)
+
+- **S2 commits:** `ConfigSummary.origin` + `CUSTOM_ORIGIN_LABEL` ("Added on this computer") in every picker and on Mapping's card (`origin_badge`); invalidation rule at both ends of the config↔UI seam; pins for identity resolve / not-listed-card retirement / friendly name / the #12 non-creator pick path.
+- **S3 commits (α β γ δ + two fix rounds):** the `creator_` advisory family behind one `_guarded_field_write` (identity messages byte-identical), `activate_creator_config` (ONE save), `is_config_digest`; `resolved_digest` over the whole validated model + `authored_with` provenance stamped by `write_overlay`; pure `config_editor` (grade chain valid by construction); `setup_flow` creator mode (six steps, four safe-default inputs, `can_finish` gated on activation); `screens/creator.py` (`build_creator` host seam, 42 copy constants swept) + `creator_gate_job` (refuses an unusable output dir before importing the pipeline).
+- **Deterministic gates (local, Linux, after the last fix):** full suite 5,149 passed / 47 skipped / 1 PRE-EXISTING root-container failure · ruff + format clean · `python -m mypy` clean (non-UI + `config_editor`) · bandit clean · email scan OK · `make validate-config` 20/20 · tree-check OK · SD74 golden byte-identical.
+- **Reviewer sign-offs (Stage 7):** foundations pass (S2 + α/β/γ) — no BLOCKING in reviewed code, 3 SHOULD fixed; δ pass — 2 BLOCKING fixed (grades seed; superseded overlay), 5 SHOULD fixed (Finish asserted end-to-end; `creator.py` module; field rules into `config_editor`; `check_row`; one spelling + lazy catalog), NOTEs ledgered above. Security/PII probes clean on both passes.
+- **Spec deviations, all in DECISIONS:** overlays inherit `sis`; `build_creator` gained `stage` + `on_written(note)`; the creator lives in `screens/creator.py` from S3, not S6. `sis_type` write sites are FOUR (the gated one added).
+- **CI:** still not read — owed at PR time (owner: PR after the UI slices).
+- **Local test recipe for the owner:** `DISTRICTSYNC_DATA_DIR=<scratch abs path> python -m src.main` → launch page → (any address, or the not-listed escape) → wizard District step → "Set up my district" → four forms → Continue → Folders (point input at a GDE folder, e.g. a copy of `tests/snapshots/input/` — note SD74's filenames differ from the standard, so with S3 alone the test conversion reports them missing; S4 adds the rename form) → "Your files" → "Run a test conversion" → "Use this district" → Delivery/Schedule → Finish.
+
+## Land record — S4 (2026-09-02)
+
+- **Commits:** the filename form (`distinct_source_files` · `file_form_rows` · `CreatorForm.renames`/`with_rename` · `renames_from_resolved` · `files_primary_action` · public `validate_source_filename` + the folded chain/duplicate refusals · the "Your files" rows + ONE "Save these file names" above the gate · fifth callback `on_files_saved`) + the review-fix commit (gate/confirm refuse while unsaved · `on_blur` re-tier · host-owned `pending` map disabling the footer Continue · `school_year_sources` slot union · divergence-aware resume · one `folded_filename` · refused names never shown as in force).
+- **Deterministic gates (local, Linux, after the fixes):** full suite 5,312 passed / 47 skipped / 1 PRE-EXISTING root-container failure · ruff + format clean · `python -m mypy` clean · bandit clean · email scan OK · `make validate-config` 20/20 · tree-check OK (100 files) · SD74 golden byte-identical.
+- **Reviewer sign-off (Stage 7):** 2 BLOCKING fixed · 3 SHOULD fixed · 1 NOTE fixed · 2 tier-gap residuals to ROADMAP. Security/PII, write-correctness and docs clean on the reviewer's probes.
+- **Closes:** ROADMAP "S1 review item 2" (rename chains). **Records:** DECISIONS (pending map host-owned; gate refuses while unsaved). `FLET_1.0_CONVENTIONS.md`: `Dropdown(editable=True)` declined + `TextField.on_blur` verified.
+- **CI:** still not read — owed at PR time (owner: PR after the UI slices).
+- **Milestone:** S1–S4 = the locally-testable self-service UI (standard AND renamed filenames). Remaining: S5 (missing-column report), S6 (Mapping edit + re-gate on Apply/folders-card Save), S7 (export + docs + certification disposition).
+
+## Land record — S6 (2026-09-03)
+
+- **Commits:** Mapping hosts `build_creator` in a `body_host` panel — CREATE door ("Set up a district that isn't listed", owner-requested), CHANGE door (user rows only), resume of a pending creation; `config_editor.activation_allowed` → `ActivationVerdict`, the ONE tested? comparison behind Mapping's Apply, the folders-card Save, the wizard's creator activation AND (review find) the wizard's standard District step — FIVE `sis_type` writers; `_after_switch` shared by Apply and activation; `MAPPING_STALE_*` provenance notes; host-neutral `GATE_REFUSED_NO_OUTPUT_NOTE` + the output-folder precondition with an Open Settings route; the `unlock` exemption removed; review fixes (Done refuses while names pend; District step gated; staleness memo cleared; folders gate only on change; fresh `AppConfig.load()` at both checks).
+- **Deterministic gates (local, Linux, after the fixes):** full suite 5,534 passed / 47 skipped / 1 PRE-EXISTING root-container failure (a second transient failure belonged to S7-α's then-in-flight smoke phase, since paired) · ruff + format clean on every S6 file · `python -m mypy` clean · bandit clean · email scan OK · `make validate-config` 20/20 · tree-check OK (101 files) · SD74 golden byte-identical.
+- **Reviewer sign-off (Stage 7):** 2 BLOCKING fixed (Done discarding pending names; the fifth ungated writer) · 3 SHOULD fixed · NOTEs ledgered above. Security/PII and the gate's reality at both named sites verified on the real mounts.
+- **Decisions (DECISIONS 2026-09-03):** five writers, one comparison; the folders card gates only when the district changes; Done keyed on `creator_gate_current` alone; the wizard's refusal routes to Mapping rather than hijacking "Set up my district" (hijacking would trap a stale-pick admin behind Discard, which deletes the overlay).
+- **CI:** still not read — owed at PR time (owner: one PR for the feature).
+
+## Land record — S5 + S7 + closing pass (2026-09-03)
+
+- **S5 commits:** `PipelineResult.input_columns` (observed headers per configured filename, empty tuple = absent file) · pure `src/etl/preflight.py` (`expected_columns` over every field-map shape naming a source column, `missing_columns` = present in NO file, `preflight_report` with denominators; TOTAL; empty observation ⇒ no claim; `_looks_like_header` drops stringified junk) · `column_names.normalize_column_name` (the one per-name rule; `helpers.normalize_columns` delegates) · the gate: `GateOutcome.missing_columns` carried ONLY on PASSED with no missing files (the soundness rule in `gate_outcome_for`), `humanize_missing_columns`, the report rendered between counts and actions on both hosts; `FORBIDDEN_PROMISES` retired. **Finding:** the report is the ONLY signal for an absent mapped column (`apply_field_map` blanks it without a data error); the frozen SD74 snapshot genuinely lacks `Next school code` (DECISIONS 2026-09-01).
+- **S7 commits:** the export reveal on Mapping's user-authored current card (path + copy + Open FOLDER; TOTAL; never logged) · `adding-district.md` "Self-service overlays" freezing the overlay shape (byte-accurate to `write_overlay`) · output-contract authorship note (no stamp) · PRODUCT/PRODUCT_SPEC journey + `AC-selfserve-1/2` · qa-checklist rows 8–8g · partner installation touch-up · CLAUDE.md "Self-service districts" subsection + the "every UNMATCHED state" fix · INVARIANTS ii–iv · the corrupt-user-overlay FAILED-run pin (real bytes, two shapes, success + shadowing twins — which found and fixed a torn YAML recording `unknown` instead of `config`) · the exe-smoke `user-overlay` phase (negative control BEFORE the plant; literal parity-tested) · `NOT_LISTED_NOTE_TAIL` now names the self-service door · DECISIONS: the four ratified adjudications + R2-4 + the digest choice · ROADMAP Phase 2 closed.
+- **Deterministic gates (local, Linux, final):** full suite 5,580 passed / 47 skipped / 1 PRE-EXISTING root-container failure (`test_ui_flet_filepicker.py::TestCheckWritable::test_unwritable_dir_is_rejected`, reproduces on a clean baseline) · ruff + format clean · `python -m mypy src/ --exclude src/ui_flet` clean (55 files) · bandit clean · email scan OK (342 files) · `make validate-config` 20/20 · tree-check OK (101 files) · SD74 golden byte-identical throughout.
+- **Reviewer sign-offs (Stage 7):** S5+S7+close-out pass — **no BLOCKING**; 3 SHOULD fixed (qa row 8e / `AC-selfserve-2` asserted a refusal the code deliberately does not give; the writer count stated four ways; the preflight junk-shape guard dead on the validated path); NOTEs fixed (export label pinned both directions; smoke phase numbering; two DECISIONS one-liners). Debt sweep: zero TODO/FIXME/skip/xfail added; every copy constant has a non-test consumer. **Definition-of-Done verdict (reviewer):** substantively done; owed at PR/certification time only.
+- **Owner-driven changes folded in during the build:** S6 before S5 + the Mapping CREATE door; the Files-step decision copy ("Save district settings", verdict-first group, locked-Continue captions, district chip); Family no-email exclusion + Students no-email WARN (separate change, contract 2.2.0).
+- **OWED (owner + PR time):** (1) the owner's local test of the branch and their review findings; (2) the ONE feature PR → **CI read and quoted here** (the 2026-07-30 land gate; no CI run exists for the branch); (3) the **certification disposition** (D-0037-6: audit pass · product-gap pass · QA walk on a BUILT exe) — run before the release, or a dated DECISIONS deferral; S7 wrote no "audited" claim anywhere; (4) Stage 9 retrospect + the plan-file lifecycle disposition.
+- **Flags for the owner (all in the `Flags:` list):** overlays inherit `sis`; `build_creator` seam additions (`stage`, `on_written(note)`, `pending`, `continue_lock_note`); creator in `screens/creator.py`; five writer surfaces; SD58/SD70 prefill-table rows; "Added on this computer" wording; the two tier-gap residuals (footer/Done a press behind on a pick); the `mbponly` grades-card edge.
+
+## Owner review round 2 (2026-09-03)
+
+The owner ran the branch on Windows and reported eight findings. All fixed inline on the branch (no
+subagents — owner's standing instruction for finding rounds). Round 1's fixes are commits `cf4e521`
+and `392343d`; this is round 2.
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | Every Help link **crashed** — `TypeError: handler must be a coroutine function` | `components.open_url` schedules an `async def` CLOSURE. `run_task` gates on `inspect.iscoroutinefunction`, and `Page.launch_url`'s `@deprecated` wrapper is a SYNC function returning the coroutine — so round 1's `run_task(page.launch_url, url)` turned a silent dead click into a visible crash. The test's fake `run_task` had no such guard: it is now the real one, plus a positive twin that AWAITS the scheduled handler. |
+| 2 | Discard deleted an already-saved mapping with no warning, and the deleted district still showed as Mapping's current | Two-press in-place confirm; and the **active district is REFUSED**, not confirmed (`CREATOR_DISCARD_ACTIVE_NOTE`) — no sixth `sis_type` writer, so a discard can never leave the install pointed at a file that is gone. An unwritten draft still discards on one press. |
+| 3 | "Change this district's setup" collided with the rail's **Setup** item | `MAPPING_EDIT_LABEL` → "Edit mapping"; `MAPPING_EXPORT_LABEL` → "Show mapping file"; plus every note that quoted them, and the doc copies the parity pin watches. |
+| 4 | Custom configs sorted by SD number but displayed the bare name | `humanize.friendly_district_name` prefixes `SD<num> - ` for a `sd<num>custom` id (`authoring.custom_sd_number`). READ-time, so the stored name stays bare, existing overlays are fixed with no migration, and all four pickers + Mapping + Convert + Run History inherit it. |
+| 5 | The district number prefilled nothing | `_prefill_from_sd` fills name + domains on change: `config_editor.district_name_seed` (pure, over the bundled names) beside the existing `derive_domains`. Replaceable while untouched — **including the launch page's own opening prefill** — never overwriting a typed answer. Controls are painted in place (no re-render of the field being typed into). |
+| 6 | A custom config was invisible once the admin's email matched a shipped district | `origin == "user"` is an unconditional keep in `filtered_catalog`. Argued in DECISIONS as NOT a reversal of 2026-08-04: it widens by one structural fact, not by a per-surface control. |
+| 7 | Grade checklists still too tall at two columns | Five columns, column-major, empty trailing columns dropped. |
+| 8 | "this district" reads oddly to a district tech; Setup/Settings/Mapping are confusable | (a) fixed: the creator's vocabulary is MAPPING throughout. (b) **NOT fixed — ROADMAP proposal.** Renaming the rail's Setup item is a D7 decision with three candidate answers costed; not taken unilaterally. |
+
+**Also fixed en route (pre-existing, would have failed CI):**
+`tests/test_ui_flet_creator_flow.py::TestTheCreateDoorOnMapping` mounted Mapping without pinning the
+schedule read-back, so it probed the REAL Windows Task Scheduler — the stale-schedule assertion passed
+only on a machine that happened to hold a live `DistrictSync_Daily` task. `_mapping` now pins
+`supports_read_schedule=False` (Mapping's own documented non-Windows behaviour).
+
+**Tests added:** the `run_task` guard + awaited twin · discard confirm / cancel-is-a-no-op / active
+refusal · `district_name_seed` (6) · the SD prefix (5, incl. the shipped-name and raw-id-fallback
+twins) · `custom_sd_number` + a round-trip property · the prefill (5, incl. what-the-admin-typed and
+the written-YAML twin) · the five-column grids + a "no grade was dropped" twin · `origin == "user"`
+survives a match that excludes it, kept by ORIGIN not by its own domain (both with narrowed-shipped-row
+twins; both verified RED with the fix removed).
+
+**Deterministic gates (local, Windows, after round 2) — run on Python 3.13, the interpreter
+`requires-python` and `ci.yml` both name.** A dev-machine 3.10 was in use earlier in this round and
+CANNOT run `tests/test_cli_entry.py` at all (`tomllib` is 3.11+), so a 3.13 environment was installed
+and every gate below re-run under it; the numbers are the 3.13 ones.
+
+- full suite + coverage: **5,639 passed / 41 skipped / 1 deselected**, `TOTAL 7637 stmts, 276 miss,
+  96%` against the 80% gate (13m12s);
+- `ruff check src/ tests/` + `ruff format --check` clean (221 files);
+- `py -3.13 -m mypy src/ --exclude src/ui_flet` clean (55 files);
+- `bandit -r src/ -q -c pyproject.toml` exit 0 · `scripts/check_no_emails.py` OK (342 files) ·
+  `make validate-config` 20/20 · tree-check OK (101 files) · SD74 golden byte-identical.
+
+**Verified against a real scratch profile** (`DISTRICTSYNC_DATA_DIR`), not only in tests: the
+`SD34 - test` label; a user-authored row riding an SD48-matched admin's picker while every other
+district's shipped rows are narrowed away; and both discard states rendering their intended copy.
+
+**Still OWED, unchanged:** the ONE feature PR → **CI read and quoted into a land record** (no CI run
+exists for this branch; `ci.yml` fires only on push/PR to `main`, and `flet-verify.yml`'s three-OS pack
+matrix fires on a PR touching `src/ui_flet/**`, which this does); the **certification disposition**
+(D-0037-6 — audit pass · product-gap pass · QA walk on a BUILT exe), to be recorded in DECISIONS when
+the PR opens, as a plan, not a deferral; Stage 9 retrospect.
+
+## Owner review round 3 (2026-09-03)
+
+Handoff `handoff0044round3.md` plus three owner answers to its open items. Fixed inline on the
+branch (no subagents — standing instruction for finding rounds). **The branch was first merged up
+from `origin/main`**, which had shipped v3.15.0 and v3.16.0 (the first signed Windows build) since it
+was cut: 7 files conflicted on paper, only 2 in fact (`docs/claugentic-DECISIONS.md`, both sides
+appending at the head of a newest-first log — resolved by date, our 09-03 block, main's 09-02 release
+block, then our 09-02 block; and `docs/developer/output-contract.md`'s front matter, resolved to our
+`2.2.0` with an honest `emitted_by` saying `2.2.0` is UNRELEASED and the newest tag still emits
+`2.1.0`). No source file conflicted.
+
+| # | Item | Disposition |
+|---|---|---|
+| A | The D-0037-6 certification entry said **three** components; the rule names **four** | Amended in DECISIONS and in ROADMAP's Phase-2 entry. The fourth, *spec review*, was never dropped — since 2026-08-17 it has been performed INSIDE the product-gap pass, and that collapse had simply never been recorded, so the count silently became three. Both docs now say four, one discharged inside another, and both carry the two standing facts: there is no `/claugentic-dev-harness:product` skill in this installed harness (the `product-designer` agent in elevate mode is the documented substitute), and **neither harness pass runs the app** — which is why the QA walk is the only component that touches a running binary, and why owner rounds 1 and 2 found what no static pass had. |
+| B | Vendor the district NAME table | `NAMES_BY_SD` (60 rows) + total `name_for()` in `bc_district_domains`, same placeholder posture and provenance note as the domains. `screens/creator._shipped_district_names` falls back to it; the pure `config_editor.district_name_seed` is untouched and still takes names as DATA. Names vendored BARE — no `SD<N>` prefix, no `School District` suffix (owner: SD92/SD93 are not that shape). A shipped name still WINS; a district in neither source still opens EMPTY. |
+| C | `creator.GATE_CONFIRM_LABEL` → **"Save district mapping"** | The third leg of round 2's vocabulary decision. Renamed at the constant plus its three inline quoters and the two DECLARED doc quoters the parity pin watches. The RAIL question stays an open owner decision. |
+| 1 | Owner: `kackaamin.org` is an artifact; SD70's real domain is `sd70.bc.ca` | Dropped, with the same reasoning already recorded for SD78's `sd48.bc.ca`. Pinned in both directions so a re-vendoring from the older CSV cannot restore it. |
+| 2 | Owner: use SD83's new correct name, ASCII-fying only if necessary | It was NOT necessary — vendored and shipped as `K̓wsaltktnéws ne Secwepemcúl'ecw`, exactly as the district spells it. `sd83myedbc_mapping.yaml`'s `district_name` renamed too (owner-confirmed: a table-only change would have had no visible effect, since a shipped name wins the prefill). Pinned by CODEPOINT, not by a pasted literal, because the combining mark is invisible in an editor. |
+| 3 | Owner: districts with custom domains should still match `sd##.bc.ca` | The rule lives in `domains_for()`, not the literal — one home, faithful provenance, and a future row inherits it. 17 rows augmented. Applied to the two SHIPPED configs too (`sd60myedbc` + `sd60.bc.ca`, `sd75myedbc` + `sd75.bc.ca`), which is the half that changes what an admin actually matches. Closes the flagged SD58 residual (`365.sd58.bc.ca`) and SD84's identical shape. |
+
+### The bug this round found
+
+Vendoring SD83's name exposed a **live, silent data-corruption bug in plan 0044's own surface**:
+`loader._load_yaml` opened with the PLATFORM LOCALE while `authoring._atomic_write_text` has always
+pinned `utf-8`. On Windows — the district-server platform — `cp1252` maps almost every byte, so a
+UTF-8 name did not fail to load, it loaded WRONG. Any admin who typed a district name with an accent,
+a curly apostrophe or their own orthography got it back **mojibake** in every picker, on Mapping,
+Convert and Run History, with no error anywhere and no gate that could see it. It would also have
+shipped SD83's new name as garbage.
+
+Fixed to `open(path, encoding="utf-8")`. Reproduced end to end before and after; both regression
+tests were confirmed **RED against the un-fixed reader**, and each carries a positive twin proving
+the fixture bytes are genuinely non-ASCII — an ASCII fixture cannot exercise a decoding bug, and
+`yaml.safe_dump`'s default would have written exactly such a fixture.
+
+### Tests
+
+`domains_for` sheet-vs-effective contract (the sheet's rows lead, in order; at most one appended) ·
+the conventional-form rule parameterised over the wholly-custom / subdomain / near-miss / already-present
+/ already-conventional cases · both domain totals pinned (62 sheet, 79 effective, plus the count of
+augmented rows — the effective pin is the anti-vacuous twin of the sheet one) · SD70 pinned in both
+directions · the SD60/SD75 conventional form resolving end-to-end through `normalize_email` ·
+`name_for` totality, table-set parity with the domains, every name BARE, SD83 by codepoint, and a
+sweep of all 15 shipped SD configs against the table · the creator fallback (vendored name fills a
+district we do not ship; NEITHER source still leaves it empty; a shipped name wins) · the two
+encoding regressions with their twins.
+
+## Land record — owner review round 3 (2026-09-03)
+
+Commits `d9dffec` (the UTF-8 read fix, deliberately separate so the bug is bisectable on its own)
+and `dd9fd3a` (the round-3 work), on top of merge `810b311` from `origin/main`.
+
+**The branch's FIRST-EVER CI run, and the cause of the silence is now known.** PR #100 had reported
+"no checks reported" for its whole life. It was the CONFLICT: GitHub cannot build a
+`refs/pull/N/merge` ref for a `CONFLICTING` PR, so `pull_request`-triggered workflows never fire at
+all. Both `ci.yml` and `flet-verify.yml` matched this PR's base and paths the entire time. The
+moment the merge from `main` was pushed the PR went `CONFLICTING` → `MERGEABLE` and all four checks
+registered and ran. Worth remembering: a conflicting PR is not merely un-mergeable, it is
+**un-tested**, and `gh pr checks` reports that as "no checks" rather than as a blocked state.
+
+**CI — read, not assumed (`gh pr checks 100 --watch`, quoted verbatim):**
+
+```
+pack / pack (macos-latest, light, :)                                   pass   3m59s
+pack / pack (ubuntu-22.04, light, :)                                   pass   2m25s
+pack / pack (windows-latest, light, ;, --require-close, --icon ...)    pass   4m41s
+test                                                                   pass  16m4s
+```
+
+Runs [33812629925](https://github.com/myblueprint-spaces/DistrictSync/actions/runs/33812629925)
+(`CI`) and [33812630377](https://github.com/myblueprint-spaces/DistrictSync/actions/runs/33812630377)
+(`flet-verify`). The three-OS pack matrix matters specifically here: the 2026-07-30 land gate exists
+because a **Linux-only** failure sat on `main` for three consecutive pushes while every slice read
+its own Windows run as authoritative. This branch has now been exercised on Linux and macOS too.
+
+**Local gates (Windows, Python 3.13 — the interpreter `requires-python` and `ci.yml` both name):**
+
+- full suite + coverage: **5,721 passed / 41 skipped / 1 deselected**, `TOTAL 7644 stmts, 276 miss,
+  96%` — `Required test coverage of 80% reached. Total coverage: 96.39%`, `PYTEST_EXIT=0` (13m33s);
+- `ruff check src/ tests/` + `ruff format --check` clean (221 files) · `mypy src/ --exclude
+  src/ui_flet` — no issues in 55 files · `bandit -r src/ -q -c pyproject.toml` exit 0 ·
+  `scripts/check_no_emails.py` — 342 tracked files, none · `make validate-config` — 20/20 ·
+  `scripts/claugentic-check_architecture_tree.py` — 101 in-scope files indexed · SD74 golden
+  byte-identical (in-suite).
+
+**A process note, recorded because it nearly shipped a false green.** The first full run was invoked
+as `pytest … | tail -25`, and `$?` then reports **`tail`'s** status, not pytest's — it read as exit 0
+while the suite actually had two failures. They were real (`TestDeriveDomains` pinned the pre-owner-rule
+domain answers for SD93 and SD34) and are fixed, but the pipeline hid them for one reporting cycle.
+Every subsequent run used `> log 2>&1; echo "PYTEST_EXIT=$?"`. A piped gate command cannot be trusted
+for a pass/fail claim.
+
+**Residual, NOT closed, flagged to the owner:** there is no `[Unreleased]` CHANGELOG entry for plan
+0044. `main` shipped v3.15.0/v3.16.0 and emptied that section, and the feature never had one. The
+repo's land-time convention says a user-visible feature earns one, but partner-facing release copy is
+an owner call and was not drafted unprompted.
+

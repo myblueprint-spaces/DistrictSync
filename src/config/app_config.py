@@ -89,12 +89,30 @@ _GEOMETRY_FIELD_PREFIX = "window_"
 #   profile we FAILED TO READ must be refused by the existing machinery rather than
 #   trading the admin's real folders/district/delivery settings for invented blanks.
 #
-# A prefix contract rather than a hand-maintained name list, so a future field in either
+# * ``creator_`` — the in-progress state of a self-service district (plan 0044). Nothing
+#   in the ETL, CLI or scheduler reads either field: the sync runs off ``sis_type`` + the
+#   YAML. The token is resume convenience; the tested-fact only decides whether the UI
+#   OFFERS activation, and it is keyed on a digest of the RESOLVED config, so losing it
+#   can only force another test run — never unlock one. Both degrade to "ask again", the
+#   property that put ``identity_`` here: the write must be refusable on a profile we
+#   failed to read without trapping the admin.
+#
+#   What the prefix does NOT cover: :meth:`AppConfig.activate_creator_config`, which
+#   writes ``sis_type`` beside them and is deliberately NON-advisory — it carries a
+#   chosen setting (the district this install converts), so it takes the same
+#   write-under-UNREADABLE posture as the wizard's District step.
+#
+# A prefix contract rather than a hand-maintained name list, so a future field in any
 # family joins automatically. Note the deliberate near-miss it also protects: the seasonal
 # window's fields are named ``sync_window_*`` precisely so they do NOT start with
 # ``window_`` — they ARE admin choices (see the naming-contract comment on those fields).
 _IDENTITY_FIELD_PREFIX = "identity_"
-_ADVISORY_FIELD_PREFIXES: tuple[str, ...] = (_GEOMETRY_FIELD_PREFIX, _IDENTITY_FIELD_PREFIX)
+_CREATOR_FIELD_PREFIX = "creator_"
+_ADVISORY_FIELD_PREFIXES: tuple[str, ...] = (
+    _GEOMETRY_FIELD_PREFIX,
+    _IDENTITY_FIELD_PREFIX,
+    _CREATOR_FIELD_PREFIX,
+)
 
 
 @dataclass(frozen=True)
@@ -232,6 +250,29 @@ class AppConfig:
     identity_email: str = ""  # as TYPED (case preserved); normalisation happens at compare time
     identity_prompt_dismissed: bool = False  # the Home card was dismissed — permanent, Settings-recoverable
     identity_sd_number: str = ""  # "my district isn't listed yet" — the SD number they told us
+
+    # Self-service district authoring — the IN-PROGRESS state of a district an admin is
+    # setting up themselves (plan 0044). Advisory metadata, never a setting the sync reads:
+    # what converts is ``sis_type`` + the YAML on disk.
+    #
+    # * ``creator_pending_sis`` is the RESUME token — the id of a district whose setup was
+    #   started and not activated. Losing it costs the admin the resume, never the file.
+    # * ``creator_verified`` maps a config id → the digest of the RESOLVED config that
+    #   PASSED a test conversion. It only decides whether the UI OFFERS activation; because
+    #   it is keyed on the resolved digest, losing it (or failing to write it) can only
+    #   force another test run, never unlock one.
+    #
+    # NAMING CONTRACT (do not break): the ``creator_`` prefix is load-bearing for the same
+    # reason ``identity_``'s is — it puts both fields in ``_ADVISORY_FIELD_PREFIXES``, which
+    # is what makes a creator-only save on a profile we FAILED TO READ get REFUSED instead
+    # of replacing the admin's real settings with blanks.
+    #
+    # ``creator_verified`` uses ``field(default_factory=dict)`` — a bare ``{}`` default
+    # raises ``ValueError: mutable default`` at class-definition time.
+    #
+    # Additive with safe defaults, so a v3.14.x ``config.json`` loads unchanged.
+    creator_pending_sis: str = ""  # the id of a self-service district still being set up
+    creator_verified: dict[str, str] = field(default_factory=dict)  # config id → tested resolved digest
 
     # SFTP (non-sensitive only)
     sftp_enabled: bool = False
@@ -383,12 +424,14 @@ class AppConfig:
         the document is 100% invention and writing it is pure destruction.
 
         The ADVISORY families are excluded by the ``_ADVISORY_FIELD_PREFIXES`` contract:
-        window geometry is ambient shell state and ``identity_*`` is "who looks after
-        this" metadata — neither is a setting that makes the sync work, so a save carrying
-        only those leaves the actual settings wholly invented. This is exactly what
-        separates the shell's advisory exit-time geometry save (refused) and an
-        identity-only save on an unreadable profile (also refused) from a save carrying a
-        real admin choice (allowed).
+        window geometry is ambient shell state, ``identity_*`` is "who looks after this"
+        metadata and ``creator_*`` is the in-progress state of a district being set up —
+        none of them is a setting that makes the sync work, so a save carrying only those
+        leaves the actual settings wholly invented. This is exactly what separates the
+        shell's advisory exit-time geometry save (refused) and an identity-only or
+        creator-only save on an unreadable profile (also refused) from a save carrying a
+        real admin choice (allowed) — including :meth:`activate_creator_config`, whose
+        ``sis_type`` IS such a choice.
 
         Note the asymmetry this predicate deliberately does NOT resolve: it answers "is
         this payload entirely invented?", not "is this payload a complete repair?". One
@@ -443,57 +486,67 @@ class AppConfig:
         """
         return self.setup_completed or (self.is_complete() and self.schedule_registered)
 
-    def identity_save(self, **updates: object) -> bool:
-        """THE choke point for every identity write. Applies ``identity_*`` fields, then saves.
+    def _guarded_field_write(
+        self,
+        updates: dict[str, object],
+        *,
+        allowed: frozenset[str],
+        refuse_when_unreadable: bool,
+        subject: str,
+        writer: str,
+    ) -> bool:
+        """THE write discipline every NAMED settings writer shares. Applies, then saves.
 
-        **Every future identity writer must go through here** — the launch page, the Home
-        cards, the Settings section, and anything Phase 2 adds. Not a convenience wrapper:
-        it is the one place three separate obligations are discharged together, and a
-        caller that hand-rolls ``cfg.identity_email = ...; cfg.save()`` silently drops all
-        three.
+        Extracted from :meth:`identity_save` (plan 0044 S3), because its obligations were
+        never identity's: they are what ANY narrow, named write into this shared,
+        hand-editable, atomically-replaced document owes, and a second family
+        (``creator_*``) would otherwise have re-implemented them by eye. Five obligations,
+        discharged in THIS order — the order is itself part of the contract:
 
-        1. **The guard lives on the WRITE, not on the boot-time decision.** It re-checks
-           :meth:`settings_unreadable` on THIS instance at write time. The gate predicate
-           (``identity_gate.needs_identity``) is evaluated once at launch; a config that
-           became unreadable since — or an instance that was never readable and reached a
-           card by another route — must still be refused. Reading the provenance off the
-           instance we are about to save is the only check that cannot go stale.
-        2. **Both the KEY and the VALUE are validated, and nothing is applied until ALL
-           of them pass.** The key must be a member of :data:`_IDENTITY_FIELD_NAMES`
-           (derived from ``fields(AppConfig)``, so it tracks the dataclass automatically)
-           — membership, NOT ``hasattr``, because ``hasattr`` also answers True for every
-           METHOD on this class, and ``identity_save(identity_save="x")`` would then bind
-           a string over the bound method, permanently disabling the choke point for that
-           instance. The value must satisfy the field's declared type via
+        1. **KEY and VALUE are validated for every update BEFORE any ``setattr``.** The key
+           must be a member of ``allowed`` — membership, NOT ``hasattr``, because
+           ``hasattr`` also answers True for every METHOD on this class, so
+           ``identity_save(identity_save="x")`` would bind a string over the bound method
+           and permanently disable the choke point on that instance while reporting
+           success. The value must satisfy the field's declared type via
            :func:`_value_fits`, because ``config.json`` is re-read through that same
            predicate: a mis-typed value written here (``identity_email=None`` →
            ``"identity_email": null``) makes the WHOLE document UNREADABLE on the next
-           load, dropping the admin's district, folders and delivery settings to
-           defaults. Both raise loudly — a caller passing the wrong type has a bug, and a
+           load, dropping the admin's district, folders and delivery settings to defaults.
+           Both raise loudly — a caller passing the wrong type has a bug, and a
            silently-coerced value would look like a save that worked. Validation runs to
-           completion BEFORE any ``setattr``, so a bad key in a multi-field call cannot
-           leave the instance half-mutated.
-        3. **A NON-identity field is refused with the same loudness**, so this entry point
-           can never become a back door for writing ``sis_type``. Identity resolution must
-           NEVER rewrite the configured district — a product rule, enforced structurally.
-        4. **Failure is non-fatal, reported, and leaves the INSTANCE untouched too.**
-           ``SettingsOverwriteRefused`` and ``OSError`` are logged and swallowed, and the
-           return value says what happened. Identity is advisory: a failed save must never
-           trap the admin at the launch page or break a card render. The gate simply asks
-           again next launch.
+           COMPLETION first, so a bad key late in a multi-field call cannot leave the
+           instance half-mutated.
+        2. **The unreadable-profile guard lives on the WRITE, not on a boot-time
+           decision** — for the families where it applies (``refuse_when_unreadable``). It
+           re-checks :meth:`settings_unreadable` on THIS instance at write time: a gate
+           predicate evaluated at launch can be stale, a config can have become unreadable
+           since, and an instance can reach a caller by another route. Checked BEFORE
+           anything is applied, so a refusal has no mutation to undo.
+        3. **Apply, then ``save()``** — ONE save for the whole payload, never one per
+           field, so no caller can leave a torn pair of fields on disk (see
+           :meth:`activate_creator_config` for why that matters).
+        4. **The two handled failures are swallowed, logged and REPORTED** through the
+           return value (:class:`SettingsOverwriteRefused`, ``OSError``). These writers
+           carry advisory or admin-triggered data; a failed save may never trap the admin
+           in front of the app.
+        5. **The INSTANCE is rolled back on ANY failure.** All-or-nothing applies at two
+           levels and the second is easy to miss: this ``AppConfig`` is SHARED (the
+           Settings scroll hands ONE instance to the folders, schedule, delivery and
+           identity sections), so a refused write that left the new value on the object
+           would (a) render a value the disk does not have and (b) get committed silently
+           by the next unrelated ``Save`` on any other section.
 
-           All-or-nothing applies at **two** levels, and the second one is easy to miss.
-           The obvious level is the payload (a bad key in a multi-field call cannot leave
-           the instance half-mutated). The subtler one is the FAILED WRITE: this instance is
-           SHARED — the Settings scroll hands one ``AppConfig`` to the folders, schedule,
-           delivery and identity sections — so a refused write that left the new value on
-           the object would (a) render a value the disk does not have, and (b) get committed
-           silently by the next unrelated ``Save`` on any other section. So the values are
-           snapshotted, applied, and RESTORED on any failure: after a ``False`` return, the
-           instance holds exactly what it held before the call.
+        ``refuse_when_unreadable`` is a REQUIRED keyword with NO default — the house rule
+        for a safety-relevant parameter (``write_overlay(overwrite=)``,
+        ``_store_run_record(dry_run=)``): "may this write replace settings we FAILED TO
+        READ?" is answered explicitly at every call site, never inherited from a default.
+        ``subject`` is the admin-facing log NOUN and ``writer`` the developer-facing API
+        name used in the two raise messages, so each wrapper keeps its own wording
+        (identity's are pinned byte-identical by ``tests/test_app_config_identity.py``,
+        which is the equivalence proof for this extraction).
 
-        Returns ``True`` iff the settings were written. Callers persist best-effort and
-        then continue regardless — never gate entry into the app on this.
+        Returns ``True`` iff the settings were written.
 
         Raises ``AttributeError`` for an unwritable key and ``TypeError`` for a value that
         would corrupt the settings document. Neither is caught here: they are programming
@@ -501,25 +554,26 @@ class AppConfig:
         """
         field_types = _settings_field_types()
         for name, value in updates.items():
-            if name not in _IDENTITY_FIELD_NAMES:
+            if name not in allowed:
                 raise AttributeError(
-                    f"identity_save() only writes identity_* settings fields "
-                    f"({', '.join(sorted(_IDENTITY_FIELD_NAMES))}); got {name!r}. "
+                    f"{writer}() only writes {_allowed_fields_phrase(allowed)} "
+                    f"({', '.join(sorted(allowed))}); got {name!r}. "
                     "Route any other settings change through AppConfig.save()."
                 )
             if not _value_fits(value, field_types[name]):
                 raise TypeError(
-                    f"identity_save() got a {type(value).__name__} for {name!r}, which is declared "
+                    f"{writer}() got a {type(value).__name__} for {name!r}, which is declared "
                     f"{field_types[name]!r}. Writing it would make config.json unreadable on the next "
                     "load, dropping the admin's district, folders and delivery settings to defaults."
                 )
 
         # Checked BEFORE anything is applied: on an unreadable profile there is no write to
         # attempt, so there must be no mutation to undo either.
-        if self.settings_unreadable():
+        if refuse_when_unreadable and self.settings_unreadable():
             logger.warning(
-                "Not saving who looks after this sync: the settings file could not be read this session, "
-                "so the saved settings are left untouched. We'll ask again next time."
+                "Not saving %s: the settings file could not be read this session, "
+                "so the saved settings are left untouched. We'll ask again next time.",
+                subject,
             )
             return False
 
@@ -529,15 +583,147 @@ class AppConfig:
         try:
             self.save()
         except SettingsOverwriteRefused:
-            # Belt-and-braces: the check above should have caught this, but save() owns
-            # the refusal rule and may widen it. Already logged at WARNING by save().
+            # Belt-and-braces for an advisory family (the check above should have caught
+            # it), and the REAL path for a non-advisory one, which reaches save()'s own
+            # rule deliberately. Already logged at WARNING by save().
             self._restore(previous)
             return False
         except OSError as exc:
-            logger.warning("Could not save who looks after this sync (%s). Nothing else was changed.", exc)
+            logger.warning("Could not save %s (%s). Nothing else was changed.", subject, exc)
             self._restore(previous)
             return False
         return True
+
+    def identity_save(self, **updates: object) -> bool:
+        """THE choke point for every identity write. Applies ``identity_*`` fields, then saves.
+
+        **Every future identity writer must go through here** — the launch page, the Home
+        cards, the Settings section, and anything Phase 2 adds. Not a convenience wrapper:
+        it names the one allowlist identity may write and the one posture it takes, and a
+        caller that hand-rolls ``cfg.identity_email = ...; cfg.save()`` silently drops
+        every obligation :meth:`_guarded_field_write` discharges (read it for the
+        mechanism — validation before mutation, the write-time unreadable guard, the
+        single save, the swallowed failures and the instance rollback).
+
+        The two identity-specific facts this wrapper decides:
+
+        * ``refuse_when_unreadable=True`` — identity is ADVISORY. It scopes a picker and
+          echoes on Help; it changes NOTHING about which district converts, from where, to
+          where, or when. So an identity-only save on a profile we FAILED TO READ must be
+          refused rather than trading the admin's real folders / district / delivery
+          settings for invented blanks. The gate simply asks again next launch.
+        * the allowlist is :data:`_IDENTITY_FIELD_NAMES` — so a NON-identity field is
+          refused with the same loudness and this entry point can never become a back door
+          for writing ``sis_type``. Identity resolution must NEVER rewrite the configured
+          district: a product rule, enforced structurally at the single write point rather
+          than trusted to every future call site.
+
+        Returns ``True`` iff the settings were written. Callers persist best-effort and
+        then continue regardless — never gate entry into the app on this.
+
+        Raises ``AttributeError`` for an unwritable key and ``TypeError`` for a value that
+        would corrupt the settings document (see :meth:`_guarded_field_write`).
+        """
+        return self._guarded_field_write(
+            dict(updates),
+            allowed=_IDENTITY_FIELD_NAMES,
+            refuse_when_unreadable=True,
+            subject="who looks after this sync",
+            writer="identity_save",
+        )
+
+    def creator_save(self, **updates: object) -> bool:
+        """THE choke point for every ``creator_*`` write (plan 0044). Prunes, then saves.
+
+        The self-service twin of :meth:`identity_save`, with the same posture for the same
+        reason: the resume token and the tested-fact are ADVISORY (see the
+        ``_ADVISORY_FIELD_PREFIXES`` comment — nothing in the ETL, CLI or scheduler reads
+        either, and both degrade to "ask again"), so ``refuse_when_unreadable=True`` and a
+        failed write reports rather than raises.
+
+        Two things this wrapper adds over the shared discipline:
+
+        * **it refuses any non-``creator_*`` key loudly**, ``sis_type`` most of all. A
+          creator flow that could pin the district here would BE the back door that
+          obligation exists to prevent — activation is a separate, deliberately named and
+          validated method (:meth:`activate_creator_config`).
+        * **it PRUNES ``creator_verified`` on every save**, so the map is bounded by the
+          number of configs actually in the user's ``mappings/`` dir rather than growing
+          for the life of the install (see :func:`_pruned_verified_configs`). The pruned
+          map is part of the payload, so it is snapshotted and rolled back with everything
+          else if the save fails.
+
+        Returns ``True`` iff the settings were written.
+        """
+        payload: dict[str, object] = dict(updates)
+        pending = payload.get("creator_verified", self.creator_verified)
+        # A non-dict is left EXACTLY as passed so the shared validation rejects it loudly;
+        # pruning it would be inventing a value for a caller with a bug.
+        payload["creator_verified"] = _pruned_verified_configs(pending) if isinstance(pending, dict) else pending
+        return self._guarded_field_write(
+            payload,
+            allowed=_CREATOR_FIELD_NAMES,
+            refuse_when_unreadable=True,
+            subject="your district setup progress",
+            writer="creator_save",
+        )
+
+    def activate_creator_config(self, *, sis_type: str, digest: str) -> bool:
+        """Make a self-service district the one this install converts — in ONE save.
+
+        The moment plan 0044 exists for, and the only place a creator flow may touch
+        ``sis_type``. Deliberately NOT routed through :meth:`creator_save`, which must
+        refuse a non-``creator_*`` key or become exactly the back door that refusal
+        prevents; and deliberately not a bare ``cfg.sis_type = ...; cfg.save()``, which
+        drops validation and rollback on the write that matters most.
+
+        **ONE save, three fields.** Two saves would leave a torn state — the district
+        active while the resume token still stands — and the resumed flow's Discard would
+        then delete a LIVE config. So the district, the cleared token and the tested-fact
+        are one atomic payload.
+
+        **NON-advisory (``refuse_when_unreadable=False``), because it carries a chosen
+        setting.** ``sis_type`` off its default is exactly what
+        :meth:`_carries_chosen_settings` counts, so on an UNREADABLE profile ``save()``
+        writes — after :func:`_preserve_unreadable_predecessor` quarantines the bytes it
+        replaces — precisely as it does for the wizard's standard District step. That
+        parity is the claim: an admin who just tested a district they set up themselves is
+        not treated worse than one who picked a shipped mapping. It also inherits that
+        path's known residual (an unmerged single-section write; see :meth:`save` and the
+        ROADMAP entry) — named, not solved, and recoverable from the quarantine copy.
+
+        Both arguments are validated BEFORE anything is applied: ``sis_type`` through
+        :func:`src.utils.validators.validate_sis_type` (this value becomes a ``--sis``
+        argument and a filename stem) and ``digest`` through
+        :func:`src.utils.validators.is_config_digest` — a malformed digest stored here
+        would read as ABSENT on the way back out, silently asking for another test run.
+
+        Returns ``True`` iff the settings were written; ``False`` on the two handled save
+        failures, with the instance rolled back (the caller stays on the step it was on
+        and can press again).
+
+        Raises ``ValueError`` for an invalid ``sis_type`` or ``digest`` — a caller reaching
+        here without a tested config has a bug, and a coerced value would activate
+        something the gate never checked.
+        """
+        from src.utils.validators import is_config_digest, validate_sis_type
+
+        validated_sis = validate_sis_type(sis_type)
+        if not is_config_digest(digest):
+            raise ValueError(
+                "activate_creator_config() needs the sha256 digest of the RESOLVED config that "
+                "passed the test conversion (64 lowercase hex characters). A malformed digest "
+                "would read as absent on the next load, so it is refused rather than stored."
+            )
+        verified = _pruned_verified_configs(self.creator_verified)
+        verified[validated_sis] = digest
+        return self._guarded_field_write(
+            {"sis_type": validated_sis, "creator_pending_sis": "", "creator_verified": verified},
+            allowed=_ACTIVATION_FIELD_NAMES,
+            refuse_when_unreadable=False,
+            subject="the district you set up",
+            writer="activate_creator_config",
+        )
 
     def _restore(self, previous: dict[str, Any]) -> None:
         """Put back the pre-call values after a refused/failed identity write.
@@ -625,6 +811,71 @@ class AppConfig:
 _IDENTITY_FIELD_NAMES: frozenset[str] = frozenset(
     f.name for f in fields(AppConfig) if f.name.startswith(_IDENTITY_FIELD_PREFIX)
 )
+
+# The exact set :meth:`AppConfig.creator_save` may write — derived the same way, for the
+# same reasons (plan 0044).
+_CREATOR_FIELD_NAMES: frozenset[str] = frozenset(
+    f.name for f in fields(AppConfig) if f.name.startswith(_CREATOR_FIELD_PREFIX)
+)
+
+# What :meth:`AppConfig.activate_creator_config` may write: the creator family PLUS the one
+# non-advisory field it exists to set. Written as the creator set plus ``sis_type`` rather
+# than a hand-listed triple so the two can never drift, and stated as an allowlist even
+# though that method builds its own payload — the guard is what makes "activation touches
+# nothing else" checkable rather than asserted.
+_ACTIVATION_FIELD_NAMES: frozenset[str] = _CREATOR_FIELD_NAMES | frozenset({"sis_type"})
+
+
+def _allowed_fields_phrase(allowed: frozenset[str]) -> str:
+    """Name an allowlist the way its writer's error message should read.
+
+    DERIVED from the allowlist rather than passed in, so a wrapper cannot describe itself
+    as writing a family it does not write. A single-family allowlist reads as
+    ``"identity_* settings fields"`` (which is what keeps ``identity_save``'s message
+    byte-identical through the extraction); a mixed one — ``activate_creator_config``'s
+    ``creator_* + sis_type`` — cannot honestly claim a prefix, so it says only "these",
+    and the message lists every member either way.
+    """
+    prefixes = {name.split("_", 1)[0] for name in allowed if "_" in name}
+    if len(prefixes) == 1 and all("_" in name for name in allowed):
+        return f"{next(iter(prefixes))}_* settings fields"
+    return "these settings fields"
+
+
+def _pruned_verified_configs(verified: dict[str, str]) -> dict[str, str]:
+    """Drop ``creator_verified`` entries whose config is no longer a USER-dir file.
+
+    Bounds the map by the number of configs actually in the admin's ``mappings/`` dir: a
+    district that was set up, tested and later discarded leaves an entry that can never be
+    consulted again, and without a prune the map grows for the life of the install.
+
+    The origin test is ``"user"``, not merely "resolves": a stale entry whose id now hits a
+    BUNDLED config must not survive as a tested-fact about a file the admin never tested.
+    Nothing here decides activation — the digest comparison does — so pruning can only ever
+    cost an extra test run.
+
+    TOTAL by construction. The import is deferred (this module must not drag the YAML
+    loader into every settings read) and ANY failure — an unreadable mappings dir, an
+    exotic id, a loader change — prunes NOTHING and returns the map unchanged rather than
+    blocking the write it is only tidying. Returns a NEW dict, never the argument, so the
+    caller's rollback snapshot still holds the original object.
+    """
+    try:
+        from src.config.loader import resolve_config_path
+
+        kept: dict[str, str] = {}
+        for sis_id, digest in verified.items():
+            resolved = resolve_config_path(sis_id)
+            if resolved is not None and resolved.origin == "user":
+                kept[sis_id] = digest
+    except Exception as exc:  # noqa: BLE001 — a tidy-up may never block a settings write
+        logger.debug("Could not check which tested configs still exist (%s); none were pruned.", exc)
+        return dict(verified)
+    dropped = len(verified) - len(kept)
+    if dropped:
+        # Counts only: an id is not PII, but the diagnostic has no use for it either.
+        logger.debug("Dropped %d tested-config record(s) whose mapping file is gone.", dropped)
+    return kept
 
 
 # --------------------------------------------------------------------------- #

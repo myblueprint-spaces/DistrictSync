@@ -21,7 +21,8 @@ can read/copy off a locked-down server.
 
 Assembled ENTIRELY from ``components.py`` (card/buttons/ErrorCard) + ``tokens`` +
 ``humanize.friendly_district_name`` — never hand-rolled controls (the ``FilledButton(text=)``
-trap; see ``docs/FLET_1.0_CONVENTIONS.md``). ``page.launch_url`` is **introspected against the
+trap; see ``docs/FLET_1.0_CONVENTIONS.md``). ``page.launch_url`` is a COROUTINE on 0.85.3 (hidden behind a ``@deprecated`` wrapper), so every
+call goes through ``components.open_url`` — which schedules it via ``page.run_task``; the pin is **against the
 installed ``flet==0.85.3``** (it is NOT documented in the conventions doc). Owns no lifecycle.
 
 **Never-crash floor:** the whole body is wrapped in ``try/except`` → ``components.ErrorCard``
@@ -112,7 +113,7 @@ def _get_help_card(page: ft.Page, app_config: AppConfig) -> ft.Control:
                 ),
                 components.primary_button(
                     "Open the Help Centre",
-                    lambda _e: page.launch_url(HELP_CENTRE_URL),
+                    lambda _e: components.open_url(page, HELP_CENTRE_URL),
                     icon=ft.Icons.OPEN_IN_NEW_ROUNDED,
                 ),
                 # Offline fallback: the address, readable + copyable if no browser opens.
@@ -125,7 +126,7 @@ def _get_help_card(page: ft.Page, app_config: AppConfig) -> ft.Control:
                 ),
                 components.secondary_button(
                     f"Email {SUPPORT_EMAIL}",
-                    lambda _e: page.launch_url(mailto),
+                    lambda _e: components.open_url(page, mailto),
                     icon=ft.Icons.MAIL_OUTLINE_ROUNDED,
                 ),
                 # Offline fallback: the email address, readable + copyable.
@@ -256,7 +257,7 @@ def _about_card(page: ft.Page) -> ft.Control:
                 ),
                 components.secondary_button(
                     "See what's new",
-                    lambda _e: page.launch_url(about.RELEASE_NOTES_URL),
+                    lambda _e: components.open_url(page, about.RELEASE_NOTES_URL),
                     icon=ft.Icons.OPEN_IN_NEW_ROUNDED,
                 ),
                 _copyable_line(page, about.RELEASE_NOTES_URL, tooltip="Copy link"),

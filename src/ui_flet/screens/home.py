@@ -622,7 +622,7 @@ def _build_identity_cards(
 
         def work() -> None:
             mailto = about.support_mailto(SUPPORT_EMAIL, app_version(), friendly_district_name(app_config.sis_type))
-            page.launch_url(mailto)
+            components.open_url(page, mailto)
 
         _guard(work)  # inside the floor: building the URL reads the version + the config too
 

@@ -24,18 +24,31 @@ Two guardrails keep that override path honest:
 - The resolved config's ``version`` is gated against the supported range
   (see ``SUPPORTED_CONFIG_MAJOR``): a different major fails loudly, a
   newer minor warns.
+
+Which tier a config came from is therefore load-bearing, not bookkeeping, so it
+is exposed once: :func:`resolve_config_path` returns ``(path, origin)`` and
+:func:`load_config` acts on that same value. A third guardrail is DIRECTIONAL
+rather than symmetric — the presentation-only ``district_domains`` list is
+pre-screened for USER-dir configs (invalid rows dropped, one counts-only WARN,
+never an echoed value; see :func:`_apply_user_dir_domains_floor`) while a BUNDLED
+config keeps the model validator's loud raise, because a typo in a hand-edited
+file must not kill a district's nightly sync but a shipped one is CI's to catch.
+
+:func:`validate_overlay` runs the same resolve → gate → floor → validate pipeline
+over an in-memory dict, for the authoring layer's load-back-before-write check.
 """
 
 import copy
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, NamedTuple, Optional
 
 import yaml
 from pydantic import ValidationError
 
-from src.config.models import MappingConfig
+from src.config.models import MappingConfig, is_valid_district_domain
 from src.utils.paths import bundle_mappings_dir, user_mappings_dir
 
 logger = logging.getLogger(__name__)
@@ -84,8 +97,13 @@ def _search_dirs(explicit: Optional[Path]) -> list[Path]:
     return [user_mappings_dir(), bundle_mappings_dir()]
 
 
-def _find_mapping_file(sis_type: str, search_dirs: list[Path]) -> Optional[Path]:
-    """Return the first existing ``<dir>/<sis_type>_mapping.yaml`` in search order.
+def _find_mapping_file(sis_type: str, search_dirs: list[Path]) -> Optional[tuple[Path, int]]:
+    """Return the first existing ``<dir>/<sis_type>_mapping.yaml`` + its dir INDEX.
+
+    The index is returned (rather than just the path) because it is the ONE
+    fact that decides a config's ORIGIN — see :func:`resolve_config_path`.
+    Deriving origin from the path's parent instead would be a second spelling
+    of the same rule, and a wrong one the moment two search dirs coincide.
 
     When the winning file shadows a same-named file in a later search dir
     (i.e. a user-dir override hides a bundled config), an INFO line names
@@ -100,8 +118,81 @@ def _find_mapping_file(sis_type: str, search_dirs: list[Path]) -> Optional[Path]
                 shadowed = later_dir / filename
                 if shadowed.exists():
                     logger.info("Mapping config '%s' loaded from '%s' — shadows '%s'", filename, candidate, shadowed)
-            return candidate
+            return candidate, index
     return None
+
+
+#: Which of the two search dirs a resolved mapping config came out of.
+#: ``"user"`` = the hand-editable app-data ``mappings/`` dir (index 0);
+#: ``"bundled"`` = the read-only shipped ``config/mappings/`` (index 1).
+#: This is a SAFETY-RELEVANT distinction, not bookkeeping: the user-dir
+#: ``district_domains`` floor (see :func:`_apply_user_dir_domains_floor`) applies
+#: to ``"user"`` only, so a mis-typed origin would either kill a district's
+#: nightly sync or defeat the CI gate on the shipped configs.
+ConfigOrigin = Literal["user", "bundled"]
+
+#: The index-to-origin rule, spelled ONCE.
+_ORIGIN_BY_INDEX: tuple[ConfigOrigin, ConfigOrigin] = ("user", "bundled")
+
+
+class ResolvedConfigPath(NamedTuple):
+    """A located mapping config: where it is, and which tier it came from."""
+
+    path: Path
+    origin: ConfigOrigin
+
+
+def _require_search_pair(search_dirs: Optional[Sequence[Path]]) -> list[Path]:
+    """Normalise a search-dir override into the contractual USER-then-BUNDLED pair.
+
+    ``None`` → the real pair ``[user_mappings_dir(), bundle_mappings_dir()]``.
+
+    Anything else MUST be a two-element sequence whose FIRST element is, by
+    contract, the user-tier dir. The length is enforced fail-loud rather than
+    defaulted because a one-element override cannot EXPRESS an origin: every
+    lookup through it would report the same tier, which would make each origin
+    test vacuously green and (worse) silently decide whether the user-dir
+    domains floor applies (plan 0044 review #9).
+    """
+    if search_dirs is None:
+        return [user_mappings_dir(), bundle_mappings_dir()]
+    dirs = list(search_dirs)
+    if len(dirs) != len(_ORIGIN_BY_INDEX):
+        raise ValueError(
+            f"search_dirs must be exactly {len(_ORIGIN_BY_INDEX)} directories "
+            f"(user dir first, bundled dir second) — got {len(dirs)}. A single-dir "
+            f"search cannot express a config's origin, and origin decides whether the "
+            f"user-dir district_domains floor applies."
+        )
+    return dirs
+
+
+def resolve_config_path(
+    sis_type: str,
+    *,
+    search_dirs: Optional[Sequence[Path]] = None,
+) -> Optional[ResolvedConfigPath]:
+    """Locate a mapping config and report WHICH tier won.
+
+    Args:
+        sis_type: SIS identifier (e.g. ``"myedbc"``, ``"sd93custom"``).
+        search_dirs: Test seam — a two-element sequence, USER dir first,
+            BUNDLED dir second (see :func:`_require_search_pair`; a wrong
+            length raises ``ValueError``). ``None`` (the default) uses the
+            real pair.
+
+    Returns:
+        ``ResolvedConfigPath(path, origin)``, or ``None`` when no search dir
+        holds ``<sis_type>_mapping.yaml``. Deliberately does NOT raise on a
+        miss — :func:`load_config` owns the actionable ``FileNotFoundError``
+        so its message stays the single spelling operators see.
+    """
+    dirs = _require_search_pair(search_dirs)
+    found = _find_mapping_file(sis_type, dirs)
+    if found is None:
+        return None
+    path, index = found
+    return ResolvedConfigPath(path, _ORIGIN_BY_INDEX[index])
 
 
 def _parse_version(version: object, path: Path) -> tuple[int, int]:
@@ -179,7 +270,22 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
-    with open(path) as f:
+    """Read ONE mapping YAML. UTF-8 EXPLICITLY — never the platform locale.
+
+    Every config this function reads is written UTF-8: the bundled ``config/mappings/``
+    files are UTF-8 in the repo, and a self-service overlay is written by
+    ``config.authoring._atomic_write_text``, which pins ``encoding="utf-8"``. Reading
+    them back at the locale encoding made the two halves disagree.
+
+    The failure was SILENT, which is why this is spelled out. On Windows the locale
+    encoding is ``cp1252``, which maps almost every byte, so a UTF-8 name did not raise
+    ``UnicodeDecodeError`` — it DECODED, into mojibake. An admin who typed a district
+    name with any non-ASCII character (an accent, a curly apostrophe, a BC district's
+    own orthography) got it back mangled in every picker, on Mapping, on Convert and in
+    Run History, with nothing anywhere reporting a fault. Found 2026-09-03 while
+    vendoring the district-name table; the write side was already correct.
+    """
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
@@ -212,15 +318,138 @@ def _resolve_inheritance(
 
     visited.add(base_name)
 
-    base_path = _find_mapping_file(base_name, search_dirs)
-    if base_path is None:
+    found = _find_mapping_file(base_name, search_dirs)
+    if found is None:
         tried = ", ".join(str(d) for d in search_dirs)
         raise FileNotFoundError(f"Base config '{base_name}_mapping.yaml' not found in any of: {tried}")
 
+    base_path, _base_origin_index = found
     base_raw = _load_yaml(base_path)
     # Recursively resolve if base also inherits (pass same visited set)
     base_raw = _resolve_inheritance(base_raw, search_dirs, visited)
     return _deep_merge(base_raw, raw)
+
+
+#: Label used in place of a real path when validating an overlay that has no file yet
+#: (see :func:`validate_overlay`). A path-shaped placeholder keeps the version-gate and
+#: floor messages one shape, and reads honestly in a log.
+_UNSAVED_OVERLAY_LABEL = "<unsaved overlay>"
+
+#: ONE counts-only warning for the user-dir ``district_domains`` floor. It NEVER
+#: interpolates an offending value: this key holds a district's PUBLIC staff email
+#: domains, and the likeliest bad row is a pasted PERSONAL email address, which must
+#: never reach an ops log (the same PII rule the model validator's raise obeys).
+_DOMAINS_FLOOR_WARNING = (
+    "Mapping config '%s' at '%s' is user-authored: dropped %d of %d 'district_domains' "
+    "%s. The offending value is deliberately NOT logged (this key holds PUBLIC district "
+    "email domains, and a mis-pasted personal address must never reach a log). "
+    "Consequence: this district will show in every district picker regardless of who is "
+    "signed in, and its admins will not be matched to it, until the row is fixed. The "
+    "conversion itself is unaffected — a domain is presentation only."
+)
+
+
+def _apply_user_dir_domains_floor(
+    raw: dict[str, Any],
+    *,
+    sis_type: str,
+    path: Path,
+) -> dict[str, Any]:
+    """Drop invalid ``district_domains`` entries from a USER-dir config, with ONE WARN.
+
+    DIRECTION IS DELIBERATE AND MUST NOT INVERT:
+
+    - **Bundled** config → UNTOUCHED, so ``MappingConfig``'s own validator still
+      RAISES. A bundled bad row is caught by ``make validate-config`` in CI before
+      the release ever ships, where a loud failure costs nothing.
+    - **User** config (hand-editable, authored on a district server, never seen by
+      CI) → WARN and drop. ``district_domains`` is a PRESENTATION key the ETL
+      structurally cannot read (``MappingConfig.to_raw_dict`` emits only ``mappings``
+      + ``global_config``), so a typo in it must never kill that district's nightly
+      sync. Failing open costs a picker-scoping nicety; failing closed costs the roster.
+
+    Two shapes are handled, both counts-only: a list with some invalid entries (those
+    entries are dropped, the good ones kept), and a non-list value (e.g. a bare string
+    — the whole key is dropped, so the model's ``list`` default applies).
+
+    Note on ``_base``: this screens the MERGED raw, so a user overlay inheriting from a
+    base that itself carries a bad row sees it here too. That is correct — the merged
+    dict is what would be validated, and the user-dir file is the one an admin can fix.
+
+    Returns a new dict when something was dropped; the input dict otherwise (never
+    mutates the caller's dict either way).
+    """
+    if "district_domains" not in raw:
+        return raw
+
+    value = raw["district_domains"]
+    if not isinstance(value, list):
+        logger.warning(
+            _DOMAINS_FLOOR_WARNING,
+            sis_type,
+            path,
+            1,
+            1,
+            "— the key was not a list of domains at all, so the whole key was dropped",
+        )
+        updated = dict(raw)
+        del updated["district_domains"]
+        return updated
+
+    kept = [entry for entry in value if is_valid_district_domain(entry)]
+    if len(kept) == len(value):
+        return raw
+
+    logger.warning(
+        _DOMAINS_FLOOR_WARNING,
+        sis_type,
+        path,
+        len(value) - len(kept),
+        len(value),
+        "entries that are not a bare lowercase domain name (e.g. 'sd48.bc.ca')",
+    )
+    updated = dict(raw)
+    updated["district_domains"] = kept
+    return updated
+
+
+def _resolve_gate_and_validate(
+    raw: dict[str, Any],
+    *,
+    sis_type: str,
+    path: Path,
+    origin: ConfigOrigin,
+    search_dirs: list[Path],
+) -> MappingConfig:
+    """Resolve ``_base`` → version-gate → user-dir domains floor → Pydantic validate.
+
+    The ONE spelling of that four-step pipeline, shared by :func:`load_config` (a file
+    on disk) and :func:`validate_overlay` (a dict that has no file yet), so the two can
+    never drift on an error message, a gate or the floor.
+
+    Mutates ``raw`` (``_resolve_inheritance`` pops ``_base``) — callers own the copy.
+    """
+    resolved = _resolve_inheritance(raw, search_dirs)
+
+    # Version-gate the RESOLVED config (a version may be inherited via _base)
+    # BEFORE Pydantic validation, so an out-of-range config gets the actionable
+    # version message rather than confusing field-level schema errors. A missing
+    # version falls through to Pydantic's required-field error.
+    if "version" in resolved:
+        _check_config_version(resolved["version"], path)
+
+    if origin == "user":
+        resolved = _apply_user_dir_domains_floor(resolved, sis_type=sis_type, path=path)
+
+    try:
+        return MappingConfig(**resolved)
+    except ValidationError as e:
+        errors = []
+        for err in e.errors():
+            loc = " → ".join(str(part) for part in err["loc"])
+            errors.append(f"  {loc}: {err['msg']}")
+        msg = f"Invalid mapping config '{sis_type}':\n" + "\n".join(errors)
+        raise ValueError(msg) from e
 
 
 def available_configs(config_dir: Optional[Path] = None) -> list[str]:
@@ -253,9 +482,14 @@ def load_config(
     Args:
         sis_type: SIS identifier (e.g. "myedbc", "sd48myedbc").
         config_dir: Override the config directory (for testing). When
-            ``None`` (the default), search
-            ``~/.districtsync/mappings/`` first, then the bundled
-            ``config/mappings/``.
+            ``None`` (the default), search the user app-data
+            ``mappings/`` dir first, then the bundled ``config/mappings/``
+            — and the winning tier decides whether the user-dir
+            ``district_domains`` floor applies (see
+            :func:`_apply_user_dir_domains_floor`). A single explicit
+            ``config_dir`` cannot express a tier, so it is treated as
+            ``"bundled"``-equivalent: NO floor, and an invalid domain row
+            keeps its loud raise.
 
     Returns:
         Validated MappingConfig.
@@ -266,28 +500,87 @@ def load_config(
             messages), or if the resolved config's version is outside the
             supported major range (see ``_check_config_version``).
     """
-    search_dirs = _search_dirs(config_dir)
-    path = _find_mapping_file(sis_type, search_dirs)
-    if path is None:
-        tried = ", ".join(str(d) for d in search_dirs)
-        raise FileNotFoundError(f"Mapping file '{sis_type}_mapping.yaml' not found in any of: {tried}")
+    origin: ConfigOrigin
+    if config_dir is None:
+        # Resolve through the PUBLIC seam so the origin this function acts on is
+        # byte-for-byte the one `resolve_config_path` reports (single source).
+        search_dirs = _search_dirs(None)
+        resolved = resolve_config_path(sis_type, search_dirs=search_dirs)
+        if resolved is None:
+            tried = ", ".join(str(d) for d in search_dirs)
+            raise FileNotFoundError(f"Mapping file '{sis_type}_mapping.yaml' not found in any of: {tried}")
+        path, origin = resolved
+    else:
+        # LEGACY single-dir override (tests / internal callers). One dir cannot
+        # express an origin, so it is defined explicitly as "bundled"-equivalent:
+        # NO user-dir domains floor applies, and an invalid `district_domains` row
+        # keeps the model validator's loud raise. That is the safe assignment —
+        # the floor exists for HAND-EDITABLE user files on a district server, and
+        # this seam is a test/CI path whose whole job is to fail loudly.
+        search_dirs = _search_dirs(config_dir)
+        found = _find_mapping_file(sis_type, search_dirs)
+        if found is None:
+            tried = ", ".join(str(d) for d in search_dirs)
+            raise FileNotFoundError(f"Mapping file '{sis_type}_mapping.yaml' not found in any of: {tried}")
+        path = found[0]
+        origin = "bundled"
 
     raw = _load_yaml(path)
-    raw = _resolve_inheritance(raw, search_dirs)
+    return _resolve_gate_and_validate(
+        raw,
+        sis_type=sis_type,
+        path=path,
+        origin=origin,
+        search_dirs=search_dirs,
+    )
 
-    # Version-gate the RESOLVED config (a version may be inherited via _base)
-    # BEFORE Pydantic validation, so an out-of-range config gets the actionable
-    # version message rather than confusing field-level schema errors. A missing
-    # version falls through to Pydantic's required-field error.
-    if "version" in raw:
-        _check_config_version(raw["version"], path)
 
-    try:
-        return MappingConfig(**raw)
-    except ValidationError as e:
-        errors = []
-        for err in e.errors():
-            loc = " → ".join(str(part) for part in err["loc"])
-            errors.append(f"  {loc}: {err['msg']}")
-        msg = f"Invalid mapping config '{sis_type}':\n" + "\n".join(errors)
-        raise ValueError(msg) from e
+def validate_overlay(
+    raw: dict[str, Any],
+    *,
+    search_dirs: Optional[Sequence[Path]] = None,
+    label: Optional[str] = None,
+) -> MappingConfig:
+    """Validate an IN-MEMORY overlay dict exactly as :func:`load_config` would.
+
+    This is the authoring layer's load-back check (plan 0044 S1): the overlay is
+    validated BEFORE any file exists, which is the whole point — a build that
+    cannot load must never reach the user's ``mappings/`` dir.
+
+    ``_base`` is resolved against the real search dirs (or the injected
+    USER-then-BUNDLED pair), the resolved raw is version-gated, the user-dir
+    ``district_domains`` floor applies (an overlay is by definition destined for
+    the user dir, so its origin is ``"user"``), and Pydantic errors are wrapped
+    with the SAME message shape ``load_config`` produces.
+
+    ``label`` names the config in log/error messages (e.g. ``"Invalid mapping
+    config '<label>': ..."``). Pass the CONFIG ID here (``write_overlay`` passes
+    ``sis_id``) — since plan 0044 review fix #2, an overlay no longer carries a
+    ``sis:`` key of its own (that key is the SIS PRODUCT NAME, inherited from
+    ``_base``, not the config id), so the id must come from the caller who knows
+    it. When ``label`` is ``None`` (the default — used by tests that construct a
+    raw dict directly, or a caller with no id yet), behaviour is UNCHANGED from
+    before this parameter existed: fall back to ``raw["sis"]`` when it is a
+    non-blank string, else the ``"<unsaved overlay>"`` placeholder.
+
+    Reads NO file for the overlay itself and does not mutate ``raw`` (a deepcopy
+    is validated, because ``_resolve_inheritance`` pops ``_base``).
+
+    Raises:
+        FileNotFoundError: unknown ``_base``.
+        ValueError: version outside the supported major range, or schema invalid.
+    """
+    dirs = _require_search_pair(search_dirs)
+    overlay = copy.deepcopy(raw)
+    if label is not None:
+        resolved_label = label
+    else:
+        sis = overlay.get("sis")
+        resolved_label = sis.strip() if isinstance(sis, str) and sis.strip() else _UNSAVED_OVERLAY_LABEL
+    return _resolve_gate_and_validate(
+        overlay,
+        sis_type=resolved_label,
+        path=Path(_UNSAVED_OVERLAY_LABEL),
+        origin="user",
+        search_dirs=dirs,
+    )

@@ -19,6 +19,13 @@ Load-bearing invariants (the honesty + no-double-register spine):
 * **Skippable Schedule + Delivery.** The aha moment is not gated on a Windows password + a
   live SFTP credential being at hand — those two steps advance freely (skip = "set up
   later"), and skipping marks them satisfied for resume without asserting anything false.
+* **Two fixed shapes, one selector** (plan 0044 S3). ``FlowMode`` is either the shipped
+  five-step ``"standard"`` walk or the six-step ``"creator"`` walk an admin takes when their
+  district ships no mapping and they build one in-app (District → Folders → **Your files** →
+  Delivery → Schedule → Finish). There is still NO data-driven step engine: two hand-written
+  tuples and ONE selector (``step_order``). Every mode-aware function defaults to
+  ``"standard"``, and the four creator ``FlowInputs`` facts each default to the SAFE value and
+  are consulted ONLY in creator mode, so standard-mode behaviour is byte-identical.
 * **Finish copy is honest and adaptive** (``finish_copy``): it names WHAT was checked and
   WHEN, never a future guarantee. Three variants — schedule skipped / delivery deferred /
   delivery tested-just-now — each phrased in the present-perfect trust register. The finish
@@ -33,19 +40,32 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from enum import Enum
+from typing import Literal
 
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.utils.validators import validate_month_day, validate_run_time
 
 
 class SetupStep(Enum):
-    """The five concrete, named wizard steps (no data-driven step engine — YAGNI, D8)."""
+    """The concrete, named wizard steps (no data-driven step engine — YAGNI, D8).
+
+    ``FILES`` is the CREATOR-only "Your files" step (plan 0044 S3): it belongs to
+    ``CREATOR_STEP_ORDER`` alone, so the standard walk is unchanged and ``step_number(FILES)``
+    without ``mode="creator"`` RAISES rather than inventing a position in a walk that has none.
+    """
 
     FOLDERS = "folders"
     DISTRICT = "district"
+    FILES = "files"
     SCHEDULE = "schedule"
     DELIVERY = "delivery"
     FINISH = "finish"
+
+
+# The two wizard SHAPES (plan 0044 S3). A ``Literal`` rather than an Enum deliberately: the mode is
+# a plain string the view already holds (derived from a pending-creator token), it needs no
+# behaviour of its own, and a string default keeps every existing call site byte-identical.
+FlowMode = Literal["standard", "creator"]
 
 
 # The fixed step order (user decision 2026-07-15): DISTRICT now LEADS — "pick who you are first,
@@ -61,18 +81,49 @@ STEP_ORDER: tuple[SetupStep, ...] = (
     SetupStep.SCHEDULE,
     SetupStep.FINISH,
 )
-# The steps that must be satisfied before the finish line is reachable (FINISH itself is the
-# terminal confirmation, never "satisfied" by derivation — only by the explicit confirm).
-_PRE_FINISH_STEPS: tuple[SetupStep, ...] = (
+# The CREATOR walk (plan 0044 S3): six steps, the standard five plus FILES. FILES sits AFTER
+# FOLDERS because its test conversion needs the input folder to read, and DELIVERY still precedes
+# SCHEDULE for exactly the F1 reason above (``--sftp`` is baked at registration).
+CREATOR_STEP_ORDER: tuple[SetupStep, ...] = (
     SetupStep.DISTRICT,
     SetupStep.FOLDERS,
+    SetupStep.FILES,
     SetupStep.DELIVERY,
     SetupStep.SCHEDULE,
+    SetupStep.FINISH,
 )
+# ``TOTAL_STEPS`` stays the STANDARD denominator constant (== 5): the view reads it directly and its
+# pin is load-bearing. ``total_steps(mode)`` is the mode-aware companion for the "Step N of M" line.
 TOTAL_STEPS: int = len(STEP_ORDER)
 
-# The two steps the user may defer ("set up later") — advancing them is always allowed.
+# The two steps the user may defer ("set up later") — advancing them is always allowed. FILES is
+# deliberately ABSENT: it IS the creator activation gate, so it can never be skipped past.
 _SKIPPABLE_STEPS: frozenset[SetupStep] = frozenset({SetupStep.SCHEDULE, SetupStep.DELIVERY})
+
+
+def step_order(mode: FlowMode) -> tuple[SetupStep, ...]:
+    """The fixed step tuple for ``mode`` — the ONE place either walk is selected (pure, TOTAL).
+
+    Every mode-aware function routes through here, so the two shapes can never disagree about
+    order, length or membership. Anything other than ``"creator"`` reads as the standard walk (the
+    safe shape: it has no activation gate to skip and no extra step to hide).
+    """
+    return CREATOR_STEP_ORDER if mode == "creator" else STEP_ORDER
+
+
+def total_steps(mode: FlowMode) -> int:
+    """The "Step N of M" denominator for ``mode`` (5 standard, 6 creator) — derived, never typed."""
+    return len(step_order(mode))
+
+
+def _pre_finish_steps(mode: FlowMode) -> tuple[SetupStep, ...]:
+    """The steps that must be satisfied before ``mode``'s finish line is reachable.
+
+    DERIVED from ``step_order`` rather than hand-written a second time (a parallel tuple would
+    drift the moment a step moves). FINISH itself is the terminal confirmation and is never
+    "satisfied" by derivation — only by the explicit confirm.
+    """
+    return tuple(step for step in step_order(mode) if step is not SetupStep.FINISH)
 
 
 class DeliveryFact(Enum):
@@ -131,6 +182,22 @@ class FlowInputs:
             latched ``schedule_skipped`` against a task that then went live (QA, 2026-08-18).
             Transient by construction: it is never persisted, and a crashed worker clears it in
             the same ``finally`` that clears the spinner.
+        mode: which wizard shape this walk is (plan 0044 S3). ``"standard"`` by default, so an
+            existing caller keeps the five-step walk byte-identical.
+        creator_district_chosen: the creator's district IS chosen — a pending overlay/token exists
+            for it. Read INSTEAD of ``district_chosen`` in creator mode (a creator has no bundled
+            district to pick, so the standard fact could never satisfy the step for them).
+        files_step_satisfied: the "Your files" gate has been passed and is still current (the
+            overlay exists AND the recorded verified digest matches the resolved config's). The
+            view computes it; this module never touches a file.
+        creator_activated: the new district is genuinely the one this install converts
+            (``sis_type`` is the creator id and the pending token is cleared).
+
+    The last four are consulted **only when ``mode == "creator"``** and each defaults to the SAFE
+    value (standard walk / not chosen / gate closed / not activated), so no default can loosen the
+    standard walk and a standard-mode ``FlowInputs`` ignores them entirely. Like every other field
+    here they are INJECTED — the view does the I/O (``folders_valid`` is the precedent), which is
+    what keeps this module free of ``flet``, ``pathlib`` and any config/authoring import.
     """
 
     folders_valid: bool
@@ -140,6 +207,10 @@ class FlowInputs:
     delivery: DeliveryFact = DeliveryFact.NONE
     window_valid: bool = True
     schedule_busy: bool = False
+    mode: FlowMode = "standard"
+    creator_district_chosen: bool = False
+    files_step_satisfied: bool = False
+    creator_activated: bool = False
 
 
 @dataclass(frozen=True)
@@ -169,12 +240,22 @@ def _schedule_satisfied(inputs: FlowInputs) -> bool:
 
 
 def _satisfied_steps(inputs: FlowInputs) -> frozenset[SetupStep]:
-    """The set of derivation-satisfied pre-finish steps (FINISH is only ever confirmed)."""
+    """The set of derivation-satisfied pre-finish steps (FINISH is only ever confirmed).
+
+    Creator mode changes exactly two rows: DISTRICT is satisfied by ``creator_district_chosen``
+    INSTEAD of ``district_chosen`` (a creator picks no bundled district, so the standard fact would
+    never fire), and FILES is satisfied by ``files_step_satisfied`` ALONE — the injected "gate
+    passed and still current" fact, never inferred from anything else.
+    """
+    creator = inputs.mode == "creator"
     done: set[SetupStep] = set()
     if inputs.folders_valid:
         done.add(SetupStep.FOLDERS)
-    if inputs.district_chosen:
+    district_chosen = inputs.creator_district_chosen if creator else inputs.district_chosen
+    if district_chosen:
         done.add(SetupStep.DISTRICT)
+    if creator and inputs.files_step_satisfied:
+        done.add(SetupStep.FILES)
     if _schedule_satisfied(inputs):
         done.add(SetupStep.SCHEDULE)
     if inputs.delivery in _DELIVERY_SATISFIED:
@@ -185,18 +266,28 @@ def _satisfied_steps(inputs: FlowInputs) -> frozenset[SetupStep]:
 def derive_flow(inputs: FlowInputs) -> FlowState:
     """Derive the wizard ``FlowState`` from injected real-state facts (pure, TOTAL).
 
-    ``resume_step`` is the first pre-finish step not satisfied; if all four are satisfied the
-    resume target is FINISH (the reachable confirmation). ``can_finish`` mirrors that: the
-    finish line is reachable only when Folders + District + Schedule + Delivery are all
+    ``resume_step`` is the first pre-finish step of ``inputs.mode``'s walk that is not satisfied;
+    if they all are, the resume target is FINISH (the reachable confirmation). ``can_finish``
+    mirrors that: the finish line is reachable only when every pre-finish step of that walk is
     satisfied (skipped counts as satisfied for the two deferrable steps).
+
+    **Creator mode ANDs ``creator_activated`` into ``can_finish``** (plan 0044 S3): a creator who
+    never pressed the activation confirm must not reach the confirmation that flips
+    ``setup_completed``, or the install would read as set up while ``sis_type`` still pointed at
+    nothing (``has_completed_setup()`` True / ``is_complete()`` False). Belt-and-braces by
+    construction — the recorded verified digest that opens the FILES gate is written BY the
+    activation — and deliberately so: it is the one guard that does not depend on that ordering.
     """
     satisfied = _satisfied_steps(inputs)
+    pre_finish = _pre_finish_steps(inputs.mode)
     resume = SetupStep.FINISH
-    for step in _PRE_FINISH_STEPS:
+    for step in pre_finish:
         if step not in satisfied:
             resume = step
             break
-    can_finish = all(step in satisfied for step in _PRE_FINISH_STEPS)
+    can_finish = all(step in satisfied for step in pre_finish)
+    if inputs.mode == "creator":
+        can_finish = can_finish and inputs.creator_activated
     return FlowState(resume_step=resume, satisfied=satisfied, can_finish=can_finish)
 
 
@@ -204,7 +295,10 @@ def can_advance(step: SetupStep, inputs: FlowInputs) -> bool:
     """Whether the given step's Next/Enter gate is satisfied (pure — the Enter-advance gate).
 
     FOLDERS / DISTRICT advance only when their own value is valid (Enter can never bypass the
-    gate a disabled Next button enforces — same guarantee as ``setup_gates``). SCHEDULE is
+    gate a disabled Next button enforces — same guarantee as ``setup_gates``); in creator mode
+    DISTRICT reads ``creator_district_chosen``, mirroring ``_satisfied_steps``. FILES (creator only)
+    advances only once ``files_step_satisfied`` — it IS the activation gate, so it is NOT skippable
+    and Enter must not walk past an untested district. SCHEDULE is
     skippable BUT additionally gated on TWO transient view facts — ``window_valid`` (an
     enabled-but-invalid seasonal window blocks Continue; the window lives on the Schedule step)
     and ``schedule_busy`` (a register/unregister is in flight). DELIVERY is skippable, so
@@ -217,7 +311,9 @@ def can_advance(step: SetupStep, inputs: FlowInputs) -> bool:
     if step is SetupStep.FOLDERS:
         return inputs.folders_valid
     if step is SetupStep.DISTRICT:
-        return inputs.district_chosen
+        return inputs.creator_district_chosen if inputs.mode == "creator" else inputs.district_chosen
+    if step is SetupStep.FILES:
+        return inputs.files_step_satisfied
     if step is SetupStep.SCHEDULE:
         # Skippable, but a visibly-enabled invalid window can't be advanced past (the window is
         # not a task arg — this only blocks Continue, never the register flow), and neither can
@@ -233,21 +329,28 @@ def is_skippable(step: SetupStep) -> bool:
     return step in _SKIPPABLE_STEPS
 
 
-def step_number(step: SetupStep) -> int:
-    """The 1-based position of ``step`` (for the "Step N of 5" indicator)."""
-    return STEP_ORDER.index(step) + 1
+def step_number(step: SetupStep, *, mode: FlowMode = "standard") -> int:
+    """The 1-based position of ``step`` in ``mode``'s walk (the "Step N of M" numerator).
+
+    Keyword-only ``mode`` with the standard default, so every existing call is unchanged. A step
+    absent from the selected walk RAISES (``ValueError``) rather than inventing a position — asking
+    for FILES' number in the standard walk is a bug, not a display edge case.
+    """
+    return step_order(mode).index(step) + 1
 
 
-def next_step(step: SetupStep) -> SetupStep | None:
-    """The step after ``step`` in the fixed order, or ``None`` at the end."""
-    index = STEP_ORDER.index(step)
-    return STEP_ORDER[index + 1] if index + 1 < len(STEP_ORDER) else None
+def next_step(step: SetupStep, *, mode: FlowMode = "standard") -> SetupStep | None:
+    """The step after ``step`` in ``mode``'s fixed order, or ``None`` at the end."""
+    order = step_order(mode)
+    index = order.index(step)
+    return order[index + 1] if index + 1 < len(order) else None
 
 
-def prev_step(step: SetupStep) -> SetupStep | None:
-    """The step before ``step`` in the fixed order, or ``None`` at the start."""
-    index = STEP_ORDER.index(step)
-    return STEP_ORDER[index - 1] if index > 0 else None
+def prev_step(step: SetupStep, *, mode: FlowMode = "standard") -> SetupStep | None:
+    """The step before ``step`` in ``mode``'s fixed order, or ``None`` at the start."""
+    order = step_order(mode)
+    index = order.index(step)
+    return order[index - 1] if index > 0 else None
 
 
 def auto_selected_district(available: Sequence[str]) -> str:

@@ -2972,3 +2972,34 @@ def test_a_switched_district_can_never_ship_another_districts_roster(tmp_path, m
         assert sis == "sd74myedbc"
         assert "sd74" in build_zip_name(sis)
         assert "sd40" not in build_zip_name(sis)
+
+
+class TestCheckRowFactory:
+    """``components.check_row`` — the ONE tick-box factory (plan 0044 S3 review, SHOULD 7).
+
+    A mount smoke plus the ADAPTER contract, which is the part that could silently break: on
+    0.85.3 ``ft.Checkbox`` reports a change through ``on_change`` with the EVENT object, while
+    every caller wants the new boolean. A factory that handed the event straight through (or
+    read the pre-change value) would mis-toggle ~50 boxes on the creator's forms — an entity
+    or a grade scope quietly set to the opposite of what was clicked.
+    """
+
+    def test_it_builds_a_checkbox_in_the_token_action_colour(self):
+        row = components.check_row("Students", value=True, on_toggle=lambda _ticked: None)
+
+        assert isinstance(row, ft.Checkbox)
+        assert row.label == "Students"
+        assert row.value is True
+        assert row.active_color == tokens.color_action_primary
+
+    def test_the_toggle_receives_the_new_boolean_and_never_the_event(self):
+        seen: list[object] = []
+        row = components.check_row("Staff", value=False, on_toggle=seen.append)
+
+        row.value = True  # Flet sets the control's value, then fires the handler
+        row.on_change(_pick_event(True))
+        row.value = False
+        row.on_change(_pick_event(False))
+
+        assert seen == [True, False]
+        assert all(isinstance(item, bool) for item in seen), "the event object reached the caller"
