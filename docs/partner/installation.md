@@ -95,18 +95,13 @@ check that the publisher reads **myBlueprint Corp.**, then click **Run anyway**.
 If the publisher shows as unknown, stop and contact us — a signed release
 should never show that.
 
-!!! tip "District IT: two ways to avoid the SmartScreen screen entirely"
+!!! tip "District IT: skip the SmartScreen screen on managed machines"
     SmartScreen only checks files that arrived from the internet. If your IT
     team downloads a release once and hosts it on an internal file share or
     your software-distribution tool, machines that install from there are
     not subject to SmartScreen's download check — Microsoft calls this a
-    *trusted intranet* location.
-
-    IT can also submit the signed `.exe` to Microsoft for review at
-    <https://www.microsoft.com/en-us/wdsi/filesubmission>. Microsoft says
-    this can speed up trust for managed deployments; it is not instant and
-    not guaranteed. Both routes are optional — the **Run anyway** path above
-    is always safe once the publisher reads **myBlueprint Corp.**
+    *trusted intranet* location. This is optional — the **Run anyway** path
+    above is always safe once the publisher reads **myBlueprint Corp.**
 
 If your district's antivirus quarantines the file instead, restore it from
 quarantine and ask your IT team to add it to the antivirus exclusion list.

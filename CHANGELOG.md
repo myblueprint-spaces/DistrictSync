@@ -13,9 +13,8 @@ Per-release download links and auto-generated commit notes live on the
 
 - The installation guide now tells district IT how to skip the SmartScreen
   screen on managed machines: host the release on an internal share (Windows
-  does not SmartScreen-check trusted-intranet files) or submit the signed
-  `.exe` to Microsoft for review. Neither is required — **Run anyway** with
-  the publisher reading **myBlueprint Corp.** remains the documented path.
+  does not SmartScreen-check trusted-intranet files). Optional — **Run anyway**
+  with the publisher reading **myBlueprint Corp.** remains the documented path.
 A district can now set itself up. Until now, a district DistrictSync did not
 ship a mapping for had to wait for one to be built, reviewed and released.
 Now a district technician answers a few questions in the app, tests the
