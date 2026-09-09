@@ -20,6 +20,11 @@ MASTER_TIMETABLE_ID = "master timetable id"
 
 # Staff roster
 STAFF_SOURCEID = "staff sourceid"
+#: Employment-status column in the MyEd BC staff GDE ("Active" / "Inactive").
+#: Present in every real district export seen so far (SD40, SD60, SD74, Unity
+#: Christian) and read ONLY to drop departed staff — never mapped to output.
+#: Districts override the spelling via the Staff entity's ``source_columns``.
+STAFF_STATUS = "staff status"
 
 # Course
 COURSE_CODE = "course code"
