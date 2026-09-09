@@ -602,16 +602,22 @@ def _create_sd60_inputs(d: Path) -> None:
 
 def _create_sd38_inputs(d: Path) -> None:
     """SD38 (Richmond): mbp_core shape (Students + the two course feeds) plus
-    ``Home School Number`` on the demographic frame for ``cross_enrollment``.
+    ``Home School Number`` for ``cross_enrollment`` and ``Student Email`` (NOT
+    the base default ``Student email address``) for the Email Address override.
 
-    Equal to ``School Number`` for this synthetic population — no cross-school
-    duplicate row is needed here to prove the entity SHAPE; the collapse
-    mechanism itself is unit-tested in tests/test_transform_students.py and
-    exercised end-to-end (with an actual duplicate) by sd60myedbc's fixture
-    above. The 8-vs-7-12 grade-scope widening is a config-value fact pinned in
-    tests/test_config.py; grade-scope FILTERING itself is generically covered
-    by tests/test_student_rostering_grades.py, so this population does not
-    need its own grade-07 row to avoid a vacuous proof.
+    ``Home School Number`` is equal to ``School Number`` for this synthetic
+    population — no cross-school duplicate row is needed here to prove the
+    entity SHAPE; the collapse mechanism itself is unit-tested in
+    tests/test_transform_students.py and exercised end-to-end (with an actual
+    duplicate) by sd60myedbc's fixture above. The 8-vs-7-12 grade-scope
+    widening is a config-value fact pinned in tests/test_config.py; grade-scope
+    FILTERING itself is generically covered by tests/test_student_rostering_grades.py,
+    so this population does not need its own grade-07 row to avoid a vacuous
+    proof. ``Student Email`` DOES need its own column here, though — a missing
+    field_map source column resolves to a silent blank (not an error; see
+    src/config/models.py's DirectMapping.apply), so a fixture still carrying
+    the base's ``Student email address`` column would leave the override
+    proven only by inspection, not by a red test.
     """
     pd.DataFrame(
         {
@@ -626,7 +632,7 @@ def _create_sd38_inputs(d: Path) -> None:
             "Previous school number": ["", "", ""],
             "Usual First Name": ["", "", ""],
             "Usual surname": ["", "", ""],
-            "Student email address": ["alice@test.ca", "bob@test.ca", "charlie@test.ca"],
+            "Student Email": ["alice@test.ca", "bob@test.ca", "charlie@test.ca"],
             "Enrolment Status": ["Active", "Active", "Active"],
             "Teacher Name": ["Ms. Harper", "Mrs. Liu", "Mr. Singh"],
             "Teacher ID": ["T001", "T003", "T004"],
@@ -1223,6 +1229,29 @@ class TestDistrictQuirks:
             "S002": "s002@learn75.ca",
             "S003": "s003@learn75.ca",
         }
+
+    # ---- SD38: renamed email column + cross-enrollment collapse (mbp_core) ----
+
+    @pytest.mark.parametrize("district_output", ["sd38myedbc"], indirect=True)
+    def test_sd38_email_sourced_from_student_email_not_the_base_default(self, district_output):
+        """SD38's real export names this column `Student Email`, not the base
+        default `Student email address` — confirmed against a real GDE drop
+        (see config/mappings/sd38myedbc_mapping.yaml). The fixture carries
+        ONLY `Student Email`, so a config that regressed to the base default
+        would ship every row blank here rather than pass by accident."""
+        _, out = district_output
+        students = _read_output(out, "Students")
+        assert dict(zip(students["User ID"], students["Email Address"])) == {
+            "S002": "bob@test.ca",
+            "S003": "charlie@test.ca",
+        }
+
+    @pytest.mark.parametrize("district_output", ["sd38myedbc"], indirect=True)
+    def test_sd38_grade_7_to_12_scope_drops_grade_3(self, district_output):
+        _, out = district_output
+        user_ids = set(_read_output(out, "Students")["User ID"])
+        assert "S001" not in user_ids, "grade-3 S001 is outside the 7-12 scope"
+        assert {"S002", "S003"} == user_ids
 
     # ---- SD83: class_rostering_grades: "homeroom" (K-8 SpacesEDU, 9-12 mbp+) ----
 

@@ -42,3 +42,12 @@ global_config:
   cross_enrollment:
     collapse: true
     home_school_column: "Home School Number"
+
+mappings:
+  Students:
+    field_map:
+      # SD38's real demographic export names this column "Student Email" —
+      # NOT the base default "Student email address" (confirmed against a
+      # real extract; the base default was silently matching a test copy
+      # that had been hand-edited to the base's column name).
+      "Email Address": "Student Email"
