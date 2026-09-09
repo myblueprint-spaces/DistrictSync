@@ -201,8 +201,8 @@ def _write_base_schedule(path: Path, filename: str, section_col: str = "Section 
 
 def _write_family(path: Path, filename: str, last_name_col: str = "Last Name") -> None:
     # Contacts for BOTH population halves: S001 (grade 3) and S002 (grade 10) —
-    # the 8-12-scoped districts (sd27/sd38) roster-filter S001's contact away,
-    # so the S002 row is what keeps their Family.csv non-empty in the sweep.
+    # the 8-12-scoped sd27myedbc roster-filters S001's contact away, so the
+    # S002 row is what keeps its Family.csv non-empty in the sweep.
     pd.DataFrame(
         {
             "Student Number": ["S001", "S002"],
@@ -600,6 +600,43 @@ def _create_sd60_inputs(d: Path) -> None:
     _write_class_info_empty(d, "ClassInformation.txt")
 
 
+def _create_sd38_inputs(d: Path) -> None:
+    """SD38 (Richmond): mbp_core shape (Students + the two course feeds) plus
+    ``Home School Number`` on the demographic frame for ``cross_enrollment``.
+
+    Equal to ``School Number`` for this synthetic population — no cross-school
+    duplicate row is needed here to prove the entity SHAPE; the collapse
+    mechanism itself is unit-tested in tests/test_transform_students.py and
+    exercised end-to-end (with an actual duplicate) by sd60myedbc's fixture
+    above. The 8-vs-7-12 grade-scope widening is a config-value fact pinned in
+    tests/test_config.py; grade-scope FILTERING itself is generically covered
+    by tests/test_student_rostering_grades.py, so this population does not
+    need its own grade-07 row to avoid a vacuous proof.
+    """
+    pd.DataFrame(
+        {
+            "Student Number": ["S001", "S002", "S003"],
+            "Legal First Name": ["Alice", "Bob", "Charlie"],
+            "Legal Surname": ["Smith", "Jones", "Brown"],
+            "Date of birth": ["2010-01-15", "2009-06-20", "2011-03-10"],
+            "Grade": ["3", "10", "12"],
+            "School Number": ["100", "200", "200"],
+            "Home School Number": ["100", "200", "200"],
+            "Homeroom": ["A1", "C3", "C4"],
+            "Previous school number": ["", "", ""],
+            "Usual First Name": ["", "", ""],
+            "Usual surname": ["", "", ""],
+            "Student email address": ["alice@test.ca", "bob@test.ca", "charlie@test.ca"],
+            "Enrolment Status": ["Active", "Active", "Active"],
+            "Teacher Name": ["Ms. Harper", "Mrs. Liu", "Mr. Singh"],
+            "Teacher ID": ["T001", "T003", "T004"],
+        }
+    ).to_csv(d / "StudentDemographicInformation.txt", index=False)
+    _write_course_info(d, catalog=True)
+    _write_course_history(d)
+    _write_course_selection(d)
+
+
 def _create_sd51attendance_inputs(d: Path) -> None:
     """SD51 attendance tier: ONLY the two HEADERLESS absence GDEs.
 
@@ -655,17 +692,19 @@ _DISTRICT_SETUP = {
     # business-logic differences the shared fixture already exercises correctly.
     "sd83myedbc": _create_mbp_all_inputs,
     # Phase-2 migration districts (2026-08-31): standard MyEd BC file shape.
-    # The six full-tier configs ride the mbp_all fixture (sd27/sd38's 8-12
-    # student scope keeps S002/S003 and drops the grade-3 S001 — the shared
-    # family fixture carries an S002 row so Family stays non-empty for them);
-    # sd10 is the mbp_core shape (Students + the two course feeds).
+    # The full-tier configs ride the mbp_all fixture (sd27's 8-12 student scope
+    # keeps S002/S003 and drops the grade-3 S001 — the shared family fixture
+    # carries an S002 row so Family stays non-empty for it); sd10 and sd38 are
+    # the mbp_core shape (Students + the two course feeds) — sd38 moved there
+    # (2026-09-08) when its enabled_entities dropped the SpacesEDU rostering
+    # entities and its student scope widened to 7-12.
     "sd27myedbc": _create_mbp_all_inputs,
-    "sd38myedbc": _create_mbp_all_inputs,
     "sd67myedbc": _create_mbp_all_inputs,
     "sd69myedbc": _create_mbp_all_inputs,
     "sd71myedbc": _create_mbp_all_inputs,
     "sd75myedbc": _create_mbp_all_inputs,
     "sd10myedbc": _create_mbp_core_inputs,
+    "sd38myedbc": _create_sd38_inputs,
     # Unity Christian School (2026-09-01): standard MyEd BC file shape. Its real
     # differences (grade-8 homerooms, generated emails, Family off) are config facts
     # the shared fixture exercises — the EmergencyContactInformation.txt this builder

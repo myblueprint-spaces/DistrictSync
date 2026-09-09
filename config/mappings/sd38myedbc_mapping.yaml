@@ -1,8 +1,9 @@
-# SD38 - Richmond: inherits from standard MyEducation BC mapping, with the
-# full myBlueprint+ tier enabled and the student roster scoped to grades 8-12
-# (phase-2 migration scope). Standard MyEd BC GDE file naming is assumed (no
-# source_files overrides here) — adjust once real GDE exports are available
-# (see docs/developer/adding-district.md, Steps 1-2).
+# SD38 - Richmond: inherits from standard MyEducation BC mapping. myBlueprint+
+# course tier only (Students + CourseInfo + StudentCourses — no SpacesEDU
+# rostering entities) with the student roster scoped to grades 7-12. Standard
+# MyEd BC GDE file naming is assumed (no source_files overrides here) — adjust
+# once real GDE exports are available (see docs/developer/adding-district.md,
+# Steps 1-2).
 _base: myedbc
 # Quoted deliberately: PyYAML collapses a bare minor with a trailing zero to a
 # float (1.10 → 1.1), which the version gate would misread (see
@@ -16,20 +17,28 @@ district_name: SD38 - Richmond School District
 district_domains: ["sd38.bc.ca"]
 
 global_config:
-  # Full myBlueprint+ tier. Deep-merge REPLACES lists (see sd51myedbc's
-  # comment on this same key), so the full set must be restated here.
+  # mbp_core shape (Students + the 2 course CSVs) — no SpacesEDU rostering
+  # entities. Deep-merge REPLACES lists (see sd51myedbc's comment on this same
+  # key), so the full set must be restated here.
   enabled_entities:
     - Students
-    - Staff
-    - Family
-    - Classes
-    - Enrollments
     - CourseInfo
     - StudentCourses
-  # Grades 8-12 only — same shape and reasoning as sd27myedbc: the base K-7
-  # homeroom set must be overridden for the chain rule (homeroom ⊆ student),
-  # and every rostered class comes from the timetable (scope 08-12).
+  # Grades 7-12 only — same shape and reasoning as sd27myedbc: the base K-7
+  # homeroom set must be overridden for the chain rule (homeroom ⊆ student).
+  # No Classes/Enrollments here, so there is no timetable-scope consequence
+  # (class_rostering_grades is left unset).
   homeroom_grades: []
-  student_rostering_grades: ["08", "09", "10", "11", "12"]
+  student_rostering_grades: ["07", "08", "09", "10", "11", "12"]
   # HS course feeds cover grades 10-12 — the base default course_start_grade
   # (10) already says exactly that, so it is deliberately not restated.
+  # SD38's demographic export sends one row PER SCHOOL for a cross-enrolled
+  # pupil (same User ID, differing School Number) — confirmed against a real
+  # extract: 965 pupils each with exactly 2 rows, identical Grade/Homeroom/
+  # Withdraw Date, and 'Home School Number' always populated and always equal
+  # to one of the two School Numbers. Uncollapsed this ships duplicate User ID
+  # rows in Students.csv. Collapse to the home-school row (same shape as
+  # sd60myedbc's comment on this same key).
+  cross_enrollment:
+    collapse: true
+    home_school_column: "Home School Number"
