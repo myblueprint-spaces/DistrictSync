@@ -347,7 +347,7 @@ Read as a grade-scope rule, not as a promise about occupancy. It is **necessary,
 |---|---|---|---|---|---|
 | 1 | School Number | School number. **Must be the literal first header with no BOM** (see the BOM matrix). | pending owner confirmation | observed import | GUARANTEED |
 | 2 | Absence Date | Formatted per `global_config.attendance.date_format` (default ISO `yyyy-MM-dd`). | pending owner confirmation | observed import | GUARANTEED |
-| 3 | Absence Category | Derived for the K-7 daily band, passed through for the 8-12 period band — the two are **not** one vocabulary (see below). | pending owner confirmation | observed import | GUARANTEED |
+| 3 | Absence Category | Derived for the K-7 daily band, passed through for the 8-12 period band — the two are **not** one vocabulary (see below). A student-day present in both bands is reported once, by the daily band, so its DERIVED category is the one that ships. | pending owner confirmation | observed import | GUARANTEED |
 | 4 | Student Number | Pupil number. | pending owner confirmation | observed import | GUARANTEED |
 
 Only these four columns are emitted. The SpacesEDU attendance spec permits dropping every optional field after `Student Number`, so the previous 28-column shape (24 always-blank columns) was reduced on 2026-06-19. Column order here is **case-sensitive, and order-sensitivity is established in our own code** for this entity — the one entity for which that is true. (Again: "established in code", not the dated `confirmed <date>` Status value.)
@@ -381,7 +381,28 @@ Only these four columns are emitted. The SpacesEDU attendance spec permits dropp
 
 ### Two bands, two vocabularies — never one merged list
 
-The output is the union of two independent bands. **They are different kinds of data and must not be documented as one category list.**
+The output is the union of two bands. **They are different kinds of data and must not be documented as one category list.**
+
+**The union is not naive — a student-day is reported ONCE.** The bands are two
+SOURCES, not two independent facts: a district taking attendance in a
+homeroom/attendance-only section (`ATT--AM` / `ATT--PM`) records the same
+absence in both files. `StudentAttendance.csv` carries no band marker, so
+SpacesEDU weighs every row by the student's GRADE and adds them up — emitting
+both turns a half-day absence into a full day. So a period row whose
+`(School Number, Absence Date, Student Number)` the daily band already reported
+is **suppressed**, and the daily band wins because it is the one carrying
+`Portion Absent` and the AM/PM codes. The category is deliberately NOT part of
+that identity: the same student-day may be derived `A` on one side and passed
+through as `AD-E` on the other, and it is still one day off school. A
+student-day seen **only** in the period band is untouched, so a genuine 8-12
+per-period district keeps its intentional multiplicity in full. Counts only are
+logged, never row values.
+
+Found live on SD60's 2026-09-09 drop: all 73 period rows were `ATT--AM` for
+grades 1-6, 44 duplicated a daily row, and 34 student-days came out over a full
+day. This rule keys on the student-day the bands share, **never** on a course
+code — a district excludes `ATT--*` from `excluded_course_codes` because it is
+not a real CLASS, but that section is exactly where its attendance is taken.
 
 **K-7 daily band** (`StudentDailyAbsences.txt`) — the category is **DERIVED by us from the configured `category_map`**, so this vocabulary is **ours to promise**:
 
@@ -511,7 +532,7 @@ This table is **hand-written and GATED AGAINST** the enforced contract by `tests
 | `sd48myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | Renamed source files. |
 | `sd51myedbc` | Students, Staff, Family, Classes, Enrollments, StudentAttendance | Students, Staff, Family, Classes, Enrollments | **Enables StudentAttendance**, but the contract fixture supplies no absence GDEs on purpose — that pins skip-on-empty (a missing attendance drop must never block rostering). In production with absence GDEs present it emits six files. |
 | `sd54myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | No status column: withdraw-date-only active detection. |
-| `sd60myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | Family `row_filters`, cross-enrollment collapse, generated emails. |
+| `sd60myedbc` | Students, Staff, Family, Classes, Enrollments, StudentAttendance | Students, Staff, Family, Classes, Enrollments, StudentAttendance | Family `row_filters`, cross-enrollment collapse, generated emails; the district's own `Spaces_*` filenames. **Enables StudentAttendance and the fixture DOES supply absence GDEs** — the deliberate complement to `sd51myedbc` above, which withholds them: SD51 pins skip-on-empty, SD60 pins the emit path. Both bands are headerful here. |
 | `sd74myedbc` | Students, Staff, Family, Classes, Enrollments | Students, Staff, Family, Classes, Enrollments | The frozen snapshot district. |
 | `sd83myedbc` | Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses | Students, Staff, Family, Classes, Enrollments, CourseInfo, StudentCourses | Full myBlueprint+ tier; extended homeroom grades (through 08), **`class_rostering_grades: "homeroom"`** (K-8 class rostering only — grades 9-12 are on `Students.csv` with no enrollment rows, so their transcripts still work), `course_start_grade: 9`, Date of Birth withheld. Standard MyEd BC file naming assumed pending real GDE samples. |
 | `sd51attendance` | StudentAttendance | StudentAttendance | Attendance-only tier — no roster anchor is a legitimate delivery here. |

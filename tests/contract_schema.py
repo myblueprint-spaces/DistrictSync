@@ -135,7 +135,12 @@ EXPECTED_ENTITIES: dict[str, frozenset[str]] = {
     "sd48myedbc": ROSTERING_ENTITIES,
     "sd51myedbc": ROSTERING_ENTITIES,  # StudentAttendance enabled, absence GDEs deliberately absent
     "sd54myedbc": ROSTERING_ENTITIES,
-    "sd60myedbc": ROSTERING_ENTITIES,
+    # SD60 delivers attendance in the SAME drop as rostering (2026-09-10). Same
+    # enabled_entities as sd51myedbc — but SD51's absence GDEs are deliberately
+    # withheld from its fixture (pinning skip-on-empty), whereas SD60's fixture
+    # SUPPLIES them, so this row is where the rostering+attendance emit path is
+    # actually proven. sd51attendance emits attendance ALONE.
+    "sd60myedbc": ROSTERING_ENTITIES | {"StudentAttendance"},
     "sd74myedbc": ROSTERING_ENTITIES,
     "sd51attendance": frozenset({"StudentAttendance"}),
     "sd83myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},

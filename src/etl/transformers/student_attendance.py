@@ -32,6 +32,23 @@ OffSite, ISS...); SpacesEDU ignores non-accepted ones, so the category is
 passed through AS-IS (no filtering, no dedup — per-period multiplicity is
 intentional). Rows with a blank category OR a blank student number are dropped.
 
+**The union is not naive.** The two bands are independent SOURCES, not
+independent FACTS. A district whose schools take attendance in a
+homeroom/attendance-only section (MyEd BC's ``ATT--AM`` / ``ATT--PM``) records
+the same absence in BOTH files, and the output carries no band marker for
+SpacesEDU to disambiguate with — it weighs each row by the student's GRADE and
+adds them up, so emitting both turns a half-day absence into a full day. So a
+period row whose (school, date, student) the daily band has already reported is
+SUPPRESSED (:meth:`StudentAttendanceTransformer.suppress_overlapping_period_rows`),
+daily winning because it is the band that carries the half-day portion. A
+student-day seen ONLY in the period band is untouched, so a genuine 8-12
+per-period district keeps its intentional per-period multiplicity in full.
+
+Note this is deliberately NOT driven by ``excluded_course_codes``: a district
+excludes ``ATT--*`` because it is not a real CLASS, but that section is exactly
+where its attendance is taken — those rows are the attendance record, so the
+rule keys on the student-day the bands share, never on a course code.
+
 Configurable-Columns rule: every source column name and every K-7 derivation
 knob (the (code, authorized) -> category map, the portion -> row-count rule) is
 read at runtime from ``global_config.attendance`` — nothing is hardcoded as a
@@ -41,12 +58,15 @@ than silently dropping or mis-bucketing, so SpacesEDU's review tunes config,
 never code.
 """
 
+import logging
 from typing import Any
 
 import pandas as pd
 
 from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.context import TransformContext
+
+logger = logging.getLogger(__name__)
 
 
 class StudentAttendanceTransformer(BaseTransformer):
@@ -59,6 +79,12 @@ class StudentAttendanceTransformer(BaseTransformer):
         "Absence Category",
         "Student Number",
     )
+
+    #: The identity a student's attendance for ONE day has in the OUTPUT space.
+    #: Deliberately excludes Absence Category: two bands describing the same
+    #: student-day may label it differently (a derived "A-E" against a
+    #: passed-through "AD-E"), and they are still the same day off school.
+    STUDENT_DAY_KEY: tuple[str, ...] = ("School Number", "Absence Date", "Student Number")
 
     def transform(self, df: pd.DataFrame, mapping: dict[str, Any], context: TransformContext) -> pd.DataFrame:
         rows: list[dict[str, str]] = []
@@ -83,18 +109,33 @@ class StudentAttendanceTransformer(BaseTransformer):
 
         # K-7 Daily band. Read via role `daily_absences`. Empty/absent -> no
         # daily rows; its config is required ONLY when its data is present.
+        daily_rows: list[dict[str, str]] = []
         daily = self._daily_frame(mapping, context)
         if not daily.empty:
             daily_cfg = self._daily_config(context.global_config)
-            rows.extend(self._build_daily_rows(daily, mapping, daily_cfg, context, strftime_fmt))
+            daily_rows = self._build_daily_rows(daily, mapping, daily_cfg, context, strftime_fmt)
 
         # 8-12 Period band. Read via role `period_absences`. Empty/absent -> no
         # period rows; its config is required ONLY when its data is present.
+        period_rows: list[dict[str, str]] = []
         period = self._period_frame(mapping, context)
         if not period.empty:
             period_cfg = self._period_config(context.global_config)
-            rows.extend(self._build_period_rows(period, period_cfg, strftime_fmt))
+            period_rows = self._build_period_rows(period, period_cfg, strftime_fmt)
 
+        # The two bands are independent SOURCES, not independent FACTS: a
+        # district may record the same student-day in both. Union them only
+        # after the daily band has claimed its student-days.
+        period_rows, suppressed = self.suppress_overlapping_period_rows(daily_rows, period_rows)
+        if suppressed:
+            logger.info(
+                f"[StudentAttendance] Suppressed {suppressed} period row(s) whose "
+                f"(school, date, student) the daily band already reported — counting a student-day "
+                f"in both bands would inflate it. Daily wins: it carries the half-day portion."
+            )
+
+        rows.extend(daily_rows)
+        rows.extend(period_rows)
         return self._frame(rows)
 
     # ------------------------------------------------------------------
@@ -217,6 +258,49 @@ class StudentAttendanceTransformer(BaseTransformer):
     # ------------------------------------------------------------------
     # 8-12 Period Absences band (per-period PASS-THROUGH — no derivation)
     # ------------------------------------------------------------------
+    @classmethod
+    def suppress_overlapping_period_rows(
+        cls,
+        daily_rows: list[dict[str, str]],
+        period_rows: list[dict[str, str]],
+    ) -> tuple[list[dict[str, str]], int]:
+        """Drop period rows for a student-day the DAILY band already reported.
+
+        WHY (recognising the data rather than configuring around it): the two
+        GDE files are two SOURCES, not two independent facts. A district whose
+        schools take attendance in a homeroom/attendance-only section emits the
+        SAME absence twice — once as a daily AM/PM record and again as a period
+        record against that section. SpacesEDU has no way to tell: the output
+        carries no band marker, so it weighs every row by the student's GRADE
+        and simply adds them up. Emitting both then turns a half-day absence
+        into a full day (0.5 daily + 0.5 period), which is silently wrong.
+
+        DAILY WINS, and that direction is the point: the daily record is the
+        authoritative half-day summary — it is the band carrying
+        ``Portion Absent`` and the AM/PM codes, and the band whose category we
+        DERIVE rather than pass through. A period row for a day the daily band
+        already describes adds no information it does not already hold.
+
+        This narrows nothing else. A student-day present ONLY in the period band
+        survives untouched, so a genuine 8-12 per-period district — several
+        period rows for a day with no daily record — is completely unaffected,
+        including its intentional per-period multiplicity.
+
+        Pure and total: no config, no district knowledge, no I/O. Returns the
+        kept rows and how many were suppressed (the caller logs the count; row
+        values are attendance PII and are never logged).
+        """
+        if not daily_rows or not period_rows:
+            return period_rows, 0
+        claimed = {cls._student_day(row) for row in daily_rows}
+        kept = [row for row in period_rows if cls._student_day(row) not in claimed]
+        return kept, len(period_rows) - len(kept)
+
+    @classmethod
+    def _student_day(cls, row: dict[str, str]) -> tuple[str, ...]:
+        """The row's (school, date, student) identity — see :data:`STUDENT_DAY_KEY`."""
+        return tuple(row.get(column, "") for column in cls.STUDENT_DAY_KEY)
+
     def _build_period_rows(
         self, period: pd.DataFrame, period_cfg: dict[str, Any], strftime_fmt: str
     ) -> list[dict[str, str]]:
