@@ -316,6 +316,50 @@ global_config:
   academic_year_rollover_month_day: "07-01"  # July onwards = next academic year
 ```
 
+### Diagnosing a wrong-year delivery
+
+`determine_school_year` logs, at INFO, exactly which mechanism produced the
+resolved year each run — the source role/file/column/raw value, or the
+calendar-fallback inputs (`rollover`, `today`) when no source column was
+usable — and `--quality` renders the same facts as a
+`--- School Year Determination ---` section, so a wrong-year `Classes.csv`
+term window can be diagnosed from that output alone, without reading source.
+Two WARNINGs exist for two DIFFERENT failure shapes, and they are worded
+differently on purpose so a log grep can tell them apart:
+
+- **Configured sources disagree with each other** — more than one
+  `school_year_sources` role parses to a different end year. Message contains
+  `"disagree"`.
+- **The chosen source value disagrees with the calendar fallback** — the
+  source-derived year doesn't match what today's date + the rollover setting
+  would independently produce. This is the shape that silently produced a
+  wrong term window before this diagnostic existed (a single stale source
+  value that doesn't conflict with any OTHER configured source raises no
+  signal on its own). Message contains `"mismatch"`, never `"disagree"`.
+
+`school_year_sources` already accepts more than one `{role: filename}` entry
+— every shipped config today lists exactly one (`student_schedule`), so the
+first warning above has never fired in production.
+
+**Checked against 4 real MyEd BC drops (SD40, SD60, SD74, Unity Christian,
+2026-09), not just this repo's own configs: `School Year` appears ONLY in the
+student-schedule/course-selection file in every one of them.**
+`ClassInformation(Enh)`, `CourseInformation`, `StaffInformation(Enhanced)` and
+`EmergencyContactInformation` carry no such column in any of the four. So
+there is currently no known second MyEd BC file to configure as a
+`school_year_sources` cross-check — this is a real, checked absence, not
+merely "nobody has looked." If a future district's real export turns out to
+carry `School Year` somewhere else, adding it as a second role is exactly how
+you'd wire the cross-check in (the mechanism already supports it, unused
+today only for lack of a second real source):
+
+```yaml
+global_config:
+  school_year_sources:
+    student_schedule: StudentSchedule.txt
+    <some_role>: <SomeOtherFile.txt>   # only once CONFIRMED to carry "School Year" for this district
+```
+
 ### Opting into CourseInfo / StudentCourses (myBlueprint+ tier)
 
 The `CourseInfo` and `StudentCourses` entity templates live in the base
