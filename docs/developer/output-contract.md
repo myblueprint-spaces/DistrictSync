@@ -218,6 +218,10 @@ The status column is auto-resolved from the alias list `("enrollment status", "e
 | 5 | Role | `map_role` transform: the teaching-staff flag `Y` → `teacher`, anything else → `administrator`. Those two values are the entire vocabulary and are asserted per config. | pending owner confirmation | emitted | GUARANTEED |
 | 6 | School ID | School number. | pending owner confirmation | emitted | GUARANTEED |
 
+**A staff member the source marks as departed is EXCLUDED from this file.** A MyEd BC staff GDE is unfiltered — it carries former employees alongside current ones — and shipping them creates active SpacesEDU users for people who have left the district. The rule is keyed on the DATA, not on per-district config, so a district nobody has configured is covered: when the resolved status column is present (default `Staff Status`, overridable via the entity's `source_columns.staff_status`) AND its non-blank values are a subset of the recognised vocabulary (`Active` / `Inactive`, case- and whitespace-insensitive), only `Active` survives. A BLANK status is dropped too — unlike a pupil, a staff record carries no withdraw date to fall back on, so a missing status is not a positive signal of employment. The run log carries one INFO line counting the exclusions (a count and the status vocabulary only — never a name or an email).
+
+It **fails open in two directions, deliberately**, and says so at WARNING level each time: an UNRECOGNISED vocabulary (a district spelling its statuses `A`/`I` or `Employed`/`Terminated`) ships every row rather than match nothing and empty the file, and so does any case where the filter would keep ZERO rows. Surplus users are recoverable; a deleted staff roster is not. Note the consequence: this file is NOT guaranteed free of departed staff — only that we exclude them wherever the district's export lets us recognise them.
+
 ### 3. `Family.csv`
 
 <!-- contract-table: Family -->

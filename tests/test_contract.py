@@ -140,15 +140,35 @@ def _write_student_demographic(path: Path, filename: str) -> None:
     ).to_csv(path / filename, index=False)
 
 
+#: The Teacher ID present in every staff fixture but marked "Inactive" — a
+#: departed employee who teaches nothing. Every emitted Staff.csv must exclude
+#: them; keeping them in the fixture (rather than a district-specific one) means
+#: no config can regress the exclusion silently. Deliberately NOT one of the
+#: teaching T001/T003/T004, so the schedule/class joins are untouched.
+_DEPARTED_TEACHER_ID = "T009"
+
+
 def _write_staff(path: Path, filename: str) -> None:
+    """The shared staff GDE shape — including the real export's "Staff Status".
+
+    Every real district drop seen so far (SD40, SD60, SD74, Unity Christian)
+    carries this UNFILTERED column, so the fixture does too: the departed row is
+    the positive twin for the "Staff.csv excludes departed staff" assertion.
+    """
     pd.DataFrame(
         {
-            "Teacher ID": ["T001", "T003", "T004"],
-            "First Name": ["Jane", "Linda", "Raj"],
-            "Last Name": ["Harper", "Liu", "Singh"],
-            "Email Address": ["harper@school.ca", "liu@school.ca", "singh@school.ca"],
-            "Teaching Staff": ["Y", "Y", "Y"],
-            "School Number": ["100", "200", "200"],
+            "Teacher ID": ["T001", "T003", "T004", _DEPARTED_TEACHER_ID],
+            "First Name": ["Jane", "Linda", "Raj", "Dana"],
+            "Last Name": ["Harper", "Liu", "Singh", "Okafor"],
+            "Email Address": [
+                "harper@school.ca",
+                "liu@school.ca",
+                "singh@school.ca",
+                "okafor@school.ca",
+            ],
+            "Teaching Staff": ["Y", "Y", "Y", "Y"],
+            "School Number": ["100", "200", "200", "100"],
+            "Staff Status": ["Active", "Active", "Active", "Inactive"],
         }
     ).to_csv(path / filename, index=False)
 
@@ -841,6 +861,31 @@ class TestOutputSchemaContract:
         df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
         bad = set(df["Role"].dropna().unique()) - VALID_STAFF_ROLES
         assert not bad, f"[{sis}] Staff.csv has invalid Role values: {bad}"
+
+    def test_staff_excludes_departed_staff(self, district_output):
+        """A staff member marked "Inactive" in the GDE never reaches Staff.csv.
+
+        The exclusion is data-driven, not per-district config, so this holds for
+        EVERY emitting config — including any added later. Twinned with
+        ``test_staff_keeps_active_staff`` so a filter that dropped everyone (or
+        a fixture that lost its status column) cannot pass both.
+        """
+        sis, out = district_output
+        _skip_unless_emitted(sis, "Staff")
+        df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
+        shipped = set(df["User ID"].dropna().astype(str))
+        assert _DEPARTED_TEACHER_ID not in shipped, (
+            f"[{sis}] Staff.csv ships departed staff {_DEPARTED_TEACHER_ID} — "
+            f"an Inactive employee would become an active SpacesEDU user."
+        )
+
+    def test_staff_keeps_active_staff(self, district_output):
+        """The positive twin: the exclusion narrows, it does not empty."""
+        sis, out = district_output
+        _skip_unless_emitted(sis, "Staff")
+        df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
+        shipped = set(df["User ID"].dropna().astype(str))
+        assert "T001" in shipped, f"[{sis}] Staff.csv dropped an Active staff member"
 
     def test_enrollment_role_values(self, district_output):
         sis, out = district_output
