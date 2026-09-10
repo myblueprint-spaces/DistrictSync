@@ -19,6 +19,7 @@ import pytest
 
 from src.config.loader import load_config
 from src.etl.transformer import DataTransformer
+from src.etl.transformers.student_attendance import StudentAttendanceTransformer
 from tests.contract_schema import OUTPUT_SCHEMA
 
 # The 4 required SpacesEDU columns in exact case-sensitive order. The contract
@@ -720,3 +721,118 @@ class TestSingleBandSelection:
         result = _run(_empty_daily(), student_attendance_period_only_mapping, gc, student_period_absences_df)
         assert len(result) == 5
         assert list(result.columns) == EXPECTED_COLUMNS
+
+
+class TestCrossBandStudentDaySuppression:
+    """A student-day recorded in BOTH bands is reported ONCE, by the daily band.
+
+    WHY: the two GDE files are two SOURCES, not two independent facts. A
+    district taking attendance in a homeroom/attendance-only section (MyEd BC's
+    ``ATT--*``) emits the same absence twice — once daily, once as a period row
+    against that section. SpacesEDU cannot tell them apart (the output carries
+    no band marker), so it weighs each row by the student's GRADE and adds them
+    up: a half-day absence becomes a full day.
+
+    Found live on SD60's 2026-09-09 drop, where all 73 period rows were
+    ``ATT--AM`` for grades 1-6 and 44 duplicated a daily row — 34 student-days
+    came out over a full day. Every "is suppressed" case below is twinned with
+    one proving a period-only student-day still survives, so a rule that
+    suppressed everything could not pass both.
+    """
+
+    _DAILY = [
+        {"School Number": "100", "Absence Date": "2025-10-01", "Absence Category": "A", "Student Number": "S1"},
+        {"School Number": "100", "Absence Date": "2025-10-01", "Absence Category": "A", "Student Number": "S1"},
+    ]
+
+    @staticmethod
+    def _period(student="S1", date="2025-10-01", school="100", category="A-E"):
+        return {
+            "School Number": school,
+            "Absence Date": date,
+            "Absence Category": category,
+            "Student Number": student,
+        }
+
+    # -- the rule fires ---------------------------------------------------
+
+    def test_overlapping_student_day_is_suppressed(self):
+        kept, n = StudentAttendanceTransformer.suppress_overlapping_period_rows(self._DAILY, [self._period()])
+        assert kept == [] and n == 1
+
+    def test_suppression_ignores_a_differing_category(self):
+        """SD60's real case: daily derived "A", period passed through "AD-E".
+
+        Same student, same school, same day — still one absence. Keying on the
+        category would have let the duplicate through.
+        """
+        kept, n = StudentAttendanceTransformer.suppress_overlapping_period_rows(
+            self._DAILY, [self._period(category="AD-E")]
+        )
+        assert kept == [] and n == 1
+
+    def test_every_period_row_for_an_overlapping_day_is_suppressed(self):
+        rows = [self._period(), self._period(category="L"), self._period(category="A")]
+        kept, n = StudentAttendanceTransformer.suppress_overlapping_period_rows(self._DAILY, rows)
+        assert kept == [] and n == 3
+
+    # -- the rule stands down (twins for each case above) ------------------
+
+    def test_period_only_student_day_survives(self):
+        rows = [self._period(student="S2")]
+        kept, n = StudentAttendanceTransformer.suppress_overlapping_period_rows(self._DAILY, rows)
+        assert kept == rows and n == 0
+
+    def test_same_student_different_date_survives(self):
+        rows = [self._period(date="2025-10-02")]
+        kept, n = StudentAttendanceTransformer.suppress_overlapping_period_rows(self._DAILY, rows)
+        assert kept == rows and n == 0
+
+    def test_same_student_and_date_at_a_DIFFERENT_school_survives(self):
+        """School is part of the identity — a cross-enrolled pupil has two days."""
+        rows = [self._period(school="200")]
+        kept, n = StudentAttendanceTransformer.suppress_overlapping_period_rows(self._DAILY, rows)
+        assert kept == rows and n == 0
+
+    def test_genuine_per_period_multiplicity_is_untouched(self):
+        """An 8-12 district with no daily band keeps every per-period row.
+
+        Four period entries = one day at the 0.25 weighting; suppressing any of
+        them would under-report the absence.
+        """
+        rows = [self._period(student="S9") for _ in range(4)]
+        kept, n = StudentAttendanceTransformer.suppress_overlapping_period_rows([], rows)
+        assert kept == rows and n == 0
+
+    def test_no_period_rows_is_a_no_op(self):
+        kept, n = StudentAttendanceTransformer.suppress_overlapping_period_rows(self._DAILY, [])
+        assert kept == [] and n == 0
+
+    # -- end to end -------------------------------------------------------
+
+    def test_end_to_end_overlap_is_reported_once(self, student_attendance_mapping, attendance_global_config):
+        """S1 is absent all day in BOTH files: 2 rows (one day), not 3."""
+        daily = pd.DataFrame(
+            {
+                "school number": ["100"],
+                "student number": ["S1"],
+                "absence date": ["2025-10-01"],
+                "absent code am": ["A"],
+                "authorized am": ["N"],
+                "portion absent": ["1.0"],
+            }
+        )
+        period = pd.DataFrame(
+            {
+                "school number": ["100", "100"],
+                "student number": ["S1", "S2"],
+                "absence date": ["2025-10-01", "2025-10-01"],
+                "absence category": ["A-E", "A"],
+            }
+        )
+        result = _run(daily, student_attendance_mapping, attendance_global_config, period)
+        assert len(result) == 3  # S1 full day (2 daily rows) + S2 period-only (1)
+        s1 = result[result["Student Number"] == "S1"]
+        assert len(s1) == 2, "S1's day must come from the daily band alone"
+        assert set(s1["Absence Category"]) == {"A"}, "the derived category wins, not the passed-through one"
+        assert len(result[result["Student Number"] == "S2"]) == 1

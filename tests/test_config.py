@@ -663,11 +663,12 @@ class TestEnabledEntities:
     def test_district_configs_inherit_rostering_default(self):
         """sd40/48/74 inherit `enabled_entities` from the base — still the 5 rostering entities.
 
-        SD51 is excluded here because it opts into StudentAttendance (its own
-        full enabled_entities list, since deep-merge replaces lists) — see
-        ``test_sd51_enables_student_attendance``.
+        SD51 AND SD60 are both excluded here because each opts into
+        StudentAttendance with its own full enabled_entities list (deep-merge
+        replaces lists) — see ``test_sd51_enables_student_attendance`` and
+        ``TestSD60Config.test_valid_and_rostering_entities``.
         """
-        for sis in ("sd40myedbc", "sd48myedbc", "sd60myedbc", "sd74myedbc"):
+        for sis in ("sd40myedbc", "sd48myedbc", "sd74myedbc"):
             cfg = load_config(sis)
             assert cfg.global_config.enabled_entities == [
                 "Students",
@@ -1462,6 +1463,12 @@ class TestStudentRosteringGradesInheritance:
 # -----------------------------------------------------------------------
 class TestSD60Config:
     def test_valid_and_rostering_entities(self):
+        """SD60 emits the rostering five PLUS StudentAttendance (2026-09-10).
+
+        Its drop carries the absence GDEs alongside the rostering ones, so the
+        attendance entity rides the same config rather than a separate tier.
+        SD51 has the same shape; sd51attendance is the attendance-ONLY variant.
+        """
         cfg = load_config("sd60myedbc")
         assert cfg.sis == "MyEducationBC"
         for entity in ("Students", "Staff", "Family", "Classes", "Enrollments"):
@@ -1472,6 +1479,7 @@ class TestSD60Config:
             "Family",
             "Classes",
             "Enrollments",
+            "StudentAttendance",
         ]
 
     def test_family_carries_guardian_row_filter(self):

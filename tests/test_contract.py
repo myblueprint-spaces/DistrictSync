@@ -581,9 +581,9 @@ def _create_sd60_inputs(d: Path) -> None:
             "Student email address": ["", "", "", "", ""],
             "Teacher ID": ["T003", "T003", "T001", "T004", "T004"],
         }
-    ).to_csv(d / "Student_demo_enh.txt", index=False)
-    _write_staff(d, "StaffInformation.txt")
-    # Real StudentCourseSelection.txt shape: "Course Code" + "Section" (no
+    ).to_csv(d / "Spaces_StudentDemoEnh.txt", index=False)
+    _write_staff(d, "Spaces_StaffInfo.txt")
+    # Real schedule shape: "Course Code" + "Section" (no
     # Section Letter, no Primary Teacher flag). S002 has classes at BOTH its
     # schools; the ATT--AM row (MT900) must be excluded.
     pd.DataFrame(
@@ -599,14 +599,14 @@ def _create_sd60_inputs(d: Path) -> None:
             "Master Timetable ID": ["MT001", "MT002", "MT202", "MT003", "MT900"],
             "Teacher ID": ["T001", "T003", "T004", "T004", "T003"],
         }
-    ).to_csv(d / "StudentCourseSelection.txt", index=False)
+    ).to_csv(d / "Spaces_StudentSchedule.txt", index=False)
     pd.DataFrame(
         {
             "School Number": ["100", "200", "300", "200"],
             "Course Code": ["HR-3", "MAT10", "SCI10", "ENG12"],
             "Title": ["Homeroom 3", "Math 10", "Science 10", "English 12"],
         }
-    ).to_csv(d / "CourseInformation.txt", index=False)
+    ).to_csv(d / "Spaces_CourseInfo.txt", index=False)
     # row_filters keep only Parent Auth / Guardian = Y (the N contact drops).
     pd.DataFrame(
         {
@@ -616,8 +616,35 @@ def _create_sd60_inputs(d: Path) -> None:
             "Email Address": ["john@mail.com", "nana@mail.com"],
             "Parent Auth / Guardian": ["Y", "N"],
         }
-    ).to_csv(d / "EmergencyEnhanced.txt", index=False)
-    _write_class_info_empty(d, "ClassInformation.txt")
+    ).to_csv(d / "Spaces_EmergencyContactENH.txt", index=False)
+    _write_class_info_empty(d, "Spaces_ClassInfo.txt")
+    # SD60 delivers attendance in the SAME drop as rostering, so this config
+    # emits StudentAttendance too. Both bands are HEADERFUL here (contrast
+    # SD51's headerless GDEs, whose column names come from the base `headers`
+    # block). The daily rows exercise the derivations rather than just the
+    # plumbing: a full-day absence (portion 1.0) becomes TWO output rows, an
+    # authorized absence maps A|Y -> "A-E", and a tardy stays ONE row.
+    pd.DataFrame(
+        {
+            "School Number": ["100", "200", "200"],
+            "Student Number": ["S001", "S002", "S003"],
+            "Absence Date": ["2025-10-01", "2025-10-01", "2025-10-02"],
+            # SD60 spells this "Absence Code Am"; the base default is
+            # "absent code am" — the config overrides the column name.
+            "Absence Code Am": ["A", "A", "T"],
+            "Authorized Am": ["N", "Y", "N"],
+            "Portion Absent": ["1.0000", "0.5000", "1.0000"],
+        }
+    ).to_csv(d / "Spaces_DailyAbs.txt", index=False)
+    # Period band is a per-period PASS-THROUGH: the GDE category ships as-is.
+    pd.DataFrame(
+        {
+            "School Number": ["200", "200"],
+            "Student Number": ["S002", "S003"],
+            "Absence Date": ["2025-10-03", "2025-10-03"],
+            "Absence Category": ["A-E", "L"],
+        }
+    ).to_csv(d / "Spaces_PeriodAbsEnh.txt", index=False)
 
 
 def _create_sd38_inputs(d: Path) -> None:
