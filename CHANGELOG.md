@@ -9,6 +9,34 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-09-10
+
+A wrong-year delivery can now be diagnosed from a run's own output, instead
+of a source-code read. This came out of a real multi-day investigation into
+a district's `Classes.csv` shipping the wrong term window, where nothing in
+DistrictSync's own logs or reports said whether the raw export was stale or
+the fallback logic had picked the wrong year.
+
+### Added
+
+- **`--quality` now explains how the school year was determined.** A new
+  `--- School Year Determination ---` section names the exact mechanism —
+  the source file, column and raw value that was read, or the calendar
+  fallback's rollover date and today's date when no usable source column was
+  found — so a wrong-year delivery can be diagnosed from that report alone.
+  The same detail is now logged at INFO on every run.
+- **A new warning catches a stale or wrong-year source value on its own.**
+  Previously, DistrictSync only warned when two *different* configured
+  sources disagreed with each other — a case that has never occurred in any
+  shipped district. It did not check a single source's value against what
+  today's date would independently suggest, which is exactly the shape that
+  silently produced a wrong term window. That check now runs on every
+  district, every time, with no configuration required.
+
+No column, output, chosen school year, or exit code changes for a
+correctly-configured district — this release only makes the "why did this
+happen" question answerable without reading source code.
+
 ## [3.17.0] - 2026-09-10
 
 A district can now set itself up. Until now, a district DistrictSync did not
