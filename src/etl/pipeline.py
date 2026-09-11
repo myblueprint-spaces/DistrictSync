@@ -30,6 +30,7 @@ from src.config.models import filter_enabled_entities
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader
 from src.etl.transformer import DataTransformer
+from src.etl.transformers.dates import SchoolYearDetermination
 from src.etl.transformers.grades import resolve_timetable_scope
 from src.history.store import VALID_SOURCES, write_run_record
 from src.quality.report import DataQualityReport, declared_blank_fields
@@ -217,11 +218,17 @@ class TransformOutputs(NamedTuple):
     axis from ETL success): non-fatal per-row / column-level transform problems
     recorded by ``BaseTransformer.apply_field_map`` instead of being silently
     swallowed. Empty on a clean run.
+
+    ``school_year`` is the full provenance of this run's school-year
+    determination (diagnostics only — carries no in-code default, since every
+    run genuinely has one) — threaded out so ``--quality`` can report WHY a
+    year was chosen, not just what it was (see ``DataQualityReport.school_year``).
     """
 
     outputs: dict[str, pd.DataFrame]
     field_orders: dict[str, list[str]]
     data_errors: list[dict]
+    school_year: SchoolYearDetermination
 
 
 def run_transform(
@@ -257,14 +264,31 @@ def run_transform(
     end_md = global_config["academic_end_month_day"]
     rollover_md = global_config.get("academic_year_rollover_month_day") or end_md
     naming = global_config.get("school_year_naming") or "end"
-    sy = transformer.determine_school_year(
+    sy_determination = transformer.determine_school_year_detailed(
         raw_data,
         sy_sources_config,
         rollover_month_day=rollover_md,
         school_year_naming=naming,
     )
+    sy = sy_determination.resolved_year
     transformer.set_school_year(sy, start_md, end_md)
-    logger.info(f"Using school year {sy}, academic start={transformer.academic_start}, end={transformer.academic_end}")
+
+    # Rich, mechanism-naming diagnostic (replaces the old "Using school year N"
+    # one-liner, which named the result but never WHY — see plan
+    # "School-year determination: diagnosability").
+    if sy_determination.mechanism == "source":
+        logger.info(
+            f"School year {sy} determined from source: role='{sy_determination.source_role}', "
+            f"file='{sy_determination.source_filename}', column='school year', "
+            f"raw value={sy_determination.source_raw_value!r}. "
+            f"academic start={transformer.academic_start}, end={transformer.academic_end}"
+        )
+    else:
+        logger.info(
+            f"School year {sy} determined by calendar fallback (no source column found): "
+            f"rollover={sy_determination.rollover_month_day}, today={sy_determination.today.isoformat()}, "
+            f"resolved={sy}. academic start={transformer.academic_start}, end={transformer.academic_end}"
+        )
 
     for entity_name in configured_entity_order(mappings, global_config):
         entity_cfg = mappings.get(entity_name, {})
@@ -302,7 +326,7 @@ def run_transform(
 
     # The shared per-run TransformContext accumulates fail-loud field-transform
     # errors across every entity; surface them on the same axis as the outputs.
-    return TransformOutputs(outputs, field_orders, transformer.data_errors)
+    return TransformOutputs(outputs, field_orders, transformer.data_errors, sy_determination)
 
 
 class DeliveryIntegrityError(RuntimeError):
@@ -815,7 +839,7 @@ def run_pipeline(
 
         # Shared transform-orchestration (school-year + per-entity loop +
         # enabled_entities filter + field-order collection).
-        outputs, field_orders, data_errors = run_transform(raw_data, mappings, global_config)
+        outputs, field_orders, data_errors, sy_determination = run_transform(raw_data, mappings, global_config)
 
         # Surface fail-loud field-transform errors (a separate axis from ETL
         # status): consolidated ERROR + a compact run-log summary. The run still
@@ -899,7 +923,9 @@ def run_pipeline(
         # Quality report — columns the config declares fixed-blank ({value: ""}) skip the
         # missing-field check (blank by design is not a finding; see quality/report.py).
         if quality:
-            report = DataQualityReport().analyze(outputs, declared_blank=declared_blank_fields(raw))
+            report = DataQualityReport().analyze(
+                outputs, declared_blank=declared_blank_fields(raw), school_year=sy_determination
+            )
             print(report.to_text())
 
         logger.info("ETL process completed successfully.")

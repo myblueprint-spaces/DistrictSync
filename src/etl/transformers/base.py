@@ -560,7 +560,32 @@ class BaseTransformer(ABC):
         IDs — one loud WARNING names every end year found and which was chosen
         (see :func:`dates.determine_school_year`).
         """
-        return _dates.determine_school_year(
+        return cls.determine_school_year_detailed(
+            all_data,
+            source_config,
+            rollover_month_day,
+            today,
+            school_year_naming,
+        ).resolved_year
+
+    @classmethod
+    def determine_school_year_detailed(
+        cls,
+        all_data: dict[str, pd.DataFrame],
+        source_config: Any,
+        rollover_month_day: str,
+        today: Optional[date] = None,
+        school_year_naming: str = "end",
+    ) -> _dates.SchoolYearDetermination:
+        """Full provenance for this run's school-year determination — diagnostics only.
+
+        Same ``today``/``normalize_source_config`` resolution as
+        :meth:`determine_school_year` (this is the one place ``today`` is
+        resolved, so the ``src.etl.transformers.base.datetime`` test seam
+        keeps working for both methods); delegates to
+        :func:`dates.determine_school_year_detailed` for the actual scan.
+        """
+        return _dates.determine_school_year_detailed(
             all_data,
             cls.normalize_source_config(source_config),
             rollover_month_day,

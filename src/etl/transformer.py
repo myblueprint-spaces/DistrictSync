@@ -16,6 +16,7 @@ from src.etl.transformers.base import BaseTransformer
 from src.etl.transformers.blended import BlendedClassDetector
 from src.etl.transformers.context import ClassArtifacts, TransformContext
 from src.etl.transformers.course_codes import resolve_course_code_column
+from src.etl.transformers.dates import SchoolYearDetermination
 from src.etl.transformers.registry import get_transformer
 
 
@@ -95,6 +96,19 @@ class DataTransformer:
     ) -> int:
         """No in-code default for ``rollover_month_day`` — caller must pass it."""
         return BaseTransformer.determine_school_year(
+            all_data, source_config, rollover_month_day, today, school_year_naming
+        )
+
+    def determine_school_year_detailed(
+        self,
+        all_data: dict[str, pd.DataFrame],
+        source_config: Any,
+        rollover_month_day: str,
+        today: Optional[date] = None,
+        school_year_naming: str = "end",
+    ) -> SchoolYearDetermination:
+        """Full provenance for this run's school-year determination — diagnostics only."""
+        return BaseTransformer.determine_school_year_detailed(
             all_data, source_config, rollover_month_day, today, school_year_naming
         )
 

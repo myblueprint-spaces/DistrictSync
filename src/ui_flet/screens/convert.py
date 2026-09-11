@@ -278,7 +278,7 @@ def convert_job(
     if not raw_data:
         return ConvertResult(status=ConvertStatus.NO_INPUT)
 
-    outputs, field_orders, data_errors = run_transform(raw_data, mappings, global_config)
+    outputs, field_orders, data_errors, sy_determination = run_transform(raw_data, mappings, global_config)
 
     # What this run was CONFIGURED to produce (enabled-entities-derived, NEVER raw
     # `mappings.keys()`). Computed once and shared by both pre-write gates, exactly as
@@ -338,7 +338,11 @@ def convert_job(
 
     # Columns the config declares fixed-blank ({value: ""}) skip the missing-field check —
     # blank by design is not a finding (see quality/report.py; same rule as run_pipeline).
-    quality_text = DataQualityReport().analyze(outputs, declared_blank=declared_blank_fields(raw)).to_text()
+    quality_text = (
+        DataQualityReport()
+        .analyze(outputs, declared_blank=declared_blank_fields(raw), school_year=sy_determination)
+        .to_text()
+    )
     entity_counts = {name: len(df) for name, df in outputs.items()}
     errors_total = _data_errors_total(data_errors)
 
