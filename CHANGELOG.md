@@ -9,6 +9,22 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Fixed
+
+- **SD51's 8-12 attendance band was silently empty in every delivery.** Their
+  mapping named the standard `StudentPeriodAbsences.txt`, but the district's
+  MyEd job emits `StudentPeriodAbsencesEnhanced.txt` and never emitted the
+  standard file. A missing source file resolves to an empty frame by design, so
+  the whole 8-12 period band was dropped with no error — their
+  `StudentAttendance.csv` carried daily-band rows only. The config now names the
+  Enhanced export, which also gives it the correct header handling for free (the
+  base's `headers:` block is keyed by filename, so the headerful Enhanced file is
+  read with its own header row rather than the standard's 17 positional names).
+  Verified against the district's 2026-09-11 drop: attendance rows 33,809 →
+  80,146, with zero student-day overlap between the two bands, so nothing is
+  double-counted. No other district is affected — the base keeps the standard
+  file and its injected headers.
+
 ## [3.18.0] - 2026-09-10
 
 A wrong-year delivery can now be diagnosed from a run's own output, instead

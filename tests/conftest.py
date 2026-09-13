@@ -337,8 +337,14 @@ def student_attendance_mapping(base_mapping):
     The base now declares NO `source_files` for StudentAttendance — each
     district selects the band(s) it runs by which roles it declares. This
     fixture starts from the base entity (headers + 28-col field_map) and adds
-    both `source_files` roles, exactly as SD51 does, so the transformer resolves
-    both bands by role. Single-band variants override `source_files` below.
+    both `source_files` roles, so the transformer resolves both bands by role.
+    Single-band variants override `source_files` below.
+
+    The BASE's standard headerless `StudentPeriodAbsences.txt` is used here
+    deliberately: these are transformer-level tests of the two-band shape, and the
+    filename is only a dict key. It is no longer SD51's own spelling — that district
+    overrides the 8-12 band to its Enhanced export (DECISIONS 2026-09-12); the
+    config-level pins for that live in `test_transform_student_attendance.py`.
     """
     mapping = dict(base_mapping["mappings"]["StudentAttendance"])
     mapping["source_files"] = {

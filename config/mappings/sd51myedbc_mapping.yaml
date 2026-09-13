@@ -53,7 +53,25 @@ mappings:
   # SD51 runs both attendance bands. Declaring both source_files roles selects
   # both bands; the transformer resolves each by role (order-independent), so
   # `daily_absences` first keeps the K-7 daily file as the pipeline's primary.
+  #
+  # The 8-12 band names the **Enhanced** export — a deliberate SD51 override of
+  # the base's standard headerless `StudentPeriodAbsences.txt`, NOT a typo, and
+  # NOT to be "corrected" back (see DECISIONS 2026-09-12, which supersedes the
+  # 2026-06-19 Slice-3 entry for THIS district only). SD51's MyEd job emits
+  # `StudentPeriodAbsencesEnhanced.txt` and has never emitted the standard file:
+  # under the old name the band silently resolved to an empty frame and every
+  # 8-12 absence was dropped from the delivery.
+  #
+  # Naming it here also gives it the RIGHT header treatment for free. The base's
+  # `headers:` block is keyed by FILENAME (`StudentPeriodAbsences.txt`), so it no
+  # longer applies to this district and the Enhanced file is read with its own
+  # header row — which is what it needs: it is headerful, carries 19 columns to
+  # the standard's 17, and diverges in column order from position 13 (`Office
+  # Reason`/`Period Id` where the standard has `Master Timetable ID`), so the
+  # base's positional headers would mislabel it. All four columns the
+  # pass-through actually sources — `global_config.attendance.period` — match by
+  # name in the Enhanced header row, so no `attendance` override is needed.
   StudentAttendance:
     source_files:
       daily_absences: "StudentDailyAbsences.txt"
-      period_absences: "StudentPeriodAbsences.txt"
+      period_absences: "StudentPeriodAbsencesEnhanced.txt"
