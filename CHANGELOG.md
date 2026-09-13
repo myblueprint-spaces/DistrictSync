@@ -9,6 +9,12 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.18.1] - 2026-09-13
+
+A one-district fix, shipped on its own because SD51's nightly attendance
+delivery has been missing its entire 8-12 band and the district is picking
+up this build. No other district's output changes.
+
 ### Fixed
 
 - **SD51's 8-12 attendance band was silently empty in every delivery.** Their
