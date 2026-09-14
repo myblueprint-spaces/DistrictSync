@@ -440,10 +440,41 @@ class TestStudentAttendanceConfigIntegration:
         roles = list(cfg.mappings["StudentAttendance"].source_files.keys())
         assert roles[0] == "daily_absences"
 
-    def test_sd51_inherits_period_source_under_base_filename(self):
+    def test_sd51_period_source_is_the_enhanced_export(self):
+        # SD51's MyEd job emits `StudentPeriodAbsencesEnhanced.txt`, NOT the base's
+        # standard headerless `StudentPeriodAbsences.txt`. This is pinned because the
+        # override reads like a typo against DECISIONS 2026-06-19 (which chose the
+        # standard file) and reverting it is SILENT: a missing file resolves to an
+        # empty frame, so every 8-12 absence would simply vanish from the delivery
+        # with no error. Confirmed against the district's 2026-09-11 drop.
         cfg = load_config("sd51myedbc")
-        assert cfg.mappings["StudentAttendance"].source_files["period_absences"] == "StudentPeriodAbsences.txt"
+        assert cfg.mappings["StudentAttendance"].source_files["period_absences"] == "StudentPeriodAbsencesEnhanced.txt"
         assert cfg.global_config.attendance["period"]["period_category_col"] == "absence category"
+
+    def test_sd51_period_file_is_read_headerful(self):
+        # The base's `headers:` block is keyed by FILENAME, so naming the Enhanced
+        # export must leave it WITHOUT injected headers — it is headerful (19 cols vs
+        # the standard's 17, diverging from position 13), so injecting the standard's
+        # positional names would mislabel every column past 12.
+        cfg = load_config("sd51myedbc")
+        entity = cfg.mappings["StudentAttendance"]
+        period_file = entity.source_files["period_absences"]
+        assert period_file not in (entity.headers or {})
+        # Positive twin: the daily band IS headerless and DOES still get its headers,
+        # so the assertion above is proving a real distinction, not an empty dict.
+        assert entity.source_files["daily_absences"] in (entity.headers or {})
+
+    def test_sd51_attendance_tier_inherits_the_enhanced_period_source(self):
+        # The attendance-only tier inherits via `_base: sd51myedbc`; it must not be
+        # left pointing at a file the district does not send.
+        cfg = load_config("sd51attendance")
+        assert cfg.mappings["StudentAttendance"].source_files["period_absences"] == "StudentPeriodAbsencesEnhanced.txt"
+
+    def test_base_still_declares_the_standard_period_headers(self):
+        # SD51's override is district-scoped: the base keeps the standard headerless
+        # file and its 17 injected columns for every district that sends that shape.
+        cfg = load_config("myedbc")
+        assert "StudentPeriodAbsences.txt" in (cfg.mappings["StudentAttendance"].headers or {})
 
 
 class TestPeriodPassThrough:

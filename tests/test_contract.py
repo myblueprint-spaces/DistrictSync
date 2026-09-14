@@ -341,11 +341,15 @@ def _write_daily_absences(path: Path, filename: str = "StudentDailyAbsences.txt"
     ).to_csv(path / filename, index=False, header=False)
 
 
-def _write_period_absences(path: Path, filename: str = "StudentPeriodAbsences.txt") -> None:
-    """8-12 Student Period Absences (17 columns) — PER-PERIOD PASS-THROUGH.
+def _write_period_absences(path: Path, filename: str = "StudentPeriodAbsencesEnhanced.txt") -> None:
+    """8-12 Student Period Absences — PER-PERIOD PASS-THROUGH.
 
-    One output row per input row, category passed through as-is (including the
-    non-accepted "OffSite", which SpacesEDU ignores rather than rejects).
+    SD51's **Enhanced** export: 19 columns and HEADERFUL, so it is written with its
+    own header row and gets no injected headers (DECISIONS 2026-09-12 — the base's
+    ``headers:`` block is keyed on the standard ``StudentPeriodAbsences.txt``, which
+    this district does not send). One output row per input row, category passed
+    through as-is (including the non-accepted "OffSite", which SpacesEDU ignores
+    rather than rejects).
     """
     pd.DataFrame(
         {
@@ -361,13 +365,15 @@ def _write_period_absences(path: Path, filename: str = "StudentPeriodAbsences.tx
             "Absence Category": ["A", "OffSite"],
             "Absence Sub Allocation Code": ["", ""],
             "Authorized Absence Code": ["", ""],
-            "Master Timetable ID": ["MT003", "MT003"],
+            "Office Reason": ["", ""],
             "Section Letter": ["A", "A"],
+            "Period Id": ["1", "2"],
             "Teacher ID": ["T004", "T004"],
             "School Course Code": ["ENG12", "ENG12"],
             "Flavour": ["", ""],
+            "Schedule Term": ["S1", "S1"],
         }
-    ).to_csv(path / filename, index=False, header=False)
+    ).to_csv(path / filename, index=False, header=True)
 
 
 # ---------------------------------------------------------------------------
@@ -480,7 +486,7 @@ def _create_sd40_inputs(d: Path) -> None:
 def _create_sd51_inputs(d: Path) -> None:
     """SD51 (Boundary): plain base inheritance + generated {student number} emails.
 
-    StudentDailyAbsences.txt / StudentPeriodAbsences.txt are intentionally
+    StudentDailyAbsences.txt / StudentPeriodAbsencesEnhanced.txt are intentionally
     absent: the enabled StudentAttendance entity skips on all-empty sources
     (attendance has its own dedicated test module) while the 5 rostering CSVs
     still emit — this pins that a missing attendance drop never blocks rostering.

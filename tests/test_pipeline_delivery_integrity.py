@@ -136,10 +136,18 @@ def _family() -> pd.DataFrame:
 
 
 def _write_attendance_only_input(d: Path) -> None:
-    """The headerless ``sd51attendance`` source — a tier config with NO roster anchor."""
-    (d / "StudentPeriodAbsences.txt").write_text(
-        "100,P1,Last,First,10,A1,Teacher,2024-09-18,MAT10,A,,,MT001,A,T001,SCC,FL\n"
-        "100,P2,Last,First,11,A1,Teacher,19-Sep-2024,ENG11,L,,,MT002,B,T002,SCC,FL",
+    """The ``sd51attendance`` source — a tier config with NO roster anchor.
+
+    HEADERFUL, and named for the district's **Enhanced** export: SD51 overrides the
+    base's standard headerless ``StudentPeriodAbsences.txt`` (DECISIONS 2026-09-12),
+    so the base's filename-keyed ``headers:`` block does not apply to this tier and
+    the file must carry its own header row. Writing the standard headerless shape
+    here kept this test green against a file the district never sends.
+    """
+    (d / "StudentPeriodAbsencesEnhanced.txt").write_text(
+        "School Number,Student Number,Student Legal Last Name,Student Legal First Name,Grade,Homeroom,Teacher Name,Absence Date,Course Code,Absence Category,Absence Sub Allocation Code,Authorized Absence Code,Office Reason,Section Letter,Period Id,Teacher ID,School Course Code,Flavour,Schedule Term\n"
+        "100,P1,Last,First,10,A1,Teacher,2024-09-18,MAT10,A,,,,A,1,T001,SCC,FL,S1\n"
+        "100,P2,Last,First,11,A1,Teacher,19-Sep-2024,ENG11,L,,,,B,2,T002,SCC,FL,S1",
         encoding="utf-8",
     )
 
