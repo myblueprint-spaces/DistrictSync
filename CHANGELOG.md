@@ -9,6 +9,20 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Changed
+
+- **SD83 staff roles now come from the district's own `Prefix` column.**
+  K̓wsaltktnéws ne Secwepemcúl’ecw records each person's role ("Teacher" /
+  "Administrator") in the `Prefix` column of their staff export rather than
+  relying on the teaching-staff Y/N flag, so `Staff.csv` now reads it from
+  there. Anyone whose `Prefix` holds something else — a courtesy title, say —
+  is left out of the file rather than published under a guessed role. If a role
+  value ever appears that the file's own rules did not already exclude, that one
+  person's Role is left blank and counted on the run's data-error line; the run
+  still completes and still delivers. **SD83 only** — no other district's
+  `Staff.csv` changes. Departed staff were already excluded for every district
+  in 3.17.0 and are unaffected by this.
+
 ## [3.18.1] - 2026-09-13
 
 A one-district fix, shipped on its own because SD51's nightly attendance

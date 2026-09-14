@@ -46,10 +46,11 @@ Parametrized over ALL 12 bundled configs:
   derived admission-year, Home-school rostering), sd74myedbc;
 * sd51attendance — StudentAttendance ONLY, from the two HEADERLESS absence GDEs;
 * sd83myedbc — standard MyEd BC file naming (same shape as myedbc/mbp_all), all
-  7 entities enabled; REUSES ``_create_mbp_all_inputs`` since the input shape is
-  identical (its overrides — extended homeroom grades, a lower course-grade
-  floor, blanked Date of Birth — are business-logic differences, not fixture
-  ones);
+  7 entities enabled; builds on ``_create_mbp_all_inputs`` and overrides only the
+  STAFF file (``_create_sd83_inputs``), whose real header carries the Prefix-stated
+  role column its config filters on. Its other overrides —
+  extended homeroom grades, a lower course-grade floor, blanked Date of Birth —
+  remain business-logic differences the shared fixture exercises as-is;
 * the 3 myBlueprint+ tiers — mbp_all (all 7), mbp_core (Students + the two course
   CSVs), mbponly (the two course CSVs only, reusing the committed
   ``tests/snapshots/mbp_input/`` fixtures its own e2e test owns).
@@ -169,6 +170,50 @@ def _write_staff(path: Path, filename: str) -> None:
             "Teaching Staff": ["Y", "Y", "Y", "Y"],
             "School Number": ["100", "200", "200", "100"],
             "Staff Status": ["Active", "Active", "Active", "Inactive"],
+        }
+    ).to_csv(path / filename, index=False)
+
+
+def _write_sd83_staff(path: Path, filename: str = "StaffInformationEnhanced.txt") -> None:
+    """SD83's REAL staff header shape, which the shared :func:`_write_staff` lacks.
+
+    Their export adds `Prefix` — MyEd BC's courtesy-title column, repurposed to
+    state the ROLE. Two rows exist ONLY to be excluded, by two DIFFERENT
+    mechanisms, so the district's fixture proves each does something:
+
+    * `T900` is a real, currently-employed person whose Prefix holds a courtesy
+      title rather than a role — excluded by SD83's own `row_filters`;
+    * :data:`_DEPARTED_TEACHER_ID` is a former teacher whose Prefix is a perfectly
+      valid role — excluded by `filter_departed_staff`, which SD83's config says
+      nothing about. Reusing that shared id (rather than a district-local one)
+      is what keeps SD83 inside `test_staff_excludes_departed_staff`'s sweep
+      instead of passing it vacuously.
+
+    T001/T003/T004 keep the same ids, names and schools as the shared fixture, so
+    every cross-entity assertion (enrollments referencing staff, class teacher
+    prefixes) lines up with the other districts.
+    """
+    pd.DataFrame(
+        {
+            "School Number": ["100", "200", "200", "100", "200"],
+            "User Name": ["jharper", "lliu", "rsingh", "mgrant", "dpast"],
+            "Teaching Staff": ["Y", "Y", "Y", "Y", "Y"],
+            "Teacher ID": ["T001", "T003", "T004", "T900", _DEPARTED_TEACHER_ID],
+            "Name": ["Harper, Jane", "Liu, Linda", "Singh, Raj", "Grant, Mia", "Past, Dana"],
+            # T004's Prefix says Administrator while its Teaching Staff flag says
+            # "Y" — the one row where the two disagree, so a config that silently
+            # kept reading the flag cannot pass `test_sd83_staff_roles_come_from_prefix`.
+            "Prefix": ["Teacher", "Teacher", "Administrator", "Mr.", "Teacher"],
+            "Last Name": ["Harper", "Liu", "Singh", "Grant", "Past"],
+            "First Name": ["Jane", "Linda", "Raj", "Mia", "Dana"],
+            "Email Address": [
+                "harper@school.ca",
+                "liu@school.ca",
+                "singh@school.ca",
+                "grant@school.ca",
+                "past@school.ca",
+            ],
+            "Staff Status": ["Active", "Active", "Active", "Active", "Inactive"],
         }
     ).to_csv(path / filename, index=False)
 
@@ -715,6 +760,18 @@ def _create_mbp_all_inputs(d: Path) -> None:
     _write_course_selection(d)
 
 
+def _create_sd83_inputs(d: Path) -> None:
+    """sd83myedbc: the mbp_all file set with SD83's own STAFF header shape.
+
+    It reused ``_create_mbp_all_inputs`` until 2026-09-14, when the district's
+    Prefix-stated roles + active-staff filters made the input shape a real
+    difference rather than a business-logic one (the rest of its overrides —
+    homeroom grades, course-grade floor, blanked DOB — still are).
+    """
+    _create_mbp_all_inputs(d)
+    _write_sd83_staff(d)
+
+
 def _create_mbp_core_inputs(d: Path) -> None:
     """mbp_core: Students + the two course CSVs — no schedule, staff or contacts."""
     _write_student_demographic(d, "StudentDemographicInformation.txt")
@@ -746,10 +803,7 @@ _DISTRICT_SETUP = {
     "sd60myedbc": _create_sd60_inputs,
     "sd74myedbc": _create_sd74_inputs,
     "sd51attendance": _create_sd51attendance_inputs,
-    # Same standard MyEd BC file shape + all 7 entities as mbp_all — sd83myedbc's
-    # overrides (homeroom grades, course-grade floor, blanked DOB) are
-    # business-logic differences the shared fixture already exercises correctly.
-    "sd83myedbc": _create_mbp_all_inputs,
+    "sd83myedbc": _create_sd83_inputs,
     # Phase-2 migration districts (2026-08-31): standard MyEd BC file shape.
     # The full-tier configs ride the mbp_all fixture (sd27's 8-12 student scope
     # keeps S002/S003 and drops the grade-3 S001 — the shared family fixture
@@ -1376,3 +1430,60 @@ class TestDistrictQuirks:
         transcripts = _read_output(out, "StudentCourses")
         assert not transcripts.empty
         assert {"S002", "S003"} <= set(transcripts["Student ID"])
+
+    # ---- SD83: Prefix-stated staff roles + active-staff filter (2026-09-14) ----
+
+    @pytest.mark.parametrize("district_output", ["sd83myedbc"], indirect=True)
+    def test_sd83_staff_roles_come_from_prefix_not_the_teaching_flag(self, district_output):
+        """T004's Prefix says Administrator while its `Teaching Staff` flag says "Y".
+
+        The base mapping's `map_role` would call it a teacher, so this row alone
+        distinguishes the shipped config from the inherited one. Asserted as the
+        full id→role mapping rather than a spot check, so a role flipping anywhere
+        in the file fails here.
+        """
+        _, out = district_output
+        staff = _read_output(out, "Staff")
+        assert dict(zip(staff["User ID"].astype(str), staff["Role"])) == {
+            "T001": "teacher",
+            "T003": "teacher",
+            "T004": "administrator",
+        }
+
+    @pytest.mark.parametrize("district_output", ["sd83myedbc"], indirect=True)
+    def test_sd83_excludes_non_role_prefixes_and_inactive_staff(self, district_output):
+        """The two rows the fixture carries ONLY to be excluded, by the TWO different
+        mechanisms that narrow this file — stated together because SD83 is the one
+        district where both are in play, and separately from the role mapping above
+        so a failure names which one stopped working.
+
+        T900 is currently employed but holds a courtesy title in `Prefix`, so SD83's
+        own `row_filters` drops it. The departed teacher holds a perfectly valid
+        role and is dropped by `filter_departed_staff`, which SD83's config says
+        nothing about — so this also asserts the universal rule still runs on a
+        district that adds its own filter.
+
+        `Role` is asserted non-empty because "excluded" must not be reachable by
+        shipping the row with a blank role instead.
+        """
+        _, out = district_output
+        staff = _read_output(out, "Staff")
+        ids = set(staff["User ID"].astype(str))
+        assert "T900" not in ids, "a courtesy title in Prefix was published as a role"
+        assert _DEPARTED_TEACHER_ID not in ids, "a departed staff member was published"
+        assert staff["Role"].notna().all() and (staff["Role"].astype(str).str.strip() != "").all()
+
+    @pytest.mark.parametrize("district_output", ["sd83myedbc"], indirect=True)
+    def test_sd83_teacher_enrollments_still_reference_published_staff(self, district_output):
+        """The filter's blast radius, checked in the direction that actually bites:
+        narrowing Staff.csv must not orphan a teacher enrollment. The homeroom
+        teacher (T001) is published, so the pairing holds — but if a future filter
+        ever excluded a rostered teacher, this is where it surfaces rather than at
+        the partner's ingest.
+        """
+        _, out = district_output
+        staff_ids = set(_read_output(out, "Staff")["User ID"].astype(str))
+        enrollments = _read_output(out, "Enrollments")
+        teachers = enrollments[enrollments["Role"].astype(str) == "teacher"]
+        assert not teachers.empty, "no teacher enrollments at all — the pairing would be vacuous"
+        assert set(teachers["User ID"].astype(str)) <= staff_ids

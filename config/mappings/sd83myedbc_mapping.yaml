@@ -6,7 +6,13 @@
 _base: myedbc
 # Quoted deliberately: PyYAML collapses a bare 1.10 to the float 1.1, which the
 # version gate would silently read as minor 1 (see src/config/loader.py).
-version: '1.10'
+#
+# 1.12 (2026-09-14): the Staff overrides below use two ETL-AFFECTING features an
+# older build would get WRONG rather than merely ignore — `row_filters` on the
+# Staff entity (a pre-1.12 build reads the key only on Family, so it would ship
+# every excluded Prefix row) and the `normalize_staff_role` transform (absent from a
+# pre-1.12 ALLOWED_TRANSFORMS, so that build refuses the config at load, loudly).
+version: '1.12'
 sis: MyEducationBC
 # Renamed 2026-09-03 (owner) to the district's own Secwepemc name, exactly as its
 # 2026-09-03 sheet spells it: K + U+0313 COMBINING COMMA ABOVE, then e-acute,
@@ -59,3 +65,51 @@ mappings:
       # the source value.
       "Date of Birth":
         value: ""
+
+  # SD83 states each person's ROLE outright instead of relying on the Y/N
+  # teaching flag. Their StaffInformationEnhanced.txt header is:
+  #
+  #   "School Number","User Name","Teaching Staff","Teacher Id","Name",
+  #   "Prefix","Last Name","First Name","Email Address","Staff Status"
+  #
+  # `Prefix` is MyEd BC's courtesy-title column (Mr./Ms./Dr. elsewhere), which
+  # the district has repurposed to carry "Teacher" / "Administrator". Deep merge
+  # means `Role` is the ONLY field overridden here — the source file name and
+  # every other mapped column stay the standard MyEd BC ones from `_base`.
+  Staff:
+    # Applied before the field map, so an excluded person never reaches output.
+    #
+    # The district populates this file with teachers and actual administrators,
+    # so anything else in `Prefix` is not a role we can publish — those rows are
+    # EXCLUDED rather than guessed at or shipped with a blank Role (the Advanced
+    # CSV contract accepts only the two values).
+    #
+    # DELIBERATELY NOT a `Staff Status` filter as well. Departed staff are
+    # already excluded for EVERY district by `filter_departed_staff`, which
+    # decides on the DATA rather than on config and fails OPEN twice over (an
+    # unrecognised status vocabulary, or a filter that would keep zero rows,
+    # warns and ships everyone). A row_filters entry here would be redundant on
+    # the happy path and strictly WORSE on the unhappy one: row_filters fails
+    # CLOSED, so the day SD83 spells its statuses differently it would deliver
+    # an EMPTY Staff.csv instead of a warning.
+    #
+    # Matching is case- and whitespace-INSENSITIVE on both sides (the value
+    # below and the export's cells are trimmed + case-folded before comparison),
+    # but it is exact SET membership, never a substring test. Pinned by
+    # tests/test_transform_staff.py::TestStaffRowFilters, both directions.
+    #
+    # `Prefix` is REQUIRED once named here: apply_row_filters raises if it is
+    # missing from the export, so a renamed column fails the run loudly instead
+    # of silently keeping everyone or no one.
+    row_filters:
+      - column: "Prefix"
+        include: ["Teacher", "Administrator"]
+    field_map:
+      # Role comes from the stated value, NOT from `map_role` on the teaching
+      # flag (the base mapping's default, which sends every non-"Y" row to
+      # "administrator"). Matching is case-insensitive; a value the row_filters
+      # above did not already exclude blanks that one cell and is recorded as a
+      # data error rather than defaulting to a role.
+      "Role":
+        column: "Prefix"
+        transform: "normalize_staff_role"

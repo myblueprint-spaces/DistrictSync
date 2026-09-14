@@ -136,6 +136,10 @@ class DataTransformer:
         return BaseTransformer.map_role(teaching_flag)
 
     @staticmethod
+    def normalize_staff_role(role_value: Any) -> str:
+        return BaseTransformer.normalize_staff_role(role_value)
+
+    @staticmethod
     def _truncate_name(name: str, max_len: int = 100) -> str:
         return BaseTransformer.truncate_name(name, max_len)
 
