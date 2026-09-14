@@ -77,10 +77,65 @@ class BaseTransformer(ABC):
         """Map a raw source grade to its CEDS code (see :func:`grades.grade_to_ceds`)."""
         return _grades.grade_to_ceds(grade_value)
 
+    # -----------------------------------------------------------------------
+    # Staff role (Advanced CSV contract vocabulary)
+    # -----------------------------------------------------------------------
+    #: The ONLY two values `Staff.csv` → `Role` may carry (the Advanced CSV
+    #: contract — `docs/developer/output-contract.md`). Single-sourced here so
+    #: the two role transforms below cannot drift from each other or from the
+    #: contract; `tests/test_contract.py` asserts the shipped outputs against
+    #: the same vocabulary.
+    STAFF_ROLE_TEACHER: str = "teacher"
+    STAFF_ROLE_ADMINISTRATOR: str = "administrator"
+    STAFF_ROLES: frozenset[str] = frozenset({STAFF_ROLE_TEACHER, STAFF_ROLE_ADMINISTRATOR})
+
     @staticmethod
     def map_role(teaching_flag: Any) -> str:
+        """Map a teaching FLAG (MyEd BC's `Teaching Staff` Y/N) to a contract role.
+
+        Exactly `"y"` (case/whitespace-insensitive) is a teacher; EVERY other
+        value — including blank, `nan` and `"Yes"` — becomes an administrator.
+        That default is deliberately preserved here: it is what all 20 bundled
+        configs have always produced, and changing it would re-role staff at
+        every district. A district whose export states the role OUTRIGHT should
+        use :meth:`normalize_staff_role` against that column instead of relying
+        on this fallback (see `docs/claugentic-ROADMAP.md` for the open question
+        of whether the blank default should stay `administrator` at all).
+        """
         val = str(teaching_flag).strip().lower()
-        return "teacher" if val == "y" else "administrator"
+        return BaseTransformer.STAFF_ROLE_TEACHER if val == "y" else BaseTransformer.STAFF_ROLE_ADMINISTRATOR
+
+    @staticmethod
+    def normalize_staff_role(role_value: Any) -> str:
+        """Pass through a source column that already STATES the contract role.
+
+        For a district that populates a column with the role itself rather than a
+        teaching flag (SD83 repurposes MyEd BC's `Prefix` this way). Normalizes
+        whitespace and case, then requires an exact member of :attr:`STAFF_ROLES`.
+
+        **Raises** `ValueError` on anything else — deliberately, and this is the
+        whole point of the function. `apply_field_map` is per-row resilient on the
+        `transform:` path, so a raise blanks THAT CELL only, records a data error
+        (ERROR log + run-log `data_errors` + Run History) and lets every valid row
+        keep its value. The alternative — falling back to a default role — is the
+        silent-miscategorisation failure this transform exists to avoid: a value
+        we do not understand must never be guessed into "administrator".
+
+        Districts that want such rows EXCLUDED rather than reported configure
+        `row_filters` on the Staff entity alongside this transform; the filter
+        removes them before the field map ever sees them.
+
+        The message names the accepted vocabulary but NEVER echoes the cell — a
+        staff-file cell can hold a person's title and the message reaches the log.
+        """
+        val = str(role_value).strip().lower()
+        if val in BaseTransformer.STAFF_ROLES:
+            return val
+        raise ValueError(
+            "staff role value is not one of the accepted roles "
+            f"({', '.join(sorted(BaseTransformer.STAFF_ROLES))}) — check the configured "
+            "source column and this entity's row_filters"
+        )
 
     # -----------------------------------------------------------------------
     # Active-student detection (single source of truth — used by Students for

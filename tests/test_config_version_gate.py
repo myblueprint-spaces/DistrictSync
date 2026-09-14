@@ -198,23 +198,54 @@ class TestBareScalarVersionRejected:
 
 
 class TestSD83DeclaresTheClassRosteringMinor:
-    """SD83 is the one bundled config that opts into `class_rostering_grades`.
+    """SD83 is the one bundled config that opts into `class_rostering_grades`,
+    and since 2026-09-14 also the first (and only) consumer of Staff-entity
+    `row_filters` + the `normalize_staff_role` transform.
 
-    Its declared version must be the QUOTED string '1.10' — the value the bare
-    YAML float would collapse to 1.1 — and it must load with no version warning
-    (pinned in aggregate by `test_all_bundled_configs_load_clean` too).
+    Its declared version must be the QUOTED string '1.12' — the value a bare YAML
+    float would collapse to 1.12's neighbours, and the reason 1.10 was quoted in
+    the first place — and it must load with no version warning (pinned in
+    aggregate by `test_all_bundled_configs_load_clean` too).
     """
 
-    def test_sd83_version_is_the_quoted_string_one_ten(self):
+    def test_sd83_version_is_the_quoted_string_one_twelve(self):
         raw = yaml.safe_load((BUNDLED_MAPPINGS_DIR / "sd83myedbc_mapping.yaml").read_text(encoding="utf-8"))
-        assert isinstance(raw["version"], str), "a bare YAML float would read as 1.1"
-        assert raw["version"] == "1.10"
-        assert _parse_version(raw["version"], Path("sd83myedbc_mapping.yaml")) == (1, 10)
+        assert isinstance(raw["version"], str), "a bare YAML float would drop the trailing digit"
+        assert raw["version"] == "1.12"
+        assert _parse_version(raw["version"], Path("sd83myedbc_mapping.yaml")) == (1, 12)
 
     def test_sd83_opts_into_class_rostering_grades(self):
         """Positive pin: `GlobalConfig` does not forbid extras, so a typo'd key
         would be silently dropped and SD83 would roster grades 9-12 anyway."""
         assert load_config("sd83myedbc").global_config.class_rostering_grades == "homeroom"
+
+    def test_sd83_staff_row_filters_and_role_transform_survive_to_raw_dict(self):
+        """`EntityConfig` does not forbid extras either, so a typo'd `row_filters`
+        (or a Role spec the validator classified as something else) would be
+        silently dropped and SD83 would ship courtesy-title rows with a
+        flag-derived role. Assert the shape the TRANSFORMER actually receives.
+
+        Asserted as EQUALITY, not membership, so the `Staff Status` filter this
+        config deliberately does NOT carry cannot creep back: employment is owned
+        by `StaffTransformer.filter_departed_staff`, which is data-keyed for every
+        district and fails OPEN, where `row_filters` fails CLOSED and would deliver
+        an empty `Staff.csv` the day SD83 respells its statuses (DECISIONS
+        2026-09-14).
+        """
+        staff = load_config("sd83myedbc").to_raw_dict()["mappings"]["Staff"]
+        assert staff["row_filters"] == [{"column": "Prefix", "include": ["Teacher", "Administrator"]}]
+        assert staff["field_map"]["Role"] == {"column": "Prefix", "transform": "normalize_staff_role"}
+
+    def test_no_other_bundled_config_gained_staff_row_filters(self):
+        """Scoped-change pin: this slice must not have widened any other district's
+        Staff entity. A `_base: myedbc` sibling inheriting a filter it was never
+        meant to have would silently shrink that district's Staff.csv."""
+        for sis in ALL_BUNDLED_CONFIGS:
+            staff = load_config(sis).to_raw_dict()["mappings"].get("Staff")
+            if staff is None or sis == "sd83myedbc":
+                continue
+            assert not staff.get("row_filters"), f"{sis} unexpectedly gained Staff row_filters"
+            assert staff["field_map"]["Role"] == {"column": "Teaching Staff", "transform": "map_role"}
 
 
 class TestDeclaredRangeVersusSupported:
@@ -225,7 +256,9 @@ class TestDeclaredRangeVersusSupported:
     diverge (minor 11 landed with plan 0042 1b ahead of any consumer, and this
     class originally pinned that lag); they CONVERGED on 2026-08-31 when
     sd27/sd38 — the first `student_rostering_grades` districts — declared
-    '1.11' and moved the prose with them. What must always hold: no bundled
+    '1.11' and moved the prose with them, and stayed converged at 1.12 (sd83's
+    Staff row_filters + `normalize_staff_role`, which shipped alongside their
+    only consumer). What must always hold: no bundled
     config declares ABOVE the supported minor, and the prose matches the real
     declared range rather than the constant.
     """
@@ -250,7 +283,7 @@ class TestDeclaredRangeVersusSupported:
         makes the second assertion a strict <= again; a config declaring past the
         constant fails here before it can ship a warning to every install."""
         highest = max(self._declared_versions())
-        assert highest == (SUPPORTED_CONFIG_MAJOR, 11)
+        assert highest == (SUPPORTED_CONFIG_MAJOR, 12)
         assert highest <= (SUPPORTED_CONFIG_MAJOR, SUPPORTED_CONFIG_MINOR)
 
     def test_the_loader_prose_matches_the_range_the_bundled_configs_DECLARE(self):

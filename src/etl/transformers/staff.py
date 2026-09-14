@@ -1,4 +1,4 @@
-"""Staff entity transformer — optional roster merge, departed-staff exclusion.
+"""Staff entity transformer — roster merge, departed-staff exclusion, row filters.
 
 A MyEd BC staff GDE is UNFILTERED: it carries departed employees alongside
 current ones, distinguished only by a status column. Shipping those rows creates
@@ -10,6 +10,13 @@ The ``enroll_status`` machinery in :mod:`~src.etl.transformers.base` cannot serv
 here: it is keyed on the *Students* field_map, and a staff export carries no
 withdraw date for its per-row fallback. So this module owns a narrower rule —
 see :meth:`StaffTransformer.filter_departed_staff`.
+
+Beyond that universal rule, an entity may declare ``row_filters`` for a narrowing
+only its own district needs (SD83 keeps only rows whose repurposed ``Prefix``
+states a real role). The two are complementary, not alternatives: employment is
+decided on the DATA for every district, while ``row_filters`` is opt-in config.
+Role is ``map_role`` over a teaching flag by default, or ``normalize_staff_role``
+over a column that states the role outright.
 """
 
 import logging
@@ -49,6 +56,12 @@ class StaffTransformer(BaseTransformer):
         # filtering first would be silently discarded on that path. BEFORE the
         # field map, so an excluded staff member never reaches output.
         working = self.filter_departed_staff(working, mapping)
+
+        # Then the district's OWN opt-in narrowing (SD83: a Prefix that states a
+        # real role). Same post-merge placement, and for the same reason — Family
+        # filters at transform entry only because it has no such rebuild. Pinned
+        # by TestStaffRowFilters::test_filters_apply_AFTER_the_roster_merge.
+        working = self.apply_row_filters(working, mapping.get("row_filters", []), "Staff")
 
         return self.apply_field_map(working, result, field_map, "Staff", context)
 

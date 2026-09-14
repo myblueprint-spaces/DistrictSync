@@ -30,6 +30,62 @@ class TestMapRole:
         assert DataTransformer.map_role(float("nan")) == "administrator"
 
 
+class TestNormalizeStaffRole:
+    """The Prefix-column role pass-through (SD83): the source states the ROLE.
+
+    Sibling of :class:`TestMapRole`, which maps a teaching FLAG. This one reads
+    a column whose values already ARE the contract's roles, so it normalizes
+    (trim + case-fold) and passes through — and RAISES on anything else rather
+    than inventing a role. The raise is what makes it fail loud: `apply_field_map`
+    turns it into a blanked cell plus a recorded data error, never a silent
+    "administrator".
+    """
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            ("teacher", "teacher"),
+            ("Teacher", "teacher"),
+            ("TEACHER", "teacher"),
+            (" Teacher ", "teacher"),
+            ("administrator", "administrator"),
+            ("Administrator", "administrator"),
+            ("ADMINISTRATOR", "administrator"),
+            (" Administrator ", "administrator"),
+        ],
+    )
+    def test_contract_roles_pass_through_case_insensitively(self, value, expected):
+        assert DataTransformer.normalize_staff_role(value) == expected
+
+    @pytest.mark.parametrize("value", ["Mr.", "Ms", "Dr.", "admin", "Principal", "", "   ", "Y", "N"])
+    def test_any_other_value_raises(self, value):
+        """Including "admin" — a near-miss must not be silently widened into a role."""
+        with pytest.raises(ValueError):
+            DataTransformer.normalize_staff_role(value)
+
+    @pytest.mark.parametrize("value", [None, float("nan")])
+    def test_missing_values_raise(self, value):
+        """A blank Prefix is an unanswered question, not an administrator."""
+        with pytest.raises(ValueError):
+            DataTransformer.normalize_staff_role(value)
+
+    def test_the_message_names_the_column_and_the_accepted_values(self):
+        """Actionable for a district admin reading the run log — and it must NOT
+        echo a name or an email (the cell it reads is a title, but the rule that
+        keeps PII out of error text is worth holding here too)."""
+        with pytest.raises(ValueError) as exc:
+            DataTransformer.normalize_staff_role("Principal")
+        message = str(exc.value)
+        assert "teacher" in message and "administrator" in message
+
+    def test_it_is_on_the_transform_allowlist(self):
+        """A transform name absent from ALLOWED_TRANSFORMS is rejected fail-fast at
+        config load, so the method existing is only half of shipping it."""
+        from src.config.models import ALLOWED_TRANSFORMS
+
+        assert "normalize_staff_role" in ALLOWED_TRANSFORMS
+
+
 class TestGenerateUserRole:
     def setup_method(self):
         self.transformer = DataTransformer()

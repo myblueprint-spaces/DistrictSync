@@ -27,6 +27,7 @@ ALLOWED_TRANSFORMS: frozenset[str] = frozenset(
     {
         "grade_to_ceds",
         "map_role",
+        "normalize_staff_role",
         "truncate_name",
         "normalize_iso_date",
     }
