@@ -9,6 +9,16 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.19.0] - 2026-09-14
+
+SD83's staff roles now come from the column the district actually records them
+in, and no other district's output changes.
+
+**If you are running v3.18.1, upgrade.** That release was tagged on the wrong
+commit — its tag points at v3.18.0's, so the binaries published under it do not
+contain the SD51 attendance fix its own notes describe. v3.19.0 is the first
+build that carries it. No earlier release is affected.
+
 ### Changed
 
 - **SD83 staff roles now come from the district's own `Prefix` column.**
@@ -22,6 +32,16 @@ Per-release download links and auto-generated commit notes live on the
   still completes and still delivers. **SD83 only** — no other district's
   `Staff.csv` changes. Departed staff were already excluded for every district
   in 3.17.0 and are unaffected by this.
+
+### Fixed
+
+- **SD51's 8-12 attendance band reaches a shipped build at last.** The fix
+  itself landed for [3.18.1] and is described in that section — nothing about it
+  has changed. What went wrong was the release, not the fix: the `v3.18.1` tag
+  was created on the previous release's commit, so every binary published under
+  it still names the standard `StudentPeriodAbsences.txt` and still drops the
+  district's entire 8-12 band. Any district that took v3.18.1 for this fix did
+  not receive it.
 
 ## [3.18.1] - 2026-09-13
 

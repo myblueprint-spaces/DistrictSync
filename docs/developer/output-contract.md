@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **contract_version** | `2.4.0` |
-| **emitted_by** | DistrictSync — `2.4.0`, emitted since v3.17.0 (the release that carried the `Staff.csv` and `StudentAttendance.csv` row-set changes). v3.18.1 changes no contract row: SD51's period-band filename fix is a district `source_files` correction, not a rule change. |
+| **emitted_by** | DistrictSync — `2.4.0`, emitted since v3.17.0 (the release that carried the `Staff.csv` and `StudentAttendance.csv` row-set changes). Neither v3.18.1 nor v3.19.0 changes a contract row: SD51's period-band filename fix is a district `source_files` correction, and SD83's `Prefix`-sourced roles are per-district config — neither is a rule change, following the 2026-09-10 SD60 precedent. The `Staff.csv` Role row's DESCRIPTION gained the second derivation mechanism (`normalize_staff_role`), but the emitted vocabulary is unmoved. **Note:** the binaries published as v3.18.1 were built from v3.18.0's commit, so the newest tagged build actually emitting `2.4.0` behaviour for SD51 is v3.19.0. |
 | **published_reference** | SpacesEDU *Advanced CSV* v1.0 (2025-07-23) — [Google Doc `1BePvuk5rg-YjUUvdwjb3X3Z0JWEUc5AtVjDfR3nub0U`](https://docs.google.com/document/d/1BePvuk5rg-YjUUvdwjb3X3Z0JWEUc5AtVjDfR3nub0U) |
 | **status** | Maintained mirror. **Confirmation is recorded PER ROW — there is no doc-wide confirmation stamp.** |
 | **mechanical mirror** | `tests/contract_schema.py` (the data) · `tests/test_contract.py` (the sweep) · `tests/test_output_contract_doc.py` (this doc ↔ that data) |
