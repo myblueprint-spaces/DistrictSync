@@ -46,10 +46,11 @@ Parametrized over ALL 12 bundled configs:
   derived admission-year, Home-school rostering), sd74myedbc;
 * sd51attendance — StudentAttendance ONLY, from the two HEADERLESS absence GDEs;
 * sd83myedbc — standard MyEd BC file naming (same shape as myedbc/mbp_all), all
-  7 entities enabled; REUSES ``_create_mbp_all_inputs`` since the input shape is
-  identical (its overrides — extended homeroom grades, a lower course-grade
-  floor, blanked Date of Birth — are business-logic differences, not fixture
-  ones);
+  7 entities enabled; builds on ``_create_mbp_all_inputs`` and overrides only the
+  STAFF file (``_create_sd83_inputs``), whose real header carries the Prefix-stated
+  role column its config filters on. Its other overrides —
+  extended homeroom grades, a lower course-grade floor, blanked Date of Birth —
+  remain business-logic differences the shared fixture exercises as-is;
 * the 3 myBlueprint+ tiers — mbp_all (all 7), mbp_core (Students + the two course
   CSVs), mbponly (the two course CSVs only, reusing the committed
   ``tests/snapshots/mbp_input/`` fixtures its own e2e test owns).
@@ -140,15 +141,79 @@ def _write_student_demographic(path: Path, filename: str) -> None:
     ).to_csv(path / filename, index=False)
 
 
+#: The Teacher ID present in every staff fixture but marked "Inactive" — a
+#: departed employee who teaches nothing. Every emitted Staff.csv must exclude
+#: them; keeping them in the fixture (rather than a district-specific one) means
+#: no config can regress the exclusion silently. Deliberately NOT one of the
+#: teaching T001/T003/T004, so the schedule/class joins are untouched.
+_DEPARTED_TEACHER_ID = "T009"
+
+
 def _write_staff(path: Path, filename: str) -> None:
+    """The shared staff GDE shape — including the real export's "Staff Status".
+
+    Every real district drop seen so far (SD40, SD60, SD74, Unity Christian)
+    carries this UNFILTERED column, so the fixture does too: the departed row is
+    the positive twin for the "Staff.csv excludes departed staff" assertion.
+    """
     pd.DataFrame(
         {
-            "Teacher ID": ["T001", "T003", "T004"],
-            "First Name": ["Jane", "Linda", "Raj"],
-            "Last Name": ["Harper", "Liu", "Singh"],
-            "Email Address": ["harper@school.ca", "liu@school.ca", "singh@school.ca"],
-            "Teaching Staff": ["Y", "Y", "Y"],
-            "School Number": ["100", "200", "200"],
+            "Teacher ID": ["T001", "T003", "T004", _DEPARTED_TEACHER_ID],
+            "First Name": ["Jane", "Linda", "Raj", "Dana"],
+            "Last Name": ["Harper", "Liu", "Singh", "Okafor"],
+            "Email Address": [
+                "harper@school.ca",
+                "liu@school.ca",
+                "singh@school.ca",
+                "okafor@school.ca",
+            ],
+            "Teaching Staff": ["Y", "Y", "Y", "Y"],
+            "School Number": ["100", "200", "200", "100"],
+            "Staff Status": ["Active", "Active", "Active", "Inactive"],
+        }
+    ).to_csv(path / filename, index=False)
+
+
+def _write_sd83_staff(path: Path, filename: str = "StaffInformationEnhanced.txt") -> None:
+    """SD83's REAL staff header shape, which the shared :func:`_write_staff` lacks.
+
+    Their export adds `Prefix` — MyEd BC's courtesy-title column, repurposed to
+    state the ROLE. Two rows exist ONLY to be excluded, by two DIFFERENT
+    mechanisms, so the district's fixture proves each does something:
+
+    * `T900` is a real, currently-employed person whose Prefix holds a courtesy
+      title rather than a role — excluded by SD83's own `row_filters`;
+    * :data:`_DEPARTED_TEACHER_ID` is a former teacher whose Prefix is a perfectly
+      valid role — excluded by `filter_departed_staff`, which SD83's config says
+      nothing about. Reusing that shared id (rather than a district-local one)
+      is what keeps SD83 inside `test_staff_excludes_departed_staff`'s sweep
+      instead of passing it vacuously.
+
+    T001/T003/T004 keep the same ids, names and schools as the shared fixture, so
+    every cross-entity assertion (enrollments referencing staff, class teacher
+    prefixes) lines up with the other districts.
+    """
+    pd.DataFrame(
+        {
+            "School Number": ["100", "200", "200", "100", "200"],
+            "User Name": ["jharper", "lliu", "rsingh", "mgrant", "dpast"],
+            "Teaching Staff": ["Y", "Y", "Y", "Y", "Y"],
+            "Teacher ID": ["T001", "T003", "T004", "T900", _DEPARTED_TEACHER_ID],
+            "Name": ["Harper, Jane", "Liu, Linda", "Singh, Raj", "Grant, Mia", "Past, Dana"],
+            # T004's Prefix says Administrator while its Teaching Staff flag says
+            # "Y" — the one row where the two disagree, so a config that silently
+            # kept reading the flag cannot pass `test_sd83_staff_roles_come_from_prefix`.
+            "Prefix": ["Teacher", "Teacher", "Administrator", "Mr.", "Teacher"],
+            "Last Name": ["Harper", "Liu", "Singh", "Grant", "Past"],
+            "First Name": ["Jane", "Linda", "Raj", "Mia", "Dana"],
+            "Email Address": [
+                "harper@school.ca",
+                "liu@school.ca",
+                "singh@school.ca",
+                "grant@school.ca",
+                "past@school.ca",
+            ],
+            "Staff Status": ["Active", "Active", "Active", "Active", "Inactive"],
         }
     ).to_csv(path / filename, index=False)
 
@@ -201,8 +266,8 @@ def _write_base_schedule(path: Path, filename: str, section_col: str = "Section 
 
 def _write_family(path: Path, filename: str, last_name_col: str = "Last Name") -> None:
     # Contacts for BOTH population halves: S001 (grade 3) and S002 (grade 10) —
-    # the 8-12-scoped districts (sd27/sd38) roster-filter S001's contact away,
-    # so the S002 row is what keeps their Family.csv non-empty in the sweep.
+    # the 8-12-scoped sd27myedbc roster-filters S001's contact away, so the
+    # S002 row is what keeps its Family.csv non-empty in the sweep.
     pd.DataFrame(
         {
             "Student Number": ["S001", "S002"],
@@ -321,11 +386,15 @@ def _write_daily_absences(path: Path, filename: str = "StudentDailyAbsences.txt"
     ).to_csv(path / filename, index=False, header=False)
 
 
-def _write_period_absences(path: Path, filename: str = "StudentPeriodAbsences.txt") -> None:
-    """8-12 Student Period Absences (17 columns) — PER-PERIOD PASS-THROUGH.
+def _write_period_absences(path: Path, filename: str = "StudentPeriodAbsencesEnhanced.txt") -> None:
+    """8-12 Student Period Absences — PER-PERIOD PASS-THROUGH.
 
-    One output row per input row, category passed through as-is (including the
-    non-accepted "OffSite", which SpacesEDU ignores rather than rejects).
+    SD51's **Enhanced** export: 19 columns and HEADERFUL, so it is written with its
+    own header row and gets no injected headers (DECISIONS 2026-09-12 — the base's
+    ``headers:`` block is keyed on the standard ``StudentPeriodAbsences.txt``, which
+    this district does not send). One output row per input row, category passed
+    through as-is (including the non-accepted "OffSite", which SpacesEDU ignores
+    rather than rejects).
     """
     pd.DataFrame(
         {
@@ -341,13 +410,15 @@ def _write_period_absences(path: Path, filename: str = "StudentPeriodAbsences.tx
             "Absence Category": ["A", "OffSite"],
             "Absence Sub Allocation Code": ["", ""],
             "Authorized Absence Code": ["", ""],
-            "Master Timetable ID": ["MT003", "MT003"],
+            "Office Reason": ["", ""],
             "Section Letter": ["A", "A"],
+            "Period Id": ["1", "2"],
             "Teacher ID": ["T004", "T004"],
             "School Course Code": ["ENG12", "ENG12"],
             "Flavour": ["", ""],
+            "Schedule Term": ["S1", "S1"],
         }
-    ).to_csv(path / filename, index=False, header=False)
+    ).to_csv(path / filename, index=False, header=True)
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +531,7 @@ def _create_sd40_inputs(d: Path) -> None:
 def _create_sd51_inputs(d: Path) -> None:
     """SD51 (Boundary): plain base inheritance + generated {student number} emails.
 
-    StudentDailyAbsences.txt / StudentPeriodAbsences.txt are intentionally
+    StudentDailyAbsences.txt / StudentPeriodAbsencesEnhanced.txt are intentionally
     absent: the enabled StudentAttendance entity skips on all-empty sources
     (attendance has its own dedicated test module) while the 5 rostering CSVs
     still emit — this pins that a missing attendance drop never blocks rostering.
@@ -561,9 +632,9 @@ def _create_sd60_inputs(d: Path) -> None:
             "Student email address": ["", "", "", "", ""],
             "Teacher ID": ["T003", "T003", "T001", "T004", "T004"],
         }
-    ).to_csv(d / "Student_demo_enh.txt", index=False)
-    _write_staff(d, "StaffInformation.txt")
-    # Real StudentCourseSelection.txt shape: "Course Code" + "Section" (no
+    ).to_csv(d / "Spaces_StudentDemoEnh.txt", index=False)
+    _write_staff(d, "Spaces_StaffInfo.txt")
+    # Real schedule shape: "Course Code" + "Section" (no
     # Section Letter, no Primary Teacher flag). S002 has classes at BOTH its
     # schools; the ATT--AM row (MT900) must be excluded.
     pd.DataFrame(
@@ -579,14 +650,14 @@ def _create_sd60_inputs(d: Path) -> None:
             "Master Timetable ID": ["MT001", "MT002", "MT202", "MT003", "MT900"],
             "Teacher ID": ["T001", "T003", "T004", "T004", "T003"],
         }
-    ).to_csv(d / "StudentCourseSelection.txt", index=False)
+    ).to_csv(d / "Spaces_StudentSchedule.txt", index=False)
     pd.DataFrame(
         {
             "School Number": ["100", "200", "300", "200"],
             "Course Code": ["HR-3", "MAT10", "SCI10", "ENG12"],
             "Title": ["Homeroom 3", "Math 10", "Science 10", "English 12"],
         }
-    ).to_csv(d / "CourseInformation.txt", index=False)
+    ).to_csv(d / "Spaces_CourseInfo.txt", index=False)
     # row_filters keep only Parent Auth / Guardian = Y (the N contact drops).
     pd.DataFrame(
         {
@@ -596,8 +667,78 @@ def _create_sd60_inputs(d: Path) -> None:
             "Email Address": ["john@mail.com", "nana@mail.com"],
             "Parent Auth / Guardian": ["Y", "N"],
         }
-    ).to_csv(d / "EmergencyEnhanced.txt", index=False)
-    _write_class_info_empty(d, "ClassInformation.txt")
+    ).to_csv(d / "Spaces_EmergencyContactENH.txt", index=False)
+    _write_class_info_empty(d, "Spaces_ClassInfo.txt")
+    # SD60 delivers attendance in the SAME drop as rostering, so this config
+    # emits StudentAttendance too. Both bands are HEADERFUL here (contrast
+    # SD51's headerless GDEs, whose column names come from the base `headers`
+    # block). The daily rows exercise the derivations rather than just the
+    # plumbing: a full-day absence (portion 1.0) becomes TWO output rows, an
+    # authorized absence maps A|Y -> "A-E", and a tardy stays ONE row.
+    pd.DataFrame(
+        {
+            "School Number": ["100", "200", "200"],
+            "Student Number": ["S001", "S002", "S003"],
+            "Absence Date": ["2025-10-01", "2025-10-01", "2025-10-02"],
+            # SD60 spells this "Absence Code Am"; the base default is
+            # "absent code am" — the config overrides the column name.
+            "Absence Code Am": ["A", "A", "T"],
+            "Authorized Am": ["N", "Y", "N"],
+            "Portion Absent": ["1.0000", "0.5000", "1.0000"],
+        }
+    ).to_csv(d / "Spaces_DailyAbs.txt", index=False)
+    # Period band is a per-period PASS-THROUGH: the GDE category ships as-is.
+    pd.DataFrame(
+        {
+            "School Number": ["200", "200"],
+            "Student Number": ["S002", "S003"],
+            "Absence Date": ["2025-10-03", "2025-10-03"],
+            "Absence Category": ["A-E", "L"],
+        }
+    ).to_csv(d / "Spaces_PeriodAbsEnh.txt", index=False)
+
+
+def _create_sd38_inputs(d: Path) -> None:
+    """SD38 (Richmond): mbp_core shape (Students + the two course feeds) plus
+    ``Home School Number`` for ``cross_enrollment`` and ``Student Email`` (NOT
+    the base default ``Student email address``) for the Email Address override.
+
+    ``Home School Number`` is equal to ``School Number`` for this synthetic
+    population — no cross-school duplicate row is needed here to prove the
+    entity SHAPE; the collapse mechanism itself is unit-tested in
+    tests/test_transform_students.py and exercised end-to-end (with an actual
+    duplicate) by sd60myedbc's fixture above. The 8-vs-7-12 grade-scope
+    widening is a config-value fact pinned in tests/test_config.py; grade-scope
+    FILTERING itself is generically covered by tests/test_student_rostering_grades.py,
+    so this population does not need its own grade-07 row to avoid a vacuous
+    proof. ``Student Email`` DOES need its own column here, though — a missing
+    field_map source column resolves to a silent blank (not an error; see
+    src/config/models.py's DirectMapping.apply), so a fixture still carrying
+    the base's ``Student email address`` column would leave the override
+    proven only by inspection, not by a red test.
+    """
+    pd.DataFrame(
+        {
+            "Student Number": ["S001", "S002", "S003"],
+            "Legal First Name": ["Alice", "Bob", "Charlie"],
+            "Legal Surname": ["Smith", "Jones", "Brown"],
+            "Date of birth": ["2010-01-15", "2009-06-20", "2011-03-10"],
+            "Grade": ["3", "10", "12"],
+            "School Number": ["100", "200", "200"],
+            "Home School Number": ["100", "200", "200"],
+            "Homeroom": ["A1", "C3", "C4"],
+            "Previous school number": ["", "", ""],
+            "Usual First Name": ["", "", ""],
+            "Usual surname": ["", "", ""],
+            "Student Email": ["alice@test.ca", "bob@test.ca", "charlie@test.ca"],
+            "Enrolment Status": ["Active", "Active", "Active"],
+            "Teacher Name": ["Ms. Harper", "Mrs. Liu", "Mr. Singh"],
+            "Teacher ID": ["T001", "T003", "T004"],
+        }
+    ).to_csv(d / "StudentDemographicInformation.txt", index=False)
+    _write_course_info(d, catalog=True)
+    _write_course_history(d)
+    _write_course_selection(d)
 
 
 def _create_sd51attendance_inputs(d: Path) -> None:
@@ -617,6 +758,18 @@ def _create_mbp_all_inputs(d: Path) -> None:
     _create_myedbc_inputs(d, course_catalog=True)
     _write_course_history(d)
     _write_course_selection(d)
+
+
+def _create_sd83_inputs(d: Path) -> None:
+    """sd83myedbc: the mbp_all file set with SD83's own STAFF header shape.
+
+    It reused ``_create_mbp_all_inputs`` until 2026-09-14, when the district's
+    Prefix-stated roles + active-staff filters made the input shape a real
+    difference rather than a business-logic one (the rest of its overrides —
+    homeroom grades, course-grade floor, blanked DOB — still are).
+    """
+    _create_mbp_all_inputs(d)
+    _write_sd83_staff(d)
 
 
 def _create_mbp_core_inputs(d: Path) -> None:
@@ -650,22 +803,21 @@ _DISTRICT_SETUP = {
     "sd60myedbc": _create_sd60_inputs,
     "sd74myedbc": _create_sd74_inputs,
     "sd51attendance": _create_sd51attendance_inputs,
-    # Same standard MyEd BC file shape + all 7 entities as mbp_all — sd83myedbc's
-    # overrides (homeroom grades, course-grade floor, blanked DOB) are
-    # business-logic differences the shared fixture already exercises correctly.
-    "sd83myedbc": _create_mbp_all_inputs,
+    "sd83myedbc": _create_sd83_inputs,
     # Phase-2 migration districts (2026-08-31): standard MyEd BC file shape.
-    # The six full-tier configs ride the mbp_all fixture (sd27/sd38's 8-12
-    # student scope keeps S002/S003 and drops the grade-3 S001 — the shared
-    # family fixture carries an S002 row so Family stays non-empty for them);
-    # sd10 is the mbp_core shape (Students + the two course feeds).
+    # The full-tier configs ride the mbp_all fixture (sd27's 8-12 student scope
+    # keeps S002/S003 and drops the grade-3 S001 — the shared family fixture
+    # carries an S002 row so Family stays non-empty for it); sd10 and sd38 are
+    # the mbp_core shape (Students + the two course feeds) — sd38 moved there
+    # (2026-09-08) when its enabled_entities dropped the SpacesEDU rostering
+    # entities and its student scope widened to 7-12.
     "sd27myedbc": _create_mbp_all_inputs,
-    "sd38myedbc": _create_mbp_all_inputs,
     "sd67myedbc": _create_mbp_all_inputs,
     "sd69myedbc": _create_mbp_all_inputs,
     "sd71myedbc": _create_mbp_all_inputs,
     "sd75myedbc": _create_mbp_all_inputs,
     "sd10myedbc": _create_mbp_core_inputs,
+    "sd38myedbc": _create_sd38_inputs,
     # Unity Christian School (2026-09-01): standard MyEd BC file shape. Its real
     # differences (grade-8 homerooms, generated emails, Family off) are config facts
     # the shared fixture exercises — the EmergencyContactInformation.txt this builder
@@ -796,6 +948,31 @@ class TestOutputSchemaContract:
         df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
         bad = set(df["Role"].dropna().unique()) - VALID_STAFF_ROLES
         assert not bad, f"[{sis}] Staff.csv has invalid Role values: {bad}"
+
+    def test_staff_excludes_departed_staff(self, district_output):
+        """A staff member marked "Inactive" in the GDE never reaches Staff.csv.
+
+        The exclusion is data-driven, not per-district config, so this holds for
+        EVERY emitting config — including any added later. Twinned with
+        ``test_staff_keeps_active_staff`` so a filter that dropped everyone (or
+        a fixture that lost its status column) cannot pass both.
+        """
+        sis, out = district_output
+        _skip_unless_emitted(sis, "Staff")
+        df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
+        shipped = set(df["User ID"].dropna().astype(str))
+        assert _DEPARTED_TEACHER_ID not in shipped, (
+            f"[{sis}] Staff.csv ships departed staff {_DEPARTED_TEACHER_ID} — "
+            f"an Inactive employee would become an active SpacesEDU user."
+        )
+
+    def test_staff_keeps_active_staff(self, district_output):
+        """The positive twin: the exclusion narrows, it does not empty."""
+        sis, out = district_output
+        _skip_unless_emitted(sis, "Staff")
+        df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
+        shipped = set(df["User ID"].dropna().astype(str))
+        assert "T001" in shipped, f"[{sis}] Staff.csv dropped an Active staff member"
 
     def test_enrollment_role_values(self, district_output):
         sis, out = district_output
@@ -1185,6 +1362,29 @@ class TestDistrictQuirks:
             "S003": "s003@learn75.ca",
         }
 
+    # ---- SD38: renamed email column + cross-enrollment collapse (mbp_core) ----
+
+    @pytest.mark.parametrize("district_output", ["sd38myedbc"], indirect=True)
+    def test_sd38_email_sourced_from_student_email_not_the_base_default(self, district_output):
+        """SD38's real export names this column `Student Email`, not the base
+        default `Student email address` — confirmed against a real GDE drop
+        (see config/mappings/sd38myedbc_mapping.yaml). The fixture carries
+        ONLY `Student Email`, so a config that regressed to the base default
+        would ship every row blank here rather than pass by accident."""
+        _, out = district_output
+        students = _read_output(out, "Students")
+        assert dict(zip(students["User ID"], students["Email Address"])) == {
+            "S002": "bob@test.ca",
+            "S003": "charlie@test.ca",
+        }
+
+    @pytest.mark.parametrize("district_output", ["sd38myedbc"], indirect=True)
+    def test_sd38_grade_7_to_12_scope_drops_grade_3(self, district_output):
+        _, out = district_output
+        user_ids = set(_read_output(out, "Students")["User ID"])
+        assert "S001" not in user_ids, "grade-3 S001 is outside the 7-12 scope"
+        assert {"S002", "S003"} == user_ids
+
     # ---- SD83: class_rostering_grades: "homeroom" (K-8 SpacesEDU, 9-12 mbp+) ----
 
     @pytest.mark.parametrize("district_output", ["sd83myedbc"], indirect=True)
@@ -1230,3 +1430,60 @@ class TestDistrictQuirks:
         transcripts = _read_output(out, "StudentCourses")
         assert not transcripts.empty
         assert {"S002", "S003"} <= set(transcripts["Student ID"])
+
+    # ---- SD83: Prefix-stated staff roles + active-staff filter (2026-09-14) ----
+
+    @pytest.mark.parametrize("district_output", ["sd83myedbc"], indirect=True)
+    def test_sd83_staff_roles_come_from_prefix_not_the_teaching_flag(self, district_output):
+        """T004's Prefix says Administrator while its `Teaching Staff` flag says "Y".
+
+        The base mapping's `map_role` would call it a teacher, so this row alone
+        distinguishes the shipped config from the inherited one. Asserted as the
+        full id→role mapping rather than a spot check, so a role flipping anywhere
+        in the file fails here.
+        """
+        _, out = district_output
+        staff = _read_output(out, "Staff")
+        assert dict(zip(staff["User ID"].astype(str), staff["Role"])) == {
+            "T001": "teacher",
+            "T003": "teacher",
+            "T004": "administrator",
+        }
+
+    @pytest.mark.parametrize("district_output", ["sd83myedbc"], indirect=True)
+    def test_sd83_excludes_non_role_prefixes_and_inactive_staff(self, district_output):
+        """The two rows the fixture carries ONLY to be excluded, by the TWO different
+        mechanisms that narrow this file — stated together because SD83 is the one
+        district where both are in play, and separately from the role mapping above
+        so a failure names which one stopped working.
+
+        T900 is currently employed but holds a courtesy title in `Prefix`, so SD83's
+        own `row_filters` drops it. The departed teacher holds a perfectly valid
+        role and is dropped by `filter_departed_staff`, which SD83's config says
+        nothing about — so this also asserts the universal rule still runs on a
+        district that adds its own filter.
+
+        `Role` is asserted non-empty because "excluded" must not be reachable by
+        shipping the row with a blank role instead.
+        """
+        _, out = district_output
+        staff = _read_output(out, "Staff")
+        ids = set(staff["User ID"].astype(str))
+        assert "T900" not in ids, "a courtesy title in Prefix was published as a role"
+        assert _DEPARTED_TEACHER_ID not in ids, "a departed staff member was published"
+        assert staff["Role"].notna().all() and (staff["Role"].astype(str).str.strip() != "").all()
+
+    @pytest.mark.parametrize("district_output", ["sd83myedbc"], indirect=True)
+    def test_sd83_teacher_enrollments_still_reference_published_staff(self, district_output):
+        """The filter's blast radius, checked in the direction that actually bites:
+        narrowing Staff.csv must not orphan a teacher enrollment. The homeroom
+        teacher (T001) is published, so the pairing holds — but if a future filter
+        ever excluded a rostered teacher, this is where it surfaces rather than at
+        the partner's ingest.
+        """
+        _, out = district_output
+        staff_ids = set(_read_output(out, "Staff")["User ID"].astype(str))
+        enrollments = _read_output(out, "Enrollments")
+        teachers = enrollments[enrollments["Role"].astype(str) == "teacher"]
+        assert not teachers.empty, "no teacher enrollments at all — the pairing would be vacuous"
+        assert set(teachers["User ID"].astype(str)) <= staff_ids

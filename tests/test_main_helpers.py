@@ -592,12 +592,15 @@ class TestRunTransform:
         result = run_transform(raw_data, mappings, self._global_config())
 
         assert isinstance(result, TransformOutputs)
-        # Unpacks cleanly into (outputs, field_orders, data_errors)
-        outputs, field_orders, data_errors = result
+        # Unpacks cleanly into (outputs, field_orders, data_errors, school_year)
+        outputs, field_orders, data_errors, school_year = result
         assert "Widgets" in outputs
         assert list(outputs["Widgets"].columns) == ["Out"]
         # A clean run records no field-transform errors.
         assert data_errors == []
+        # school_year is always populated — no in-code default (this fixture has
+        # no "school year" source column, so it resolves via calendar fallback).
+        assert school_year.mechanism == "fallback"
 
     def test_honors_enabled_entities(self):
         """A disabled entity is absent from outputs even though its source file
@@ -643,7 +646,7 @@ class TestRunTransform:
             "gadgets.txt": pd.DataFrame({"in_col": []}),  # empty primary
         }
 
-        outputs, field_orders, _ = run_transform(raw_data, mappings, self._global_config())
+        outputs, field_orders, _, _ = run_transform(raw_data, mappings, self._global_config())
 
         assert "Widgets" in outputs
         assert "Gadgets" not in outputs

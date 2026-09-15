@@ -15,8 +15,9 @@ takes ``today`` as an explicit parameter.
 
 import logging
 import re
+from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import pandas as pd
 
@@ -186,14 +187,48 @@ def fallback_school_year(today: date, rollover_month_day: str) -> int:
     return today.year if today < rollover else today.year + 1
 
 
-def determine_school_year(
+@dataclass(frozen=True)
+class SchoolYearDetermination:
+    """Full provenance for one school-year determination — diagnostics only,
+    never consulted for behavior. ``resolved_year`` is exactly what
+    :func:`determine_school_year` returns.
+
+    ``fallback_year`` is computed UNCONDITIONALLY, even on the ``"source"``
+    path, purely so :attr:`source_fallback_disagree` can cross-check a source
+    value against what the calendar would say — the single case that produces
+    a silently-wrong term window today (a stale source value that doesn't
+    happen to conflict with any OTHER configured source).
+    """
+
+    resolved_year: int
+    mechanism: Literal["source", "fallback"]
+    fallback_year: int
+    rollover_month_day: str
+    today: date
+    #: Distinct end-years found across ALL configured sources, first-seen order.
+    found_years: tuple[int, ...] = ()
+    #: Populated only when ``mechanism == "source"``.
+    source_role: Optional[str] = None
+    source_filename: Optional[str] = None
+    source_raw_value: Optional[str] = None
+
+    @property
+    def sources_disagree(self) -> bool:
+        return len(self.found_years) > 1
+
+    @property
+    def source_fallback_disagree(self) -> bool:
+        return self.mechanism == "source" and self.resolved_year != self.fallback_year
+
+
+def determine_school_year_detailed(
     all_data: dict[str, pd.DataFrame],
     normalized_sources: dict[str, str],
     rollover_month_day: str,
     today: date,
     school_year_naming: str = "end",
-) -> int:
-    """Return the academic year's END year (MyEd BC "School Year" convention).
+) -> SchoolYearDetermination:
+    """Return the full :class:`SchoolYearDetermination` provenance for this run.
 
     Pure determination over ALREADY-normalized ``{role: filename}`` sources
     and a concrete ``today`` (callers resolve now(); see the module docstring).
@@ -203,15 +238,33 @@ def determine_school_year(
     IDs — one loud WARNING names every end year found and which was chosen.
     Falls back to the rollover-aware calendar heuristic when no source has a
     recognised value.
+
+    A SECOND, independent check: the calendar fallback is computed regardless
+    of which mechanism wins, and when a source value disagrees with it, a
+    loud WARNING names both — deliberately worded WITHOUT the substring
+    "disagree" (that word is reserved for the multi-source check above; the
+    two conditions are unrelated and must stay distinguishable in a log grep).
+
+    :func:`determine_school_year` is a thin wrapper returning only
+    ``.resolved_year`` — this function is the single scan, so the two never
+    duplicate logic or disagree with each other.
     """
     found_years: list[int] = []
-    for _role, filename in normalized_sources.items():
+    winning_role: Optional[str] = None
+    winning_filename: Optional[str] = None
+    winning_raw: Optional[str] = None
+
+    for role, filename in normalized_sources.items():
         df = all_data.get(filename)
         if df is not None and "school year" in df.columns:
             for raw in normalize_id_series(df["school year"].dropna()).unique():
                 parsed = parse_school_year_to_end(str(raw), school_year_naming)
                 if parsed is not None and parsed not in found_years:
+                    if not found_years:
+                        winning_role, winning_filename, winning_raw = role, filename, str(raw)
                     found_years.append(parsed)
+
+    fallback_year = fallback_school_year(today, rollover_month_day)
 
     if found_years:
         chosen = found_years[0]
@@ -221,6 +274,48 @@ def determine_school_year(
                 "Academic dates and Class IDs derive from this value — check that every "
                 "GDE file comes from the same export period."
             )
-        return chosen
+        if chosen != fallback_year:
+            logger.warning(
+                f"School year mismatch: source '{winning_filename}' (role '{winning_role}') gives "
+                f"end year {chosen}, but calculating from today's date ({today.isoformat()}) and the "
+                f"rollover setting ({rollover_month_day}) gives {fallback_year} instead. Using the "
+                f"source value ({chosen}) as configured — if that is wrong, check whether "
+                f"'{winning_filename}' still has last year's School Year value."
+            )
+        return SchoolYearDetermination(
+            resolved_year=chosen,
+            mechanism="source",
+            fallback_year=fallback_year,
+            rollover_month_day=rollover_month_day,
+            today=today,
+            found_years=tuple(found_years),
+            source_role=winning_role,
+            source_filename=winning_filename,
+            source_raw_value=winning_raw,
+        )
 
-    return fallback_school_year(today, rollover_month_day)
+    return SchoolYearDetermination(
+        resolved_year=fallback_year,
+        mechanism="fallback",
+        fallback_year=fallback_year,
+        rollover_month_day=rollover_month_day,
+        today=today,
+    )
+
+
+def determine_school_year(
+    all_data: dict[str, pd.DataFrame],
+    normalized_sources: dict[str, str],
+    rollover_month_day: str,
+    today: date,
+    school_year_naming: str = "end",
+) -> int:
+    """Return the academic year's END year (MyEd BC "School Year" convention).
+
+    Thin wrapper over :func:`determine_school_year_detailed` — see that
+    function for the full scan/warning behavior (unchanged: same signature,
+    same return type, same warnings, same precedence).
+    """
+    return determine_school_year_detailed(
+        all_data, normalized_sources, rollover_month_day, today, school_year_naming
+    ).resolved_year

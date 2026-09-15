@@ -99,12 +99,14 @@ def _write_full_rostering_input(d: Path) -> None:
     ).to_csv(d / "ClassInformationEnh.txt", index=False)
 
 
-# 17 columns in file order — StudentPeriodAbsences.txt is HEADERLESS (headers
-# injected from config). Two data rows, no header row. Only School Number /
-# Student Number / Absence Date / Absence Category are functionally used.
+# SD51 sends the HEADERFUL Enhanced export (19 columns), NOT the base's standard
+# headerless 17-column file, so these rows carry their OWN header line and no
+# headers are injected (DECISIONS 2026-09-12). Only School Number / Student Number
+# / Absence Date / Absence Category are functionally used.
 _PERIOD_ROWS = [
-    "100,P1,Last,First,10,A1,Teacher,2024-09-18,MAT10,A,,,MT001,A,T001,SCC,FL",
-    "100,P2,Last,First,11,A1,Teacher,19-Sep-2024,ENG11,L,,,MT002,B,T002,SCC,FL",
+    "School Number,Student Number,Student Legal Last Name,Student Legal First Name,Grade,Homeroom,Teacher Name,Absence Date,Course Code,Absence Category,Absence Sub Allocation Code,Authorized Absence Code,Office Reason,Section Letter,Period Id,Teacher ID,School Course Code,Flavour,Schedule Term",
+    "100,P1,Last,First,10,A1,Teacher,2024-09-18,MAT10,A,,,,A,1,T001,SCC,FL,S1",
+    "100,P2,Last,First,11,A1,Teacher,19-Sep-2024,ENG11,L,,,,B,2,T002,SCC,FL,S1",
 ]
 
 
@@ -184,7 +186,7 @@ class TestPeriodOnlyAttendanceDoesNotFire:
         """
         input_dir = tmp_path / "input"
         input_dir.mkdir()
-        (input_dir / "StudentPeriodAbsences.txt").write_text("\n".join(_PERIOD_ROWS), encoding="utf-8")
+        (input_dir / "StudentPeriodAbsencesEnhanced.txt").write_text("\n".join(_PERIOD_ROWS), encoding="utf-8")
         # NOTE: StudentDailyAbsences.txt deliberately absent.
 
         # Must NOT raise the new "No usable required input" guard — the period
@@ -268,11 +270,12 @@ def _sd51attendance_raw() -> tuple[dict, dict]:
 
 
 def _period_frame() -> pd.DataFrame:
-    """A populated 8-12 Student Period Absences frame (header-injected columns).
+    """A populated 8-12 Student Period Absences frame.
 
-    Matches the 17 headers the extractor injects for the headerless
-    StudentPeriodAbsences.txt; only School Number / Student Number / Absence Date
-    / Absence Category are functionally used by the transformer.
+    Matches the 19 columns SD51's HEADERFUL StudentPeriodAbsencesEnhanced.txt
+    carries in its own header row (no injection — DECISIONS 2026-09-12); only
+    School Number / Student Number / Absence Date / Absence Category are
+    functionally used by the transformer.
     """
     return pd.DataFrame(
         {
@@ -288,11 +291,13 @@ def _period_frame() -> pd.DataFrame:
             "Absence Category": ["A", "L"],
             "Absence Sub Allocation Code": ["", ""],
             "Authorized Absence Code": ["", ""],
-            "Master Timetable ID": ["MT001", "MT002"],
+            "Office Reason": ["", ""],
             "Section Letter": ["A", "B"],
+            "Period Id": ["1", "2"],
             "Teacher ID": ["T001", "T002"],
             "School Course Code": ["SCC", "SCC"],
             "Flavour": ["FL", "FL"],
+            "Schedule Term": ["S1", "S1"],
         }
     )
 
@@ -313,7 +318,7 @@ class TestRunTransformAllSourcesEmptySkip:
         mappings, global_config = _sd51attendance_raw()
         raw_data = {
             "StudentDailyAbsences.txt": pd.DataFrame(),  # empty (absent daily band)
-            "StudentPeriodAbsences.txt": _period_frame(),  # populated period band
+            "StudentPeriodAbsencesEnhanced.txt": _period_frame(),  # populated period band
         }
 
         result = run_transform(raw_data, mappings, global_config)
@@ -330,7 +335,7 @@ class TestRunTransformAllSourcesEmptySkip:
         mappings, global_config = _sd51attendance_raw()
         raw_data = {
             "StudentDailyAbsences.txt": pd.DataFrame(),
-            "StudentPeriodAbsences.txt": pd.DataFrame(),
+            "StudentPeriodAbsencesEnhanced.txt": pd.DataFrame(),
         }
 
         result = run_transform(raw_data, mappings, global_config)

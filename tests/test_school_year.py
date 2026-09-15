@@ -234,6 +234,119 @@ class TestDetermineSchoolYear:
         assert year == 2026  # Sep past Jul 25 default rollover
 
 
+class TestDetermineSchoolYearDetailed:
+    """The rich provenance object behind ``determine_school_year`` (diagnosability)."""
+
+    def setup_method(self):
+        self.transformer = DataTransformer()
+
+    def test_source_mechanism_captures_provenance(self):
+        """A clean single source names its role/file/raw value; sources_disagree is False."""
+        raw_data = {"StudentSchedule.txt": pd.DataFrame({"school year": ["2025/2026"]})}
+        source_config = {"student_schedule": "StudentSchedule.txt"}
+
+        result = self.transformer.determine_school_year_detailed(
+            raw_data, source_config, today=date(2026, 6, 1), rollover_month_day="07-25"
+        )
+        assert result.resolved_year == 2026
+        assert result.mechanism == "source"
+        assert result.source_role == "student_schedule"
+        assert result.source_filename == "StudentSchedule.txt"
+        assert result.source_raw_value == "2025/2026"
+        assert result.found_years == (2026,)
+        assert result.sources_disagree is False
+
+    def test_fallback_mechanism_when_no_usable_source(self):
+        """No source column at all → mechanism 'fallback', no source fields populated."""
+        raw_data = {"StudentSchedule.txt": pd.DataFrame({"other": [1]})}
+        source_config = {"student_schedule": "StudentSchedule.txt"}
+
+        result = self.transformer.determine_school_year_detailed(
+            raw_data, source_config, today=date(2026, 9, 10), rollover_month_day="07-25"
+        )
+        assert result.mechanism == "fallback"
+        assert result.resolved_year == 2027  # Sep past the 07-25 rollover
+        assert result.fallback_year == 2027
+        assert result.source_role is None
+        assert result.source_filename is None
+        assert result.source_raw_value is None
+        assert result.found_years == ()
+        assert result.rollover_month_day == "07-25"
+        assert result.today == date(2026, 9, 10)
+
+    def test_multi_source_disagreement_captured(self):
+        """Two configured sources with different end years: both are recorded."""
+        raw_data = {
+            "a.txt": pd.DataFrame({"school year": ["2025/2026"]}),
+            "b.txt": pd.DataFrame({"school year": ["2026/2027"]}),
+        }
+        source_config = {"role_a": "a.txt", "role_b": "b.txt"}
+
+        result = self.transformer.determine_school_year_detailed(
+            raw_data, source_config, today=date(2026, 6, 1), rollover_month_day="07-25"
+        )
+        assert result.resolved_year == 2026
+        assert result.found_years == (2026, 2027)
+        assert result.sources_disagree is True
+        assert result.source_fallback_disagree is False  # fallback(2026-06-01) == 2026, agrees
+
+    def test_source_fallback_mismatch_warns_without_the_word_disagree(self, caplog):
+        """A source value that disagrees with the CALENDAR fallback warns loudly —
+        a different condition from the multi-source check, so it must never share
+        that check's 'disagree' wording (tests/regex/log-greps distinguish the two)."""
+        raw_data = {"StudentSchedule.txt": pd.DataFrame({"school year": ["2025/2026"]})}
+        source_config = {"student_schedule": "StudentSchedule.txt"}
+
+        with caplog.at_level("WARNING"):
+            result = self.transformer.determine_school_year_detailed(
+                raw_data, source_config, today=date(2026, 9, 10), rollover_month_day="07-25"
+            )
+        assert result.resolved_year == 2026  # source still wins
+        assert result.fallback_year == 2027
+        assert result.source_fallback_disagree is True
+
+        mismatch_warnings = [r.message for r in caplog.records if "mismatch" in r.message]
+        assert len(mismatch_warnings) == 1
+        assert "2026" in mismatch_warnings[0]
+        assert "2027" in mismatch_warnings[0]
+        assert "disagree" not in mismatch_warnings[0]
+
+    def test_source_fallback_agreement_does_not_warn(self, caplog):
+        """When the source value and the calendar fallback agree, no mismatch warning fires."""
+        raw_data = {"StudentSchedule.txt": pd.DataFrame({"school year": ["2025/2026"]})}
+        source_config = {"student_schedule": "StudentSchedule.txt"}
+
+        with caplog.at_level("WARNING"):
+            result = self.transformer.determine_school_year_detailed(
+                raw_data, source_config, today=date(2026, 6, 1), rollover_month_day="07-25"
+            )
+        assert result.source_fallback_disagree is False
+        assert not any("mismatch" in r.message for r in caplog.records)
+
+    def test_determine_school_year_matches_detailed_resolved_year(self):
+        """The thin wrapper returns exactly `.resolved_year` — never duplicated logic."""
+        cases = [
+            ({"a.txt": pd.DataFrame({"school year": ["2025/2026"]})}, {"role": "a.txt"}, date(2026, 6, 1)),
+            ({"a.txt": pd.DataFrame({"other": [1]})}, {"role": "a.txt"}, date(2026, 9, 10)),
+            (
+                {
+                    "a.txt": pd.DataFrame({"school year": ["2025/2026"]}),
+                    "b.txt": pd.DataFrame({"school year": ["2026/2027"]}),
+                },
+                {"role_a": "a.txt", "role_b": "b.txt"},
+                date(2026, 6, 1),
+            ),
+        ]
+        for raw_data, source_config, today in cases:
+            detailed = self.transformer.determine_school_year_detailed(
+                raw_data, source_config, today=today, rollover_month_day="07-25"
+            )
+            plain = self.transformer.determine_school_year(
+                raw_data, source_config, today=today, rollover_month_day="07-25"
+            )
+            assert plain == detailed.resolved_year
+
+
 class TestParseSchoolYearToEnd:
     """Direct tests of the static parser, independent of the transformer."""
 

@@ -1,7 +1,10 @@
 """Tests for the data quality report module."""
 
+from datetime import date
+
 import pandas as pd
 
+from src.etl.transformers.dates import SchoolYearDetermination
 from src.quality.report import DataQualityReport
 
 
@@ -339,3 +342,85 @@ class TestDeclaredBlankFields:
         outputs = {"Students": pd.DataFrame({"User ID": ["S1"], "Date of Birth": [""]})}
         report = DataQualityReport().analyze(outputs)
         assert "Date of Birth" in report.entities["Students"].missing_fields
+
+
+class TestSchoolYearSection:
+    """The `--- School Year Determination ---` section (diagnosability)."""
+
+    def _outputs(self):
+        return {"Students": pd.DataFrame({"User ID": ["S1"]})}
+
+    def test_omitted_school_year_renders_no_section(self):
+        """Existing call shape (no `school_year=`) stays byte-identical."""
+        report = DataQualityReport().analyze(self._outputs())
+        assert "School Year Determination" not in report.to_text()
+
+    def test_source_mechanism_renders_provenance(self):
+        sy = SchoolYearDetermination(
+            resolved_year=2026,
+            mechanism="source",
+            fallback_year=2026,
+            rollover_month_day="07-25",
+            today=date(2026, 6, 1),
+            found_years=(2026,),
+            source_role="student_schedule",
+            source_filename="StudentSchedule.txt",
+            source_raw_value="2025/2026",
+        )
+        report = DataQualityReport().analyze(self._outputs(), school_year=sy)
+        text = report.to_text()
+        assert "School Year Determination" in text
+        assert "2026" in text
+        assert "StudentSchedule.txt" in text
+        assert "student_schedule" in text
+        assert "! WARNING" not in text
+
+    def test_fallback_mechanism_renders_calendar_details(self):
+        sy = SchoolYearDetermination(
+            resolved_year=2027,
+            mechanism="fallback",
+            fallback_year=2027,
+            rollover_month_day="07-25",
+            today=date(2026, 9, 10),
+        )
+        report = DataQualityReport().analyze(self._outputs(), school_year=sy)
+        text = report.to_text()
+        assert "no source file had a usable School Year column" in text
+        assert "2026-09-10" in text
+        assert "07-25" in text
+        assert "2027" in text
+
+    def test_multi_source_disagreement_renders_warning(self):
+        sy = SchoolYearDetermination(
+            resolved_year=2026,
+            mechanism="source",
+            fallback_year=2026,
+            rollover_month_day="07-25",
+            today=date(2026, 6, 1),
+            found_years=(2026, 2027),
+            source_role="role_a",
+            source_filename="a.txt",
+            source_raw_value="2025/2026",
+        )
+        report = DataQualityReport().analyze(self._outputs(), school_year=sy)
+        text = report.to_text()
+        assert "! WARNING" in text
+        assert "2026" in text and "2027" in text
+
+    def test_source_fallback_mismatch_renders_warning(self):
+        sy = SchoolYearDetermination(
+            resolved_year=2026,
+            mechanism="source",
+            fallback_year=2027,
+            rollover_month_day="07-25",
+            today=date(2026, 9, 10),
+            found_years=(2026,),
+            source_role="student_schedule",
+            source_filename="StudentSchedule.txt",
+            source_raw_value="2025/2026",
+        )
+        report = DataQualityReport().analyze(self._outputs(), school_year=sy)
+        text = report.to_text()
+        assert "! WARNING" in text
+        assert "does not match" in text
+        assert "StudentSchedule.txt" in text

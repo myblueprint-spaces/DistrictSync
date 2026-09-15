@@ -9,26 +9,111 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.19.0] - 2026-09-14
+
+SD83's staff roles now come from the column the district actually records them
+in, and no other district's output changes.
+
+**If you are running v3.18.1, upgrade.** That release was tagged on the wrong
+commit — its tag points at v3.18.0's, so the binaries published under it do not
+contain the SD51 attendance fix its own notes describe. v3.19.0 is the first
+build that carries it. No earlier release is affected.
+
 ### Changed
 
-- The installation guide now tells district IT how to skip the SmartScreen
-  screen on managed machines: host the release on an internal share (Windows
-  does not SmartScreen-check trusted-intranet files) or submit the signed
-  `.exe` to Microsoft for review. Neither is required — **Run anyway** with
-  the publisher reading **myBlueprint Corp.** remains the documented path.
+- **SD83 staff roles now come from the district's own `Prefix` column.**
+  K̓wsaltktnéws ne Secwepemcúl’ecw records each person's role ("Teacher" /
+  "Administrator") in the `Prefix` column of their staff export rather than
+  relying on the teaching-staff Y/N flag, so `Staff.csv` now reads it from
+  there. Anyone whose `Prefix` holds something else — a courtesy title, say —
+  is left out of the file rather than published under a guessed role. If a role
+  value ever appears that the file's own rules did not already exclude, that one
+  person's Role is left blank and counted on the run's data-error line; the run
+  still completes and still delivers. **SD83 only** — no other district's
+  `Staff.csv` changes. Departed staff were already excluded for every district
+  in 3.17.0 and are unaffected by this.
+
+### Fixed
+
+- **SD51's 8-12 attendance band reaches a shipped build at last.** The fix
+  itself landed for [3.18.1] and is described in that section — nothing about it
+  has changed. What went wrong was the release, not the fix: the `v3.18.1` tag
+  was created on the previous release's commit, so every binary published under
+  it still names the standard `StudentPeriodAbsences.txt` and still drops the
+  district's entire 8-12 band. Any district that took v3.18.1 for this fix did
+  not receive it.
+
+## [3.18.1] - 2026-09-13
+
+A one-district fix, shipped on its own because SD51's nightly attendance
+delivery has been missing its entire 8-12 band and the district is picking
+up this build. No other district's output changes.
+
+### Fixed
+
+- **SD51's 8-12 attendance band was silently empty in every delivery.** Their
+  mapping named the standard `StudentPeriodAbsences.txt`, but the district's
+  MyEd job emits `StudentPeriodAbsencesEnhanced.txt` and never emitted the
+  standard file. A missing source file resolves to an empty frame by design, so
+  the whole 8-12 period band was dropped with no error — their
+  `StudentAttendance.csv` carried daily-band rows only. The config now names the
+  Enhanced export, which also gives it the correct header handling for free (the
+  base's `headers:` block is keyed by filename, so the headerful Enhanced file is
+  read with its own header row rather than the standard's 17 positional names).
+  Verified against the district's 2026-09-11 drop: attendance rows 33,809 →
+  80,146, with zero student-day overlap between the two bands, so nothing is
+  double-counted. No other district is affected — the base keeps the standard
+  file and its injected headers.
+
+## [3.18.0] - 2026-09-10
+
+A wrong-year delivery can now be diagnosed from a run's own output, instead
+of a source-code read. This came out of a real multi-day investigation into
+a district's `Classes.csv` shipping the wrong term window, where nothing in
+DistrictSync's own logs or reports said whether the raw export was stale or
+the fallback logic had picked the wrong year.
+
+### Added
+
+- **`--quality` now explains how the school year was determined.** A new
+  `--- School Year Determination ---` section names the exact mechanism —
+  the source file, column and raw value that was read, or the calendar
+  fallback's rollover date and today's date when no usable source column was
+  found — so a wrong-year delivery can be diagnosed from that report alone.
+  The same detail is now logged at INFO on every run.
+- **A new warning catches a stale or wrong-year source value on its own.**
+  Previously, DistrictSync only warned when two *different* configured
+  sources disagreed with each other — a case that has never occurred in any
+  shipped district. It did not check a single source's value against what
+  today's date would independently suggest, which is exactly the shape that
+  silently produced a wrong term window. That check now runs on every
+  district, every time, with no configuration required.
+
+No column, output, chosen school year, or exit code changes for a
+correctly-configured district — this release only makes the "why did this
+happen" question answerable without reading source code.
+
+## [3.17.0] - 2026-09-10
+
 A district can now set itself up. Until now, a district DistrictSync did not
 ship a mapping for had to wait for one to be built, reviewed and released.
 Now a district technician answers a few questions in the app, tests the
 result against their own export, and switches the computer over themselves —
-no ticket and no new version. Around it: every link on the Help screen did
-nothing when clicked, mapping files with non-ASCII district names were
-garbled on Windows, and one output change carried over from the owner's
-live-data review lands here rather than in 3.14.0 where it was first noted.
+no ticket and no new version. Two roster-correctness fixes ship alongside it,
+both found and verified against real district exports: a staff member who has
+left the district no longer appears as an active SpacesEDU user, and a
+student absence recorded in two different attendance files is no longer
+counted twice. Around it: every link on the Help screen did nothing when
+clicked, mapping files with non-ASCII district names were garbled on
+Windows, and one output change carried over from the owner's live-data
+review lands here rather than in 3.14.0 where it was first noted.
 
-**One output change, for every district** (output contract `2.2.0`): family
-contacts with no email address are no longer written to `Family.csv`. No
-column, order, filename or encoding changed, and the SD74 reference output is
-byte-identical.
+**Three output-contract changes, for every district** (contract `2.4.0`):
+family contacts with no email address are no longer written to `Family.csv`;
+a staff member the source marks as departed is no longer written to
+`Staff.csv`; and a student absence reported in both attendance files is now
+reported once, by the daily one. None change a column, order, filename or
+encoding, and none invalidate a previously confirmed row.
 
 ### Added
 
@@ -107,9 +192,29 @@ byte-identical.
   even where the district's shipped mapping lists only its own custom staff
   domain — SD60 (`prn.bc.ca`) and SD75 (`mpsd.ca`) both gain `sd60.bc.ca` /
   `sd75.bc.ca`. Matching stays exact: never a subdomain or a suffix.
+- **A departed staff member no longer appears as an active user in
+  `Staff.csv`.** MyEd BC's staff export is unfiltered — it carries former
+  employees right alongside current ones, and DistrictSync had no active-staff
+  check at all. Real exports affected: SD74 (14 of 163), SD40 (32 of 1129),
+  SD60 (2 of 82), and Unity Christian (206 of 306). A district whose export
+  doesn't spell status the recognized way, or where the filter would empty the
+  file, ships every row rather than risk deleting a real staff roster.
+- **A student absence recorded in both attendance files was counted twice.**
+  Some districts also take attendance in a dedicated attendance-only period
+  alongside the daily homeroom check, and MyEd BC's export then reports the
+  same absence in both files. `StudentAttendance.csv` carries no marker for
+  which file a row came from, so SpacesEDU added the two together and turned a
+  half-day absence into a full day. The daily record now wins; a district
+  whose 8-12 attendance is genuinely per-period, with no matching daily
+  record, is unaffected.
 
 ### Changed
 
+- The installation guide now tells district IT how to skip the SmartScreen
+  screen on managed machines: host the release on an internal share (Windows
+  does not SmartScreen-check trusted-intranet files) or submit the signed
+  `.exe` to Microsoft for review. Neither is required — **Run anyway** with
+  the publisher reading **myBlueprint Corp.** remains the documented path.
 - **Mission (SD75) student email addresses are now generated by DistrictSync**
   as `<student number>@learn75.ca`, instead of being read from the MyEducation
   BC demographic export. MyEd BC holds non-district addresses for some of
@@ -117,6 +222,16 @@ byte-identical.
   the key a SpacesEDU student account is created against. Nothing else about
   the district changes — its homeroom split and its file names are untouched —
   and no other district is affected.
+- **Peace River North (SD60) reads its own export filenames directly** — the
+  `Spaces_*` files it actually ships — so its GDEs no longer need to be
+  hand-renamed into a working folder before a run, **and it now delivers
+  attendance in the same drop as rostering**, joining SD51 in producing
+  `StudentAttendance.csv`.
+- **Richmond (SD38) narrows to the myBlueprint+ core shape** — `Students.csv`,
+  `CourseInfo.csv` and `StudentCourses.csv` only — widened from grades 8-12 to
+  7-12, with a student's duplicate cross-school rows collapsed to one. Its
+  student email now reads from the district's actual `Student Email` column
+  rather than the standard MyEd BC field name.
 - **SD83 is named K̓wsaltktnéws ne Secwepemcúl’ecw** (formerly North
   Okanagan-Shuswap) in every district list, spelled as the district spells it.
 - **A mapping added on this computer is always shown** in the wizard, Settings,

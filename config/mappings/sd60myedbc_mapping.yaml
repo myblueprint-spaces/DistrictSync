@@ -13,6 +13,11 @@
 #     attachments, not real active enrolments; inherits base ["Active","PreReg"].
 #   - Students are rostered under their Home School Number (was: home-school row's
 #     per-row School Number).
+#   - Source FILENAMES are the district's own `Spaces_*` exports (2026-09-09
+#     drop). Every COLUMN the mapping reads was verified present and unchanged
+#     in that drop — this was a pure filename rename, no field_map edits. Before
+#     this, running SD60 meant hand-copying the GDEs into a `renamed_input/`
+#     folder with the canonical names.
 _base: myedbc
 version: '1.0'
 sis: MyEducationBC
@@ -33,8 +38,28 @@ district_name: SD60 - Peace River North School District
 district_domains: ["prn.bc.ca", "sd60.bc.ca"]
 
 global_config:
+  # SD60 delivers attendance alongside rostering in ONE drop, so this config
+  # emits all SIX entities (deep merge REPLACES lists — every entity must be
+  # spelled, not just the added one). This is the SAME shape sd51myedbc already
+  # ships, not a new pattern; sd51attendance is the separate attendance-ONLY
+  # tier, for a district that sends the absence GDEs by themselves.
+  # StudentAttendance.csv is delivered STANDALONE beside the zip
+  # (sftp.uploader.STANDALONE_CSV_FILENAMES), so rostering delivery is
+  # unchanged.
+  enabled_entities:
+    - Students
+    - Staff
+    - Family
+    - Classes
+    - Enrollments
+    - StudentAttendance
+  attendance:
+    daily:
+      # SD60's daily GDE spells this "Absence Code Am"; the base default is
+      # "absent code am". Every other daily/period column matches the base.
+      daily_absent_code_col: absence code am
   school_year_sources:
-    student_schedule: StudentCourseSelection.txt
+    student_schedule: Spaces_StudentSchedule.txt
   # MyEd internal attendance-only sections — not real classes.
   excluded_course_codes:
     - ATT--AM
@@ -62,7 +87,7 @@ global_config:
 mappings:
   Students:
     source_files:
-      student_demographic: Student_demo_enh.txt
+      student_demographic: Spaces_StudentDemoEnh.txt
     field_map:
       # EnrollStatus override REMOVED — inherit base default ["Active","PreReg"],
       # dropping the 37 "Active No Primary" (online-course-only attachments).
@@ -83,11 +108,11 @@ mappings:
 
   Staff:
     source_files:
-      staff_info: StaffInformation.txt
+      staff_info: Spaces_StaffInfo.txt
 
   Family:
     source_files:
-      emergency_contacts: EmergencyEnhanced.txt
+      emergency_contacts: Spaces_EmergencyContactENH.txt
     # Only true parents/guardians become SpacesEDU family accounts (exclude
     # non-guardian emergency contacts: grandparents, friends, etc.).
     row_filters:
@@ -96,11 +121,11 @@ mappings:
 
   Classes:
     source_files:
-      student_schedule: StudentCourseSelection.txt
-      course_info: CourseInformation.txt
-      staff_info: StaffInformation.txt
-      student_demographic: Student_demo_enh.txt
-      class_info: ClassInformation.txt
+      student_schedule: Spaces_StudentSchedule.txt
+      course_info: Spaces_CourseInfo.txt
+      staff_info: Spaces_StaffInfo.txt
+      student_demographic: Spaces_StudentDemoEnh.txt
+      class_info: Spaces_ClassInfo.txt
     field_map:
       # SD60 schedule has no Primary-Teacher flag; title col is "Title"; section
       # comes from the schedule's "Section" (not "Section Letter").
@@ -110,10 +135,18 @@ mappings:
         "course title": "Title"
         "section letter": "Section"
 
+  # Headerful, unlike SD51's headerless absence GDEs — so no `headers:` block
+  # here. The base's headers are keyed on the SD51 filenames, so they simply do
+  # not apply to these two files.
+  StudentAttendance:
+    source_files:
+      daily_absences: Spaces_DailyAbs.txt
+      period_absences: Spaces_PeriodAbsEnh.txt
+
   Enrollments:
     source_files:
-      student_schedule: StudentCourseSelection.txt
-      student_demographic: Student_demo_enh.txt
+      student_schedule: Spaces_StudentSchedule.txt
+      student_demographic: Spaces_StudentDemoEnh.txt
     field_map:
       "User ID":
         "student_id_col": "Student Number"

@@ -10,9 +10,11 @@ Produces a summary of the ETL output highlighting potential issues:
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Optional
 
 import pandas as pd
 
+from src.etl.transformers.dates import SchoolYearDetermination
 from src.etl.transformers.ids import normalize_id_series
 
 
@@ -68,19 +70,31 @@ class DataQualityReport:
 
     entities: dict[str, EntityReport] = field(default_factory=dict)
     cross_entity_warnings: list[str] = field(default_factory=list)
+    #: Full provenance of this run's school-year determination — diagnostics
+    #: only. ``None`` when the caller doesn't pass one (every existing caller
+    #: before this field existed); populated by ``run_pipeline``/``convert_job``
+    #: via ``TransformOutputs.school_year`` so a non-engineer can see WHY a
+    #: year was chosen from ``--quality`` output, not just what it was.
+    school_year: Optional[SchoolYearDetermination] = None
 
     def analyze(
         self,
         outputs: dict[str, pd.DataFrame],
         *,
         declared_blank: Mapping[str, frozenset[str]] | None = None,
+        school_year: Optional[SchoolYearDetermination] = None,
     ) -> "DataQualityReport":
         """Run all quality checks on the pipeline outputs.
 
         ``declared_blank`` (from :func:`declared_blank_fields`) names the columns each entity's
         config declares fixed-blank — those skip the missing-field check (blank by design is not
         a finding), and ONLY that check. Omitted → the previous behavior, every column checked.
+
+        ``school_year`` (from ``TransformOutputs.school_year``) is rendered as its own section
+        in :meth:`to_text`; omitted → no such section (byte-identical to before this parameter
+        existed).
         """
+        self.school_year = school_year
         blank_by_entity = declared_blank or {}
         for name, df in outputs.items():
             report = EntityReport(name=name, row_count=len(df))
@@ -204,9 +218,47 @@ class DataQualityReport:
                 f"Grades with only 1 student: {', '.join(str(g) for g in grades_with_one)}"
             )
 
+    @staticmethod
+    def _school_year_lines(sy: SchoolYearDetermination) -> list[str]:
+        """Plain-language ``--- School Year Determination ---`` section.
+
+        Written for a non-engineer support person diagnosing a wrong-year
+        delivery from ``--quality`` output alone (per the SD51 investigation
+        that motivated this section) — never a name, address, or row value,
+        just the mechanism + provenance that produced ``resolved_year``.
+        """
+        lines = ["--- School Year Determination ---"]
+        if sy.mechanism == "source":
+            lines.append(
+                f"  Resolved year: {sy.resolved_year} (from source file '{sy.source_filename}', "
+                f"role '{sy.source_role}', School Year column value {sy.source_raw_value!r})"
+            )
+        else:
+            lines.append(
+                f"  Resolved year: {sy.resolved_year} (no source file had a usable School Year "
+                f"column — calculated from today's date {sy.today.isoformat()} and rollover "
+                f"setting {sy.rollover_month_day})"
+            )
+        if sy.sources_disagree:
+            lines.append(
+                f"  ! WARNING: configured sources disagree — found end years {list(sy.found_years)}, "
+                f"used {sy.resolved_year}. Check that every GDE file comes from the same export period."
+            )
+        if sy.source_fallback_disagree:
+            lines.append(
+                f"  ! WARNING: the source file's School Year ({sy.resolved_year}) does not match what "
+                f"today's date would suggest ({sy.fallback_year}). If the delivered dates/term window "
+                f"look wrong, check whether '{sy.source_filename}' still has last year's value."
+            )
+        lines.append("")
+        return lines
+
     def to_text(self) -> str:
         """Render the report as a human-readable text string."""
         lines = ["=" * 60, "DATA QUALITY REPORT", "=" * 60, ""]
+
+        if self.school_year is not None:
+            lines.extend(self._school_year_lines(self.school_year))
 
         for name, report in self.entities.items():
             lines.append(f"--- {name} ---")

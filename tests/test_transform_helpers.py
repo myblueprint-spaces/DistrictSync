@@ -58,6 +58,30 @@ class TestNormalizeIdSeries:
         assert list(out["id"]) == ["T1", "T2"]
 
 
+class TestIsBlankSeries:
+    """The ONE spelling of "this cell says nothing" (shared with staff filtering)."""
+
+    def test_flags_nan_empty_whitespace_and_the_nan_literal(self):
+        s = pd.Series(["T1", "", "   ", "nan", "NaN", None, np.nan, "T2"])
+        assert list(ids.is_blank_series(s)) == [False, True, True, True, True, True, True, False]
+
+    def test_the_nan_literal_is_why_comparing_to_empty_is_not_enough(self):
+        """Regression guard: a CSV blank arrives as NaN, which stringifies to "nan".
+
+        A caller comparing only against "" would treat it as a real value — the
+        trap that makes a config-level ``include: [""]`` silently ineffective.
+        """
+        s = pd.Series([np.nan])
+        assert ids.normalize_id_series(s).iloc[0] == "nan"
+        assert bool(ids.is_blank_series(s).iloc[0]) is True
+
+    def test_returns_new_series_input_untouched(self):
+        s = pd.Series([" S001 "])
+        out = ids.is_blank_series(s)
+        assert s.iloc[0] == " S001 "
+        assert out is not s
+
+
 # ---------------------------------------------------------------------------
 # grades.py — split_by_homeroom_grades (T3.4)
 # ---------------------------------------------------------------------------

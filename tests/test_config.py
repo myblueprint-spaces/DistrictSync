@@ -663,11 +663,12 @@ class TestEnabledEntities:
     def test_district_configs_inherit_rostering_default(self):
         """sd40/48/74 inherit `enabled_entities` from the base — still the 5 rostering entities.
 
-        SD51 is excluded here because it opts into StudentAttendance (its own
-        full enabled_entities list, since deep-merge replaces lists) — see
-        ``test_sd51_enables_student_attendance``.
+        SD51 AND SD60 are both excluded here because each opts into
+        StudentAttendance with its own full enabled_entities list (deep-merge
+        replaces lists) — see ``test_sd51_enables_student_attendance`` and
+        ``TestSD60Config.test_valid_and_rostering_entities``.
         """
-        for sis in ("sd40myedbc", "sd48myedbc", "sd60myedbc", "sd74myedbc"):
+        for sis in ("sd40myedbc", "sd48myedbc", "sd74myedbc"):
             cfg = load_config(sis)
             assert cfg.global_config.enabled_entities == [
                 "Students",
@@ -1382,19 +1383,30 @@ class TestStudentRosteringGradesWiring:
         assert raw["global_config"]["student_rostering_grades"] is None
 
     def test_exactly_the_two_grade_scoped_districts_set_it(self):
-        """The key's shipped consumers, stated as a config fact (2026-08-31): the
-        phase-2 8-12 districts sd27/sd38 are the FIRST licensing districts (they
-        also declare version '1.11' — the declared-range parity in
-        tests/test_config_version_gate.py moved with them). Every other bundled
-        config still resolves to None, so the byte-identical default is pinned in
-        both directions; the positive behaviour layer stays
-        tests/test_student_rostering_grades.py."""
+        """The key's shipped consumers, stated as a config fact: sd27/sd38 were
+        the FIRST licensing districts (2026-08-31, both declaring version
+        '1.11' — the declared-range parity in tests/test_config_version_gate.py
+        moved with them). Every other bundled config still resolves to None, so
+        the byte-identical default is pinned in both directions; the positive
+        behaviour layer stays tests/test_student_rostering_grades.py.
+
+        The two scopes have since diverged (2026-09-08): sd27 stays the
+        phase-2 8-12 scope, while sd38 widened to 7-12 (its config also
+        dropped the SpacesEDU rostering entities — see
+        sd38myedbc_mapping.yaml)."""
         setters = {
             name for name in available_configs() if load_config(name).global_config.student_rostering_grades is not None
         }
         assert setters == {"sd27myedbc", "sd38myedbc"}
-        for name in setters:
-            assert load_config(name).global_config.student_rostering_grades == ["08", "09", "10", "11", "12"], name
+        assert load_config("sd27myedbc").global_config.student_rostering_grades == ["08", "09", "10", "11", "12"]
+        assert load_config("sd38myedbc").global_config.student_rostering_grades == [
+            "07",
+            "08",
+            "09",
+            "10",
+            "11",
+            "12",
+        ]
 
 
 class TestStudentRosteringGradesInheritance:
@@ -1451,6 +1463,12 @@ class TestStudentRosteringGradesInheritance:
 # -----------------------------------------------------------------------
 class TestSD60Config:
     def test_valid_and_rostering_entities(self):
+        """SD60 emits the rostering five PLUS StudentAttendance (2026-09-10).
+
+        Its drop carries the absence GDEs alongside the rostering ones, so the
+        attendance entity rides the same config rather than a separate tier.
+        SD51 has the same shape; sd51attendance is the attendance-ONLY variant.
+        """
         cfg = load_config("sd60myedbc")
         assert cfg.sis == "MyEducationBC"
         for entity in ("Students", "Staff", "Family", "Classes", "Enrollments"):
@@ -1461,6 +1479,7 @@ class TestSD60Config:
             "Family",
             "Classes",
             "Enrollments",
+            "StudentAttendance",
         ]
 
     def test_family_carries_guardian_row_filter(self):

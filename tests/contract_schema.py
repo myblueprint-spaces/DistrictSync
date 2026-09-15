@@ -135,15 +135,22 @@ EXPECTED_ENTITIES: dict[str, frozenset[str]] = {
     "sd48myedbc": ROSTERING_ENTITIES,
     "sd51myedbc": ROSTERING_ENTITIES,  # StudentAttendance enabled, absence GDEs deliberately absent
     "sd54myedbc": ROSTERING_ENTITIES,
-    "sd60myedbc": ROSTERING_ENTITIES,
+    # SD60 delivers attendance in the SAME drop as rostering (2026-09-10). Same
+    # enabled_entities as sd51myedbc — but SD51's absence GDEs are deliberately
+    # withheld from its fixture (pinning skip-on-empty), whereas SD60's fixture
+    # SUPPLIES them, so this row is where the rostering+attendance emit path is
+    # actually proven. sd51attendance emits attendance ALONE.
+    "sd60myedbc": ROSTERING_ENTITIES | {"StudentAttendance"},
     "sd74myedbc": ROSTERING_ENTITIES,
     "sd51attendance": frozenset({"StudentAttendance"}),
     "sd83myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
-    # Phase-2 migration districts (2026-08-31): six full-tier configs on the
+    # Phase-2 migration districts (2026-08-31): full-tier configs on the
     # standard MyEd BC file shape (grade-scope overrides are business logic the
-    # shared fixture exercises), plus SD10 on the mbp_core shape.
+    # shared fixture exercises), plus SD10 on the mbp_core shape. SD38 moved to
+    # the mbp_core shape itself (2026-09-08): no SpacesEDU rostering entities,
+    # grades 7-12 only (see sd38myedbc_mapping.yaml).
     "sd27myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
-    "sd38myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
+    "sd38myedbc": frozenset({"Students", "CourseInfo", "StudentCourses"}),
     "sd67myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
     "sd69myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},
     "sd71myedbc": ROSTERING_ENTITIES | {"CourseInfo", "StudentCourses"},

@@ -176,14 +176,33 @@ def gde_sources() -> dict[str, bytes]:
         ]
     )
 
-    # Headerless Student Period Absences (8-12) — 17 columns. Only school/
-    # student/date/category functionally used; category passed through as-is.
-    # cols: School Number, Student Number, Last, First, Grade, Homeroom,
-    # Teacher Name, Absence Date, Course Code, Absence Category, Sub Alloc,
-    # Authorized, Master Timetable ID, Section Letter, Teacher ID,
-    # School Course Code, Flavour
+    # SD51's Student Period Absences (8-12) is the HEADERFUL Enhanced export — 19
+    # columns carrying their OWN header row, so no headers are injected (DECISIONS
+    # 2026-09-12). Only school/student/date/category are functionally used; the
+    # category is passed through as-is.
     period = _headerless_bytes(
         [
+            [
+                "School Number",
+                "Student Number",
+                "Student Legal Last Name",
+                "Student Legal First Name",
+                "Grade",
+                "Homeroom",
+                "Teacher Name",
+                "Absence Date",
+                "Course Code",
+                "Absence Category",
+                "Absence Sub Allocation Code",
+                "Authorized Absence Code",
+                "Office Reason",
+                "Section Letter",
+                "Period Id",
+                "Teacher ID",
+                "School Course Code",
+                "Flavour",
+                "Schedule Term",
+            ],
             [
                 "200",
                 "S002",
@@ -197,11 +216,13 @@ def gde_sources() -> dict[str, bytes]:
                 "A",
                 "",
                 "N",
-                "MT002",
+                "",
                 "A",
+                "1",
                 "T003",
                 "MAT10",
                 "",
+                "S1",
             ],
             [
                 "200",
@@ -216,11 +237,13 @@ def gde_sources() -> dict[str, bytes]:
                 "L",
                 "",
                 "N",
-                "MT003",
+                "",
                 "B",
+                "2",
                 "T004",
                 "ENG12",
                 "",
+                "S1",
             ],
         ]
     )
@@ -233,7 +256,7 @@ def gde_sources() -> dict[str, bytes]:
         "CourseInformation.txt": _csv_bytes(course),
         "ClassInformationEnh.txt": _csv_bytes(class_info),
         "StudentDailyAbsences.txt": daily,
-        "StudentPeriodAbsences.txt": period,
+        "StudentPeriodAbsencesEnhanced.txt": period,
     }
 
 
@@ -272,7 +295,7 @@ def _run_ui_path(gde_sources: dict[str, bytes], tmp_path: Path) -> Path:
     mappings = raw["mappings"]
     global_config = raw["global_config"]
     raw_data = DataExtractor("").load_from_bytes(gde_sources, _file_headers(CONFIG))
-    outputs, field_orders, _ = run_transform(raw_data, mappings, global_config)
+    outputs, field_orders, _, _ = run_transform(raw_data, mappings, global_config)
     DataLoader(str(output_dir)).save_all(outputs, field_orders)
     return output_dir
 
