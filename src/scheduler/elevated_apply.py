@@ -146,10 +146,13 @@ def _do_register(payload: dict[str, object]) -> None:
     task_name = validate_task_name(str(payload["task_name"]))
     run_time = str(payload["run_time"])
     validate_run_time(run_time)
-    password = payload.get("password")
-    user = str(payload["user"])
-    if password is not None:
-        user = validate_run_as_user(user)
+    password = payload.get("password") or None  # ONE spelling of "no password" (0046 A1)
+    # UNCONDITIONAL: this module promises to re-validate every input in the privileged
+    # half, and ``user`` is the field that names the principal an elevated registration
+    # creates. It used to be validated only when a password was present — the one input
+    # whose absence is exactly the case worth refusing. Nothing the parent sends reaches
+    # here unvalidated, so this is a fail-closed floor, not a second opinion.
+    user = validate_run_as_user(str(payload["user"]))
 
     task_com.register_task_definition(
         task_com.RegisterParams(
