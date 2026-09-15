@@ -4,7 +4,8 @@ Source article being updated: https://help.spacesedu.com/en-ca/article/myedbc-di
 Drafted: 2026-08-13 · Revised: 2026-09-03 (self-service district setup, the signed Windows
 build, the macOS .dmg, a required-input-files section, delivery contents) · Revised: 2026-09-14
 (the MyEd BC reports named as REPORTS and the Enhanced variants called out, Class Information
-Enhanced's second job, case-insensitive filename matching, the attendance source files).
+Enhanced's second job, case-insensitive filename matching, the attendance source files; then the
+owner's two wording tweaks and the email-addresses block).
 This file is NOT linked from anywhere and is not part of the built docs — it exists only
 so a reviewer can compare it against the live article and copy the approved text across.
 
@@ -50,9 +51,7 @@ For servers with no display (headless Linux, Docker, Windows Server Core), see *
 
 ## First launch: a desktop app, not a browser
 
-Double-clicking the program opens **a native application window on the desktop** — nothing opens in a web browser, and there's no address to type in.
-
-Down the left side of the window is a fixed navigation menu, always in the same order:
+Double-clicking the program opens **a native application window**, with a navigation menu along the left-hand side.
 
 **Home · Convert · Run History · Setup · Mapping · Help**
 
@@ -76,7 +75,7 @@ After the initial question, DistrictSync walks you through a five-step setup wiz
 2. **Choose your folders** — the **input folder** where your MyEd BC GDE files land, and the **output folder** DistrictSync writes the converted CSV files to.
 3. **Set up delivery** — enter the SFTP details SpacesEDU provided (host, username, password, remote path) and test the connection. This step is optional and can be set up later.
 4. **Set a nightly schedule** — turn on an automatic daily run and pick a time (03:00 is a good default, after your overnight MyEd BC export finishes). This step is also optional — if you only plan to run conversions by hand from the **Convert** screen, you can skip it. This step also has an optional **seasonal pause**: pick a start and end date once, and the sync stops over the summer break and resumes on its own each fall, every year, with nothing to renew. While paused, Home says so in green — it isn't a warning.
-5. **Finish** — an honest summary of what was actually set up (and what you skipped, so you know what's left). Finishing here is the one thing that marks setup complete.
+5. **Finish** — a summary of what was actually set up (and what you skipped, if anything, so you know what's left). Finishing here is the one thing that marks setup complete.
 
 If you set up your own district in step 1, the wizard gains one extra step, **Your files**, between Folders and Delivery — described in the next section.
 
@@ -174,6 +173,12 @@ Three more, only for districts on the myBlueprint+ tier or syncing attendance:
 - **A missing file is logged and the outputs it feeds are skipped**; the rest of the run continues. Home tells you when a run produced far fewer records than the last one.
 - **Why the Enhanced reports.** *Student Demographic Information Enhanced* carries an enrollment-status column; the basic report doesn't, and without one DistrictSync falls back to the withdrawal date to decide who is still active — so former students with no withdrawal date can slip through as active. *Class Information Enhanced* carries the **Primary Teacher** column, which is how teachers who never appear in the student timetable (co-taught and modular programs) get their class enrollments. Without it, blended classes are still detected from the timetable, but those co-teachers are simply absent from `Enrollments.csv`. *Emergency Contact Information Enhanced* carries extra columns DistrictSync ignores, so either variant works for `Family.csv` — request it for consistency with the rest.
 
+**Check the email addresses before your first sync.** Email is the one field in these extracts SpacesEDU cannot work around, and a blank or mistyped one fails quietly — the run succeeds, the counts look plausible, and the person simply never appears. It is worth a look in MyEd BC now rather than a puzzled email in October.
+
+- **Family contacts are the strict case.** A contact with no email address is not written to `Family.csv` at all, because SpacesEDU has no way to import one. So if guardian emails are blank in MyEd BC, sit in a field your extract doesn't include, or are entered on the wrong contact, those families are missing from SpacesEDU and nothing about the run will look wrong. A guardian's address is personal — it can't be derived from anything — so correcting it in MyEd BC is the only fix. The run log records how many contacts were left out, as a count only, which is the number to watch after your first sync.
+- **Students are the forgiving case.** A student with no email address is still sent and still appears on the roster; they just can't be invited by email until one is added.
+- **No student emails in MyEd BC? They can often be generated.** Where your students' addresses follow a predictable pattern — `{student number}@yourdistrict.ca`, or a first-name/surname combination — your mapping can build them from columns you already export, so the field doesn't have to be populated in MyEd BC at all. Several shipped district mappings already work this way. It has to be set up in the mapping rather than in the app, so email SpacesEDU support with the pattern your district uses and we'll build it into your configuration. The same trick can't rescue family contacts — there is no pattern for a guardian's personal address.
+
 ---
 
 ## What gets produced
@@ -195,7 +200,7 @@ Most districts use the standard 5-file rostering set. Some also use the myBluepr
 
 **How classes are built.** Subject classes come from the timetable, one per section. For the grades your mapping marks as homeroom grades (typically elementary), students get one homeroom class from their demographic record instead of timetable classes. Where one teacher teaches two or more grades in the same slot, those sections are merged into a single blended class.
 
-**A few rules worth knowing.** Only Active and PreReg students are sent; Inactive students — and, where a district has chosen to, grades outside its rostering range — are left out, along with their classes and enrollments. Family contacts with no email address are left out, because SpacesEDU can't import them; students with no email address are still sent but can't be invited by email. Both counts appear in the run log. Class names are capped at 100 characters. The files are written all-or-nothing — a run that fails partway never leaves a half-written set behind.
+**A few rules worth knowing.** Only Active and PreReg students are sent; Inactive students — and, where a district has chosen to, grades outside its rostering range — are left out, along with their classes and enrollments. Family contacts with no email address are left out and students with no email address are still sent; both counts appear in the run log (see *Check the email addresses before your first sync*, above). Class names are capped at 100 characters. The files are written all-or-nothing — a run that fails partway never leaves a half-written set behind.
 
 **Delivery.** When SFTP delivery is on, the five rostering CSVs are zipped into one dated file, `districtsync_YYYY-MM-DD.zip`, and `CourseInfo.csv`, `StudentCourses.csv` and `StudentAttendance.csv` are uploaded beside it as standalone files, because SpacesEDU imports those three individually. A course-only or attendance-only configuration produces no zip. Uploads can only go to SpacesEDU's own servers.
 
@@ -255,6 +260,7 @@ unchanged, so nothing below has been overtaken. It already carries the 2026-08-1
 
 - *Setting up a district that isn't listed yet* — the whole section.
 - *The MyEd BC files DistrictSync needs* — the required-input-files section the article's scope principle calls for (public, high-level: which reports to request, what they feed, how names are reconciled). Since 2026-09-14 it also carries: the MyEd BC **report** names beside the filenames; *Why the Enhanced reports*, which gives the consequence of each non-Enhanced variant rather than just preferring them; Class Information Enhanced's second job (co-teacher enrollments, not only blended-class detection); and the two attendance source files, which had no row at all even though `StudentAttendance.csv` has one under *What gets produced*.
+- *Check the email addresses before your first sync* — a new block at the foot of *The MyEd BC files DistrictSync needs*, at the owner's request. Three facts a district cannot get from the live article today: a Family row with no email is not written at all (v3.14.0), so blank guardian emails in MyEd BC are invisible data loss; a student with no email still ships; and where student addresses follow a district pattern they can be GENERATED by the mapping instead of exported — seven shipped mappings already do (sd10/40/51/54/60/74 and unitychristian), which is why the block routes that request to support rather than to the in-app self-service setup, whose four questions cannot express an email template. The corresponding sentence under *A few rules worth knowing* was trimmed to a cross-reference so the page does not state the same rule twice.
 - **Capitalization no longer has to match** (shipped 2026-08-04). The draft previously said "Filenames must match exactly", which has been wrong for six weeks: DistrictSync matches a configured name against the folder ignoring case, an exact match always wins, and only a genuine case collision on a name that is otherwise absent stops the run — which it does loudly, naming both files. Replaced by the *Spelling matters, capitalization doesn't* bullet.
 - Under *What gets produced*: the `StudentAttendance.csv` row, the three-sentence *How classes are built*, the *A few rules worth knowing* paragraph (active/PreReg filter, rostering-range scoping, the no-email Family/Student rules, the 100-character cap, all-or-nothing writes), and the *Delivery* paragraph.
 - The in-repo relative links (`headless-sftp-setup.md`, `faq.md`, `troubleshooting.md`, `how-classes-work.md`) are GONE — they were dead on the Help Centre. Each now names the live article's own section (*Headless configuration*, *Troubleshooting*) or carries the fact inline (the seasonal pause, how classes are built).
