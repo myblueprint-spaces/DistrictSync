@@ -2,7 +2,9 @@
 DRAFT — for a human to review and paste into the SpacesEDU Help Centre.
 Source article being updated: https://help.spacesedu.com/en-ca/article/myedbc-districtsync-guide-mx56qo/
 Drafted: 2026-08-13 · Revised: 2026-09-03 (self-service district setup, the signed Windows
-build, the macOS .dmg, a required-input-files section, delivery contents).
+build, the macOS .dmg, a required-input-files section, delivery contents) · Revised: 2026-09-14
+(the MyEd BC reports named as REPORTS and the Enhanced variants called out, Class Information
+Enhanced's second job, case-insensitive filename matching, the attendance source files).
 This file is NOT linked from anywhere and is not part of the built docs — it exists only
 so a reviewer can compare it against the live article and copy the approved text across.
 
@@ -145,23 +147,32 @@ Links out to the SpacesEDU Help Centre and a one-click "email support" button (w
 
 ## The MyEd BC files DistrictSync needs
 
-DistrictSync reads the standard MyEducation BC General Data Extract (GDE) reports, dropped into your input folder as `.txt` files (tab- or comma-separated; `.csv` works too). Which ones you need depends on which output files your district produces:
+DistrictSync reads the standard MyEducation BC General Data Extract (GDE) reports, dropped into your input folder as `.txt` files (tab- or comma-separated; `.csv` works too). Which ones you need depends on which output files your district produces.
 
-| MyEd BC extract (standard filename) | Feeds |
-|---|---|
-| `StudentDemographicInformation.txt` | Students, homeroom classes, enrollments |
-| `StaffInformationEnhanced.txt` | Staff, Classes |
-| `EmergencyContactInformation.txt` | Family |
-| `StudentSchedule.txt` | Classes, Enrollments |
-| `CourseInformation.txt` | Classes; CourseInfo and StudentCourses (myBlueprint+) |
-| `ClassInformationEnh.txt` | Classes — optional; used to detect blended (multi-grade) classes |
-| `StudentCourseHistory.txt` | StudentCourses (myBlueprint+) |
-| `StudentCourseSelection.txt` | StudentCourses (myBlueprint+) |
+**Ask your MyEd BC administrator for these six reports** — the **Enhanced** variant wherever one exists, because the Enhanced reports carry columns DistrictSync relies on (see *Why the Enhanced reports* below):
 
-- **Standard rostering** needs the first five. **Full myBlueprint+** adds the two course-history files. **Core myBlueprint+** needs the demographic file plus the three course files.
-- **Filenames must match exactly.** Many districts receive their extracts under other names (for example `StaffInformation.txt` or `studentcourseselection.txt`). A ready-made district mapping already knows your names; a mapping you set up yourself lets you set them on the *Your files* step.
+| MyEd BC report to request | Filename the standard mapping looks for | Feeds |
+|---|---|---|
+| Student Demographic Information Enhanced | `StudentDemographicInformation.txt` | Students, homeroom classes, enrollments |
+| Staff Information Enhanced | `StaffInformationEnhanced.txt` | Staff, Classes |
+| Emergency Contact Information Enhanced | `EmergencyContactInformation.txt` | Family |
+| Student Schedule | `StudentSchedule.txt` | Classes, Enrollments |
+| Course Information | `CourseInformation.txt` | Classes; CourseInfo and StudentCourses (myBlueprint+) |
+| Class Information Enhanced | `ClassInformationEnh.txt` | Classes (blended, multi-grade) and Enrollments (co-teachers) |
+
+Three more, only for districts on the myBlueprint+ tier or syncing attendance:
+
+| MyEd BC report to request | Filename the standard mapping looks for | Feeds |
+|---|---|---|
+| Student Course History | `StudentCourseHistory.txt` | StudentCourses (myBlueprint+) |
+| Student Course Selection | `StudentCourseSelection.txt` | StudentCourses (myBlueprint+) |
+| Student Daily Absences / Student Period Absences | `StudentDailyAbsences.txt`, `StudentPeriodAbsences.txt` | StudentAttendance (by arrangement) |
+
+- **Which of them your district needs.** **Standard rostering** needs the first five, with Class Information Enhanced strongly recommended (see below). **Full myBlueprint+** adds the two course-history files. **Core myBlueprint+** needs the demographic file plus Course Information and the two course-history files.
+- **The filename is your district's, not ours.** The names above are the plain MyEd BC spellings the standard mapping looks for. Many districts receive the same reports under other names — `StaffInformation.txt`, `studentcourseselection.txt`, and, very commonly for the Enhanced reports, `StudentDemographicEnhanced.txt` and `EmergencyContactInformationEnhanced.txt`. That is normal and nothing needs renaming: a ready-made district mapping already knows your district's names, and a mapping you set up yourself lets you set them on the *Your files* step.
+- **Spelling matters, capitalization doesn't.** DistrictSync finds your files whatever their case, so `studentschedule.txt` and `StudentSchedule.txt` both work. It won't guess at a genuinely different name — and if the name in your mapping isn't in the folder and two files there match it apart from case, the run stops and names them both rather than picking one.
 - **A missing file is logged and the outputs it feeds are skipped**; the rest of the run continues. Home tells you when a run produced far fewer records than the last one.
-- **Prefer the Enhanced demographic extract.** If your demographic file has no enrollment-status column (the basic report doesn't carry one), DistrictSync falls back to the withdrawal date to decide who is still active, and former students with no withdrawal date can slip through as active.
+- **Why the Enhanced reports.** *Student Demographic Information Enhanced* carries an enrollment-status column; the basic report doesn't, and without one DistrictSync falls back to the withdrawal date to decide who is still active — so former students with no withdrawal date can slip through as active. *Class Information Enhanced* carries the **Primary Teacher** column, which is how teachers who never appear in the student timetable (co-taught and modular programs) get their class enrollments. Without it, blended classes are still detected from the timetable, but those co-teachers are simply absent from `Enrollments.csv`. *Emergency Contact Information Enhanced* carries extra columns DistrictSync ignores, so either variant works for `Family.csv` — request it for consistency with the rest.
 
 ---
 
@@ -216,7 +227,8 @@ If something isn't working as expected:
 
 This section is for the reviewer only — it is not part of the article and should not be published.
 
-**Baseline.** The live article was re-read on 2026-09-03. It already carries the 2026-08-13 body (native desktop app, the launch question, the five wizard steps in the right order, the seasonal pause, the six screens, `hello@spacesedu.com`), followed by the older tail sections (*Headless configuration (Linux)*, *Step 3 — Place your GDE files*, *Step 4 — Run the tool*, *Output and SFTP upload*, *Configurations*, *Field mapping reference*, *Automating GDE downloads from MyEdBC SFTP*, *Troubleshooting*). The rows below are against THAT.
+**Baseline.** The live article was re-read on 2026-09-03 and again on 2026-09-14 — it is
+unchanged, so nothing below has been overtaken. It already carries the 2026-08-13 body (native desktop app, the launch question, the five wizard steps in the right order, the seasonal pause, the six screens, `hello@spacesedu.com`), followed by the older tail sections (*Headless configuration (Linux)*, *Step 3 — Place your GDE files*, *Step 4 — Run the tool*, *Output and SFTP upload*, *Configurations*, *Field mapping reference*, *Automating GDE downloads from MyEdBC SFTP*, *Troubleshooting*). The rows below are against THAT.
 
 **Now wrong** — things in the live article that would actively mislead a district admin today:
 
@@ -225,10 +237,12 @@ This section is for the reviewer only — it is not part of the article and shou
 - **"DistrictSync automatically zips all output CSVs into a single dated archive."** Wrong since the 2026-08-26 delivery change: only the five rostering CSVs go into the zip; `CourseInfo.csv`, `StudentCourses.csv` and `StudentAttendance.csv` are uploaded standalone beside it, and a course-only or attendance-only configuration produces no zip. The *Delivery* paragraph under *What gets produced* is the replacement — the *Output and SFTP upload* tail section should be trimmed to its manual-upload sentence or dropped.
 - **Download list is Windows + Linux only.** macOS ships as `DistrictSync-macos.dmg` since v3.15.0 (drag to Applications; allow in Privacy & Security); the bare `DistrictSync-macos` is now the headless-only build. Both added to *Installing DistrictSync*.
 - **"If your district uses different filenames, advise SpacesEDU Support and we can generate a custom configuration for you"** (*Step 3 — Place your GDE files*). Still an option, no longer the only one: file names are now set by the district on the *Your files* step. Superseded by *The MyEd BC files DistrictSync needs*.
+- **The live GDE list names five files and omits Class Information Enhanced entirely** (*Step 3 — Place your GDE files*: demographic, staff, emergency contact, schedule, course information). So a district following the live article never requests the report that carries **Primary Teacher** — and co-taught and modular-program teachers are then missing from `Enrollments.csv` with nothing on screen to say why. It is the single most consequential omission on the page. Fixed by the six-report table in *The MyEd BC files DistrictSync needs*. (Also worth eyeballing on the live page: the emergency-contact filename renders as `Emergency ContactInformation.txt`, with a space — possibly just a line wrap, but check.)
+- **The live list gives filenames only, and none of them says "Enhanced" except the staff one.** The reports to ask a MyEd BC administrator for are *Student Demographic Information Enhanced*, *Staff Information Enhanced*, *Emergency Contact Information Enhanced*, *Student Schedule*, *Course Information* and *Class Information Enhanced* — and the first, third and sixth commonly arrive under filenames the standard mapping does NOT look for (`StudentDemographicEnhanced.txt`, `EmergencyContactInformationEnhanced.txt`). The new table gives the report name and the standard mapping's filename as separate columns, with a bullet saying the difference is normal and where it is reconciled (*Your files*, or a ready-made district mapping).
 
 **Sections to replace or fold** — the older tail, one by one:
 
-- ***Step 3 — Place your GDE files*** → replaced by *The MyEd BC files DistrictSync needs* (same content, plus `ClassInformationEnh.txt`, the exact-name rule, missing-file behaviour and the Enhanced-extract note).
+- ***Step 3 — Place your GDE files*** → replaced by *The MyEd BC files DistrictSync needs* (same content, plus Class Information Enhanced and the two attendance files, the MyEd BC report names, the case-insensitive matching rule, missing-file behaviour and *Why the Enhanced reports*).
 - ***Configurations*** → superseded by *The MyEd BC files DistrictSync needs* (the per-tier required-files lists) + *What gets produced* (the per-tier outputs). The three-tier list also omits that individual districts have their own mappings (twenty ship with the program today, plus any a district adds itself) — the article no longer enumerates them; the Mapping screen does.
 - ***Step 4 — Run the tool*** → folded into *Running DistrictSync from the command line* ("Replace `myedbc` with your district's mapping name").
 - ***Output and SFTP upload*** → see the "zips all output CSVs" row above.
@@ -240,7 +254,8 @@ This section is for the reviewer only — it is not part of the article and shou
 **New in this draft, not in the live article:**
 
 - *Setting up a district that isn't listed yet* — the whole section.
-- *The MyEd BC files DistrictSync needs* — the required-input-files section the article's scope principle calls for (public, high-level: which files, what they feed, the exact-name rule).
+- *The MyEd BC files DistrictSync needs* — the required-input-files section the article's scope principle calls for (public, high-level: which reports to request, what they feed, how names are reconciled). Since 2026-09-14 it also carries: the MyEd BC **report** names beside the filenames; *Why the Enhanced reports*, which gives the consequence of each non-Enhanced variant rather than just preferring them; Class Information Enhanced's second job (co-teacher enrollments, not only blended-class detection); and the two attendance source files, which had no row at all even though `StudentAttendance.csv` has one under *What gets produced*.
+- **Capitalization no longer has to match** (shipped 2026-08-04). The draft previously said "Filenames must match exactly", which has been wrong for six weeks: DistrictSync matches a configured name against the folder ignoring case, an exact match always wins, and only a genuine case collision on a name that is otherwise absent stops the run — which it does loudly, naming both files. Replaced by the *Spelling matters, capitalization doesn't* bullet.
 - Under *What gets produced*: the `StudentAttendance.csv` row, the three-sentence *How classes are built*, the *A few rules worth knowing* paragraph (active/PreReg filter, rostering-range scoping, the no-email Family/Student rules, the 100-character cap, all-or-nothing writes), and the *Delivery* paragraph.
 - The in-repo relative links (`headless-sftp-setup.md`, `faq.md`, `troubleshooting.md`, `how-classes-work.md`) are GONE — they were dead on the Help Centre. Each now names the live article's own section (*Headless configuration*, *Troubleshooting*) or carries the fact inline (the seasonal pause, how classes are built).
 
