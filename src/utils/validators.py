@@ -37,11 +37,18 @@ _MONTH_DAY_RE = re.compile(r"^\d{2}-\d{2}$")
 # it in non-leap years; see src/etl/sync_window.py).
 _MONTH_DAY_PROBE_YEAR = 2000
 # Windows run-as account: DOMAIN\user or bare user. Letters, digits, dot,
-# underscore, hyphen, and at most ONE backslash domain separator. No
-# whitespace or special characters — this value is interpolated into a
-# PowerShell ``-User`` / principal ``-UserId`` parameter (passed to
-# ``Register-ScheduledTask`` via the child env), so it must stay a clean
-# account identifier with no PowerShell-meaningful characters.
+# underscore, hyphen, and at most ONE backslash domain separator. No whitespace
+# or special characters.
+#
+# The PowerShell ``-User`` / child-env transport this once guarded RETIRED at plan
+# 0041 S1b: the value is now an in-process BSTR argument to COM
+# ``RegisterTaskDefinition`` (``task_com.apply_definition``), where there is no
+# shell, no argv and no interpolation — so this pattern is no longer an injection
+# defence. It is kept as a narrow *shape* check on a security-relevant field: it
+# names the identity a stored-credential task runs as, it is applied only to a
+# CALLER-CHOSEN account (never the machine-derived fallback, which may legitimately
+# contain a space), and keeping it narrow is what makes ``$``-suffixed gMSA /
+# virtual accounts unrepresentable while that path is unsupported (plan 0046 N1).
 _RUN_AS_USER_RE = re.compile(r"^[A-Za-z0-9._-]+(?:\\[A-Za-z0-9._-]+)?$")
 
 # Maximum length for a run-as account string (DOMAIN\user).
@@ -126,15 +133,20 @@ def validate_run_time(value: str) -> tuple[str, str]:
 
 
 def validate_run_as_user(user: str) -> str:
-    """Validate a Windows run-as account for a PowerShell scheduled-task principal.
+    """Validate a Windows run-as account for a scheduled-task principal.
 
-    The value flows to ``Register-ScheduledTask``'s ``-User`` and the principal's
-    ``-UserId`` (via the spawned PowerShell process's environment, not a shell
-    argument list). Accepts a bare username (``jane``) or a ``DOMAIN\\user`` pair
-    (``CORP\\jane``). Permits letters, digits, ``.``, ``_``, ``-`` and at most
-    one backslash as the domain separator. Rejects empty values, internal
-    whitespace, and any special character so the value stays a clean account
-    identifier with no PowerShell-meaningful characters.
+    The value flows to COM ``RegisterTaskDefinition``'s ``userId`` as an in-process
+    BSTR (``src/scheduler/task_com.apply_definition``) — **not** a PowerShell
+    ``-User`` parameter and not a child environment variable; that transport retired
+    at plan 0041 S1b. Accepts a bare username (``jane``) or a ``DOMAIN\\user`` pair
+    (``CORP\\jane``). Permits letters, digits, ``.``, ``_``, ``-`` and at most one
+    backslash as the domain separator. Rejects empty values, internal whitespace and
+    special characters.
+
+    Callers apply this to the account a caller CHOSE, never to the machine-derived
+    ``current_run_as_user()`` fallback on the logged-on-only path — a legitimate local
+    account can contain a space (``PC\\John Smith``), and validating the fallback would
+    stop that district scheduling at all (``register_task``'s G5 contract).
 
     Returns the stripped value on success; raises ``ValueError`` otherwise.
     """

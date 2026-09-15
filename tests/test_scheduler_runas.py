@@ -21,6 +21,7 @@ MagicMocks, so these run identically on Windows dev hosts and Linux CI (no pywin
 
 import logging
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -407,3 +408,181 @@ class TestValidateRunAsUser:
 
         with pytest.raises(ValueError, match="too long"):
             validate_run_as_user("a" * 257)
+
+
+# -----------------------------------------------------------------------
+# The PRINCIPAL contract (plan 0046, A1)
+#
+# register_task used to resolve the run-as account like this::
+#
+#     has_password = bool(run_as_password)
+#     if has_password:
+#         user = validate_run_as_user(run_as_user or current_run_as_user())
+#     else:
+#         user = current_run_as_user()          # <- run_as_user DISCARDED, silently
+#
+# so an explicit account with no password registered the task to the INTERACTIVE user
+# and returned (True, "Schedule registered."): the wrong identity behind a green banner.
+# ``""`` compounded it — ``windows`` read it as "no password" while
+# ``task_com.apply_definition`` reads ``password is not None`` as "unattended", so a blank
+# string could register TASK_LOGON_PASSWORD + Highest with a blank credential.
+#
+# These tests assert the REGISTERED PRINCIPAL (the RegisterParams that reach the COM
+# boundary), never the return tuple alone — the old defect returned success.
+# -----------------------------------------------------------------------
+
+_SETUP_ACCOUNT = r"CORP\ted"
+_SERVICE_ACCOUNT = r"CORP\SVC_DistrictSync"
+
+
+@contextmanager
+def _capture_registration():
+    """Run the direct COM path for real, capturing the RegisterParams that reach it."""
+    with (
+        patch("src.scheduler.windows.task_com.bounded", side_effect=lambda fn, **kw: fn()),
+        patch("src.scheduler.task_com.register_task_definition") as reg,
+    ):
+        yield reg
+
+
+def _params_of(reg):
+    assert reg.call_count == 1
+    return reg.call_args[0][0]
+
+
+def _register(**overrides):
+    from src.scheduler.windows import register_task
+
+    kwargs = {
+        "task_name": "DistrictSync_Daily",
+        "exe_path": Path("x.exe"),
+        "sis_type": "myedbc",
+        "input_dir": Path("i"),
+        "output_dir": Path("o"),
+        "run_time": "03:00",
+    }
+    kwargs.update(overrides)
+    return register_task(**kwargs)
+
+
+@pytest.fixture
+def _setup_account():
+    """Pin ``current_run_as_user()`` so "is this a DIFFERENT account?" is deterministic."""
+    with patch("src.scheduler.windows.current_run_as_user", return_value=_SETUP_ACCOUNT):
+        yield _SETUP_ACCOUNT
+
+
+class TestForeignAccountRequiresItsPassword:
+    @pytest.mark.parametrize("password", [None, ""])
+    def test_refused_without_a_password(self, _setup_account, password):
+        """The measured defect. Windows stores no credential for an interactive-token
+        task, so "that other account, logged-on-only" is not a thing it can do — the
+        honest answer is a refusal, never a substituted principal."""
+        from src.scheduler.windows import _MSG_ACCOUNT_NEEDS_PASSWORD
+
+        with _capture_registration() as reg:
+            ok, msg = _register(run_as_user=_SERVICE_ACCOUNT, run_as_password=password)
+        assert (ok, msg) == (False, _MSG_ACCOUNT_NEEDS_PASSWORD)
+        reg.assert_not_called()
+
+    def test_the_refusal_names_no_account(self, _setup_account, caplog):
+        """The canonical message is keyed by setup_errors by EXACT equality, and neither
+        it nor the log may echo an account name (bounded and PII-free — the same house
+        rule the elevation markers follow)."""
+        with caplog.at_level(logging.DEBUG), _capture_registration():
+            ok, msg = _register(run_as_user=_SERVICE_ACCOUNT, run_as_password=None)
+        assert ok is False  # not vacuous: without the refusal there is no message to check
+        assert "SVC_DistrictSync" not in msg
+        assert "SVC_DistrictSync" not in caplog.text
+        assert "ted" not in msg
+
+    @patch("src.scheduler.windows._register_elevated")
+    @patch("src.scheduler.windows.is_elevated", return_value=False)
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    def test_refused_before_any_uac_prompt(self, _elev, mock_elevated, _setup_account):
+        """A refusal must cost the admin nothing — no elevation, no prompt, no child, and
+        (the capture context is load-bearing) no COM registration on the direct path
+        either: the refusal is the FIRST thing that happens, not a late veto."""
+        with _capture_registration() as reg:
+            ok, _ = _register(run_as_user=_SERVICE_ACCOUNT, run_as_password="")
+        assert ok is False
+        mock_elevated.assert_not_called()
+        reg.assert_not_called()
+
+    def test_with_a_password_it_registers_that_account(self, _setup_account):
+        """The positive twin of the refusal: the thing the refusal protects must actually
+        work, or every assertion above would pass over a function that can no longer
+        register a foreign principal at all."""
+        with _capture_registration() as reg:
+            ok, _ = _register(run_as_user=_SERVICE_ACCOUNT, run_as_password="pw")
+        assert ok is True
+        params = _params_of(reg)
+        assert params.user == _SERVICE_ACCOUNT
+        assert params.password == "pw"
+
+    def test_an_invalid_foreign_account_is_rejected_before_any_com_call(self, _setup_account):
+        with _capture_registration() as reg, pytest.raises(ValueError):
+            _register(run_as_user="jane && calc", run_as_password="pw")
+        reg.assert_not_called()
+
+
+class TestTodaysBehaviourIsUnchanged:
+    """G5: the 20 shipped districts all pass ``run_as_user=None``. Nothing here may move."""
+
+    def test_the_current_account_needs_no_password(self, _setup_account):
+        with _capture_registration() as reg:
+            ok, _ = _register()
+        assert ok is True
+        params = _params_of(reg)
+        assert params.user == _SETUP_ACCOUNT
+        assert params.password is None
+
+    def test_naming_the_current_account_is_not_a_foreign_account(self, _setup_account):
+        """Case-insensitively the same account — a request to keep things as they are, not
+        a principal change. (Slice 2 prefills this field with the current account.)"""
+        with _capture_registration() as reg:
+            ok, _ = _register(run_as_user=_SETUP_ACCOUNT.upper(), run_as_password=None)
+        assert ok is True
+        assert _params_of(reg).password is None
+
+    def test_a_spaced_local_account_still_registers_logged_on_only(self):
+        """``PC\\John Smith`` is a legitimate Windows account that ``validate_run_as_user``
+        rejects (no spaces). The machine-derived fallback is therefore NEVER validated on
+        this path — validating it would stop that district scheduling at all."""
+        env = {"USERDOMAIN": "PC", "USERNAME": "John Smith"}
+        with patch.dict("os.environ", env, clear=False), _capture_registration() as reg:
+            ok, _ = _register()
+        assert ok is True
+        assert _params_of(reg).user == r"PC\John Smith"
+
+
+class TestBlankPasswordIsNeverUnattended:
+    """R2: ``windows`` (``bool``) and ``task_com`` (``is not None``) disagreed about what
+    "no password" means, so ``""`` could reach RegisterTaskDefinition as TASK_LOGON_PASSWORD
+    with a blank credential. Both halves are asserted from the SAME params."""
+
+    @pytest.mark.parametrize(
+        ("password", "expected_logon"),
+        [
+            (None, task_com.TASK_LOGON_INTERACTIVE_TOKEN),
+            ("", task_com.TASK_LOGON_INTERACTIVE_TOKEN),
+            ("x", task_com.TASK_LOGON_PASSWORD),
+        ],
+    )
+    def test_both_halves_agree(self, _setup_account, password, expected_logon):
+        with _capture_registration() as reg:
+            ok, _ = _register(run_as_password=password)
+        assert ok is True
+        params = _params_of(reg)
+
+        # Half 1 — what register_task hands the COM boundary.
+        assert params.password == (password or None)
+
+        # Half 2 — what apply_definition does with exactly those params.
+        service, folder = _fake_com()
+        apply_definition(service, folder, params)
+        _n, definition, _f, _u, sent_password, logon = _register_call(folder)
+        assert logon == expected_logon
+        assert sent_password == (password or None)
+        if expected_logon == task_com.TASK_LOGON_INTERACTIVE_TOKEN:
+            assert definition.Principal.RunLevel == task_com.TASK_RUNLEVEL_LUA

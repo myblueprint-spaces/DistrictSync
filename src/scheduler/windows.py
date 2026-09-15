@@ -22,6 +22,12 @@ DECISIONS 2026-06-25 — consult git history for the scripts themselves.
     (no network token → breaks SFTP egress; the 2026-06-25 regression class).
     *run_highest* is honoured only WITH a password; without one the task is always
     Limited.
+  - The PRINCIPAL is never substituted (plan 0046 A1). An explicit ``run_as_user`` that
+    differs from the account running setup registers only WITH that account's password,
+    or the call is REFUSED — it used to fall back to the current user and return
+    ``(True, "Schedule registered.")``, i.e. a wrong principal behind a green banner.
+    ``""`` and ``None`` are normalised to one meaning at entry, so a blank password can
+    no longer reach ``RegisterTaskDefinition`` as a TASK_LOGON_PASSWORD registration.
   - The settings quintet (no catch-up, IgnoreNew, PT2H, both battery flags) is set
     explicitly in ``task_com.apply_definition`` — COM defaults differ on all five.
   - Failure messages are the ``task_com`` HRESULT-keyed canonicals ("Access is
@@ -115,6 +121,18 @@ _MSG_ELEVATION_NO_RESULT = "The schedule change could not be confirmed."
 _MSG_ELEVATION_REMOVE_UNCONFIRMED = "The schedule removal could not be confirmed."
 _MSG_DIFFERENT_ACCOUNT = "The permission prompt ran as a different account."
 _MSG_ELEVATION_LAUNCH_FAILED = "Windows could not show the permission prompt."
+
+# A PRE-FLIGHT refusal, not an elevation outcome (plan 0046 A1): an explicit run-as
+# account that is NOT the account running setup can only be registered WITH its
+# password — Windows stores no credential for an interactive-token task. register_task
+# used to silently substitute the current user here and return success, so the nightly
+# ran under the wrong identity with a green banner over it. Canonical + secret-free
+# (it never echoes the account) so setup_errors can key off it by exact equality.
+# (B105 is a false positive here, as on main.SFTP_PASSWORD_ENV_VAR: the NAME carries the
+# word, the value is user-facing refusal copy and no credential is involved.)
+_MSG_ACCOUNT_NEEDS_PASSWORD = (  # nosec B105
+    "A password is required to schedule the task for a different account."
+)
 
 # The sentinel the elevated child writes to its result file when the DPAPI unprotect
 # FAILS (a cross-SID / different-admin UAC consent — fail closed). The parent detects
@@ -273,16 +291,22 @@ def register_task(
         output_dir: Directory to write CSV files.
         run_time:  Daily run time in "HH:MM" 24-hour format.
         sftp:      If True, appends ``--sftp`` flag to the task command.
-        run_as_user: Windows account the task runs as. Defaults to the current
-                   interactive user (:func:`current_run_as_user`) when a
-                   password is supplied. Validated via
-                   :func:`validate_run_as_user`.
-        run_as_password: The ``run_as_user`` account's Windows password. When
-                   provided, the task is registered to run **whether the user is
-                   logged on or not** (explicit ``TASK_LOGON_PASSWORD`` — never
-                   parameter-set inference, never S4U). When omitted, the task
-                   runs only while the user is logged on
-                   (``TASK_LOGON_INTERACTIVE_TOKEN``) and no credential is stored.
+        run_as_user: Windows account the task runs as. Omit (or pass the current
+                   account) for today's behaviour — the task is registered to
+                   :func:`current_run_as_user`. A DIFFERENT account is validated
+                   via :func:`validate_run_as_user` and **requires**
+                   ``run_as_password``: without one the call is REFUSED with
+                   ``_MSG_ACCOUNT_NEEDS_PASSWORD`` and nothing is registered.
+                   It is never silently replaced by the current user (plan 0046 A1).
+        run_as_password: The ``run_as_user`` account's Windows password. Empty
+                   string and ``None`` mean the same thing — normalised once, at
+                   entry, so this half and ``task_com.apply_definition`` cannot
+                   disagree about what "no password" is. When provided, the task
+                   is registered to run **whether the user is logged on or not**
+                   (explicit ``TASK_LOGON_PASSWORD`` — never parameter-set
+                   inference, never S4U). When omitted, the task runs only while
+                   the user is logged on (``TASK_LOGON_INTERACTIVE_TOKEN``) and no
+                   credential is stored.
         run_highest: When True and a password is supplied, run with highest
                    privileges (``TASK_RUNLEVEL_HIGHEST``). Ignored without a
                    password (the logged-on-only path is always Limited).
@@ -301,11 +325,39 @@ def register_task(
     sis_type = validate_sis_type(sis_type)
     validate_run_time(run_time)
 
-    has_password = bool(run_as_password)
-    if has_password:
-        user = validate_run_as_user(run_as_user or current_run_as_user())
+    # ONE spelling of "no password" (R2). ``windows`` used to read ``""`` as *absent*
+    # (``bool``) while ``task_com.apply_definition`` reads it as *present* (``is not
+    # None``) — so a blank string registered TASK_LOGON_PASSWORD with a blank credential.
+    # Normalising here, at the single entry point, makes the two halves agree by
+    # construction instead of by the caller remembering to pass ``password or None``.
+    run_as_password = run_as_password or None
+    has_password = run_as_password is not None
+
+    requested = (run_as_user or "").strip()
+    current = current_run_as_user()
+    if requested and requested.casefold() != current.casefold():
+        # A DIFFERENT account than the one running setup. Caller input, so it is ALWAYS
+        # validated — and it can only be registered WITH its password: Windows stores no
+        # credential for an interactive-token task, so "this other account, logged-on-only"
+        # is not a thing Windows can do. We REFUSE rather than substitute the current user,
+        # which is what this function used to do while returning (True, "Schedule
+        # registered.") — a silently misregistered principal reported as success (A1/R1).
+        user = validate_run_as_user(requested)
+        if not has_password:
+            logger.error(
+                "Refusing to register '%s': a different run-as account was requested without a password.",
+                task_name,
+            )
+            return False, _MSG_ACCOUNT_NEEDS_PASSWORD
+    elif has_password:
+        # Unattended registration for the CURRENT account — unchanged from today,
+        # including validating the machine-derived fallback on this branch.
+        user = validate_run_as_user(requested or current)
     else:
-        user = current_run_as_user()
+        # Logged-on-only. The machine-derived account is deliberately NOT validated: a
+        # legitimate local account can contain a space (``PC\John Smith``), which the
+        # regex rejects, and that district must keep registering exactly as it does today.
+        user = current
 
     arguments, working_dir = _build_action_args(exe_path, sis_type, input_dir, output_dir, sftp)
 
@@ -314,7 +366,7 @@ def register_task(
     # registration behind ONE normal UAC prompt — the child is DistrictSync itself in
     # --elevated-apply mode since S1b — while the app itself stays non-admin.
     if has_password and sys.platform == "win32" and not is_elevated():
-        assert run_as_password is not None  # has_password == bool(run_as_password)  # nosec B101
+        assert run_as_password is not None  # has_password is the same check  # nosec B101
         return _register_elevated(
             task_name=task_name,
             user=user,
