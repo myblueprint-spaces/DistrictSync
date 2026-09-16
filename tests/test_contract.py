@@ -148,6 +148,16 @@ def _write_student_demographic(path: Path, filename: str) -> None:
 #: teaching T001/T003/T004, so the schedule/class joins are untouched.
 _DEPARTED_TEACHER_ID = "T009"
 
+#: The contact EVERY Family ``row_filters`` fixture marks as a NON-guardian, and
+#: the guardian alongside them. Both carry a populated email on purpose: the
+#: filter is the only thing that separates them, so a config that lost it would
+#: still emit a fully-populated row and pass every other assertion in this
+#: module. Twinned in ``test_family_excludes_non_guardian_contacts`` /
+#: ``…_keeps_guardian_contacts`` — an exclusion that emptied Family.csv must not
+#: pass either.
+_NON_GUARDIAN_CONTACT_EMAIL = "nonguardian@mail.com"
+_GUARDIAN_CONTACT_EMAIL = "john@mail.com"
+
 
 def _write_staff(path: Path, filename: str) -> None:
     """The shared staff GDE shape — including the real export's "Staff Status".
@@ -664,7 +674,7 @@ def _create_sd60_inputs(d: Path) -> None:
             "Student Number": ["S001", "S001"],
             "First Name": ["John", "Nana"],
             "Last Name": ["Smith", "Elder"],
-            "Email Address": ["john@mail.com", "nana@mail.com"],
+            "Email Address": [_GUARDIAN_CONTACT_EMAIL, _NON_GUARDIAN_CONTACT_EMAIL],
             "Parent Auth / Guardian": ["Y", "N"],
         }
     ).to_csv(d / "Spaces_EmergencyContactENH.txt", index=False)
@@ -760,6 +770,33 @@ def _create_mbp_all_inputs(d: Path) -> None:
     _write_course_selection(d)
 
 
+def _create_unitychristian_inputs(d: Path) -> None:
+    """Standard MyEd BC file shape, with the ENHANCED emergency-contact export.
+
+    The school's 2026-09-14 drop switched to the Enhanced contact report while
+    KEEPING the canonical ``EmergencyContactInformation.txt`` filename, so the
+    config needs no ``source_files`` override — only the guardian
+    ``row_filters``. This builder therefore reuses the shared MyEd BC inputs and
+    REPLACES just that one file with a version carrying the
+    ``Parent Auth / Guardian`` flag.
+
+    Both flag values are present on purpose: the ``N`` contact is a real
+    non-guardian emergency contact WITH an email, so a config that lost the
+    filter would still emit a populated row and pass every other assertion here.
+    That row dropping is the only thing that proves the filter ran.
+    """
+    _create_myedbc_inputs(d)
+    pd.DataFrame(
+        {
+            "Student Number": ["S001", "S002", "S002"],
+            "First Name": ["John", "Mei", "Auntie"],
+            "Last Name": ["Smith", "Wong", "Wong"],
+            "Email Address": [_GUARDIAN_CONTACT_EMAIL, "mei@mail.com", _NON_GUARDIAN_CONTACT_EMAIL],
+            "Parent Auth / Guardian": ["Y", "Y", "N"],
+        }
+    ).to_csv(d / "EmergencyContactInformation.txt", index=False)
+
+
 def _create_sd83_inputs(d: Path) -> None:
     """sd83myedbc: the mbp_all file set with SD83's own STAFF header shape.
 
@@ -821,11 +858,11 @@ _DISTRICT_SETUP = {
     "sd75myedbc": _create_mbp_all_inputs,
     "sd10myedbc": _create_mbp_all_inputs,
     "sd38myedbc": _create_sd38_inputs,
-    # Unity Christian School (2026-09-01): standard MyEd BC file shape. Its real
-    # differences (grade-8 homerooms, generated emails, Family off) are config facts
-    # the shared fixture exercises — the EmergencyContactInformation.txt this builder
-    # writes is simply never read, which is the point.
-    "unitychristianmyedbc": _create_myedbc_inputs,
+    # Unity Christian School: standard MyEd BC file shape. Its grade-8 homerooms
+    # and generated emails are config facts the shared fixture exercises; its
+    # guardian row_filter needs the Enhanced contact columns, which is the one
+    # thing its own builder adds.
+    "unitychristianmyedbc": _create_unitychristian_inputs,
     "mbp_all": _create_mbp_all_inputs,
     "mbp_core": _create_mbp_core_inputs,
     "mbponly": _create_mbponly_inputs,
@@ -865,7 +902,7 @@ def district_output(request, tmp_path_factory):
         main(sis, str(input_dir), str(output_dir))
     finally:
         mp.undo()
-    return sis, output_dir
+    return sis, output_dir, input_dir
 
 
 # ---------------------------------------------------------------------------
@@ -915,7 +952,7 @@ class TestOutputSchemaContract:
         unexpected one means a config emitted an entity nobody asked for (the
         `_base`-inheritance hazard behind the stale-output archival rule).
         """
-        sis, out = district_output
+        sis, out, _ = district_output
         produced = {p.stem for p in out.glob("*.csv")}
         expected = set(EXPECTED_ENTITIES[sis])
         assert produced == expected, (
@@ -936,7 +973,7 @@ class TestOutputSchemaContract:
         EVERY mismatching entity is reported, not just the first — a config whose
         output drifted in three entities should say so in one run.
         """
-        sis, out = district_output
+        sis, out, _ = district_output
         failures = []
         for entity in sorted(EXPECTED_ENTITIES[sis]):
             df = pd.read_csv(out / DataLoader.csv_filename(entity), encoding="utf-8-sig")
@@ -946,7 +983,7 @@ class TestOutputSchemaContract:
         assert not failures, "\n\n".join(failures)
 
     def test_staff_role_values(self, district_output):
-        sis, out = district_output
+        sis, out, _ = district_output
         _skip_unless_emitted(sis, "Staff")
         df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
         bad = set(df["Role"].dropna().unique()) - VALID_STAFF_ROLES
@@ -960,7 +997,7 @@ class TestOutputSchemaContract:
         ``test_staff_keeps_active_staff`` so a filter that dropped everyone (or
         a fixture that lost its status column) cannot pass both.
         """
-        sis, out = district_output
+        sis, out, _ = district_output
         _skip_unless_emitted(sis, "Staff")
         df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
         shipped = set(df["User ID"].dropna().astype(str))
@@ -971,28 +1008,79 @@ class TestOutputSchemaContract:
 
     def test_staff_keeps_active_staff(self, district_output):
         """The positive twin: the exclusion narrows, it does not empty."""
-        sis, out = district_output
+        sis, out, _ = district_output
         _skip_unless_emitted(sis, "Staff")
         df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
         shipped = set(df["User ID"].dropna().astype(str))
         assert "T001" in shipped, f"[{sis}] Staff.csv dropped an Active staff member"
 
+    @staticmethod
+    def _fixture_supplies_a_non_guardian(input_dir: Path) -> bool:
+        """Did THIS district's fixture plant the non-guardian contact?
+
+        Keyed on the INPUT the run actually consumed, never on the config's own
+        ``row_filters``. That direction is the whole point: a config-keyed skip
+        would make deleting the filter turn this assertion OFF instead of RED,
+        which is the vacuous green the contract tests exist to prevent. Configs
+        whose fixture plants no non-guardian (most of them) skip honestly —
+        there is nothing for them to exclude.
+        """
+        return any(
+            _NON_GUARDIAN_CONTACT_EMAIL in f.read_text(encoding="utf-8", errors="ignore")
+            for f in input_dir.iterdir()
+            if f.is_file()
+        )
+
+    def test_family_excludes_non_guardian_contacts(self, district_output):
+        """A contact the GDE does NOT mark as a guardian never reaches Family.csv.
+
+        This is the only assertion that proves a Family ``row_filters`` actually
+        ran: the fixture's non-guardian carries a populated email, so losing the
+        filter emits a well-formed row that every other test here accepts. The
+        cost of that silent regression is shipping a doctor's or a family
+        friend's contact details to the vendor as a parent account.
+        """
+        sis, out, input_dir = district_output
+        _skip_unless_emitted(sis, "Family")
+        if not self._fixture_supplies_a_non_guardian(input_dir):
+            pytest.skip(f"[{sis}] fixture plants no non-guardian contact")
+        df = pd.read_csv(out / "Family.csv", encoding="utf-8-sig")
+        shipped = set(df["Email"].dropna().astype(str))
+        assert _NON_GUARDIAN_CONTACT_EMAIL not in shipped, (
+            f"[{sis}] Family.csv ships a contact the GDE does not mark as a guardian. "
+            f"The Family row_filters did not run — check that the config still declares "
+            f"one and that its column name matches the export."
+        )
+
+    def test_family_keeps_guardian_contacts(self, district_output):
+        """The positive twin: the filter narrows Family.csv, it does not empty it."""
+        sis, out, input_dir = district_output
+        _skip_unless_emitted(sis, "Family")
+        if not self._fixture_supplies_a_non_guardian(input_dir):
+            pytest.skip(f"[{sis}] fixture plants no non-guardian contact")
+        df = pd.read_csv(out / "Family.csv", encoding="utf-8-sig")
+        shipped = set(df["Email"].dropna().astype(str))
+        assert _GUARDIAN_CONTACT_EMAIL in shipped, (
+            f"[{sis}] Family.csv dropped an authorized guardian — a filter that keeps "
+            f"nobody delivers no parent accounts at all."
+        )
+
     def test_enrollment_role_values(self, district_output):
-        sis, out = district_output
+        sis, out, _ = district_output
         _skip_unless_emitted(sis, "Enrollments")
         df = pd.read_csv(out / "Enrollments.csv", encoding="utf-8-sig")
         bad = set(df["Role"].dropna().unique()) - VALID_ENROLLMENT_ROLES
         assert not bad, f"[{sis}] Enrollments.csv has invalid Role values: {bad}"
 
     def test_class_ids_contain_school_year(self, district_output):
-        sis, out = district_output
+        sis, out, _ = district_output
         _skip_unless_emitted(sis, "Classes")
         classes = pd.read_csv(out / "Classes.csv", encoding="utf-8-sig")
         ids = classes["Class ID"].dropna().astype(str)
         assert any("_20" in cid for cid in ids), f"[{sis}] No Class ID contains a school year suffix"
 
     def test_students_grade_is_ceds_format(self, district_output):
-        sis, out = district_output
+        sis, out, _ = district_output
         _skip_unless_emitted(sis, "Students")
         students = pd.read_csv(out / "Students.csv", encoding="utf-8-sig", dtype=str)
         grades = students["Grade"].dropna()
@@ -1007,7 +1095,7 @@ class TestOutputSchemaContract:
         classes must always be written to Classes.csv before Enrollments
         references them.
         """
-        sis, out = district_output
+        sis, out, _ = district_output
         _skip_unless_emitted(sis, "Classes", "Enrollments")
         classes = pd.read_csv(out / "Classes.csv", encoding="utf-8-sig", dtype=str)
         enrollments = pd.read_csv(out / "Enrollments.csv", encoding="utf-8-sig", dtype=str)
@@ -1026,7 +1114,7 @@ class TestOutputSchemaContract:
         with empty User ID, which the partner's pre-upload validator
         rejects with 'Missing required Field:userId'.
         """
-        sis, out = district_output
+        sis, out, _ = district_output
         _skip_unless_emitted(sis, "Enrollments")
         enrollments = pd.read_csv(out / "Enrollments.csv", encoding="utf-8-sig", dtype=str)
         user_ids = enrollments["User ID"].fillna("").astype(str).str.strip().str.lower()
@@ -1037,7 +1125,7 @@ class TestOutputSchemaContract:
 
     def test_no_empty_class_ids_in_enrollments(self, district_output):
         """Every Enrollments row must have a non-empty Class ID."""
-        sis, out = district_output
+        sis, out, _ = district_output
         _skip_unless_emitted(sis, "Enrollments")
         enrollments = pd.read_csv(out / "Enrollments.csv", encoding="utf-8-sig", dtype=str)
         class_ids = enrollments["Class ID"].fillna("").astype(str).str.strip().str.lower()
@@ -1063,7 +1151,7 @@ class TestOnDiskEncodingContract:
     @pytest.mark.parametrize("district_output", ["sd51myedbc"], indirect=True)
     def test_rostering_csv_starts_with_the_excel_bom(self, district_output):
         """Rostering CSVs are utf-8-SIG so districts can open them in Excel unmangled."""
-        sis, out = district_output
+        sis, out, _ = district_output
         head = (out / "Students.csv").read_bytes()[: len(UTF8_BOM)]
         assert head == UTF8_BOM, f"[{sis}] Students.csv must start with the UTF-8 BOM, got {head!r}"
 
@@ -1072,7 +1160,7 @@ class TestOnDiskEncodingContract:
         """StudentAttendance is plain utf-8: SpacesEDU's attendance importer treats a
         BOM as part of the case-sensitive first header and rejects the file
         ("Unexpected file" + cascading "Invalid date format")."""
-        sis, out = district_output
+        sis, out, _ = district_output
         head = (out / "StudentAttendance.csv").read_bytes()[: len(b"School Number")]
         assert not head.startswith(UTF8_BOM), f"[{sis}] StudentAttendance.csv must NOT carry a BOM"
         assert head == b"School Number", (
@@ -1210,19 +1298,19 @@ class TestDistrictQuirks:
     def test_sd40_headerless_schedule_columns_injected(self, district_output):
         """The header-free schedule CSV must load via the YAML `headers` block —
         proven by subject classes keyed on its Master Timetable ID column."""
-        _, out = district_output
+        _, out, _ = district_output
         ids = set(_read_output(out, "Classes")["Class ID"].dropna())
         assert any(cid.startswith("MT002_") for cid in ids), f"Expected MT002_<year> class, got {sorted(ids)}"
         assert any(cid.startswith("MT003_") for cid in ids)
 
     @pytest.mark.parametrize("district_output", ["sd40myedbc"], indirect=True)
     def test_sd40_att_bookkeeping_sections_excluded(self, district_output):
-        _, out = district_output
+        _, out, _ = district_output
         _assert_mt_excluded(out, "MT900")
 
     @pytest.mark.parametrize("district_output", ["sd40myedbc"], indirect=True)
     def test_sd40_generated_newwestschools_emails(self, district_output):
-        _, out = district_output
+        _, out, _ = district_output
         students = _read_output(out, "Students")
         assert set(students["Email Address"]) == {
             "s001@newwestschools.ca",
@@ -1234,7 +1322,7 @@ class TestDistrictQuirks:
 
     @pytest.mark.parametrize("district_output", ["sd51myedbc"], indirect=True)
     def test_sd51_generated_sd51_emails(self, district_output):
-        _, out = district_output
+        _, out, _ = district_output
         students = _read_output(out, "Students")
         assert set(students["Email Address"]) == {
             "s001@sd51.bc.ca",
@@ -1246,7 +1334,7 @@ class TestDistrictQuirks:
 
     @pytest.mark.parametrize("district_output", ["sd54myedbc"], indirect=True)
     def test_sd54_generated_surname_dot_usual_first_emails(self, district_output):
-        _, out = district_output
+        _, out, _ = district_output
         students = _read_output(out, "Students")
         assert set(students["Email Address"]) == {
             "smith.ali@sd54.bc.ca",
@@ -1258,7 +1346,7 @@ class TestDistrictQuirks:
     def test_sd54_withdraw_date_fallback_drops_student(self, district_output):
         """SD54's demographic has no status column — a past withdraw date must
         drop the student via the date-only fallback."""
-        _, out = district_output
+        _, out, _ = district_output
         user_ids = set(_read_output(out, "Students")["User ID"])
         assert "S004" not in user_ids
         assert {"S001", "S002", "S003"} == user_ids
@@ -1266,7 +1354,7 @@ class TestDistrictQuirks:
     @pytest.mark.parametrize("district_output", ["sd54myedbc"], indirect=True)
     def test_sd54_family_filtered_to_active_roster(self, district_output):
         """The withdrawn student's contact must not ship (zero-orphan invariant)."""
-        _, out = district_output
+        _, out, _ = district_output
         family = _read_output(out, "Family")
         assert set(family["Student User ID"]) == {"S001"}
 
@@ -1274,14 +1362,14 @@ class TestDistrictQuirks:
     def test_sd54_att_bookkeeping_sections_excluded(self, district_output):
         """SD54's schedule has no plain 'Course Code' column — exclusion must
         work via 'District Course Code'."""
-        _, out = district_output
+        _, out, _ = district_output
         _assert_mt_excluded(out, "MT900")
 
     # ---- SD60: row_filters + learn60 emails + home-school rostering + collapse ----
 
     @pytest.mark.parametrize("district_output", ["sd60myedbc"], indirect=True)
     def test_sd60_family_row_filter_keeps_guardians_only(self, district_output):
-        _, out = district_output
+        _, out, _ = district_output
         family = _read_output(out, "Family")
         assert set(family["Email"]) == {"john@mail.com"}, "non-guardian (N) contact must be dropped"
         assert len(family) == 1
@@ -1290,7 +1378,7 @@ class TestDistrictQuirks:
     def test_sd60_generated_learn60_emails_sanitized_with_admission_yy(self, district_output):
         """firstlast + 2-digit admission year @learn60.ca; sanitize strips the
         apostrophe/hyphen from Mary-Jane O'Brien."""
-        _, out = district_output
+        _, out, _ = district_output
         students = _read_output(out, "Students")
         emails = dict(zip(students["User ID"], students["Email Address"]))
         assert emails == {
@@ -1303,7 +1391,7 @@ class TestDistrictQuirks:
     def test_sd60_cross_enrollment_collapses_to_one_row_keeping_both_schools(self, district_output):
         """S002 is Active at schools 200 AND 300: ONE Students row (home school),
         but enrollments preserved at BOTH schools."""
-        _, out = district_output
+        _, out, _ = district_output
         students = _read_output(out, "Students")
         s002 = students[students["User ID"] == "S002"]
         assert len(s002) == 1
@@ -1317,18 +1405,18 @@ class TestDistrictQuirks:
     def test_sd60_rosters_under_home_school_number(self, district_output):
         """S003 attends school 210 but the Home school number is 200 —
         SchoolCode must be the home school."""
-        _, out = district_output
+        _, out, _ = district_output
         students = _read_output(out, "Students")
         assert students[students["User ID"] == "S003"]["SchoolCode"].iloc[0] == "200"
 
     @pytest.mark.parametrize("district_output", ["sd60myedbc"], indirect=True)
     def test_sd60_active_no_primary_dropped(self, district_output):
-        _, out = district_output
+        _, out, _ = district_output
         assert "S005" not in set(_read_output(out, "Students")["User ID"])
 
     @pytest.mark.parametrize("district_output", ["sd60myedbc"], indirect=True)
     def test_sd60_att_bookkeeping_sections_excluded(self, district_output):
-        _, out = district_output
+        _, out, _ = district_output
         _assert_mt_excluded(out, "MT900")
 
     @pytest.mark.parametrize("district_output", ["sd60myedbc"], indirect=True)
@@ -1340,7 +1428,7 @@ class TestDistrictQuirks:
         "Section" column (the schedule has no "Section Letter") — pinned
         exactly since the spaced-key Name config drives naming.
         """
-        _, out = district_output
+        _, out, _ = district_output
         classes = _read_output(out, "Classes")
         name = classes[classes["Class ID"].astype(str).str.startswith("MT002_")]["Name"].iloc[0]
         assert name == "Liu Math 10 (A) 2026", name
@@ -1357,7 +1445,7 @@ class TestDistrictQuirks:
         column carries `alice@test.ca` / `bob@test.ca` / `charlie@test.ca`, so a
         template that silently fell back to the source column would fail here.
         """
-        _, out = district_output
+        _, out, _ = district_output
         students = _read_output(out, "Students")
         assert dict(zip(students["User ID"], students["Email Address"])) == {
             "S001": "s001@learn75.ca",
@@ -1374,7 +1462,7 @@ class TestDistrictQuirks:
         (see config/mappings/sd38myedbc_mapping.yaml). The fixture carries
         ONLY `Student Email`, so a config that regressed to the base default
         would ship every row blank here rather than pass by accident."""
-        _, out = district_output
+        _, out, _ = district_output
         students = _read_output(out, "Students")
         assert dict(zip(students["User ID"], students["Email Address"])) == {
             "S002": "bob@test.ca",
@@ -1383,7 +1471,7 @@ class TestDistrictQuirks:
 
     @pytest.mark.parametrize("district_output", ["sd38myedbc"], indirect=True)
     def test_sd38_grade_7_to_12_scope_drops_grade_3(self, district_output):
-        _, out = district_output
+        _, out, _ = district_output
         user_ids = set(_read_output(out, "Students")["User ID"])
         assert "S001" not in user_ids, "grade-3 S001 is outside the 7-12 scope"
         assert {"S002", "S003"} == user_ids
@@ -1398,7 +1486,7 @@ class TestDistrictQuirks:
         one rostered class is S001's grade-3 homeroom. Asserted as SET EQUALITY,
         not a count: a subject class re-appearing under a different ID must fail.
         """
-        _, out = district_output
+        _, out, _ = district_output
         class_ids = set(_read_output(out, "Classes")["Class ID"].dropna().astype(str))
         assert class_ids == {"100_A1_2026"}, sorted(class_ids)
 
@@ -1407,7 +1495,7 @@ class TestDistrictQuirks:
         """Stated separately from the set equality above so a failure names the
         cause. MT002 (grade 10) and MT003 (grade 12) are the sections that would
         otherwise be rostered."""
-        _, out = district_output
+        _, out, _ = district_output
         for entity in ("Classes", "Enrollments"):
             ids = set(_read_output(out, entity)["Class ID"].dropna().astype(str))
             assert not [cid for cid in ids if cid.startswith("MT")], f"{entity}: {sorted(ids)}"
@@ -1418,7 +1506,7 @@ class TestDistrictQuirks:
         """Two-sided pairing: Enrollments is NON-EMPTY and every Class ID it
         carries exists in Classes (`enrolled ⊆ classes` alone is satisfiable by
         emptiness, which is why the non-empty half is asserted with it)."""
-        _, out = district_output
+        _, out, _ = district_output
         classes = set(_read_output(out, "Classes")["Class ID"].dropna().astype(str))
         enrollments = _read_output(out, "Enrollments")
         assert not enrollments.empty, "the homeroom enrollments themselves vanished"
@@ -1428,7 +1516,7 @@ class TestDistrictQuirks:
     def test_sd83_students_and_transcripts_are_UNCHANGED_by_the_class_scope(self, district_output):
         """The non-goal, proven: grades 9-12 stay on the roster (with no class
         enrollments) precisely so their myBlueprint+ transcripts still work."""
-        _, out = district_output
+        _, out, _ = district_output
         assert set(_read_output(out, "Students")["User ID"]) == {"S001", "S002", "S003"}
         transcripts = _read_output(out, "StudentCourses")
         assert not transcripts.empty
@@ -1445,7 +1533,7 @@ class TestDistrictQuirks:
         full id→role mapping rather than a spot check, so a role flipping anywhere
         in the file fails here.
         """
-        _, out = district_output
+        _, out, _ = district_output
         staff = _read_output(out, "Staff")
         assert dict(zip(staff["User ID"].astype(str), staff["Role"])) == {
             "T001": "teacher",
@@ -1469,7 +1557,7 @@ class TestDistrictQuirks:
         `Role` is asserted non-empty because "excluded" must not be reachable by
         shipping the row with a blank role instead.
         """
-        _, out = district_output
+        _, out, _ = district_output
         staff = _read_output(out, "Staff")
         ids = set(staff["User ID"].astype(str))
         assert "T900" not in ids, "a courtesy title in Prefix was published as a role"
@@ -1484,7 +1572,7 @@ class TestDistrictQuirks:
         ever excluded a rostered teacher, this is where it surfaces rather than at
         the partner's ingest.
         """
-        _, out = district_output
+        _, out, _ = district_output
         staff_ids = set(_read_output(out, "Staff")["User ID"].astype(str))
         enrollments = _read_output(out, "Enrollments")
         teachers = enrollments[enrollments["Role"].astype(str) == "teacher"]

@@ -1,10 +1,12 @@
 # Unity Christian School (Chilliwack) — an independent K-12 school, not an SD.
 # Inherits from the standard MyEducation BC mapping.
 #
-# Built against the school's FIRST real GDE drop (2026-08-31, 6 files). All six
+# Built against the school's FIRST real GDE drop (2026-08-31, 6 files) and
+# revised for the 2026-09-14 drop, which swapped the emergency-contact export
+# for the ENHANCED report while KEEPING the canonical filename. All six
 # filenames AND every column name match the MyEd BC canonical set, so there are
 # no `source_files` and no column overrides here — only the three genuine
-# differences below (homeroom band, generated student email, Family disabled).
+# differences below (homeroom band, generated student email, guardian filter).
 _base: myedbc
 version: '1.9'
 sis: MyEducationBC
@@ -15,22 +17,19 @@ district_name: Unity Christian School (Chilliwack)
 district_domains: ["unitychristian.ca"]
 
 global_config:
-  # Family is OFF until the school supplies a contact export that carries
-  # guardian EMAIL. Its `EmergencyContactInformation.txt` has no email column at
-  # all, so every one of the 2,483 rows this entity would emit carries a blank
-  # `Email` — the field SpacesEDU keys a family account on. Emitting it would
-  # ship the names and relationships of ~1,700 third parties (doctors, aunts,
-  # friends of the family — the file is an EMERGENCY-contact list, not a
-  # guardian list) to the vendor with no function whatsoever, which the
-  # privacy-first standard does not permit.
+  # Family is ON as of the 2026-09-14 drop. The school's export is now the
+  # ENHANCED emergency-contact report — it carries `Email Address` and
+  # `Parent Auth / Guardian` — but the school still writes it out under the
+  # CANONICAL filename `EmergencyContactInformation.txt`, which is exactly the
+  # file the base Family mapping already points at. So there is no
+  # `source_files` override here: only the entity, and the guardian filter it
+  # is NOT safe to ship without (see `row_filters` on Family below).
   #
-  # TO RE-ENABLE once the school exports Parent Information (the GDE report
-  # SD74 uses — it carries `Email Address` and `Parent Type Description`): add
-  # `Family` back to this list and add the mapping block sketched at the bottom
-  # of this file. Deep-merge REPLACES lists, so the full set is restated here.
+  # Restated in full because deep-merge REPLACES lists.
   enabled_entities:
     - Students
     - Staff
+    - Family
     - Classes
     - Enrollments
 
@@ -58,61 +57,46 @@ mappings:
       "Email Address":
         format: "{student number}@unitychristian.ca"
 
+  Family:
+    # This is an EMERGENCY-contact list, not a guardian list: unfiltered it
+    # carries 2,539 rows for 643 students, and 89 of the rows that DO have an
+    # email are aunts, friends of the family, homestay coordinators and one
+    # doctor. Keep only the contacts the school itself marks as an authorized
+    # parent/guardian — the same column, and the same shape, SD60 uses.
+    #
+    # Measured on the real 2026-09-14 export:
+    #   Parent Auth / Guardian = Y ... 1,271 rows, 1,176 with an email, 642 of
+    #                                  the 643 students covered.
+    #   Contact Level Code in 1,2 .... 1,278 rows, 1,173 with an email — a near
+    #                                  tie on volume, but it admits non-guardian
+    #                                  aunts/homestay coordinators while missing
+    #                                  12 authorized step-fathers and fathers
+    #                                  the school filed at level 3-5.
+    # The school's own Y/N flag is the statement of fact; the level code is a
+    # call-priority ordering that only correlates with it.
+    #
+    # The 95 kept rows with no email (80 of them Fathers) are dropped downstream
+    # by FamilyTransformer's blank-email exclusion with a counted WARNING, so
+    # they cost a log line, not a junk row.
+    row_filters:
+      - column: "Parent Auth / Guardian"
+        include: ["Y"]
+
 # ---------------------------------------------------------------------------
-# PENDING — how to turn Family on. Kept as a comment because the data is not
-# there yet (confirmed with the school, 2026-09-01: they hold no guardian email
-# addresses today), and a live entity that quietly emits blank `Email` reads as
-# "working" when it is not.
+# HISTORY — why Family was off, and what changed.
 #
-# The base Family mapping ALREADY reads a column called `Email Address` and is
-# inherited verbatim, so whenever an export arrives carrying one there is NO
-# column mapping to write. Two edits, and the second is NOT optional:
+# The 2026-08-28 drop's `EmergencyContactInformation.txt` was the PLAIN report:
+# 18 columns, no `Email Address` and no `Parent Auth / Guardian`. Family was
+# disabled because the entity could only have emitted ~2,483 rows with a blank
+# `Email` — the field SpacesEDU keys a family account on — shipping the names
+# and relationships of ~1,700 third parties to the vendor with no function.
 #
-#   1. add `- Family` back to `enabled_entities` above; and
-#   2. add a row_filter (below), because this is an EMERGENCY-contact list, not
-#      a guardian list.
+# The 2026-09-14 drop is the ENHANCED report under the SAME filename: five new
+# columns (`Contact Type Code`, `Receive Email`, `Prevent Autodialing`,
+# `Parent Auth / Guardian`, `Email Address`). No other file changed. That is
+# both of the things Family was waiting on, so it is on, filtered to guardians.
 #
-# Measured on the real 2,488-row export with emails simulated onto the guardian
-# rows (2026-09-01): UNFILTERED it emits 2,483 rows of which 1,228 carry a blank
-# `Email` — doctors, dentists, aunts, grandparents, friends of the family,
-# homestay coordinators. Two ways to draw the guardian line were compared:
-#
-#   Contact Level Code 1-2 ......... 1,249 rows, 627 of 628 students   <- USE THIS
-#   Relationship Description ....... 1,257 rows, 622 students
-#
-# They agree on 1,227 rows. Prefer `Contact Level Code` — it is the SCHOOL's own
-# priority ordering, and the 22 rows it keeps that the relationship list misses
-# are exactly the ones that should have accounts (13 grandparents, 2 homestay
-# families, 2 homestay coordinators, an adult sister). An end-to-end run through
-# this filter produced 1,247 Family rows with ZERO blank emails and ZERO orphans.
-#
-#   mappings:
-#     Family:
-#       # ONLY if the email arrives in a differently-named export — the base
-#       # already points at EmergencyContactInformation.txt:
-#       source_files:
-#         emergency_contacts: "EmergencyContactInformationEnhanced.txt"
-#       row_filters:
-#         - column: "Contact Level Code"
-#           include: ["1", "2"]
-#
-# Re-check the real column names against the actual export first: `row_filters`
-# fails LOUD on a missing COLUMN, but silently drops any row whose value is not
-# in the include list.
-#
-# ALTERNATIVE, if the school sends the Parent Information GDE instead (the report
-# SD74 uses — a guardian list by construction, carrying `Email Address`). Its
-# columns differ, hence the field_map line; its relationship column is named
-# `Parent Type Description`, NOT the `Relationship Description` above:
-#
-#   mappings:
-#     Family:
-#       source_files:
-#         emergency_contacts: "ParentInformation.txt"
-#       field_map:
-#         "Last Name": "Surname"
-#
-# NOTE no shape can filter on "email is non-blank" — `row_filters` matches an
-# include LIST, not emptiness — so any guardian the SIS has no address for still
-# ships as a blank-`Email` row.
+# STILL OPEN with the school (not config-fixable): the demographic export is
+# non-Enhanced and carries no `Enrollment status`, so 20 alumni (DOB 1995-96)
+# with no withdraw date still ship as active `UG`.
 # ---------------------------------------------------------------------------
