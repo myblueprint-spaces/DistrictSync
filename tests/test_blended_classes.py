@@ -863,7 +863,14 @@ class TestCourseCodeColumnGuard:
         with caplog.at_level(logging.WARNING, logger=blended_module.logger.name):
             metadata = self._detect(class_info, schedule, course_info)
 
-        assert sorted(meta["Name"] for meta in metadata.values()) == ["Cole (01/02) 2025", "Diaz (03/04) 2025"]
+        names = sorted(meta["Name"] for meta in metadata.values())
+        # The block segment (plan 0047) is what separates these two blends —
+        # same teacher-less course-code state, different period. The course
+        # segment is still SKIPPED, not substituted, which is what this test
+        # exists to pin: asserted positively below so the re-pin cannot have
+        # weakened it into "some name came out".
+        assert names == ["Cole (Block 1 1 1 1) (01/02) 2025", "Diaz (Block 1 1 1 2) (03/04) 2025"]
+        assert not any("Unknown Course" in name or "English 1" in name for name in names)
         missing_column_warnings = [r for r in caplog.records if "district course code" in r.getMessage()]
         assert len(missing_column_warnings) == 1, f"expected exactly one warning, got {len(missing_column_warnings)}"
 
@@ -905,3 +912,222 @@ class TestCourseCodeColumnGuard:
 
         assert metadata == {}, "precondition: this frame must produce no blends, or the twin proves nothing"
         assert [r for r in caplog.records if "district course code" in r.getMessage()] == []
+
+
+class TestBlendNameIdentifiesTheBlend:
+    """Plan 0047 — a blended class name must say WHICH blend it is.
+
+    Before this, `create_name` composed `<course titles> (<grades>) <year>` and
+    nothing else, so on SD54's 2026-09-16 delivery 68 of 98 blended classes
+    shared a display name with another blend and one teacher's five blends
+    rendered as two names. Two facts separate them: the time slot (the session
+    key's own components) and the teacher.
+    """
+
+    def setup_method(self):
+        self.transformer = DataTransformer()
+        self.transformer.set_school_year(2025, "08-25", "07-25")
+
+    def _detect(self, class_info_df, schedule_df, course_info_df):
+        self.transformer._detect_blended_classes(
+            class_info_df,
+            _MAPPING,
+            {
+                "StudentSchedule.txt": schedule_df,
+                "CourseInformation.txt": course_info_df,
+                "ClassInformationEnh.txt": class_info_df,
+            },
+            _ENROLLMENTS_FIELD_MAP,
+        )
+        return self.transformer.blended_class_metadata
+
+    @staticmethod
+    def _course_info():
+        return pd.DataFrame(
+            {
+                "school number": ["500", "500"],
+                "course code": ["ENG01", "SCI01"],
+                "title": ["English 1", "Science 1"],
+            }
+        )
+
+    def test_two_blends_of_the_SAME_courses_by_ONE_teacher_get_DIFFERENT_names(self):
+        """The defect, stated positively.
+
+        Same school, same teacher, same course pair, same grades — differing
+        ONLY in period. That is the exact shape that produced three
+        identically-named classes on one SD54 teacher's list, and asserting
+        merely that "a block segment appears" would not catch a regression that
+        emitted a constant.
+        """
+        class_info = pd.DataFrame(
+            {
+                "school number": ["500"] * 4,
+                "teacher id": ["T500"] * 4,
+                "course code": ["ENG01", "SCI01", "ENG01", "SCI01"],
+                "master timetable id": ["MT1", "MT2", "MT3", "MT4"],
+                "term": ["1"] * 4,
+                "semester": ["1"] * 4,
+                "day": ["A"] * 4,
+                "period": ["1", "1", "4", "4"],
+            }
+        )
+        schedule = pd.DataFrame(
+            {
+                "school number": ["500"] * 4,
+                "master timetable id": ["MT1", "MT2", "MT3", "MT4"],
+                "grade": ["08", "09", "08", "09"],
+            }
+        )
+
+        names = sorted(meta["Name"] for meta in self._detect(class_info, schedule, self._course_info()).values())
+
+        assert len(names) == 2, "precondition: this frame must produce exactly two blends"
+        assert names[0] != names[1], "two blends differing only by period must not share a name"
+        assert names == [
+            "English 1 / Science 1 (Block 1 1 A 1) (08/09) 2025",
+            "English 1 / Science 1 (Block 1 1 A 4) (08/09) 2025",
+        ]
+
+    def test_a_frame_with_NONE_of_the_components_is_named_exactly_as_before(self):
+        """The no-regression floor.
+
+        `_add_session_key` keys only on components PRESENT in the frame, so a
+        district whose export carries none of them must still be named — and
+        indexing a missing column would raise KeyError and kill the Classes
+        entity rather than degrade.
+        """
+        class_info = pd.DataFrame(
+            {
+                "school number": ["500", "500"],
+                "teacher id": ["T500", "T500"],
+                "course code": ["ENG01", "SCI01"],
+                "master timetable id": ["MT1", "MT2"],
+            }
+        )
+        schedule = pd.DataFrame(
+            {
+                "school number": ["500", "500"],
+                "master timetable id": ["MT1", "MT2"],
+                "grade": ["08", "09"],
+            }
+        )
+
+        names = [meta["Name"] for meta in self._detect(class_info, schedule, self._course_info()).values()]
+
+        assert names == ["English 1 / Science 1 (08/09) 2025"]
+        assert "Block" not in names[0]
+
+    def test_the_teacher_name_comes_from_the_SCHEDULE_when_class_info_lacks_it(self):
+        """A2: no bundled ClassInformation carries a teacher-name column, yet
+        every district's REGULAR class names show one — because the regular path
+        reads it off the schedule. The blend now reads the same fact.
+
+        BOTH frames carry a padded id, and that is what makes this case RED if
+        EITHER normalize is dropped (verified by mutation): padding only the
+        schedule leaves the lookup side unproven, because a map keyed on the
+        normalized id still matches an already-clean class-info id. A miss is
+        indistinguishable from "this district has no teacher name" — i.e. it
+        fails silently — which is why both sides need a pin rather than a
+        comment.
+        """
+        class_info = pd.DataFrame(
+            {
+                "school number": ["500", "500"],
+                "teacher id": ["T500 ", "T500 "],
+                "course code": ["ENG01", "SCI01"],
+                "master timetable id": ["MT1", "MT2"],
+            }
+        )
+        schedule = pd.DataFrame(
+            {
+                "school number": ["500", "500"],
+                "teacher id": ["T500 ", " T500"],
+                "teacher name": ["Okafor Grace", "Okafor Grace"],
+                "master timetable id": ["MT1", "MT2"],
+                "grade": ["08", "09"],
+            }
+        )
+
+        names = [meta["Name"] for meta in self._detect(class_info, schedule, self._course_info()).values()]
+
+        assert names == ["Okafor Grace English 1 / Science 1 (08/09) 2025"]
+
+
+class TestBlendNameBudgetsTheCourseSegment:
+    """Plan 0047 — truncation must eat course text, not the identifying tail.
+
+    `truncate_name` cuts the ASSEMBLED string, and the unbounded joined course
+    titles sit in the middle, so it was the `(grades) year` suffix that got
+    dropped: 22 of SD54's 98 blended names truncated and all 22 lost their grade
+    token — with `Grade` deliberately blank on a blended row, leaving no grade
+    signal anywhere.
+    """
+
+    def setup_method(self):
+        self.detector = BlendedClassDetector()
+        self.transformer = DataTransformer()
+        self.transformer.set_school_year(2025, "08-25", "07-25")
+        self.context = self.transformer._context
+
+    def _name(self, titles, *, grade_str, teacher_name, with_block=True):
+        codes = [f"C{i:02d}" for i in range(len(titles))]
+        columns = {"course code": codes, "master timetable id": [f"MT{i}" for i in range(len(codes))]}
+        if with_block:
+            columns |= {"term": ["1"] * len(codes), "day": ["A"] * len(codes), "period": ["7"] * len(codes)}
+        return self.detector.create_name(
+            pd.DataFrame(columns),
+            {"Name": {"teacher last name": "Teacher Name"}},
+            grade_str,
+            dict(zip(codes, titles)),
+            self.context,
+            course_code_col="course code",
+            teacher_name=teacher_name,
+        )
+
+    def test_the_block_grades_and_year_SURVIVE_a_course_list_that_overflows(self):
+        name = self._name(
+            [f"EXTREMELY LONG COURSE TITLE NUMBER {i}" for i in range(8)],
+            grade_str="08/09/10/11/12",
+            teacher_name="Okafor Grace",
+        )
+
+        assert len(name) <= 100
+        assert name.startswith("Okafor Grace ")
+        assert "(Block 1 A 7)" in name, "the block segment must not be truncated away"
+        assert "(08/09/10/11/12)" in name, "the grade range must not be truncated away"
+        assert name.endswith("2025")
+        assert "..." in name, "precondition: this input must actually overflow, or the test is vacuous"
+
+    def test_a_budget_below_the_floor_DROPS_the_course_segment_rather_than_overflow(self):
+        """`truncate_name` inverts its own `len(result) <= max_len` guarantee
+        below `max_len == 3` — `truncate_name("AAAA BBBB CCCC", 2)` returns 12
+        characters — and the guarantee is only PROVEN for `max_len >= 10`
+        (`tests/test_property_based.py`). create_name is its first caller with a
+        COMPUTED budget, so it clamps.
+
+        What this pins is the GUARANTEE (the identifying tail survives), not the
+        number 10: a floor of 3 behaves identically, and 10 is chosen only to
+        stay inside the band the property test proves. The teacher name is sized
+        so the budget lands at exactly 0 — the band where the clamp is the only
+        thing standing between the stub course fragment and a name over the cap,
+        whose final truncation would eat the year. Verified by mutation: delete
+        the floor and `endswith("2025")` goes red.
+        """
+        name = self._name(
+            ["A COURSE TITLE THAT WILL NOT FIT AT ALL"],
+            grade_str="KG/01/02/03/04/05/06/07/08/09/10/11/12",
+            teacher_name="Wollaston-Fitzgerald-Smythe Bartholomew",
+        )
+
+        assert len(name) <= 100
+        assert "COURSE TITLE" not in name, "no room for the course segment — it must be dropped whole"
+        assert "(Block 1 A 7)" in name
+        assert name.endswith("2025")
+
+    def test_a_name_that_fits_is_NOT_truncated(self):
+        """The positive twin: the budget must only bite when it has to."""
+        name = self._name(["English 1"], grade_str="08/09", teacher_name="Okafor Grace")
+
+        assert name == "Okafor Grace English 1 (Block 1 A 7) (08/09) 2025"
+        assert "..." not in name
