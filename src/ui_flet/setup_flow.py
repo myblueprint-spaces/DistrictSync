@@ -43,6 +43,7 @@ from enum import Enum
 from typing import Literal
 
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
+from src.ui_flet.setup_gates import principal_key
 from src.utils.validators import validate_month_day, validate_run_time
 
 
@@ -522,14 +523,20 @@ def task_args_from_persisted(raw: object) -> TaskArgs | None:
 # --------------------------------------------------------------------------- #
 # The durable registered-schedule record + the reconcile decision (W3-C).       #
 # --------------------------------------------------------------------------- #
+#: The run-as field's label — single-sourced (plan 0046 B). The view renders it; the
+#: ``setup_errors`` branches for a bad account NAME and a missing service-account password both
+#: quote it, so an admin is pointed at a control that is spelled the same way on screen.
+SCHEDULE_ACCOUNT_FIELD_LABEL = "Windows account for the nightly task"
+
+
 @dataclass(frozen=True)
 class RegisteredSchedule:
     """What the app durably KNOWS about the live scheduled task — ``None`` means "we can't tell".
 
-    The two facets are written together by every confirmed register and cleared together by every
-    confirmed unregister, so the record is **atomic**: either both facts are evidenced or neither
-    is. That is why an absent ``args`` also makes ``unattended`` unknown — the ``False`` default of
-    ``AppConfig.schedule_unattended`` is a dataclass default, not an observation.
+    The three facets are written together by every confirmed register and cleared together by every
+    confirmed unregister, so the record is **atomic**: either the facts are evidenced or none of
+    them is. That is why an absent ``args`` also makes ``unattended`` unknown — the ``False``
+    default of ``AppConfig.schedule_unattended`` is a dataclass default, not an observation.
 
     Attributes:
         args: the task-baked args the live task actually carries, or ``None`` when there is no
@@ -538,16 +545,25 @@ class RegisteredSchedule:
         unattended: whether the live task runs while signed out, or ``None`` when unknown. Always
             ``False`` where the platform has no stored-password logon at all (cron): there is no
             logon type an unproven re-register could downgrade, so "unknown" would buy nothing.
+        run_as_user: the PRINCIPAL the live task was registered to (plan 0046 B). ``None`` exactly
+            when ``args`` is ``None`` — the facets are written and cleared together, so an absent
+            record makes all three unknown. ``""`` (the signed-in account) is not a guess: no build
+            before this one could register anything else (``screens/setup.py`` passed
+            ``run_as_user=None`` unconditionally), so a pre-0046 record's ``""`` is EVIDENCED. A
+            hand-edited ``config.json`` can still lie; every consequence of being wrong falls back
+            to refusing a switch, never to performing one.
     """
 
     args: TaskArgs | None
     unattended: bool | None
+    run_as_user: str | None
 
 
 def registered_schedule(
     *,
     raw_task_args: object,
     unattended_flag: bool,
+    raw_run_as_user: object,
     supports_unattended: bool = True,
 ) -> RegisteredSchedule:
     """Resolve the durable registered-schedule record from its persisted parts (pure, TOTAL).
@@ -565,8 +581,9 @@ def registered_schedule(
     """
     args = task_args_from_persisted(raw_task_args)
     if args is None:
-        return RegisteredSchedule(args=None, unattended=None if supports_unattended else False)
-    return RegisteredSchedule(args=args, unattended=bool(unattended_flag))
+        return RegisteredSchedule(args=None, unattended=None if supports_unattended else False, run_as_user=None)
+    principal = raw_run_as_user.strip() if isinstance(raw_run_as_user, str) else ""
+    return RegisteredSchedule(args=args, unattended=bool(unattended_flag), run_as_user=principal)
 
 
 class ScheduleReconcile(Enum):
@@ -589,6 +606,8 @@ def schedule_reconcile(
     schedule_registered: bool,
     record: RegisteredSchedule,
     pending: TaskArgs,
+    pending_run_as_user: str,
+    current_account: str,
 ) -> ScheduleReconcile:
     """Decide whether a Settings Save must re-register the live task (pure, TOTAL; W3-C).
 
@@ -597,12 +616,24 @@ def schedule_reconcile(
     every night while the UI reports the fix as applied. The cost is bounded: a confirmed
     re-register writes the record, so the very next Save is precisely change-gated again (at most
     one extra prompt per install, never one per Save).
+
+    The PRINCIPAL is a third axis (plan 0046 B): a task whose args are unchanged but whose
+    run-as account moved is NOT up to date, and reporting it so would leave the nightly running
+    as the wrong identity while Settings claimed otherwise. ``TaskArgs`` is deliberately untouched
+    (A2 — it is documented as "fields baked into the ACTION", and adding a field would invalidate
+    every persisted ``schedule_task_args`` record on 20 installs), so the comparison is inlined
+    here, through the ONE ``setup_gates.principal_key`` reduction. It is reachable only when
+    ``record.args is not None`` — the facets move together.
     """
     if not schedule_registered:
         return ScheduleReconcile.NO_TASK
     if record.args is None:
         return ScheduleReconcile.REREGISTER
-    return ScheduleReconcile.REREGISTER if task_args_changed(record.args, pending) else ScheduleReconcile.UP_TO_DATE
+    if task_args_changed(record.args, pending):
+        return ScheduleReconcile.REREGISTER
+    if principal_key(record.run_as_user, current_account) != principal_key(pending_run_as_user, current_account):
+        return ScheduleReconcile.REREGISTER
+    return ScheduleReconcile.UP_TO_DATE
 
 
 def schedule_delivery_desync(
@@ -698,6 +729,22 @@ _DOWNGRADE_KEEP_NEXT_DETAIL = (
     "Type your Windows account password below, then choose Schedule nightly sync — your new "
     "settings will apply and the sync will keep running when you're signed out."
 )
+# The SERVICE-ACCOUNT variant (plan 0046 B). Every pre-0046 string here coaches the admin's OWN
+# Windows password, which is the wrong credential when the task runs as someone else — so the
+# follow-through copy (``keep_next_*``) is overridden too, not just the premise. The account name
+# is interpolated by ``downgrade_interrupt``: the pure function owns the copy and the view renders
+# whatever it is handed, unchanged from today.
+_DOWNGRADE_SERVICE_ACCOUNT_HEADLINE = "Re-enter the service account password to update the nightly sync"
+_DOWNGRADE_SERVICE_ACCOUNT_DETAIL = (
+    "Your nightly schedule runs as {account}. Windows needs that account's password again to apply "
+    "your new settings — DistrictSync never stores it. To run the sync as a different account "
+    "instead, choose Remove nightly sync first, then schedule it again."
+)
+_DOWNGRADE_SERVICE_ACCOUNT_KEEP_NEXT_HEADLINE = "Enter the password for {account}"
+_DOWNGRADE_SERVICE_ACCOUNT_KEEP_NEXT_DETAIL = (
+    "Type that account's Windows password in the Daily schedule section, then choose Schedule "
+    "nightly sync — your new settings will apply and the sync will keep running when you're signed out."
+)
 _DOWNGRADE_CANCELLED_HEADLINE = "Schedule not updated"
 _DOWNGRADE_CANCELLED_DETAIL = (
     "Your settings are saved, but the nightly schedule still runs with your previous settings. "
@@ -719,6 +766,9 @@ class DowngradeInterrupt:
     ``keep_next_*`` is the guidance painted after choosing to stay unattended — the password
     is collected ONLY through the existing schedule-section field flow (I1/I3: handler-local,
     never a dialog stash, never persisted). ``cancelled_*`` is the honest post-Cancel record.
+    ``offers_signed_in_only`` is ``False`` for the service-account variant (plan 0046 B): the
+    Register gate REFUSES a principal change on a live task, so that button would be a dead
+    control — and its label goes blank with it, so nothing can render it by accident.
     """
 
     headline: str = _DOWNGRADE_HEADLINE
@@ -730,9 +780,15 @@ class DowngradeInterrupt:
     keep_next_detail: str = _DOWNGRADE_KEEP_NEXT_DETAIL
     cancelled_headline: str = _DOWNGRADE_CANCELLED_HEADLINE
     cancelled_detail: str = _DOWNGRADE_CANCELLED_DETAIL
+    offers_signed_in_only: bool = True
 
 
-def downgrade_interrupt(*, registered_unattended: bool | None, password_supplied: bool) -> DowngradeInterrupt | None:
+def downgrade_interrupt(
+    *,
+    registered_unattended: bool | None,
+    password_supplied: bool,
+    registered_foreign_account: str,
+) -> DowngradeInterrupt | None:
     """Whether a reconcile-triggered re-register must pause for the explicit downgrade choice.
 
     ``None`` → proceed (re-registering cannot downgrade the logon type: the task was never
@@ -747,11 +803,29 @@ def downgrade_interrupt(*, registered_unattended: bool | None, password_supplied
     (on a district server nobody is signed in, so a downgrade stops the nightly sync entirely),
     and guessing "not unattended" would be exactly the unchecked assertion the trust bar forbids.
 
+    ``registered_foreign_account`` is the RECORDED principal when it is not the signed-in account
+    (blank otherwise — the view reduces it through ``setup_gates.principal_key`` first). A
+    non-blank value selects the service-account variant REGARDLESS of ``registered_unattended``:
+    a foreign principal implies a stored password (the engine refuses to register one without
+    it), so a record claiming otherwise is inconsistent and interrupting is the honest move. It
+    is also the only place the admin is told WHICH account's password Windows wants — every
+    pre-0046 string here says "your Windows account password", which is the wrong credential.
+
     Applies ONLY to the reconcile path (Settings Save): a blank-password Register via the
     button is a legitimate explicit user choice (the wizard offers it) and never interrupts.
     """
     if password_supplied:
         return None
+    account = (registered_foreign_account or "").strip()
+    if account:
+        return DowngradeInterrupt(
+            headline=_DOWNGRADE_SERVICE_ACCOUNT_HEADLINE,
+            detail=_DOWNGRADE_SERVICE_ACCOUNT_DETAIL.format(account=account),
+            signed_in_only_label="",
+            keep_next_headline=_DOWNGRADE_SERVICE_ACCOUNT_KEEP_NEXT_HEADLINE.format(account=account),
+            keep_next_detail=_DOWNGRADE_SERVICE_ACCOUNT_KEEP_NEXT_DETAIL,
+            offers_signed_in_only=False,
+        )
     if registered_unattended is None:
         return DowngradeInterrupt(headline=_DOWNGRADE_UNKNOWN_HEADLINE, detail=_DOWNGRADE_UNKNOWN_DETAIL)
     return DowngradeInterrupt() if registered_unattended else None
@@ -789,6 +863,26 @@ _SFTP_RECONCILE_IN_FLIGHT = (
     " The nightly schedule is still applying an earlier change and doesn't include delivery yet — "
     "save again once it finishes."
 )
+# Plan 0046 B — the two causes the pre-0046 BLOCKED strings could not name. Those strings
+# hardcode "fix the run time" as the ONLY reason a reconcile can be blocked; a missing
+# service-account password is a second, and a refused in-place principal switch is a third, and
+# neither is fixed by touching the run time. BLOCKED's own copy is untouched (byte-identical).
+_FOLDERS_SAVED_BLOCKED_ACCOUNT = (
+    "Saved — the nightly schedule wasn't updated. Check the Windows account and its password in "
+    "the Daily schedule section, then save again."
+)
+_FOLDERS_SAVED_BLOCKED_ACCOUNT_SWITCH = (
+    "Saved — the nightly schedule wasn't updated. To run it as a different Windows account, choose "
+    "Remove nightly sync in the Daily schedule section, then schedule it again."
+)
+_SFTP_RECONCILE_BLOCKED_ACCOUNT = (
+    " The nightly schedule wasn't updated — check the Windows account and its password in the Daily "
+    "schedule section, then save again."
+)
+_SFTP_RECONCILE_BLOCKED_ACCOUNT_SWITCH = (
+    " The nightly schedule wasn't updated — to run it as a different Windows account, choose Remove "
+    "nightly sync in the Daily schedule section, then schedule it again."
+)
 
 
 class ReconcileOutcome(Enum):
@@ -807,6 +901,13 @@ class ReconcileOutcome(Enum):
     changed). The two Settings Save sites paint their schedule note from this, so an optimistic
     "updating…" note is never shown when the reconcile merely opened a dialog / hit a gate /
     found an apply already in progress and returned.
+
+    ``BLOCKED_ACCOUNT`` / ``BLOCKED_ACCOUNT_SWITCH`` (plan 0046 B) are the two principal causes
+    ``BLOCKED``'s run-time copy could not name: the Windows account or its password is wrong or
+    missing, and a live task is on a different principal (which the app REFUSES to re-point in
+    place — the admin removes the schedule and creates it again, with the delete and the create
+    both in front of them). Added rather than folded into ``BLOCKED`` so today's two strings stay
+    byte-identical by construction.
     """
 
     DISPATCHED = "dispatched"
@@ -814,6 +915,8 @@ class ReconcileOutcome(Enum):
     BLOCKED = "blocked"
     IN_FLIGHT = "in_flight"
     NONE = "none"
+    BLOCKED_ACCOUNT = "blocked_account"
+    BLOCKED_ACCOUNT_SWITCH = "blocked_account_switch"
 
 
 def folders_save_note(outcome: ReconcileOutcome) -> str:
@@ -833,6 +936,10 @@ def folders_save_note(outcome: ReconcileOutcome) -> str:
         return _FOLDERS_SAVED_INTERRUPTED
     if outcome is ReconcileOutcome.BLOCKED:
         return _FOLDERS_SAVED_BLOCKED
+    if outcome is ReconcileOutcome.BLOCKED_ACCOUNT:
+        return _FOLDERS_SAVED_BLOCKED_ACCOUNT
+    if outcome is ReconcileOutcome.BLOCKED_ACCOUNT_SWITCH:
+        return _FOLDERS_SAVED_BLOCKED_ACCOUNT_SWITCH
     if outcome is ReconcileOutcome.IN_FLIGHT:
         return _FOLDERS_SAVED_IN_FLIGHT
     return _FOLDERS_SAVED
@@ -855,6 +962,10 @@ def sftp_reconcile_suffix(outcome: ReconcileOutcome) -> str:
         return _SFTP_RECONCILE_INTERRUPTED
     if outcome is ReconcileOutcome.BLOCKED:
         return _SFTP_RECONCILE_BLOCKED
+    if outcome is ReconcileOutcome.BLOCKED_ACCOUNT:
+        return _SFTP_RECONCILE_BLOCKED_ACCOUNT
+    if outcome is ReconcileOutcome.BLOCKED_ACCOUNT_SWITCH:
+        return _SFTP_RECONCILE_BLOCKED_ACCOUNT_SWITCH
     if outcome is ReconcileOutcome.IN_FLIGHT:
         return _SFTP_RECONCILE_IN_FLIGHT
     return ""

@@ -31,9 +31,11 @@ from src.scheduler.task_com import (
     HR_ACCOUNT_INFO_NOT_SET,
     HR_LOGON_FAILURE,
     HR_NO_SUCH_LOGON_SESSION,
+    HR_NONE_MAPPED,
     HR_NOT_FOUND,
     MSG_ACCESS_DENIED,
     MSG_ACCOUNT_INFO_NOT_SET,
+    MSG_ACCOUNT_NOT_RECOGNIZED,
     MSG_LOGON_FAILURE,
     MSG_NO_LOGON_SESSION,
     MSG_NOT_FOUND,
@@ -111,6 +113,10 @@ class TestCanonicalMessage:
             (HR_LOGON_FAILURE, MSG_LOGON_FAILURE),
             (HR_ACCOUNT_INFO_NOT_SET, MSG_ACCOUNT_INFO_NOT_SET),
             (HR_NO_SUCH_LOGON_SESSION, MSG_NO_LOGON_SESSION),
+            # Plan 0046 B, MEASURED 2026-09-16 on this exact COM path: a mistyped run-as ACCOUNT
+            # NAME reports 0x80070534, distinct from a wrong password. Without its own canonical
+            # a name typo reads as a credential failure and loops the admin on the password.
+            (HR_NONE_MAPPED, MSG_ACCOUNT_NOT_RECOGNIZED),
         ],
     )
     def test_each_credential_class_has_its_own_canonical(self, hr, expected):
@@ -129,6 +135,19 @@ class TestCanonicalMessage:
     def test_the_logon_failure_text_is_unchanged(self):
         """The one golden pin: the live-observed wrong-password text (2026-08-05)."""
         assert MSG_LOGON_FAILURE == "The user name or password is incorrect."
+
+    def test_the_bad_name_and_the_bad_password_canonicals_are_distinct(self):
+        """The measurement's whole point: two codes, two causes, two sentences. If these ever
+        collapse, a service-account NAME typo is coached as a password problem forever."""
+        assert MSG_ACCOUNT_NOT_RECOGNIZED != MSG_LOGON_FAILURE
+        assert hresult_for(MSG_ACCOUNT_NOT_RECOGNIZED) == HR_NONE_MAPPED
+        assert hresult_for(MSG_LOGON_FAILURE) == HR_LOGON_FAILURE
+
+    def test_the_new_canonical_carries_no_foreign_marker(self):
+        """INVARIANT: a marker in a message that does not own it turns a FAILED registration
+        into `interpret_unregister`'s success-shaped "No schedule was registered"."""
+        assert not carries_foreign_marker(MSG_ACCOUNT_NOT_RECOGNIZED)
+        assert interpret_unregister(False, MSG_ACCOUNT_NOT_RECOGNIZED).success_shaped is False
 
     def test_unmapped_hresult_surfaces_the_excepinfo_description_with_its_code(self):
         """Row 10 + plan 0047: readable Windows prose, now carrying the code.
@@ -254,10 +273,12 @@ class TestMessageInjectivity:
         assert duplicates == {}
 
     def test_the_sweep_sees_the_constants_at_all(self):
-        """Not vacuous: the reflection must actually find every producible message (23
-        today — 7 engine canonicals, 12 transport categories, 4 child refusals; the 12th is
-        _MSG_ELEVATED_ACCESS_DENIED, added with its classifier branch at plan 0047 A2)."""
-        assert len(self._producible()) == 23
+        """Not vacuous: the reflection must actually find every producible message (24
+        today — 8 engine canonicals, 12 transport categories, 4 child refusals; the 12th
+        transport category is _MSG_ELEVATED_ACCESS_DENIED, added with its classifier branch at
+        plan 0047 A2, and the 8th engine canonical is MSG_ACCOUNT_NOT_RECOGNIZED, added with the
+        measured 0x80070534 row at plan 0046 B)."""
+        assert len(self._producible()) == 24
 
     def test_every_table_value_is_a_named_constant(self):
         produced = self._producible()

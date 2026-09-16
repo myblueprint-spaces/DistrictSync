@@ -48,6 +48,7 @@ from src.scheduler.messages import ACCESS_DENIED_MARKERS
 from src.scheduler.task_com import (
     MSG_ACCESS_DENIED,
     MSG_ACCOUNT_INFO_NOT_SET,
+    MSG_ACCOUNT_NOT_RECOGNIZED,
     MSG_COM_UNAVAILABLE,
     MSG_LOGON_FAILURE,
     MSG_NO_LOGON_SESSION,
@@ -56,6 +57,7 @@ from src.scheduler.task_com import (
     hresult_for,
 )
 from src.scheduler.windows import (
+    _MSG_ACCOUNT_NEEDS_PASSWORD,
     _MSG_CHILD_DETAIL_UNAVAILABLE,
     _MSG_CHILD_NO_DETAIL,
     _MSG_DIFFERENT_ACCOUNT,
@@ -65,6 +67,7 @@ from src.scheduler.windows import (
     _MSG_ELEVATION_TIMEOUT,
     _MSG_UAC_DECLINED,
 )
+from src.ui_flet.setup_flow import SCHEDULE_ACCOUNT_FIELD_LABEL
 
 
 def _code(canonical: str) -> str:
@@ -185,6 +188,29 @@ def classify_schedule_error(msg: str, elevated: bool, *, account_is_current: boo
         return lead + (
             " If it's rejected again, stop rather than retry (repeated attempts can lock the account) "
             "and check with your IT team, quoting the code shown here." + _code(msg)
+        )
+    if msg == MSG_ACCOUNT_NOT_RECOGNIZED:
+        # 0x80070534, MEASURED 2026-09-16 on our own COM path and DISTINCT from a wrong
+        # password — so this branch exists precisely to stop a name typo being coached as a
+        # credential problem. Windows' own description for it is the field locator
+        # "(21,8):UserId:", which reads as a parser error to an admin.
+        return (
+            "Windows doesn't recognise that account name. Check the spelling in the "
+            f"'{SCHEDULE_ACCOUNT_FIELD_LABEL}' box, and include the domain if the account has one — "
+            "for example DOMAIN\\svc_districtsync. This is about the name, not the password." + _code(msg)
+        )
+    if msg == _MSG_ACCOUNT_NEEDS_PASSWORD:
+        # Our OWN pre-flight refusal, not something Windows reported — so NO code is shown
+        # (`hresult_for` returns None for it and the copy must not imply a Windows status).
+        # B's Register gate refuses a foreign account with a blank password before dispatch, so
+        # this is a gate/engine DRIFT FLOOR rather than the admin's normal route; classifying it
+        # is still right — if the two comparisons ever diverge, the admin reads an actionable
+        # sentence instead of "(Details: A password is required…)".
+        return (
+            "Scheduling the nightly sync for a different Windows account needs that account's "
+            "password. Enter it in the Daily schedule section, then choose Schedule nightly sync "
+            f"again — or clear the '{SCHEDULE_ACCOUNT_FIELD_LABEL}' box to run the sync as the "
+            "account you're signed in with."
         )
     if msg == MSG_COM_UNAVAILABLE:
         # A frozen build that failed to bundle pywin32 — PERMANENT, so no retry is offered and

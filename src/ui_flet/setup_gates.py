@@ -12,7 +12,10 @@ Mirrors the folders save-gate that already lives purely in
 
 from __future__ import annotations
 
-from src.utils.validators import validate_month_day
+from dataclasses import dataclass
+from enum import Enum
+
+from src.utils.validators import validate_month_day, validate_run_as_user
 
 
 def window_settings_valid(enabled: bool, start_md: str, end_md: str) -> bool:
@@ -59,14 +62,130 @@ def window_valid_from_config(
     return window_settings_valid(enabled, start_md or prefill_start, end_md or prefill_end)
 
 
-def can_register_schedule(config_complete: bool, run_time: str) -> bool:
-    """The Register-schedule gate.
+def principal_key(account: str | None, current: str) -> str:
+    """The comparable identity of a scheduled-task principal (pure, TOTAL).
 
-    The folders/district config must be complete AND a non-blank run time entered.
-    Single-sources the gate the Register button encodes so the button's ``disabled``
-    state and the run-time / Windows-password ``on_submit`` handlers agree.
+    ``""`` means "the signed-in account"; anything else is the case-folded foreign account
+    name. The ONE reduction every principal comparison in the app goes through — the gate,
+    the reconcile, the record and the delivery note — restating the exact equivalence
+    :func:`src.scheduler.windows.register_task` applies (blank ≡ current;
+    ``requested.casefold() != current.casefold()`` decides "a different account"), so the
+    view and the engine can never disagree about what a principal change IS.
+
+    It is used ONLY to decide gates and notes. It is NEVER used to decide what to SEND: the
+    typed value goes to ``register_task`` verbatim (stripped only), so if this reduction ever
+    drifts from the engine's, the engine's refusal still catches it.
     """
-    return bool(config_complete) and bool((run_time or "").strip())
+    value = (account or "").strip()
+    if not value or value.casefold() == (current or "").strip().casefold():
+        return ""
+    return value.casefold()
+
+
+@dataclass(frozen=True)
+class ScheduleAccountFacts:
+    """The principal half of the Register gate (plan 0046 B).
+
+    Attributes:
+        typed: EXACTLY what the admin typed, ``.strip()``ed and nothing else — never
+            case-folded, never re-cased, never domain-qualified. Sanitising here would bypass
+            the case-insensitive comparison that makes the PREFILLED field safe.
+        current: the signed-in account the field is prefilled with
+            (``scheduler.run_as_user()``, resolved defensively by the view).
+        password_supplied: whether the Windows-password field currently holds anything.
+        recorded: ``RegisteredSchedule.run_as_user`` — ``None`` = no usable record, ``""`` =
+            recorded as the signed-in account.
+        schedule_registered: whether a nightly task is believed live.
+    """
+
+    typed: str
+    current: str
+    password_supplied: bool
+    recorded: str | None
+    schedule_registered: bool
+
+
+class RegisterBlock(Enum):
+    """Why the Register gate is closed — the SINGLE source the disabled button, the inline
+    field note, the ``on_submit`` floor and the Settings reconcile all read."""
+
+    NONE = "none"
+    INCOMPLETE = "incomplete"
+    RUN_TIME = "run_time"
+    ACCOUNT_SHAPE = "account_shape"
+    # nosec B105 — an enum member NAMED "..._PASSWORD"; the value is a gate reason, not a secret.
+    ACCOUNT_NEEDS_PASSWORD = "account_needs_password"  # nosec B105
+    ACCOUNT_SWITCH_NEEDS_REMOVE = "account_switch_needs_remove"
+
+
+def register_block(config_complete: bool, run_time: str, *, account: ScheduleAccountFacts) -> RegisterBlock:
+    """The Register-schedule gate with its REASON (pure, TOTAL).
+
+    Order is load-bearing and asserted: config completeness, then run time (today's two
+    conditions, byte-identical), then the three principal conditions — the admin is told the
+    FIRST thing that is wrong, not the last.
+
+    **Shape is checked ONLY for a FOREIGN principal.** ``current_run_as_user()`` legitimately
+    returns a name containing a space (``PC\\John Smith``), which ``_RUN_AS_USER_RE`` rejects;
+    the field is PREFILLED with that value, so validating it unconditionally would close the
+    gate on mount for those districts, which register logged-on-only fine today (G5). This
+    mirrors the engine, which deliberately never validates the machine-derived fallback.
+
+    ``ACCOUNT_SWITCH_NEEDS_REMOVE`` fires when a task is registered and the requested principal
+    is not PROVABLY the recorded one. Both directions, and the unknown record:
+
+      * ``typed_key == "" and recorded_key in ("", None)`` → not a switch (today's world);
+      * ``typed_key != "" and recorded_key == typed_key``  → not a switch (re-registering the
+        same service account, e.g. a run-time change);
+      * anything else, with ``schedule_registered`` → SWITCH.
+
+    The ``recorded is None`` arm is deliberate: a pre-v3.7.0 or hand-edited install has no
+    record, so we cannot prove the live task is already on that account — and re-pointing a live
+    task in place is the T1053.005 shape the owner's delete-then-create decision exists to avoid
+    (owner decision, 2026-09-16). The remedy is the same instruction either way, so refusing
+    costs nothing and never asserts an unchecked state.
+
+    ``ACCOUNT_NEEDS_PASSWORD`` mirrors ``windows._MSG_ACCOUNT_NEEDS_PASSWORD``. It does not
+    replace the engine refusal (which closes three blank-password paths structurally); it makes
+    the common one legible BEFORE a UAC prompt is raised.
+    """
+    if not bool(config_complete):
+        return RegisterBlock.INCOMPLETE
+    if not (run_time or "").strip():
+        return RegisterBlock.RUN_TIME
+
+    typed_key = principal_key(account.typed, account.current)
+    if typed_key:
+        try:
+            validate_run_as_user(account.typed)
+        except (ValueError, TypeError, AttributeError):
+            return RegisterBlock.ACCOUNT_SHAPE
+
+    if account.schedule_registered:
+        recorded = account.recorded
+        recorded_key = None if recorded is None else principal_key(recorded, account.current)
+        provably_same = recorded_key == typed_key if recorded_key is not None else typed_key == ""
+        if not provably_same:
+            return RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE
+
+    if typed_key and not account.password_supplied:
+        return RegisterBlock.ACCOUNT_NEEDS_PASSWORD
+    return RegisterBlock.NONE
+
+
+def can_register_schedule(config_complete: bool, run_time: str, *, account: ScheduleAccountFacts) -> bool:
+    """The Register-schedule gate (bool form) — ``register_block(...) is RegisterBlock.NONE``.
+
+    The folders/district config must be complete, a non-blank run time entered, AND the
+    requested principal must be registrable (shape, password, and not an in-place switch).
+    Single-sources the gate the Register button encodes so the button's ``disabled`` state and
+    the run-time / account / Windows-password ``on_submit`` handlers agree.
+
+    ``account`` is required keyword-only and deliberately UNDEFAULTED: a defaulted
+    ``ScheduleAccountFacts`` would let a forgotten call site skip the principal gate silently,
+    which is the exact shape CLAUDE.md bans on a safety-relevant parameter.
+    """
+    return register_block(config_complete, run_time, account=account) is RegisterBlock.NONE
 
 
 def can_save_sftp(

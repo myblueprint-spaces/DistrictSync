@@ -122,6 +122,7 @@ from src.ui_flet.screens.identity import NOT_LISTED_NOTE_TAIL as UNMATCHED_DISTR
 from src.ui_flet.screens.identity import log_resolve, matched_headline
 from src.ui_flet.setup_errors import classify_schedule_error
 from src.ui_flet.setup_flow import (
+    SCHEDULE_ACCOUNT_FIELD_LABEL,
     TRANSITION_CUE,
     DeliveryFact,
     DowngradeInterrupt,
@@ -157,8 +158,12 @@ from src.ui_flet.setup_flow import (
     total_steps,
 )
 from src.ui_flet.setup_gates import (
+    RegisterBlock,
+    ScheduleAccountFacts,
     can_register_schedule,
     can_save_sftp,
+    principal_key,
+    register_block,
     window_settings_valid,
     window_valid_from_config,
 )
@@ -192,6 +197,51 @@ _TRANSIENT_LOCATION_WARNING = (
 # must ALWAYS be released, so the worker marshals one of these instead of stranding the UI.
 _WORKER_ERROR_REGISTER = "We couldn't set up the nightly sync just now. Please try again."
 _WORKER_ERROR_UNREGISTER = "We couldn't remove the nightly sync just now. Please try again."
+# The run-as account was refused by ``validate_run_as_user`` INSIDE the engine (it RAISES rather
+# than returning a message). A copy-honesty floor, not a crash fix: `except Exception` already
+# caught it and reported it as transient, which invites a retry that cannot work. The pre-gate
+# uses the SAME validator, so this is drift defence. The exception's own text is never echoed —
+# ``validate_run_as_user``'s message interpolates the typed value.
+_WORKER_ERROR_ACCOUNT_SHAPE = (
+    "Windows wouldn't accept that account name. Check it in the Daily schedule section and try again."
+)
+
+# The inline reasons painted beneath the run-as field, so a disabled Register button always has
+# a visible cause (INCOMPLETE / RUN_TIME paint nothing here — that is today's behaviour, and the
+# run-time error has its own inline slot).
+_ACCOUNT_SHAPE_NOTE = (
+    "That account name isn't valid. Use the account's Windows name — DOMAIN\\name if it has a "
+    "domain. Letters, digits, dots, underscores and hyphens only; no spaces."
+)
+# nosec B105 — a constant NAMED "..._PASSWORD_NOTE"; the value is on-screen copy, not a secret.
+_ACCOUNT_PASSWORD_NOTE = (  # nosec B105
+    "Enter the Windows password for this account below, or clear this box to run the nightly sync "
+    "as the account you're signed in with."
+)
+_ACCOUNT_SWITCH_NOTE = (
+    "The nightly sync is already scheduled to run as {recorded}. Choose Remove nightly sync, then "
+    "schedule it again with the account you want — what you've typed here stays in the box. "
+    "Windows never gives a task's stored password back, so the existing schedule can't be changed "
+    "in place."
+)
+_ACCOUNT_SWITCH_NOTE_UNKNOWN = (
+    "A nightly sync is already scheduled and DistrictSync has no record of which account it runs "
+    "as. Choose Remove nightly sync, then schedule it again with the account you want — what "
+    "you've typed here stays in the box."
+)
+# Owner decision 2 (2026-09-16): the one-time ``--sftp-configure`` step is named HERE as well as
+# in the partner guide. Credential Manager has no cross-user scope, so a delivery password stored
+# by the admin is STRUCTURALLY invisible to a task running as the service account — the single
+# most likely thing to break a district's nightly delivery, and an admin mid-setup does not have
+# the guide open. No email address (scripts/check_no_emails.py scans every tracked file; the
+# address lives on the Help page).
+_SERVICE_ACCOUNT_DELIVERY_NOTE = (
+    "Delivery passwords are stored per Windows account, so this account needs its own copy. Sign "
+    "in as it once (or use Windows' Run as different user) and run DistrictSync with "
+    "--sftp-configure. Your DistrictSync setup guide has the full steps; the Help page has our "
+    "support contact. DistrictSync can't do this for you, and the nightly delivery will fail "
+    "until it's done."
+)
 
 # The finish line's save FAILED (0038 S6). Two things must be true of this line and neither is
 # decoration: it must not claim THIS save lost anything (it did not — the only field it adds is
@@ -427,8 +477,14 @@ class _ScheduleHandle:
     flow early-returned without dispatching (e.g. an invalid run time, whose inline error it
     paints) — so the Save sites can paint an honest note (never "updating…" when nothing was
     registered).
-    ``persist_run_time`` is the S3-b seam: persist a valid run-time edit as plain config when
-    no schedule is registered (invalid → the section's inline error, nothing persisted).
+    ``BLOCKED_ACCOUNT`` / ``BLOCKED_ACCOUNT_SWITCH`` (0046 B) are the two principal refusals —
+    the Windows account or its password, and a live task on a different principal, which the
+    app never re-points in place.
+    ``run_as_user_value`` is the live run-as field, so the reconcile compares the PENDING
+    principal against the recorded one (a principal move with unchanged task args is still a
+    re-register). ``persist_run_time`` is the S3-b seam: persist a valid run-time edit as plain
+    config when no schedule is registered (invalid → the section's inline error, nothing
+    persisted).
     ``is_busy`` reports whether a register/unregister dispatched EARLIER is still applying
     (its UAC prompt/worker is in flight) — the reconcile must return ``IN_FLIGHT`` then,
     because ``schedule_registered`` and the durable record describe the PRE-dispatch world
@@ -438,6 +494,7 @@ class _ScheduleHandle:
 
     trigger_register: Callable[[], ReconcileOutcome]
     run_time_value: Callable[[], str]
+    run_as_user_value: Callable[[], str]
     persist_run_time: Callable[[], bool]
     is_busy: Callable[[], bool]
 
@@ -1369,6 +1426,7 @@ def _registered_schedule(cfg: AppConfig) -> RegisteredSchedule:  # pragma: no co
     return registered_schedule(
         raw_task_args=cfg.schedule_task_args,
         unattended_flag=cfg.schedule_unattended,
+        raw_run_as_user=cfg.schedule_run_as_user,
         supports_unattended=get_scheduler().supports_unattended_password,
     )
 
@@ -1415,6 +1473,8 @@ def _mount_settings(  # pragma: no cover - Flet view glue
             schedule_registered=cfg.schedule_registered,
             record=_registered_schedule(cfg),
             pending=pending,
+            pending_run_as_user=sched_handle.run_as_user_value(),
+            current_account=_keyring_owner_account(),
         )
         if action is ScheduleReconcile.REREGISTER:
             # May pause on the explicit downgrade choice first (S3-a). Returns DISPATCHED
@@ -1956,10 +2016,27 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     )
 
     password_field: ft.TextField | None = None
+    account_field: ft.TextField | None = None
+    account_note_slot = ft.Column(spacing=4, controls=[])
     if scheduler.supports_unattended_password:
-        section_controls.append(
-            ft.Text(f"This task will run as: {scheduler.run_as_user()}", size=13, color=tokens.color_muted)
+        # 0046 B: the static "This task will run as: X" caption becomes an editable field,
+        # PREFILLED with the signed-in account. What makes the prefill safe is that the typed
+        # value is sent VERBATIM and ``register_task`` compares it case-insensitively against
+        # the current account — naming your own account is not a principal change. Sanitising
+        # or re-casing here would bypass exactly that comparison (INVARIANTS).
+        account_field = ft.TextField(
+            label=SCHEDULE_ACCOUNT_FIELD_LABEL,
+            value=cfg.schedule_run_as_user or _keyring_owner_account(),
+            width=340,
+            border_color=tokens.color_border,
+            helper=(
+                "Leave this as it is to run the sync as you. To use a service account, type its "
+                "name (DOMAIN\\name if it has a domain) and enter that account's password below."
+            ),
+            helper_max_lines=3,
         )
+        section_controls.append(account_field)
+        section_controls.append(account_note_slot)
         password_field = ft.TextField(
             label="Windows account password",
             password=True,
@@ -1983,6 +2060,62 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 
     def _elevated_now() -> bool:
         return scheduler.is_elevated()  # always False where elevation has no meaning (cron)
+
+    def _account_facts(*, force_blank_password: bool = False) -> ScheduleAccountFacts:
+        """The ONE place the principal gate's inputs are assembled (0046 B).
+
+        ``typed`` is ``.strip()``ed and NOTHING else — ``validate_run_as_user`` itself strips and
+        never re-cases, so the value is byte-identical to what the validator would return and
+        ``register_task``'s ``requested.casefold() != current.casefold()`` is preserved exactly.
+        ``force_blank_password`` blanks the PASSWORD only, never the account: under the switch
+        refusal the gate owns the principal, and clearing the field there would wipe a correct
+        prefill on the ordinary signed-in-only path for no benefit.
+        """
+        typed = "" if account_field is None else (account_field.value or "").strip()
+        password = "" if force_blank_password else ((password_field.value or "") if password_field is not None else "")
+        record = _registered_schedule(cfg)
+        return ScheduleAccountFacts(
+            typed=typed,
+            current=_keyring_owner_account(),
+            password_supplied=bool(password),
+            recorded=record.run_as_user,
+            schedule_registered=bool(cfg.schedule_registered),
+        )
+
+    def _account_note_controls() -> list[ft.Control]:
+        """The inline block reason + the service-account delivery note (pure assembly).
+
+        A disabled primary with no visible cause is a dead control, so the Register gate's
+        REASON is painted right under the field it is about, live on every keystroke.
+        """
+        if account_field is None:
+            return []
+        facts = _account_facts()
+        controls: list[ft.Control] = []
+        block = register_block(cfg.is_complete(), run_time_field.value or "", account=facts)
+        note = ""
+        if block is RegisterBlock.ACCOUNT_SHAPE:
+            note = _ACCOUNT_SHAPE_NOTE
+        elif block is RegisterBlock.ACCOUNT_NEEDS_PASSWORD:
+            note = _ACCOUNT_PASSWORD_NOTE
+        elif block is RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE:
+            recorded = facts.recorded
+            note = (
+                _ACCOUNT_SWITCH_NOTE_UNKNOWN
+                if recorded is None
+                else _ACCOUNT_SWITCH_NOTE.format(recorded=recorded or _keyring_owner_account())
+            )
+        if note:
+            controls.append(ft.Text(note, size=13, color=tokens.color_status_failed))
+        # Owner decision 2: named only where it is TRUE and actionable — delivery is on AND a
+        # service account is in play on either side (typed now, or already registered).
+        foreign = principal_key(facts.typed, facts.current) != "" or principal_key(facts.recorded, facts.current) != ""
+        if cfg.sftp_enabled and foreign:
+            controls.append(ft.Text(_SERVICE_ACCOUNT_DELIVERY_NOTE, size=12, color=tokens.color_muted))
+        return controls
+
+    def _paint_account_note() -> None:
+        account_note_slot.controls = _account_note_controls()
 
     # The section's own in-flight fact (2026-08-31): recorded UNCONDITIONALLY in _set_busy —
     # the same single place the buttons toggle — and exposed via the handle so the Settings
@@ -2027,7 +2160,16 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         dispatches NOTHING, and the Settings-Save note must not claim "updating…" for it.
         The button/Enter callers ignore the return value.
         """
-        if not can_register_schedule(cfg.is_complete(), run_time_field.value or ""):
+        block = register_block(
+            cfg.is_complete(),
+            run_time_field.value or "",
+            account=_account_facts(force_blank_password=force_blank_password),
+        )
+        if block is not RegisterBlock.NONE:
+            # Paints the principal reasons; silent for INCOMPLETE / RUN_TIME, preserving today's
+            # bare early return (the run-time error has its own inline slot below).
+            _paint_account_note()
+            page.update()
             return False
 
         # I1/I3 (see module docstring — password contract): the Windows account password is a
@@ -2038,6 +2180,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         # outcome no longer relies on the field happening to be empty at click time.
         password = None if force_blank_password else (password_field.value if password_field is not None else None)
         run_time = (run_time_field.value or "").strip()
+        # 0046 B: the TYPED account, verbatim (stripped only), or None for "the signed-in
+        # account". ``principal_key`` is deliberately NOT used to decide what to send — if the
+        # view's reduction ever drifted from the engine's, sending None for a genuinely foreign
+        # account would be exactly the silent substitution Slice 1 exists to prevent.
+        sent_account = _account_facts(force_blank_password=force_blank_password).typed or None
 
         try:
             validate_run_time(run_time)
@@ -2070,6 +2217,10 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             # also honestly flips the persisted flag to False on that path.
             cfg.schedule_unattended = bool(password)
             cfg.schedule_task_args = task_args_to_persisted(registered_args)
+            # 0046 B: the third facet of the ATOMIC record — the principal that was actually
+            # registered. "" means the signed-in account. Written in the SAME save as the other
+            # two, so the record can never be half-evidenced.
+            cfg.schedule_run_as_user = sent_account or ""
             cfg.save()
             # 2026-08-31 race guard, confirm-side: the args were captured at CLICK time — if a
             # Save changed the config while this apply was in flight (a delivery Save during the
@@ -2101,15 +2252,26 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 components.HealthVerdictBanner(local_verdict, headline=headline, detail=local_detail)
             ]
 
+        # 0047 G4, wired at 0046 B: the coaching that names a Windows Hello PIN and a
+        # microsoft.com password is right for the admin's OWN account and actively wrong — and
+        # a credential-hygiene hazard — for a service account. Computed from what was SENT.
+        account_is_current = principal_key(sent_account, _keyring_owner_account()) == ""
+
         async def _apply_result(ok: bool, msg: str) -> None:
             _set_busy(False)
-            register_btn.disabled = not can_register_schedule(cfg.is_complete(), run_time_field.value or "")
+            register_btn.disabled = not can_register_schedule(
+                cfg.is_complete(), run_time_field.value or "", account=_account_facts()
+            )
             unregister_btn.disabled = False
+            _paint_account_note()
             if ok and password:
                 # Only reachable where the password affordance exists (supports_unattended_password).
+                # G3: the banner names what was REGISTERED, never the signed-in account — a task
+                # on a service account must not report someone else's name back.
                 _on_register_success(
                     "Nightly sync scheduled",
-                    f"Runs as {scheduler.run_as_user()}, whether or not you're logged in, daily at {run_time}.",
+                    f"Runs as {sent_account or _keyring_owner_account()}, whether or not you're "
+                    f"signed in, daily at {run_time}.",
                 )
             elif ok and scheduler.supports_unattended_password:
                 _on_register_success(
@@ -2121,14 +2283,14 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             elif ok:
                 # No unattended/interactive logon distinction on this platform (cron) — plain success.
                 _on_register_success("Nightly sync scheduled", f"Runs daily at {run_time}.")
-            elif msg == _WORKER_ERROR_REGISTER:
+            elif msg in (_WORKER_ERROR_REGISTER, _WORKER_ERROR_ACCOUNT_SHAPE):
                 result_slot.controls = [components.ErrorCard("Couldn't schedule the nightly sync", msg)]
             elif msg in (windows._MSG_ELEVATION_NO_RESULT, windows._MSG_ELEVATION_TIMEOUT):
                 # Canonical elevation markers (exact equality) — cron never produces these strings.
                 result_slot.controls = [
                     components.ErrorCard(
                         "Couldn't confirm the schedule",
-                        classify_schedule_error(msg, _elevated_now(), account_is_current=True),
+                        classify_schedule_error(msg, _elevated_now(), account_is_current=account_is_current),
                     )
                 ]
             elif scheduler.supports_unattended_password:
@@ -2136,7 +2298,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 result_slot.controls = [
                     components.ErrorCard(
                         "Couldn't schedule the nightly sync",
-                        classify_schedule_error(msg, _elevated_now(), account_is_current=True),
+                        classify_schedule_error(msg, _elevated_now(), account_is_current=account_is_current),
                     )
                 ]
             else:
@@ -2155,9 +2317,15 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     output_dir=Path(cfg.output_dir),
                     run_time=run_time,
                     sftp=cfg.sftp_enabled,
-                    run_as_user=None,
+                    run_as_user=sent_account,
                     run_as_password=(password or None),
                 )
+            except ValueError:
+                # validate_run_as_user, raised inside register_task or the elevated child. The
+                # exception's own message interpolates the TYPED value, so neither the log line
+                # nor the rendered copy echoes it.
+                logger.error("Scheduling the nightly sync rejected the run-as account name.")
+                ok, msg = False, _WORKER_ERROR_ACCOUNT_SHAPE
             except Exception as exc:  # noqa: BLE001 - a worker crash must not strand the spinner
                 logger.error("Scheduling the nightly sync raised unexpectedly: %s", type(exc).__name__)
                 ok, msg = False, _WORKER_ERROR_REGISTER
@@ -2177,9 +2345,17 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         return True
 
     def _unregister(_e: ft.ControlEvent | None = None) -> None:
+        # Read from the RECORD before the clear (0046 B): on a service-account install the
+        # honest value comes from the registered principal, not the signed-in account. Inert
+        # today (a delete never produces MSG_LOGON_FAILURE) — but a hardcoded True beside two
+        # wired sites is exactly the drift the required keyword was introduced to prevent.
+        account_is_current = principal_key(_registered_schedule(cfg).run_as_user, _keyring_owner_account()) == ""
+
         async def _apply_unregister(ok: bool, msg: str) -> None:
             _set_busy(False)
-            register_btn.disabled = not can_register_schedule(cfg.is_complete(), run_time_field.value or "")
+            register_btn.disabled = not can_register_schedule(
+                cfg.is_complete(), run_time_field.value or "", account=_account_facts()
+            )
             unregister_btn.disabled = False
             if not ok and msg == _WORKER_ERROR_UNREGISTER:
                 result_slot.controls = [components.ErrorCard("Couldn't remove the nightly sync", msg)]
@@ -2202,17 +2378,20 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 result_slot.controls = [
                     components.ErrorCard(
                         "Schedule not removed",
-                        classify_schedule_error(msg, _elevated_now(), account_is_current=True),
+                        classify_schedule_error(msg, _elevated_now(), account_is_current=account_is_current),
                     )
                 ]
             else:
                 outcome = interpret_unregister(ok, msg)
                 if outcome.success_shaped:
                     cfg.schedule_registered = False
-                    # 0034 S3: no task exists any more — the "what was registered" facts go too
-                    # (an honest record; a later register rewrites both).
+                    # 0034 S3 + 0046 B: no task exists any more — all THREE "what was registered"
+                    # facts go together (an honest record; a later register rewrites them).
+                    # ``account_field.value`` is deliberately NOT touched, so Remove → Schedule
+                    # works in one session without retyping the account.
                     cfg.schedule_unattended = False
                     cfg.schedule_task_args = None
+                    cfg.schedule_run_as_user = ""
                     cfg.save()
                     if on_schedule_changed is not None:
                         # 0032 T1 #8: a confirmed removal invalidates the boot-time rail badge too.
@@ -2225,6 +2404,12 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     ]
                 else:
                     result_slot.controls = [components.ErrorCard(outcome.headline, outcome.detail)]
+            # 0046 B: a confirmed removal clears the record, so the switch refusal note must go
+            # with it — the admin can press Schedule immediately with the account still typed.
+            register_btn.disabled = not can_register_schedule(
+                cfg.is_complete(), run_time_field.value or "", account=_account_facts()
+            )
+            _paint_account_note()
             page.update()
             _refresh_readout()
 
@@ -2305,16 +2490,18 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             ]
             page.update()
 
+        actions: list[ft.Control] = [components.text_button(interrupt.cancel_label, _cancel)]
+        if interrupt.offers_signed_in_only:
+            # 0046 B: omitted on the service-account variant — the Register gate refuses a
+            # principal change on a live task, so this button would be a dead control.
+            actions.append(components.secondary_button(interrupt.signed_in_only_label, _signed_in_only))
+        actions.append(components.secondary_button(interrupt.keep_unattended_label, _keep))
         page.show_dialog(
             ft.AlertDialog(
                 modal=True,
                 title=ft.Text(interrupt.headline),
                 content=ft.Text(interrupt.detail),
-                actions=[
-                    components.text_button(interrupt.cancel_label, _cancel),
-                    components.secondary_button(interrupt.signed_in_only_label, _signed_in_only),
-                    components.secondary_button(interrupt.keep_unattended_label, _keep),
-                ],
+                actions=actions,
             )
         )
 
@@ -2336,22 +2523,50 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         interrupts with its own can't-tell copy rather than trusting the ``False`` default and
         silently replacing a signed-out-capable task with a logged-on-only one.
         """
-        password = password_field.value if password_field is not None else None
+        # 0046 B — the order here is load-bearing and pinned. The SWITCH refusal and a malformed
+        # account are decided BEFORE the interrupt (neither is a logon-type question), while
+        # ACCOUNT_NEEDS_PASSWORD is decided AFTER it, because the service-account dialog variant
+        # is the richer explanation for that state: it names the account whose password Windows
+        # wants, and it is the path plan 0034 built.
+        facts = _account_facts()
+        block = register_block(cfg.is_complete(), run_time_field.value or "", account=facts)
+        if block is RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE:
+            _paint_account_note()
+            page.update()
+            return ReconcileOutcome.BLOCKED_ACCOUNT_SWITCH
+        if block is RegisterBlock.ACCOUNT_SHAPE:
+            _paint_account_note()
+            page.update()
+            return ReconcileOutcome.BLOCKED_ACCOUNT
         interrupt = downgrade_interrupt(
             registered_unattended=_registered_schedule(cfg).unattended,
-            password_supplied=bool(password),
+            password_supplied=facts.password_supplied,
+            registered_foreign_account=(
+                "" if principal_key(facts.recorded, facts.current) == "" else (facts.recorded or "")
+            ),
         )
-        if interrupt is None:
-            return ReconcileOutcome.DISPATCHED if _register(None) else ReconcileOutcome.BLOCKED
-        _show_downgrade_dialog(interrupt)
-        return ReconcileOutcome.INTERRUPTED
+        if interrupt is not None:
+            _show_downgrade_dialog(interrupt)
+            return ReconcileOutcome.INTERRUPTED
+        if block not in (RegisterBlock.NONE, RegisterBlock.INCOMPLETE, RegisterBlock.RUN_TIME):
+            # A TOTALITY floor, not a live path: today the only member that can reach here is
+            # ACCOUNT_NEEDS_PASSWORD, and every live-task shape of it is already absorbed by the
+            # service-account interrupt above (a foreign principal on a registered task with no
+            # password IS that dialog). The arm exists because the alternative is worse than dead
+            # code: falling through to `_register` would early-return and the Save would paint
+            # BLOCKED's "fix the run time" over a principal problem — exactly the misdirect
+            # carried item 5 is about. A new RegisterBlock member lands here rather than there.
+            _paint_account_note()
+            page.update()
+            return ReconcileOutcome.BLOCKED_ACCOUNT
+        return ReconcileOutcome.DISPATCHED if _register(None) else ReconcileOutcome.BLOCKED
 
     # 0032 T1 #6 vocabulary: plain "Schedule nightly sync"/"Remove nightly sync" — never the
     # Windows-jargon "Register"/"Unregister" pair on a user-facing control.
     register_btn = components.primary_button(
         "Schedule nightly sync",
         _register,
-        disabled=not can_register_schedule(cfg.is_complete(), run_time_field.value or ""),
+        disabled=not can_register_schedule(cfg.is_complete(), run_time_field.value or "", account=_account_facts()),
         icon=ft.Icons.SCHEDULE_ROUNDED,
     )
     unregister_btn = components.secondary_button(
@@ -2361,12 +2576,21 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     )
 
     def _refresh_register_gate(_e: ft.ControlEvent | None = None) -> None:
-        register_btn.disabled = not can_register_schedule(cfg.is_complete(), run_time_field.value or "")
+        register_btn.disabled = not can_register_schedule(
+            cfg.is_complete(), run_time_field.value or "", account=_account_facts()
+        )
+        # The gate's REASON repaints with the gate itself, so a disabled primary always has a
+        # visible cause and the delivery note appears/disappears with the account as it is typed.
+        _paint_account_note()
         page.update()
 
     run_time_field.on_change = _refresh_register_gate
     run_time_field.on_submit = _register
+    if account_field is not None:
+        account_field.on_change = _refresh_register_gate
+        account_field.on_submit = _register
     if password_field is not None:
+        password_field.on_change = _refresh_register_gate
         password_field.on_submit = _register
 
     section_controls.append(ft.Row(spacing=16, controls=[register_btn, unregister_btn]))
@@ -2470,20 +2694,35 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         )
     )
 
+    # 0046 B: paint the gate's reason at BUILD time too — a section that mounts with the button
+    # already disabled (a live task on a service account, say) must not show a dead primary.
+    _paint_account_note()
     _kick_readout_probe()
 
     card = components.card(content=ft.Column(spacing=18, controls=section_controls))
     handle = _ScheduleHandle(
         trigger_register=_trigger_register_reconciled,
         run_time_value=lambda: run_time_field.value or "",
+        run_as_user_value=lambda: "" if account_field is None else (account_field.value or "").strip(),
         persist_run_time=_persist_run_time_if_edited,
         is_busy=lambda: bool(_flight["busy"]),
     )
     return card, handle
 
 
-def _run_as_account() -> str:
-    """The account whose keyring must hold the SFTP credential (defensive)."""
+def _keyring_owner_account() -> str:
+    """The Windows account whose OS keyring holds the SFTP credential (defensive).
+
+    This is the account DistrictSync is RUNNING as. Deliberately **not** the scheduled
+    task's principal (plan 0046 A6). Credential Manager has no cross-user scope
+    (``CRED_PERSIST_ENTERPRISE`` is per-user), so a task running as another account cannot
+    read this credential; naming the task principal here would print a false all-clear on
+    the single most likely real failure this feature creates.
+
+    Also the defensive resolver the run-as gate reads on every keystroke (0046 B) — the
+    ``try/except`` is load-bearing there too: ``getpass.getuser()`` can raise, and one raise
+    must not strand the whole schedule section.
+    """
     try:
         return get_scheduler().run_as_user()
     except Exception:
@@ -2616,7 +2855,7 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
         # Vocabulary (W4a sweep): delivery-flavored plain language — "SFTP" stays only on the
         # sanctioned technical host FIELD label. Truthful for a blank-password Save too: the
         # read-back above just verified a credential IS in the keyring and readable.
-        detail = f"Your delivery password is saved and readable by {_run_as_account()}."
+        detail = f"Your delivery password is saved and readable by {_keyring_owner_account()}."
         # F1 reconcile (Settings only): enabling/confirming delivery must add --sftp to an
         # already-registered nightly task, or tonight builds but never delivers. Routed through the
         # SAME task-args reconcile the folders Save uses; a blank-password re-register keeps the

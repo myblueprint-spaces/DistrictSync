@@ -400,6 +400,27 @@ Nobody has verified that a task running under `TASK_LOGON_PASSWORD` as `SVC_X` *
 
 ---
 
+## Slice B — acceptance-criterion correction (Verify, 2026-09-16)
+
+The drafted AC for A6 read *"`_keyring_owner_account` has exactly one call site"*. That was a stale
+expectation carried from the draft, and the implementation has EIGHT — because the review's own
+journey gap 8 directed reusing it as the defensive resolver (`scheduler.run_as_user()` is now called
+per keystroke, and `getpass.getuser()` can raise; one unguarded raise would strand the whole schedule
+section).
+
+**The call-site COUNT was never the property worth protecting.** The property is that the delivery
+banner names the account whose Credential Manager actually holds the secret — the KEYRING OWNER —
+and never the task principal, because printing the principal there would be the exact inverse of the
+truth and a false all-clear on the failure most likely to hit a service-account district (Credential
+Manager has no cross-user scope, handover §5a). Verified at `screens/setup.py` (`"Your delivery
+password is saved and readable by …"` resolves `_keyring_owner_account()`), and the success banner
+names the REGISTERED principal with the signed-in account only as the fallback for the case where
+they are the same. All eight call sites carry "the signed-in account" semantics.
+
+**AC restated:** the delivery banner resolves the keyring owner, the success banner resolves the
+registered principal, and neither substitutes the other — pinned with a positive twin, not by counting
+call sites.
+
 ## Owner decisions — 2026-09-16 (asked and answered in session; do not re-litigate)
 
 1. **Switching a LIVE nightly sync onto a service account: the app REFUSES and routes the admin to

@@ -33,6 +33,7 @@ import pytest
 
 from src.scheduler import elevated_apply, task_com, windows
 from src.ui_flet.setup_errors import _unclassified_copy, classify_schedule_error
+from src.ui_flet.setup_flow import SCHEDULE_ACCOUNT_FIELD_LABEL
 
 # A fake secret + path smuggled inside ``msg`` — used to prove that a classified
 # (known-substring) branch returns FIXED copy that does NOT echo it.
@@ -374,11 +375,9 @@ def _producible() -> dict[str, str]:
 
 #: Reaches the classifier, deliberately UNCLASSIFIED — each with the reason.
 _DELIBERATELY_UNCLASSIFIED: dict[str, str] = {
-    "windows._MSG_ACCOUNT_NEEDS_PASSWORD": (
-        "unreachable from today's UI for TWO independent reasons: screens/setup.py passes "
-        "run_as_user=None, so the pre-flight refusal branch is never taken at all; and its copy "
-        "belongs with 0046-B's run-as field. The fallback's details clause carries it meanwhile."
-    ),
+    # windows._MSG_ACCOUNT_NEEDS_PASSWORD left this set at plan 0046 B: the run-as field now
+    # exists, so the engine refusal is reachable and has its own copy. The sweep's
+    # declared-but-now-classified arm is what forced the move.
     "task_com.MSG_OPERATION_FAILED": (
         "the bare generic carries no cause to name — it is in _NO_DETAIL so the fallback does not "
         "repeat it back. Its CODED variant is a different string and keeps its details clause."
@@ -458,6 +457,8 @@ def test_every_declared_reason_is_a_real_reason() -> None:
         (task_com.MSG_COM_UNAVAILABLE, "can't reach Windows Task Scheduler"),
         (windows._MSG_ELEVATED_ACCESS_DENIED, "is likely blocking the schedule change"),
         (task_com.MSG_ACCESS_DENIED, "is likely blocking the schedule change"),
+        (task_com.MSG_ACCOUNT_NOT_RECOGNIZED, "doesn't recognise that account name"),
+        (windows._MSG_ACCOUNT_NEEDS_PASSWORD, "needs that account's password"),
     ],
 )
 def test_every_new_branch_leads_with_the_cause(message: str, cause_phrase: str) -> None:
@@ -478,3 +479,62 @@ def test_no_classifier_string_says_below_or_logged_in() -> None:
                 assert "below" not in out, f"{probe!r} classifies with a direction word"
                 # The fallback echoes msg verbatim; only the classifier's OWN copy is swept.
                 assert "logged in" not in out.split("(Details:")[0]
+
+
+# ---------------------------------------------------------------------------
+# Plan 0046 B — the two run-as-account branches (A7 completed)
+# ---------------------------------------------------------------------------
+
+
+class TestAccountNotRecognized:
+    """0x80070534, MEASURED 2026-09-16 on our own COM path: a mistyped run-as ACCOUNT NAME.
+    Distinct from a wrong password (0x8007052E), so it gets its own branch — dropping a name
+    typo into the credential branch loops the admin on the password forever."""
+
+    def _out(self) -> str:
+        return _classify(task_com.MSG_ACCOUNT_NOT_RECOGNIZED, elevated=True)
+
+    def test_it_is_not_the_generic_fallback(self) -> None:
+        assert self._out() != _unclassified_copy(task_com.MSG_ACCOUNT_NOT_RECOGNIZED)
+
+    def test_it_carries_the_measured_code(self) -> None:
+        assert "0x80070534" in self._out()
+
+    def test_it_is_about_the_name_not_the_password(self) -> None:
+        out = self._out()
+        assert "name" in out
+        assert "spelling" in out
+        assert "not the password" in out
+
+    def test_it_names_the_field_by_its_single_sourced_label(self) -> None:
+        # Substring against the CONSTANT, not a literal: the box on screen and the sentence
+        # pointing at it can never drift apart.
+        assert f"'{SCHEDULE_ACCOUNT_FIELD_LABEL}'" in self._out()
+
+
+class TestAccountNeedsPassword:
+    """The engine's own pre-flight refusal. B's Register gate refuses this state before
+    dispatch, so this branch is a gate/engine DRIFT FLOOR — classified anyway, because if the
+    two comparisons ever diverge the admin must read a next step, not a raw canonical."""
+
+    def _out(self) -> str:
+        return _classify(windows._MSG_ACCOUNT_NEEDS_PASSWORD, elevated=False)
+
+    def test_it_is_not_the_generic_fallback(self) -> None:
+        assert self._out() != _unclassified_copy(windows._MSG_ACCOUNT_NEEDS_PASSWORD)
+
+    def test_it_shows_no_windows_code(self) -> None:
+        # It is OUR refusal — nothing reached Windows, so claiming a status would be a lie.
+        assert "0x" not in self._out()
+        assert task_com.hresult_for(windows._MSG_ACCOUNT_NEEDS_PASSWORD) is None
+
+    def test_it_names_the_field_and_the_clear_it_escape(self) -> None:
+        out = self._out()
+        assert f"'{SCHEDULE_ACCOUNT_FIELD_LABEL}'" in out
+        assert "clear" in out
+        assert "signed in with" in out
+
+    def test_it_is_no_longer_declared_unclassified(self) -> None:
+        # The positive twin of the sweep's declared-but-now-classified arm.
+        assert "windows._MSG_ACCOUNT_NEEDS_PASSWORD" not in _DELIBERATELY_UNCLASSIFIED
+        assert "windows._MSG_ACCOUNT_NEEDS_PASSWORD" not in _NEVER_REACHES
