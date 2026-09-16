@@ -418,7 +418,9 @@ class TestSeasonalPauseBanner:
     def test_confirmed_missing_schedule_is_not_masked_by_pause(self) -> None:
         # Mirrors Home's FIX 2 gate so the two surfaces stay identical: a confirmed-gone task
         # suppresses the pause (it won't resume in the fall) — the banner must NOT read "Paused".
-        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        missing = derive_schedule_status(
+            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+        )
         old = (_SUMMER - timedelta(hours=40)).isoformat(timespec="seconds")
         cfg = _windowed(setup_completed=True, schedule_registered=False)
         banner = derive_history_banner([_record(timestamp=old)], cfg, now=_SUMMER, schedule_status=missing)
@@ -749,12 +751,13 @@ class TestHomeHistoryAgreementOnFailures:
     """
 
     _EXPECTED_MISSING = derive_schedule_status(
-        ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None
+        ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, foreign_account=""
     )
     _CONTRADICTION = derive_schedule_status(
         ScheduleReadback(found=True, last_run="2026-07-04T04:00:00"),
         hint_registered=True,
         latest_record_ts=_RECENT,
+        foreign_account="",
     )
 
     @pytest.mark.parametrize(
@@ -772,3 +775,238 @@ class TestHomeHistoryAgreementOnFailures:
         banner = derive_history_banner([record], _CONFIGURED, now=_NOW, schedule_status=schedule)
         assert home.verdict is Verdict.FAILED
         assert banner.verdict is home.verdict
+
+
+# --------------------------------------------------------------------------- #
+# Plan 0046 C / A5 — the foreign principal on Run History                        #
+# --------------------------------------------------------------------------- #
+from src.ui_flet.home_status import (  # noqa: E402
+    EMPTY_FRESH_START_HEADLINE,
+    EMPTY_NO_RUNS_HEADLINE,
+    FOREIGN_PRINCIPAL_HEADLINE,
+)
+
+_FOREIGN = "CONTOSO\\svc_districtsync"
+_STALE_BANNER_HEADLINE = "No recent sync"
+_ESTABLISHED = (_NOW - timedelta(hours=72)).isoformat(timespec="seconds")
+_ANCIENT = (_NOW - timedelta(hours=STALE_AFTER_HOURS + 48)).isoformat(timespec="seconds")
+
+
+def _foreign_schedule(*, attention: bool = False, detail: str = "registered elsewhere") -> ScheduleStatus:
+    """A LIVE read-back on a RECORDED foreign principal (see the Home-side twin)."""
+    return ScheduleStatus(
+        state=ScheduleState.LIVE,
+        headline="Nightly sync is scheduled",
+        detail=detail,
+        next_run_display="3:00 AM",
+        attention=attention,
+        foreign_account=_FOREIGN,
+    )
+
+
+def _real_foreign_status(*, last_result: int | None) -> ScheduleStatus:
+    """A foreign-principal LIVE status built by the REAL derivation, so headline/detail/attention
+    are exactly what ships — never a hand-rolled combination the producer could not emit."""
+    return derive_schedule_status(
+        ScheduleReadback(found=True, next_run="2026-07-05T03:00:00", last_result=last_result),
+        hint_registered=True,
+        latest_record_ts=None,
+        foreign_account=_FOREIGN,
+    )
+
+
+class TestRunHistoryEmptyStateUnderAForeignPrincipal:
+    """An empty ledger here is EXPECTED — saying "no runs yet" would be read as "it never ran"."""
+
+    @pytest.mark.parametrize("store_created_at", [None, _ESTABLISHED])
+    def test_neither_empty_arm_renders(self, store_created_at: str | None) -> None:
+        banner = derive_history_banner(
+            [], _CONFIGURED, now=_NOW, store_created_at=store_created_at, schedule_status=_foreign_schedule()
+        )
+        assert banner.headline not in (EMPTY_FRESH_START_HEADLINE, EMPTY_NO_RUNS_HEADLINE)
+        assert banner.headline == FOREIGN_PRINCIPAL_HEADLINE
+
+    @pytest.mark.parametrize(
+        ("store_created_at", "expected"),
+        [(None, EMPTY_NO_RUNS_HEADLINE), (_ESTABLISHED, EMPTY_FRESH_START_HEADLINE)],
+    )
+    def test_positive_twin_both_empty_arms_still_render_on_a_same_account_install(
+        self, store_created_at: str | None, expected: str
+    ) -> None:
+        banner = derive_history_banner(
+            [], _CONFIGURED, now=_NOW, store_created_at=store_created_at, schedule_status=_live_schedule()
+        )
+        assert banner.headline == expected
+
+
+class TestRunHistoryStaleRuleUnderAForeignPrincipal:
+    def test_the_stale_banner_is_never_rendered(self) -> None:
+        banner = derive_history_banner(
+            [_record(timestamp=_ANCIENT)],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=_ESTABLISHED,
+            schedule_status=_foreign_schedule(),
+        )
+        assert banner.headline != _STALE_BANNER_HEADLINE
+        assert banner.headline == FOREIGN_PRINCIPAL_HEADLINE
+
+    def test_positive_twin_the_stale_banner_still_renders(self) -> None:
+        banner = derive_history_banner(
+            [_record(timestamp=_ANCIENT)],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=_ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert banner.headline == _STALE_BANNER_HEADLINE
+
+    def test_a_fresh_local_record_still_speaks_for_itself(self) -> None:
+        banner = derive_history_banner(
+            [_record(timestamp=_RECENT)],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=_ESTABLISHED,
+            schedule_status=_foreign_schedule(),
+        )
+        assert banner.headline != FOREIGN_PRINCIPAL_HEADLINE
+
+    def test_a_failed_latest_still_owns_the_banner(self) -> None:
+        banner = derive_history_banner(
+            [_record(timestamp=_ANCIENT, status="failed", error="boom")],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=_ESTABLISHED,
+            schedule_status=_foreign_schedule(),
+        )
+        assert banner.verdict is Verdict.FAILED
+
+
+class TestRunHistorySeasonalPauseUnderAForeignPrincipal:
+    """A9 — the same single-source ``sync_window_paused`` fact Home reads."""
+
+    def test_the_paused_banner_is_never_rendered(self) -> None:
+        banner = derive_history_banner(
+            [_record(timestamp=_ANCIENT)],
+            _windowed(),
+            now=_SUMMER,
+            store_created_at=_ESTABLISHED,
+            schedule_status=_foreign_schedule(),
+        )
+        assert banner.headline != _PAUSED_HEADLINE
+
+    def test_positive_twin_the_paused_banner_still_renders(self) -> None:
+        banner = derive_history_banner(
+            [_record(timestamp=_ANCIENT)],
+            _windowed(),
+            now=_SUMMER,
+            store_created_at=_ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert banner.headline == _PAUSED_HEADLINE
+
+
+class TestForeignPrincipalCopyIsIdenticalAcrossBothSurfaces:
+    """No literal is re-spelled in ``run_history.py`` — it delegates, exactly as ``_paused_banner``
+    delegates to ``_paused_status``, so the two surfaces can never drift about one state."""
+
+    @pytest.mark.parametrize("records", [[], [_record(timestamp=_ANCIENT)]])
+    def test_the_calm_arm_is_identical_on_both_surfaces(self, records: list[dict]) -> None:
+        """Windows reports no problem: the foreign-principal branch owns the band on BOTH."""
+        schedule = _real_foreign_status(last_result=0)
+        home = derive_home_status(
+            records, _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=schedule
+        )
+        banner = derive_history_banner(
+            records, _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=schedule
+        )
+        assert (banner.headline, banner.detail, banner.verdict) == (home.headline, home.detail, home.verdict)
+        assert banner.headline == FOREIGN_PRINCIPAL_HEADLINE
+
+    @pytest.mark.parametrize("records", [[], [_record(timestamp=_ANCIENT)]])
+    def test_the_problem_arm_shares_the_detail_and_the_verdict(self, records: list[dict]) -> None:
+        """Windows reported a problem. The DETAIL — the single-sourced sentence pair — and the
+        amber verdict are identical; only the HEADLINE differs, and that is the module's existing,
+        documented division of labour, not drift: Home surfaces the schedule-attention verdict
+        (with its Setup CTA) and Run History, being read-only, deliberately does not.
+        """
+        schedule = _real_foreign_status(last_result=1)
+        assert schedule.attention is True
+        home = derive_home_status(
+            records, _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=schedule
+        )
+        banner = derive_history_banner(
+            records, _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=schedule
+        )
+        assert banner.detail == home.detail == schedule.detail
+        assert banner.verdict is home.verdict is Verdict.WARNING
+        assert home.headline == schedule.headline == "Your last nightly run reported a problem"
+        assert banner.headline == FOREIGN_PRINCIPAL_HEADLINE
+
+    @pytest.mark.parametrize(
+        "record_kind",
+        ["clean", "anomaly", "data-warnings"],
+    )
+    def test_the_rule_sits_at_the_same_position_on_both_surfaces(self, record_kind: str) -> None:
+        """RULE ORDER parity, not just copy parity.
+
+        Caught during review: this banner originally slotted the foreign rule BELOW anomaly /
+        data-warnings while Home slots it ABOVE, so one ancient-anomaly install read
+        "Something looked off recently" here and "runs under a different Windows account" on Home
+        — the exact two-surface drift this file exists to prevent. Every rule below the foreign
+        one describes a nightly cadence this ledger cannot see.
+        """
+        overrides: dict[str, object] = {"timestamp": _ANCIENT}
+        if record_kind == "anomaly":
+            overrides["anomalies"] = ["ANOMALY: Students dropped 42%"]
+        elif record_kind == "data-warnings":
+            overrides["data_errors"] = {"total": 3, "by_field": {"Grade": 3}}
+        records = [_record(**overrides)]
+        schedule = _real_foreign_status(last_result=0)
+        home = derive_home_status(
+            records, _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=schedule
+        )
+        banner = derive_history_banner(
+            records, _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=schedule
+        )
+        assert (banner.headline, banner.detail, banner.verdict) == (home.headline, home.detail, home.verdict)
+        assert banner.headline == FOREIGN_PRINCIPAL_HEADLINE
+
+    def test_positive_twin_those_same_records_still_reach_their_own_rules(self) -> None:
+        """Non-vacuity: with no recorded principal the anomaly / data-warning banners still win."""
+        anomaly = [_record(timestamp=_ANCIENT, anomalies=["ANOMALY: Students dropped 42%"])]
+        warnings = [_record(timestamp=_ANCIENT, data_errors={"total": 3, "by_field": {"Grade": 3}})]
+        live = _live_schedule()
+        assert (
+            derive_history_banner(
+                anomaly, _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=live
+            ).headline
+            == "Something looked off recently"
+        )
+        assert (
+            derive_history_banner(
+                warnings, _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=live
+            ).headline
+            == "Recent runs completed with data warnings"
+        )
+
+    def test_both_surfaces_name_the_recorded_account_from_one_constant(self) -> None:
+        from src.ui_flet.schedule_status import FOREIGN_RECORDS_NOTE
+
+        schedule = _real_foreign_status(last_result=0)
+        note = FOREIGN_RECORDS_NOTE.format(account=_FOREIGN)
+        home = derive_home_status([], _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=schedule)
+        banner = derive_history_banner(
+            [], _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=schedule
+        )
+        assert note in home.detail
+        assert note in banner.detail
+
+    def test_run_history_re_spells_no_foreign_copy_of_its_own(self) -> None:
+        import inspect
+
+        from src.ui_flet import run_history as run_history_mod
+
+        source = inspect.getsource(run_history_mod)
+        assert "runs under a different Windows account" not in source
+        assert "run records are saved under" not in source

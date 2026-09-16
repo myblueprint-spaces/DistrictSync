@@ -75,17 +75,20 @@ _LIVE = ScheduleStatus(
     detail="registered",
     next_run_display="3:00 AM",
 )
-_EXPECTED_MISSING = derive_schedule_status(ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None)
+_EXPECTED_MISSING = derive_schedule_status(
+    ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, foreign_account=""
+)
 _CONTRADICTION = derive_schedule_status(
     ScheduleReadback(found=True, last_run="2026-07-04T04:00:00"),
     hint_registered=True,
     latest_record_ts=_RECENT,
+    foreign_account="",
 )
 # MISSING but NOT ``attention``: the task is confirmed absent and the config never promised
 # one (a manual-only district). This is the read-back the honest "won't sync automatically"
 # copy keys on — and, unlike the two above, it does NOT trip Home's schedule-attention rule.
 _UNEXPECTED_MISSING = derive_schedule_status(
-    ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None
+    ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
 )
 
 # Flavours that leave Home's two extra rules silent — the ones the STRICT sweeps may use.
@@ -94,11 +97,33 @@ _QUIET_SCHEDULES: dict[str, ScheduleStatus | None] = {
     "live": _LIVE,
     "unexpected-missing": _UNEXPECTED_MISSING,
 }
+# A LIVE read-back on a RECORDED FOREIGN principal (plan 0046 C). Both flavours are built by the
+# REAL derivation so headline/detail/attention are exactly what ships: the calm one (Windows
+# reports success) and the one where Windows' own LastTaskResult reported a problem — the signal
+# that SWAPS IN for the record gap A5 silences. Added to the verdict-axis sweep because a
+# service-account install is now a state BOTH surfaces must classify consistently, and until this
+# slice neither surface had ever seen it.
+_FOREIGN_ACCOUNT = r"CONTOSO\svc_districtsync"
+_FOREIGN_CLEAN = derive_schedule_status(
+    ScheduleReadback(found=True, next_run="2026-07-05T03:00:00", last_result=0),
+    hint_registered=True,
+    latest_record_ts=None,
+    foreign_account=_FOREIGN_ACCOUNT,
+)
+_FOREIGN_PROBLEM = derive_schedule_status(
+    ScheduleReadback(found=True, next_run="2026-07-05T03:00:00", last_result=1),
+    hint_registered=True,
+    latest_record_ts=None,
+    foreign_account=_FOREIGN_ACCOUNT,
+)
+
 # Every flavour, including the two that DO trip Home's schedule-attention rule.
 _SCHEDULES: dict[str, ScheduleStatus | None] = {
     **_QUIET_SCHEDULES,
     "expected-missing": _EXPECTED_MISSING,
     "contradiction": _CONTRADICTION,
+    "foreign-clean": _FOREIGN_CLEAN,
+    "foreign-problem": _FOREIGN_PROBLEM,
 }
 
 

@@ -29,7 +29,23 @@ from datetime import datetime
 from enum import Enum
 
 from src.scheduler.messages import ABSENT_TASK_MARKERS as _ABSENT_DELETE_MARKERS
+from src.scheduler.task_com import RESULT_BATCH_LOGON_PROBLEM, RESULT_HAS_NOT_RUN
 from src.scheduler.windows import ScheduleReadback
+
+#: The single-source sentence for "the nightly's run records are in ANOTHER account's profile"
+#: (plan 0046 C / A5). TRUE BY CONSTRUCTION: ``src/history/store.py`` writes ``history.db`` into
+#: ``paths.user_data_dir()`` of the account the task RUNS as, so once the task's principal is a
+#: service account its records are written there and never reach this profile. The sentence makes
+#: no claim about whether the run SUCCEEDED — that claim comes from Windows' own ``LastTaskResult``
+#: via :func:`run_result_verdict`, which is unaffected by where the records land.
+#:
+#: Rendered by the Setup readout (through ``ScheduleStatus.detail``), by Home's foreign-principal
+#: branch and by Run History's empty-state + stale arms — all from HERE, never re-spelled. It names
+#: the account ON SCREEN only: no account name reaches a log, a run record or a message.
+FOREIGN_RECORDS_NOTE = (
+    "Your nightly sync runs as {account}, so its run records are saved under that account "
+    "and don't appear in Run History here."
+)
 
 # Path components that mean the running exe lives in a transient location — pinning a task
 # to it risks the "task fires, exe is gone, nothing recorded" blind spot (the Downloads case).
@@ -46,6 +62,113 @@ _TRANSIENT_DIR_PARTS: frozenset[str] = frozenset({"downloads", "temp", "tmp"})
 # failure message, so a crontab that prints one of these phrases still reaches here unguarded —
 # the cron half of the same defect the Windows guard closes (ROADMAP).
 # See the marker-guard entry in `docs/claugentic-INVARIANTS.md` before adding a phrase here.
+
+
+class RunResult(Enum):
+    """What Windows reported for the task's LAST run (plan 0046 C / A4).
+
+    A channel deliberately distinct from ``setup_errors``' registration-exception classifier:
+    that one classifies what a register/remove call RAISED, this one classifies the task's
+    run-time ``LastTaskResult``. The two never share a table (see the CHANNEL RULE beside
+    ``task_com.RESULT_BATCH_LOGON_PROBLEM``).
+
+    ``UNREADABLE`` (no value came back) and ``UNRECOGNISED`` (a value we will not guess at) are
+    deliberately SEPARATE members: "we could not read a result" and "Windows reported a result we
+    cannot name" are different facts, and collapsing them would let a failed probe present as a
+    reported problem — or a reported problem present as a failed probe.
+    """
+
+    OK = "ok"
+    NEVER_RUN = "never_run"
+    FAILED = "failed"
+    DELIVERY_FAILED = "delivery_failed"
+    BATCH_LOGON_SUSPECTED = "batch_logon_suspected"
+    UNRECOGNISED = "unrecognised"
+    UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True)
+class RunResultVerdict:
+    """A classified ``LastTaskResult`` — the member plus the ONE sentence that may be shown."""
+
+    result: RunResult
+    note: str | None = None
+
+    @property
+    def reported_a_problem(self) -> bool:
+        """The last run did NOT report success — true by DEFINITION of ``LastTaskResult`` for
+        every non-zero code, INDEPENDENT of whether we can name the cause.
+
+        ``NEVER_RUN`` is not a problem (a freshly-registered task has simply not fired yet) and
+        neither ``UNREADABLE`` nor ``OK`` is. Only these rows may raise ``attention``, and only
+        on a foreign principal — see :func:`_live_status`.
+        """
+        return self.result in (
+            RunResult.FAILED,
+            RunResult.DELIVERY_FAILED,
+            RunResult.BATCH_LOGON_SUSPECTED,
+            RunResult.UNRECOGNISED,
+        )
+
+
+def run_result_verdict(last_result: int | None) -> RunResultVerdict:
+    """Classify Windows' own ``LastTaskResult`` for the nightly task (pure, TOTAL, no raise path).
+
+    ``ScheduleReadback.last_result`` has been read since inception and consumed by NOTHING; this
+    is its first consumer, and for a district on a service account it is the PRIMARY "did the
+    nightly actually run?" signal — the only one unaffected by which profile the run records land
+    in (A5 silences the record-gap inference exactly there).
+
+    Honesty rules baked into the table:
+
+    * ``2`` is deliberately NOT mapped, against an earlier draft's "bad arguments" row. Our exit 2
+      is *stdin empty or mutually-exclusive flags* — structurally unreachable for a task whose args
+      DistrictSync itself baked — while ``ERROR_FILE_NOT_FOUND`` is also 2. Naming it would be more
+      likely wrong than right, so it falls to ``UNRECOGNISED``.
+    * ``1`` and ``3`` are worded to be TRUE under both readings (our own exit code, or a bare Win32
+      code). ``1`` says only "ended with an error"; ``3`` names the result as the one *DistrictSync
+      uses* for a delivery failure and never claims files were built.
+    * ``RESULT_BATCH_LOGON_PROBLEM`` is COMMUNITY-SOURCED. The copy states what Windows reported
+      and what the code means in general, offers no in-app remedy, and routes to IT — it never
+      claims a district's policy-blocked sync is fixable here.
+    * An unmapped code still yields a TRUE statement without a guessed cause.
+    """
+    if last_result is None:
+        return RunResultVerdict(result=RunResult.UNREADABLE)
+    if last_result == 0:
+        return RunResultVerdict(result=RunResult.OK)
+    if last_result == RESULT_HAS_NOT_RUN:
+        return RunResultVerdict(
+            result=RunResult.NEVER_RUN,
+            note="Windows reports this task hasn't run yet.",
+        )
+    if last_result == 1:
+        return RunResultVerdict(
+            result=RunResult.FAILED,
+            note="Windows recorded that the last nightly run ended with an error.",
+        )
+    if last_result == 3:
+        return RunResultVerdict(
+            result=RunResult.DELIVERY_FAILED,
+            note=(
+                "The last nightly run ended with the result DistrictSync uses for a delivery "
+                "failure — if delivery is turned on, check that this account has its own saved "
+                "SFTP credential."
+            ),
+        )
+    if last_result == RESULT_BATCH_LOGON_PROBLEM:
+        return RunResultVerdict(
+            result=RunResult.BATCH_LOGON_SUSPECTED,
+            note=(
+                "Windows reported a logon-type failure for this task. That is what Windows "
+                "returns when an account has not been granted the 'Log on as a batch job' "
+                "right — your IT team can confirm and grant it."
+            ),
+        )
+    return RunResultVerdict(
+        result=RunResult.UNRECOGNISED,
+        note="Windows recorded a problem with the last nightly run.",
+    )
 
 
 class ScheduleState(Enum):
@@ -72,8 +195,11 @@ class ScheduleStatus:
             verified next-run (honesty invariant); MISSING/UNKNOWN never carry a time either.
         attention: this warrants a fix nudge → a Home WARNING routed to Setup + the nav
             badge. True iff (MISSING while the config expected a schedule) OR (LIVE with a
-            fired-but-no-record contradiction). A clean LIVE, an unexpected MISSING, and
-            every UNKNOWN are NOT attention (never nag, never assert).
+            fired-but-no-record contradiction) OR (LIVE on a FOREIGN principal whose Windows
+            ``LastTaskResult`` reported a problem — the swapped-in signal, plan 0046 C). A clean
+            LIVE, an unexpected MISSING, and every UNKNOWN are NOT attention (never nag, never
+            assert).
+        foreign_account: see the field docstring below.
     """
 
     state: ScheduleState
@@ -83,6 +209,26 @@ class ScheduleStatus:
     contradiction: bool = False
     next_run_display: str | None = None
     attention: bool = False
+    foreign_account: str = ""
+    """The RECORDED principal when it is not the signed-in account; ``""`` otherwise (plan 0046 C).
+
+    Non-blank means, and ONLY means: at a confirmed registration this app WROTE that account name
+    to ``AppConfig.schedule_run_as_user``, and ``setup_gates.principal_key`` reduces it to a
+    different identity than the account now running. It is the sole authority for "a missing run
+    record is EXPECTED here" — never inferred from an empty store, never from the config hint flag,
+    and never read back off the live task (``task_com.TaskFacts`` carries no principal at all).
+
+    ONE fact, ONE carrier: ``_is_contradiction`` reads it directly and ``home_status._is_missed_run``
+    reads it off the ``ScheduleStatus`` it already receives, so the two predicates can never
+    disagree and exactly one call path — the seam that already does the I/O — can get it wrong.
+
+    Named for the fact that is CHECKED, not for the inference drawn from it: "records land
+    elsewhere" is a consequence a machine-wide ``DISTRICTSYNC_DATA_DIR`` override could falsify.
+
+    The dataclass default is ``""`` (do NOT suppress) because that is the conservative value; the
+    INPUT on :func:`derive_schedule_status` is REQUIRED keyword-only, so no call site may omit it
+    by accident.
+    """
 
 
 def derive_schedule_status(
@@ -90,6 +236,7 @@ def derive_schedule_status(
     *,
     hint_registered: bool,
     latest_record_ts: str | None,
+    foreign_account: str,
     surface: str = "home",
 ) -> ScheduleStatus:
     """Derive the tri-state ``ScheduleStatus`` from a read-back + the config hint (pure, TOTAL).
@@ -106,12 +253,24 @@ def derive_schedule_status(
     ``surface`` de-circularizes the MISSING copy (finding #3): rendered ON the Setup surface
     (``"setup"``) it reads "add/re-register it **below**"; everywhere else (``"home"``,
     Run History, badge) it keeps "**in Setup**" — the fix lives on a different screen there.
+
+    ``foreign_account`` (plan 0046 C / A5) is REQUIRED keyword-only — the conservative value is
+    ``""`` but it must be SUPPLIED, never defaulted, because omitting it is exactly the mistake
+    that would silently disable the suppression (or, if the default went the other way, silently
+    disable the app's only "did it run?" signal). Resolved by the one impure
+    ``schedule_probe.foreign_task_account``. It is threaded to ALL THREE builders — Home and Run
+    History read the field regardless of state, so a MISSING/UNKNOWN status must carry it too.
     """
     if readback.found is True:
-        return _live_status(readback, latest_record_ts=latest_record_ts, expected=hint_registered)
+        return _live_status(
+            readback,
+            latest_record_ts=latest_record_ts,
+            expected=hint_registered,
+            foreign_account=foreign_account,
+        )
     if readback.found is False:
-        return _missing_status(expected=hint_registered, surface=surface)
-    return _unknown_status(expected=hint_registered)
+        return _missing_status(expected=hint_registered, surface=surface, foreign_account=foreign_account)
+    return _unknown_status(expected=hint_registered, foreign_account=foreign_account)
 
 
 def _live_status(
@@ -119,9 +278,27 @@ def _live_status(
     *,
     latest_record_ts: str | None,
     expected: bool,
+    foreign_account: str,
 ) -> ScheduleStatus:
-    """Build the LIVE status — a registered task, with next-run copy + contradiction detection."""
-    contradiction = _is_contradiction(readback, latest_record_ts)
+    """Build the LIVE status — a registered task, with next-run copy + contradiction detection.
+
+    Composition order is load-bearing (plan 0046 C):
+
+    1. the record-gap contradiction, which a foreign principal SUPPRESSES (A5);
+    2. otherwise today's detail, BYTE FOR BYTE;
+    3. then, and only when non-empty, ``FOREIGN_RECORDS_NOTE`` (foreign only) followed by the
+       run-result note — the foreign note first, because it explains why the ledger is silent
+       before the OS result speaks about the run itself;
+    4. ``attention`` iff the contradiction fired (today's rule) OR the principal is foreign AND
+       Windows reported a problem. The second arm carries a DIFFERENT headline, because it rests
+       on a different — and better — class of evidence than an inference from an empty ledger.
+
+    For a same-account install NOTHING escalates that did not escalate before: the run store and
+    Run History already own the "a run failed" narrative (exactly why ``_is_contradiction`` was
+    written not to fire on a non-benign ``last_result`` alone), so their copy stays byte-identical
+    apart from the one appended run-result sentence.
+    """
+    contradiction = _is_contradiction(readback, latest_record_ts, foreign_account=foreign_account)
     if contradiction:
         # HEDGED copy (honesty): the evidence is only that a run fired without a store record —
         # it does NOT establish the run failed, or that the app was moved. Name what we can see
@@ -138,6 +315,7 @@ def _live_status(
             contradiction=True,
             next_run_display=None,
             attention=True,
+            foreign_account=foreign_account,
         )
 
     # The next-run time comes ONLY from the OS-reported NextRunTime — never the config hint
@@ -148,18 +326,29 @@ def _live_status(
         if next_display
         else "Your nightly schedule is registered with Windows."
     )
+    # A5 + A4: the swapped signal. On a foreign principal the record-based alarm is off (the gap is
+    # where the record WENT), so say plainly where it went — a permanently empty Run History with
+    # no explanation is itself read as evidence the sync never ran — and let Windows' own result
+    # take over the alarm. Sentences are appended in fixed order and only when non-empty.
+    verdict = run_result_verdict(readback.last_result)
+    if foreign_account:
+        detail = f"{detail} {FOREIGN_RECORDS_NOTE.format(account=foreign_account)}"
+    if verdict.note:
+        detail = f"{detail} {verdict.note}"
+    reported_problem = bool(foreign_account) and verdict.reported_a_problem
     return ScheduleStatus(
         state=ScheduleState.LIVE,
-        headline="Nightly sync is scheduled",
+        headline=("Your last nightly run reported a problem" if reported_problem else "Nightly sync is scheduled"),
         detail=detail,
         expected=expected,
         contradiction=False,
         next_run_display=next_display,
-        attention=False,
+        attention=reported_problem,
+        foreign_account=foreign_account,
     )
 
 
-def _missing_status(*, expected: bool, surface: str = "home") -> ScheduleStatus:
+def _missing_status(*, expected: bool, foreign_account: str, surface: str = "home") -> ScheduleStatus:
     """Build the MISSING status — a definitively-absent task; copy varies on expectation + surface.
 
     ``surface="setup"`` swaps the circular "in Setup" pointer for "below" (the fix is on THIS
@@ -176,6 +365,7 @@ def _missing_status(*, expected: bool, surface: str = "home") -> ScheduleStatus:
             ),
             expected=True,
             attention=True,
+            foreign_account=foreign_account,
         )
     return ScheduleStatus(
         state=ScheduleState.MISSING,
@@ -183,21 +373,28 @@ def _missing_status(*, expected: bool, surface: str = "home") -> ScheduleStatus:
         detail=f"You haven't set up a nightly schedule yet — add one {where} whenever you're ready.",
         expected=False,
         attention=False,
+        foreign_account=foreign_account,
     )
 
 
-def _unknown_status(*, expected: bool) -> ScheduleStatus:
-    """Build the UNKNOWN status — the query failed; NEVER assert a schedule from the hint."""
+def _unknown_status(*, expected: bool, foreign_account: str) -> ScheduleStatus:
+    """Build the UNKNOWN status — the query failed; NEVER assert a schedule from the hint.
+
+    Carries ``foreign_account`` (the RECORD is readable even when the OS query failed) but the
+    copy is byte-identical: this state asserts nothing about a schedule it could not see, so it
+    must not assert where that schedule's records go either.
+    """
     return ScheduleStatus(
         state=ScheduleState.UNKNOWN,
         headline="We couldn't confirm the schedule",
         detail="We couldn't confirm the nightly schedule right now — it may still be registered.",
         expected=expected,
         attention=False,
+        foreign_account=foreign_account,
     )
 
 
-def _is_contradiction(readback: ScheduleReadback, latest_record_ts: str | None) -> bool:
+def _is_contradiction(readback: ScheduleReadback, latest_record_ts: str | None, *, foreign_account: str) -> bool:
     """Whether the task fired but the store has no row for that run (the record-gap blind spot).
 
     The SOLE trigger is the record gap: a real prior run (``last_run`` present, so the never-run
@@ -205,10 +402,28 @@ def _is_contradiction(readback: ScheduleReadback, latest_record_ts: str | None) 
     captured nothing for it. This deliberately does NOT fire on a non-benign ``LastTaskResult``
     alone: an exit-3 run (roster built, SFTP failed) writes a record and is a completed
     "Built, not delivered" row in Run History — flagging it here would contradict that surface.
-    A non-benign ``last_result`` is only ever supporting evidence WITHIN this record-gap case,
-    never a standalone trigger. With no records to compare against, no gap can be established,
-    so no contradiction is raised (a pre-store run must not false-alarm).
+    This function does NOT read ``readback.last_result`` at all — it never has. A non-benign run
+    result is classified independently by :func:`run_result_verdict` and surfaced in the LIVE
+    detail sentence (plan 0046 C / A4); this function's only concern is the record-gap timing
+    comparison. With no records to compare against, no gap can be established, so no contradiction
+    is raised (a pre-store run must not false-alarm).
+
+    ``foreign_account`` is REQUIRED keyword-only and is the A5 suppression — one-directional, and
+    ONLY on positive confirmation. The asymmetry decides the direction: going quiet on an UNKNOWN
+    record would silently disable the app's only "did it actually run?" signal for the districts
+    NOT on a service account, invisibly and unboundedly; staying noisy on a torn record costs one
+    visible amber that the next registration heals. So a missing record, a recorded ``""``, a
+    case-insensitive match and a failed account resolution ALL keep alarming (see
+    ``schedule_probe.foreign_task_account``, which fails to ``""`` on every one of them).
     """
+    if foreign_account:
+        # A5: the nightly runs as another account, so its run record was written to THAT profile's
+        # history.db (src/history/store.py writes under paths.user_data_dir() of the RUNNING
+        # account). A gap here is the DOCUMENTED consequence of where the record was written, not
+        # evidence of a fault — asserting one would walk the admin into re-registering a task that
+        # is working perfectly, every night, forever. The replacement signal is run_result_verdict,
+        # which reads Windows' own LastTaskResult and is unaffected by which profile records land in.
+        return False
     if not readback.last_run or not latest_record_ts:
         return False
     last = _parse_dt(readback.last_run)

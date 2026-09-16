@@ -91,6 +91,24 @@ HR_ACCOUNT_INFO_NOT_SET = 0x8004130F  # SCHED_E_ACCOUNT_INFORMATION_NOT_SET
 # SCHED_S_TASK_HAS_NOT_RUN — LastTaskResult of a task that has never fired.
 RESULT_HAS_NOT_RUN = 267011
 
+# LastTaskResult at RUN time for a batch-logon failure. 0x80070569 is the mechanical
+# HRESULT_FROM_WIN32 form of Win32 1385 ERROR_LOGON_TYPE_NOT_GRANTED — that much is arithmetic.
+# That Task Scheduler reports it HERE when the task's principal lacks "Log on as a batch job" is
+# COMMUNITY-SOURCED (an archived forum thread): no Microsoft doc, and no measurement on this
+# codebase's own COM path (contrast HR_NONE_MAPPED, which WAS measured 2026-09-16). The consuming
+# copy hedges to exactly that evidence — it reports what Windows returned and what the code means
+# in general, and routes the diagnosis to IT rather than asserting a cause for THIS install.
+#
+# It is the only channel available for this fact: registration returns the SUCCESS code
+# SCHED_S_BATCH_LOGON_PROBLEM (0x0004131C), which pywin32 cannot surface (a success HRESULT raises
+# nothing), so the run-time LastTaskResult read back by `read_schedule` is where it shows up.
+#
+# CHANNEL RULE (pinned by tests/test_ui_flet_run_result.py): this is a run-time LastTaskResult,
+# NOT a COM-exception scode. It must never enter _HRESULT_CANONICAL / _MESSAGE_TO_HRESULT /
+# setup_errors.classify_schedule_error — those classify what registration and removal RAISED.
+# Its one consumer is ui_flet.schedule_status.run_result_verdict.
+RESULT_BATCH_LOGON_PROBLEM = 0x80070569
+
 # Canonical, secret-free, locale-independent text per HRESULT — DESCRIPTIVE of the status
 # Windows returned, never a cause. `setup_errors.classify_schedule_error` keys on these by
 # EXACT equality and IMPORTS them (plan 0047 A2) — any edit here must be mirrored there,

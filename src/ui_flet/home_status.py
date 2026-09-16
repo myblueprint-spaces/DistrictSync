@@ -174,6 +174,14 @@ _SCHEDULE_GONE_NOTE = (
 # resume date is a PURE fact (``next_resume_date``), rendered PII-free via ``friendly_date_short``.
 _PAUSED_HEADLINE = "Paused for the summer"
 
+#: The foreign-principal headline (plan 0046 C / A5) — Home AND Run History, from here.
+#: Silence would be the worse product AND the less honest option: an admin facing a permanently
+#: empty Run History with no explanation concludes the sync never ran, so silence is itself read
+#: as evidence. This ONE rule replaces all three false signals the service account would otherwise
+#: produce on this surface — missed-run, stale, and the misleading empty-state arms — with one
+#: true statement, and the detail is taken from ``ScheduleStatus.detail`` rather than re-spelled.
+FOREIGN_PRINCIPAL_HEADLINE = "Your nightly sync runs under a different Windows account"
+
 # --------------------------------------------------------------------------- #
 # The empty-store copy — SHARED with Run History (0038 S7 part (i))            #
 #                                                                             #
@@ -691,7 +699,23 @@ def derive_home_status(
     # over a task that will never resume. The pause is now gated on a NOT-confirmed-MISSING read-back
     # (mirrors the stated intent ``schedule_status is None or state is not MISSING``), so the honest
     # "add a nightly schedule" copy surfaces even when the schedule-attention rule stays silent.
-    paused = sync_window_paused(app_config, now=now) and not _schedule_confirmed_missing(schedule_status)
+    #
+    # 0046 C / A9: the pause is additionally FALSE on a foreign principal — the nightly gate reads
+    # the RUNNING account's config, which for a service account has no window at all, so a green
+    # "resumes <date>" would be painted over a sync that is still delivering. Single-sourced in
+    # ``sync_window_paused``, so Home, the Run History banner and the Setup badge move together.
+    foreign_account = schedule_status.foreign_account if schedule_status is not None else ""
+    paused = sync_window_paused(
+        app_config, now=now, foreign_account=foreign_account
+    ) and not _schedule_confirmed_missing(schedule_status)
+
+    # 0046 C / A5: the nightly's records live in another account's profile. This ONE rule stands in
+    # for the missed-run, stale and empty-state arms that would otherwise each assert a fault that
+    # did not happen — every night, forever — for a sync that is working perfectly. It is computed
+    # here and consulted at TWO slots below (the empty-store block and the main sequence), exactly
+    # like ``missed_run``, and it NEVER outranks a FAILED latest record: a manual Convert that
+    # genuinely failed still owns the band.
+    foreign_records = _foreign_records_elsewhere(records, now=now, schedule_status=schedule_status)
 
     schedule_attention = _schedule_attention(schedule_status)
     # Surface schedule attention UNLESS the latest record is a failure (it owns the band, W3-B) OR
@@ -733,6 +757,12 @@ def derive_home_status(
         # empty store is calm, not a missed run. Beats the missed-run/fresh-start empty sub-states.
         if paused:
             return _paused_status(app_config, now=now)
+        # Rule: the records are in another account's profile (A5) — an empty store here is not an
+        # install waiting for its first sync, and saying so would be the confusing silence this
+        # slice exists to remove. Above the missed-run and empty arms, all of which would either
+        # allege a fault or promise a nightly that will never appear HERE.
+        if foreign_records:
+            return _foreign_records_status(schedule_status)  # type: ignore[arg-type]
         # Rule: missed run (empty store) — a LIVE schedule over an ESTABLISHED store with no
         # runs at all is not a calm fresh start: the nightly we promised never arrived.
         if missed_run:
@@ -822,6 +852,14 @@ def derive_home_status(
     # while the season is intentionally paused. The pause is HEALTHY-toned; nothing is wrong.
     if paused:
         return _paused_status(app_config, now=now)
+
+    # Rule: the records are in another account's profile (A5). Slotted BELOW the two FAILED reasons
+    # (a real local failure is not explained away by where the NIGHTLY's records go) and the pause,
+    # and ABOVE missed-run / stale / anomaly / data-warnings — whose copy would each describe a
+    # nightly cadence this ledger cannot see. It only fires when that ledger has nothing current to
+    # say (see ``_foreign_records_elsewhere``), so a fresh manual Convert still speaks for itself.
+    if foreign_records:
+        return _foreign_records_status(schedule_status)  # type: ignore[arg-type]
 
     # Rule: missed run — the newest record is older than the window while the schedule is LIVE.
     # Slotted below the two FAILED reasons (a red verdict is never downgraded to this amber) and
@@ -967,6 +1005,58 @@ def _schedule_attention(schedule_status: ScheduleStatus | None) -> HomeStatus | 
     )
 
 
+def _foreign_records_elsewhere(
+    records: list[dict],
+    *,
+    now: datetime | None,
+    schedule_status: ScheduleStatus | None,
+) -> bool:
+    """Whether the nightly's records land in ANOTHER account's profile AND this ledger is silent.
+
+    The positive replacement for the three signals A5 silences (plan 0046 C). Two facts, both
+    required:
+
+    * the read-back is CONFIRMED LIVE on a recorded FOREIGN principal. LIVE is demanded for the
+      same D4 reason everything else here is: "your nightly sync runs as X" is a claim about a
+      task, and a MISSING task (a real fault, principal or not) or an UNCONFIRMED one must not
+      have claims made about it. A confirmed-MISSING foreign task keeps today's honest
+      "won't sync automatically" copy;
+    * the local ledger CANNOT SPEAK — no records at all, or the newest is stale. With a fresh
+      local record (a manual Convert) this surface has something true and current to say, and
+      saying it is better than explaining an absence that isn't there.
+    """
+    if schedule_status is None or not schedule_status.foreign_account:
+        return False
+    if schedule_status.state is not ScheduleState.LIVE:
+        return False
+    if not records:
+        return True
+    return is_stale(str(records[0].get("timestamp", "")), now)
+
+
+def _foreign_records_status(schedule_status: ScheduleStatus) -> HomeStatus:
+    """The foreign-principal state — one true statement in place of three false alarms.
+
+    The verdict keys on ``attention``, which on a foreign LIVE status means exactly "Windows'
+    own ``LastTaskResult`` reported a problem" (``_is_contradiction`` is suppressed there, so the
+    record-gap arm cannot contribute). AMBER, never red, is deliberate: red is reserved for a
+    failure read out of a RUN RECORD, and this is an OS result classified with hedges — it already
+    carries a fix CTA and, through ``attention``, the nav badge.
+
+    The detail is ``schedule_status.detail`` verbatim: that string is already composed from
+    ``FOREIGN_RECORDS_NOTE`` plus the run-result note, in ``schedule_status._live_status``. Taking
+    it rather than re-deriving is what keeps ONE copy of the sentence in the codebase.
+    """
+    problem = schedule_status.attention
+    return HomeStatus(
+        verdict=Verdict.WARNING if problem else Verdict.HEALTHY,
+        headline=FOREIGN_PRINCIPAL_HEADLINE,
+        detail=schedule_status.detail,
+        fix=FixAction(_OPEN_SETUP_LABEL, _SETUP_FIX) if problem else None,
+        metrics=None,
+    )
+
+
 def _is_missed_run(
     records: list[dict],
     *,
@@ -987,6 +1077,13 @@ def _is_missed_run(
       POSITIVELY older than the window (unparseable → can't establish the gap → silent).
     """
     if schedule_status is None or schedule_status.state is not ScheduleState.LIVE:
+        return False
+    if schedule_status.foreign_account:
+        # A5 (plan 0046 C) — see ``schedule_status._is_contradiction`` for the full argument: the
+        # nightly runs as another account, so its run record was written to THAT profile's
+        # history.db. The gap is where the record WENT, not a sync that failed to happen. The
+        # signature is deliberately UNCHANGED: the fact rides the ``ScheduleStatus`` this predicate
+        # already receives, so it can never disagree with the contradiction rule that shares it.
         return False
     if not is_stale(store_created_at or "", now, stale_after_hours=MISSED_RUN_AFTER_HOURS):
         return False
@@ -1080,7 +1177,7 @@ def welcome_band(app_config: AppConfig, *, records: list[dict] | None, store_cre
     )
 
 
-def sync_window_paused(app_config: AppConfig, *, now: datetime | None) -> bool:
+def sync_window_paused(app_config: AppConfig, *, now: datetime | None, foreign_account: str) -> bool:
     """Whether an ENABLED seasonal window is currently OUTSIDE its active season (pure + TOTAL).
 
     Reuses the ENGINE predicate ``sync_window.in_sync_window`` (single source — the nightly gate
@@ -1089,7 +1186,21 @@ def sync_window_paused(app_config: AppConfig, *, now: datetime | None) -> bool:
     called in pure code), mirroring the rest of this module. Fail-safe: disabled, unset, or a
     MALFORMED window (which should be gated at save) all return ``False`` — behaving as year-round
     rather than ever suppressing a real warning behind a broken window.
+
+    ``foreign_account`` (plan 0046 C / A9) is REQUIRED keyword-only and forces ``False``, because
+    the pause is NOT IN FORCE for a task running as another account. ``src/main.py``'s nightly gate
+    evaluates the window against ``AppConfig.load()`` — the **running** account's config — and a
+    service account has no DistrictSync profile, so ``sync_window_enabled`` is the dataclass default
+    ``False`` there and the window is never enforced. Rendering a green "Paused for the summer —
+    resumes Aug 11" over a sync that is running nightly and delivering rosters out of season would
+    be a false green about the one thing this surface exists to report.
+
+    This is the SINGLE-SOURCE pause fact Home, the Run History banner and the Setup nav badge all
+    read, so the one change covers all three and they cannot disagree. The limitation itself is
+    SURFACED, not solved — see ``screens/setup.sync_window_foreign_note`` and the ROADMAP item.
     """
+    if foreign_account:
+        return False
     if not app_config.sync_window_enabled:
         return False
     start = (app_config.sync_window_start or "").strip()

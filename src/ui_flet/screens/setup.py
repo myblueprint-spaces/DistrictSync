@@ -100,6 +100,7 @@ from src.ui_flet.mapping_catalog import (
     filtered_catalog,
 )
 from src.ui_flet.picker_field import PickerField
+from src.ui_flet.schedule_probe import foreign_task_account
 from src.ui_flet.schedule_status import (
     ScheduleState,
     ScheduleStatus,
@@ -284,6 +285,33 @@ _RUN_TIME_ERROR_DETAIL = "Enter the time as HH:MM in 24-hour form, e.g. 03:00."
 # The inline seasonal-window error (B): shown when the window is ON but a bound isn't a real
 # month-day. Plain-language, no jargon — mirrors the run-time error's shape.
 _WINDOW_ERROR = "Enter each date as MM-DD (month then day), e.g. 08-11."
+
+# The A9 limitation, SURFACED not solved (plan 0046 C). ``src/main.py``'s nightly gate evaluates
+# the seasonal window against ``AppConfig.load()`` — the config of the account the task RUNS as. A
+# service account has no DistrictSync profile, so ``sync_window_enabled`` is the dataclass default
+# ``False`` there and the window is simply never enforced: the sync keeps running all summer. The
+# note states that plainly and names the ONE remedy that actually works today (remove the nightly
+# schedule for the break); it never implies DistrictSync handles the pause for a foreign principal.
+# The real fix — a shared/machine-scope profile — is on the ROADMAP, deliberately not built here.
+SYNC_WINDOW_FOREIGN_NOTE = (
+    "Your summer pause won't apply while the nightly sync runs as {account}. The pause is stored "
+    "with your own Windows account, and the sync reads the settings of the account it runs as — so "
+    "it will keep running through the break. To pause it, remove the nightly schedule for the summer."
+)
+
+
+def sync_window_foreign_note(app_config: AppConfig, *, foreign_account: str) -> str | None:
+    """The A9 limitation, stated only when it is BOTH enabled here AND unenforceable there.
+
+    Returns ``None`` on every other combination — a limitation nobody has configured into is noise,
+    and a note on an install with no foreign principal would be simply false. Pure and TOTAL.
+    """
+    if not foreign_account:
+        return None
+    if not app_config.sync_window_enabled:
+        return None
+    return SYNC_WINDOW_FOREIGN_NOTE.format(account=foreign_account)
+
 
 # Plain-language titles for the wizard steps (the "Step N of M · <title>" indicator).
 _STEP_TITLES: dict[SetupStep, str] = {
@@ -1970,12 +1998,15 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             return
 
         def _work() -> None:  # runs OFF the UI thread
-            from src.ui_flet.schedule_probe import probe_schedule
+            from src.ui_flet.schedule_probe import foreign_task_account, probe_schedule
 
+            # 0046 C: the readout is where the run-result sentence and the records-elsewhere note
+            # land. Resolved inside the worker thread; fails to "", which keeps the alarms on.
             status = probe_schedule(
                 cfg.schedule_task_name,
                 hint_registered=cfg.schedule_registered,
                 latest_record_ts=None,
+                foreign_account=foreign_task_account(cfg),
                 surface="setup",  # de-circularize the MISSING copy → "add one below" (finding #3)
             )
 
@@ -2628,6 +2659,17 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         helper_max_lines=3,
     )
     window_error_slot = ft.Column(spacing=0, controls=[])
+    # A9 (0046 C): the limitation note, muted tone, rendered only when the window is enabled AND the
+    # recorded task principal is foreign. Resolved once at build time from the same single resolver
+    # every probe uses; ``_on_window_change`` refreshes it when the toggle moves.
+    window_foreign_slot = ft.Column(spacing=0, controls=[])
+
+    def _window_foreign_note() -> str | None:
+        return sync_window_foreign_note(cfg, foreign_account=foreign_task_account(cfg))
+
+    def _paint_window_foreign_note() -> None:
+        note = _window_foreign_note()
+        window_foreign_slot.controls = [ft.Text(note, size=13, color=tokens.color_muted)] if note else []
 
     def _on_window_change(_e: ft.ControlEvent | None = None) -> None:
         enabled = bool(window_toggle.value)
@@ -2646,6 +2688,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 cfg.sync_window_start = validate_month_day(start)
                 cfg.sync_window_end = validate_month_day(end)
             cfg.save()
+        _paint_window_foreign_note()
         if on_window_valid is not None:
             on_window_valid(valid)  # wizard footer gate — Continue blocks while enabled+invalid
         page.update()
@@ -2690,9 +2733,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     controls=[window_start_field, window_end_field],
                 ),
                 window_error_slot,
+                window_foreign_slot,
             ],
         )
     )
+    _paint_window_foreign_note()
 
     # 0046 B: paint the gate's reason at BUILD time too — a section that mounts with the button
     # already disabled (a live task on a service account, say) must not show a dead primary.

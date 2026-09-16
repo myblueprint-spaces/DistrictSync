@@ -228,7 +228,9 @@ class TestEmptyState:
         # plainly that nothing syncs on its own — NOT the "new syncs will appear" copy that implies
         # automation. Calm WARNING, NO fix CTA/badge (a manual-only district must not be nagged).
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
-        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        missing = derive_schedule_status(
+            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+        )
         status = derive_home_status([], cfg, now=_NOW, schedule_status=missing)
         assert status.verdict is Verdict.WARNING
         assert status.fix is None
@@ -239,7 +241,9 @@ class TestEmptyState:
         # The no-automation nudge is NOT scoped to newcomers: an upgrader whose task is
         # confirmed gone needs it just as much. (Its headline stays the upgrader's.)
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
-        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        missing = derive_schedule_status(
+            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+        )
         status = derive_home_status([], cfg, now=_NOW, store_created_at=self._STORE_STAMP, schedule_status=missing)
         assert status.headline == home_status_mod.EMPTY_FRESH_START_HEADLINE
         assert "won't sync automatically" in status.detail
@@ -333,7 +337,9 @@ class TestScheduleAttention:
     completing) is the dominant fault — WARNING routed to Setup, never onboarding."""
 
     def test_expected_missing_routes_to_setup(self) -> None:
-        sched = derive_schedule_status(ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None)
+        sched = derive_schedule_status(
+            ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, foreign_account=""
+        )
         status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=sched)
         assert status.verdict is Verdict.WARNING
         assert status.fix is not None and status.fix.dest_id == "setup"
@@ -347,6 +353,7 @@ class TestScheduleAttention:
             ScheduleReadback(found=True, last_run="2026-07-04T04:00:00"),
             hint_registered=True,
             latest_record_ts=_RECENT,
+            foreign_account="",
         )
         status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=sched)
         assert status.verdict is Verdict.WARNING
@@ -355,7 +362,10 @@ class TestScheduleAttention:
     def test_unknown_schedule_never_overrides_a_healthy_run(self) -> None:
         # A failed query must not manufacture a fault — Home falls through to the record rules.
         sched = derive_schedule_status(
-            ScheduleReadback(found=None, error="denied"), hint_registered=True, latest_record_ts=None
+            ScheduleReadback(found=None, error="denied"),
+            hint_registered=True,
+            latest_record_ts=None,
+            foreign_account="",
         )
         status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=sched)
         assert status.verdict is Verdict.HEALTHY
@@ -366,7 +376,9 @@ class TestScheduleAttention:
 
     def test_unexpected_missing_does_not_warn(self) -> None:
         # A configured manual-only install that never scheduled → not a fault on Home.
-        sched = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        sched = derive_schedule_status(
+            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+        )
         status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=sched)
         assert status.verdict is Verdict.HEALTHY
 
@@ -395,7 +407,9 @@ class TestFailureBeatsScheduleAttention:
     @staticmethod
     def _expected_missing() -> ScheduleStatus:
         """The Event-141 shape: the config expected a schedule, the OS definitively has none."""
-        return derive_schedule_status(ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None)
+        return derive_schedule_status(
+            ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, foreign_account=""
+        )
 
     @staticmethod
     def _contradiction() -> ScheduleStatus:
@@ -404,6 +418,7 @@ class TestFailureBeatsScheduleAttention:
             ScheduleReadback(found=True, last_run="2026-07-04T04:00:00"),
             hint_registered=True,
             latest_record_ts=_RECENT,
+            foreign_account="",
         )
 
     @staticmethod
@@ -474,9 +489,14 @@ class TestFailureBeatsScheduleAttention:
         [
             None,  # not probed yet (the first paint)
             _live_schedule(),  # a clean LIVE schedule
-            derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None),
             derive_schedule_status(
-                ScheduleReadback(found=None, error="denied"), hint_registered=True, latest_record_ts=None
+                ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+            ),
+            derive_schedule_status(
+                ScheduleReadback(found=None, error="denied"),
+                hint_registered=True,
+                latest_record_ts=None,
+                foreign_account="",
             ),
         ],
         ids=["unprobed", "live", "unexpected-missing", "unknown"],
@@ -627,7 +647,10 @@ class TestMissedRun:
         # D4 honesty: None (not probed) and UNKNOWN (query failed) never assert a miss — the
         # schedule-unaware staleness proxy remains the honest fallback for an old clean record.
         unknown = derive_schedule_status(
-            ScheduleReadback(found=None, error="denied"), hint_registered=True, latest_record_ts=None
+            ScheduleReadback(found=None, error="denied"),
+            hint_registered=True,
+            latest_record_ts=None,
+            foreign_account="",
         )
         for sched in (None, unknown):
             status = derive_home_status(
@@ -642,7 +665,9 @@ class TestMissedRun:
     def test_confirmed_missing_schedule_does_not_fire_missed(self) -> None:
         # An unexpected MISSING (manual-only install) is not a missed run — nothing was promised.
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
-        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        missing = derive_schedule_status(
+            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+        )
         status = derive_home_status([], cfg, now=_NOW, store_created_at=self._ESTABLISHED, schedule_status=missing)
         assert status.headline != self._MISSED_HEADLINE
 
@@ -793,7 +818,9 @@ class TestSeasonalPause:
     def test_expected_missing_schedule_still_surfaces_in_a_pause(self) -> None:
         # A genuinely gone task makes "resumes <date>" a lie — the MISSING attention still surfaces
         # (only the by-design LIVE fired-but-no-record contradiction is suppressed during a pause).
-        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None)
+        missing = derive_schedule_status(
+            ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, foreign_account=""
+        )
         status = derive_home_status([_record()], _windowed(), now=_SUMMER, schedule_status=missing)
         assert status.verdict is Verdict.WARNING
         assert status.fix is not None and status.fix.dest_id == "setup"
@@ -805,7 +832,9 @@ class TestSeasonalPause:
         # fires and the empty-store paused branch used to mask a schedule that is CONFIRMED gone
         # (it will never resume, so "resumes <date>" is a lie). The honest "add a nightly schedule"
         # WARNING must surface instead of the green paused headline.
-        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        missing = derive_schedule_status(
+            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+        )
         status = derive_home_status(
             [],
             _windowed(setup_completed=True, schedule_registered=False),
@@ -821,7 +850,9 @@ class TestSeasonalPause:
         # The populated twin ("Remove nightly sync" leaves past runs in the store). A confirmed-gone
         # schedule must not read as a calm summer pause -> the normal record rules apply (here: an
         # old newest record -> the honest "No recent sync" WARNING), never the HEALTHY pause.
-        missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None)
+        missing = derive_schedule_status(
+            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+        )
         old = (_SUMMER - timedelta(hours=STALE_AFTER_HOURS + 5)).isoformat(timespec="seconds")
         status = derive_home_status(
             [_record(timestamp=old)],
@@ -839,6 +870,7 @@ class TestSeasonalPause:
             ScheduleReadback(found=True, last_run="2026-07-19T04:00:00"),
             hint_registered=True,
             latest_record_ts=_RECENT,
+            foreign_account="",
         )
         status = derive_home_status([_record()], _windowed(), now=_SUMMER, schedule_status=contradiction)
         assert status.verdict is Verdict.HEALTHY
@@ -1007,7 +1039,10 @@ class TestHealthy:
     def test_healthy_headline_stays_neutral_on_unconfirmed_readback(self) -> None:
         # An UNKNOWN read-back (query failed) must not upgrade the claim — honesty inverse of D4.
         unknown = derive_schedule_status(
-            ScheduleReadback(found=None, error="denied"), hint_registered=True, latest_record_ts=None
+            ScheduleReadback(found=None, error="denied"),
+            hint_registered=True,
+            latest_record_ts=None,
+            foreign_account="",
         )
         status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=unknown)
         assert status.headline == "Your roster is up to date"
@@ -1316,7 +1351,9 @@ class TestQuickActions:
 
 def _every_home_status() -> list[HomeStatus]:
     """Every ``HomeStatus`` the module's rules can produce over a spread of inputs."""
-    missing = derive_schedule_status(ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None)
+    missing = derive_schedule_status(
+        ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, foreign_account=""
+    )
     records = [
         None,
         [],
@@ -1729,3 +1766,227 @@ class TestWelcomeBandOverAConfig:
         blank = AppConfig(identity_email="admin@sd48.bc.ca")
         assert home_status_mod._has_saved_choices(blank) is False, "the fixture is not the blank profile"
         assert welcome_band(blank, records=None, store_created_at=None) == WELCOME_RESUME_PLAIN
+
+
+# --------------------------------------------------------------------------- #
+# Plan 0046 C / A5 + A9 — the foreign principal on Home                          #
+# --------------------------------------------------------------------------- #
+from src.ui_flet.home_status import (  # noqa: E402
+    FOREIGN_PRINCIPAL_HEADLINE,
+    _is_missed_run,
+    sync_window_paused,
+)
+
+_FOREIGN = "CONTOSO\\svc_districtsync"
+_STALE_HEADLINE = "No recent sync"
+
+#: The store is established (older than the missed-run window), so the fresh-start guard is open.
+_ESTABLISHED = (_NOW - timedelta(hours=MISSED_RUN_AFTER_HOURS + 48)).isoformat(timespec="seconds")
+#: A record older than BOTH windows — the ledger has nothing current to say.
+_ANCIENT = (_NOW - timedelta(hours=STALE_AFTER_HOURS + 48)).isoformat(timespec="seconds")
+
+
+def _foreign_schedule(*, attention: bool = False, detail: str = "registered elsewhere") -> ScheduleStatus:
+    """A LIVE read-back on a RECORDED foreign principal.
+
+    ``attention`` stands in for "Windows' own LastTaskResult reported a problem" — on a foreign
+    LIVE status that is the ONLY thing that can raise it, because ``_is_contradiction`` is
+    suppressed there (see ``schedule_status``).
+    """
+    return ScheduleStatus(
+        state=ScheduleState.LIVE,
+        headline="Nightly sync is scheduled",
+        detail=detail,
+        next_run_display="3:00 AM",
+        attention=attention,
+        foreign_account=_FOREIGN,
+    )
+
+
+class TestMissedRunGoesQuietOnlyForAForeignPrincipal:
+    """A5 — and the positive twin on every arm, because a predicate that goes quiet when it
+    should not is worse than one that is occasionally noisy: it is the app's ONLY evidence
+    the nightly actually ran."""
+
+    def test_empty_store_is_quiet_under_a_foreign_principal(self) -> None:
+        assert _is_missed_run([], now=_NOW, store_created_at=_ESTABLISHED, schedule_status=_foreign_schedule()) is False
+
+    def test_positive_twin_the_same_empty_store_still_alarms_on_a_same_account_install(self) -> None:
+        assert _is_missed_run([], now=_NOW, store_created_at=_ESTABLISHED, schedule_status=_live_schedule()) is True
+
+    def test_stale_newest_record_is_quiet_under_a_foreign_principal(self) -> None:
+        records = [_record(timestamp=_ANCIENT)]
+        assert (
+            _is_missed_run(records, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=_foreign_schedule())
+            is False
+        )
+
+    def test_positive_twin_the_same_stale_record_still_alarms_on_a_same_account_install(self) -> None:
+        records = [_record(timestamp=_ANCIENT)]
+        assert (
+            _is_missed_run(records, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=_live_schedule()) is True
+        )
+
+    def test_the_signature_gained_no_parameter(self) -> None:
+        """The fact rides the ``ScheduleStatus`` this predicate already receives — ONE carrier, so
+        it can never disagree with the contradiction rule that shares it."""
+        import inspect
+
+        params = set(inspect.signature(_is_missed_run).parameters)
+        assert params == {"records", "now", "store_created_at", "schedule_status"}
+
+
+class TestSyncWindowPausedIsForeignAware:
+    """A9 — the pause is NOT IN FORCE for a task running as another account."""
+
+    def test_an_otherwise_paused_window_reports_unpaused_under_a_foreign_principal(self) -> None:
+        assert sync_window_paused(_windowed(), now=_SUMMER, foreign_account=_FOREIGN) is False
+
+    def test_positive_twin_the_same_window_still_reports_paused_on_a_same_account_install(self) -> None:
+        assert sync_window_paused(_windowed(), now=_SUMMER, foreign_account="") is True
+
+    def test_foreign_account_is_required_keyword_only(self) -> None:
+        with pytest.raises(TypeError):
+            sync_window_paused(_windowed(), now=_SUMMER)  # type: ignore[call-arg]
+
+
+class TestHomeNeverRendersAFalseAlarmUnderAForeignPrincipal:
+    """The three signals A5 silences, each with its positive twin."""
+
+    def test_the_missed_run_headline_is_never_rendered(self) -> None:
+        status = derive_home_status(
+            [], _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=_foreign_schedule()
+        )
+        assert status.headline != _MISSED_HEADLINE
+
+    def test_positive_twin_the_missed_run_headline_still_renders(self) -> None:
+        status = derive_home_status(
+            [], _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=_live_schedule()
+        )
+        assert status.headline == _MISSED_HEADLINE
+
+    def test_the_stale_headline_is_never_rendered(self) -> None:
+        records = [_record(timestamp=_ANCIENT)]
+        status = derive_home_status(
+            records, _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=_foreign_schedule()
+        )
+        assert status.headline != _STALE_HEADLINE
+
+    def test_positive_twin_the_stale_headline_still_renders(self) -> None:
+        """Same ancient record, same LIVE schedule, no recorded principal — with the missed-run
+        rule off (a fresh store) the stale rule is what speaks."""
+        records = [_record(timestamp=_ANCIENT)]
+        status = derive_home_status(
+            records, _CONFIGURED, now=_NOW, store_created_at=None, schedule_status=_live_schedule()
+        )
+        assert status.headline == _STALE_HEADLINE
+
+    def test_the_seasonal_paused_headline_is_never_rendered(self) -> None:
+        status = derive_home_status(
+            [_record(timestamp=_SUMMER_ESTABLISHED)],
+            _windowed(),
+            now=_SUMMER,
+            store_created_at=_SUMMER_ESTABLISHED,
+            schedule_status=_foreign_schedule(),
+        )
+        assert status.headline != _PAUSED_HEADLINE
+
+    def test_positive_twin_the_seasonal_paused_headline_still_renders(self) -> None:
+        status = derive_home_status(
+            [_record(timestamp=_SUMMER_ESTABLISHED)],
+            _windowed(),
+            now=_SUMMER,
+            store_created_at=_SUMMER_ESTABLISHED,
+            schedule_status=_live_schedule(),
+        )
+        assert status.headline == _PAUSED_HEADLINE
+
+    def test_the_empty_state_arms_are_never_rendered(self) -> None:
+        """An empty ledger under a foreign principal is EXPECTED — neither empty arm may claim a
+        fresh start or promise a nightly that will never appear HERE."""
+        from src.ui_flet.home_status import EMPTY_FRESH_START_HEADLINE, EMPTY_NO_RUNS_HEADLINE
+
+        for store_created_at in (None, _ESTABLISHED):
+            status = derive_home_status(
+                [],
+                _CONFIGURED,
+                now=_NOW,
+                store_created_at=store_created_at,
+                schedule_status=_foreign_schedule(),
+            )
+            assert status.headline not in (EMPTY_FRESH_START_HEADLINE, EMPTY_NO_RUNS_HEADLINE)
+            assert status.headline == FOREIGN_PRINCIPAL_HEADLINE
+
+
+class TestTheForeignPrincipalBranch:
+    """The ONE true statement that replaces all three false ones."""
+
+    def test_it_is_healthy_when_windows_reports_no_problem(self) -> None:
+        status = derive_home_status(
+            [], _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=_foreign_schedule()
+        )
+        assert status.verdict is Verdict.HEALTHY
+        assert status.headline == FOREIGN_PRINCIPAL_HEADLINE
+        assert status.fix is None
+
+    def test_it_is_amber_with_a_setup_cta_when_windows_reports_a_problem(self) -> None:
+        """AMBER, never red: red is reserved for a failure read out of a RUN RECORD, and this is
+        an OS result classified with hedges."""
+        status = derive_home_status(
+            [],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=_ESTABLISHED,
+            schedule_status=_foreign_schedule(attention=True),
+        )
+        assert status.verdict is Verdict.WARNING
+        assert status.fix is not None
+        assert status.fix.dest_id == "setup"
+
+    def test_its_detail_is_the_schedule_status_detail_verbatim(self) -> None:
+        """Single-sourced — the sentence lives in ``schedule_status``, never re-spelled here."""
+        schedule = _foreign_schedule(detail="Records live under CONTOSO\\svc_districtsync.")
+        status = derive_home_status([], _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=schedule)
+        assert status.detail == schedule.detail
+
+    def test_it_does_not_fire_while_the_local_ledger_has_something_current_to_say(self) -> None:
+        """A fresh manual Convert speaks for itself — explaining an absence that isn't there
+        would be noise."""
+        status = derive_home_status(
+            [_record(timestamp=_RECENT)],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=_ESTABLISHED,
+            schedule_status=_foreign_schedule(),
+        )
+        assert status.headline != FOREIGN_PRINCIPAL_HEADLINE
+        assert status.verdict is Verdict.HEALTHY
+
+    def test_it_never_outranks_a_failed_latest_record(self) -> None:
+        """Failures above warnings — a manual Convert that genuinely failed still owns the band."""
+        status = derive_home_status(
+            [_record(timestamp=_ANCIENT, status="failed", error="boom")],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=_ESTABLISHED,
+            schedule_status=_foreign_schedule(),
+        )
+        assert status.verdict is Verdict.FAILED
+        assert status.headline == "Last sync failed"
+
+    def test_it_requires_a_confirmed_live_read_back(self) -> None:
+        """D4 honesty: "your nightly sync runs as X" is a claim about a TASK. A gone task (a real
+        fault, principal or not) and an unconfirmed one must not have claims made about them."""
+        for state in (ScheduleState.MISSING, ScheduleState.UNKNOWN):
+            schedule = ScheduleStatus(state=state, headline="h", detail="d", foreign_account=_FOREIGN, expected=False)
+            status = derive_home_status(
+                [], _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=schedule
+            )
+            assert status.headline != FOREIGN_PRINCIPAL_HEADLINE
+
+    def test_it_does_not_fire_without_a_recorded_foreign_principal(self) -> None:
+        """The whole narrowing, in one line: no record, no suppression, no new branch."""
+        status = derive_home_status(
+            [], _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=_live_schedule()
+        )
+        assert status.headline != FOREIGN_PRINCIPAL_HEADLINE

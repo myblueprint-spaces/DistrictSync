@@ -26,7 +26,33 @@ Per-release download links and auto-generated commit notes live on the
   delivery is switched on, and your DistrictSync setup guide has the full steps.
   This does not change what your district's security policy allows.
 
+- **Windows' own result for last night's run is now on screen.** The schedule
+  readout says what Task Scheduler reported for the task's most recent run —
+  that it hasn't run yet, that it ended with an error, or that Windows returned
+  a logon-type result (what Windows returns when an account has not been granted
+  the "Log on as a batch job" right, which your IT team can confirm and grant).
+  A result we can't name is reported as a problem without a guessed cause. This
+  is a reading of Windows' own record, so it works even when the run records
+  themselves are written somewhere this account can't see. Note this is about
+  the task's last **run** — the "Log on as a batch job" advice that was removed
+  from scheduling failures below was about **setting the schedule up**, where it
+  did not apply.
+
 ### Fixed
+
+- **A nightly sync running as a service account no longer reports a nightly
+  false alarm.** Run records are saved under the Windows account the sync runs
+  as, so a service account's records never reach the account you sign in with.
+  Home, Run History and the Setup badge used to read that empty history as a
+  fault — "we expected a nightly sync that didn't arrive", "no recent sync", or
+  a prompt to re-register a schedule that was working perfectly. They now say
+  plainly where the records went instead, and use Windows' own result for the
+  task to tell you if something really did go wrong. Nothing changes for a sync
+  running as your own account: a genuinely missed run still raises the same
+  warning it always has. The summer pause also stops claiming to be in force
+  for a service account, because it isn't — the schedule section now says so,
+  and the only way to pause that sync for the break is to remove the nightly
+  schedule.
 
 - **Scheduling the nightly sync: five failures now name the cause instead
   of "try again in a moment".** The status Windows returns when it will not store the task

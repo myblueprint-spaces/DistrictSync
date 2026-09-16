@@ -154,15 +154,19 @@ _BRANCH_OVERRIDES: tuple[dict, ...] = (
 _SCHEDULE_STATES: dict[str, ScheduleStatus | None] = {
     "unprobed": None,
     "live": derive_schedule_status(
-        ScheduleReadback(found=True, next_run="2099-01-05T03:00:00"), hint_registered=True, latest_record_ts=None
+        ScheduleReadback(found=True, next_run="2099-01-05T03:00:00"),
+        hint_registered=True,
+        latest_record_ts=None,
+        foreign_account="",
     ),
     "expected-missing": derive_schedule_status(
-        ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None
+        ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, foreign_account=""
     ),
     "contradiction": derive_schedule_status(
         ScheduleReadback(found=True, last_run="2099-01-03T03:04:05"),
         hint_registered=True,
         latest_record_ts=_RAW_ISO,
+        foreign_account="",
     ),
 }
 
