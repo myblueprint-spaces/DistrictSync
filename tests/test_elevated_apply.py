@@ -242,3 +242,57 @@ class TestDispatchFirst:
         assert code == 0
         assert "usage" in out.lower()  # help really printed (positive twin)
         assert "--elevated-apply" not in out
+
+
+class TestPrincipalReValidation:
+    """Plan 0046 A1 — the privileged half re-validates the field that names the PRINCIPAL.
+
+    ``user`` used to be validated only ``if password is not None``, i.e. everywhere except
+    the one case worth refusing. The parent can no longer send an unvalidated account, so
+    this is a fail-closed floor rather than a second opinion — but a floor with a hole in
+    it is not a floor, and this module's contract is that EVERY input is re-checked here.
+    """
+
+    def _run(self, tmp_path: Path, payload: dict):
+        req, res = _sealed(tmp_path, None)
+        raw = json.dumps(payload).encode()
+        with (
+            patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+            patch("src.scheduler.task_com.register_task_definition") as reg,
+        ):
+            code = elevated_apply.run_elevated_apply([str(req), str(res)])
+        return code, _read(res), reg
+
+    def test_a_hostile_account_is_refused_without_a_password(self, tmp_path: Path) -> None:
+        payload = _valid_register_payload(user="svc && calc", password=None)
+        _code, out, reg = self._run(tmp_path, payload)
+        assert out["ok"] is False
+        assert "not valid" in out["message"]
+        reg.assert_not_called()
+
+    def test_a_hostile_account_is_refused_with_a_password(self, tmp_path: Path) -> None:
+        """The positive twin of the branch above: both password states refuse."""
+        payload = _valid_register_payload(user="svc && calc", password="pw")
+        _code, out, reg = self._run(tmp_path, payload)
+        assert out["ok"] is False
+        reg.assert_not_called()
+
+    def test_a_valid_account_still_registers_without_a_password(self, tmp_path: Path) -> None:
+        """Not vacuous: the unconditional validation must not close the whole branch."""
+        payload = _valid_register_payload(password=None)
+        _code, out, reg = self._run(tmp_path, payload)
+        assert out["ok"] is True
+        assert reg.call_args[0][0].user == "CORP\\jane"
+
+    def test_a_blank_password_never_becomes_an_unattended_registration(self, tmp_path: Path) -> None:
+        """R2 in the privileged half: ``""`` is normalised to ``None`` here too, so the
+        child cannot register TASK_LOGON_PASSWORD with a blank credential even if a
+        request file says so."""
+        payload = _valid_register_payload(password="")
+        _code, out, reg = self._run(tmp_path, payload)
+        assert out["ok"] is True
+        params = reg.call_args[0][0]
+        assert params.password is None
+        service, folder = MagicMock(), MagicMock()
+        task_com.apply_definition(service, folder, params)
+        assert folder.RegisterTaskDefinition.call_args[0][5] == task_com.TASK_LOGON_INTERACTIVE_TOKEN

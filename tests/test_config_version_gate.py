@@ -258,7 +258,8 @@ class TestDeclaredRangeVersusSupported:
     sd27/sd38 — the first `student_rostering_grades` districts — declared
     '1.11' and moved the prose with them, and stayed converged at 1.12 (sd83's
     Staff row_filters + `normalize_staff_role`, which shipped alongside their
-    only consumer). What must always hold: no bundled
+    only consumer) and 1.13 (sd51's `blended_classes` opt-out, which shipped
+    alongside its only consumer). What must always hold: no bundled
     config declares ABOVE the supported minor, and the prose matches the real
     declared range rather than the constant.
     """
@@ -283,7 +284,7 @@ class TestDeclaredRangeVersusSupported:
         makes the second assertion a strict <= again; a config declaring past the
         constant fails here before it can ship a warning to every install."""
         highest = max(self._declared_versions())
-        assert highest == (SUPPORTED_CONFIG_MAJOR, 12)
+        assert highest == (SUPPORTED_CONFIG_MAJOR, 13)
         assert highest <= (SUPPORTED_CONFIG_MAJOR, SUPPORTED_CONFIG_MINOR)
 
     def test_the_loader_prose_matches_the_range_the_bundled_configs_DECLARE(self):

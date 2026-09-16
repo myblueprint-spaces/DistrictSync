@@ -1,7 +1,7 @@
 # SD51 - Inherits from standard MyEducation BC mapping
 # Differences: source file names, custom email format
 _base: myedbc
-version: '1.9'
+version: '1.13'
 sis: MyEducationBC
 district_name: SD51 - Boundary School District
 # The district's PUBLIC staff email domain. It scopes which district rows this
@@ -29,6 +29,28 @@ global_config:
     - Enrollments
     - StudentAttendance
 
+  # Blended-class detection DISABLED for SD51 (2026-09-16). SD51's MyEd BC
+  # export carries no day rotation — `Day` is "1" on every secondary row of
+  # StudentSchedule.txt and both ClassInformation files, and `Period` is a
+  # block letter/number that repeats across a teacher's sections — so the
+  # blended session_key (school + teacher + term + semester + day + period)
+  # cannot tell distinct secondary courses apart. A probe run on the
+  # 2026-09-14 drop (562-row class-info file) produced 85 FALSE blends (e.g. a
+  # grade-8 Applied Skills section merged with a grade-9 ELA section, 40
+  # students in one class): Classes.csv fell 428→207 and Enrollments.csv
+  # 5081→4699, exit code 0, nothing flagged. All SD51 K-7 grades are homeroom
+  # grades (inherited `homeroom_grades`, unmodified), so a blend entirely
+  # within K-7 is already dropped by the existing blend-suppression gate
+  # (plan 0043 — a blend none of whose grades receives subject/timetable
+  # rostering never reaches Classes.csv) — blended detection has zero upside
+  # for this district. Pointing `class_info` at the NON-enhanced
+  # `ClassInformation.txt` is NOT a fix: that file has no Master Timetable ID
+  # (so blended falls back to the schedule dedup, which uses the SAME
+  # session_key and produces the same false merges) and no Primary Teacher
+  # column (so co-teacher enrollments would drop to zero). See
+  # docs/claugentic-DECISIONS.md (2026-09-16) and the session_key ROADMAP item.
+  blended_classes: false
+
 mappings:
   Students:
     source_files:
@@ -45,6 +67,11 @@ mappings:
     source_files:
       staff_info: "StaffInformation.txt"
       student_demographic: "StudentDemographicEnhanced.txt"
+      # Explicit (was inherited from the base): a 10-row early-year extract is
+      # EXPECTED (owner-confirmed 2026-09-11) and must not be swapped for the
+      # non-enhanced `ClassInformation.txt` — see the `blended_classes` note
+      # above for why that file is not a fix.
+      class_info: "ClassInformationEnh.txt"
 
   Enrollments:
     source_files:

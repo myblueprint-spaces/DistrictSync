@@ -921,6 +921,69 @@ class TestCrossEnrollmentConfig:
         assert cfg.to_raw_dict()["global_config"]["cross_enrollment"] is None
 
 
+class TestBlendedClassesConfig:
+    """`global_config.blended_classes` — the opt-out for SD51's day-less export
+    (see the field's own docstring in models.py and config/mappings/sd51myedbc_mapping.yaml)."""
+
+    def test_default_is_true(self):
+        assert GlobalConfig().blended_classes is True
+
+    def test_explicit_false_accepted(self):
+        assert GlobalConfig(blended_classes=False).blended_classes is False
+
+    def test_lax_string_coerces_like_every_other_bool_field(self):
+        # GlobalConfig sets no strict-mode model_config, same as
+        # CrossEnrollmentConfig.collapse, so pydantic v2's default LAX bool
+        # parsing applies: a recognised truthy/falsy string coerces rather
+        # than raising, while a value outside that vocabulary raises loudly.
+        assert GlobalConfig(blended_classes="no").blended_classes is False
+        assert GlobalConfig(blended_classes="yes").blended_classes is True
+        with pytest.raises(ValidationError):
+            GlobalConfig(blended_classes="banana")
+
+    def test_roundtrip_via_to_raw_dict(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            global_config=GlobalConfig(blended_classes=False),
+            mappings={
+                "Students": EntityConfig(
+                    source_files={"student_demographic": "Demo.txt"},
+                    field_map={"User ID": "Student Number"},
+                ),
+            },
+        )
+        assert cfg.to_raw_dict()["global_config"]["blended_classes"] is False
+
+    def test_roundtrip_defaults_true_when_unset(self):
+        cfg = MappingConfig(
+            version="1.9",
+            sis="test",
+            mappings={
+                "Students": EntityConfig(
+                    source_files={"student_demographic": "Demo.txt"},
+                    field_map={"User ID": "Student Number"},
+                ),
+            },
+        )
+        assert cfg.to_raw_dict()["global_config"]["blended_classes"] is True
+
+    def test_exactly_the_two_sd51_tiers_set_it_false(self):
+        """The key's shipped consumers, stated as a config fact (2026-09-16):
+        sd51myedbc sets it directly; sd51attendance inherits it via `_base:
+        sd51myedbc` (it declares no `blended_classes` of its own — a scalar
+        key is not replaced by deep-merge the way a list would be, so the
+        inherited False survives). Every other bundled config must still
+        resolve to True — a loop, so a future district that flips it must
+        edit this test deliberately rather than widen the set by accident."""
+        setters = {name for name in available_configs() if load_config(name).global_config.blended_classes is False}
+        assert setters == {"sd51myedbc", "sd51attendance"}
+        for name in available_configs():
+            if name in setters:
+                continue
+            assert load_config(name).global_config.blended_classes is True
+
+
 # -----------------------------------------------------------------------
 # class_rostering_grades — the opt-in CLASS-rostering scope (plan 0042, 1a)
 # -----------------------------------------------------------------------
