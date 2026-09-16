@@ -9,6 +9,18 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Changed
+
+- **Unity Christian School: family contacts are now delivered.** The school's
+  2026-09-14 extract switched to the Enhanced emergency-contact report, which
+  carries guardian email addresses — the field a SpacesEDU family account is
+  keyed on — and a parent/guardian flag. `Family.csv` was switched off for this
+  school because the earlier extract had neither. It is now produced, filtered
+  to the contacts the school itself marks as an authorized parent or guardian,
+  so emergency-only contacts (doctors, aunts, family friends) are not turned
+  into parent accounts. No other file changed, and the school does not need to
+  rename anything.
+
 ## [3.20.0] - 2026-09-16
 
 Districts can now be told to never merge sections into a blended class —
