@@ -1,98 +1,192 @@
-"""Tests for the relocated Setup schedule-error classifier (IA-4a).
+"""Tests for the Setup schedule-error classifier (IA-4a; rewritten at plan 0047 Slice A2).
 
-``src.ui_flet.setup_errors.classify_schedule_error`` is the single source for
-mapping a (de-CLIXML'd) ``register_task`` failure message + the process
-elevation state into a calm, actionable message. It is pure (no flet import)
-so it is unit-testable headless.
+``src.ui_flet.setup_errors.classify_schedule_error`` is the single source for mapping a
+``register_task`` / ``delete_task`` failure message + the process elevation state into a
+calm, actionable message. It is pure (no flet import) so it is unit-testable headless.
 
-Two concerns are covered:
+Four concerns are covered:
 
-1. **Behaviour** — the six ported cases, asserting on the PLAIN substrings (the
-   relocation stripped the ``**markdown**`` bold so a Flet verdict banner renders
-   clean prose, not literal asterisks).
-2. **[SECURITY — I2] Non-leak proof** — the classifier is a faithful,
-   non-leaking mapper: on a KNOWN-substring branch it returns FIXED copy
-   independent of ``msg`` (so a secret riding in ``msg`` can NOT ride along into
-   a classified branch); on the ``else`` branch ``msg`` passes through verbatim
-   (the core owns having sanitized it — this test does NOT re-test the core's
-   de-CLIXML). The classifier itself introduces no credential text.
+1. **Behaviour** — the five HRESULT-keyed exact branches plan 0047 added, the five
+   elevation markers, the two defensive access-denied substring branches, and the
+   unclassified fallback. Assertions are on PLAIN substrings (the copy carries no
+   ``**markdown**``: a Flet verdict banner renders ``detail`` as a plain ``ft.Text``).
+2. **[SECURITY — I2] Non-leak proof** — the proof is MIXED by construction: a SUBSTRING
+   branch returns FIXED copy independent of ``msg`` (so a secret riding in ``msg`` cannot
+   ride along), and an EXACT-equality branch is unreachable unless ``msg`` IS the constant.
+   The fallback passes ``msg`` through verbatim (the core owns having sanitized it).
+3. **Produced-vs-classified sweep** — the producible message set is DERIVED by reflection
+   over ``task_com`` / ``windows`` / ``elevated_apply``, so a new canonical is red by
+   construction until it is either classified or declared unclassified with a reason.
+4. **Vocabulary + first-sentence rules** — every branch's first sentence names the CAUSE
+   (all five render under the same red "Couldn't schedule the nightly sync" headline), and
+   no classifier string says "below" (the readout renders ABOVE the result slot) or
+   "logged in" (the schedule section's vocabulary is "signed in / signed out").
+
+All 25 production call sites route through the module-level :func:`_classify` helper: the
+production signature's ``account_is_current`` is a REQUIRED keyword (so plan 0046-B cannot
+forget it), and one test-file default keeps the next keyword a one-line edit here.
 """
 
 from __future__ import annotations
 
-from src.scheduler import windows
-from src.ui_flet.setup_errors import classify_schedule_error
+import pytest
+
+from src.scheduler import elevated_apply, task_com, windows
+from src.ui_flet.setup_errors import _unclassified_copy, classify_schedule_error
 
 # A fake secret + path smuggled inside ``msg`` — used to prove that a classified
 # (known-substring) branch returns FIXED copy that does NOT echo it.
 _SECRET_MSG = "Access is denied. DSYNC_TASK_PW=hunter2 C:\\Users\\x\\secret"
 
 
+def _classify(msg: str, elevated: bool, *, account_is_current: bool = True) -> str:
+    """The ONE call shape this file uses — the next required keyword is one edit here.
+
+    ``account_is_current`` has no default in production (a permissive default on the
+    parameter that selects personal-credential coaching is the banned shape); a default
+    HERE is fine and is what keeps the 25 call sites from each carrying the keyword.
+    """
+    return classify_schedule_error(msg, elevated, account_is_current=account_is_current)
+
+
+def _first_sentence(text: str) -> str:
+    return text.split(". ")[0]
+
+
 class TestClassifyScheduleError:
     def test_not_elevated_access_denied_says_run_as_admin(self) -> None:
-        msg = classify_schedule_error("Access is denied.", elevated=False)
+        msg = _classify("Access is denied.", elevated=False)
         assert "Run as administrator" in msg
         assert "administrator rights" in msg
 
-    def test_elevated_access_denied_points_at_credentials(self) -> None:
-        msg = classify_schedule_error("Access is denied.", elevated=True)
-        # Does NOT send an already-elevated admin in circles.
+    def test_elevated_access_denied_is_provenance_worded_not_credential_coaching(self) -> None:
+        # Plan 0046 A7: the PIN / microsoft.com / batch-logon coaching was the PowerShell-era
+        # diagnosis and is retired — a wrong password was live-observed (2026-08-05) to fail
+        # with 0x8007052E, which now has its own branch.
+        msg = _classify(task_com.MSG_ACCESS_DENIED, elevated=True)
         assert "Run as administrator" not in msg
-        assert "Log on as a batch job" in msg
-        assert "Windows account password" in msg
-        assert "PIN" in msg
+        assert "Log on as a batch job" not in msg
+        assert "PIN" not in msg
+        assert "microsoft.com" not in msg
+        assert "batch" not in msg.lower()
+        assert "in our testing a wrong password reports a different message" in msg
+        assert "IT team" in msg
+        assert "0x80070005" in msg
 
-    def test_powershell_not_found(self) -> None:
-        # Elevation is irrelevant here — the PS message wins regardless.
-        for elevated in (True, False):
-            msg = classify_schedule_error("PowerShell not found", elevated=elevated)
-            assert "PowerShell wasn't found" in msg
-            assert "Run as administrator" not in msg
+    def test_elevated_child_access_denied_names_the_approved_prompt(self) -> None:
+        out = _classify(windows._MSG_ELEVATED_ACCESS_DENIED, elevated=False)
+        # Provenance, not the parent's elevation bit: a child refusal arrives as its own
+        # canonical, so the copy can say the prompt WAS approved.
+        assert "even after the permission prompt was approved" in out
+        assert "0x80070005" in out
 
-    def test_scheduledtasks_module_missing(self) -> None:
+    def test_no_logon_session_names_the_policy_and_the_options(self) -> None:
         for elevated in (True, False):
-            msg = classify_schedule_error("ScheduledTasks module not available", elevated=elevated)
-            assert "too old to schedule tasks" in msg
-            assert "Run as administrator" not in msg
+            out = _classify(task_com.MSG_NO_LOGON_SESSION, elevated=elevated)
+            assert "Network access: Do not allow storage of passwords and credentials for network authentication" in out
+            assert "Microsoft documents this when" in out
+            assert "Convert page" in out
+            assert "Windows account password" in out
+            assert "Schedule nightly sync" in out
+            assert "will not run after a reboot with no one signed in" in out
+            assert "0x80070520" in out
+            # No promise a retry helps, no frequency word, no markdown, no wrong direction.
+            assert "try again" not in out.lower()
+            assert "usually" not in out.lower()
+            assert "(Details:" not in out
+            assert "**" not in out
+            assert "below" not in out
+            assert "logged in" not in out
+
+    def test_account_info_not_set_is_not_about_the_typed_password(self) -> None:
+        out = _classify(task_com.MSG_ACCOUNT_INFO_NOT_SET, elevated=False)
+        assert "isn't about the password you typed" in out
+        assert "Remove nightly sync" in out
+        assert "Schedule nightly sync" in out
+        assert "0x8004130F" in out
+
+    def test_credential_copy_for_the_current_account(self) -> None:
+        out = _classify(task_com.MSG_LOGON_FAILURE, elevated=False, account_is_current=True)
+        assert "Windows rejected the user name or password" in out
+        assert "PIN" in out
+        assert "microsoft.com" in out
+        assert "the one you use to sign in to this computer" in out
+        assert "lock the account" in out
+        assert "0x8007052E" in out
+
+    def test_credential_copy_for_another_account_drops_the_personal_coaching(self) -> None:
+        out = _classify(task_com.MSG_LOGON_FAILURE, elevated=False, account_is_current=False)
+        # A service account has no Windows Hello PIN and no microsoft.com password — coaching
+        # a personal cloud credential into a service-account field is plan 0046's A7.
+        assert "PIN" not in out
+        assert "microsoft.com" not in out
+        assert "the account you entered" in out
+        assert "lock the account" in out
+        assert "0x8007052E" in out
+
+    def test_account_is_current_is_a_required_keyword(self) -> None:
+        # G5: 0046-B cannot forget the switch — a missing argument is a TypeError (and a
+        # mypy error), never a silently-personal default.
+        with pytest.raises(TypeError):
+            classify_schedule_error(task_com.MSG_LOGON_FAILURE, False)  # type: ignore[call-arg]
+
+    def test_com_unavailable_offers_convert_and_carries_no_code(self) -> None:
+        out = _classify(task_com.MSG_COM_UNAVAILABLE, elevated=False)
+        assert "can't reach Windows Task Scheduler" in out
+        assert "Convert page" in out
+        assert "Help page" in out
+        assert "0x" not in out  # this one has no HRESULT to show
+        assert "try again" not in out.lower()
 
     def test_unknown_message_leads_calm_and_demotes_details(self) -> None:
-        # 0035 W3b (T1 #2): the else branch LEADS with fixed calm copy + a support path;
-        # the raw (core-sanitized) message is demoted to a trailing "(Details: …)" clause.
-        msg = classify_schedule_error("The user name or password is incorrect.", elevated=True)
+        # The else branch LEADS with fixed calm copy + a support path; the raw
+        # (core-sanitized) message is demoted to a trailing "(Details: …)" clause.
+        # NOTE the probe: "The user name or password is incorrect." is now
+        # task_com.MSG_LOGON_FAILURE, an exact-equality branch — a genuinely unclassified
+        # string is needed here or this row would test the credential branch instead.
+        raw = "CIM exception 0x80041318 at Microsoft.Management.Infrastructure"
+        msg = _classify(raw, elevated=True)
         assert msg == (
-            "The schedule change didn't go through. Try again in a moment — if it keeps failing, "
-            "the Help page has our support contact. "
-            "(Details: The user name or password is incorrect.)"
+            "The schedule change didn't go through. You can try once more; if it fails again, "
+            "the Help page has our support contact — include the detail shown here. "
+            f"(Details: {raw})"
         )
 
     def test_lowercase_access_denied_classified(self) -> None:
         # Defensive: a lowercase "access denied" phrasing still classifies.
-        msg = classify_schedule_error("access denied while registering", elevated=False)
+        msg = _classify("access denied while registering", elevated=False)
         assert "Run as administrator" in msg
+        assert "0x" not in msg  # a FUZZY match must not assert a status it may not have
 
     def test_no_markdown_asterisks_in_any_branch(self) -> None:
-        # The relocation stripped ``**bold**`` so a Flet verdict banner (plain
-        # ft.Text) never shows literal asterisks.
+        # The copy carries no ``**bold**`` so a Flet verdict banner (plain ft.Text) never
+        # shows literal asterisks. Seeded with the LIVE branch messages (the two retired
+        # PowerShell strings this loop used to carry classified nothing after 0041 S1b —
+        # it kept passing while testing only the fallback).
         for elevated in (True, False):
             for src_msg in (
-                "Access is denied.",
-                "PowerShell not found",
-                "ScheduledTasks module not available",
+                task_com.MSG_ACCESS_DENIED,
+                task_com.MSG_NO_LOGON_SESSION,
+                task_com.MSG_ACCOUNT_INFO_NOT_SET,
+                task_com.MSG_LOGON_FAILURE,
+                task_com.MSG_COM_UNAVAILABLE,
+                windows._MSG_ELEVATED_ACCESS_DENIED,
             ):
-                assert "**" not in classify_schedule_error(src_msg, elevated=elevated)
+                assert "**" not in _classify(src_msg, elevated=elevated)
 
 
 class TestClassifierNeverLeaksSecret:
     """[SECURITY — I2] The classifier never surfaces a secret carried in ``msg``.
 
-    For each KNOWN-substring branch the returned copy is FIXED and independent of
-    ``msg``, so a ``DSYNC_TASK_PW=...`` / path token smuggled into ``msg`` can NOT
-    ride along. On the ``else`` branch ``msg`` passes through verbatim (the core
+    On a SUBSTRING branch the returned copy is FIXED and independent of ``msg``, so a
+    ``DSYNC_TASK_PW=...`` / path token smuggled into ``msg`` can NOT ride along. An
+    EXACT-equality branch is unreachable unless ``msg`` IS the constant, so a secret
+    cannot reach one at all. On the fallback ``msg`` passes through verbatim (the core
     owns having sanitized it); the classifier adds no credential text of its own.
     """
 
     def test_access_denied_not_elevated_branch_drops_secret(self) -> None:
-        out = classify_schedule_error(_SECRET_MSG, elevated=False)
+        out = _classify(_SECRET_MSG, elevated=False)
         # Classified branch → FIXED copy, independent of msg.
         assert "Run as administrator" in out
         assert "hunter2" not in out
@@ -100,23 +194,11 @@ class TestClassifierNeverLeaksSecret:
         assert "DSYNC_TASK_PW" not in out
 
     def test_access_denied_elevated_branch_drops_secret(self) -> None:
-        out = classify_schedule_error(_SECRET_MSG, elevated=True)
-        assert "Log on as a batch job" in out
-        assert "hunter2" not in out
-        assert "secret" not in out
-        assert "DSYNC_TASK_PW" not in out
-
-    def test_powershell_branch_drops_secret(self) -> None:
-        # A secret smuggled alongside the PowerShell substring is dropped.
-        out = classify_schedule_error("PowerShell not found DSYNC_TASK_PW=hunter2 secret", elevated=False)
-        assert "PowerShell wasn't found" in out
-        assert "hunter2" not in out
-        assert "secret" not in out
-        assert "DSYNC_TASK_PW" not in out
-
-    def test_scheduledtasks_branch_drops_secret(self) -> None:
-        out = classify_schedule_error("ScheduledTasks module not available DSYNC_TASK_PW=hunter2 secret", elevated=True)
-        assert "too old to schedule tasks" in out
+        out = _classify(_SECRET_MSG, elevated=True)
+        # POSITIVE ANCHOR — re-anchored on the new provenance copy when the batch-logon
+        # coaching was retired. Without it the three negatives below would pass trivially
+        # against a branch that returned "" (verified by perturbation).
+        assert "Check with your IT team" in out
         assert "hunter2" not in out
         assert "secret" not in out
         assert "DSYNC_TASK_PW" not in out
@@ -126,13 +208,13 @@ class TestClassifierNeverLeaksSecret:
         # "(Details: …)" clause (the core sanitized it). The classifier only wraps
         # FIXED copy around it; it introduces no new secret.
         raw = "Some unclassified failure text"
-        out = classify_schedule_error(raw, elevated=False)
+        out = _classify(raw, elevated=False)
         assert out.endswith(f"(Details: {raw})")
         # Nothing beyond the fixed lead + the (core-sanitized) msg — the wrapper is
         # byte-identical no matter what msg carries.
         assert out.replace(raw, "") == (
-            "The schedule change didn't go through. Try again in a moment — if it keeps failing, "
-            "the Help page has our support contact. (Details: )"
+            "The schedule change didn't go through. You can try once more; if it fails again, "
+            "the Help page has our support contact — include the detail shown here. (Details: )"
         )
 
 
@@ -141,17 +223,16 @@ class TestClassifyElevationOutcomes:
 
     The markers are single-sourced from ``register_task`` (imported constants), and the
     classify branches use exact equality so a bounded category always wins over the
-    generic access-denied / else copy. Elevation replaces the old un-elevated "run as
-    administrator" dead-end on the register path.
+    generic access-denied / fallback copy.
     """
 
     def test_uac_declined_says_nothing_changed(self) -> None:
-        out = classify_schedule_error(windows._MSG_UAC_DECLINED, elevated=False)
+        out = _classify(windows._MSG_UAC_DECLINED, elevated=False)
         assert "declined" in out.lower()
         assert "nothing was changed" in out.lower()
 
     def test_elevation_timeout_is_hedged_not_a_false_no_change(self) -> None:
-        out = classify_schedule_error(windows._MSG_ELEVATION_TIMEOUT, elevated=False)
+        out = _classify(windows._MSG_ELEVATION_TIMEOUT, elevated=False)
         # HEDGED — timeout is post-consent, so it must NOT claim nothing changed / not answered.
         assert "may or may not" in out.lower()
         assert "schedule status" in out.lower()
@@ -159,18 +240,29 @@ class TestClassifyElevationOutcomes:
         assert "before it was answered" not in out.lower()
 
     def test_elevation_no_result_points_at_schedule_status(self) -> None:
-        out = classify_schedule_error(windows._MSG_ELEVATION_NO_RESULT, elevated=False)
+        out = _classify(windows._MSG_ELEVATION_NO_RESULT, elevated=False)
         assert "couldn't confirm" in out.lower()
         assert "schedule status" in out.lower()
 
     def test_different_account_offers_two_fixes(self) -> None:
-        out = classify_schedule_error(windows._MSG_DIFFERENT_ACCOUNT, elevated=False)
+        out = _classify(windows._MSG_DIFFERENT_ACCOUNT, elevated=False)
         assert "different account" in out.lower()
         assert "administrator" in out.lower()
         assert "without the Windows password" in out
 
+    def test_different_account_leads_with_the_observed_fact_not_the_inference(self) -> None:
+        # A8: the PermissionError rung this message comes from also fires on a non-cross-account
+        # read refusal, so the cross-account mechanism is the KNOWN TRIGGER, not a settled fact
+        # (plan 0047's grounding calls it "a code reading, not a reproduction").
+        out = _classify(windows._MSG_DIFFERENT_ACCOUNT, elevated=False)
+        assert out.startswith("The elevated step couldn't read the request DistrictSync prepared under your account")
+        # "can happen", not "happens": the same rung fires on an AV/sharing-violation or an ACL
+        # refusal, so the cross-account case is the KNOWN TRIGGER, never the only one.
+        assert "that can happen when" in out
+        assert "run DistrictSync from there" in out
+
     def test_launch_failed(self) -> None:
-        out = classify_schedule_error(windows._MSG_ELEVATION_LAUNCH_FAILED, elevated=False)
+        out = _classify(windows._MSG_ELEVATION_LAUNCH_FAILED, elevated=False)
         assert "couldn't show the permission prompt" in out.lower()
 
     def test_elevation_markers_ignore_elevated_flag(self) -> None:
@@ -182,7 +274,7 @@ class TestClassifyElevationOutcomes:
             windows._MSG_DIFFERENT_ACCOUNT,
             windows._MSG_ELEVATION_LAUNCH_FAILED,
         ):
-            assert classify_schedule_error(marker, elevated=True) == classify_schedule_error(marker, elevated=False)
+            assert _classify(marker, elevated=True) == _classify(marker, elevated=False)
 
     def test_no_markdown_asterisks_in_elevation_copy(self) -> None:
         for marker in (
@@ -192,32 +284,34 @@ class TestClassifyElevationOutcomes:
             windows._MSG_DIFFERENT_ACCOUNT,
             windows._MSG_ELEVATION_LAUNCH_FAILED,
         ):
-            assert "**" not in classify_schedule_error(marker, elevated=False)
+            assert "**" not in _classify(marker, elevated=False)
 
 
 class TestElseBranchNoDeadEnd:
     """0035 W3b (T1 #2): the unclassified branch is calm-first — never a raw-text-first dead end.
 
-    The fixed lead offers a next step (try again) and a support path (the Help page)
-    BEFORE any technical text; the raw PowerShell message survives only as the trailing
-    parenthetical so support can still diagnose from a screenshot.
+    Plan 0047 G4: the fixed lead keeps a PROMISE-FREE "try once more" (the old "Try again in
+    a moment" told a district whose security policy blocks the registration that waiting
+    would help), keeps the support path and the details clause, and omits the clause when the
+    message itself carries no detail.
     """
 
     def test_else_leads_with_calm_copy_not_the_raw_message(self) -> None:
         raw = "CIM exception 0x80041318 at Microsoft.Management.Infrastructure"
-        out = classify_schedule_error(raw, elevated=False)
+        out = _classify(raw, elevated=False)
         assert out.startswith("The schedule change didn't go through.")
         assert not out.startswith(raw)
 
-    def test_else_offers_a_support_path_and_a_retry(self) -> None:
-        out = classify_schedule_error("weird failure", elevated=True)
-        assert "Try again" in out
+    def test_else_offers_a_support_path_without_promising_a_retry_works(self) -> None:
+        out = _classify("weird failure", elevated=True)
+        assert "You can try once more" in out
+        assert "in a moment" not in out
         assert "Help page" in out
         assert "support" in out
 
     def test_else_demotes_the_raw_message_to_a_trailing_details_clause(self) -> None:
         raw = "weird failure"
-        out = classify_schedule_error(raw, elevated=False)
+        out = _classify(raw, elevated=False)
         assert out.endswith(f"(Details: {raw})")
         # Demoted means AFTER the calm copy — the raw text appears exactly once, at the end.
         assert out.index(raw) > out.index("support")
@@ -225,15 +319,162 @@ class TestElseBranchNoDeadEnd:
     def test_else_wraps_neutrally_for_remove_failures_too(self) -> None:
         # Setup routes UNREGISTER failures through this same classifier — the fixed lead
         # must not claim a registration was attempted ("schedule change", not "register").
-        out = classify_schedule_error("could not delete task", elevated=False)
+        out = _classify("could not delete task", elevated=False)
         assert "register" not in out.split("(Details:")[0].lower()
 
     def test_else_classified_branches_have_no_details_clause(self) -> None:
-        # The demotion is else-only: classified branches keep their byte-intact fixed copy.
+        # The demotion is fallback-only: classified branches keep their byte-intact fixed
+        # copy. Re-seeded with the LIVE branch messages — with the two retired PowerShell
+        # strings this loop was ACTIVELY wrong (they reach the fallback, which DOES append
+        # a details clause).
         for known in (
-            "PowerShell not found",
-            "ScheduledTasks module not available",
-            "Access is denied.",
+            task_com.MSG_ACCESS_DENIED,
+            task_com.MSG_NO_LOGON_SESSION,
+            task_com.MSG_ACCOUNT_INFO_NOT_SET,
+            task_com.MSG_LOGON_FAILURE,
+            task_com.MSG_COM_UNAVAILABLE,
+            windows._MSG_ELEVATED_ACCESS_DENIED,
         ):
             for elevated in (True, False):
-                assert "(Details:" not in classify_schedule_error(known, elevated=elevated)
+                assert "(Details:" not in _classify(known, elevated=elevated)
+
+    def test_the_no_detail_literals_get_no_details_clause(self) -> None:
+        # A details clause that repeats the lead is no detail at all.
+        for literal in (
+            windows._MSG_CHILD_DETAIL_UNAVAILABLE,
+            windows._MSG_CHILD_NO_DETAIL,
+            task_com.MSG_OPERATION_FAILED,
+        ):
+            assert "(Details:" not in _classify(literal, elevated=False)
+
+    def test_a_coded_generic_keeps_its_details_clause(self) -> None:
+        # MSG_OPERATION_FAILED's CODED variant (the guarded-description escape) is a
+        # different string and must still show the code it carries.
+        coded = "The schedule operation failed (0x80070520)."
+        out = _classify(coded, elevated=False)
+        assert out.endswith(f"(Details: {coded})")
+
+
+# ---------------------------------------------------------------------------
+# The produced-vs-classified sweep (plan 0047, Approach item 6)
+# ---------------------------------------------------------------------------
+
+
+#: The producible message set, DERIVED rather than hand-listed: every ``MSG_``/``_MSG_``
+#: string binding of the three producer modules. A new canonical is therefore red by
+#: construction until it is classified or declared below with a reason.
+def _producible() -> dict[str, str]:
+    found: dict[str, str] = {}
+    for module in (task_com, windows, elevated_apply):
+        for name, value in sorted(vars(module).items()):
+            if isinstance(value, str) and (name.startswith("MSG_") or name.startswith("_MSG_")):
+                found[value] = f"{module.__name__.rsplit('.', 1)[-1]}.{name}"
+    return found
+
+
+#: Reaches the classifier, deliberately UNCLASSIFIED — each with the reason.
+_DELIBERATELY_UNCLASSIFIED: dict[str, str] = {
+    "windows._MSG_ACCOUNT_NEEDS_PASSWORD": (
+        "unreachable from today's UI for TWO independent reasons: screens/setup.py passes "
+        "run_as_user=None, so the pre-flight refusal branch is never taken at all; and its copy "
+        "belongs with 0046-B's run-as field. The fallback's details clause carries it meanwhile."
+    ),
+    "task_com.MSG_OPERATION_FAILED": (
+        "the bare generic carries no cause to name — it is in _NO_DETAIL so the fallback does not "
+        "repeat it back. Its CODED variant is a different string and keeps its details clause."
+    ),
+    "windows._MSG_CHILD_DETAIL_UNAVAILABLE": "a child-result floor with no cause to name; in _NO_DETAIL.",
+    "windows._MSG_CHILD_NO_DETAIL": "a child-result floor with no cause to name; in _NO_DETAIL.",
+    "elevated_apply._MSG_REQUEST_INVALID": (
+        "an elevated-child refusal: the fallback's details clause is the whole signal."
+    ),
+    "elevated_apply._MSG_REQUEST_MISSING": (
+        "genuinely transient — the handshake file was gone when the child ran; the cross-account "
+        "case no longer reaches it (A8 split the PermissionError rung out ahead of it)."
+    ),
+    "elevated_apply._MSG_REQUEST_UNREADABLE": (
+        "an elevated-child refusal: the fallback's details clause is the whole signal."
+    ),
+    "elevated_apply._MSG_CHILD_FLOOR": (
+        "an elevated-child refusal: the fallback's details clause is the whole signal."
+    ),
+}
+
+#: Never reaches the classifier at all — routed elsewhere, with the evidence.
+_NEVER_REACHES: dict[str, str] = {
+    "task_com.MSG_NOT_FOUND": (
+        "its only realistic producer is the delete path, where schedule_status.interpret_unregister "
+        "intercepts it via ABSENT_TASK_MARKERS ('cannot find') and renders the HEALTHY 'no schedule "
+        "was registered' banner before classify_schedule_error is called."
+    ),
+    "windows._MSG_ELEVATION_REMOVE_UNCONFIRMED": (
+        "screens/setup.py's _apply_unregister renders a fully hardcoded ErrorCard for it."
+    ),
+    "windows._MSG_REMOVAL_TIMED_OUT": (
+        "falls through _apply_unregister's checks to interpret_unregister's fixed generic copy."
+    ),
+    "windows._MSG_NOT_WINDOWS": ("only populates ScheduleReadback.error, outside the classifier's three call sites."),
+}
+
+
+def test_the_sweep_is_watching_a_non_empty_derived_set() -> None:
+    """Non-vacuity: the reflection must actually find the canonicals it is sweeping."""
+    produced = _producible()
+    assert len(produced) >= 15, f"the derived producible set collapsed to {len(produced)} — the sweep is vacuous"
+    for label in list(_DELIBERATELY_UNCLASSIFIED) + list(_NEVER_REACHES):
+        assert label in produced.values(), f"{label} is declared here but no longer produced — drop or rename it"
+
+
+def test_every_producible_message_is_classified_or_declared() -> None:
+    """A new canonical is RED by construction until someone decides what it should say."""
+    declared = set(_DELIBERATELY_UNCLASSIFIED) | set(_NEVER_REACHES)
+    unclassified: set[str] = set()
+    for value, label in _producible().items():
+        classified = any(
+            _classify(value, elevated=elevated, account_is_current=current) != _unclassified_copy(value)
+            for elevated in (True, False)
+            for current in (True, False)
+        )
+        if not classified:
+            unclassified.add(label)
+    assert unclassified == declared, (
+        f"unclassified-but-undeclared: {sorted(unclassified - declared)}; "
+        f"declared-but-now-classified: {sorted(declared - unclassified)}"
+    )
+
+
+def test_every_declared_reason_is_a_real_reason() -> None:
+    """A bucket entry without a reason is a TODO wearing a decision's clothes."""
+    for label, reason in {**_DELIBERATELY_UNCLASSIFIED, **_NEVER_REACHES}.items():
+        assert len(reason) > 40, f"{label}'s reason is too thin to be a decision"
+
+
+@pytest.mark.parametrize(
+    ("message", "cause_phrase"),
+    [
+        (task_com.MSG_NO_LOGON_SESSION, "would not save the password"),
+        (task_com.MSG_ACCOUNT_INFO_NOT_SET, "is missing the nightly task's own saved account details"),
+        (task_com.MSG_LOGON_FAILURE, "rejected the user name or password"),
+        (task_com.MSG_COM_UNAVAILABLE, "can't reach Windows Task Scheduler"),
+        (windows._MSG_ELEVATED_ACCESS_DENIED, "is likely blocking the schedule change"),
+        (task_com.MSG_ACCESS_DENIED, "is likely blocking the schedule change"),
+    ],
+)
+def test_every_new_branch_leads_with_the_cause(message: str, cause_phrase: str) -> None:
+    """All five render under ONE red headline ("Couldn't schedule the nightly sync"), so a
+    first sentence that names the OUTCOME repeats the headline and tells the admin nothing."""
+    out = _classify(message, elevated=True)
+    assert cause_phrase in _first_sentence(out), f"the first sentence of {out!r} does not name the cause"
+
+
+def test_no_classifier_string_says_below_or_logged_in() -> None:
+    """Vocabulary: the readout renders ABOVE the result slot, and the schedule section's
+    spelling is "signed in / signed out" (the password field's caption owns it)."""
+    probes = [*_producible(), "access denied while registering", "something unclassified"]
+    for probe in probes:
+        for elevated in (True, False):
+            for current in (True, False):
+                out = _classify(probe, elevated=elevated, account_is_current=current)
+                assert "below" not in out, f"{probe!r} classifies with a direction word"
+                # The fallback echoes msg verbatim; only the classifier's OWN copy is swept.
+                assert "logged in" not in out.split("(Details:")[0]

@@ -27,7 +27,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.scheduler import elevated_apply, elevation, windows
+from src.scheduler import elevated_apply, elevation, task_com, windows
 from src.scheduler.elevation import ElevationOutcome, ElevationResult
 from src.scheduler.windows import ScheduleReadback
 
@@ -484,6 +484,33 @@ class TestRegisterElevatedFlow:
         ok, msg = self._register()
         assert ok is False
         assert "password is incorrect" in msg  # real cause surfaced (sanitized)
+
+    def test_child_access_denied_is_relabelled_as_the_elevated_refusal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Plan 0047 A2: a UAC-APPROVED child that is still refused must not classify as
+        "right-click and Run as administrator" — the exact loop SD60 ran.
+
+        ``classify_schedule_error``'s ``elevated`` flag is the PARENT's token, which is
+        False on this path, so provenance has to ride the MESSAGE instead. The log line
+        still carries 0x80070005: the code is recovered from the message BEFORE the
+        re-label (``hresult_for`` knows nothing about the re-labelled string).
+        """
+        self._patch_win_nonelevated(monkeypatch)
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
+        _patch_run_elevated(monkeypatch, {}, ElevationOutcome(ElevationResult.COMPLETED, exit_code=0))
+        monkeypatch.setattr(
+            "src.scheduler.elevation.read_result",
+            lambda p: {"ok": False, "message": task_com.MSG_ACCESS_DENIED},
+        )
+        with caplog.at_level(logging.ERROR, logger="src.scheduler.windows"):
+            ok, msg = self._register()
+
+        assert ok is False
+        assert msg == windows._MSG_ELEVATED_ACCESS_DENIED
+        assert "0x80070005" in caplog.text  # the code survives the re-label
 
     def test_child_message_carrying_dsync_token_is_scrubbed(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

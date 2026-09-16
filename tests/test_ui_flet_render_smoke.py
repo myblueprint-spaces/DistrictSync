@@ -2677,6 +2677,46 @@ def test_confirmed_register_and_unregister_fire_the_shell_badge_refresh(tmp_path
     assert fired == ["changed", "changed"]
 
 
+def test_cross_account_removal_renders_the_diagnostic_copy_not_the_generic_floor(tmp_path, monkeypatch):
+    """Plan 0047 A2 / AC4b: a REMOVE that fails cross-account must reach the classifier.
+
+    ``_apply`` serves both ops, so A1's cross-account rung fires on the remove path too —
+    but `_apply_unregister` routes only a short tuple of messages through
+    ``classify_schedule_error``; everything else is swallowed by ``interpret_unregister``'s
+    fixed generic copy ("We couldn't remove the nightly schedule. Try again from Setup."),
+    which is the "try again" promise this plan exists to stop making. Drop
+    ``_MSG_DIFFERENT_ACCOUNT`` from that tuple and this goes red.
+    """
+    from src.scheduler import windows as _windows
+
+    in_dir, out_dir = _settings_dirs(tmp_path)
+    cfg = AppConfig(
+        input_dir=str(in_dir),
+        output_dir=str(out_dir),
+        sis_type="myedbc",
+        setup_completed=True,
+        schedule_registered=True,
+    )
+    monkeypatch.setattr(AppConfig, "load", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(AppConfig, "save", lambda self: None)
+    _benign_probe(monkeypatch)
+    monkeypatch.setattr("src.scheduler.windows.delete_task", lambda name: (False, _windows._MSG_DIFFERENT_ACCOUNT))
+    monkeypatch.setattr("src.scheduler.linux.delete_cron", lambda: (False, _windows._MSG_DIFFERENT_ACCOUNT))
+
+    captured: list = []
+    tree = build_setup(_driving_page(captured))
+    captured.clear()
+
+    _button_by_content(tree, "Remove nightly sync").on_click(None)
+    coro, args = captured[-1]
+    asyncio.run(coro(*args))
+
+    rendered = " ".join(str(getattr(c, "value", "") or "") for c in _iter_controls(tree))
+    assert "Sign in to this computer with an administrator account" in rendered
+    assert "Try again from Setup" not in rendered
+    assert cfg.schedule_registered is True  # a FAILED removal never clears the record
+
+
 def test_failed_register_does_not_fire_the_badge_refresh(tmp_path, monkeypatch):
     """T1 #8 negative: a register that FAILS changes no schedule — the badge callback stays quiet."""
     in_dir, out_dir = _settings_dirs(tmp_path)

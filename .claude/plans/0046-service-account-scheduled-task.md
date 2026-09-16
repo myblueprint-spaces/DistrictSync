@@ -400,6 +400,30 @@ Nobody has verified that a task running under `TASK_LOGON_PASSWORD` as `SVC_X` *
 
 ---
 
+## Owner decisions — 2026-09-16 (asked and answered in session; do not re-litigate)
+
+1. **Switching a LIVE nightly sync onto a service account: the app REFUSES and routes the admin to
+   "Remove nightly sync" then "Schedule nightly sync" again.** It does NOT orchestrate the swap itself.
+   This keeps the delete-then-create shape the owner already chose (their own EDR-tripwire experience,
+   above) but performs it *with the admin watching*: no hidden tear window where the district has no
+   schedule, no second UAC prompt the app owns, and nothing to roll back when a step fails halfway —
+   which makes A10.3 / N10 moot rather than solved. An app-orchestrated switch stays UNBUILT until a
+   district actually asks for it.
+2. **The one-time `--sftp-configure` step is named in BOTH places.** A short line in the schedule
+   section on screen (rendered only when delivery is enabled AND a service account is in use), pointing
+   at the partner guide for the full steps. Rationale the owner accepted: Credential Manager has no
+   cross-user scope (handover §5a), so this is the single most likely thing to silently break a
+   district's nightly DELIVERY — and an admin mid-setup does not have the partner guide open. The guide
+   still carries the complete procedure. No email address in either surface.
+
+**Ordering correction (orchestrator, 2026-09-16).** The drafted Slice C spec deferred its second half —
+suppressing the "did this run?" alarms under a foreign principal — on the grounds that the recorded
+principal "doesn't exist in the code yet". **Slice B adds exactly that fact** (the principal on
+`RegisteredSchedule`), so with the handover's B → C order the deferral does not apply: C builds BOTH
+halves. This matters for the district outcome, not just tidiness — shipping B without C's suppression
+would make `schedule_status._is_contradiction` and `home_status._is_missed_run` fire **every night,
+forever**, on every district that adopts a service account. C is therefore not optional after B.
+
 ## Investigations  _(run before Slice 2, per the Open fork)_
 
 ### Spike — does `TASK_CREATE_OR_UPDATE` already replace the PRINCIPAL? **PARTIAL: strong yes on the mechanism, not yet conclusive on a foreign account.**

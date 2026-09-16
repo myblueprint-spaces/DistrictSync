@@ -4,11 +4,12 @@
 consumers key on, and it may not import ``ui_flet`` to learn them; equally, the pure
 ``ui_flet.schedule_status`` must key on the SAME list without owning it. ONE home for the
 lists — ``task_com``, ``windows``, ``src/scheduler/__init__.py`` and
-``ui_flet.schedule_status`` all import from here today. Two live consumers still hand-spell a
-marker rather than import it: ``src/ui_flet/setup_errors.py`` (its own ``"Access is denied"``
-substring check) and ``src/scheduler/linux.py`` (its own ``"no crontab"`` check). Importing
-those two is tracked work (plan 0047 Slice A2), not yet done — so the "never re-spelled on
-one side only" property holds for the four importers above, not universally.
+``ui_flet.schedule_status`` and ``ui_flet.setup_errors`` (its defensive access-denied
+fallback, since plan 0047 A2) all import from here today. ONE live consumer still hand-spells
+a marker rather than importing it: ``src/scheduler/linux.py`` (its own ``"no crontab"``
+check) — tracked on ``docs/claugentic-ROADMAP.md`` beside the cron path's unguarded
+marker interpolation, so the "never re-spelled on one side only" property holds for the five
+importers above, not universally.
 
 Three vocabularies, three owners:
 
