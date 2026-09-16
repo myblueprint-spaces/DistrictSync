@@ -206,6 +206,11 @@ class DataTransformer:
         has only the one group in hand, so it resolves from that — the SAME
         shared resolver, so the same answer for a frame that carries the column,
         and the skip-the-segment degradation when it does not.
+
+        `teacher_name` is empty for the same reason: the schedule map is built
+        once per detection off a frame this shim does not hold, so the name
+        falls back to the group's own teacher column — which is exactly the
+        documented fallback, not a degraded path.
         """
         return self._blended_detector.create_name(
             session_group,
@@ -214,6 +219,7 @@ class DataTransformer:
             course_code_to_title_map,
             self._context,
             course_code_col=resolve_course_code_column(session_group),
+            teacher_name="",
         )
 
     def _detect_blended_classes(
