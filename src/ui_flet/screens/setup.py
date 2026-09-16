@@ -1967,7 +1967,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             width=340,
             border_color=tokens.color_border,
             helper=(
-                "Lets the nightly sync run after a reboot with no one logged in. "
+                "Lets the nightly sync run after a reboot with no one signed in. "
                 "Used once to schedule the task — DistrictSync does not store it."
             ),
         )
@@ -2126,13 +2126,17 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             elif msg in (windows._MSG_ELEVATION_NO_RESULT, windows._MSG_ELEVATION_TIMEOUT):
                 # Canonical elevation markers (exact equality) — cron never produces these strings.
                 result_slot.controls = [
-                    components.ErrorCard("Couldn't confirm the schedule", classify_schedule_error(msg, _elevated_now()))
+                    components.ErrorCard(
+                        "Couldn't confirm the schedule",
+                        classify_schedule_error(msg, _elevated_now(), account_is_current=True),
+                    )
                 ]
             elif scheduler.supports_unattended_password:
                 # The Windows message contract → the calm classifier (setup_errors).
                 result_slot.controls = [
                     components.ErrorCard(
-                        "Couldn't schedule the nightly sync", classify_schedule_error(msg, _elevated_now())
+                        "Couldn't schedule the nightly sync",
+                        classify_schedule_error(msg, _elevated_now(), account_is_current=True),
                     )
                 ]
             else:
@@ -2154,7 +2158,8 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     run_as_user=None,
                     run_as_password=(password or None),
                 )
-            except Exception:  # noqa: BLE001 - a worker crash must not strand the spinner
+            except Exception as exc:  # noqa: BLE001 - a worker crash must not strand the spinner
+                logger.error("Scheduling the nightly sync raised unexpectedly: %s", type(exc).__name__)
                 ok, msg = False, _WORKER_ERROR_REGISTER
             page.run_task(_apply_result, ok, msg)
 
@@ -2183,12 +2188,22 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     components.ErrorCard(
                         "Couldn't confirm the schedule was removed",
                         "We couldn't confirm the nightly schedule was removed — check the schedule "
-                        "status below, then try again if it's still there.",
+                        "status above, then try again if it's still there.",
                     )
                 ]
-            elif not ok and msg in (windows._MSG_UAC_DECLINED, windows._MSG_ELEVATION_LAUNCH_FAILED):
+            elif not ok and msg in (
+                windows._MSG_UAC_DECLINED,
+                windows._MSG_ELEVATION_LAUNCH_FAILED,
+                # A8: the cross-account rung fires on the remove path too (_apply serves both
+                # ops). Without it here the diagnostic copy is swallowed by
+                # interpret_unregister's generic floor and the admin is told to try again.
+                windows._MSG_DIFFERENT_ACCOUNT,
+            ):
                 result_slot.controls = [
-                    components.ErrorCard("Schedule not removed", classify_schedule_error(msg, _elevated_now()))
+                    components.ErrorCard(
+                        "Schedule not removed",
+                        classify_schedule_error(msg, _elevated_now(), account_is_current=True),
+                    )
                 ]
             else:
                 outcome = interpret_unregister(ok, msg)
@@ -2217,7 +2232,8 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             try:
                 # The Windows adapter owns the access-denied → one-UAC-prompt elevated retry.
                 ok, msg = scheduler.delete(cfg.schedule_task_name)
-            except Exception:  # noqa: BLE001 - a worker crash must not strand the spinner
+            except Exception as exc:  # noqa: BLE001 - a worker crash must not strand the spinner
+                logger.error("Removing the nightly sync raised unexpectedly: %s", type(exc).__name__)
                 ok, msg = False, _WORKER_ERROR_UNREGISTER
             page.run_task(_apply_unregister, ok, msg)
 

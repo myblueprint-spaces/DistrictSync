@@ -1,4 +1,4 @@
-# 0047 — Give a blended class a name that identifies it
+# 0048 — Give a blended class a name that identifies it
 
 **Status:** verified (Stage 7 closed); awaiting CI + merge
 **Raised by:** SD54 partner question, 2026-09-16 — "are these two teachers' blended classes working correctly?"

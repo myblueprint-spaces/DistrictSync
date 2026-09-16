@@ -11,6 +11,25 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Fixed
 
+- **Scheduling the nightly sync: five failures now name the cause instead
+  of "try again in a moment".** The status Windows returns when it will not store the task
+  password (Microsoft documents this under a security-hardening policy) ·
+  missing saved account information for the task · a wrong password · Task
+  Scheduler unreachable from this build · and administrator credentials typed
+  at the Windows prompt that belong to a different account (previously a
+  misleading "the elevated request was missing"). Each says what happened and
+  what to do next, instead of "try again in a moment". Every scheduling or
+  removal failure now logs one line with the Windows code, when Windows
+  supplies one; error-card details are selectable, so you can copy the code
+  into an email to your IT team. And a failed removal can no longer read as
+  "nothing to remove" because Windows' own error text happened to contain
+  "does not exist". This does not change what Windows allows: a district whose
+  policy blocks stored passwords still needs the policy lifted for that
+  computer, a logged-on-only schedule, or a manual run from the Convert page.
+  The Task Scheduler section of the troubleshooting guide is rewritten to
+  match, and the retired advice about Windows Hello PINs and the "Log on as a
+  batch job" right is gone.
+
 - **Blended classes are no longer named identically to one another.** A blended
   class was named from its course titles, grade range and year alone — so a
   teacher running the same course pair in two different blocks saw two classes

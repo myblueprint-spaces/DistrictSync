@@ -1,10 +1,22 @@
 # 0046 — Run the nightly task as a service account
 
-- **Status:** BLOCKED on one owner decision + one measurement (see `## Open fork`). Slices 1–4 below remain valid.
+- **Status:** REVISED 2026-09-16 — see the *Revision* block below. Slice 1 LANDED (#117); Slice A split out to **plan 0047** (in flight, ships first); B/C/D await 0047's land and are spec'd JIT.
 - **Roadmap item:** partially discharges *"Service-account / machine-scope secret storage (SYSTEM/gMSA task principals; non-keyring secret sources) — enterprise-scope, L"*. This plan takes the **password-account half only**.
 - **Supersedes:** the 2026-06-05 decision *"the task's run-as account must equal the setup account"* (`docs/claugentic-DECISIONS.md:444`).
 - **References:** plan 0034 (reconcile), plan 0041 (COM scheduler), `docs/DESIGN_SYSTEM.md`
 - **Review:** 3 adversarial passes (plan-gate · YAGNI · security lens). Verdict was **CHANGES REQUIRED**; this revision incorporates them. See `## Review`.
+
+> ## Revision — 2026-09-16 (owner scope decision + `0046-HANDOVER.md`)
+>
+> - **Slice 1 LANDED** (PR #117, `8e1f24e`; DECISIONS 2026-09-15). **Slice A → plan 0047** (`0047-schedule-failure-diagnosability.md`): schedule-failure diagnosability, independent of the feature, ships first, closes alone. Slices 2–4 below are renamed **B / C / D**, revised as listed here, and are NOT deep-spec'd until 0047 lands (JIT spec per `docs/claugentic-WORKFLOW.md`).
+> - **N1 STANDS — gMSA / SYSTEM / LOCAL SERVICE / NETWORK SERVICE are PARKED** (owner, 2026-09-16: *"gMSA is OUT until explicitly asked for. Keep it simple."*). The handover's §4 "compatible with both" direction is superseded by that later decision; the gMSA research is preserved in handover §6 so nobody re-does it. `validate_run_as_user` keeps rejecting `$`; `TASK_LOGON_SERVICE_ACCOUNT` is not touched; no explicit principal-kind enum is added (see next bullet).
+> - **N2 STANDS** (no machine-scope secret storage) — it only becomes load-bearing for the parked combinations.
+> - **Explicit principal kind on `RegisterParams`** (handover §4 called it "worth doing regardless") — considered and **DEFERRED**: with gMSA parked there are exactly two kinds, and Slice 1's `run_as_password or None` normalisation already makes `password is not None` the explicit, single-spelled choice. Revisit when a third kind is asked for.
+> - **A10 (delete-then-create) is an OPEN OWNER DECISION**, not settled: the 2026-09-15 spike measured that `TASK_CREATE_OR_UPDATE` replaces the whole definition and re-derives `UserId` on every call (handover §5), so the delete step is unnecessary as a *mechanism* and rests solely on the EDR argument — which the owner's 2026-09-07 rationale and A10's rationale reach from opposite premises. Decide at B's plan-review; both options are buildable.
+> - **Slice B = the feature (was 2)**, plus what 0047 and the handover add: `_run_as_account → _keyring_owner_account` **FIRST** (A6; `screens/setup.py:2603` must keep reporting the keyring owner — one caller, verified 2026-09-16) · the principal on `RegisteredSchedule`, never `TaskArgs` (A2) · the prefilled field sends the **typed** value (a request naming the current account case-insensitively is not a principal change — DECISIONS 2026-09-15) · `_register` catches `ValueError` (carried item 3; `register_task` raises for a malformed account) · `_FOLDERS_SAVED_BLOCKED` / `_SFTP_RECONCILE_BLOCKED` (`setup_flow.py:778/786`) name the missing-service-account-password cause (carried item 4) · `classify_schedule_error(..., account_is_current=…)` wired from the recorded principal (0047 G4) and `_MSG_ACCOUNT_NEEDS_PASSWORD` moved out of 0047's `DELIBERATELY_UNCLASSIFIED` set with its own copy (A7 completes) · `runas --sftp-configure` is **necessary, not optional** (Credential Manager has no cross-user scope — handover §5a) · **two live measurements on the owner's machine (UAC clicks, owner's approval):** the HRESULT a mistyped account name produces on our COM path (`0x80070534` is Community-sourced for the general case — map it only once observed) and S0 (a batch-logon task reading its OWN account's Credential Manager — handover §9.2; a RED result is decisive).
+> - **Slice C = signal honesty (was 3)** — A5 (a recorded foreign principal makes a record gap EXPECTED for `schedule_status._is_contradiction` + `home_status._is_missed_run`) · A4's pure `run_result_verdict(last_result)` rendered in the existing readout — note `ScheduleReadback.last_result` has **no consumer in `src/` today** and `schedule_status.py:201`'s docstring wrongly claims one (fix the docstring here) — with `0x80070569` (batch-logon at RUN time; Community-sourced; registration only returns the success code `SCHED_S_BATCH_LOGON_PROBLEM`, unobservable through pywin32) as its first non-exit-code row · A9 (seasonal-window limitation surfaced, not solved).
+> - **Slice D = docs (was 4)** — extend `docs/partner/headless-sftp-setup.md` (its Task Scheduler section still says *"no special handling is required"* and shows a bare `schtasks /Create` — misleading once 0047 lands) · the `runas --sftp-configure` step documented as ONE action that is both necessary (§5a) and the profile-warming step Microsoft recommends (§6 trap 2) · DECISIONS: the Credential-Manager cross-user fact, the gMSA parking and why, A8's recorded `run_highest` · ROADMAP: narrow the deferred item to gMSA / machine-scope secrets, add UPN (N8) and A9.
+> - **Owner decisions still open** (surfaced 2026-09-16): release sequencing (ship 0047 alone as a patch release first?) · A10 delete-vs-in-place · approval to run the two live measurements · nothing is ever sent to a district by an agent (the owner already asked SD60 for the exact error text on 2026-09-16 morning; no reply yet).
 
 ## Problem
 
@@ -388,6 +400,30 @@ Nobody has verified that a task running under `TASK_LOGON_PASSWORD` as `SVC_X` *
 
 ---
 
+## Owner decisions — 2026-09-16 (asked and answered in session; do not re-litigate)
+
+1. **Switching a LIVE nightly sync onto a service account: the app REFUSES and routes the admin to
+   "Remove nightly sync" then "Schedule nightly sync" again.** It does NOT orchestrate the swap itself.
+   This keeps the delete-then-create shape the owner already chose (their own EDR-tripwire experience,
+   above) but performs it *with the admin watching*: no hidden tear window where the district has no
+   schedule, no second UAC prompt the app owns, and nothing to roll back when a step fails halfway —
+   which makes A10.3 / N10 moot rather than solved. An app-orchestrated switch stays UNBUILT until a
+   district actually asks for it.
+2. **The one-time `--sftp-configure` step is named in BOTH places.** A short line in the schedule
+   section on screen (rendered only when delivery is enabled AND a service account is in use), pointing
+   at the partner guide for the full steps. Rationale the owner accepted: Credential Manager has no
+   cross-user scope (handover §5a), so this is the single most likely thing to silently break a
+   district's nightly DELIVERY — and an admin mid-setup does not have the partner guide open. The guide
+   still carries the complete procedure. No email address in either surface.
+
+**Ordering correction (orchestrator, 2026-09-16).** The drafted Slice C spec deferred its second half —
+suppressing the "did this run?" alarms under a foreign principal — on the grounds that the recorded
+principal "doesn't exist in the code yet". **Slice B adds exactly that fact** (the principal on
+`RegisteredSchedule`), so with the handover's B → C order the deferral does not apply: C builds BOTH
+halves. This matters for the district outcome, not just tidiness — shipping B without C's suppression
+would make `schedule_status._is_contradiction` and `home_status._is_missed_run` fire **every night,
+forever**, on every district that adopts a service account. C is therefore not optional after B.
+
 ## Investigations  _(run before Slice 2, per the Open fork)_
 
 ### Spike — does `TASK_CREATE_OR_UPDATE` already replace the PRINCIPAL? **PARTIAL: strong yes on the mechanism, not yet conclusive on a foreign account.**
@@ -419,7 +455,77 @@ then rest solely on the EDR argument — and note that the owner's stated ration
 (in-place re-pointing IS the T1053.005 signature) point the same way but from opposite premises.
 That is an owner decision, not a measurement.
 
-### S0 — can a batch-logon task read its own account's Credential Manager? **NOT RUN — needs owner approval.**
+### M1 — what does a MISTYPED run-as account name report? **MEASURED 2026-09-16, elevated. Owner authorised the UAC prompt in-session.**
+
+Run against the real Task Scheduler COM API (`Schedule.Service`, raw — deliberately NOT through
+`task_com`, which was mid-edit for plan 0047), elevated, three throwaway tasks prefixed
+`DSYNC_PROBE_0046_`, all deleted and the folder swept for survivors (none). No real credential
+was used: both failing cases were driven with a deliberate junk password string.
+
+| case | registered as | password | result |
+|---|---|---|---|
+| bogus account name | `DSYNC_NOSUCHACCOUNT_46`, `TASK_LOGON_PASSWORD` | junk | **`0x80070534`** (`ERROR_NONE_MAPPED`), `excepinfo[2]` = `"(21,8):UserId:"` |
+| real account, wrong password | `DESKTOP-…\shan.peiris`, `TASK_LOGON_PASSWORD` | junk | **`0x8007052E`** (`ERROR_LOGON_FAILURE`), `excepinfo[2]` EMPTY |
+| delete-then-create | current user, interactive token | none | create -> read back -> delete -> **verified gone (`0x80070002`)** -> re-create under the SAME name, clean |
+
+**What this settles for Slice B.** `0x80070534` was *Community-sourced* for the general case
+(handover §5c documents it only for the SYSTEM + NULL + NULL + `TASK_LOGON_SERVICE_ACCOUNT`
+shape). It is now **measured on our exact COM path** for the case SD54 will actually hit first —
+a typo'd service-account name — and it is **distinct from a wrong password**. So B maps it to its
+own canonical and its own classifier branch ("check the account name"), instead of dropping a
+name typo into the credential branch and looping the admin on the password. Both halves of the
+pairing are evidenced, which is what the `hresult_for` inverse requires.
+
+Two secondary findings worth carrying:
+- The real code arrives in `excepinfo[5]` under a `DISP_E_EXCEPTION` (`0x80020009`) wrapper, exactly
+  as `task_com.com_error_scode` assumes — that machinery is confirmed against a second code.
+- `0x80070534`'s `excepinfo[2]` is a **field locator** (`"(21,8):UserId:"`), not prose. Plan 0047's
+  unmapped branch will therefore render `"(21,8):UserId: (0x80070534)"` — carrying the code, which
+  is the point, but unreadable as an explanation. That is an argument FOR mapping it in B, not a
+  defect in 0047.
+
+**A10 — decided (owner, 2026-09-16): DELETE-THEN-CREATE.** Not on the mechanism (the spike below
+plus this probe's third row show in-place replacement works and delete-then-create is clean), but
+on the owner's own first-hand evidence: *"updating an existing task triggered malware tripwires in
+the past; delete and create new task untested but hopefully less chance of triggering malware
+alarms."* The measurement removes the remaining doubt about the alternative's cost — re-creating
+under the same name after a verified-gone delete is clean, so the tear window is the only price.
+
+**Not measurable on this host:** the machine is **standalone (`PartOfDomain=False`, WORKGROUP)**, so a
+genuinely different DOMAIN principal cannot be authenticated here at all. A throwaway domain account
+would not help; that half stays unmeasured and B must not assume it.
+
+### S0 — can a batch-logon task read its own account's Credential Manager? **MEASURED 2026-09-16: YES, on the mechanism. Owner authorised the prompts in-session.**
+
+**Result.** A throwaway task was registered with `TASK_LOGON_PASSWORD` (logon type 1 — "run
+whether user is logged on or not", i.e. a BATCH logon), pointed at a small child script, and run.
+It returned `LastTaskResult = 0`, and in that batch session the child **read back the Credential
+Manager entry the same account had written interactively** — `read_ok: true`, `matched: true`,
+against `keyring.backends.Windows.WinVaultKeyring` on both sides. `%USERPROFILE%` resolved to the
+real profile (`profile_looks_default: false`), so KB 2968540's profile-load race did not fire here.
+The task was deleted, the folder swept (no survivors) and the throwaway keyring entry removed. No
+real credential was involved: the probe wrote and deleted its own random token under the service
+name `DistrictSync_PROBE_0046`. The owner typed the account password into a `getpass` prompt in the
+elevated console; it reached only the `RegisterTaskDefinition` BSTR and was never written, logged
+or returned.
+
+**What this settles:** the SAME-ACCOUNT half of S0 — the only half that was open, since the
+cross-account half is already Documented and NEGATIVE (Credential Manager has no cross-user scope,
+handover §5a). A batch logon does get a credential set, as the `hh994565` "scheduled task or batch
+job" line says. So Slice B's delivery half rests on a measured mechanism, not an assembled chain.
+
+**What it does NOT settle — carry these into B's spec, do not let a green here launder them:**
+1. **The account was interactively signed in at the time**, so its profile was already warm. A real
+   district service account that has never logged on interactively is the untested case. This is
+   precisely why `runas --sftp-configure` is documented as ONE action that is both *necessary*
+   (it is the only way that account's own credential gets written) and Microsoft's recommended
+   *profile-warming* step (§6 trap 2). The measurement strengthens that framing rather than
+   removing the step.
+2. **Standalone Windows 11 Home, `PartOfDomain=False`.** Trap 1 — a domain account's first-ever
+   DPAPI use needing a reachable writable DC, failing `0x80090345` — cannot be reproduced here, and
+   SD54 is a DOMAIN account (owner, 2026-09-16). B's docs must still cover it.
+3. **Trap 3** (the temporary-profile fallback, Event ID 1511) is a hotfixed bug class that a healthy
+   host will not show. Unreproduced, not disproved.
 
 The plan calls this cheap. It is cheap in code and not cheap in consent: the measurement needs a
 throwaway **local account with a password** created on the host, an elevated registration, and at

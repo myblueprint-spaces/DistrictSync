@@ -895,7 +895,10 @@ def ErrorCard(  # noqa: N802 - a view-factory named like a component
         ),
     ]
     if detail:
-        body.append(ft.Text(detail, size=14, color=tokens.color_text))
+        # selectable: an admin on a locked-down server has to relay the Windows code in this
+        # detail to their IT team or to support, and a screenshot of a code is a transcription
+        # error waiting to happen (plan 0047). One word here reaches every ErrorCard call site.
+        body.append(ft.Text(detail, size=14, color=tokens.color_text, selectable=True))
     if action is not None:
         body.append(action)
     if log_folder:

@@ -30,10 +30,22 @@ DECISIONS 2026-06-25 — consult git history for the scripts themselves.
     no longer reach ``RegisterTaskDefinition`` as a TASK_LOGON_PASSWORD registration.
   - The settings quintet (no catch-up, IgnoreNew, PT2H, both battery flags) is set
     explicitly in ``task_com.apply_definition`` — COM defaults differ on all five.
-  - Failure messages are the ``task_com`` HRESULT-keyed canonicals ("Access is
-    denied." / "The user name or password is incorrect." / Windows' own description
-    for unmapped statuses), so ``setup_errors.classify_schedule_error`` keeps matching
-    exactly the strings it always matched — now locale-independent.
+  - Failure messages are the ``task_com`` HRESULT-keyed canonicals
+    (``task_com.MSG_ACCESS_DENIED`` / ``MSG_LOGON_FAILURE`` / ``MSG_ACCOUNT_INFO_NOT_SET``
+    / ``MSG_NO_LOGON_SESSION`` / ``MSG_NOT_FOUND``, or Windows' own description plus its
+    hex status for an unmapped one) — locale-independent, injective, and marker-guarded
+    (plan 0047; ``docs/claugentic-INVARIANTS.md``). ``setup_errors.classify_schedule_error``
+    IMPORTS these constants and branches on them by EXACT equality (as it already did for the
+    ``windows._MSG_*`` elevation canonicals), so an edit to a canonical here silently moves a
+    branch there — mirror it. Only the defensive access-denied fallback still matches by
+    substring, and it deliberately shows no code.
+  - **Every** ``(False, message)`` return in this module goes through :func:`_fail`, which
+    writes ONE anchored log line carrying the verb, the task name, the message and
+    ``[HRESULT 0x… | n/a]`` — so a district's ``etl_tool.log`` carries ONE greppable anchor
+    per failure, with the status Windows returned and its HRESULT. That is the STATUS, not a
+    cause: the hedged cause copy is the classifier's, and for a policy-blocked registration no
+    app-side change makes the sync run. The one documented silence is an already-absent task
+    on the remove path.
 
 **Self-elevation (Plan 0029 D5; re-targeted at 0041 S1b):** the unattended
 (password / RunLevel Highest) registration genuinely requires an elevated caller.
@@ -91,7 +103,9 @@ from pathlib import Path
 # elevation.py's ShellExecuteExW, not subprocess). Pinned by the transport-absence
 # tests in tests/test_schedulers.py.
 from src.scheduler import elevation, task_com
+from src.scheduler.elevated_apply import DIFFERENT_ACCOUNT_SENTINEL as _DIFFERENT_ACCOUNT_SENTINEL
 from src.scheduler.elevation import ElevationOutcome, ElevationResult
+from src.scheduler.messages import SECRET_SENTINEL_PREFIX
 from src.utils.validators import (
     validate_run_as_user,
     validate_run_time,
@@ -102,9 +116,9 @@ from src.utils.validators import (
 logger = logging.getLogger(__name__)
 
 # Bounded wait for the elevated child (D5) — never INFINITE. WaitForSingleObject waits
-# for the elevated PowerShell to finish registering (the UAC-consent delay happens
+# for the elevated DistrictSync child to finish registering (the UAC-consent delay happens
 # inside ShellExecuteEx, which the OS bounds by its own prompt timeout), so 120s is
-# generous headroom for a slow Register-ScheduledTask without ever freezing the flow.
+# generous headroom for a slow RegisterTaskDefinition without ever freezing the flow.
 _ELEV_TIMEOUT_S = 120.0
 
 # Elevation outcome message contract (D5) — the canonical, secret-free strings
@@ -134,11 +148,41 @@ _MSG_ACCOUNT_NEEDS_PASSWORD = (  # nosec B105
     "A password is required to schedule the task for a different account."
 )
 
-# The sentinel the elevated child writes to its result file when the DPAPI unprotect
-# FAILS (a cross-SID / different-admin UAC consent — fail closed). The parent detects
-# it BEFORE sanitizing (it deliberately carries the DSYNC_ prefix a normal message
-# never would) and maps it to the bounded _MSG_DIFFERENT_ACCOUNT category.
-_DIFFERENT_ACCOUNT_SENTINEL = "DSYNC_DIFFERENT_ACCOUNT"
+# The sentinel the elevated child writes to its result file when it cannot READ the request
+# (the owner-only DACL refuses a DIFFERENT administrator) or when the DPAPI unprotect FAILS
+# (a cross-SID / different-admin UAC consent) — fail closed either way. The parent detects it
+# BEFORE sanitizing (it deliberately carries the DSYNC_ prefix a normal message never would)
+# and maps it to the bounded _MSG_DIFFERENT_ACCOUNT category, on BOTH the register and the
+# remove path. IMPORTED from its producer (plan 0047) rather than re-spelled here — a second
+# spelling is exactly how the two halves of an IPC contract drift apart.
+
+# An access-denied the ELEVATED CHILD reported — i.e. Windows refused the change AFTER the
+# UAC prompt was approved (plan 0047 A2). It exists because `classify_schedule_error`'s
+# `elevated` flag is the PARENT process's token, which is False on this path: without its own
+# canonical, a UAC-approved child refusal classified as "right-click and Run as administrator"
+# — the exact loop SD60 ran on 2026-09-14. Provenance rides the MESSAGE, not the parent's bit.
+_MSG_ELEVATED_ACCESS_DENIED = "Windows refused the elevated schedule change."
+
+# Two child-result floors, named so the classifier can decide each one explicitly.
+_MSG_CHILD_DETAIL_UNAVAILABLE = "The schedule change failed (error detail unavailable)."
+_MSG_CHILD_NO_DETAIL = "The schedule change failed with no detail."
+
+# The direct (non-elevated) delete's bounded-worker timeout — the OUTCOME is unknown.
+_MSG_REMOVAL_TIMED_OUT = "The schedule removal timed out."
+
+# --- The ONE failure log line (plan 0047, G2) ---------------------------------
+# SD60 (2026-09-14) hit a registration failure, re-ran the app as administrator, hit the
+# same failure, and reported "I didn't see anything informative in the log": several
+# `(False, msg)` arms logged nothing, and NONE of them logged the HRESULT. `_fail` is the
+# single funnel every failure return goes through, so a district's `etl_tool.log` has ONE
+# grep anchor — the partner troubleshooting page quotes the "[HRESULT " prefix.
+# The trailing `%s` is the OPTIONAL detail suffix (empty on almost every arm), so there is
+# still exactly ONE format string to grep for and the no-detail line is byte-identical to
+# the pre-detail one. It exists because `com_error_scode` recovers nothing from a non-COM
+# exception: on the two generic arms `[HRESULT n/a]` would otherwise be the whole payload,
+# strictly LESS than the class name those arms logged before the funnel existed.
+_FAIL_LOG_FORMAT = "Failed to %s task '%s': %s [HRESULT %s]%s"
+_FAIL_DETAIL_SUFFIX = " (%s)"
 
 # The run-history store's source tag for the nightly scheduled run (Plan 0029, D2c).
 # Carried on the registered task's action command line (``--source scheduled``) so the
@@ -148,7 +192,8 @@ _SCHEDULED_SOURCE = "scheduled"
 
 # The "PowerShell not found" / "ScheduledTasks module not available" canonical messages,
 # the CLIXML decoder and its regexes all RETIRED at plan 0041 S1b with their transport —
-# the COM analogue of an unavailable engine is task_com.MSG_COM_UNAVAILABLE (row 10).
+# the COM analogue of an unavailable engine is task_com.MSG_COM_UNAVAILABLE (row 10), and
+# it is produced HERE (the two ImportError arms) and by the elevated child.
 
 # --- Schedule read-back (D4) --------------------------------------------------
 # In-process COM since plan 0041 Slice 1a (src/scheduler/task_com.py) — the DSYNC_FOUND /
@@ -159,6 +204,63 @@ _SCHEDULED_SOURCE = "scheduled"
 # Honest platform note surfaced when read-back is requested off Windows (Linux/macOS
 # schedule read-back is out of scope — the pure module renders this as UNKNOWN).
 _MSG_NOT_WINDOWS = "Schedule read-back is only available on Windows."
+
+
+def _fail(
+    task_name: str,
+    message: str,
+    *,
+    verb: str,
+    scode: int | None = None,
+    level: int = logging.ERROR,
+    detail: str | None = None,
+) -> tuple[bool, str]:
+    """Log ONE anchored failure line and return the ``(False, message)`` contract (G2).
+
+    ``verb`` is a REQUIRED keyword (``"register"`` / ``"remove"``): a default would let a
+    failed REMOVAL log "Failed to register task", and that line is the one an IT reader is
+    told to grep for. ``level`` is ``WARNING`` only for the two *unconfirmed-outcome* arms
+    (``_confirm_registration`` / ``_confirm_removal``), where the task may well exist — the
+    outcome is UNKNOWN, not failed, and WARNING is the honest level.
+
+    The line carries a verb, the task name, a message and an int. ``_fail`` itself does not
+    verify what the message is — that property holds because every call site today passes
+    either a ``task_com`` canonical, one of this module's bounded ``_MSG_*`` categories, or a
+    ``DSYNC_``-stripped child message (never a password, an account name, argv or an
+    environment value). ``task_com``'s guard strips any escape carrying the ``DSYNC_``
+    sentinel prefix before it reaches here — that is a MARKER check, not a secret scrubber,
+    so it would not catch a bare credential Windows had somehow echoed. The no-secret
+    property is upheld at the call sites and by ``task_com``'s stated assumption that Task
+    Scheduler's own descriptions never echo a credential; it is not enforced by this
+    function.
+
+    ``detail`` is an OPTIONAL, BOUNDED, secret-free diagnostic token appended after the
+    code on the SAME line (one failure still means one anchored line). Today its only
+    callers are the two generic ``except Exception`` arms, which pass
+    ``type(exc).__name__``: ``com_error_scode`` recovers a status from a ``com_error`` but
+    nothing at all from, say, a ``TypeError`` raised by a pywin32 shape change, and
+    ``[HRESULT n/a]`` alone would be LESS diagnostic than the class name those arms logged
+    before this funnel existed. A funnel may add context; it may never net-delete it.
+    **Never pass an exception's ``str()``** — that is uncontrolled text which can carry a
+    path, an account name or a secret, the very reason messages are canonicalised.
+
+    **The one documented silence:** an already-absent task on the REMOVE path
+    (``task_com.MSG_NOT_FOUND``) is the idempotent desired end state, not an incident;
+    logging it at ERROR on every Unregister would train a district to ignore the anchor.
+    Keeping that rule INSIDE the funnel is what lets the AST guard stay absolute (no
+    ``return False,`` anywhere in this module outside this function).
+    """
+    if not (verb == "remove" and message == task_com.MSG_NOT_FOUND):
+        logger.log(
+            level,
+            _FAIL_LOG_FORMAT,
+            verb,
+            task_name,
+            message,
+            task_com.format_hresult(scode),
+            _FAIL_DETAIL_SUFFIX % detail if detail else "",
+        )
+    return False, message
 
 
 def current_run_as_user() -> str:
@@ -313,9 +415,18 @@ def register_task(
 
     Returns:
         (success, message). Failure messages are the ``task_com`` canonical
-        strings — "Access is denied." / "The user name or password is
-        incorrect." / Windows' own description for unmapped statuses — so the
-        wizard classifier keeps matching exactly what it matched before. A
+        constants (``MSG_ACCESS_DENIED`` / ``MSG_LOGON_FAILURE`` /
+        ``MSG_ACCOUNT_INFO_NOT_SET`` / ``MSG_NO_LOGON_SESSION`` /
+        ``MSG_COM_UNAVAILABLE`` / ``MSG_OPERATION_FAILED``), this module's own
+        ``_MSG_*`` elevation categories, a ``DSYNC_``-stripped child message off the
+        elevated path (an ``elevated_apply.CHILD_REFUSALS`` refusal or a child-side
+        ``task_com`` canonical), or Windows' own description plus its hex status for
+        an unmapped one. The wizard classifier
+        (``setup_errors.classify_schedule_error``) keys on this module's own
+        ``_MSG_*`` elevation categories AND on the ``task_com`` canonicals above by
+        exact equality — it imports both families, so a re-worded canonical moves a
+        branch there; an unmapped message still reaches its details clause. **Every**
+        failure return also writes the :func:`_fail` log line. A
         registration that TIMES OUT resolves through :func:`_confirm_registration`
         (the worker cannot be cancelled and may still complete — a bare "failed"
         over a task that now exists would be a lie; row 14).
@@ -344,11 +455,7 @@ def register_task(
         # registered.") — a silently misregistered principal reported as success (A1/R1).
         user = validate_run_as_user(requested)
         if not has_password:
-            logger.error(
-                "Refusing to register '%s': a different run-as account was requested without a password.",
-                task_name,
-            )
-            return False, _MSG_ACCOUNT_NEEDS_PASSWORD
+            return _fail(task_name, _MSG_ACCOUNT_NEEDS_PASSWORD, verb="register")
     elif has_password:
         # Unattended registration for the CURRENT account — unchanged from today,
         # including validating the machine-derived fallback on this branch.
@@ -398,18 +505,26 @@ def register_task(
     except task_com.BoundedTimeout:
         # The worker may still complete after the bound — the verdict comes from the
         # real task, with the hedged elevation-timeout copy (same classifier branch).
-        return _confirm_registration(task_name, on_unconfirmed=_MSG_ELEVATION_TIMEOUT)
+        return _confirm_registration(task_name, on_unconfirmed=_MSG_ELEVATION_TIMEOUT, path_label="Registration")
     except ImportError:
-        logger.error(f"Failed to register task '{task_name}': {task_com.MSG_COM_UNAVAILABLE}")
-        return False, task_com.MSG_COM_UNAVAILABLE
+        return _fail(task_name, task_com.MSG_COM_UNAVAILABLE, verb="register")
     except task_com.TaskComError as exc:
         # Canonical, secret-free text (task_com never formats argv/env/password into
         # messages) — surfaced as-is so the wizard classifier matches its known strings.
-        logger.error(f"Failed to register task '{task_name}': {exc.message}")
-        return False, exc.message
+        return _fail(task_name, exc.message, verb="register", scode=exc.scode)
     except Exception as exc:  # noqa: BLE001 - (ok, message) contract: classify, never propagate
-        logger.warning("Task registration failed unexpectedly: %s", type(exc).__name__)
-        return False, "The schedule operation failed."
+        # A com_error raised at APARTMENT ENTRY (the Task Scheduler service stopped) never
+        # became a TaskComError, so this arm used to discard its status and log only the
+        # exception's class name, at WARNING. `com_error_scode` recovers the real HRESULT —
+        # and `detail` KEEPS the class name, which is the whole payload when the exception
+        # is not a com_error at all (a pywin32 shape change raising TypeError).
+        return _fail(
+            task_name,
+            task_com.MSG_OPERATION_FAILED,
+            verb="register",
+            scode=task_com.com_error_scode(exc),
+            detail=type(exc).__name__,
+        )
 
     logger.info(f"Task '{task_name}' registered successfully")
     return True, "Schedule registered."
@@ -422,13 +537,17 @@ def delete_task(task_name: str) -> tuple[bool, str]:
     last ``schtasks.exe`` call — after which ``schtasks.exe`` left the ``system_binary``
     allowlist entirely. Two message contracts are LOAD-BEARING and pinned:
 
-    - an already-absent task (``0x80070002``) returns its canonical text "The system
-      cannot find the file specified." — the "cannot find" marker keeps
+    - an already-absent task (``0x80070002``) returns ``task_com.MSG_NOT_FOUND`` — its
+      ``messages.ABSENT_TASK_MARKERS`` token keeps
       ``schedule_status.interpret_unregister`` idempotent-success-shaped, exactly as the
-      schtasks stderr did;
-    - access denied returns "Access is denied." — the substring the
-      ``WindowsTaskScheduler.delete`` adapter's elevated-retry predicate matches
-      (contract row 13). Mapped by HRESULT, never by locale text.
+      schtasks stderr did. It is also the ONE failure :func:`_fail` does not log: that
+      end state is the desired one, not an incident;
+    - access denied returns ``task_com.MSG_ACCESS_DENIED`` — the
+      ``messages.ACCESS_DENIED_MARKERS`` token the ``WindowsTaskScheduler.delete``
+      adapter's elevated-retry predicate matches (contract row 13). Mapped by HRESULT,
+      never by locale text — and since plan 0047 an UNMAPPED code whose Windows
+      description merely *mentions* access denial no longer fires that retry, because
+      ``task_com`` guards the description against markers it does not own.
     """
     task_name = validate_task_name(task_name)
     try:
@@ -440,14 +559,23 @@ def delete_task(task_name: str) -> tuple[bool, str]:
     except task_com.BoundedTimeout:
         # The worker may still complete — resolve the ambiguity by reading back, the
         # same honesty rule the elevated path has always applied.
-        return _confirm_removal(task_name, on_unconfirmed="The schedule removal timed out.")
+        return _confirm_removal(task_name, on_unconfirmed=_MSG_REMOVAL_TIMED_OUT, path_label="Removal")
     except ImportError:
-        return False, task_com.MSG_COM_UNAVAILABLE
+        return _fail(task_name, task_com.MSG_COM_UNAVAILABLE, verb="remove")
     except task_com.TaskComError as exc:
-        return False, exc.message
+        # `_fail` stays SILENT for MSG_NOT_FOUND: an already-absent task is the idempotent
+        # desired end state, not an incident (the rule lives in the funnel, not here).
+        return _fail(task_name, exc.message, verb="remove", scode=exc.scode)
     except Exception as exc:  # noqa: BLE001 - (ok, message) contract: classify, don't propagate
-        logger.warning("Schedule delete failed unexpectedly: %s", type(exc).__name__)
-        return False, "The schedule operation failed."
+        # `detail` for the same reason as the register twin: a non-COM exception has no
+        # status to recover, and its class name is then the only diagnostic there is.
+        return _fail(
+            task_name,
+            task_com.MSG_OPERATION_FAILED,
+            verb="remove",
+            scode=task_com.com_error_scode(exc),
+            detail=type(exc).__name__,
+        )
     return True, "The scheduled task was removed."
 
 
@@ -503,9 +631,16 @@ def _sanitize_child_message(message: str) -> str:
     reaches the result by construction; this guards even a sentinel/name leaking.
     """
     cleaned = (message or "").strip()
-    if "DSYNC_" in cleaned:
-        return "The schedule change failed (error detail unavailable)."
-    return cleaned or "The schedule change failed with no detail."
+    # Case-INSENSITIVE on purpose (plan 0047 Stage 7 security finding): a lowercased leak
+    # must collapse exactly like the canonical-cased one. Deliberately NOT
+    # `messages.carries_foreign_marker` — that guard is case-insensitive too, but it also
+    # fires on `task_com.MSG_ACCESS_DENIED` (which does not carry this prefix at all; the
+    # guard's ANY-marker sweep is broader than this one prefix), which would collapse a
+    # legitimate child-reported access-denied canonical into the no-detail floor and destroy
+    # the message the elevated path depends on. Keep this check narrow and local.
+    if SECRET_SENTINEL_PREFIX.lower() in cleaned.lower():
+        return _MSG_CHILD_DETAIL_UNAVAILABLE
+    return cleaned or _MSG_CHILD_NO_DETAIL
 
 
 def _cleanup_handshake(*handshake_paths: Path | None) -> None:
@@ -521,33 +656,50 @@ def _cleanup_handshake(*handshake_paths: Path | None) -> None:
             path.unlink(missing_ok=True)
 
 
-def _confirm_registration(task_name: str, *, on_unconfirmed: str) -> tuple[bool, str]:
+def _confirm_registration(task_name: str, *, on_unconfirmed: str, path_label: str) -> tuple[bool, str]:
     """Confirm a registration against the REAL task; unconfirmed → ``(False, on_unconfirmed)``.
 
     Success (exit code / child ``ok`` / a long-running TIMEOUT) is only ever asserted when
     ``read_schedule`` reports ``found=True``. An elevated-registered task a filtered token
     can't read yields ``found=None`` → honestly unconfirmed, never a false green.
+
+    ``path_label`` ("Registration" / "Elevated registration") is REQUIRED: this function
+    serves BOTH the direct bounded-timeout path and the elevated path, and the phase line
+    used to say "Elevated registration" on both — sending a reader hunting a UAC prompt
+    that never happened. The anchored ``_fail`` line is written BESIDE that phase line: the
+    phase (pre-consent / post-consent / unconfirmed) is context ``_FAIL_LOG_FORMAT`` does
+    not carry, and the funnel ADDS a line, it never deletes context.
     """
     readback = read_schedule(task_name)
     if readback.found is True:
         logger.info("Scheduled task '%s' registered and confirmed via read-back.", task_name)
         return True, "Schedule registered and confirmed."
-    logger.warning("Elevated registration of '%s' could not be confirmed via read-back.", task_name)
-    return False, on_unconfirmed
+    logger.warning("%s of '%s' could not be confirmed via read-back.", path_label, task_name)
+    # WARNING, not ERROR: the task may well exist — the OUTCOME is unknown, not failed.
+    return _fail(task_name, on_unconfirmed, verb="register", level=logging.WARNING)
 
 
-def _confirm_removal(task_name: str, *, on_unconfirmed: str) -> tuple[bool, str]:
+def _confirm_removal(task_name: str, *, on_unconfirmed: str, path_label: str) -> tuple[bool, str]:
     """Confirm a removal against the REAL task; only ``found=False`` is a confirmed removal.
 
     ``found=True`` (still there) or ``found=None`` (unreadable) → ``(False, on_unconfirmed)`` —
     the flow must not assert the schedule was removed when it couldn't be confirmed.
+
+    Reached from the DIRECT delete's bounded timeout as well as from both elevated arms, so
+    the anchored line is written with ``verb="remove"`` (R2-1: a removal must never log
+    "Failed to register task"). ``path_label`` ("Removal" / "Elevated removal") is REQUIRED
+    for the same reason it is on :func:`_confirm_registration`: the bespoke phase line said
+    "Elevated removal" on EVERY path, including the direct bounded timeout, sending a reader
+    hunting a UAC prompt that never happened.
     """
     readback = read_schedule(task_name)
     if readback.found is False:
         logger.info("Scheduled task '%s' removal confirmed via read-back.", task_name)
         return True, "Schedule removed and confirmed."
-    logger.warning("Elevated removal of '%s' could not be confirmed via read-back.", task_name)
-    return False, on_unconfirmed
+    logger.warning("%s of '%s' could not be confirmed via read-back.", path_label, task_name)
+    # WARNING + verb="remove": the task may still be gone — and a removal must never log
+    # "Failed to register task", which is the line the partner doc points an IT reader at.
+    return _fail(task_name, on_unconfirmed, verb="remove", level=logging.WARNING)
 
 
 def _register_elevated(
@@ -596,23 +748,48 @@ def _register_elevated(
         fail = _map_pre_consent_failure(outcome)
         if fail is not None:
             logger.error("Elevated registration of '%s' did not start: %s", task_name, fail)
-            return False, fail
+            return _fail(task_name, fail, verb="register")
         if outcome.result is ElevationResult.TIMEOUT:
             # Post-consent timeout: the terminated child may already have registered — confirm.
             logger.warning("Elevated registration of '%s' timed out; confirming via read-back.", task_name)
-            return _confirm_registration(task_name, on_unconfirmed=_MSG_ELEVATION_TIMEOUT)
+            return _confirm_registration(
+                task_name, on_unconfirmed=_MSG_ELEVATION_TIMEOUT, path_label="Elevated registration"
+            )
 
         result = elevation.read_result(res_path)
         if result is None:
             logger.error("Elevated registration of '%s' produced no readable result.", task_name)
-            return _confirm_registration(task_name, on_unconfirmed=_MSG_ELEVATION_NO_RESULT)
+            return _confirm_registration(
+                task_name, on_unconfirmed=_MSG_ELEVATION_NO_RESULT, path_label="Elevated registration"
+            )
         if not result.get("ok"):
             child_msg = str(result.get("message", ""))
             if _DIFFERENT_ACCOUNT_SENTINEL in child_msg:
-                return False, _MSG_DIFFERENT_ACCOUNT
-            return False, _sanitize_child_message(child_msg)
+                # Log the FIXED canonical, never child_msg — the sentinel carries the DSYNC_
+                # prefix no admin-facing string (or log line) may republish.
+                return _fail(task_name, _MSG_DIFFERENT_ACCOUNT, verb="register")
+            msg = _sanitize_child_message(child_msg)
+            # ORDER IS LOAD-BEARING: recover the code from the message the CHILD sent, before
+            # the re-label. `hresult_for` is the inverse of task_com's table and knows nothing
+            # about `_MSG_ELEVATED_ACCESS_DENIED`, so re-labelling first would log
+            # `[HRESULT n/a]` for the one arm whose code we already have.
+            scode = task_com.hresult_for(msg)
+            if msg == task_com.MSG_ACCESS_DENIED:
+                msg = _MSG_ELEVATED_ACCESS_DENIED
+            return _fail(task_name, msg, verb="register", scode=scode)
         # The child reported ok — CONFIRM against the real task (exit code alone is not success).
-        return _confirm_registration(task_name, on_unconfirmed=_MSG_ELEVATION_NO_RESULT)
+        return _confirm_registration(
+            task_name, on_unconfirmed=_MSG_ELEVATION_NO_RESULT, path_label="Elevated registration"
+        )
+    except (OSError, RuntimeError, ValueError):
+        # The PRE-CONSENT handshake (DPAPI seal, profile dir, icacls) could raise straight
+        # past the (ok, message) contract to the view's floor, with zero log lines — the
+        # exact "nothing informative in the log" shape SD60 reported. `elevation.write_request`
+        # -> `paths.user_data_dir()` can raise `RuntimeError` (unusable dir) or `ValueError`
+        # (a relative `DISTRICTSYNC_DATA_DIR`) in addition to `OSError` — all three are the
+        # same pre-consent shape, so all three are caught here. The detail is not
+        # admin-actionable, so the canonical generic is returned; the log line is the record.
+        return _fail(task_name, task_com.MSG_OPERATION_FAILED, verb="register")
     finally:
         _cleanup_handshake(req_path, res_path)
 
@@ -627,6 +804,9 @@ def delete_task_elevated(task_name: str) -> tuple[bool, str]:
     Removal is only reported as success when ``read_schedule`` confirms the task is gone
     (``found=False``) — the child's self-reported ``ok`` is never trusted on its own
     (security F4); an unconfirmed removal returns ``_MSG_ELEVATION_REMOVE_UNCONFIRMED``.
+    A cross-account consent maps to ``_MSG_DIFFERENT_ACCOUNT`` here exactly as it does on
+    the register path: the child's request-read rung serves BOTH ops (plan 0047, A8), and
+    without the leg the sentinel would collapse into a detail-free floor.
     """
     task_name = validate_task_name(task_name)
     req_path: Path | None = None
@@ -639,18 +819,42 @@ def delete_task_elevated(task_name: str) -> tuple[bool, str]:
 
         fail = _map_pre_consent_failure(outcome)
         if fail is not None:
-            return False, fail
+            return _fail(task_name, fail, verb="remove")
         if outcome.result is ElevationResult.TIMEOUT:
-            return _confirm_removal(task_name, on_unconfirmed=_MSG_ELEVATION_REMOVE_UNCONFIRMED)
+            return _confirm_removal(
+                task_name, on_unconfirmed=_MSG_ELEVATION_REMOVE_UNCONFIRMED, path_label="Elevated removal"
+            )
 
         result = elevation.read_result(res_path)
         if result is None:
             # The child wrote nothing — a read-back can still tell us whether it was removed.
-            return _confirm_removal(task_name, on_unconfirmed=_MSG_ELEVATION_REMOVE_UNCONFIRMED)
+            return _confirm_removal(
+                task_name, on_unconfirmed=_MSG_ELEVATION_REMOVE_UNCONFIRMED, path_label="Elevated removal"
+            )
         if not result.get("ok"):
-            return False, _sanitize_child_message(str(result.get("message", "")))
+            child_msg = str(result.get("message", ""))
+            if _DIFFERENT_ACCOUNT_SENTINEL in child_msg:
+                # A8: the child's request-read rung serves BOTH ops, so a cross-account
+                # consent reaches the REMOVE path too. Without this leg the sentinel is
+                # collapsed by _sanitize_child_message into a no-detail floor and the admin
+                # is told to "include the detail shown here" with no detail at all.
+                return _fail(task_name, _MSG_DIFFERENT_ACCOUNT, verb="remove")
+            msg = _sanitize_child_message(child_msg)
+            return _fail(task_name, msg, verb="remove", scode=task_com.hresult_for(msg))
         # The child reported ok — CONFIRM the task is actually gone before claiming removal.
-        return _confirm_removal(task_name, on_unconfirmed=_MSG_ELEVATION_REMOVE_UNCONFIRMED)
+        return _confirm_removal(
+            task_name, on_unconfirmed=_MSG_ELEVATION_REMOVE_UNCONFIRMED, path_label="Elevated removal"
+        )
+    except (OSError, RuntimeError, ValueError):
+        # The SAME pre-consent guard `_register_elevated` carries, on the REMOVE path: the
+        # handshake (DPAPI seal, profile dir, icacls) could raise straight past the
+        # (ok, message) contract to the view's floor with zero log lines. Half a funnel is
+        # not a funnel — a failed removal is exactly the "nothing informative in the log"
+        # shape this slice exists to close. `elevation.write_request` ->
+        # `paths.user_data_dir()` can raise `RuntimeError`/`ValueError` too (see the
+        # register-path twin above) — the detail is not admin-actionable, so the canonical
+        # generic is returned and the anchored line is the record.
+        return _fail(task_name, task_com.MSG_OPERATION_FAILED, verb="remove")
     finally:
         _cleanup_handshake(req_path, res_path)
 
@@ -665,17 +869,17 @@ class ScheduleReadback:
 
       - ``True``  — the task exists (``next_run`` / ``last_run`` / ``last_result`` /
         ``action_path`` populated as available).
-      - ``False`` — the task was definitively queried and is absent (the cmdlet's
-        own ObjectNotFound error) → the honest "not scheduled" signal.
-      - ``None``  — the query itself failed (PowerShell missing, timeout, access
+      - ``False`` — the task was definitively queried and is absent
+        (``task_com.HR_NOT_FOUND``) → the honest "not scheduled" signal.
+      - ``None``  — the query itself failed (pywin32 missing, timeout, access
         denied, an elevated-registered task unreadable by a filtered token, or a
         non-Windows host) → "we couldn't confirm right now", NEVER "absent".
 
-    Datetimes are the raw ISO round-trip strings PowerShell emits
-    (``.ToString("o", InvariantCulture)``); ``last_result`` is the task's
-    ``LastTaskResult`` HRESULT (0 = last run ok). All fields are total — a field
-    the query couldn't supply is ``None``. ``error`` carries a de-CLIXML'd,
-    secret-free one-liner on the ``found=None`` path (diagnostic only).
+    Datetimes are NAIVE-LOCAL ISO strings from ``task_com`` (the COM layer strips
+    pywin32's lying ``+00:00``); ``last_result`` is the task's ``LastTaskResult``
+    HRESULT (0 = last run ok). All fields are total — a field the query couldn't
+    supply is ``None``. ``error`` carries a canonical, secret-free one-liner on the
+    ``found=None`` path (diagnostic only).
     """
 
     found: bool | None

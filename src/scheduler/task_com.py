@@ -57,6 +57,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from src.scheduler.messages import carries_foreign_marker
+
 logger = logging.getLogger(__name__)
 
 # The Task Scheduler root folder — tasks are registered at "\" by bare name (contract
@@ -68,25 +70,70 @@ ROOT_FOLDER = "\\"
 # The ONLY status allowed to produce found=False / an idempotent-success delete.
 HR_NOT_FOUND = 0x80070002
 HR_ACCESS_DENIED = 0x80070005
+# ERROR_NO_SUCH_LOGON_SESSION as an HRESULT. Windows returns it when a credential-storing
+# registration cannot obtain a logon session — Microsoft documents the "Network access: Do not
+# allow storage of passwords and credentials for network authentication" hardening policy as a
+# cause elsewhere. The INFERENCE belongs in the UI classifier's hedged copy, never here — it
+# lives in `setup_errors.classify_schedule_error`'s branch for this canonical, which names the
+# setting and says Microsoft DOCUMENTS it, never that it is what happened.
+HR_NO_SUCH_LOGON_SESSION = 0x80070520
 HR_LOGON_FAILURE = 0x8007052E  # ERROR_LOGON_FAILURE — bad user/password at registration
 HR_ACCOUNT_INFO_NOT_SET = 0x8004130F  # SCHED_E_ACCOUNT_INFORMATION_NOT_SET
 
 # SCHED_S_TASK_HAS_NOT_RUN — LastTaskResult of a task that has never fired.
 RESULT_HAS_NOT_RUN = 267011
 
-# Canonical English for the HRESULTs our consumers key on. Two are load-bearing contracts:
-# "Access is denied." must keep the substring the adapter's elevated-retry predicate
-# matches (src/scheduler/__init__.py — `"access is denied" in msg.lower()`), and
-# HR_NOT_FOUND's text must keep a `_ABSENT_DELETE_MARKERS` marker ("cannot find") so
-# `schedule_status.interpret_unregister` stays idempotent-success-shaped on an
-# already-absent task. Mapping is BY HRESULT, never by Windows' locale-dependent
-# FormatMessage text — which retires the implicit en-only assumption the PS path carried.
+# Canonical, secret-free, locale-independent text per HRESULT — DESCRIPTIVE of the status
+# Windows returned, never a cause. `setup_errors.classify_schedule_error` keys on these by
+# EXACT equality and IMPORTS them (plan 0047 A2) — any edit here must be mirrored there,
+# because a re-worded canonical silently moves a branch to the unclassified fallback. The
+# cause copy is the classifier's, hedged to its evidence; this module states the STATUS only.
+#
+# RULE (pinned; docs/claugentic-INVARIANTS.md): no string this module can RETURN — a table
+# value, Windows' own description, or `str(exc)` — may carry a marker another consumer owns
+# (`messages.ABSENT_TASK_MARKERS` / `ACCESS_DENIED_MARKERS` / `SECRET_SENTINEL_PREFIX`) unless
+# it IS that code's canonical; and every `MSG_`/`_MSG_`-NAMED binding in `task_com` / `windows` /
+# `elevated_apply` has exactly ONE name (the injectivity sweep's reach). An UNNAMED return — a
+# guarded description plus its code, or the coded generic — is outside that sweep by
+# construction, and is model-upheld rather than pinned.
+#
+# Two owned contracts: "Access is denied." carries the substring the adapter's elevated-retry predicate
+# matches (src/scheduler/__init__.py), and HR_NOT_FOUND's text carries "cannot find" so
+# `schedule_status.interpret_unregister` stays idempotent-success-shaped on an already-absent
+# task. Windows' OWN text for 0x80070520 reads "…does not exist…" — which is exactly why that
+# code's canonical restates the status in other words, and why the description pass-through
+# below is guarded. Mapping is BY HRESULT, never by Windows' locale-dependent FormatMessage
+# text — which retires the implicit en-only assumption the PS path carried.
+MSG_ACCESS_DENIED = "Access is denied."
+MSG_NOT_FOUND = "The system cannot find the file specified."
+MSG_LOGON_FAILURE = "The user name or password is incorrect."
+MSG_ACCOUNT_INFO_NOT_SET = "Windows has no saved account information for the task."
+MSG_NO_LOGON_SESSION = "Windows reported that the logon session for the task registration was unavailable."
+MSG_OPERATION_FAILED = "The schedule operation failed."
+
 _HRESULT_CANONICAL: dict[int, str] = {
-    HR_ACCESS_DENIED: "Access is denied.",
-    HR_LOGON_FAILURE: "The user name or password is incorrect.",
-    HR_ACCOUNT_INFO_NOT_SET: "The user name or password is incorrect.",
-    HR_NOT_FOUND: "The system cannot find the file specified.",
+    HR_ACCESS_DENIED: MSG_ACCESS_DENIED,
+    HR_NO_SUCH_LOGON_SESSION: MSG_NO_LOGON_SESSION,
+    HR_LOGON_FAILURE: MSG_LOGON_FAILURE,
+    HR_ACCOUNT_INFO_NOT_SET: MSG_ACCOUNT_INFO_NOT_SET,
+    HR_NOT_FOUND: MSG_NOT_FOUND,
 }
+# The inverse — the ONE way a consumer recovers a code from a canonical message. Well-defined
+# only while the table is injective, which the injectivity sweep pins.
+_MESSAGE_TO_HRESULT: dict[str, int] = {v: k for k, v in _HRESULT_CANONICAL.items()}
+
+
+def format_hresult(scode: int | None) -> str:
+    """``0x%08X`` (masked — a signed int arrives from ``excepinfo``) or ``"n/a"``; total."""
+    if scode is None:
+        return "n/a"
+    return f"0x{scode & 0xFFFFFFFF:08X}"
+
+
+def hresult_for(message: str) -> int | None:
+    """The HRESULT a canonical message stands for; ``None`` for anything else."""
+    return _MESSAGE_TO_HRESULT.get(message)
+
 
 # The pywin32-missing canonical (contract row 10) — the COM analogue of the retired
 # "PowerShell not found". A frozen build that failed to bundle pywin32 must degrade to a
@@ -287,19 +334,35 @@ def _canonical_message(scode: int | None, exc: BaseException) -> str:
 
     Known HRESULTs map to the canonical strings the classifier/adapter key on; an unmapped
     one surfaces the ``excepinfo`` description (Windows' own explanation of the specific
-    failure) or, failing that, the hex status — readable, never a ``com_error`` tuple repr.
-    Nothing here can carry a secret: the register path's password never appears in Task
-    Scheduler error descriptions, and this module never formats argv or env into messages.
+    failure) **with its code appended**, or, failing that, the hex status alone. On the
+    ``scode is None`` branch below this returns ``str(exc)`` — which, for a ``com_error``, IS
+    its tuple repr; that branch is marker-guarded (see below) but NOT shape-guarded, so it can
+    still surface a raw tuple repr when one carries no marker. No path here formats argv, an
+    environment value, or the password into a message — the register path's password never
+    appears in Task Scheduler error descriptions — but "Windows' own description never echoes
+    a credential" is an assumption this module does not itself enforce.
+
+    **The boundary guard (plan 0047; INVARIANTS).** The two escapes this function does not
+    author — Windows' own description and ``str(exc)`` — are checked against
+    :func:`messages.carries_foreign_marker` and DROPPED for the coded generic when they carry
+    a marker another consumer owns. Measured live 2026-09-16: Windows' text for
+    ``0x80070520`` is "A specified logon session does not exist…", which
+    ``interpret_unregister`` was reading as the success-shaped "No schedule was registered"
+    over a task that was still live. The two legitimate owners return from the table ABOVE
+    the guard, so they keep the markers they own — which is why there is no ``owned=`` knob.
     """
     if scode is None:
-        return str(exc).strip() or "The schedule operation failed."
-    if scode in _HRESULT_CANONICAL:
+        text = str(exc).strip()
+        return text if text and not carries_foreign_marker(text) else MSG_OPERATION_FAILED
+    if scode in _HRESULT_CANONICAL:  # the two marker OWNERS return here, before the guard
         return _HRESULT_CANONICAL[scode]
     excepinfo = getattr(exc, "excepinfo", None)
     description = ""
     if excepinfo is not None and len(excepinfo) >= 3 and excepinfo[2]:
         description = str(excepinfo[2]).strip()
-    return description or f"The schedule operation failed (0x{scode:08X})."
+    if description and not carries_foreign_marker(description):
+        return f"{description} ({format_hresult(scode)})"
+    return f"The schedule operation failed ({format_hresult(scode)})."
 
 
 def _as_task_com_error(exc: BaseException) -> TaskComError:
@@ -407,7 +470,7 @@ def read_task(task_name: str) -> TaskFacts:
             # which otherwise outlives __exit__'s CoUninitialize by one frame-teardown.
             folder = task = actions = service = None  # noqa: F841
     if error is None:  # pragma: no cover - unreachable: every with-body path returns or sets error
-        error = TaskComError(None, "The schedule operation failed.")
+        error = TaskComError(None, MSG_OPERATION_FAILED)
     raise error
 
 

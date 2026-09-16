@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Protocol
 
 from src.scheduler import linux, windows
+from src.scheduler.messages import ACCESS_DENIED_MARKERS
 from src.scheduler.windows import ScheduleReadback
 
 
@@ -138,7 +139,10 @@ class WindowsTaskScheduler:
         read-back and returns the canonical elevation messages verbatim.
         """
         ok, msg = windows.delete_task(task_name)
-        if not ok and "access is denied" in (msg or "").lower() and not windows.is_elevated():
+        # The marker list is single-sourced in src/scheduler/messages.py (plan 0047) — the
+        # same tuple task_com guards its returnable strings against, so the retry can only
+        # be triggered by the code that legitimately owns the phrase.
+        if not ok and any(m in (msg or "").lower() for m in ACCESS_DENIED_MARKERS) and not windows.is_elevated():
             ok, msg = windows.delete_task_elevated(task_name)
         return ok, msg
 
