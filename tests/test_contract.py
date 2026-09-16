@@ -807,16 +807,19 @@ _DISTRICT_SETUP = {
     # Phase-2 migration districts (2026-08-31): standard MyEd BC file shape.
     # The full-tier configs ride the mbp_all fixture (sd27's 8-12 student scope
     # keeps S002/S003 and drops the grade-3 S001 — the shared family fixture
-    # carries an S002 row so Family stays non-empty for it); sd10 and sd38 are
-    # the mbp_core shape (Students + the two course feeds) — sd38 moved there
-    # (2026-09-08) when its enabled_entities dropped the SpacesEDU rostering
-    # entities and its student scope widened to 7-12.
+    # carries an S002 row so Family stays non-empty for it); sd38 is the
+    # mbp_core shape (Students + the two course feeds), moved there 2026-09-08
+    # when its enabled_entities dropped the SpacesEDU rostering entities and its
+    # student scope widened to 7-12. SD10 left mbp_core for the full tier on
+    # 2026-09-15 and so moved onto the mbp_all fixture — it needs the rostering
+    # GDEs (schedule, staff, emergency contacts, class info) the mbp_core
+    # builder does not write.
     "sd27myedbc": _create_mbp_all_inputs,
     "sd67myedbc": _create_mbp_all_inputs,
     "sd69myedbc": _create_mbp_all_inputs,
     "sd71myedbc": _create_mbp_all_inputs,
     "sd75myedbc": _create_mbp_all_inputs,
-    "sd10myedbc": _create_mbp_core_inputs,
+    "sd10myedbc": _create_mbp_all_inputs,
     "sd38myedbc": _create_sd38_inputs,
     # Unity Christian School (2026-09-01): standard MyEd BC file shape. Its real
     # differences (grade-8 homerooms, generated emails, Family off) are config facts

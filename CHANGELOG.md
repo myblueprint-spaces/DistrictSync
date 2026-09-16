@@ -34,6 +34,16 @@ needed for an export whose day rotation can't tell two courses apart.
   export fills out through the school year, this setting is what stops
   unrelated secondary courses from being wrongly merged into one class.
 
+- **SD10 Arrow Lakes now receives class, enrollment, family and staff
+  rostering.** The district previously got the student roster plus the two
+  course feeds; it now gets all seven CSVs. Classes follow the standard split —
+  Kindergarten through grade 7 are rostered by homeroom, grades 8-12 by their
+  timetable. `Staff.csv` is included because `Enrollments.csv` always lists the
+  teacher of each class, and without it those teachers would not exist in the
+  upload; it needs no additional file from the district, since the class feed
+  already reads the staff export. Generated student emails
+  (`{student number}@sd10.bc.ca`) are unchanged. No other district is affected.
+
 ## [3.19.0] - 2026-09-14
 
 SD83's staff roles now come from the column the district actually records them
