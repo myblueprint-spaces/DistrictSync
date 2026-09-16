@@ -33,11 +33,31 @@ from src.etl.transformers.grades import (
     timetable_rostered_grades,
 )
 from src.etl.transformers.ids import normalize_id_series
-from src.etl.transformers.naming import truncate_name
+from src.etl.transformers.naming import MAX_CLASS_NAME_LENGTH, truncate_name
 from src.etl.transformers.sources import get_source_file, normalize_source_config
 from src.utils.helpers import normalize_columns
 
 logger = logging.getLogger(__name__)
+
+#: The session-key components that identify a blend's TIME SLOT, in key order.
+#:
+#: Read by BOTH :meth:`BlendedClassDetector._add_session_key` (which prefixes
+#: school + teacher) and :meth:`BlendedClassDetector._block_label`, so a
+#: component added to the key automatically reaches the class NAME and the two
+#: cannot drift. School and teacher are deliberately NOT here: they are
+#: constant within a blend and already carried by the Class ID.
+SESSION_TIME_COMPONENTS = ("term", "semester", "day", "period")
+
+#: Smallest course-title budget :meth:`BlendedClassDetector.create_name` will
+#: hand to :func:`~src.etl.transformers.naming.truncate_name`.
+#:
+#: That function's ``len(result) <= max_len`` guarantee is only proven for
+#: ``max_len >= 10`` (``tests/test_property_based.py``), and below 3 it inverts
+#: outright — ``truncate_name("AAAA BBBB CCCC", 2)`` returns 12 characters.
+#: create_name is its first caller with a COMPUTED budget, so a budget under
+#: this floor drops the course segment entirely rather than leaving the cap to
+#: a band nothing proves.
+_MIN_COURSE_SEGMENT_BUDGET = 10
 
 
 class BlendedDetection(NamedTuple):
@@ -92,6 +112,7 @@ class BlendedClassDetector:
         mtid_to_grade = self._build_grade_map(schedule_df)
         mtid_to_enrollable_grades = self._build_enrollable_grade_map(schedule_df)
         course_title_map = self._build_course_title_map(course_df)
+        teacher_name_map = self._build_teacher_name_map(schedule_df, field_map, teacher_id_col)
 
         working = self._resolve_working_frame(class_info_df, schedule_df, teacher_id_col)
         if working is None:
@@ -103,7 +124,14 @@ class BlendedClassDetector:
 
         working = self._add_session_key(working, teacher_id_col)
         return self._register_blends(
-            working, field_map, teacher_id_col, mtid_to_grade, mtid_to_enrollable_grades, course_title_map, context
+            working,
+            field_map,
+            teacher_id_col,
+            mtid_to_grade,
+            mtid_to_enrollable_grades,
+            course_title_map,
+            teacher_name_map,
+            context,
         )
 
     # ------------------------------------------------------------------
@@ -187,7 +215,7 @@ class BlendedClassDetector:
         candidates for blending. Only components present in the frame
         participate; they are stringified with NaN → "" first.
         """
-        session_components = [SCHOOL_NUMBER, teacher_id_col, "term", "semester", "day", "period"]
+        session_components = [SCHOOL_NUMBER, teacher_id_col, *SESSION_TIME_COMPONENTS]
         available = [col for col in session_components if col in working.columns]
 
         for col in available:
@@ -203,6 +231,7 @@ class BlendedClassDetector:
         mtid_to_grade: dict[str, str],
         mtid_to_enrollable_grades: dict[str, set[str]],
         course_title_map: dict[str, str],
+        teacher_name_map: dict[str, str],
         context: TransformContext,
     ) -> BlendedDetection:
         """Validate each multi-section session and collect it into the returned maps.
@@ -314,7 +343,13 @@ class BlendedClassDetector:
 
             grade_str = self.get_grade_range(group, mtid_to_grade)
             class_name = self.create_name(
-                group, field_map, grade_str, course_title_map, context, course_code_col=course_code_col
+                group,
+                field_map,
+                grade_str,
+                course_title_map,
+                context,
+                course_code_col=course_code_col,
+                teacher_name=self._session_teacher_name(group, teacher_id_col, teacher_name_map),
             )
 
             result.metadata[blended_id] = {
@@ -443,8 +478,20 @@ class BlendedClassDetector:
         context: TransformContext,
         *,
         course_code_col: Optional[str],
+        teacher_name: str,
     ) -> str:
         """Build the blend's display name from the parts the frame actually has.
+
+        Composed as ``<Teacher> <Course titles> (Block <slot>) (<Grades>)
+        <Year>`` — the regular path's word order plus the grade range, so a
+        district's blended and subject class lists read alike.
+
+        ``teacher_name`` is the schedule-resolved name
+        (:meth:`_build_teacher_name_map`) and takes precedence; ``""`` falls
+        back to :meth:`_teacher_from_frame`. Keyword-only with no default so no
+        caller silently re-acquires the frame-only behaviour this replaced —
+        which produced blended names with no teacher on every bundled district
+        while their regular names carried one.
 
         ``course_code_col`` is the resolved course-code column (see
         :func:`~src.etl.transformers.course_codes.resolve_course_code_column`),
@@ -460,32 +507,134 @@ class BlendedClassDetector:
         caller can silently re-acquire the unguarded lookup this replaced (it
         raised ``KeyError`` and killed the run at the Classes entity).
         """
-        name_parts = []
+        teacher = teacher_name.strip() or self._teacher_from_frame(session_group, field_map)
+        block = self._block_label(session_group)
 
-        name_config = field_map.get("Name", {})
-        if isinstance(name_config, dict):
-            # Spaced YAML authoring key (see ClassTransformer._assign_class_names).
-            teacher_col = name_config.get("teacher last name", "teacher name").lower()
-            if teacher_col in session_group.columns:
-                teacher_name = session_group[teacher_col].iloc[0]
-                if pd.notna(teacher_name) and str(teacher_name).strip():
-                    name_parts.append(str(teacher_name).strip())
+        head_parts = [teacher] if teacher else []
+        tail_parts = []
+        if block:
+            tail_parts.append(f"(Block {block})")
+        if grade_str:
+            tail_parts.append(f"({grade_str})")
+        tail_parts.append(str(context.school_year))
 
+        course_segment = ""
         if course_code_col is not None:
             unique_titles = sorted(
                 {course_title_map.get(code, "Unknown Course") for code in session_group[course_code_col]}
             )
             if unique_titles:
-                name_parts.append(" / ".join(unique_titles))
-        if grade_str:
-            name_parts.append(f"({grade_str})")
-        name_parts.append(str(context.school_year))
+                course_segment = " / ".join(unique_titles)
+
+        if course_segment:
+            # The one unbounded segment is budgeted against what the IDENTIFYING
+            # parts already cost, so truncation eats course text instead of the
+            # block/grades/year tail (which used to vanish on 22% of SD54's
+            # blends, leaving a class with no grade signal anywhere — `Grade` is
+            # deliberately blank on a blended row). The +1 is the space that
+            # joins this segment to its neighbours.
+            spent = len(" ".join(head_parts + tail_parts))
+            budget = MAX_CLASS_NAME_LENGTH - spent - 1
+            course_segment = "" if budget < _MIN_COURSE_SEGMENT_BUDGET else truncate_name(course_segment, budget)
+
+        name_parts = head_parts + ([course_segment] if course_segment else []) + tail_parts
 
         full_name = " ".join(name_parts).strip()
         if not full_name or len(name_parts) <= 1:
             full_name = f"Blended Class {grade_str} {context.school_year}".strip()
 
+        # Unconditional, so the cap is guaranteed by the one call that owns it
+        # in EVERY branch — including the budget-floor and fallback paths.
         return truncate_name(full_name)
+
+    @staticmethod
+    def _teacher_from_frame(session_group: pd.DataFrame, field_map: dict[str, Any]) -> str:
+        """The blend's teacher name as the GROUPED frame carries it, or ``""``.
+
+        The documented FALLBACK to the schedule map (see :meth:`create_name`),
+        not the preferred source: no bundled ``ClassInformation`` carries a
+        teacher-name column, so this path serves the schedule-fallback frame
+        (where it is the same fact) and a district whose class-info export
+        happens to include one.
+        """
+        name_config = field_map.get("Name", {})
+        if not isinstance(name_config, dict):
+            return ""
+        # Spaced YAML authoring key (see ClassTransformer._assign_class_names).
+        teacher_col = name_config.get("teacher last name", "teacher name").lower()
+        if teacher_col not in session_group.columns:
+            return ""
+        value = session_group[teacher_col].iloc[0]
+        return str(value).strip() if pd.notna(value) else ""
+
+    @staticmethod
+    def _block_label(session_group: pd.DataFrame) -> str:
+        """The blend's time slot as a space-joined string, or ``""``.
+
+        Built from the components PRESENT in the frame — ``_add_session_key``
+        keys on the available subset only, so indexing a column a district's
+        export omits would raise ``KeyError`` and kill the Classes entity.
+        Every row of the group shares these values for that subset (they are
+        the group key), so the first row answers for all of them.
+
+        Values are joined and never labelled individually: the components'
+        meanings differ per district (one SD54 school numbers days and letters
+        periods; another does the reverse), so a "Day A Period 1" rendering
+        would assert an order the data does not guarantee. The ``Block`` prefix
+        that :meth:`create_name` wraps this in carries the meaning instead.
+        """
+        available = [col for col in SESSION_TIME_COMPONENTS if col in session_group.columns]
+        values = (str(session_group[col].iloc[0]).strip() for col in available)
+        return " ".join(value for value in values if value)
+
+    @staticmethod
+    def _build_teacher_name_map(
+        schedule_df: pd.DataFrame, field_map: dict[str, Any], teacher_id_col: str
+    ) -> dict[str, str]:
+        """Map each teacher id to the display name the SCHEDULE carries.
+
+        The regular class path reads its teacher name off the schedule (base
+        declares ``"teacher last name": "Teacher Name"``, inherited by every
+        bundled config; the staff merge contributes only ``LAST_NAME``, which no
+        config selects). Building the blended name off the same frame is what
+        makes a district's blended and regular names agree, and it costs one
+        grouping pass over a frame :meth:`_load_reference_frames` already holds.
+
+        The id is normalized on THIS side too. ``_load_reference_frames``
+        normalizes only the Master Timetable ID, while ClassInformation's
+        teacher id arrives already normalized — so a raw key here would miss on
+        any padding difference, and the miss is indistinguishable from "this
+        district has no teacher name", i.e. it would fail silently.
+
+        Missing columns → ``{}``; the segment is then simply omitted.
+        """
+        name_config = field_map.get("Name", {})
+        if not isinstance(name_config, dict):
+            return {}
+        teacher_col = name_config.get("teacher last name", "teacher name").lower()
+        if teacher_col not in schedule_df.columns or teacher_id_col not in schedule_df.columns:
+            return {}
+
+        pairs = schedule_df[[teacher_id_col, teacher_col]].dropna().drop_duplicates(subset=[teacher_id_col])
+        normalized_ids = normalize_id_series(pairs[teacher_id_col])
+        return {
+            teacher_id: str(name).strip()
+            for teacher_id, name in zip(normalized_ids, pairs[teacher_col])
+            if teacher_id and teacher_id.lower() != "nan" and str(name).strip()
+        }
+
+    @staticmethod
+    def _session_teacher_name(group: pd.DataFrame, teacher_id_col: str, teacher_name_map: dict[str, str]) -> str:
+        """The blend's teacher name from the schedule map, or ``""`` if unknown.
+
+        The whole group shares one teacher id — it is a session-key component —
+        so the first row answers for all of them. Normalized on LOOKUP for the
+        same reason :meth:`_build_teacher_name_map` normalizes on build: the two
+        frames reach this point with differently-padded ids.
+        """
+        if not teacher_name_map or teacher_id_col not in group.columns:
+            return ""
+        return teacher_name_map.get(normalize_id_series(group[teacher_id_col]).iloc[0], "")
 
     # ------------------------------------------------------------------
     # Reference lookup tables
