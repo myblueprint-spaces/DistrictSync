@@ -35,10 +35,10 @@ DECISIONS 2026-06-25 — consult git history for the scripts themselves.
     / ``MSG_NO_LOGON_SESSION`` / ``MSG_NOT_FOUND``, or Windows' own description plus its
     hex status for an unmapped one) — locale-independent, injective, and marker-guarded
     (plan 0047; ``docs/claugentic-INVARIANTS.md``). ``setup_errors.classify_schedule_error``
-    matches only the ``windows._MSG_*`` elevation canonicals by exact equality today and
-    reaches THESE by substring or by echoing them in its details clause; Slice A2 WILL import
-    these constants and branch on them directly — until it lands, an edit to a canonical must
-    be mirrored at that substring.
+    IMPORTS these constants and branches on them by EXACT equality (as it already did for the
+    ``windows._MSG_*`` elevation canonicals), so an edit to a canonical here silently moves a
+    branch there — mirror it. Only the defensive access-denied fallback still matches by
+    substring, and it deliberately shows no code.
   - **Every** ``(False, message)`` return in this module goes through :func:`_fail`, which
     writes ONE anchored log line carrying the verb, the task name, the message and
     ``[HRESULT 0x… | n/a]`` — so a district's ``etl_tool.log`` carries ONE greppable anchor
@@ -155,6 +155,13 @@ _MSG_ACCOUNT_NEEDS_PASSWORD = (  # nosec B105
 # and maps it to the bounded _MSG_DIFFERENT_ACCOUNT category, on BOTH the register and the
 # remove path. IMPORTED from its producer (plan 0047) rather than re-spelled here — a second
 # spelling is exactly how the two halves of an IPC contract drift apart.
+
+# An access-denied the ELEVATED CHILD reported — i.e. Windows refused the change AFTER the
+# UAC prompt was approved (plan 0047 A2). It exists because `classify_schedule_error`'s
+# `elevated` flag is the PARENT process's token, which is False on this path: without its own
+# canonical, a UAC-approved child refusal classified as "right-click and Run as administrator"
+# — the exact loop SD60 ran on 2026-09-14. Provenance rides the MESSAGE, not the parent's bit.
+_MSG_ELEVATED_ACCESS_DENIED = "Windows refused the elevated schedule change."
 
 # Two child-result floors, named so the classifier can decide each one explicitly.
 _MSG_CHILD_DETAIL_UNAVAILABLE = "The schedule change failed (error detail unavailable)."
@@ -416,9 +423,9 @@ def register_task(
         ``task_com`` canonical), or Windows' own description plus its hex status for
         an unmapped one. The wizard classifier
         (``setup_errors.classify_schedule_error``) keys on this module's own
-        ``_MSG_*`` elevation categories by exact equality (it imports them) and
-        reaches the ``task_com`` canonicals above by substring or by echoing them
-        in its details clause — Slice A2 WILL import those directly too. **Every**
+        ``_MSG_*`` elevation categories AND on the ``task_com`` canonicals above by
+        exact equality — it imports both families, so a re-worded canonical moves a
+        branch there; an unmapped message still reaches its details clause. **Every**
         failure return also writes the :func:`_fail` log line. A
         registration that TIMES OUT resolves through :func:`_confirm_registration`
         (the worker cannot be cancelled and may still complete — a bare "failed"
@@ -762,7 +769,14 @@ def _register_elevated(
                 # prefix no admin-facing string (or log line) may republish.
                 return _fail(task_name, _MSG_DIFFERENT_ACCOUNT, verb="register")
             msg = _sanitize_child_message(child_msg)
-            return _fail(task_name, msg, verb="register", scode=task_com.hresult_for(msg))
+            # ORDER IS LOAD-BEARING: recover the code from the message the CHILD sent, before
+            # the re-label. `hresult_for` is the inverse of task_com's table and knows nothing
+            # about `_MSG_ELEVATED_ACCESS_DENIED`, so re-labelling first would log
+            # `[HRESULT n/a]` for the one arm whose code we already have.
+            scode = task_com.hresult_for(msg)
+            if msg == task_com.MSG_ACCESS_DENIED:
+                msg = _MSG_ELEVATED_ACCESS_DENIED
+            return _fail(task_name, msg, verb="register", scode=scode)
         # The child reported ok — CONFIRM against the real task (exit code alone is not success).
         return _confirm_registration(
             task_name, on_unconfirmed=_MSG_ELEVATION_NO_RESULT, path_label="Elevated registration"

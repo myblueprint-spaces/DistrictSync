@@ -115,6 +115,11 @@ Never inline a hex or a px size in a screen or a factory arg; add a token, then 
 *(`list_scope_row` — the 0038 S5 "Show all districts" row — was **deleted** on 2026-08-04 with the
 rule it served; see rule 9. `section_label` retired at S7 with slim Home's tile row.)*
 
+*(`ErrorCard`'s DETAIL text is `selectable=True` (plan 0047) — an admin may have to relay a Windows
+error code off a locked-down server, and a screenshot of a code is a transcription error waiting to
+happen. The HEADLINE stays unselectable: it is a label, not a value. One word in the factory, so
+every `ErrorCard` call site inherits it.)*
+
 **The one-primary rule is a review gate:** a screen with two `primary_button`s is a bug — demote the
 weaker one to `secondary_button`. (Settings is a stack of independent SECTIONS, each with at most one
 filled action — folders, schedule, delivery; a new section rides those rather than adding a fourth.)

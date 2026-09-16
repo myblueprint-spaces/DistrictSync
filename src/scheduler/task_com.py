@@ -73,9 +73,9 @@ HR_ACCESS_DENIED = 0x80070005
 # ERROR_NO_SUCH_LOGON_SESSION as an HRESULT. Windows returns it when a credential-storing
 # registration cannot obtain a logon session — Microsoft documents the "Network access: Do not
 # allow storage of passwords and credentials for network authentication" hardening policy as a
-# cause elsewhere. The INFERENCE belongs in the UI classifier's hedged copy, never here —
-# Slice A2 adds that hedged copy. Until it lands this canonical reaches the classifier's
-# unclassified branch (the details-clause echo, not a dedicated case).
+# cause elsewhere. The INFERENCE belongs in the UI classifier's hedged copy, never here — it
+# lives in `setup_errors.classify_schedule_error`'s branch for this canonical, which names the
+# setting and says Microsoft DOCUMENTS it, never that it is what happened.
 HR_NO_SUCH_LOGON_SESSION = 0x80070520
 HR_LOGON_FAILURE = 0x8007052E  # ERROR_LOGON_FAILURE — bad user/password at registration
 HR_ACCOUNT_INFO_NOT_SET = 0x8004130F  # SCHED_E_ACCOUNT_INFORMATION_NOT_SET
@@ -84,12 +84,10 @@ HR_ACCOUNT_INFO_NOT_SET = 0x8004130F  # SCHED_E_ACCOUNT_INFORMATION_NOT_SET
 RESULT_HAS_NOT_RUN = 267011
 
 # Canonical, secret-free, locale-independent text per HRESULT — DESCRIPTIVE of the status
-# Windows returned, never a cause. `setup_errors.classify_schedule_error` matches only the
-# `windows._MSG_*` elevation canonicals by exact equality today and reaches THESE by substring
-# (`"Access is denied" in msg`, setup_errors.py's `access_denied` line) or by echoing them
-# verbatim in its unclassified-branch details clause; it does not import them. Slice A2 WILL
-# import these constants and branch on them directly. Until it lands, any edit here must be
-# mirrored at that substring.
+# Windows returned, never a cause. `setup_errors.classify_schedule_error` keys on these by
+# EXACT equality and IMPORTS them (plan 0047 A2) — any edit here must be mirrored there,
+# because a re-worded canonical silently moves a branch to the unclassified fallback. The
+# cause copy is the classifier's, hedged to its evidence; this module states the STATUS only.
 #
 # RULE (pinned; docs/claugentic-INVARIANTS.md): no string this module can RETURN — a table
 # value, Windows' own description, or `str(exc)` — may carry a marker another consumer owns
