@@ -9,6 +9,23 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Added
+
+- **The nightly sync can run as a service account.** The Daily schedule section
+  now has a **Windows account for the nightly task** box, filled in with your own
+  account. Leave it alone and nothing changes. To use a service account instead,
+  type its name (`DOMAIN\name` if it has one) and enter **that account's**
+  Windows password — DistrictSync still never stores it. If the account name is
+  wrong, Windows now says so in plain words instead of asking you to retype the
+  password, and the confirmation names the account the task was actually
+  registered to. An existing nightly sync can't be re-pointed at a different
+  account in place — choose **Remove nightly sync**, then schedule it again;
+  what you typed stays in the box. Delivery passwords are stored per Windows
+  account, so a service account needs its own set up once, with
+  `--sftp-configure` run as that account; the schedule section says so when
+  delivery is switched on, and your DistrictSync setup guide has the full steps.
+  This does not change what your district's security policy allows.
+
 ### Fixed
 
 - **Scheduling the nightly sync: five failures now name the cause instead

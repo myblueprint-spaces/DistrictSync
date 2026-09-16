@@ -1175,6 +1175,7 @@ class TestWizardStepsRender:
             return ft.Text("schedule"), setup_mod._ScheduleHandle(
                 trigger_register=lambda: ReconcileOutcome.NONE,
                 run_time_value=lambda: "03:00",
+                run_as_user_value=lambda: "",
                 persist_run_time=lambda: False,
                 is_busy=lambda: False,
             )
@@ -1224,6 +1225,7 @@ class TestScheduleStepMidFlight:
             return ft.Text("schedule"), setup_mod._ScheduleHandle(
                 trigger_register=lambda: ReconcileOutcome.NONE,
                 run_time_value=lambda: "03:00",
+                run_as_user_value=lambda: "",
                 persist_run_time=lambda: False,
                 is_busy=lambda: False,
             )
@@ -1855,7 +1857,7 @@ def test_unproven_record_save_asks_before_it_could_downgrade_an_unattended_task(
     assert recorded["called"] == 0, "no blank-password register may fire on an unproven logon type"
     dialog = page.show_dialog.call_args[0][0]
     assert isinstance(dialog, ft.AlertDialog)
-    unknown = downgrade_interrupt(registered_unattended=None, password_supplied=False)
+    unknown = downgrade_interrupt(registered_foreign_account="", registered_unattended=None, password_supplied=False)
     assert dialog.title.value == unknown.headline
     assert dialog.content.value == unknown.detail
 

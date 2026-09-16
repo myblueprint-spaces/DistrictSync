@@ -206,6 +206,17 @@ class AppConfig:
     # Both are additive with defaults — old config.json files load unchanged (back-compat).
     schedule_unattended: bool = False
     schedule_task_args: dict[str, object] | None = None
+    # The task PRINCIPAL that was ACTUALLY registered (plan 0046 B) — written ONLY on a
+    # confirmed register, cleared on a confirmed unregister, in the SAME block as
+    # ``schedule_unattended`` / ``schedule_task_args`` so the three facets stay atomic.
+    # ``""`` means "the signed-in account". That is EVIDENCED, not guessed: every build before
+    # this one passed ``run_as_user=None`` unconditionally from screens/setup.py, so no
+    # existing install can have a task on any other principal.
+    #
+    # NAMING CONTRACT (do not break): the ``schedule_`` prefix keeps this OUT of
+    # ``_ADVISORY_FIELD_PREFIXES`` by construction, so ``_carries_chosen_settings`` counts it
+    # like every other admin choice. NEVER a password — a NAME only (I1/I3 untouched).
+    schedule_run_as_user: str = ""
 
     # Seasonal sync window (owner decision 2026-07-21) — an OPT-IN recurring
     # school-year window that governs the app's OWN automatic nightly run only. The

@@ -78,6 +78,14 @@ HR_ACCESS_DENIED = 0x80070005
 # setting and says Microsoft DOCUMENTS it, never that it is what happened.
 HR_NO_SUCH_LOGON_SESSION = 0x80070520
 HR_LOGON_FAILURE = 0x8007052E  # ERROR_LOGON_FAILURE — bad user/password at registration
+# ERROR_NONE_MAPPED as an HRESULT: the run-as account NAME is not a principal Windows can
+# resolve. MEASURED 2026-09-16 on this exact COM path (plan 0046, Investigations M1) with a
+# deliberately bogus account name and a junk password: it is DISTINCT from a wrong password
+# (0x8007052E), which is why it earns its own canonical and its own classifier branch — dropping
+# a name typo into the credential branch loops the admin on the password. The same probe recorded
+# `excepinfo[2] == "(21,8):UserId:"` — a COM FIELD LOCATOR, not prose, which is a second argument
+# for mapping it rather than letting the guarded description pass through.
+HR_NONE_MAPPED = 0x80070534
 HR_ACCOUNT_INFO_NOT_SET = 0x8004130F  # SCHED_E_ACCOUNT_INFORMATION_NOT_SET
 
 # SCHED_S_TASK_HAS_NOT_RUN — LastTaskResult of a task that has never fired.
@@ -107,6 +115,10 @@ RESULT_HAS_NOT_RUN = 267011
 MSG_ACCESS_DENIED = "Access is denied."
 MSG_NOT_FOUND = "The system cannot find the file specified."
 MSG_LOGON_FAILURE = "The user name or password is incorrect."
+# Deliberately free of every marker another consumer owns ("cannot find" / "does not exist" /
+# "no such" / "access…denied" / the secret sentinel) — a marker in a message that does not own it
+# turns a failure into `interpret_unregister`'s success-shaped "No schedule was registered".
+MSG_ACCOUNT_NOT_RECOGNIZED = "Windows did not recognize the account name given for the task."
 MSG_ACCOUNT_INFO_NOT_SET = "Windows has no saved account information for the task."
 MSG_NO_LOGON_SESSION = "Windows reported that the logon session for the task registration was unavailable."
 MSG_OPERATION_FAILED = "The schedule operation failed."
@@ -115,6 +127,7 @@ _HRESULT_CANONICAL: dict[int, str] = {
     HR_ACCESS_DENIED: MSG_ACCESS_DENIED,
     HR_NO_SUCH_LOGON_SESSION: MSG_NO_LOGON_SESSION,
     HR_LOGON_FAILURE: MSG_LOGON_FAILURE,
+    HR_NONE_MAPPED: MSG_ACCOUNT_NOT_RECOGNIZED,
     HR_ACCOUNT_INFO_NOT_SET: MSG_ACCOUNT_INFO_NOT_SET,
     HR_NOT_FOUND: MSG_NOT_FOUND,
 }

@@ -14,6 +14,7 @@ import pytest
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.setup_flow import (
     CREATOR_STEP_ORDER,
+    SCHEDULE_ACCOUNT_FIELD_LABEL,
     STEP_ORDER,
     TOTAL_STEPS,
     DeliveryFact,
@@ -997,6 +998,10 @@ class TestTaskArgsPersistedRoundTrip:
 # The record is the ONLY reconcile baseline — an absent one is UNKNOWN, never    #
 # silently "up to date" (the mount-snapshot fallback's silent no-op).            #
 # --------------------------------------------------------------------------- #
+#: The signed-in account every principal comparison in these tests reduces against (0046 B).
+_CURRENT_ACCOUNT = "PC\\ted"
+
+
 def _task_args(**over) -> TaskArgs:
     base = {
         "input_dir": "/in",
@@ -1012,31 +1017,37 @@ def _task_args(**over) -> TaskArgs:
 class TestRegisteredSchedule:
     def test_a_usable_record_carries_both_facts(self):
         record = registered_schedule(
+            raw_run_as_user="",
             raw_task_args=task_args_to_persisted(_task_args()),
             unattended_flag=True,
             supports_unattended=True,
         )
-        assert record == RegisteredSchedule(args=_task_args(), unattended=True)
+        assert record == RegisteredSchedule(args=_task_args(), unattended=True, run_as_user="")
 
     @pytest.mark.parametrize("raw", [None, "not a dict", {}, {"input_dir": "/in"}])
     def test_an_absent_or_garbled_record_is_unknown_on_BOTH_facts(self, raw):
         # The record is ATOMIC (both facets are written by the same confirmed register and
         # cleared by the same unregister): no args record ⇒ the unattended flag is equally
         # un-evidenced, so it must read unknown rather than its False default.
-        record = registered_schedule(raw_task_args=raw, unattended_flag=False, supports_unattended=True)
+        record = registered_schedule(
+            raw_run_as_user="", raw_task_args=raw, unattended_flag=False, supports_unattended=True
+        )
         assert record.args is None
         assert record.unattended is None
 
     def test_an_unknown_record_is_not_unattended_where_the_platform_has_no_logon_type(self):
         # cron has no logon type — there is nothing an unproven re-register could downgrade, so
         # "unknown" would only produce a nonsense Windows-password prompt.
-        record = registered_schedule(raw_task_args=None, unattended_flag=False, supports_unattended=False)
+        record = registered_schedule(
+            raw_run_as_user="", raw_task_args=None, unattended_flag=False, supports_unattended=False
+        )
         assert record.unattended is False
 
     def test_a_RECORDED_unattended_fact_is_honored_regardless_of_platform_capability(self):
         # A durable recorded fact is evidence — it is never overridden by the running platform's
         # capability (a config can travel; only the INFERENCE is capability-gated).
         record = registered_schedule(
+            raw_run_as_user="",
             raw_task_args=task_args_to_persisted(_task_args()),
             unattended_flag=True,
             supports_unattended=False,
@@ -1046,30 +1057,62 @@ class TestRegisteredSchedule:
 
 class TestScheduleReconcile:
     def test_no_registered_task_needs_no_reconcile(self):
-        record = registered_schedule(raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False)
+        record = registered_schedule(
+            raw_run_as_user="", raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False
+        )
         assert (
-            schedule_reconcile(schedule_registered=False, record=record, pending=_task_args(sis_type="sd48myedbc"))
+            schedule_reconcile(
+                pending_run_as_user="",
+                current_account=_CURRENT_ACCOUNT,
+                schedule_registered=False,
+                record=record,
+                pending=_task_args(sis_type="sd48myedbc"),
+            )
             is ScheduleReconcile.NO_TASK
         )
 
     def test_a_matching_record_is_up_to_date(self):
-        record = registered_schedule(raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False)
+        record = registered_schedule(
+            raw_run_as_user="", raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False
+        )
         assert (
-            schedule_reconcile(schedule_registered=True, record=record, pending=_task_args())
+            schedule_reconcile(
+                pending_run_as_user="",
+                current_account=_CURRENT_ACCOUNT,
+                schedule_registered=True,
+                record=record,
+                pending=_task_args(),
+            )
             is ScheduleReconcile.UP_TO_DATE
         )
 
     def test_a_cosmetic_whitespace_difference_is_still_up_to_date(self):
-        record = registered_schedule(raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False)
+        record = registered_schedule(
+            raw_run_as_user="", raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False
+        )
         assert (
-            schedule_reconcile(schedule_registered=True, record=record, pending=_task_args(output_dir="  /out  "))
+            schedule_reconcile(
+                pending_run_as_user="",
+                current_account=_CURRENT_ACCOUNT,
+                schedule_registered=True,
+                record=record,
+                pending=_task_args(output_dir="  /out  "),
+            )
             is ScheduleReconcile.UP_TO_DATE
         )
 
     def test_a_changed_record_reregisters(self):
-        record = registered_schedule(raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False)
+        record = registered_schedule(
+            raw_run_as_user="", raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False
+        )
         assert (
-            schedule_reconcile(schedule_registered=True, record=record, pending=_task_args(sis_type="sd48myedbc"))
+            schedule_reconcile(
+                pending_run_as_user="",
+                current_account=_CURRENT_ACCOUNT,
+                schedule_registered=True,
+                record=record,
+                pending=_task_args(sis_type="sd48myedbc"),
+            )
             is ScheduleReconcile.REREGISTER
         )
 
@@ -1078,16 +1121,28 @@ class TestScheduleReconcile:
         # the new district, so any baseline derived from the current config equals `pending` and
         # the reconcile silently does nothing — while the live task still bakes the OLD district.
         # With no durable record the app cannot know what the task carries, so it must act.
-        record = registered_schedule(raw_task_args=None, unattended_flag=False)
+        record = registered_schedule(raw_run_as_user="", raw_task_args=None, unattended_flag=False)
         assert (
-            schedule_reconcile(schedule_registered=True, record=record, pending=_task_args(sis_type="sd48myedbc"))
+            schedule_reconcile(
+                pending_run_as_user="",
+                current_account=_CURRENT_ACCOUNT,
+                schedule_registered=True,
+                record=record,
+                pending=_task_args(sis_type="sd48myedbc"),
+            )
             is ScheduleReconcile.REREGISTER
         )
 
     def test_an_absent_record_with_no_task_registered_is_still_NO_TASK(self):
-        record = registered_schedule(raw_task_args=None, unattended_flag=False)
+        record = registered_schedule(raw_run_as_user="", raw_task_args=None, unattended_flag=False)
         assert (
-            schedule_reconcile(schedule_registered=False, record=record, pending=_task_args())
+            schedule_reconcile(
+                pending_run_as_user="",
+                current_account=_CURRENT_ACCOUNT,
+                schedule_registered=False,
+                record=record,
+                pending=_task_args(),
+            )
             is ScheduleReconcile.NO_TASK
         )
 
@@ -1096,14 +1151,22 @@ class TestDowngradeInterruptOnAnUnknownRecord:
     def test_an_unknown_logon_type_without_a_password_interrupts(self):
         # Never silently replace a possibly-unattended task with a logged-on-only one: on a
         # district server nobody is signed in, so that would stop the nightly sync entirely.
-        assert downgrade_interrupt(registered_unattended=None, password_supplied=False) is not None
+        assert (
+            downgrade_interrupt(registered_foreign_account="", registered_unattended=None, password_supplied=False)
+            is not None
+        )
 
     def test_an_unknown_logon_type_with_a_password_supplied_proceeds(self):
         # A supplied password keeps the task unattended either way — nothing can be downgraded.
-        assert downgrade_interrupt(registered_unattended=None, password_supplied=True) is None
+        assert (
+            downgrade_interrupt(registered_foreign_account="", registered_unattended=None, password_supplied=True)
+            is None
+        )
 
     def test_the_unknown_copy_never_asserts_a_state_it_did_not_check(self):
-        interrupt = downgrade_interrupt(registered_unattended=None, password_supplied=False)
+        interrupt = downgrade_interrupt(
+            registered_foreign_account="", registered_unattended=None, password_supplied=False
+        )
         known = DowngradeInterrupt()
         assert interrupt is not None
         assert interrupt.headline != known.headline
@@ -1115,7 +1178,9 @@ class TestDowngradeInterruptOnAnUnknownRecord:
 
     def test_the_unknown_variant_offers_the_same_three_choices(self):
         # The view renders the labels straight off the interrupt — the choices must not diverge.
-        interrupt = downgrade_interrupt(registered_unattended=None, password_supplied=False)
+        interrupt = downgrade_interrupt(
+            registered_foreign_account="", registered_unattended=None, password_supplied=False
+        )
         known = DowngradeInterrupt()
         assert interrupt is not None
         assert interrupt.keep_unattended_label == known.keep_unattended_label
@@ -1162,13 +1227,19 @@ class TestDowngradeInterrupt:
         ],
     )
     def test_interrupt_truth_table(self, registered_unattended, password_supplied, interrupts):
-        result = downgrade_interrupt(registered_unattended=registered_unattended, password_supplied=password_supplied)
+        result = downgrade_interrupt(
+            registered_foreign_account="",
+            registered_unattended=registered_unattended,
+            password_supplied=password_supplied,
+        )
         assert (result is not None) is interrupts
 
     def test_choice_copy_is_byte_pinned(self):
         # Owner-approved copy (2026-07-15) — the two explicit choices, verbatim; calm framing;
         # no default that downgrades silently; cancel = no change.
-        interrupt = downgrade_interrupt(registered_unattended=True, password_supplied=False)
+        interrupt = downgrade_interrupt(
+            registered_foreign_account="", registered_unattended=True, password_supplied=False
+        )
         assert interrupt == DowngradeInterrupt()
         assert interrupt.headline == "Keep the nightly sync running when you're signed out?"
         assert interrupt.detail == (
@@ -1191,8 +1262,12 @@ class TestDowngradeInterrupt:
 
     def test_interrupt_carries_no_password_shaped_field(self):
         # I1/I3 structural guard: the interrupt is COPY only — a password can't even ride it.
+        # The ONE non-string field is the 0046-B rendering flag, named and pinned here so a
+        # future non-copy field cannot slip in under this assertion.
         interrupt = DowngradeInterrupt()
-        assert all(isinstance(v, str) for v in vars(interrupt).values())
+        non_strings = {k for k, v in vars(interrupt).items() if not isinstance(v, str)}
+        assert non_strings == {"offers_signed_in_only"}
+        assert isinstance(interrupt.offers_signed_in_only, bool)
         assert "password" not in {k.lower() for k in vars(interrupt)}
 
 
@@ -1269,8 +1344,238 @@ class TestReconcileSaveNote:
         )
         assert "updating" not in suffix.lower()
 
-    def test_reconcile_outcome_members_are_the_five_states(self):
-        assert {o.value for o in ReconcileOutcome} == {"dispatched", "interrupted", "blocked", "in_flight", "none"}
+    def test_reconcile_outcome_members_are_the_five_pre_0046_states_plus_the_two_account_ones(self):
+        assert {o.value for o in ReconcileOutcome} == {
+            "dispatched",
+            "interrupted",
+            "blocked",
+            "in_flight",
+            "none",
+            "blocked_account",
+            "blocked_account_switch",
+        }
+
+    def test_every_outcome_has_a_distinct_non_tail_note(self):
+        """The ``return _FOLDERS_SAVED`` / ``return ""`` tails STAY as the totality guard — so a
+        future member that forgets its branch must be caught here, not painted as a bare
+        "Saved." (the exact silent-misreport this sweep exists to stop)."""
+        for produce, tail in ((folders_save_note, "Saved."), (sftp_reconcile_suffix, "")):
+            seen: dict[str, ReconcileOutcome] = {}
+            for outcome in ReconcileOutcome:
+                note = produce(outcome)
+                if outcome is ReconcileOutcome.NONE:
+                    assert note == tail
+                    continue
+                assert note != tail, f"{produce.__name__}({outcome}) fell through to the totality tail"
+                assert note not in seen, f"{produce.__name__}: {outcome} duplicates {seen[note]}"
+                seen[note] = outcome
+
+
+# --------------------------------------------------------------------------- #
+# Plan 0046 B — the task principal on the record, the reconcile and the copy.    #
+# --------------------------------------------------------------------------- #
+class TestRecordedPrincipal:
+    def test_a_usable_record_carries_the_principal(self):
+        record = registered_schedule(
+            raw_task_args=task_args_to_persisted(_task_args()),
+            unattended_flag=True,
+            raw_run_as_user="CORP\\svc_x",
+        )
+        assert record.run_as_user == "CORP\\svc_x"
+
+    def test_no_args_record_means_the_principal_is_unknown_too(self):
+        # The three facets are written and cleared TOGETHER, so an absent record makes all
+        # three unknown — `""` would be an unchecked assertion, and the gate keys on it.
+        record = registered_schedule(raw_task_args=None, unattended_flag=False, raw_run_as_user="CORP\\svc_x")
+        assert record.args is None
+        assert record.run_as_user is None
+
+    def test_a_pre_0046_record_reads_as_the_signed_in_account(self):
+        # R5 upgrade path: a v3.7.0-era config.json has schedule_task_args but no
+        # schedule_run_as_user. `""` is EVIDENCED — every build before this one passed
+        # run_as_user=None unconditionally, so no such install can be on another principal.
+        persisted: dict[str, object] = {"schedule_task_args": task_args_to_persisted(_task_args())}
+        record = registered_schedule(
+            raw_task_args=persisted["schedule_task_args"],
+            unattended_flag=False,
+            raw_run_as_user=persisted.get("schedule_run_as_user", ""),
+        )
+        assert record.run_as_user == ""
+
+    @pytest.mark.parametrize("raw", [None, 7, ["CORP\\svc_x"], {"user": "x"}, True])
+    def test_a_non_string_principal_degrades_to_the_signed_in_account(self, raw):
+        # config.json is hand-editable; total and defensive, like the rest of the record.
+        record = registered_schedule(
+            raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False, raw_run_as_user=raw
+        )
+        assert record.run_as_user == ""
+
+    def test_the_principal_is_a_required_keyword(self):
+        with pytest.raises(TypeError):
+            registered_schedule(  # type: ignore[call-arg]
+                raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False
+            )
+
+
+class TestReconcileOnThePrincipal:
+    def _record(self, run_as_user: str) -> RegisteredSchedule:
+        return registered_schedule(
+            raw_task_args=task_args_to_persisted(_task_args()),
+            unattended_flag=True,
+            raw_run_as_user=run_as_user,
+        )
+
+    def test_an_account_only_change_reregisters(self):
+        # The task args are IDENTICAL — only the principal moved. Without this clause a
+        # Settings Save would report "up to date" over a task on the wrong account.
+        assert (
+            schedule_reconcile(
+                schedule_registered=True,
+                record=self._record(""),
+                pending=_task_args(),
+                pending_run_as_user="CORP\\svc_x",
+                current_account=_CURRENT_ACCOUNT,
+            )
+            is ScheduleReconcile.REREGISTER
+        )
+
+    @pytest.mark.parametrize("pending_account", ["corp\\SVC_X", "  CORP\\svc_x  "])
+    def test_a_case_or_whitespace_difference_is_not_a_principal_change(self, pending_account):
+        assert (
+            schedule_reconcile(
+                schedule_registered=True,
+                record=self._record("CORP\\svc_x"),
+                pending=_task_args(),
+                pending_run_as_user=pending_account,
+                current_account=_CURRENT_ACCOUNT,
+            )
+            is ScheduleReconcile.UP_TO_DATE
+        )
+
+    def test_the_prefill_against_a_blank_record_is_not_a_change(self):
+        # THE G5 row: every install types nothing and the field is prefilled with the signed-in
+        # account. `principal_key` reduces both sides to "", so today's Saves are untouched.
+        assert (
+            schedule_reconcile(
+                schedule_registered=True,
+                record=self._record(""),
+                pending=_task_args(),
+                pending_run_as_user=_CURRENT_ACCOUNT,
+                current_account=_CURRENT_ACCOUNT,
+            )
+            is ScheduleReconcile.UP_TO_DATE
+        )
+
+    def test_the_two_new_keywords_are_required(self):
+        with pytest.raises(TypeError):
+            schedule_reconcile(  # type: ignore[call-arg]
+                schedule_registered=True, record=self._record(""), pending=_task_args()
+            )
+
+
+class TestDowngradeInterruptForAServiceAccount:
+    def _variant(self, **over):
+        kwargs = {
+            "registered_unattended": True,
+            "password_supplied": False,
+            "registered_foreign_account": "CORP\\svc_x",
+        }
+        kwargs.update(over)
+        return downgrade_interrupt(**kwargs)  # type: ignore[arg-type]
+
+    def test_a_password_still_short_circuits_first(self):
+        assert self._variant(password_supplied=True) is None
+
+    @pytest.mark.parametrize("registered_unattended", [True, False, None])
+    def test_a_foreign_principal_interrupts_whatever_the_logon_record_claims(self, registered_unattended):
+        # A foreign principal IMPLIES a stored password (the engine refuses otherwise), so a
+        # record claiming `unattended=False` beside one is inconsistent — interrupting is the
+        # honest move, and it is the only way the admin hears which account's password is wanted.
+        assert self._variant(registered_unattended=registered_unattended) is not None
+
+    def test_it_names_the_account_and_never_coaches_the_admins_OWN_password(self):
+        interrupt = self._variant()
+        assert interrupt is not None
+        for copy in (interrupt.detail, interrupt.keep_next_detail, interrupt.keep_next_headline):
+            assert "your Windows account password" not in copy
+        assert "CORP\\svc_x" in interrupt.detail
+        # The follow-through HEADLINE names the account; its detail then says "that account's
+        # Windows password" and refers back to it, so no screen ever says "your" password.
+        assert "CORP\\svc_x" in interrupt.keep_next_headline
+        assert "that account's Windows password" in interrupt.keep_next_detail
+
+    def test_it_routes_the_switch_to_remove_then_schedule(self):
+        interrupt = self._variant()
+        assert interrupt is not None
+        assert "Remove nightly sync" in interrupt.detail
+
+    def test_the_signed_in_only_escape_is_withdrawn(self):
+        # The gate refuses a principal change on a live task, so that button would be dead.
+        interrupt = self._variant()
+        assert interrupt is not None
+        assert interrupt.offers_signed_in_only is False
+        assert interrupt.signed_in_only_label == ""
+
+    @pytest.mark.parametrize("registered_unattended", [True, None])
+    def test_the_two_pre_0046_variants_are_byte_identical(self, registered_unattended):
+        produced = downgrade_interrupt(
+            registered_unattended=registered_unattended,
+            password_supplied=False,
+            registered_foreign_account="",
+        )
+        expected = DowngradeInterrupt() if registered_unattended else None
+        if registered_unattended is None:
+            assert produced is not None
+            assert produced.headline == "Should the nightly sync keep running when you're signed out?"
+        else:
+            assert produced == expected
+        assert produced is not None
+        assert produced.offers_signed_in_only is True
+        assert produced.signed_in_only_label == "Continue — the sync will only run while signed in"
+
+    def test_the_new_keyword_is_required(self):
+        with pytest.raises(TypeError):
+            downgrade_interrupt(registered_unattended=True, password_supplied=False)  # type: ignore[call-arg]
+
+
+class TestBlockedAccountCopy:
+    """Carried item 5: today's BLOCKED strings hardcode "fix the run time" as the ONLY cause a
+    reconcile can be blocked for. A missing service-account password is a second."""
+
+    def test_the_pre_0046_blocked_copy_is_byte_identical(self):
+        assert folders_save_note(ReconcileOutcome.BLOCKED) == (
+            "Saved — the nightly schedule wasn't updated. Fix the run time in the Daily schedule "
+            "section, then save again."
+        )
+        assert sftp_reconcile_suffix(ReconcileOutcome.BLOCKED) == (
+            " The nightly schedule wasn't updated — fix the run time in the Daily schedule section, then save again."
+        )
+
+    @pytest.mark.parametrize("outcome", [ReconcileOutcome.BLOCKED_ACCOUNT, ReconcileOutcome.BLOCKED_ACCOUNT_SWITCH])
+    def test_no_account_blocked_string_misdirects_to_the_run_time(self, outcome):
+        for note in (folders_save_note(outcome), sftp_reconcile_suffix(outcome)):
+            assert "run time" not in note.lower()
+
+    def test_the_account_strings_name_the_account_and_its_password(self):
+        for note in (
+            folders_save_note(ReconcileOutcome.BLOCKED_ACCOUNT),
+            sftp_reconcile_suffix(ReconcileOutcome.BLOCKED_ACCOUNT),
+        ):
+            assert "Windows account" in note
+            assert "password" in note
+
+    def test_the_switch_strings_route_to_remove_then_schedule(self):
+        for note in (
+            folders_save_note(ReconcileOutcome.BLOCKED_ACCOUNT_SWITCH),
+            sftp_reconcile_suffix(ReconcileOutcome.BLOCKED_ACCOUNT_SWITCH),
+        ):
+            assert "Remove nightly sync" in note
+            assert "schedule it again" in note
+
+
+def test_the_account_field_label_is_single_sourced():
+    """The classifier's two branches and the view's field must name ONE control."""
+    assert SCHEDULE_ACCOUNT_FIELD_LABEL == "Windows account for the nightly task"
 
 
 # --------------------------------------------------------------------------- #
