@@ -18,6 +18,7 @@ No test triggers a real UAC prompt or registers/deletes a real task.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import time
@@ -26,7 +27,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.scheduler import elevation, windows
+from src.scheduler import elevated_apply, elevation, windows
 from src.scheduler.elevation import ElevationOutcome, ElevationResult
 from src.scheduler.windows import ScheduleReadback
 
@@ -654,3 +655,284 @@ class TestDeleteTaskElevated:
         with pytest.raises(ValueError):
             windows.delete_task_elevated("bad;name|rm")
         launched.assert_not_called()
+
+    def test_pre_consent_runtime_error_is_logged_and_returned_not_raised(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`elevation.write_request` -> `paths.user_data_dir()` raises `RuntimeError` for an
+        unusable directory — NOT `OSError`. The SAME pre-consent guard `_register_elevated`
+        carries, on the REMOVE path, must widen too, or a district whose profile dir is
+        unusable gets a silent raise to the view's floor on delete specifically."""
+        from src.scheduler import task_com
+
+        monkeypatch.setattr(
+            "src.scheduler.elevation.write_request",
+            MagicMock(side_effect=RuntimeError("unusable data dir")),
+        )
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = windows.delete_task_elevated("DistrictSync_Daily")
+        assert (ok, msg) == (False, task_com.MSG_OPERATION_FAILED)
+        records = [r for r in caplog.records if r.msg == windows._FAIL_LOG_FORMAT]
+        assert len(records) == 1, [r.getMessage() for r in records]
+        assert records[0].levelno == logging.ERROR
+        assert "Failed to remove task" in records[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# Plan 0047 — the elevated arms reach the log too (G2, A8)
+# ---------------------------------------------------------------------------
+#
+# A4: the elevated `ok=False` arm logged NOTHING — not the child's message, not a code,
+# not even the cross-SID DIFFERENT_ACCOUNT leg. SD60 ran exactly this path twice.
+#
+# `elevation.write_request` is Windows-only (DPAPI + icacls), so it stays MOCKED in every
+# test here — the Linux CI leg must exercise the same arms as a Windows dev host (R14).
+
+
+def _anchored(caplog):
+    return [r for r in caplog.records if r.msg == windows._FAIL_LOG_FORMAT]
+
+
+def _one_anchored(caplog):
+    records = _anchored(caplog)
+    assert len(records) == 1, [r.getMessage() for r in records]
+    return records[0]
+
+
+class TestElevatedFailuresAreLogged:
+    """Every `(False, msg)` arm of the elevated register path writes ONE anchored line."""
+
+    SECRET = "P@ssw0rd-do-not-leak-42"
+    ACCOUNT = "CORP\\uniq-Rr9w-account"
+
+    def _setup(self, monkeypatch: pytest.MonkeyPatch, req: Path, outcome: ElevationOutcome, result: object) -> None:
+        monkeypatch.setattr("src.scheduler.windows.sys.platform", "win32")
+        monkeypatch.setattr("src.scheduler.windows.is_elevated", lambda: False)
+        monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
+        _patch_run_elevated(monkeypatch, {}, outcome)
+        monkeypatch.setattr("src.scheduler.elevation.read_result", lambda p: result)
+
+    def _register(self) -> tuple[bool, str]:
+        return windows.register_task(
+            task_name="DistrictSync_Daily",
+            exe_path=Path("C:/DistrictSync/DistrictSync.exe"),
+            sis_type="myedbc",
+            input_dir=Path("C:/input"),
+            output_dir=Path("C:/output"),
+            run_time="03:00",
+            run_as_user=self.ACCOUNT,
+            run_as_password=self.SECRET,
+        )
+
+    def test_a_child_canonical_failure_carries_its_code(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog
+    ) -> None:
+        """The code is recovered from the MESSAGE via `task_com.hresult_for` — the elevated
+        result file carries no `scode` field and deliberately keeps its `{ok, message}`
+        schema, so this is the one pairing spelling, not a second one."""
+        from src.scheduler import task_com
+
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._setup(
+            monkeypatch,
+            req,
+            ElevationOutcome(ElevationResult.COMPLETED, exit_code=0),
+            {"ok": False, "message": task_com.MSG_LOGON_FAILURE},
+        )
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = self._register()
+        assert (ok, msg) == (False, task_com.MSG_LOGON_FAILURE)
+        record = _one_anchored(caplog)
+        assert record.levelno == logging.ERROR
+        assert "[HRESULT 0x8007052E]" in record.getMessage()
+
+    def test_an_unmapped_child_message_logs_n_a_not_a_wrong_code(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog
+    ) -> None:
+        """The NEGATIVE twin: `hresult_for` returns None for anything outside the table, so
+        the line says "n/a" rather than asserting a status the message does not carry."""
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._setup(
+            monkeypatch,
+            req,
+            ElevationOutcome(ElevationResult.COMPLETED, exit_code=0),
+            {"ok": False, "message": "Something Windows has not told us about (0xF0001234)"},
+        )
+        with caplog.at_level(logging.DEBUG):
+            ok, _ = self._register()
+        assert ok is False
+        assert "[HRESULT n/a]" in _one_anchored(caplog).getMessage()
+
+    def test_the_different_account_leg_logs_the_canonical_never_the_sentinel(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog
+    ) -> None:
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._setup(
+            monkeypatch,
+            req,
+            ElevationOutcome(ElevationResult.COMPLETED, exit_code=0),
+            {"ok": False, "message": elevated_apply.DIFFERENT_ACCOUNT_SENTINEL},
+        )
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = self._register()
+        assert (ok, msg) == (False, windows._MSG_DIFFERENT_ACCOUNT)
+        message = _one_anchored(caplog).getMessage()
+        assert windows._MSG_DIFFERENT_ACCOUNT in message  # positive twin for the absence below
+        assert "DSYNC_" not in caplog.text
+
+    def test_a_pre_consent_refusal_is_logged(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog) -> None:
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._setup(monkeypatch, req, ElevationOutcome(ElevationResult.DECLINED), None)
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = self._register()
+        assert (ok, msg) == (False, windows._MSG_UAC_DECLINED)
+        assert _one_anchored(caplog).levelno == logging.ERROR
+        # The bespoke phase line is KEPT beside the anchor — it records that the child never
+        # STARTED, which _FAIL_LOG_FORMAT does not carry.
+        assert "did not start" in caplog.text
+
+    def test_an_unconfirmed_elevated_registration_is_a_warning(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog
+    ) -> None:
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._setup(monkeypatch, req, ElevationOutcome(ElevationResult.COMPLETED, exit_code=0), {"ok": True})
+        monkeypatch.setattr("src.scheduler.windows.read_schedule", lambda name: ScheduleReadback(found=None))
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = self._register()
+        assert (ok, msg) == (False, windows._MSG_ELEVATION_NO_RESULT)
+        assert _one_anchored(caplog).levelno == logging.WARNING
+        assert "Elevated registration of 'DistrictSync_Daily' could not be confirmed" in caplog.text
+
+    def test_no_elevated_log_line_carries_the_password_or_the_account(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog
+    ) -> None:
+        from src.scheduler import task_com
+
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._setup(
+            monkeypatch,
+            req,
+            ElevationOutcome(ElevationResult.COMPLETED, exit_code=0),
+            {"ok": False, "message": task_com.MSG_ACCESS_DENIED},
+        )
+        with caplog.at_level(logging.DEBUG):
+            ok, _ = self._register()
+        assert ok is False
+        assert "0x80070005" in caplog.text  # positive twin — the line WAS written
+        assert self.SECRET not in caplog.text
+        assert "uniq-Rr9w-account" not in caplog.text
+
+
+class TestDeleteElevatedCrossAccount:
+    """A8's rung serves BOTH ops, so a cross-account consent reaches the REMOVE path.
+
+    Without the sentinel leg here, `_sanitize_child_message` collapses the DSYNC_-bearing
+    sentinel into the detail-free floor and Setup renders "include the detail shown here"
+    with no detail at all.
+    """
+
+    def _setup(self, monkeypatch: pytest.MonkeyPatch, req: Path, message: str) -> None:
+        monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
+        _patch_run_elevated(monkeypatch, {}, ElevationOutcome(ElevationResult.COMPLETED, exit_code=0))
+        monkeypatch.setattr("src.scheduler.elevation.read_result", lambda p: {"ok": False, "message": message})
+
+    def test_the_sentinel_maps_to_the_different_account_message(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog
+    ) -> None:
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._setup(monkeypatch, req, elevated_apply.DIFFERENT_ACCOUNT_SENTINEL)
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = windows.delete_task_elevated("DistrictSync_Daily")
+        assert (ok, msg) == (False, windows._MSG_DIFFERENT_ACCOUNT)
+        record = _one_anchored(caplog)
+        assert "Failed to remove task" in record.getMessage()  # never "register" (R2-1)
+        assert "DSYNC_" not in caplog.text
+
+    def test_an_ordinary_child_failure_is_still_sanitized_and_logged_as_a_removal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog
+    ) -> None:
+        """The negative twin: the new leg narrowed the arm, it did not replace it."""
+        from src.scheduler import task_com
+
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._setup(monkeypatch, req, task_com.MSG_ACCESS_DENIED)
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = windows.delete_task_elevated("DistrictSync_Daily")
+        assert (ok, msg) == (False, task_com.MSG_ACCESS_DENIED)
+        record = _one_anchored(caplog)
+        assert "Failed to remove task" in record.getMessage()
+        assert "[HRESULT 0x80070005]" in record.getMessage()
+
+    def test_an_unconfirmed_elevated_removal_is_a_warning_naming_the_removal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog
+    ) -> None:
+        """The elevated half of the same R2-1 rule: the task may still be there, so the
+        level is WARNING — but the verb must still be "remove"."""
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._setup(monkeypatch, req, "irrelevant")
+        monkeypatch.setattr("src.scheduler.elevation.read_result", lambda p: {"ok": True})
+        monkeypatch.setattr("src.scheduler.windows.read_schedule", lambda name: ScheduleReadback(found=True))
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = windows.delete_task_elevated("DistrictSync_Daily")
+        assert (ok, msg) == (False, windows._MSG_ELEVATION_REMOVE_UNCONFIRMED)
+        record = _one_anchored(caplog)
+        assert record.levelno == logging.WARNING
+        assert record.getMessage().startswith("Failed to remove task 'DistrictSync_Daily'")
+        assert "Failed to register" not in caplog.text
+
+    def test_a_pre_consent_handshake_failure_is_logged_not_raised(
+        self, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        """The twin of `TestPreConsentHandshakeFailureIsLogged` on the REMOVE path: the
+        register arm gained an `except OSError` around `write_request` / `_run_elevated_child`
+        and this one had none, so a DPAPI / profile-dir / icacls failure still escaped past
+        the `(ok, message)` contract to the view's floor with zero log lines — literally the
+        "nothing informative in the log" shape this slice exists to close."""
+
+        from src.scheduler import task_com
+
+        def _boom(payload: dict[str, object]) -> Path:
+            raise OSError("profile dir unwritable")
+
+        monkeypatch.setattr("src.scheduler.elevation.write_request", _boom)
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = windows.delete_task_elevated("DistrictSync_Daily")
+        assert (ok, msg) == (False, task_com.MSG_OPERATION_FAILED)
+        record = _one_anchored(caplog)
+        assert record.levelno == logging.ERROR
+        assert "Failed to remove task" in record.getMessage()
+
+    def test_an_unconfirmed_elevated_removal_still_names_the_elevated_phase(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog
+    ) -> None:
+        """The positive twin of `_confirm_removal`'s new `path_label`: the direct delete must
+        stop claiming elevation, and the elevated path must keep claiming it."""
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        self._setup(monkeypatch, req, "irrelevant")
+        monkeypatch.setattr("src.scheduler.elevation.read_result", lambda p: {"ok": True})
+        monkeypatch.setattr("src.scheduler.windows.read_schedule", lambda name: ScheduleReadback(found=None))
+        with caplog.at_level(logging.DEBUG):
+            windows.delete_task_elevated("DistrictSync_Daily")
+        assert "Elevated removal of 'DistrictSync_Daily' could not be confirmed" in caplog.text
+
+    def test_a_pre_consent_removal_refusal_is_logged_as_a_removal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog
+    ) -> None:
+        req = tmp_path / "r.req"
+        req.write_bytes(b"blob")
+        monkeypatch.setattr("src.scheduler.elevation.write_request", lambda payload: req)
+        _patch_run_elevated(monkeypatch, {}, ElevationOutcome(ElevationResult.LAUNCH_FAILED))
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = windows.delete_task_elevated("DistrictSync_Daily")
+        assert (ok, msg) == (False, windows._MSG_ELEVATION_LAUNCH_FAILED)
+        assert "Failed to remove task" in _one_anchored(caplog).getMessage()

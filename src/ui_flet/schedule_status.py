@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
+from src.scheduler.messages import ABSENT_TASK_MARKERS as _ABSENT_DELETE_MARKERS
 from src.scheduler.windows import ScheduleReadback
 
 # Path components that mean the running exe lives in a transient location — pinning a task
@@ -35,10 +36,16 @@ from src.scheduler.windows import ScheduleReadback
 _TRANSIENT_DIR_PARTS: frozenset[str] = frozenset({"downloads", "temp", "tmp"})
 
 # "The task doesn't exist" phrasings across BOTH platform delete paths — an absent task on
-# Unregister is the desired end state (idempotent success-shaped), not a failure. Covers
-# schtasks ("cannot find" / "does not exist" / "no such") AND crontab's own wording
-# ("no crontab for <user>"), so a Linux Unregister of a missing entry classifies the same way.
-_ABSENT_DELETE_MARKERS: tuple[str, ...] = ("cannot find", "does not exist", "no such", "no crontab")
+# Unregister is the desired end state (idempotent success-shaped), not a failure. The list is
+# IMPORTED from src/scheduler/messages.py (plan 0047), not re-spelled here: `task_com` has to
+# guard what it can RETURN against exactly these markers and cannot import `ui_flet` to learn
+# them. Today's producers are `task_com._HRESULT_CANONICAL[HR_NOT_FOUND]` plus the guarded
+# description pass-through on Windows, and `linux.py`'s crontab wording ("no crontab for
+# <user>") on Unix — so a Linux Unregister of a missing entry classifies the same way.
+# NOT closed on Unix: `linux._read_crontab_lines` interpolates RAW `crontab` output into its
+# failure message, so a crontab that prints one of these phrases still reaches here unguarded —
+# the cron half of the same defect the Windows guard closes (ROADMAP).
+# See the marker-guard entry in `docs/claugentic-INVARIANTS.md` before adding a phrase here.
 
 
 class ScheduleState(Enum):

@@ -20,9 +20,11 @@ diagnostics ride the result file's message, never a log sink it would have to co
 
 * wrong argument count → exit 2 (no result path is trustworthy, so nothing is written);
 * request missing / oversized / unreadable → a refusal result, exit 0;
-* DPAPI unprotect fails (cross-SID consent — a DIFFERENT admin clicked Yes) → the
-  ``DSYNC_DIFFERENT_ACCOUNT`` sentinel result, exit 0 — the parent maps it to the
-  canonical different-account message;
+* the request cannot be READ (``PermissionError`` — the owner-only DACL refuses a DIFFERENT
+  administrator) **or** DPAPI unprotect fails (cross-SID consent — a DIFFERENT admin clicked
+  Yes) → the ``DSYNC_DIFFERENT_ACCOUNT`` sentinel result, exit 0 — the parent maps it to the
+  canonical different-account message. The read rung MUST precede the generic ``OSError``
+  one, or the cross-account case surfaces as "the request was missing" (defect A8);
 * malformed payload / unknown op / invalid field values → a refusal result, exit 0;
 * the ``task_com`` call raises → ``{ok: False, message: <canonical>}``;
 * success → ``{ok: True}``.
@@ -55,6 +57,24 @@ _REQUIRED_REGISTER_FIELDS = frozenset(
     {"op", "task_name", "exe", "arguments", "working_dir", "run_time", "user", "run_highest"}
 )
 
+# The child's OWN refusal vocabulary — named so the classifier can decide each one explicitly
+# (plan 0047) instead of matching a literal typed twice. Every value is admin-facing copy and
+# must stay free of the markers `messages.carries_foreign_marker` guards (pinned in the tests).
+_MSG_REQUEST_INVALID = "The elevated request was not valid."
+# GENUINELY absent — swept, or never written. Since plan 0047 a request the child cannot READ
+# (a different administrator answered the prompt, so the owner-only DACL refuses it) no longer
+# lands here: that is the DIFFERENT_ACCOUNT_SENTINEL rung below (defect A8, SD51 2026-09-16).
+_MSG_REQUEST_MISSING = "The elevated request was missing."
+_MSG_REQUEST_UNREADABLE = "The elevated request could not be read."
+_MSG_CHILD_FLOOR = "The schedule change failed in the elevated step."
+
+CHILD_REFUSALS: tuple[str, ...] = (
+    _MSG_REQUEST_INVALID,
+    _MSG_REQUEST_MISSING,
+    _MSG_REQUEST_UNREADABLE,
+    _MSG_CHILD_FLOOR,
+)
+
 
 def _write_result(res_path: Path, ok: bool, message: str = "") -> None:
     """Atomic plaintext result — temp + ``os.replace`` so the parent never sees a partial.
@@ -78,7 +98,7 @@ def run_elevated_apply(args: list[str]) -> int:
         return _apply(Path(args[0]), res_path)
     except Exception:  # noqa: BLE001 - the child floor: a written refusal beats a traceback
         with contextlib.suppress(OSError):
-            _write_result(res_path, False, "The schedule change failed in the elevated step.")
+            _write_result(res_path, False, _MSG_CHILD_FLOOR)
         return 0
 
 
@@ -88,11 +108,19 @@ def _apply(req_path: Path, res_path: Path) -> int:
     # --- read + unseal the request (fail closed at every rung) ----------------------
     try:
         if req_path.stat().st_size > _MAX_REQUEST_BYTES:
-            _write_result(res_path, False, "The elevated request was not valid.")
+            _write_result(res_path, False, _MSG_REQUEST_INVALID)
             return 0
         sealed = req_path.read_bytes()
+    except PermissionError:
+        # A8 (SD51, 2026-09-16): the request is sealed under the SIGNED-IN user's profile with
+        # an owner-only DACL (elevation.write_request). A DIFFERENT administrator answering the
+        # UAC prompt is refused the READ — so a refused read IS the cross-account signature, and
+        # it must fail closed on the SAME sentinel the DPAPI rung below uses. PermissionError is
+        # an OSError subclass, so this rung MUST precede the generic one.
+        _write_result(res_path, False, DIFFERENT_ACCOUNT_SENTINEL)
+        return 0
     except OSError:
-        _write_result(res_path, False, "The elevated request was missing.")
+        _write_result(res_path, False, _MSG_REQUEST_MISSING)
         return 0
 
     try:
@@ -106,10 +134,10 @@ def _apply(req_path: Path, res_path: Path) -> int:
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        _write_result(res_path, False, "The elevated request could not be read.")
+        _write_result(res_path, False, _MSG_REQUEST_UNREADABLE)
         return 0
     if not isinstance(payload, dict):
-        _write_result(res_path, False, "The elevated request could not be read.")
+        _write_result(res_path, False, _MSG_REQUEST_UNREADABLE)
         return 0
 
     # --- dispatch (re-validating EVERYTHING in the privileged half) ------------------
@@ -120,7 +148,7 @@ def _apply(req_path: Path, res_path: Path) -> int:
         elif op == "delete":
             _do_delete(payload)
         else:
-            _write_result(res_path, False, "The elevated request could not be read.")
+            _write_result(res_path, False, _MSG_REQUEST_UNREADABLE)
             return 0
     except task_com.TaskComError as exc:
         _write_result(res_path, False, exc.message)
@@ -130,7 +158,7 @@ def _apply(req_path: Path, res_path: Path) -> int:
         return 0
     except ValueError:
         # A validator refusal — the payload asked for something the app never asks for.
-        _write_result(res_path, False, "The elevated request was not valid.")
+        _write_result(res_path, False, _MSG_REQUEST_INVALID)
         return 0
 
     _write_result(res_path, True)

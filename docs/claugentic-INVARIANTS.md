@@ -6,21 +6,57 @@ change "simplified" it. Consult this before changing the named subsystem.
 
 ---
 
-- **Unattended Windows scheduling requires a stored-password logon (`LogonType=Password`), NEVER `S4U`.** _(Plan 0009, 2026-06-25 · `src/scheduler/windows.py`.)_
+- **Unattended Windows scheduling requires a stored-password logon (`LogonType=Password`), NEVER `S4U`.** _(Plan 0009, 2026-06-25 · `src/scheduler/windows.py`, `src/scheduler/task_com.py`.)_
   The daily scheduled run that uploads via SFTP must run **whether or not the
   setup user is logged on** AND must have a **network token** (to reach the
-  SpacesEDU SFTP host). Only a stored-credential logon
-  (`New-ScheduledTaskPrincipal -LogonType Password` + `Register-ScheduledTask
-  -User -Password`) provides both. `S4U` runs logged-off **without** storing a
-  password, but it has **no network token** — the task would run yet silently
-  fail to deliver. `S4U` (and the loose `-User/-Password/-RunLevel`
+  SpacesEDU SFTP host). Only a stored-credential logon provides both. `S4U` runs
+  logged-off **without** storing a password, but it has **no network token** —
+  the task would run yet silently fail to deliver. `S4U` (and the loose
   parameter-set inference that can degrade to it) is therefore **rejected by
-  design**; the explicit `-LogonType Password` principal is the **documented way
-  to force** `TASK_LOGON_PASSWORD` (rather than rely on parameter-set
-  inference). **Proof-it-took (pending user verification):** the registered task
-  must query as `LogonType = Password` / `RunLevel = Highest`, and a logged-off
-  run must reach SFTP. Do not "simplify" the principal to S4U or rely on
-  parameter-set inference.
+  design**. Since the COM move (plan 0041 S1b) the mechanism is
+  `task_com.apply_definition`, which passes the explicit `TASK_LOGON_PASSWORD`
+  constant to `RegisterTaskDefinition` — never inference — and `TASK_LOGON_S4U`
+  (2) is deliberately **not even defined** in that module, so the unsafe value is
+  unrepresentable rather than merely unused. **Proof-it-took (pending user
+  verification):** the registered task must query as `LogonType = Password` /
+  `RunLevel = Highest`, and a logged-off run must reach SFTP. Do not "simplify"
+  the principal to S4U or reintroduce the constant.
+
+---
+
+- **No string `task_com._canonical_message` can RETURN may carry a marker another consumer keys on (`messages.ABSENT_TASK_MARKERS`, `ACCESS_DENIED_MARKERS`, `SECRET_SENTINEL_PREFIX`) unless it is the code that owns it — and every `MSG_`/`_MSG_`-named message binding swept in `task_com`/`windows`/`elevated_apply` has exactly ONE name.** _(Plan 0047, 2026-09-16 · `src/scheduler/task_com.py`, `src/scheduler/messages.py`.)_ The injectivity claim is scoped to what the sweep actually collects — a binding whose name starts with `MSG_`/`_MSG_` in those three modules. An inline literal at a `_fail` call site, or `linux.py`'s crontab messages, is invisible to it; those stay model-upheld, not swept.
+  Three different consumers key on substrings of a schedule failure message, and
+  a fourth keys on the whole string by exact equality:
+  `schedule_status.interpret_unregister` turns an absent-task marker into the
+  success-shaped "No schedule was registered", after which
+  `screens/setup.py` persists `schedule_registered = False` **over a task that
+  is still live**; `src/scheduler/__init__.py`'s delete adapter fires its one
+  elevated UAC retry on an access-denied marker; `windows._sanitize_child_message`
+  collapses any `DSYNC_`-bearing message, so a canonical carrying that prefix
+  would collapse on the elevated path only; and
+  `task_com.hresult_for` recovers an HRESULT from a WHOLE canonical string by exact
+  equality (consumed by `windows._fail`'s elevated arms, and by the classifier from
+  Slice A2 on), which is sound only on an **injective** set (two HRESULTs sharing one string
+  is defect A2 — an admin whose task had no saved account information was told
+  to retype a password forever). The rule binds what the function can
+  **return**, not just the table we wrote: the two uncontrolled escapes (Windows'
+  own `excepinfo` description and `str(exc)`) are checked with
+  `messages.carries_foreign_marker` and dropped for the coded generic. The two
+  legitimate owners (`HR_NOT_FOUND`, `HR_ACCESS_DENIED`) return from the table
+  **before** the guard, which is why there is no `owned=` knob to forget.
+  **Provenance:** Windows' own text for `0x80070520` is literally "A specified
+  logon session does not exist. It may already have been terminated." and was
+  reaching `interpret_unregister` unscrubbed — measured live 2026-09-16 with a
+  faked `com_error` through the real `delete_task` + `interpret_unregister`.
+  **Proof-it-took:** three sweeps in `tests/test_task_com.py` — the **table
+  sweep** (every row round-trips `interpret_unregister` to exactly the expected
+  shape, and only the access-denied row carries that marker), the **description
+  sweep** (the two measured Windows strings come back marker-free and carrying
+  their hex code, while a marker-free description still passes through), and the
+  **injectivity sweep** (value→names over every `MSG_`/`_MSG_` string binding of
+  `task_com` / `windows` / `elevated_apply`, exactly one name each). Remove the
+  guard and the description sweep is red; give two constants the same value and
+  the injectivity sweep is red.
 
 ---
 
