@@ -9,8 +9,18 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.20.0] - 2026-09-16
+
 Districts can now be told to never merge sections into a blended class —
-needed for an export whose day rotation can't tell two courses apart.
+needed for an export whose day rotation can't tell two courses apart. SD51
+is the first district to use it, and the scheduler now refuses to register
+a task to the wrong Windows account.
+
+**If you are SD51, run this build or newer.** Your MyEd BC export carries no
+day rotation, so once your Class Information Enhanced extract fills out with
+secondary sections, earlier builds would merge unrelated courses into one
+class. This build switches that merging off for your district. Today's
+output is byte-identical to v3.19.0's.
 
 ### Added
 
@@ -33,6 +43,18 @@ needed for an export whose day rotation can't tell two courses apart.
   10-row K-7 file with nothing that would have blended — but as the district's
   export fills out through the school year, this setting is what stops
   unrelated secondary courses from being wrongly merged into one class.
+
+### Fixed
+
+- **A scheduled task can no longer be registered to the wrong Windows
+  account.** If a run-as account other than the signed-in user is supplied
+  without a password, registration is now refused with a clear message
+  before any elevation prompt, instead of silently registering the task to
+  the current user and reporting success. A blank password is treated as no
+  password on both halves of the scheduler, so a blank credential can never
+  register an unattended task. Not reachable from the current Setup screen,
+  which always passes no account; fixed ahead of the service-account work
+  that will make it reachable. No district's output changes.
 
 ## [3.19.0] - 2026-09-14
 
