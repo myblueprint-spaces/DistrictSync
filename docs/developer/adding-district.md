@@ -279,6 +279,45 @@ broken roster: the run fails with nothing written and the previous output
 untouched (exit code 1). That is deliberate — the alternative is shipping
 enrolments for students who are not in `Students.csv`.
 
+### Opting out of blended-class detection (`blended_classes`)
+
+```yaml
+global_config:
+  blended_classes: false
+```
+
+`ClassTransformer`/`BlendedClassDetector` merge sections into a "blended"
+class when they share a **session key** — school + teacher + term + semester
++ day + period — and span 2+ grades. That key assumes the export's `Day`
+column actually rotates. Some districts' exports don't: `Day` is a constant
+`"1"` on every secondary row, and `Period` is a block letter/number that
+repeats across a teacher's whole course load. On that shape the session key
+cannot tell two genuinely different sections apart, and unrelated sections
+taught by the same teacher at "the same time" merge into one false blended
+class (SD51's 2026-09-14 drop: 85 false blends, Classes.csv 428→207,
+Enrollments.csv 5081→4699 — see `docs/claugentic-DECISIONS.md`, 2026-09-16).
+
+Set `blended_classes: false` when a district's `Day` column doesn't rotate
+(or you otherwise can't trust the session key to disambiguate sections).
+`ClassInformation` still loads, still feeds `Classes.csv`'s
+`class_info_df` output, and still produces `Enrollments.csv` co-teacher rows
+(a `Primary Teacher: Y` row whose `Section Letter` matches a homeroom) — only
+blend DETECTION is skipped, so nothing merges. Default `true` keeps every
+existing district byte-identical.
+
+Pointing `class_info` at the non-Enhanced `ClassInformation.txt` is **not** a
+workaround: without a Master Timetable ID, blended detection falls back to a
+deduplicated schedule using the SAME session key (same false merges), and
+without a Primary Teacher column the co-teacher enrollments this switch
+preserves would drop to zero.
+
+If a district's K-7 (or equivalent) grades are already `homeroom_grades`, the
+existing blend-suppression gate (a blend none of whose grades receives
+subject/timetable rostering is dropped — see `class_rostering_grades` above)
+already removes most of the false-blend risk for those grades; `blended_classes`
+is for districts where secondary (timetable-rostered) sections are also at
+risk, which that gate does not cover.
+
 ### School year naming convention (non-BC districts)
 
 The pipeline internally uses **end-year semantics**: ``school_year = 2026``
@@ -655,7 +694,7 @@ python -m src.main --sis sd93custom --input tests/snapshots/input --output data/
 | `myedbc` | (none — base) | Standard MyEdBC filenames; defines all 7 entity templates; enables the 5 rostering entities by default |
 | `sd40myedbc` | `myedbc` | CSV files with SD-40_/SD40- prefix; Student Schedule is headerless (`file_headers:` used) |
 | `sd48myedbc` | `myedbc` | Student Demographic Enhanced, Staff Information (non-enhanced) |
-| `sd51myedbc` | `myedbc` | Contact SpacesEDU for file naming details |
+| `sd51myedbc` | `myedbc` | Boundary — Student Demographic Enhanced, Class Info Enhanced (10-row early-year extract expected); `blended_classes: false` (2026-09-16) — the export's `Day` column never rotates, so the session key can't disambiguate secondary sections |
 | `sd54myedbc` | `myedbc` | Bulkley Valley — lowercase filenames; Staff non-Enhanced; Emergency Contact + Class Info Enhanced; ATT--AM/PM/Daily excluded |
 | `sd60myedbc` | `myedbc` | Peace River North — Family `row_filters` (guardians-only); opt-in `cross_enrollment.collapse` home-school dedupe for dual-school students; ATT--AM/PM excluded |
 | `sd74myedbc` | `myedbc` | Student Course Selection, Staff Information, Parent Information, Class Info Enhanced |

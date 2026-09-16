@@ -9,6 +9,31 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+Districts can now be told to never merge sections into a blended class —
+needed for an export whose day rotation can't tell two courses apart.
+
+### Added
+
+- **`blended_classes` config key.** When a district's export doesn't rotate
+  through days (its `Day` column reads the same value on every row), the
+  detection that merges same-teacher, same-time sections spanning multiple
+  grades into one "blended" class can no longer tell genuinely different
+  courses apart, and starts merging sections that were never meant to be
+  merged. Setting `blended_classes: false` in a district's config turns that
+  detection off entirely: `ClassInformation` is still read and still produces
+  co-teacher enrollment rows, only the merging step is skipped. Every
+  district's config defaults to blending switched on, unchanged from today.
+
+### Changed
+
+- **SD51 is the only district that sets it.** Boundary's export has no day
+  rotation, so its section-merging is not trustworthy; `blended_classes` is
+  now `false` for SD51 specifically. SD51's delivered output today is
+  **byte-identical** either way — its current class-info extract is an early,
+  10-row K-7 file with nothing that would have blended — but as the district's
+  export fills out through the school year, this setting is what stops
+  unrelated secondary courses from being wrongly merged into one class.
+
 ## [3.19.0] - 2026-09-14
 
 SD83's staff roles now come from the column the district actually records them

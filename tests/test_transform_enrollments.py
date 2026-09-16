@@ -293,6 +293,64 @@ class TestClassInfoCoTeacherEnrollments:
         matching = teacher_rows[teacher_rows["Class ID"] == "100_A1_2025"]
         assert not matching.empty, f"Expected T099 on 100_A1_2025, got Class IDs: {teacher_rows['Class ID'].tolist()}"
 
+    def test_coteacher_attached_via_section_letter_survives_blended_classes_disabled(
+        self,
+        student_schedule_df,
+        student_demographic_df,
+        staff_info_df,
+        course_info_df,
+        emergency_contact_df,
+        classes_mapping,
+        enrollments_mapping,
+        global_config,
+    ):
+        """The "ClassInformation still feeds co-teacher enrollments" promise
+        (SD51's `global_config.blended_classes: false`, 2026-09-16): identical
+        to `test_coteacher_attached_via_section_letter` above, but with blended
+        detection switched OFF. Section-letter-matched co-teacher rows are
+        PATH 1 in `_classinfo_coteacher_enrollments` and never touch the blended
+        maps — only PATH 2 (Master Timetable ID -> blended class id) would go
+        quiet, and this fixture doesn't exercise that path.
+        """
+        class_info_df = pd.DataFrame(
+            {
+                "school number": ["100"],
+                "course code": ["MADST01"],
+                "teacher id": ["T099"],
+                "primary teacher": ["Y"],
+                "section letter": ["A1"],
+                "semester": ["FY"],
+                "term": ["1"],
+                "day": [""],
+                "period": [""],
+                "master timetable id": [""],
+            }
+        )
+        raw_data = {
+            "StudentDemographicInformation.txt": student_demographic_df,
+            "StudentSchedule.txt": student_schedule_df,
+            "StaffInformationEnhanced.txt": staff_info_df,
+            "CourseInformation.txt": course_info_df,
+            "EmergencyContactInformation.txt": emergency_contact_df,
+            "ClassInformationEnh.txt": class_info_df,
+        }
+        gc_disabled = {**global_config, "blended_classes": False}
+
+        self.transformer.transform(student_schedule_df, classes_mapping, "Classes", raw_data, gc_disabled)
+        result = self.transformer.transform(
+            student_schedule_df, enrollments_mapping, "Enrollments", raw_data, gc_disabled
+        )
+
+        assert self.transformer.blended_class_map == {}, "no blend was ever a candidate in this fixture"
+        assert not result.empty
+        teacher_rows = result[(result["Role"] == "teacher") & (result["User ID"] == "T099")]
+        assert not teacher_rows.empty, (
+            "Teacher T099 (Primary=Y in ClassInformation section A1) must still be enrolled "
+            "as co-teacher on the matching homeroom class with blended_classes disabled"
+        )
+        matching = teacher_rows[teacher_rows["Class ID"] == "100_A1_2025"]
+        assert not matching.empty, f"Expected T099 on 100_A1_2025, got Class IDs: {teacher_rows['Class ID'].tolist()}"
+
     def test_coteacher_skipped_when_no_section_match(
         self,
         student_schedule_df,

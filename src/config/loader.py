@@ -54,7 +54,7 @@ from src.utils.paths import bundle_mappings_dir, user_mappings_dir
 logger = logging.getLogger(__name__)
 
 # Supported mapping-config format version (derived from the bundled configs,
-# which declare 1.0–1.12 today). Bump MINOR when the bundled configs start
+# which declare 1.0–1.13 today). Bump MINOR when the bundled configs start
 # using new same-major ETL-AFFECTING features; bump MAJOR only on a breaking
 # config-format change (and migrate every bundled config in the same release,
 # so the bundled set always loads clean against these constants).
@@ -82,10 +82,13 @@ logger = logging.getLogger(__name__)
 # moved this prose with them, exactly as the convention prescribes. 1.12
 # (2026-09-14) landed the same way but WITHOUT a lag: `row_filters` reaching the
 # Staff entity plus the `normalize_staff_role` transform shipped together with
-# their first and only consumer, sd83myedbc, which declares quoted '1.12'.
+# their first and only consumer, sd83myedbc, which declares quoted '1.12'. 1.13
+# (2026-09-16) landed the same way too: the `blended_classes` opt-out shipped
+# together with its first and only consumer, sd51myedbc, which declares
+# quoted '1.13'.
 # (Pinned by tests/test_config_version_gate.py::TestDeclaredRangeVersusSupported.)
 SUPPORTED_CONFIG_MAJOR = 1
-SUPPORTED_CONFIG_MINOR = 12
+SUPPORTED_CONFIG_MINOR = 13
 
 
 def _search_dirs(explicit: Optional[Path]) -> list[Path]:
