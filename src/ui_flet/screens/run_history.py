@@ -147,12 +147,14 @@ def _probe_schedule_async(
         return
 
     def _work() -> None:  # runs OFF the UI thread
-        from src.ui_flet.schedule_probe import probe_schedule
+        from src.ui_flet.schedule_probe import foreign_task_account, probe_schedule
 
+        # 0046 C: resolved inside the worker thread (see screens/home.py) — fails to "", which alarms.
         status = probe_schedule(
             app_config.schedule_task_name,
             hint_registered=app_config.schedule_registered,
             latest_record_ts=latest_ts,
+            foreign_account=foreign_task_account(app_config),
         )
 
         async def _apply() -> None:

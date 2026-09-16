@@ -47,6 +47,8 @@ from src.ui_flet.home_status import (
     LatestReason,
     _as_int,
     _data_errors_total,
+    _foreign_records_elsewhere,
+    _foreign_records_status,
     _paused_status,
     _schedule_confirmed_live,
     _schedule_confirmed_missing,
@@ -202,7 +204,22 @@ def derive_history_banner(
     # while Home shows the calm HEALTHY "Paused for the summer". Consulted at the empty-state slot AND
     # after the two FAILED reasons (a real failure still surfaces in summer), ABOVE the anomaly /
     # data-warning / stale rules whose "we expected a sync" copy is moot while the season is paused.
-    paused = sync_window_paused(app_config, now=now) and not _schedule_confirmed_missing(schedule_status)
+    # 0046 C / A9: the pause is FALSE on a foreign principal — the nightly gate reads the RUNNING
+    # account's config, where no window exists. Single-sourced in ``sync_window_paused`` so this
+    # banner, Home and the Setup badge can never disagree about one state.
+    foreign_account = schedule_status.foreign_account if schedule_status is not None else ""
+    paused = sync_window_paused(
+        app_config, now=now, foreign_account=foreign_account
+    ) and not _schedule_confirmed_missing(schedule_status)
+
+    # 0046 C / A5: the nightly's run records are written to ANOTHER account's profile, so this
+    # ledger's silence is where the records WENT — not a sync that failed to happen. Consulted at
+    # the empty-state slot AND above the stale rule, the two arms that would otherwise each imply a
+    # fault ("No recent sync … a nightly run may have been missed") or promise a nightly that will
+    # never appear here. The rule, the headline and the note are all imported from Home's module /
+    # ``schedule_status`` — NO literal is re-spelled in this file, which is the same single-sourcing
+    # the EMPTY_* headlines and ``_paused_banner`` already use.
+    foreign_records = _foreign_records_elsewhere(records, now=now, schedule_status=schedule_status)
 
     # Rule: no runs yet (empty but readable). The store is fresh for EVERY install after this
     # update (no backfill), so an UPGRADER is told the history starts fresh rather than that
@@ -221,6 +238,11 @@ def derive_history_banner(
         # (mirrors Home's empty-store paused branch — the two surfaces stay identical).
         if paused:
             return _paused_banner(app_config, now=now)
+        # Rule: the records are in another account's profile (A5) — an empty ledger here is
+        # EXPECTED, so neither empty-state arm may run: both would describe an install waiting for
+        # a first sync that already happened somewhere else.
+        if foreign_records:
+            return _foreign_records_banner(schedule_status)  # type: ignore[arg-type]
         upgrade = has_earlier_run_history(store_created_at=store_created_at)
         if app_config.has_completed_setup() and _schedule_confirmed_missing(schedule_status):
             # Honest (finding #1b): a completed install with NO nightly schedule won't sync on its
@@ -271,6 +293,15 @@ def derive_history_banner(
     # Home's ``_paused_status`` so the banner is byte-identical to Home's for the same inputs.
     if paused:
         return _paused_banner(app_config, now=now)
+
+    # Rule: the records are in another account's profile (A5). Slotted at HOME'S EXACT POSITION —
+    # below the two FAILED reasons and the pause, above anomaly / data-warnings / stale — because
+    # the two surfaces must not classify one install differently. Every rule below it describes a
+    # nightly cadence this ledger cannot see, and the rule only fires when the ledger has nothing
+    # current to say anyway (no records, or a newest older than the stale window), so "recently" in
+    # the anomaly/data-warning copy would already be false by construction.
+    if foreign_records:
+        return _foreign_records_banner(schedule_status)  # type: ignore[arg-type]
 
     if reason is LatestReason.ANOMALY:
         anomalies = latest.get("anomalies") or []
@@ -330,6 +361,18 @@ def _paused_banner(app_config: AppConfig, *, now: datetime | None) -> HistoryBan
     """
     paused = _paused_status(app_config, now=now)
     return HistoryBanner(verdict=paused.verdict, headline=paused.headline, detail=paused.detail)
+
+
+def _foreign_records_banner(schedule_status: ScheduleStatus) -> HistoryBanner:
+    """Mirror Home's foreign-principal state as a Run-History banner — identical copy (A5).
+
+    Delegates to ``home_status._foreign_records_status`` exactly as ``_paused_banner`` delegates to
+    ``_paused_status``, so the two surfaces can NEVER drift about where the nightly's records went.
+    Run History is read-only, so only the three banner fields are carried over — the fix CTA Home
+    attaches on the problem arm is dropped here, not re-spelled.
+    """
+    foreign = _foreign_records_status(schedule_status)
+    return HistoryBanner(verdict=foreign.verdict, headline=foreign.headline, detail=foreign.detail)
 
 
 def _sftp_delivery(record: dict) -> SftpDelivery:

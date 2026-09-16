@@ -25,11 +25,16 @@ def _derive(
     *,
     hint_registered: bool = True,
     latest_record_ts: str | None = None,
+    foreign_account: str = "",
 ) -> ScheduleStatus:
+    """Derive a status. ``foreign_account`` defaults to the SAME-ACCOUNT world, so every
+    pre-0046-C case in this file keeps asserting today's behaviour unchanged; the plan 0046 C
+    cases pass a name explicitly."""
     return derive_schedule_status(
         readback,
         hint_registered=hint_registered,
         latest_record_ts=latest_record_ts,
+        foreign_account=foreign_account,
     )
 
 
@@ -76,6 +81,7 @@ class TestContradiction:
         status = _derive(
             ScheduleReadback(found=True, last_run="2026-07-08T03:00:00.0000000", last_result=0),
             latest_record_ts="2026-07-07T03:00:05",
+            foreign_account="",
         )
         assert status.state is ScheduleState.LIVE
         assert status.contradiction is True
@@ -93,6 +99,7 @@ class TestContradiction:
         status = _derive(
             ScheduleReadback(found=True, last_run="2026-07-08T03:00:00", last_result=3),
             latest_record_ts="2026-07-08T03:00:00",
+            foreign_account="",
         )
         assert status.contradiction is False
 
@@ -102,6 +109,7 @@ class TestContradiction:
         status = _derive(
             ScheduleReadback(found=True, last_run="2026-07-08T03:00:00", last_result=2147942402),
             latest_record_ts=None,
+            foreign_account="",
         )
         assert status.contradiction is False
 
@@ -109,6 +117,7 @@ class TestContradiction:
         status = _derive(
             ScheduleReadback(found=True, last_run="2026-07-07T03:00:00", last_result=0),
             latest_record_ts="2026-07-07T03:05:00",
+            foreign_account="",
         )
         assert status.contradiction is False
 
@@ -116,6 +125,7 @@ class TestContradiction:
         status = _derive(
             ScheduleReadback(found=True, last_run="2026-07-08T03:00:00", last_result=0),
             latest_record_ts=None,
+            foreign_account="",
         )
         assert status.contradiction is False
 
@@ -147,17 +157,29 @@ class TestMissing:
     def test_missing_copy_is_de_circularized_on_the_setup_surface(self) -> None:
         # Finding #3: rendered ON Setup, "add one in Setup" is circular → "add one below".
         home = derive_schedule_status(
-            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, surface="home"
+            ScheduleReadback(found=False),
+            hint_registered=False,
+            latest_record_ts=None,
+            foreign_account="",
+            surface="home",
         )
         setup = derive_schedule_status(
-            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, surface="setup"
+            ScheduleReadback(found=False),
+            hint_registered=False,
+            latest_record_ts=None,
+            foreign_account="",
+            surface="setup",
         )
         assert "in Setup" in home.detail
         assert "below" in setup.detail and "in Setup" not in setup.detail
 
     def test_expected_missing_copy_is_de_circularized_on_setup(self) -> None:
         setup = derive_schedule_status(
-            ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, surface="setup"
+            ScheduleReadback(found=False),
+            hint_registered=True,
+            latest_record_ts=None,
+            foreign_account="",
+            surface="setup",
         )
         assert "re-register it below" in setup.detail and "in Setup" not in setup.detail
 
@@ -200,6 +222,7 @@ class TestBadgeModel:
         status = _derive(
             ScheduleReadback(found=True, last_run="2026-07-08T03:00:00"),
             latest_record_ts="2026-07-07T03:00:00",
+            foreign_account="",
         )
         assert needs_setup_badge(status) is True
 
@@ -230,6 +253,7 @@ class TestBadgeIsWindowAware:
         return _derive(
             ScheduleReadback(found=True, last_run="2026-07-08T03:00:00"),
             latest_record_ts="2026-07-07T03:00:00",
+            foreign_account="",
         )
 
     def test_contradiction_still_badges_when_not_paused(self) -> None:
@@ -268,6 +292,7 @@ class TestBadgeIsSilentDuringFirstRun:
         return _derive(
             ScheduleReadback(found=True, last_run="2026-07-08T03:00:00"),
             latest_record_ts="2026-07-07T03:00:00",
+            foreign_account="",
         )
 
     def _expected_missing(self) -> object:
@@ -344,3 +369,224 @@ class TestUnregisterPresentation:
             False, "Couldn't read the existing crontab (crontab -l exited 1): permission denied"
         )
         assert outcome.success_shaped is False
+
+
+# --------------------------------------------------------------------------- #
+# Plan 0046 C — the foreign principal: A5's suppression + A4's swapped-in signal #
+# --------------------------------------------------------------------------- #
+_SERVICE = "CONTOSO\\svc_districtsync"
+
+#: A read-back that IS a record-gap contradiction on a same-account install: the task fired at
+#: 04:00 and the newest recorded run is from 02:00, so nothing was captured for that firing.
+_GAP_READBACK = ScheduleReadback(found=True, next_run="2026-07-10T03:00:00", last_run="2026-07-09T04:00:00")
+_GAP_NEWEST_RECORD = "2026-07-09T02:00:00"
+
+
+class TestForeignPrincipalSuppressesTheRecordGap:
+    """A5: a missing run record is the DOCUMENTED consequence of where the record was written.
+
+    ``src/history/store.py`` writes ``history.db`` under ``paths.user_data_dir()`` of the account
+    the task RUNS as, so once the principal is a service account the nightly's records are written
+    to that profile and never reach this one. Asserting a fault there would walk the admin into
+    re-registering a task that is working perfectly — every night, forever.
+    """
+
+    def test_a_real_gap_is_suppressed_under_a_foreign_principal(self) -> None:
+        status = _derive(_GAP_READBACK, latest_record_ts=_GAP_NEWEST_RECORD, foreign_account=_SERVICE)
+        assert status.contradiction is False
+        assert status.headline != "Your last scheduled run reported a problem"
+
+    def test_positive_twin_the_same_gap_still_alarms_on_a_same_account_install(self) -> None:
+        """THE test that proves the narrowing is narrow — identical inputs, no recorded principal."""
+        status = _derive(_GAP_READBACK, latest_record_ts=_GAP_NEWEST_RECORD, foreign_account="")
+        assert status.contradiction is True
+        assert status.attention is True
+        assert status.headline == "Your last scheduled run reported a problem"
+
+    def test_is_contradiction_itself_is_one_directional(self) -> None:
+        from src.ui_flet.schedule_status import _is_contradiction
+
+        assert _is_contradiction(_GAP_READBACK, _GAP_NEWEST_RECORD, foreign_account="") is True
+        assert _is_contradiction(_GAP_READBACK, _GAP_NEWEST_RECORD, foreign_account=_SERVICE) is False
+
+    def test_foreign_account_is_required_keyword_only_on_is_contradiction(self) -> None:
+        """A forgotten argument must be a TypeError, never a silently-defaulted suppression."""
+        import pytest
+
+        from src.ui_flet.schedule_status import _is_contradiction
+
+        with pytest.raises(TypeError):
+            _is_contradiction(_GAP_READBACK, _GAP_NEWEST_RECORD)  # type: ignore[call-arg]
+
+    def test_foreign_account_is_required_keyword_only_on_derive(self) -> None:
+        import pytest
+
+        with pytest.raises(TypeError):
+            derive_schedule_status(  # type: ignore[call-arg]
+                ScheduleReadback(found=True), hint_registered=True, latest_record_ts=None
+            )
+
+
+class TestForeignAccountRidesEveryState:
+    """Home and Run History read the field regardless of state, so all three builders carry it."""
+
+    def test_live_missing_and_unknown_all_carry_the_recorded_account(self) -> None:
+        for readback in (
+            ScheduleReadback(found=True, next_run="2026-07-09T03:00:00"),
+            ScheduleReadback(found=False),
+            ScheduleReadback(found=None, error="denied"),
+        ):
+            assert _derive(readback, foreign_account=_SERVICE).foreign_account == _SERVICE
+
+    def test_the_default_is_the_conservative_do_not_suppress_value(self) -> None:
+        assert ScheduleStatus(state=ScheduleState.LIVE, headline="h", detail="d").foreign_account == ""
+
+    def test_missing_and_unknown_copy_is_byte_identical_under_a_foreign_principal(self) -> None:
+        """Neither state may ASSERT where a schedule's records go — one is gone, one is unseen."""
+        for readback in (ScheduleReadback(found=False), ScheduleReadback(found=None, error="denied")):
+            for expected in (True, False):
+                plain = _derive(readback, hint_registered=expected, foreign_account="")
+                foreign = _derive(readback, hint_registered=expected, foreign_account=_SERVICE)
+                assert (foreign.headline, foreign.detail) == (plain.headline, plain.detail)
+
+
+class TestSameAccountDetailIsByteIdentical:
+    """Nothing changes for the 19 of 20 districts that are not on a service account."""
+
+    def test_benign_last_result_appends_nothing_on_any_state(self) -> None:
+        for last_result in (0, None):
+            for readback in (
+                ScheduleReadback(found=True, next_run="2026-07-09T03:00:00", last_result=last_result),
+                ScheduleReadback(found=True, next_run=None, last_result=last_result),
+                ScheduleReadback(found=False, last_result=last_result),
+                ScheduleReadback(found=None, error="denied", last_result=last_result),
+            ):
+                status = _derive(readback, foreign_account="")
+                assert "run records are saved under" not in status.detail
+                assert not status.detail.endswith(" ")
+
+    def test_clean_live_detail_is_exactly_todays_sentence(self) -> None:
+        status = _derive(ScheduleReadback(found=True, next_run="2026-07-09T03:00:00", last_result=0))
+        assert status.detail == "Your nightly schedule is registered — next run at 3:00 AM."
+        assert status.headline == "Nightly sync is scheduled"
+
+    def test_timeless_live_detail_is_exactly_todays_sentence(self) -> None:
+        status = _derive(ScheduleReadback(found=True, next_run=None, last_result=None))
+        assert status.detail == "Your nightly schedule is registered with Windows."
+
+    def test_the_record_gap_copy_is_untouched_by_the_run_result_note(self) -> None:
+        """The contradiction branch returns BEFORE the append — its copy is already about the
+        run problem, and a second sentence would restate it from weaker evidence."""
+        status = _derive(
+            ScheduleReadback(found=True, next_run="2026-07-10T03:00:00", last_run="2026-07-09T04:00:00", last_result=1),
+            latest_record_ts=_GAP_NEWEST_RECORD,
+            foreign_account="",
+        )
+        assert status.contradiction is True
+        assert "Windows recorded" not in status.detail
+
+
+class TestRunResultNoteInTheLiveDetail:
+    """A4: the OS result is rendered in the readout — one sentence, appended, never escalating
+    on a same-account install."""
+
+    def test_one_sentence_is_appended_and_attention_is_unchanged(self) -> None:
+        from src.scheduler.task_com import RESULT_BATCH_LOGON_PROBLEM, RESULT_HAS_NOT_RUN
+        from src.ui_flet.schedule_status import run_result_verdict
+
+        base = "Your nightly schedule is registered — next run at 3:00 AM."
+        for code in (1, 3, 2, RESULT_HAS_NOT_RUN, RESULT_BATCH_LOGON_PROBLEM):
+            status = _derive(
+                ScheduleReadback(found=True, next_run="2026-07-09T03:00:00", last_result=code),
+                foreign_account="",
+            )
+            note = run_result_verdict(code).note
+            assert note is not None
+            assert status.detail == f"{base} {note}"
+            # Today's rule, unchanged: a same-account install never escalates on an OS result —
+            # the run store and Run History already own that narrative.
+            assert status.attention is False
+            assert status.headline == "Nightly sync is scheduled"
+
+    def test_the_foreign_note_precedes_the_run_result_note(self) -> None:
+        from src.ui_flet.schedule_status import FOREIGN_RECORDS_NOTE, run_result_verdict
+
+        status = _derive(
+            ScheduleReadback(found=True, next_run="2026-07-09T03:00:00", last_result=1),
+            foreign_account=_SERVICE,
+        )
+        foreign_note = FOREIGN_RECORDS_NOTE.format(account=_SERVICE)
+        run_note = run_result_verdict(1).note or ""
+        assert foreign_note in status.detail
+        assert run_note in status.detail
+        assert status.detail.index(foreign_note) < status.detail.index(run_note)
+
+    def test_the_foreign_note_names_the_recorded_account(self) -> None:
+        status = _derive(ScheduleReadback(found=True, next_run="2026-07-09T03:00:00"), foreign_account=_SERVICE)
+        assert _SERVICE in status.detail
+        assert "don't appear in Run History here" in status.detail
+
+
+class TestAttentionSwapsToTheOsResult:
+    """The alarm is SWAPPED, not removed — a service-account district never loses its signal."""
+
+    def test_attention_iff_a_reported_problem_on_a_foreign_principal(self) -> None:
+        from src.scheduler.task_com import RESULT_BATCH_LOGON_PROBLEM, RESULT_HAS_NOT_RUN
+        from src.ui_flet.schedule_status import run_result_verdict
+
+        for code in (None, 0, 1, 2, 3, RESULT_HAS_NOT_RUN, RESULT_BATCH_LOGON_PROBLEM, 99):
+            status = _derive(
+                ScheduleReadback(found=True, next_run="2026-07-09T03:00:00", last_result=code),
+                foreign_account=_SERVICE,
+            )
+            assert status.attention is run_result_verdict(code).reported_a_problem
+
+    def test_ok_and_never_run_never_escalate_on_any_principal(self) -> None:
+        from src.scheduler.task_com import RESULT_HAS_NOT_RUN
+
+        for account in ("", _SERVICE):
+            for code in (0, None, RESULT_HAS_NOT_RUN):
+                status = _derive(
+                    ScheduleReadback(found=True, next_run="2026-07-09T03:00:00", last_result=code),
+                    foreign_account=account,
+                )
+                assert status.attention is False
+
+    def test_the_problem_headline_is_distinct_from_the_record_gap_headline(self) -> None:
+        """Different evidence classes get different headlines — one is an OS report, one an inference."""
+        os_problem = _derive(
+            ScheduleReadback(found=True, next_run="2026-07-09T03:00:00", last_result=1),
+            foreign_account=_SERVICE,
+        )
+        record_gap = _derive(_GAP_READBACK, latest_record_ts=_GAP_NEWEST_RECORD, foreign_account="")
+        assert os_problem.headline == "Your last nightly run reported a problem"
+        assert os_problem.headline != record_gap.headline
+
+    def test_a_foreign_problem_badges_setup(self) -> None:
+        status = _derive(
+            ScheduleReadback(found=True, next_run="2026-07-09T03:00:00", last_result=1),
+            foreign_account=_SERVICE,
+        )
+        assert needs_setup_badge(status) is True
+
+
+class TestDocstringCorrection:
+    """``_is_contradiction`` claimed a ``last_result`` consumer it never had (plan 0046 C)."""
+
+    def test_the_false_supporting_evidence_sentence_is_gone(self) -> None:
+        from src.ui_flet.schedule_status import _is_contradiction
+
+        doc = _is_contradiction.__doc__ or ""
+        assert "supporting evidence" not in doc
+
+    def test_it_now_states_that_it_does_not_read_last_result(self) -> None:
+        import inspect
+
+        from src.ui_flet.schedule_status import _is_contradiction
+
+        doc = _is_contradiction.__doc__ or ""
+        assert "does NOT read" in doc
+        assert "last_result" in doc
+        # And the body genuinely does not — the docstring is now checkable against the code.
+        body = inspect.getsource(_is_contradiction).split('"""')[-1]
+        assert "last_result" not in body

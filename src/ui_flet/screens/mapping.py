@@ -490,9 +490,17 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
             return
 
         def _work() -> None:  # runs OFF the UI thread
-            from src.ui_flet.schedule_probe import probe_schedule
+            from src.ui_flet.schedule_probe import foreign_task_account, probe_schedule
 
-            status = probe_schedule(task_name, hint_registered=hint_registered)
+            # 0046 C: INERT here (only ``status.state`` is read on this surface) and supplied
+            # anyway — a special case is how the next reader learns the wrong lesson. Resolved
+            # from the ``app_config`` already closed over by ``_surface``, so no extra primitive
+            # is threaded through ``_refine_from_probe``'s signature.
+            status = probe_schedule(
+                task_name,
+                hint_registered=hint_registered,
+                foreign_account=foreign_task_account(app_config),
+            )
 
             async def _apply() -> None:
                 if apply_seq["n"] != gen:

@@ -1018,7 +1018,7 @@ def _dashboard(
             schedule_status is not None
             and schedule_status.state is ScheduleState.LIVE
             and not schedule_status.attention
-            and not sync_window_paused(app_config, now=None)
+            and not sync_window_paused(app_config, now=None, foreign_account=schedule_status.foreign_account)
         ):
             controls.append(_schedule_card(schedule_status, on_navigate))
         container.controls = controls
@@ -1045,12 +1045,15 @@ def _probe_schedule_async(
         return
 
     def _work() -> None:  # runs OFF the UI thread
-        from src.ui_flet.schedule_probe import probe_schedule
+        from src.ui_flet.schedule_probe import foreign_task_account, probe_schedule
 
+        # 0046 C: resolve the recorded task principal HERE, inside the worker thread, so the
+        # config read stays off the UI thread. It fails to "" on everything, and "" ALARMS.
         status = probe_schedule(
             app_config.schedule_task_name,
             hint_registered=app_config.schedule_registered,
             latest_record_ts=latest_ts,
+            foreign_account=foreign_task_account(app_config),
         )
 
         async def _apply() -> None:

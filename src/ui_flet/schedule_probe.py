@@ -10,23 +10,75 @@ marshalling: each surface calls :func:`probe_schedule` OFF the UI thread (via
 ``nav.py`` and the pure derivations stay subprocess-free.
 
 The WARNING log names only the config-controlled task name — never a path, credential, or any
-PII (the read-back itself carries none into the log).
+PII (the read-back itself carries none into the log). Plan 0046 C adds a Windows ACCOUNT NAME to
+this module's inputs and that posture is UNCHANGED: ``_log_divergence`` must never gain the
+account name, which is rendered ON SCREEN only.
 """
 
 from __future__ import annotations
 
 import logging
 
+from src.config.app_config import AppConfig
+from src.scheduler import get_scheduler
 from src.scheduler.windows import read_schedule
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus, derive_schedule_status
+from src.ui_flet.setup_flow import registered_schedule
+from src.ui_flet.setup_gates import principal_key
 
 logger = logging.getLogger(__name__)
+
+
+def foreign_task_account(app_config: AppConfig) -> str:
+    """The RECORDED task principal when it is not the account now running; ``""`` otherwise.
+
+    THE one resolver for plan 0046 C / A5, and the reason ``schedule_status`` and ``home_status``
+    stay pure. It reads the ATOMIC record (``setup_flow.registered_schedule``) rather than
+    ``AppConfig.schedule_run_as_user`` directly, so a torn ``schedule_task_args`` makes the
+    principal unknown too — and unknown is ``""``, which ALARMS. Reading one facet of an atomic
+    triple in isolation is exactly the drift ``RegisteredSchedule`` exists to prevent.
+
+    It can only ever be a fact the app WROTE at a confirmed registration. The live task's own
+    identity is genuinely unreadable — ``task_com.TaskFacts`` carries ``next_run`` / ``last_run`` /
+    ``last_result`` / ``action_path`` and NO principal — so inference was never on the table.
+
+    **FAILS TO ``""`` ON EVERYTHING**: no record, a blank record, a case-insensitive match with the
+    signed-in account, an unreadable ``AppConfig``, or a raising ``get_scheduler().run_as_user()``.
+    That direction is the whole safety argument (see ``schedule_status._is_contradiction``).
+
+    Deliberately NOT ``screens/setup.py::_keyring_owner_account``, whose ``"this account"`` fallback
+    would make EVERY recorded name compare foreign and fire the suppression in the unsafe direction
+    on any machine where the account resolution fails.
+
+    ``supports_unattended`` is left at its default: only the ``run_as_user`` facet is read, and its
+    ``None``-iff-``args is None`` rule does not depend on that flag.
+    """
+    try:
+        record = registered_schedule(
+            raw_task_args=app_config.schedule_task_args,
+            unattended_flag=bool(app_config.schedule_unattended),
+            raw_run_as_user=app_config.schedule_run_as_user,
+        )
+        recorded = record.run_as_user
+        if not recorded:
+            return ""
+        current = get_scheduler().run_as_user()
+        # `principal_key` is the ONE reduction every principal comparison goes through — it
+        # restates `register_task`'s own equivalence, so the view and the engine cannot disagree
+        # about what "a different account" IS. Blank key ⇒ the signed-in account ⇒ not foreign.
+        if not principal_key(recorded, current):
+            return ""
+        return recorded
+    except Exception:  # noqa: BLE001 - advisory: any failure means UNKNOWN, and unknown ALARMS
+        logger.debug("Could not resolve the recorded task principal; treating it as not foreign.")
+        return ""
 
 
 def probe_schedule(
     task_name: str,
     *,
     hint_registered: bool,
+    foreign_account: str,
     latest_record_ts: str | None = None,
     surface: str = "home",
 ) -> ScheduleStatus:
@@ -35,12 +87,18 @@ def probe_schedule(
     Runs the bounded PowerShell read-back (``read_schedule``) and maps it to the honest
     tri-state via the pure ``derive_schedule_status``. Never raises — a failed read is UNKNOWN.
     ``surface`` (``"home"``/``"setup"``) de-circularizes the MISSING copy (finding #3).
+
+    ``foreign_account`` is REQUIRED keyword-only and passed straight through. It stays a PARAMETER
+    rather than an internal :func:`foreign_task_account` call: this probe fires on nearly every nav
+    click, and a disk read per click plus an untestable seam is a worse trade than one explicit
+    argument. Each caller resolves it inside the worker thread it already owns.
     """
     readback = read_schedule(task_name)
     status = derive_schedule_status(
         readback,
         hint_registered=hint_registered,
         latest_record_ts=latest_record_ts,
+        foreign_account=foreign_account,
         surface=surface,
     )
     _log_divergence(task_name, status, hint_registered=hint_registered)

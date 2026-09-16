@@ -433,7 +433,7 @@ def build_app_body(
     def _refresh_setup_badge() -> None:  # runs OFF the UI thread
         from src.history.store import read_run_records
         from src.ui_flet.home_status import sync_window_paused
-        from src.ui_flet.schedule_probe import probe_schedule
+        from src.ui_flet.schedule_probe import foreign_task_account, probe_schedule
         from src.ui_flet.schedule_status import needs_setup_badge
 
         cfg = AppConfig.load()
@@ -443,11 +443,14 @@ def build_app_body(
             cfg.schedule_task_name,
             hint_registered=cfg.schedule_registered,
             latest_record_ts=latest_ts,
+            foreign_account=foreign_task_account(cfg),
         )
         # Window-aware badge: during an enabled seasonal pause the fired-but-no-record
         # contradiction is by design (matches Home's calm "Paused" state) — a MISSING task
         # still badges. `sync_window_paused` is the SAME pure fact Home derives (single source).
-        paused = sync_window_paused(cfg, now=None)
+        # 0046 C / A9: no pause is in force for a foreign principal (the nightly gate reads the
+        # RUNNING account's config), so the badge must not be suppressed as if one were.
+        paused = sync_window_paused(cfg, now=None, foreign_account=status.foreign_account)
         # First-run silence (0038 S6): Home HOSTS the wizard while `needs_setup`, so an
         # attention dot on the Setup rail item would flag the work in progress as a fault.
         # Read here, at probe time, from the SAME predicate Home branches on.
