@@ -9,6 +9,74 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Changed
+
+- **Unity Christian School: family contacts are now delivered.** The school's
+  2026-09-14 extract switched to the Enhanced emergency-contact report, which
+  carries guardian email addresses — the field a SpacesEDU family account is
+  keyed on — and a parent/guardian flag. `Family.csv` was switched off for this
+  school because the earlier extract had neither. It is now produced, filtered
+  to the contacts the school itself marks as an authorized parent or guardian,
+  so emergency-only contacts (doctors, aunts, family friends) are not turned
+  into parent accounts. No other file changed, and the school does not need to
+  rename anything.
+
+## [3.20.0] - 2026-09-16
+
+Districts can now be told to never merge sections into a blended class —
+needed for an export whose day rotation can't tell two courses apart. SD51
+is the first district to use it, and the scheduler now refuses to register
+a task to the wrong Windows account.
+
+**If you are SD51, run this build or newer.** Your MyEd BC export carries no
+day rotation, so once your Class Information Enhanced extract fills out with
+secondary sections, earlier builds would merge unrelated courses into one
+class. This build switches that merging off for your district. Today's
+output is byte-identical to v3.19.0's.
+
+### Added
+
+- **`blended_classes` config key.** When a district's export doesn't rotate
+  through days (its `Day` column reads the same value on every row), the
+  detection that merges same-teacher, same-time sections spanning multiple
+  grades into one "blended" class can no longer tell genuinely different
+  courses apart, and starts merging sections that were never meant to be
+  merged. Setting `blended_classes: false` in a district's config turns that
+  detection off entirely: `ClassInformation` is still read and still produces
+  co-teacher enrollment rows, only the merging step is skipped. Every
+  district's config defaults to blending switched on, unchanged from today.
+
+### Changed
+
+- **SD51 is the only district that sets it.** Boundary's export has no day
+  rotation, so its section-merging is not trustworthy; `blended_classes` is
+  now `false` for SD51 specifically. SD51's delivered output today is
+  **byte-identical** either way — its current class-info extract is an early,
+  10-row K-7 file with nothing that would have blended — but as the district's
+  export fills out through the school year, this setting is what stops
+  unrelated secondary courses from being wrongly merged into one class.
+
+### Fixed
+
+- **A scheduled task can no longer be registered to the wrong Windows
+  account.** If a run-as account other than the signed-in user is supplied
+  without a password, registration is now refused with a clear message
+  before any elevation prompt, instead of silently registering the task to
+  the current user and reporting success. A blank password is treated as no
+  password on both halves of the scheduler, so a blank credential can never
+  register an unattended task. Not reachable from the current Setup screen,
+  which always passes no account; fixed ahead of the service-account work
+  that will make it reachable. No district's output changes.
+- **SD10 Arrow Lakes now receives class, enrollment, family and staff
+  rostering.** The district previously got the student roster plus the two
+  course feeds; it now gets all seven CSVs. Classes follow the standard split —
+  Kindergarten through grade 7 are rostered by homeroom, grades 8-12 by their
+  timetable. `Staff.csv` is included because `Enrollments.csv` always lists the
+  teacher of each class, and without it those teachers would not exist in the
+  upload; it needs no additional file from the district, since the class feed
+  already reads the staff export. Generated student emails
+  (`{student number}@sd10.bc.ca`) are unchanged. No other district is affected.
+
 ## [3.19.0] - 2026-09-14
 
 SD83's staff roles now come from the column the district actually records them

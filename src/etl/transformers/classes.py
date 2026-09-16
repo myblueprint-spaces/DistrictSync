@@ -94,6 +94,20 @@ class ClassTransformer(BaseTransformer):
         class_info_df = self.filter_excluded_course_codes(class_info_df, excluded_codes)
 
         logger.info(f"[Classes] Class info data loaded: {len(class_info_df)} records")
+
+        # Opt-out (global_config.blended_classes: false): the normalized/
+        # filtered class_info frame is still returned UNCHANGED — Enrollments
+        # still builds ClassInformation co-teacher rows from it — only blended
+        # DETECTION is skipped. Branch on the resolved bool, never truthiness
+        # of a missing key, so a typo'd key can't silently flip the default.
+        if context.global_config.get("blended_classes", True) is False:
+            logger.info(
+                "[Classes] Blended-class detection disabled by config "
+                "(global_config.blended_classes: false); ClassInformation still "
+                "feeds co-teacher enrollments"
+            )
+            return class_info_df, BlendedDetection.empty()
+
         return class_info_df, self._blended_detector.detect(class_info_df, mapping, context)
 
     # -------------------------------------------------------------------

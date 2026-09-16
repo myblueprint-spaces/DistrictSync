@@ -1,9 +1,10 @@
 # SD10 - Arrow Lakes: inherits from standard MyEducation BC mapping, on the
-# minimal myBlueprint+ tier (Students + the two course feeds — the mbp_core
-# shape) with generated student emails (phase-2 migration; K-12 students and
-# 10-12 HS course feeds are the base defaults). Standard MyEd BC GDE file
-# naming is assumed (no source_files overrides here) — adjust once real GDE
-# exports are available (see docs/developer/adding-district.md, Steps 1-2).
+# full myBlueprint+ tier (the 5 SpacesEDU rostering CSVs plus the two course
+# feeds) with generated student emails. K-7 homerooms and 8-12 timetable
+# classes are the BASE defaults, so neither grade key is restated here (see
+# global_config below). Standard MyEd BC GDE file naming is assumed (no
+# source_files overrides here) — adjust once real GDE exports are available
+# (see docs/developer/adding-district.md, Steps 1-2).
 _base: myedbc
 sis: MyEducationBC
 district_name: SD10 - Arrow Lakes School District
@@ -12,13 +13,31 @@ district_name: SD10 - Arrow Lakes School District
 district_domains: ["sd10.bc.ca"]
 
 global_config:
-  # Minimal myBlueprint+ tier: no class/enrollment/family/staff rostering —
-  # only the student roster plus the course catalog and transcripts. Deep-merge
-  # REPLACES lists, so the exact set is stated here.
+  # Full myBlueprint+ tier: the 5 standard rostering entities plus CourseInfo +
+  # StudentCourses. Deep-merge REPLACES lists (see sd51myedbc's comment on this
+  # same key), so the full set must be restated here.
+  #
+  # Staff rides along with Classes/Enrollments deliberately: Enrollments always
+  # emits teacher rows, so without Staff.csv every teacher User ID in
+  # Enrollments.csv would reference a person who never ships. Classes already
+  # reads StaffInformationEnhanced.txt, so this costs no additional GDE.
   enabled_entities:
     - Students
+    - Staff
+    - Family
+    - Classes
+    - Enrollments
     - CourseInfo
     - StudentCourses
+  # Grade scoping is deliberately ABSENT. The base already gives exactly what
+  # this district asked for — homeroom_grades = K-7, and with
+  # class_rostering_grades unset the timetable scope is the complement
+  # (CEDS − homeroom), i.e. 8-12. Pinning class_rostering_grades to a literal
+  # ["08".."12"] would ALSO de-roster every student whose grade converts to a
+  # code outside that list (a blank or unrecognised Grade becomes "UG"), who
+  # would then ship in Students.csv with no classes at all.
+  #
+  # course_start_grade stays at the base default 10 (HS course feeds, 10-12).
 
 mappings:
   Students:

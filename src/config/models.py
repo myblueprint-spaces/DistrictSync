@@ -572,6 +572,16 @@ class GlobalConfig(BaseModel):
     # Opt-in Students cross-enrollment collapse (see CrossEnrollmentConfig).
     # None/absent → disabled (default); every non-opted-in district is unaffected.
     cross_enrollment: Optional[CrossEnrollmentConfig] = None
+    # Opt-out of blended-class detection (session-key merge of same-teacher/
+    # same-time sections spanning 2+ grades). When False, sections are never
+    # merged into blended classes; ClassInformation still loads and still
+    # feeds co-teacher enrollment rows. Default True keeps every existing
+    # district byte-identical. Exists because `BlendedClassDetector`'s
+    # session_key (school + teacher + term + semester + day + period) needs a
+    # day rotation to disambiguate sections — an export with no rotation (Day
+    # always "1", e.g. SD51) makes distinct secondary courses collide into
+    # false blends. See `docs/claugentic-ROADMAP.md` for the general fix.
+    blended_classes: bool = True
     # Opt-in CLASS-rostering scope: the COMPLETE set of grades that receive class
     # rostering, in CEDS OUTPUT space ("KG", "01", ... — NOT raw MyEd values like
     # "K"/"3"). `homeroom_grades` must be a SUBSET of it (validated below), which
@@ -1096,6 +1106,7 @@ class MappingConfig(BaseModel):
             "cross_enrollment": (
                 self.global_config.cross_enrollment.model_dump() if self.global_config.cross_enrollment else None
             ),
+            "blended_classes": self.global_config.blended_classes,
             # The sentinel passes through as the string; a list is copied. None
             # (absent) must survive as None — the ETL distinguishes "not set"
             # from an empty scope, so never collapse it to [].
