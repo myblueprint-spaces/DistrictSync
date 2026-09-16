@@ -64,7 +64,7 @@ class TestRefusalLadder:
         assert code == 0
         out = _read(res)
         assert out["ok"] is False
-        assert "missing" in out["message"].lower()
+        assert out["message"] == elevated_apply._MSG_REQUEST_MISSING
 
     def test_oversized_request_is_refused_unread(self, tmp_path: Path) -> None:
         req = tmp_path / "big.req"
@@ -86,6 +86,41 @@ class TestRefusalLadder:
         out = _read(res)
         assert out["ok"] is False
         assert out["message"] == elevated_apply.DIFFERENT_ACCOUNT_SENTINEL
+
+    def test_a_refused_read_is_the_cross_account_signature_not_a_missing_request(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Defect A8, reported by SD51 2026-09-16 (pre-fix).
+
+        ``elevation.write_request`` seals the request under the SIGNED-IN user's profile with
+        an owner-only DACL. When the UAC prompt is answered with a DIFFERENT administrator
+        account, the elevated child's ``read_bytes()`` raises ``PermissionError`` — which the
+        generic ``except OSError`` reported as "The elevated request was missing.", three rungs
+        before the DPAPI cross-SID rung that was designed to say *different account*. The admin
+        was then told to "try again in a moment", forever. ``PermissionError`` is an ``OSError``
+        subclass, so the rung ORDER is the whole fix.
+        """
+        req, res = _sealed(tmp_path, None)
+        real_read_bytes = Path.read_bytes
+
+        def _refuse(self: Path, *args, **kwargs):
+            if self == req:
+                raise PermissionError(13, "Access is denied")
+            return real_read_bytes(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_bytes", _refuse)
+        code = elevated_apply.run_elevated_apply([str(req), str(res)])
+        assert code == 0
+        out = _read(res)
+        assert out["ok"] is False
+        assert out["message"] == elevated_apply.DIFFERENT_ACCOUNT_SENTINEL
+
+    def test_a_genuinely_absent_request_still_reports_missing(self, tmp_path: Path) -> None:
+        """The NEGATIVE twin of the rung above: a swept/never-written request is still
+        'missing', so the new rung narrowed the generic arm rather than replacing it."""
+        res = tmp_path / "gone.res"
+        elevated_apply.run_elevated_apply([str(tmp_path / "never-written.req"), str(res)])
+        assert _read(res)["message"] == elevated_apply._MSG_REQUEST_MISSING
 
     @pytest.mark.parametrize("raw", [b"not json", b'"a string"', b"[1,2]"])
     def test_malformed_payload_is_refused(self, tmp_path: Path, raw: bytes) -> None:
@@ -206,6 +241,59 @@ class TestSuccessPaths:
         ):
             elevated_apply.run_elevated_apply([str(req), str(res)])
         assert secret not in res.read_text(encoding="utf-8")
+
+
+class TestChildRefusalVocabulary:
+    """``CHILD_REFUSALS`` is the child's OWN failure vocabulary — derived, never hand-listed.
+
+    The classifier's produced-vs-classified sweep (A2) consumes this tuple, so a new refusal
+    literal added without registering it must be red HERE, in the module that authored it.
+
+    BOUND (Verify 2026-09-16, R7): the walk recognises only the shape
+    ``_write_result(res_path, False, _MSG_NAME)`` — positional arguments with a bare
+    ``_MSG_``-prefixed ``Name`` as the third. A refusal added as a keyword argument, an
+    f-string, or via a local variable holding the constant is INVISIBLE to it. Every call site
+    uses the bare-literal shape today, so the guard holds in practice; widening it past that
+    blind spot is ROADMAP, not a pinned property.
+    """
+
+    @staticmethod
+    def _refusal_names() -> set[str]:
+        """Every ``_MSG_*`` name this module passes to ``_write_result(..., False, X)``.
+
+        Deliberately excludes the three non-literal messages the child can write: the
+        cross-SID ``DIFFERENT_ACCOUNT_SENTINEL`` (a sentinel the parent maps, not copy),
+        ``task_com.MSG_COM_UNAVAILABLE`` (the ENGINE's canonical, named there) and
+        ``exc.message`` (a ``task_com`` canonical passed straight through).
+        """
+        import ast
+        import pathlib
+
+        source = pathlib.Path(elevated_apply.__file__).read_text(encoding="utf-8")
+        found: set[str] = set()
+        for node in ast.walk(ast.parse(source)):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_write_result"):
+                continue
+            args = node.args
+            if len(args) < 3 or not (isinstance(args[1], ast.Constant) and args[1].value is False):
+                continue
+            if isinstance(args[2], ast.Name) and args[2].id.startswith("_MSG_"):
+                found.add(args[2].id)
+        return found
+
+    def test_the_scan_finds_write_result_calls_at_all(self) -> None:
+        """Not vacuous: an AST walk that matched nothing would make every row below pass."""
+        assert len(self._refusal_names()) >= 3
+
+    def test_child_refusals_is_exactly_the_written_literal_set(self) -> None:
+        written = {getattr(elevated_apply, name) for name in self._refusal_names()}
+        assert set(elevated_apply.CHILD_REFUSALS) == written
+
+    def test_no_refusal_literal_carries_a_foreign_marker(self) -> None:
+        """The child's copy reaches the same consumers the engine's canonicals do."""
+        from src.scheduler.messages import carries_foreign_marker
+
+        assert [m for m in elevated_apply.CHILD_REFUSALS if carries_foreign_marker(m)] == []
 
 
 class TestDispatchFirst:

@@ -175,15 +175,14 @@ class TestWindowsDeleteTask:
         HR_NOT_FOUND canonical must keep that marker or deleting an already-gone task
         starts presenting as a failure."""
         from src.scheduler import task_com
+        from src.scheduler.messages import ABSENT_TASK_MARKERS
         from src.scheduler.windows import delete_task
 
-        mock_bounded.side_effect = task_com.TaskComError(
-            task_com.HR_NOT_FOUND, "The system cannot find the file specified."
-        )
+        mock_bounded.side_effect = task_com.TaskComError(task_com.HR_NOT_FOUND, task_com.MSG_NOT_FOUND)
 
         ok, msg = delete_task("DistrictSync_Daily")
         assert ok is False
-        assert "cannot find" in msg.lower()
+        assert any(marker in msg.lower() for marker in ABSENT_TASK_MARKERS)
 
     @patch("src.scheduler.windows.task_com.bounded")
     def test_access_denied_keeps_the_adapter_retry_substring(self, mock_bounded):
@@ -191,13 +190,14 @@ class TestWindowsDeleteTask:
         failure message contains "access is denied". The COM canonical must preserve it,
         or un-elevated admins permanently lose the ability to remove a Highest task."""
         from src.scheduler import task_com
+        from src.scheduler.messages import ACCESS_DENIED_MARKERS
         from src.scheduler.windows import delete_task
 
-        mock_bounded.side_effect = task_com.TaskComError(task_com.HR_ACCESS_DENIED, "Access is denied.")
+        mock_bounded.side_effect = task_com.TaskComError(task_com.HR_ACCESS_DENIED, task_com.MSG_ACCESS_DENIED)
 
         ok, msg = delete_task("DistrictSync_Daily")
         assert ok is False
-        assert "access is denied" in msg.lower()
+        assert any(marker in msg.lower() for marker in ACCESS_DENIED_MARKERS)
 
     @patch("src.scheduler.windows._confirm_removal")
     @patch("src.scheduler.windows.task_com.bounded")
@@ -289,9 +289,7 @@ class TestReadSchedule:
         from src.scheduler import task_com
         from src.scheduler.windows import read_schedule
 
-        mock_bounded.side_effect = task_com.TaskComError(
-            task_com.HR_NOT_FOUND, "The system cannot find the file specified."
-        )
+        mock_bounded.side_effect = task_com.TaskComError(task_com.HR_NOT_FOUND, task_com.MSG_NOT_FOUND)
         rb = read_schedule("NonExistent")
         assert rb.found is False  # MISSING — the only state that may claim "not scheduled"
 
@@ -301,10 +299,10 @@ class TestReadSchedule:
         from src.scheduler import task_com
         from src.scheduler.windows import read_schedule
 
-        mock_bounded.side_effect = task_com.TaskComError(task_com.HR_ACCESS_DENIED, "Access is denied.")
+        mock_bounded.side_effect = task_com.TaskComError(task_com.HR_ACCESS_DENIED, task_com.MSG_ACCESS_DENIED)
         rb = read_schedule("DistrictSync_Daily")
         assert rb.found is None  # a failed query is NEVER reported as absent
-        assert rb.error == "Access is denied."
+        assert rb.error == task_com.MSG_ACCESS_DENIED
 
     @patch("src.scheduler.windows.sys.platform", "win32")
     @patch("src.scheduler.windows.task_com.bounded")
@@ -697,3 +695,207 @@ class TestLinuxCronEntryExists:
 
         mock_run.return_value = (0, "30 12 * * * /other/job")
         assert cron_entry_exists() is False
+
+
+# -----------------------------------------------------------------------
+# Plan 0047 — the remove path is legible too (G2), and the markers are single-sourced
+# -----------------------------------------------------------------------
+
+
+class TestDeleteFailuresAreLogged:
+    """`delete_task` logged NOTHING on any failure arm (defect A4) — including the
+    access-denied that precedes the adapter's elevated retry."""
+
+    @staticmethod
+    def _anchored(caplog):
+        from src.scheduler import windows
+
+        return [r for r in caplog.records if r.msg == windows._FAIL_LOG_FORMAT]
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_access_denied_is_logged_as_a_removal_with_its_code(self, mock_bounded, caplog):
+        import logging
+
+        from src.scheduler import task_com
+        from src.scheduler.windows import delete_task
+
+        mock_bounded.side_effect = task_com.TaskComError(task_com.HR_ACCESS_DENIED, task_com.MSG_ACCESS_DENIED)
+        with caplog.at_level(logging.DEBUG):
+            ok, _ = delete_task("DistrictSync_Daily")
+        assert ok is False
+        records = self._anchored(caplog)
+        assert len(records) == 1
+        assert records[0].getMessage() == (
+            "Failed to remove task 'DistrictSync_Daily': Access is denied. [HRESULT 0x80070005]"
+        )
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_an_already_absent_task_is_the_one_silent_arm(self, mock_bounded, caplog):
+        """Deleting a task that is already gone is the IDEMPOTENT desired end state. An
+        ERROR line on every Unregister would train a district to ignore the anchor."""
+        import logging
+
+        from src.scheduler import task_com
+        from src.scheduler.windows import delete_task
+
+        mock_bounded.side_effect = task_com.TaskComError(task_com.HR_NOT_FOUND, task_com.MSG_NOT_FOUND)
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = delete_task("DistrictSync_Daily")
+        assert (ok, msg) == (False, task_com.MSG_NOT_FOUND)  # the arm DID run
+        assert self._anchored(caplog) == []
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_pywin32_missing_is_logged_as_a_removal(self, mock_bounded, caplog):
+        import logging
+
+        from src.scheduler import task_com
+        from src.scheduler.windows import delete_task
+
+        mock_bounded.side_effect = ImportError("no win32com")
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = delete_task("DistrictSync_Daily")
+        assert (ok, msg) == (False, task_com.MSG_COM_UNAVAILABLE)
+        assert "Failed to remove task" in self._anchored(caplog)[0].getMessage()
+
+    @patch("src.scheduler.windows.read_schedule")
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_an_unconfirmed_removal_never_says_register(self, mock_bounded, mock_read, caplog):
+        """R2-1: `_confirm_removal` is reached from the DIRECT delete's bounded timeout as
+        well as from both elevated arms, and `_fail`'s `verb` decides the line an IT reader
+        greps. A removal reported as "Failed to register task" sends them to the wrong half
+        of the troubleshooting page — and it is the arm where the outcome is UNKNOWN, so the
+        level must be WARNING rather than ERROR."""
+        import logging
+
+        from src.scheduler import task_com, windows
+        from src.scheduler.windows import ScheduleReadback, delete_task
+
+        mock_bounded.side_effect = task_com.BoundedTimeout("delete")
+        mock_read.return_value = ScheduleReadback(found=True)  # still there → unconfirmed
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = delete_task("DistrictSync_Daily")
+        assert (ok, msg) == (False, windows._MSG_REMOVAL_TIMED_OUT)
+        record = self._anchored(caplog)[0]
+        assert record.levelno == logging.WARNING
+        assert record.getMessage().startswith("Failed to remove task 'DistrictSync_Daily'")
+        assert "Failed to register" not in caplog.text
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_an_unexpected_failure_is_logged_at_error_with_its_code(self, mock_bounded, caplog):
+        import logging
+
+        from src.scheduler import task_com
+        from src.scheduler.windows import delete_task
+
+        class _ApartmentComError(Exception):
+            def __init__(self):
+                super().__init__()
+                self.hresult = -2147352567
+                self.excepinfo = (0, None, "desc", None, 0, -2147024891)
+
+        mock_bounded.side_effect = _ApartmentComError()
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = delete_task("DistrictSync_Daily")
+        assert (ok, msg) == (False, task_com.MSG_OPERATION_FAILED)
+        record = self._anchored(caplog)[0]
+        assert record.levelno == logging.ERROR
+        assert "[HRESULT 0x80070005]" in record.getMessage()
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_a_non_com_exception_keeps_its_class_name(self, mock_bounded, caplog):
+        """The generic arm's ONLY payload used to be the exception's class name. Routing it
+        through `_fail` recovers the HRESULT for a `com_error` but recovers NOTHING for a
+        non-COM exception (a pywin32 shape change raising `TypeError`, say) — so without
+        `detail` the line would be strictly LESS diagnostic than before the funnel. The
+        funnel ADDS context; it may never net-delete it."""
+        import logging
+
+        from src.scheduler import task_com
+        from src.scheduler.windows import delete_task
+
+        mock_bounded.side_effect = TypeError("pywin32 changed shape")
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = delete_task("DistrictSync_Daily")
+        assert (ok, msg) == (False, task_com.MSG_OPERATION_FAILED)
+        record = self._anchored(caplog)[0]
+        assert record.getMessage() == (
+            "Failed to remove task 'DistrictSync_Daily': The schedule operation failed. [HRESULT n/a] (TypeError)"
+        )
+
+    @patch("src.scheduler.windows.read_schedule")
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_a_direct_removal_timeout_does_not_claim_to_be_elevated(self, mock_bounded, mock_read, caplog):
+        """The twin of `_confirm_registration`'s `path_label` fix: `_confirm_removal` is
+        reached from the DIRECT bounded-timeout as well as from both elevated arms, and its
+        bespoke phase line said "Elevated removal" on every one of them — sending a reader
+        hunting a UAC prompt that never happened."""
+        import logging
+
+        from src.scheduler import task_com
+        from src.scheduler.windows import ScheduleReadback, delete_task
+
+        mock_bounded.side_effect = task_com.BoundedTimeout("delete")
+        mock_read.return_value = ScheduleReadback(found=None)
+        with caplog.at_level(logging.DEBUG):
+            delete_task("DistrictSync_Daily")
+        assert "Elevated removal" not in caplog.text
+        assert "Removal of 'DistrictSync_Daily' could not be confirmed" in caplog.text
+
+
+class TestMarkerListsAreSingleSourced:
+    """Plan 0047: the three marker vocabularies live in ONE import-free module, so
+    `task_com` can guard what it RETURNS without importing `ui_flet` to learn them."""
+
+    def test_the_absent_delete_markers_are_the_imported_tuple(self):
+        from src.scheduler.messages import ABSENT_TASK_MARKERS
+        from src.ui_flet import schedule_status
+
+        assert schedule_status._ABSENT_DELETE_MARKERS is ABSENT_TASK_MARKERS
+
+    def test_the_delete_adapter_reads_the_shared_access_denied_markers(self):
+        """The adapter's elevated-retry predicate must not hand-spell its own phrase — a
+        phrase spelled twice is a phrase that can be corrected once."""
+        import inspect
+
+        from src.scheduler import WindowsTaskScheduler
+
+        source = inspect.getsource(WindowsTaskScheduler.delete)
+        assert "ACCESS_DENIED_MARKERS" in source
+        assert '"access is denied"' not in source
+
+    def test_the_cross_sid_sentinel_has_one_producer(self):
+        """The IPC contract's two halves must be the SAME object, not two spellings — a
+        sentinel corrected on one side only fails closed into the wrong category."""
+        from src.scheduler import elevated_apply, windows
+
+        assert windows._DIFFERENT_ACCOUNT_SENTINEL is elevated_apply.DIFFERENT_ACCOUNT_SENTINEL
+
+    def test_the_secret_prefix_is_read_not_respelled_in_windows(self):
+        import inspect
+
+        from src.scheduler import windows
+
+        source = inspect.getsource(windows._sanitize_child_message)
+        assert "SECRET_SENTINEL_PREFIX" in source
+        assert '"DSYNC_"' not in source
+
+    def test_the_scrub_still_works(self):
+        """The POSITIVE twin of the two absences above: the behaviour those single-source
+        edits preserve must actually be exercised, not just spelled differently."""
+        from src.scheduler import windows
+
+        assert windows._sanitize_child_message("boom DSYNC_TASK_PW=leak") == windows._MSG_CHILD_DETAIL_UNAVAILABLE
+        assert windows._sanitize_child_message("  ") == windows._MSG_CHILD_NO_DETAIL
+
+    def test_the_scrub_is_case_insensitive(self):
+        """Plan 0047 Stage 7: the guard used to test ``SECRET_SENTINEL_PREFIX in cleaned``
+        case-SENSITIVELY, so a lowercased leak (``dsync_task_pw=...``) rode straight through
+        verbatim while ``messages.carries_foreign_marker`` — the same vocabulary, introduced
+        in the same slice — already treated it as a hit. Pin the lowercase form is stripped,
+        with its positive twins: the uppercase form still stripped, and a clean message still
+        passing through unchanged."""
+        from src.scheduler import windows
+
+        assert windows._sanitize_child_message("dsync_task_pw=hunter2") == windows._MSG_CHILD_DETAIL_UNAVAILABLE
+        assert windows._sanitize_child_message("boom DSYNC_TASK_PW=leak") == windows._MSG_CHILD_DETAIL_UNAVAILABLE
+        assert windows._sanitize_child_message("Schedule removed and confirmed.") == "Schedule removed and confirmed."

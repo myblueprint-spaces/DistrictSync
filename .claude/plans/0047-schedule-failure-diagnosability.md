@@ -267,6 +267,36 @@ Order: A1 → A2. Two PRs, two land gates.
 
 ---
 
+### Spec amendment — 2026-09-16, raised by the Stage 7 Verify gate (R1)
+
+The Spec's `task_com.py` comment block (line ~303 below) prescribes, verbatim:
+
+> `setup_errors.classify_schedule_error` keys on these by EXACT equality and IMPORTS them — any edit here must be mirrored there.
+
+**That is false in the A1-only state, and A1 is a slice that ships alone.** `setup_errors.py` imports only the five
+`windows._MSG_*` elevation markers; it reaches the `task_com` canonicals by SUBSTRING (the un-elevated
+"Run as administrator" branch) or by echoing them verbatim in its details clause. The exact-equality import is
+**Slice A2's** work. Shipping the sentence as written would put a maintainer-facing comment in `main` that names a
+coupling which does not exist while hiding the one that does — and the hidden one is load-bearing: losing that
+substring silently kills the "run as administrator" remedy.
+
+**Amendment:** in A1, the comment states the present-tense coupling and names A2 as what converts it. A2 then rewrites
+the same comment to the Spec's original sentence, at the point where it becomes true. No code behaviour changes; the
+Spec's INTENT (the classifier and the producer must never drift) is unchanged and is what both wordings serve.
+
+Recorded here rather than only in the PR because this plan file is deleted at plan close, and commit history is then
+the only surviving proof that the deviation was deliberate and reviewed.
+
+**Also carried from the Verify verdict, for A2 to discharge:** `src/ui_flet/setup_errors.py`'s module docstring still
+names `_clean_ps_stderr` and CLIXML de-wrapping as its sanitization contract — both retired with the PowerShell
+transport at plan 0041 S1b. A2 already rewrites that docstring; this is the check that it actually did.
+
+**Deferred to `docs/claugentic-ROADMAP.md` at A2 (out of A1's scope, recorded so they are not lost):** defect A7 is
+unfixed on the CRON path (`src/scheduler/linux.py` interpolates raw `crontab -l` output into a failure message, which
+can carry an absent-task marker exactly as the Windows path did); and the two structural guards have reproduced blind
+spots — the AST funnel guard sees only a literal `return False, …` tuple, and `CHILD_REFUSALS`' scanner sees only a
+bare `_MSG_`-prefixed Name passed positionally.
+
 ## Spec  _(Stage 4)_
 
 ### In plain English (shown first at the approval gate — covers both slices)
@@ -301,7 +331,8 @@ HR_ACCOUNT_INFO_NOT_SET = 0x8004130F
 
 # Canonical, secret-free, locale-independent text per HRESULT — DESCRIPTIVE of the status Windows
 # returned, never a cause. setup_errors.classify_schedule_error keys on these by EXACT equality and
-# IMPORTS them — any edit here must be mirrored there. RULE (pinned; INVARIANTS): no string this module
+# IMPORTS them  [AMENDED at Verify 2026-09-16 -- see 'Spec amendment' below: that is TRUE ONLY AFTER A2;
+# the A1 comment must state the present-tense substring coupling instead] — any edit here must be mirrored there. RULE (pinned; INVARIANTS): no string this module
 # can RETURN — table value, Windows' own description, or str(exc) — may carry a marker another consumer
 # owns (messages.ABSENT_TASK_MARKERS / ACCESS_DENIED_MARKERS / SECRET_SENTINEL_PREFIX) unless it IS that
 # code; and every producible message has exactly one name. Windows' own text for 0x80070520 reads

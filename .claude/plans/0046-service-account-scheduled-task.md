@@ -431,7 +431,77 @@ then rest solely on the EDR argument — and note that the owner's stated ration
 (in-place re-pointing IS the T1053.005 signature) point the same way but from opposite premises.
 That is an owner decision, not a measurement.
 
-### S0 — can a batch-logon task read its own account's Credential Manager? **NOT RUN — needs owner approval.**
+### M1 — what does a MISTYPED run-as account name report? **MEASURED 2026-09-16, elevated. Owner authorised the UAC prompt in-session.**
+
+Run against the real Task Scheduler COM API (`Schedule.Service`, raw — deliberately NOT through
+`task_com`, which was mid-edit for plan 0047), elevated, three throwaway tasks prefixed
+`DSYNC_PROBE_0046_`, all deleted and the folder swept for survivors (none). No real credential
+was used: both failing cases were driven with a deliberate junk password string.
+
+| case | registered as | password | result |
+|---|---|---|---|
+| bogus account name | `DSYNC_NOSUCHACCOUNT_46`, `TASK_LOGON_PASSWORD` | junk | **`0x80070534`** (`ERROR_NONE_MAPPED`), `excepinfo[2]` = `"(21,8):UserId:"` |
+| real account, wrong password | `DESKTOP-…\shan.peiris`, `TASK_LOGON_PASSWORD` | junk | **`0x8007052E`** (`ERROR_LOGON_FAILURE`), `excepinfo[2]` EMPTY |
+| delete-then-create | current user, interactive token | none | create -> read back -> delete -> **verified gone (`0x80070002`)** -> re-create under the SAME name, clean |
+
+**What this settles for Slice B.** `0x80070534` was *Community-sourced* for the general case
+(handover §5c documents it only for the SYSTEM + NULL + NULL + `TASK_LOGON_SERVICE_ACCOUNT`
+shape). It is now **measured on our exact COM path** for the case SD54 will actually hit first —
+a typo'd service-account name — and it is **distinct from a wrong password**. So B maps it to its
+own canonical and its own classifier branch ("check the account name"), instead of dropping a
+name typo into the credential branch and looping the admin on the password. Both halves of the
+pairing are evidenced, which is what the `hresult_for` inverse requires.
+
+Two secondary findings worth carrying:
+- The real code arrives in `excepinfo[5]` under a `DISP_E_EXCEPTION` (`0x80020009`) wrapper, exactly
+  as `task_com.com_error_scode` assumes — that machinery is confirmed against a second code.
+- `0x80070534`'s `excepinfo[2]` is a **field locator** (`"(21,8):UserId:"`), not prose. Plan 0047's
+  unmapped branch will therefore render `"(21,8):UserId: (0x80070534)"` — carrying the code, which
+  is the point, but unreadable as an explanation. That is an argument FOR mapping it in B, not a
+  defect in 0047.
+
+**A10 — decided (owner, 2026-09-16): DELETE-THEN-CREATE.** Not on the mechanism (the spike below
+plus this probe's third row show in-place replacement works and delete-then-create is clean), but
+on the owner's own first-hand evidence: *"updating an existing task triggered malware tripwires in
+the past; delete and create new task untested but hopefully less chance of triggering malware
+alarms."* The measurement removes the remaining doubt about the alternative's cost — re-creating
+under the same name after a verified-gone delete is clean, so the tear window is the only price.
+
+**Not measurable on this host:** the machine is **standalone (`PartOfDomain=False`, WORKGROUP)**, so a
+genuinely different DOMAIN principal cannot be authenticated here at all. A throwaway domain account
+would not help; that half stays unmeasured and B must not assume it.
+
+### S0 — can a batch-logon task read its own account's Credential Manager? **MEASURED 2026-09-16: YES, on the mechanism. Owner authorised the prompts in-session.**
+
+**Result.** A throwaway task was registered with `TASK_LOGON_PASSWORD` (logon type 1 — "run
+whether user is logged on or not", i.e. a BATCH logon), pointed at a small child script, and run.
+It returned `LastTaskResult = 0`, and in that batch session the child **read back the Credential
+Manager entry the same account had written interactively** — `read_ok: true`, `matched: true`,
+against `keyring.backends.Windows.WinVaultKeyring` on both sides. `%USERPROFILE%` resolved to the
+real profile (`profile_looks_default: false`), so KB 2968540's profile-load race did not fire here.
+The task was deleted, the folder swept (no survivors) and the throwaway keyring entry removed. No
+real credential was involved: the probe wrote and deleted its own random token under the service
+name `DistrictSync_PROBE_0046`. The owner typed the account password into a `getpass` prompt in the
+elevated console; it reached only the `RegisterTaskDefinition` BSTR and was never written, logged
+or returned.
+
+**What this settles:** the SAME-ACCOUNT half of S0 — the only half that was open, since the
+cross-account half is already Documented and NEGATIVE (Credential Manager has no cross-user scope,
+handover §5a). A batch logon does get a credential set, as the `hh994565` "scheduled task or batch
+job" line says. So Slice B's delivery half rests on a measured mechanism, not an assembled chain.
+
+**What it does NOT settle — carry these into B's spec, do not let a green here launder them:**
+1. **The account was interactively signed in at the time**, so its profile was already warm. A real
+   district service account that has never logged on interactively is the untested case. This is
+   precisely why `runas --sftp-configure` is documented as ONE action that is both *necessary*
+   (it is the only way that account's own credential gets written) and Microsoft's recommended
+   *profile-warming* step (§6 trap 2). The measurement strengthens that framing rather than
+   removing the step.
+2. **Standalone Windows 11 Home, `PartOfDomain=False`.** Trap 1 — a domain account's first-ever
+   DPAPI use needing a reachable writable DC, failing `0x80090345` — cannot be reproduced here, and
+   SD54 is a DOMAIN account (owner, 2026-09-16). B's docs must still cover it.
+3. **Trap 3** (the temporary-profile fallback, Event ID 1511) is a hotfixed bug class that a healthy
+   host will not show. Unreproduced, not disproved.
 
 The plan calls this cheap. It is cheap in code and not cheap in consent: the measurement needs a
 throwaway **local account with a password** created on the host, an elevated registration, and at

@@ -23,12 +23,21 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src.scheduler import task_com
+from src.scheduler import elevated_apply, task_com, windows
+from src.scheduler.messages import ACCESS_DENIED_MARKERS, SECRET_SENTINEL_PREFIX, carries_foreign_marker
 from src.scheduler.task_com import (
+    _HRESULT_CANONICAL,
     HR_ACCESS_DENIED,
     HR_ACCOUNT_INFO_NOT_SET,
     HR_LOGON_FAILURE,
+    HR_NO_SUCH_LOGON_SESSION,
     HR_NOT_FOUND,
+    MSG_ACCESS_DENIED,
+    MSG_ACCOUNT_INFO_NOT_SET,
+    MSG_LOGON_FAILURE,
+    MSG_NO_LOGON_SESSION,
+    MSG_NOT_FOUND,
+    MSG_OPERATION_FAILED,
     BoundedTimeout,
     TaskComError,
     _canonical_message,
@@ -36,7 +45,15 @@ from src.scheduler.task_com import (
     _unsigned_or_none,
     bounded,
     com_error_scode,
+    format_hresult,
+    hresult_for,
 )
+from src.ui_flet.schedule_status import interpret_unregister
+
+# The measured Windows FormatMessage text for the two codes whose OWN description carries a
+# marker another consumer keys on — the live hazard plan 0047 closes (A7, measured 2026-09-16).
+WINDOWS_TEXT_NO_LOGON_SESSION = "A specified logon session does not exist. It may already have been terminated."
+WINDOWS_TEXT_PATH_NOT_FOUND = "The system cannot find the path specified."
 
 
 class _FakeComError(Exception):
@@ -88,14 +105,41 @@ class TestCanonicalMessage:
         msg = _canonical_message(HR_NOT_FOUND, _wrapped(-2147024894))
         assert "cannot find" in msg.lower()
 
-    @pytest.mark.parametrize("hr", [HR_LOGON_FAILURE, HR_ACCOUNT_INFO_NOT_SET])
-    def test_credential_failures_read_as_the_password_message(self, hr):
-        assert _canonical_message(hr, _wrapped(0)) == "The user name or password is incorrect."
+    @pytest.mark.parametrize(
+        ("hr", "expected"),
+        [
+            (HR_LOGON_FAILURE, MSG_LOGON_FAILURE),
+            (HR_ACCOUNT_INFO_NOT_SET, MSG_ACCOUNT_INFO_NOT_SET),
+            (HR_NO_SUCH_LOGON_SESSION, MSG_NO_LOGON_SESSION),
+        ],
+    )
+    def test_each_credential_class_has_its_own_canonical(self, hr, expected):
+        """DELIBERATE contract change (plan 0047, defect A2).
 
-    def test_unmapped_hresult_surfaces_the_excepinfo_description(self):
-        """Row 10: readable Windows prose, never a com_error tuple repr."""
+        This row used to assert that HR_LOGON_FAILURE and HR_ACCOUNT_INFO_NOT_SET both read
+        as "The user name or password is incorrect." — one string for two different statuses.
+        The classifier keys on these by EXACT equality, so the conflation made an admin whose
+        task has NO SAVED ACCOUNT INFORMATION (0x8004130F — a GET-path lookup miss that has no
+        password parameter at all) be told to retype a password forever. Splitting them is the
+        whole point of the slice; HR_LOGON_FAILURE's text stays byte-identical so nothing that
+        matched a real wrong-password failure stops matching.
+        """
+        assert _canonical_message(hr, _wrapped(0)) == expected
+
+    def test_the_logon_failure_text_is_unchanged(self):
+        """The one golden pin: the live-observed wrong-password text (2026-08-05)."""
+        assert MSG_LOGON_FAILURE == "The user name or password is incorrect."
+
+    def test_unmapped_hresult_surfaces_the_excepinfo_description_with_its_code(self):
+        """Row 10 + plan 0047: readable Windows prose, now carrying the code.
+
+        DELIBERATE change — this assertion used to be ``== "Windows' own description"``. The
+        hex suffix is what lets the classifier's details clause (and the district's log line)
+        answer "which failure?" for a code we have not mapped yet; N2 names the log line as the
+        mechanism by which the next unknown code becomes evidence.
+        """
         msg = _canonical_message(0x80041318, _wrapped(0x80041318 - (1 << 32)))
-        assert msg == "Windows' own description"
+        assert msg == "Windows' own description (0x80041318)"
 
     def test_unmapped_hresult_without_description_names_the_hex_status(self):
         exc = _FakeComError(-2147352567, (0, None, "", None, 0, 0x80041318 - (1 << 32)))
@@ -108,6 +152,171 @@ class TestCanonicalMessage:
         msg = _canonical_message(com_error_scode(exc), exc)
         assert not msg.startswith("(")
         assert "-214" not in msg
+
+
+# ---------------------------------------------------------------------------
+# Plan 0047 — the marker-guard / injectivity boundary (INVARIANTS)
+# ---------------------------------------------------------------------------
+
+
+class TestTableSweep:
+    """Every row of the ONE table, round-tripped through the real consumer.
+
+    The positive twin and the negative sweep in one line: `interpret_unregister` must be
+    success-shaped for EXACTLY the not-found row. A marker leaking into any other canonical
+    turns a FAILED removal into "No schedule was registered", after which Setup persists
+    ``schedule_registered = False`` over a task that is still live (defect A7).
+    """
+
+    @pytest.mark.parametrize(("hr", "msg"), sorted(_HRESULT_CANONICAL.items()))
+    def test_only_the_not_found_row_is_success_shaped(self, hr, msg):
+        assert interpret_unregister(False, msg).success_shaped is (hr == HR_NOT_FOUND)
+
+    @pytest.mark.parametrize(("hr", "msg"), sorted(_HRESULT_CANONICAL.items()))
+    def test_only_the_access_denied_row_carries_an_access_denied_marker(self, hr, msg):
+        carries = any(marker in msg.lower() for marker in ACCESS_DENIED_MARKERS)
+        assert carries is (hr == HR_ACCESS_DENIED)
+
+    @pytest.mark.parametrize(("hr", "msg"), sorted(_HRESULT_CANONICAL.items()))
+    def test_no_row_carries_the_secret_sentinel_prefix(self, hr, msg):
+        assert SECRET_SENTINEL_PREFIX not in msg
+
+
+class TestDescriptionGuard:
+    """The other escape: Windows' OWN description, and ``str(exc)`` when there is no scode."""
+
+    def test_the_measured_logon_session_description_is_dropped_for_its_code(self):
+        """A7, measured 2026-09-16: this exact Windows text carries "does not exist"."""
+        exc = _FakeComError(-2147352567, (0, None, WINDOWS_TEXT_NO_LOGON_SESSION, None, 0, 0x7654321 - (1 << 32)))
+        msg = _canonical_message(0xF7654321, exc)
+        assert not carries_foreign_marker(msg)
+        assert "0xF7654321" in msg
+
+    def test_the_measured_path_not_found_description_is_dropped_for_its_code(self):
+        exc = _FakeComError(-2147352567, (0, None, WINDOWS_TEXT_PATH_NOT_FOUND, None, 0, 0x7654321 - (1 << 32)))
+        msg = _canonical_message(0xF7654321, exc)
+        assert not carries_foreign_marker(msg)
+        assert "0xF7654321" in msg
+
+    def test_an_access_denied_description_is_dropped_too(self):
+        """G7's ONE recorded behaviour change: an UNMAPPED code whose description happens to
+        say "access is denied" no longer fires the delete path's elevated retry. The code that
+        OWNS the marker (0x80070005) still does — pinned by TestTableSweep above."""
+        exc = _FakeComError(-2147352567, (0, None, "Access is denied by policy.", None, 0, 0x7654321 - (1 << 32)))
+        msg = _canonical_message(0xF7654321, exc)
+        assert not any(marker in msg.lower() for marker in ACCESS_DENIED_MARKERS)
+
+    def test_a_marker_free_description_passes_through_with_its_code(self):
+        """The POSITIVE twin: the guard must not swallow every description."""
+        exc = _FakeComError(-2147352567, (0, None, "The task XML is malformed.", None, 0, 0x7654321 - (1 << 32)))
+        assert _canonical_message(0xF7654321, exc) == "The task XML is malformed. (0xF7654321)"
+
+    def test_str_exc_is_guarded_the_same_way_when_there_is_no_scode(self):
+        msg = _canonical_message(None, RuntimeError("the folder does not exist here"))
+        assert msg == MSG_OPERATION_FAILED
+
+    def test_a_marker_free_str_exc_still_passes_through(self):
+        """The positive twin for the ``scode is None`` escape."""
+        assert _canonical_message(None, RuntimeError("the task XML is malformed")) == "the task XML is malformed"
+
+    def test_a_secret_sentinel_bearing_description_is_also_dropped_for_its_code(self):
+        """Stage 7 coverage gap (finding 10): the sweep above never fed a
+        ``SECRET_SENTINEL_PREFIX``-bearing string through here — only the absent-task and
+        access-denied markers were exercised. `messages.carries_foreign_marker` covers all
+        three markers already, so this pins the third."""
+        exc = _FakeComError(-2147352567, (0, None, "leaked DSYNC_TASK_PW=hunter2", None, 0, 0x7654321 - (1 << 32)))
+        msg = _canonical_message(0xF7654321, exc)
+        assert not carries_foreign_marker(msg)
+        assert SECRET_SENTINEL_PREFIX not in msg
+        assert "0xF7654321" in msg
+
+    def test_a_secret_sentinel_bearing_str_exc_is_also_dropped(self):
+        """The ``scode is None`` twin of the row above."""
+        msg = _canonical_message(None, RuntimeError("leaked DSYNC_TASK_PW=hunter2"))
+        assert msg == MSG_OPERATION_FAILED
+        assert SECRET_SENTINEL_PREFIX not in msg
+
+
+class TestMessageInjectivity:
+    """Exact-equality classification is only sound on an injective producible set (G3)."""
+
+    @staticmethod
+    def _producible() -> dict[str, list[str]]:
+        names: dict[str, list[str]] = {}
+        for module in (task_com, windows, elevated_apply):
+            for name, value in vars(module).items():
+                if isinstance(value, str) and (name.startswith("MSG_") or name.startswith("_MSG_")):
+                    names.setdefault(value, []).append(f"{module.__name__}.{name}")
+        return names
+
+    def test_every_producible_message_has_exactly_one_name(self):
+        duplicates = {value: owners for value, owners in self._producible().items() if len(owners) > 1}
+        assert duplicates == {}
+
+    def test_the_sweep_sees_the_constants_at_all(self):
+        """Not vacuous: the reflection must actually find every producible message (22
+        today — 7 engine canonicals, 11 transport categories, 4 child refusals)."""
+        assert len(self._producible()) == 22
+
+    def test_every_table_value_is_a_named_constant(self):
+        produced = self._producible()
+        assert all(value in produced for value in _HRESULT_CANONICAL.values())
+
+
+class TestFormatHresult:
+    @pytest.mark.parametrize(
+        ("scode", "expected"),
+        [
+            (None, "n/a"),
+            (0, "0x00000000"),
+            (HR_NO_SUCH_LOGON_SESSION, "0x80070520"),
+            (-2147024891, "0x80070005"),  # a SIGNED int arrives from excepinfo — the & mask
+        ],
+    )
+    def test_total_over_every_shape(self, scode, expected):
+        assert format_hresult(scode) == expected
+
+    def test_a_non_numeric_excepinfo_scode_reaches_the_n_a_path(self):
+        """The REACHABLE "n/a" source: com_error_scode cannot coerce excepinfo[5]."""
+        exc = _FakeComError(-2147352567, (0, None, "x", None, 0, "not-a-number"))
+        assert com_error_scode(exc) is None
+        assert format_hresult(com_error_scode(exc)) == "n/a"
+
+
+class TestHresultFor:
+    @pytest.mark.parametrize(("hr", "msg"), sorted(_HRESULT_CANONICAL.items()))
+    def test_round_trips_every_row(self, hr, msg):
+        assert hresult_for(msg) == hr
+
+    @pytest.mark.parametrize("text", ["", "Windows' own description (0x80041318)", MSG_OPERATION_FAILED])
+    def test_anything_else_is_none(self, text):
+        assert hresult_for(text) is None
+
+    def test_the_named_constants_are_the_table(self):
+        assert hresult_for(MSG_ACCESS_DENIED) == HR_ACCESS_DENIED
+        assert hresult_for(MSG_NOT_FOUND) == HR_NOT_FOUND
+        assert hresult_for(MSG_NO_LOGON_SESSION) == HR_NO_SUCH_LOGON_SESSION
+
+
+class TestOneHexSpelling:
+    """A re-spelling guard (NOT a red-first pin — it is already true today).
+
+    ``format_hresult`` is the ONE place the ``0x%08X`` shape is spelled. A second formatter
+    would let the log line and the message drift on padding or case.
+    """
+
+    def test_src_contains_exactly_one_08x_format_spelling(self):
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[1] / "src"
+        hits = [
+            f"{path.name}:{n}"
+            for path in sorted(root.rglob("*.py"))
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            if ":08X" in line
+        ]
+        assert len(hits) == 1, hits
+        assert hits[0].startswith("task_com.py:"), hits
 
 
 class TestIsoOrNone:

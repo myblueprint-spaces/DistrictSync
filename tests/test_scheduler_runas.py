@@ -586,3 +586,329 @@ class TestBlankPasswordIsNeverUnattended:
         assert sent_password == (password or None)
         if expected_logon == task_com.TASK_LOGON_INTERACTIVE_TOKEN:
             assert definition.Principal.RunLevel == task_com.TASK_RUNLEVEL_LUA
+
+
+# -----------------------------------------------------------------------
+# Plan 0047 — ONE anchored failure log line per failure return (G2)
+# -----------------------------------------------------------------------
+#
+# SD60, 2026-09-14: an admin enabled the nightly sync, got a failure, ran the app as
+# administrator, got the SAME failure, and reported "I didn't see anything informative in
+# the log." Several `(False, msg)` arms logged nothing at all, and none of them logged the
+# HRESULT. `_fail` is the ONE funnel: it writes `_FAIL_LOG_FORMAT` — a single grep anchor
+# carrying the verb, the task name, the canonical text and `[HRESULT 0x... | n/a]`.
+
+
+def _fail_records(caplog):
+    """Only the ANCHORED lines — the bespoke phase lines beside them are deliberately kept."""
+    from src.scheduler import windows
+
+    return [r for r in caplog.records if r.msg == windows._FAIL_LOG_FORMAT]
+
+
+def _one_fail_record(caplog):
+    records = _fail_records(caplog)
+    assert len(records) == 1, [r.getMessage() for r in records]
+    return records[0]
+
+
+class TestFailHelper:
+    def test_verb_is_required(self):
+        """The house rule (no permissive default on a safety-relevant parameter): a default
+        would let a failed REMOVAL log "Failed to register task", which is the line the
+        partner troubleshooting page tells an IT reader to grep for."""
+        from src.scheduler import windows
+
+        with pytest.raises(TypeError):
+            windows._fail("DistrictSync_Daily", "boom")  # type: ignore[call-arg]
+
+    def test_it_returns_the_message_unchanged(self, caplog):
+        from src.scheduler import windows
+
+        with caplog.at_level(logging.DEBUG):
+            result = windows._fail("T", "boom", verb="remove", scode=task_com.HR_ACCESS_DENIED)
+        assert result == (False, "boom")
+        assert _one_fail_record(caplog).getMessage() == "Failed to remove task 'T': boom [HRESULT 0x80070005]"
+
+    def test_an_absent_task_on_the_remove_path_is_the_one_silent_failure(self, caplog):
+        """Deleting an already-absent task is the IDEMPOTENT end state, not an incident —
+        logging it at ERROR every time would train a district to ignore the anchor."""
+        from src.scheduler import windows
+
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = windows._fail("T", task_com.MSG_NOT_FOUND, verb="remove")
+        assert (ok, msg) == (False, task_com.MSG_NOT_FOUND)
+        assert _fail_records(caplog) == []
+
+    def test_a_line_without_detail_ends_at_the_code(self, caplog):
+        """The NEGATIVE twin of the detail suffix: every arm that has a canonical and a code
+        keeps today's exact line — `detail` is additive, never a reformat of the anchor."""
+        from src.scheduler import windows
+
+        with caplog.at_level(logging.DEBUG):
+            windows._fail("T", "boom", verb="register", scode=task_com.HR_LOGON_FAILURE)
+        assert _one_fail_record(caplog).getMessage().endswith("[HRESULT 0x8007052E]")
+
+    def test_detail_rides_after_the_code_on_the_same_line(self, caplog):
+        """One anchored line per failure stays ONE line: a bounded, secret-free token (today
+        only an exception's class name) is appended, never logged separately."""
+        from src.scheduler import windows
+
+        with caplog.at_level(logging.DEBUG):
+            windows._fail("T", "boom", verb="register", detail="TypeError")
+        record = _one_fail_record(caplog)
+        assert record.getMessage() == "Failed to register task 'T': boom [HRESULT n/a] (TypeError)"
+
+    def test_the_same_message_on_the_register_path_is_still_logged(self, caplog):
+        """The POSITIVE twin of the silence: the carve-out is remove-specific, not a
+        blanket mute on that string."""
+        from src.scheduler import windows
+
+        with caplog.at_level(logging.DEBUG):
+            windows._fail("T", task_com.MSG_NOT_FOUND, verb="register")
+        assert len(_fail_records(caplog)) == 1
+
+
+class TestNoUnfunnelledFailureReturn:
+    """The STRUCTURAL pin for G2 — a convention a reviewer must remember is not a pin.
+
+    Every `(False, ...)` return in `windows.py` must come from `_fail`, so a NEW failure arm
+    added later cannot be silent by accident. Fourteen sites routed at plan 0047.
+    """
+
+    @staticmethod
+    def _windows_source() -> str:
+        import pathlib
+
+        from src.scheduler import windows
+
+        return pathlib.Path(windows.__file__).read_text(encoding="utf-8")
+
+    @staticmethod
+    def _offending_lines(source: str) -> list[int]:
+        import ast
+
+        tree = ast.parse(source)
+        offenders: list[int] = []
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)) or func.name == "_fail":
+                continue
+            for node in ast.walk(func):
+                if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Tuple):
+                    continue
+                first = node.value.elts[0] if node.value.elts else None
+                if isinstance(first, ast.Constant) and first.value is False:
+                    offenders.append(node.lineno)
+        return offenders
+
+    def test_no_return_false_tuple_outside_fail(self):
+        assert self._offending_lines(self._windows_source()) == []
+
+    def test_the_guard_can_see_a_planted_one(self):
+        """Not vacuous — and not vacuous in the honest way: the planted return goes through
+        THE SAME `_offending_lines` on THE REAL module source, so a bug in the walk itself
+        fails this test too. (Re-implementing the walk inline over a synthetic snippet would
+        prove only that a correct walk works, which was never the thing in doubt.)"""
+        planted = self._windows_source().replace(
+            "def current_run_as_user() -> str:",
+            "def _planted_failure() -> tuple[bool, str]:\n    return False, 'planted'\n\n\ndef current_run_as_user() -> str:",
+            1,
+        )
+        assert planted != self._windows_source()  # the anchor still exists
+        assert len(self._offending_lines(planted)) == 1
+
+
+class TestRegisterArmSweep:
+    """Every `(False, msg)` arm of `register_task` on the DIRECT path emits exactly one
+    anchored line, at the honest level, carrying the code when there is one."""
+
+    # Arms whose failure genuinely has no HRESULT behind it, so `[HRESULT n/a]` is a decision
+    # rather than an omission. Each is separately and BEHAVIOURALLY tested below; this list is a
+    # plain comment, deliberately NOT a class attribute with a test over itself — that shape
+    # asserted "the set has three entries, each containing a colon", which stayed green with the
+    # whole `_fail` funnel removed (Verify 2026-09-16, R3).
+    #   - pre-flight refusal: a different run-as account with no password (nothing was attempted)
+    #   - pywin32 missing from a frozen build: an ImportError, not a COM status
+    #   - bounded-worker timeout: the OUTCOME is unknown, so there is no status to report
+
+    def test_preflight_refusal_is_logged(self, _setup_account, caplog):
+        from src.scheduler import windows
+
+        with caplog.at_level(logging.DEBUG), _capture_registration():
+            ok, msg = _register(run_as_user=_SERVICE_ACCOUNT, run_as_password=None)
+        assert (ok, msg) == (False, windows._MSG_ACCOUNT_NEEDS_PASSWORD)
+        record = _one_fail_record(caplog)
+        assert record.levelno == logging.ERROR
+        assert "Failed to register task" in record.getMessage()
+        assert "[HRESULT n/a]" in record.getMessage()
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_import_error_is_logged(self, mock_bounded, caplog):
+        mock_bounded.side_effect = ImportError("no win32com")
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = _register()
+        assert (ok, msg) == (False, task_com.MSG_COM_UNAVAILABLE)
+        record = _one_fail_record(caplog)
+        assert record.levelno == logging.ERROR
+        assert task_com.MSG_COM_UNAVAILABLE in record.getMessage()
+        assert "[HRESULT n/a]" in record.getMessage()
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_a_task_com_error_carries_its_code(self, mock_bounded, caplog):
+        mock_bounded.side_effect = task_com.TaskComError(task_com.HR_ACCESS_DENIED, task_com.MSG_ACCESS_DENIED)
+        with caplog.at_level(logging.DEBUG):
+            ok, _ = _register()
+        assert ok is False
+        assert "[HRESULT 0x80070005]" in _one_fail_record(caplog).getMessage()
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_the_new_logon_session_code_reaches_the_log(self, mock_bounded, caplog):
+        """The code SD60's failure is believed to be — unmapped before plan 0047, so it
+        could not appear in a district's log at all."""
+        mock_bounded.side_effect = task_com.TaskComError(
+            task_com.HR_NO_SUCH_LOGON_SESSION, task_com.MSG_NO_LOGON_SESSION
+        )
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = _register(run_as_password="pw")
+        assert (ok, msg) == (False, task_com.MSG_NO_LOGON_SESSION)
+        assert "[HRESULT 0x80070520]" in _one_fail_record(caplog).getMessage()
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_a_scodeless_task_com_error_logs_n_a(self, mock_bounded, caplog):
+        """REACHABLE: `com_error_scode` returns None when `excepinfo[5]` cannot be coerced."""
+        mock_bounded.side_effect = task_com.TaskComError(None, task_com.MSG_OPERATION_FAILED)
+        with caplog.at_level(logging.DEBUG):
+            ok, _ = _register()
+        assert ok is False
+        assert "[HRESULT n/a]" in _one_fail_record(caplog).getMessage()
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_an_apartment_entry_com_error_is_logged_at_error_with_its_code(self, mock_bounded, caplog):
+        """The generic arm used to log only the exception's CLASS NAME, at WARNING — so a
+        stopped Task Scheduler service (a `com_error` raised at apartment entry, before any
+        TaskComError conversion) reached the district's log as `Exception`, with no status."""
+
+        class _ApartmentComError(Exception):
+            def __init__(self):
+                super().__init__()
+                self.hresult = -2147352567
+                self.excepinfo = (0, None, "desc", None, 0, -2147024891)
+
+        mock_bounded.side_effect = _ApartmentComError()
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = _register()
+        assert (ok, msg) == (False, task_com.MSG_OPERATION_FAILED)
+        record = _one_fail_record(caplog)
+        assert record.levelno == logging.ERROR
+        assert "[HRESULT 0x80070005]" in record.getMessage()
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_a_non_com_exception_keeps_its_class_name(self, mock_bounded, caplog):
+        """`com_error_scode` recovers nothing for a non-COM exception, so without `detail`
+        the whole payload would be "[HRESULT n/a]" — strictly LESS than the class name the
+        pre-0047 arm logged. The funnel adds context; it never net-deletes it."""
+        mock_bounded.side_effect = TypeError("pywin32 changed shape")
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = _register()
+        assert (ok, msg) == (False, task_com.MSG_OPERATION_FAILED)
+        record = _one_fail_record(caplog)
+        assert record.levelno == logging.ERROR
+        assert record.getMessage().endswith("[HRESULT n/a] (TypeError)")
+
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_a_com_error_carries_both_its_code_and_its_class_name(self, mock_bounded, caplog):
+        """The positive twin: `detail` is unconditional on the generic arm, so the apartment
+        -entry case keeps its code AND gains the class name."""
+
+        class _ApartmentComError(Exception):
+            def __init__(self):
+                super().__init__()
+                self.hresult = -2147352567
+                self.excepinfo = (0, None, "desc", None, 0, -2147024891)
+
+        mock_bounded.side_effect = _ApartmentComError()
+        with caplog.at_level(logging.DEBUG):
+            _register()
+        assert _one_fail_record(caplog).getMessage().endswith("[HRESULT 0x80070005] (_ApartmentComError)")
+
+    @patch("src.scheduler.windows.read_schedule")
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_a_timeout_is_a_warning_not_an_error(self, mock_bounded, mock_read, caplog):
+        """The outcome is UNKNOWN, not failed — the worker may still complete. WARNING is
+        the honest level, and the line still carries the anchor."""
+        from src.scheduler.windows import ScheduleReadback
+
+        mock_bounded.side_effect = task_com.BoundedTimeout("register")
+        mock_read.return_value = ScheduleReadback(found=None)
+        with caplog.at_level(logging.DEBUG):
+            ok, _ = _register()
+        assert ok is False
+        assert _one_fail_record(caplog).levelno == logging.WARNING
+
+    @patch("src.scheduler.windows.read_schedule")
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_a_direct_path_timeout_does_not_claim_to_be_elevated(self, mock_bounded, mock_read, caplog):
+        """The bespoke phase line said "Elevated registration" on EVERY unconfirmed
+        registration, including the direct one — which sends a reader hunting a UAC prompt
+        that never happened."""
+        from src.scheduler.windows import ScheduleReadback
+
+        mock_bounded.side_effect = task_com.BoundedTimeout("register")
+        mock_read.return_value = ScheduleReadback(found=None)
+        with caplog.at_level(logging.DEBUG):
+            _register()
+        assert "Elevated registration" not in caplog.text
+        assert "Registration of 'DistrictSync_Daily' could not be confirmed" in caplog.text
+
+
+class TestPreConsentHandshakeFailureIsLogged:
+    """`_register_elevated`'s pre-consent `write_request` could raise `OSError` (DPAPI,
+    profile dir, icacls) straight past the `(ok, message)` contract to the view's floor —
+    with zero log lines. It is now caught, logged and returned as the generic canonical."""
+
+    @patch("src.scheduler.windows.is_elevated", return_value=False)
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    @patch("src.scheduler.elevation.write_request", side_effect=OSError("profile dir unwritable"))
+    def test_it_is_logged_and_returned_not_raised(self, _write, _elev, caplog):
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = _register(run_as_password="pw")
+        assert (ok, msg) == (False, task_com.MSG_OPERATION_FAILED)
+        record = _one_fail_record(caplog)
+        assert record.levelno == logging.ERROR
+        assert "Failed to register task" in record.getMessage()
+
+    @patch("src.scheduler.windows.is_elevated", return_value=False)
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    @patch("src.scheduler.elevation.write_request", side_effect=RuntimeError("unusable data dir"))
+    def test_a_runtime_error_from_write_request_is_also_logged_and_returned(self, _write, _elev, caplog):
+        """`elevation.write_request` -> `paths.user_data_dir()` raises `RuntimeError` for an
+        unusable directory (and `ValueError` for a relative `DISTRICTSYNC_DATA_DIR`) — NOT
+        `OSError`. Before Stage 7 this guard caught only `OSError`, so the exact
+        silent-raise-to-the-view-floor failure the slice exists to close was still open on
+        this path."""
+        with caplog.at_level(logging.DEBUG):
+            ok, msg = _register(run_as_password="pw")
+        assert (ok, msg) == (False, task_com.MSG_OPERATION_FAILED)
+        record = _one_fail_record(caplog)
+        assert record.levelno == logging.ERROR
+        assert "Failed to register task" in record.getMessage()
+
+
+class TestFailLogLineCarriesNoSecret:
+    """R2 — the new lines must not become a secret or PII channel."""
+
+    SECRET = "uniq-Vq7x-secret"  # noqa: S105 - a test marker, not a credential
+    ACCOUNT = "CORP\\uniq-Kp3z-account"
+
+    @patch("src.scheduler.windows.current_run_as_user", return_value=ACCOUNT)
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_the_direct_failure_line_carries_the_code_and_neither_secret(self, mock_bounded, _who, caplog):
+        mock_bounded.side_effect = task_com.TaskComError(task_com.HR_ACCESS_DENIED, task_com.MSG_ACCESS_DENIED)
+        with caplog.at_level(logging.DEBUG):
+            ok, _ = _register(run_as_password=self.SECRET)
+        assert ok is False
+        # POSITIVE twin first: without it, the two absences below would pass over a line
+        # that was never written at all.
+        assert "0x80070005" in caplog.text
+        assert self.SECRET not in caplog.text
+        assert "uniq-Kp3z-account" not in caplog.text
