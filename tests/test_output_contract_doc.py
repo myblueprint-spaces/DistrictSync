@@ -119,7 +119,17 @@ Q3_TEXT = (
 #: line-endings section links to it rather than restating it). Pinning the COUNT
 #: as well as the text stops a silent de-duplication that would strip a question
 #: from the section a reader actually reaches.
-_EXPECTED_QUESTION_COUNTS = {"Q1b": (Q1B_TEXT, 2), "Q2": (Q2_TEXT, 2), "Q3": (Q3_TEXT, 1)}
+Q4_TEXT = (
+    "**Q4 — a renamed class: does the live importer update the existing class in place, or create a new "
+    "one?**\n"
+    "> DistrictSync has twice changed `Classes.csv` `Name` values for classes that already exist in "
+    "SpacesEDU — subject names on 2026-07-20, blended names at contract 2.5.0 — each time on the "
+    "understanding that the importer matches a class on `Class ID` (unchanged in both) and so treats a "
+    "changed `Name` as a rename rather than a new class. That understanding has never been confirmed "
+    "against the live importer. If it is wrong, a rename orphans the original class and its student work."
+)
+
+_EXPECTED_QUESTION_COUNTS = {"Q1b": (Q1B_TEXT, 2), "Q2": (Q2_TEXT, 2), "Q3": (Q3_TEXT, 1), "Q4": (Q4_TEXT, 1)}
 
 #: The RETIRED question text. Q1a was answered, so the two-part Q1 must not still
 #: be posed anywhere — a doc that keeps asking a question the owner has settled

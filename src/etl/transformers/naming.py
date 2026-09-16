@@ -18,8 +18,23 @@ class _HasSchoolYear(Protocol):
     school_year: int
 
 
-def truncate_name(name: str, max_len: int = 100) -> str:
-    """Gracefully truncate a string, breaking at word boundaries."""
+#: The cap every emitted class name is held to (``Classes.csv`` → ``Name``,
+#: stated in ``docs/developer/output-contract.md``). Named here because
+#: :func:`truncate_name` is the one place the rule is enforced, and a caller
+#: that needs to BUDGET against the cap (see
+#: ``BlendedClassDetector.create_name``) must read the same number rather than
+#: respell it.
+MAX_CLASS_NAME_LENGTH = 100
+
+
+def truncate_name(name: str, max_len: int = MAX_CLASS_NAME_LENGTH) -> str:
+    """Gracefully truncate a string, breaking at word boundaries.
+
+    The ``len(result) <= max_len`` guarantee holds for ``max_len >= 10``; below
+    that ``trunc_len`` goes negative and the ellipsis can make the result
+    LONGER than the cap. Callers passing a computed budget must clamp — see
+    ``blended._MIN_COURSE_SEGMENT_BUDGET``.
+    """
     if len(name) <= max_len:
         return name
     trunc_len = max_len - 3

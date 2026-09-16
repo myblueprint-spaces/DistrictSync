@@ -73,6 +73,24 @@ Per-release download links and auto-generated commit notes live on the
   match, and the retired advice about Windows Hello PINs and the "Log on as a
   batch job" right is gone.
 
+- **Blended classes are no longer named identically to one another.** A blended
+  class was named from its course titles, grade range and year alone — so a
+  teacher running the same course pair in two different blocks saw two classes
+  with the same name, and on one district's delivery 68 of 98 blended classes
+  shared a name with another blend. The name now carries the teacher and the
+  block it runs in: `Clark Carol Business 11 / PHE 9 (Block 1 2 1 2) (08/11)
+  2026`. The block values come from the district's own timetable columns and
+  are shown as the export spells them, so they read the way that district's
+  staff already read a timetable; a district whose export carries none of them
+  is named exactly as before. Long names are now shortened by trimming the
+  course-title list instead of the end of the name, so the block and the grade
+  range are kept whenever they fit — previously 22 of those 98 names lost their
+  grade range, which on a blended class is the only place a grade appears.
+  Subject, homeroom and co-teacher class names are unchanged, and the class IDs
+  do not change, so the new names are expected to appear on your existing
+  classes rather than creating new ones. Worth a quick look at your class list
+  after the first run following this update.
+
 ### Changed
 
 - **Unity Christian School: family contacts are now delivered.** The school's
