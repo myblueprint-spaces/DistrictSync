@@ -332,6 +332,120 @@ class TestDetectBlendedClasses:
             assert "nan" not in [str(t).lower() for t in teachers]
 
 
+class TestBlendedClassesOptOut:
+    """`global_config.blended_classes` — SD51's day-less-export opt-out (2026-09-16).
+
+    Runs the REAL ``ClassTransformer``/``EnrollmentTransformer`` pair through the
+    registry (``DataTransformer.transform(..., "Classes"/"Enrollments", ...)``),
+    not the ``_detect_blended_classes`` shim the rest of this file uses — the
+    gate lives one layer up, in ``ClassTransformer._run_blended_detection``,
+    above ``BlendedClassDetector.detect``.
+    """
+
+    def _run(
+        self,
+        class_info_enh_df,
+        blended_schedule_df,
+        blended_course_info_df,
+        classes_mapping,
+        enrollments_mapping,
+        global_config,
+        **overrides,
+    ):
+        raw_data = {
+            "StudentSchedule.txt": blended_schedule_df,
+            "CourseInformation.txt": blended_course_info_df,
+            "ClassInformationEnh.txt": class_info_enh_df,
+            "EmergencyContactInformation.txt": pd.DataFrame(),
+        }
+        transformer = DataTransformer()
+        transformer.set_school_year(2025, "08-25", "07-25")
+        gc = {**global_config, **overrides}
+        classes = transformer.transform(blended_schedule_df, classes_mapping, "Classes", raw_data, gc)
+        transformer.transform(blended_schedule_df, enrollments_mapping, "Enrollments", raw_data, gc)
+        return transformer, classes
+
+    @staticmethod
+    def _blended_ids(classes_df: pd.DataFrame) -> set:
+        if classes_df.empty:
+            return set()
+        return {cid for cid in classes_df["Class ID"].astype(str) if cid.startswith("BLENDED_")}
+
+    def test_default_true_is_the_positive_control_and_still_blends(
+        self,
+        class_info_enh_df,
+        blended_schedule_df,
+        blended_course_info_df,
+        classes_mapping,
+        enrollments_mapping,
+        global_config,
+    ):
+        """The SAME fixture DOES blend when `blended_classes` is at its default
+        (True, i.e. the key absent) — the positive twin the "disabled" test below
+        needs, so a detector that stopped detecting for any reason could not
+        pass both.
+
+        `homeroom_grades` is cleared here (and below) so the plan-0043
+        blend-suppression gate — which drops an all-homeroom blend regardless
+        of `blended_classes` — cannot be the reason a blend is or isn't present;
+        the base config's homeroom range (KG-07) would otherwise swallow this
+        fixture's grades 1/2/3 blend before the switch under test ever runs.
+        """
+        transformer, classes = self._run(
+            class_info_enh_df,
+            blended_schedule_df,
+            blended_course_info_df,
+            classes_mapping,
+            enrollments_mapping,
+            global_config,
+            homeroom_grades=[],
+        )
+        blended_ids = self._blended_ids(classes)
+        assert blended_ids, "expected at least one BLENDED_ class with blended_classes at its default"
+        assert transformer.blended_class_map  # MT100/MT101/MT102 all present
+
+    def test_disabled_yields_zero_blended_classes_but_keeps_class_info_intact(
+        self,
+        caplog,
+        class_info_enh_df,
+        blended_schedule_df,
+        blended_course_info_df,
+        classes_mapping,
+        enrollments_mapping,
+        global_config,
+    ):
+        with caplog.at_level(logging.INFO, logger="src.etl.transformers.classes"):
+            transformer, classes = self._run(
+                class_info_enh_df,
+                blended_schedule_df,
+                blended_course_info_df,
+                classes_mapping,
+                enrollments_mapping,
+                global_config,
+                blended_classes=False,
+                homeroom_grades=[],
+            )
+
+        assert self._blended_ids(classes) == set()
+        assert transformer.blended_class_map == {}
+        assert transformer.blended_class_metadata == {}
+        assert transformer.blended_teacher_map == {}
+
+        # The class_info frame is still normalized/filtered and PUBLISHED —
+        # EnrollmentTransformer's ClassInformation co-teacher path still
+        # consumes it (see tests/test_transform_enrollments.py) — only
+        # DETECTION was skipped, so its row count is unchanged.
+        class_info_df = transformer._context.class_artifacts.class_info_df
+        assert len(class_info_df) == len(class_info_enh_df)
+
+        messages = [
+            r.getMessage() for r in caplog.records if "Blended-class detection disabled by config" in r.getMessage()
+        ]
+        assert len(messages) == 1, caplog.text
+        assert "global_config.blended_classes: false" in messages[0]
+        assert "co-teacher" in messages[0]
+
+
 # ---------------------------------------------------------------------------
 # class_rostering_grades — blend suppression (plan 0042, slice 1a)
 # ---------------------------------------------------------------------------
