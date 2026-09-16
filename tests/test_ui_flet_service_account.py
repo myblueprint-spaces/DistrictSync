@@ -14,6 +14,7 @@ find a control.
 from __future__ import annotations
 
 import contextlib
+import sys
 from unittest.mock import MagicMock
 
 import pytest
@@ -51,7 +52,16 @@ def stub_page() -> MagicMock:
 # Harness                                                                      #
 # --------------------------------------------------------------------------- #
 def _settings(tmp_path, monkeypatch, **over) -> AppConfig:
-    """A completed-install Settings config on a Windows-shaped scheduler."""
+    """A completed-install Settings config on a Windows-shaped scheduler.
+
+    The ``sys.platform`` pin is LOAD-BEARING, not decoration: the run-as account field renders
+    and wires ONLY on win32 (``tests/test_ui_flet_render_smoke.py`` says so at its own account
+    note), so without it every control lookup here returns ``None`` on the Linux and macOS CI
+    legs while passing on a Windows developer box. That is the exact three-OS divergence the
+    land gate exists to catch — and it caught this one (PR #124, `test fail`). The house pattern
+    is to pin the platform rather than skip the file, so the WIRING stays covered on every leg.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
     in_dir, out_dir = _settings_dirs(tmp_path)
     fields: dict = {
         "input_dir": str(in_dir),
