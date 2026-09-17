@@ -9,6 +9,8 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.21.0] - 2026-09-17
+
 ### Added
 
 - **The nightly sync can run as a service account.** The Daily schedule section
