@@ -803,12 +803,39 @@ class AppConfig:
         return ClearOutcome(cleared=True, removed=removed, remaining=remaining)
 
     def sftp_is_configured(self) -> bool:
-        """Return True if SFTP has been enabled and configured."""
+        """Return True if SFTP has been enabled and configured.
+
+        **TOTAL — this may never raise.** The nightly's delivery branch and several UI
+        paint paths read it, so a surprise here would take a whole run down.
+
+        On a MACHINE-SCOPED install (plan 0049 S-1a-ii.2) one conjunct is added: the
+        delivery secret must actually be readable by whoever is asking. The blob is sealed
+        at LocalMachine scope and bound to ``(host, username)``, so "configured" there
+        genuinely means "this process can deliver". **Per-user it is byte-identical** —
+        adding a keyring read would change the answer on 20 installs that have always
+        reported configured from ``config.json`` alone.
+        """
         if not (self.sftp_enabled and self.sftp_host and self.sftp_username and self.sftp_remote_path):
             return False
         from src.utils.validators import ALLOWED_SFTP_HOSTS
 
-        return self.sftp_host.strip().lower() in ALLOWED_SFTP_HOSTS
+        if self.sftp_host.strip().lower() not in ALLOWED_SFTP_HOSTS:
+            return False
+
+        try:
+            if not paths.is_machine_scope():
+                return True
+            # Lazy import (the ALLOWED_SFTP_HOSTS import above is the precedent): the
+            # config layer must not pull the SFTP package in at module import time.
+            from src.sftp import secret_store
+
+            return secret_store.select_store().has_secret(self.sftp_host, self.sftp_username)
+        except Exception as exc:  # noqa: BLE001 - totality is the contract; the reason is logged
+            # ``has_secret`` is total by its own contract; this guards the SELECTION (a
+            # refused profile, an import failure) so the method's promise does not depend
+            # on another module keeping its. Logged, never silently swallowed.
+            logger.warning(f"Could not confirm the delivery secret is readable: {type(exc).__name__}: {exc}")
+            return False
 
 
 # The exact set of field names :meth:`AppConfig.identity_save` may write. DERIVED from the

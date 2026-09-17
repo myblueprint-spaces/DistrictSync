@@ -38,17 +38,26 @@ from datetime import date
 from pathlib import Path
 from typing import TypeVar
 
-import keyring
+import keyring  # noqa: F401  (see the note below — a deliberate PyInstaller anchor)
 import paramiko
 
+from src.sftp.secret_store import KEYRING_SERVICE as KEYRING_SERVICE  # noqa: PLC0414 (re-export)
+from src.sftp.secret_store import select_store
 from src.utils.paths import bundle_known_hosts_file, user_known_hosts_file
 from src.utils.validators import validate_sftp_host
+
+# Two deliberate imports above (plan 0049 S-1a-ii):
+#   * ``keyring`` — the keyring CALLS moved into ``src/sftp/secret_store.py``, but this is
+#     the top-level import PyInstaller's static analysis picks the package up from (see
+#     CLAUDE.md § Build executables), beside ``paramiko``. Dropping it is a packaging
+#     change, not a cleanup.
+#   * ``KEYRING_SERVICE`` — re-exported, not redefined. The name is spelled ONCE, in
+#     ``secret_store``; this module has been its public address since v1 and callers keep
+#     importing it from here.
 
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
-
-KEYRING_SERVICE = "DistrictSync_SFTP"
 
 # Bounded retry for the transient-failure surface of connect+upload (delivery only —
 # ``test_connection`` never retries: a Setup "Test" click must answer fast). 3 attempts
@@ -313,22 +322,29 @@ class SFTPUploader:
         self.remote_path = remote_path
 
     # ------------------------------------------------------------------
-    # Credential management (OS keyring)
+    # Credential management (the scope-selected secret store)
     # ------------------------------------------------------------------
+    #
+    # These three keep their signatures verbatim — four callers in ``src/`` and eleven
+    # test files reach them — and delegate to ``secret_store.select_store()``, which is
+    # the OS keyring on every install in the field and a DPAPI LocalMachine blob on a
+    # machine-scoped one (plan 0049 S-1a-ii). Nothing above the uploader learns a store
+    # exists; the store is selected per call rather than cached on the instance so a
+    # post-provision re-pin (S-1b) cannot leave a long-lived uploader on the old one.
 
     def store_password(self, password: str) -> None:
-        """Store the SFTP password in the OS credential manager."""
+        """Store the SFTP password in this install's secret store."""
         try:
-            keyring.set_password(KEYRING_SERVICE, self.username, password)
+            select_store().store_password(self.host, self.username, password)
             logger.info("SFTP credentials stored successfully")
         except Exception as exc:
             logger.error(f"Failed to store SFTP password: {exc}")
             raise
 
     def _get_password(self) -> str | None:
-        """Retrieve the SFTP password from the OS credential manager."""
+        """Retrieve the SFTP password from this install's secret store."""
         try:
-            return keyring.get_password(KEYRING_SERVICE, self.username)
+            return select_store().get_password(self.host, self.username)
         except Exception as exc:
             logger.error(f"Failed to retrieve SFTP password: {exc}")
             return None
@@ -337,7 +353,7 @@ class SFTPUploader:
         """Return the stored SFTP password, or None if not found / unreadable.
 
         Public wrapper around :meth:`_get_password` for use in the setup wizard
-        to verify the keyring round-trip without re-implementing the storage key
+        to verify the store round-trip without re-implementing the storage key
         logic in the UI layer.
         """
         return self._get_password()
@@ -491,6 +507,7 @@ class SFTPUploader:
         sis_type: str | None = None,
         *,
         manifest: Collection[str],
+        staging_dir: Path | None = None,
     ) -> list[str]:
         """Zip the *manifested* rostering CSVs in *output_dir* and upload via SFTP.
 
@@ -524,6 +541,16 @@ class SFTPUploader:
             manifest: The exact CSV filenames authorized for this delivery
                 (e.g. ``DataLoader.output_filenames(outputs)``). Files in
                 *output_dir* outside this set are NOT uploaded.
+            staging_dir: Where to build the transient ZIP. ``None`` (the default, and
+                every install in the field) means the system temp dir, byte-identical to
+                what this has always done. Only the scheduled nightly on a machine-scoped
+                install passes a directory — ``<machine profile>/runs/tmp`` — because that
+                principal may have no loaded user profile to hold a ``%TEMP%``. It is
+                deliberately NOT used for a manual Convert or a hand-run CLI: ``runs/``
+                grants the service principal Modify by design, and the admin's zip is
+                student PII that must not sit where another principal could swap it. The
+                directory is created if absent and the ZIP inside it is always removed,
+                delivered or not (plan 0049 S-1a-ii.2).
 
         Returns:
             List of CSV filenames delivered — the zipped rostering CSVs plus every
@@ -572,7 +599,12 @@ class SFTPUploader:
         standalone_files = [f for f in csv_files if f.name in STANDALONE_CSV_FILENAMES]
         zip_files = [f for f in csv_files if f.name not in STANDALONE_CSV_FILENAMES]
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        if staging_dir is not None:
+            # The provisioned ``runs/`` already carries the principal's ACL, which this
+            # subdirectory inherits — so no permission work happens here.
+            staging_dir.mkdir(parents=True, exist_ok=True)
+
+        with tempfile.TemporaryDirectory(dir=staging_dir) as tmpdir:
             # Build the rostering zip ONCE, outside the retry (local + deterministic) —
             # and only when there are rostering CSVs, so a standalone-only run (an
             # attendance district, or a course-only myBlueprint+ config) never delivers

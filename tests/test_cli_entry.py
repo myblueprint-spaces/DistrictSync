@@ -566,3 +566,83 @@ class TestDeadStreamsNeverBreakTheContract:
         empty_input = tmp_path / "input"
         empty_input.mkdir()
         assert cli(["--sis", "myedbc", "--input", str(empty_input), "--output", str(gde_output)]) == 1
+
+
+# ===========================================================================
+#  Machine scope (plan 0049 S-1a-i) — a refused shared profile must be REPORTED
+# ===========================================================================
+
+
+class TestMachineScopeRefusalAtTheCliEntryPoint:
+    """``cli()`` catches only ``SystemExit``, so without this branch a refused shared
+    profile would die with a bare traceback on a stderr the Task Scheduler discards —
+    a nightly that goes silent, which is the failure mode plan 0049 exists to remove."""
+
+    @staticmethod
+    def _refusing_pin(shared: Path):
+        from src.utils.paths import MachineScopeRefused, MachineScopeRefusedReason
+
+        def _boom() -> Path:
+            raise MachineScopeRefused(MachineScopeRefusedReason.FOREIGN_OWNER, shared)
+
+        return _boom
+
+    def test_returns_exit_1_with_one_error_naming_the_path_and_the_reason(self, monkeypatch, tmp_path, caplog):
+        import logging
+
+        shared = tmp_path / "ProgramData" / "DistrictSync"
+        monkeypatch.setattr(main_mod, "pin_data_dir", self._refusing_pin(shared))
+        # Same stub reason as the exit-3 test above: the real sink runs fileConfig, which
+        # replaces root's handlers and discards caplog's. The SINK itself is proven by
+        # test_the_error_lands_in_a_real_log_file below.
+        monkeypatch.setattr(main_mod, "_configure_cli_logging", lambda log_file=None: logging.getLogger("src.main"))
+
+        with caplog.at_level(logging.ERROR, logger="src.main"):
+            assert cli(["--version"]) == 1
+
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(errors) == 1  # ONE anchored line, not a storm
+        message = errors[0].getMessage()
+        assert "machine-scope refused: foreign_owner" in message
+        assert str(shared) in message
+
+    def test_the_error_lands_in_a_real_log_file_under_the_handshake_dir(self, monkeypatch, tmp_path):
+        shared = tmp_path / "ProgramData" / "DistrictSync"
+        per_user = tmp_path / "per-user" / "DistrictSync"
+        monkeypatch.setattr(main_mod, "pin_data_dir", self._refusing_pin(shared))
+        monkeypatch.setattr(main_mod, "handshake_dir", lambda: per_user)
+
+        assert cli(["--version"]) == 1
+
+        log = per_user / "etl_tool.log"
+        assert log.exists(), "the refusal must be reported into a log file, not only to stderr"
+        text = log.read_text(encoding="utf-8", errors="replace")
+        assert "machine-scope refused: foreign_owner" in text
+        assert str(shared) in text
+
+    def test_an_unwritable_report_sink_still_returns_1_instead_of_crashing(self, monkeypatch, tmp_path):
+        shared = tmp_path / "ProgramData" / "DistrictSync"
+        blocker = tmp_path / "blocked"
+        blocker.write_text("i am a file", encoding="utf-8")
+        monkeypatch.setattr(main_mod, "pin_data_dir", self._refusing_pin(shared))
+        monkeypatch.setattr(main_mod, "handshake_dir", lambda: blocker / "profile")
+
+        assert cli(["--version"]) == 1
+
+    def test_the_normal_path_is_unaffected(self, gde_input: Path, gde_output: Path):
+        # The positive twin: the pin is REAL here (the switch is off in every test), the
+        # run completes, and the exit-code contract is untouched.
+        assert cli(_etl_argv(gde_input, gde_output)) == 0
+
+    def test_the_elevated_child_never_pins_the_data_dir(self, monkeypatch, tmp_path):
+        # DISPATCH-FIRST (tests/test_elevated_apply.py): nothing in _cli's preamble may
+        # run under the elevated token. The pin resolves a profile and can create a
+        # directory — a side effect the elevated child must not own.
+        from unittest.mock import MagicMock
+
+        pin = MagicMock()
+        monkeypatch.setattr(main_mod, "pin_data_dir", pin)
+        res = tmp_path / "r.res"
+
+        assert cli(["--elevated-apply", str(tmp_path / "absent.req"), str(res)]) == 0
+        pin.assert_not_called()

@@ -1,6 +1,7 @@
 """Tests for src/sftp/uploader.py — SFTP upload with mocked paramiko/keyring."""
 
 from datetime import date
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -647,3 +648,78 @@ class TestUploadStandaloneFeeds:
         assert "/upload/CourseInfo.csv" not in remote
         assert uploaded == ["Students.csv"]
         assert (tmp_path / "CourseInfo.csv").exists()  # never deleted, just not shipped
+
+
+class TestStagingDir:
+    """Where the delivery zip is BUILT (plan 0049 S-1a-ii.2).
+
+    ``staging_dir=None`` is today's ``%TEMP%``, byte-identical for every install in the
+    field; only the scheduled nightly on a machine-scoped install passes a directory, and
+    ``pipeline`` is what decides that (see ``tests/test_main_helpers.py``).
+    """
+
+    @staticmethod
+    def _deliver(uploader, output_dir, manifest, **kwargs):
+        mock_sftp = MagicMock()
+        mock_client = MagicMock()
+        seen: list[Path] = []
+
+        def _put(local, remote):
+            seen.append(Path(local))
+
+        mock_sftp.put.side_effect = _put
+        with patch.object(uploader, "_connect", return_value=(mock_client, mock_sftp)):
+            uploader.upload_csvs(output_dir, manifest=manifest, **kwargs)
+        return seen
+
+    def test_default_stages_outside_the_output_folder(self, tmp_path):
+        """The default is unchanged: a system temp dir, not the profile and not the output."""
+        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+
+        staged = self._deliver(uploader, tmp_path, {"Students.csv"})
+
+        assert len(staged) == 1
+        assert staged[0].suffix == ".zip"
+        assert tmp_path not in staged[0].parents
+
+    def test_an_explicit_staging_dir_is_where_the_zip_is_built(self, tmp_path):
+        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
+        staging = tmp_path / "profile" / "runs" / "tmp"
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+
+        staged = self._deliver(uploader, tmp_path, {"Students.csv"}, staging_dir=staging)
+
+        assert len(staged) == 1
+        assert staging in staged[0].parents
+
+    def test_the_staging_dir_is_created_when_missing(self, tmp_path):
+        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
+        staging = tmp_path / "profile" / "runs" / "tmp"
+        assert not staging.exists()
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+
+        self._deliver(uploader, tmp_path, {"Students.csv"}, staging_dir=staging)
+
+        assert staging.is_dir()
+
+    def test_nothing_is_left_behind_in_the_staging_dir(self, tmp_path):
+        """A zip of student PII must not outlive the delivery it was built for."""
+        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
+        staging = tmp_path / "profile" / "runs" / "tmp"
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+
+        self._deliver(uploader, tmp_path, {"Students.csv"}, staging_dir=staging)
+
+        assert list(staging.iterdir()) == []
+
+    def test_a_standalone_only_delivery_needs_no_staging_at_all(self, tmp_path):
+        """No rostering CSVs → no zip → the staging dir is created but never written into."""
+        (tmp_path / "StudentAttendance.csv").write_text("id\n1\n", encoding="utf-8")
+        staging = tmp_path / "profile" / "runs" / "tmp"
+        uploader = SFTPUploader("sftp.ca.spacesedu.com", 22, "user", "/upload")
+
+        staged = self._deliver(uploader, tmp_path, {"StudentAttendance.csv"}, staging_dir=staging)
+
+        assert [p.name for p in staged] == ["StudentAttendance.csv"]
+        assert list(staging.iterdir()) == []

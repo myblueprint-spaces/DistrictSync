@@ -28,7 +28,7 @@ import yaml
 from keyring.backend import KeyringBackend
 
 from src.etl.transformer import DataTransformer
-from src.utils.paths import _DATA_DIR_ENV_VAR
+from src.utils.paths import _DATA_DIR_ENV_VAR, _platform_data_dir, reset_data_dir_pin
 
 # ---------------------------------------------------------------------------
 # The standalone CI smoke script, loaded ONCE by path and registered in
@@ -81,12 +81,17 @@ def pytest_configure(config: pytest.Config) -> None:
 
 # ---------------------------------------------------------------------------
 # Real-profile baseline — captured at conftest IMPORT (before any test runs and
-# before any seam is patched), via Path.home() which the isolation fixture never
-# patches. The canary compares against this to prove a whole pytest run leaves
-# the real ~/.districtsync profile byte-untouched.
+# before any seam is patched), via Path.home() / _platform_data_dir() which the
+# isolation fixture never patches at import time. The canary compares against this
+# to prove a whole pytest run leaves the real profile byte-untouched.
+#
+# BOTH real locations are watched (plan 0049 S-1a-i): the legacy ~/.districtsync AND
+# the platform dir (%LOCALAPPDATA%\DistrictSync), which the tripwire did not watch
+# before — every install since v3.5.0 keeps its profile there, so a seam that stopped
+# being redirected would have leaked into the location nobody was checking.
 # ---------------------------------------------------------------------------
 
-_REAL_PROFILE_DIR = Path.home() / ".districtsync"
+_REAL_PROFILE_DIRS = {"legacy": Path.home() / ".districtsync", "platform": _platform_data_dir()}
 _REAL_PROFILE_FILES = ("config.json", "etl_tool.log", "history.db")
 
 
@@ -96,7 +101,9 @@ def _snapshot_mtime(path: Path) -> int | None:
 
 
 _REAL_PROFILE_BASELINE: dict[str, tuple[Path, int | None]] = {
-    name: (_REAL_PROFILE_DIR / name, _snapshot_mtime(_REAL_PROFILE_DIR / name)) for name in _REAL_PROFILE_FILES
+    f"{label}/{name}": (directory / name, _snapshot_mtime(directory / name))
+    for label, directory in _REAL_PROFILE_DIRS.items()
+    for name in _REAL_PROFILE_FILES
 }
 
 
@@ -114,15 +121,15 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     invariant once ALL tests have run. A drift marks the whole session failed.
     """
     drifted = [
-        name
-        for name, (path, baseline_mtime) in _REAL_PROFILE_BASELINE.items()
+        str(path)
+        for _name, (path, baseline_mtime) in _REAL_PROFILE_BASELINE.items()
         if _snapshot_mtime(path) != baseline_mtime
     ]
     if drifted:
         session.exitstatus = 1
         print(
-            f"\nREAL-PROFILE LEAK: {', '.join(drifted)} in {_REAL_PROFILE_DIR} changed during the "
-            "test session — a fixture failed to isolate the user profile (see tests/conftest.py)."
+            f"\nREAL-PROFILE LEAK: {', '.join(drifted)} changed during the test session — "
+            "a fixture failed to isolate the user profile (see tests/conftest.py)."
         )
 
 
@@ -196,12 +203,27 @@ def isolated_user_profile(request: pytest.FixtureRequest, tmp_path: Path, monkey
     # for the ``real_user_data_dir`` tests that drive the real seam.
     monkeypatch.delenv(_DATA_DIR_ENV_VAR, raising=False)
 
-    def _fake_user_data_dir() -> Path:
+    # Plan 0049 S-1a-i: ``user_data_dir()`` now MEMOISES its answer for the process, and
+    # the machine-scope switch is consulted while resolving it. Two consequences for every
+    # test, both handled here so the default is exactly today's behaviour:
+    #   * clear the pin on entry AND teardown — a pinned tmp profile must not survive into
+    #     the next test, and a pin taken before this fixture ran must not survive into it;
+    #   * force the switch OFF, so no test's answer depends on whether the machine running
+    #     it happens to have HKLM\SOFTWARE\DistrictSync set (the machine-scope tests in
+    #     test_paths.py drive the seams themselves and override this).
+    monkeypatch.setattr("src.utils.paths._machine_switch_on", lambda: False)
+    reset_data_dir_pin()
+
+    def _fake_user_scope_data_dir(*, create: bool) -> Path:
         data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir
 
     if request.node.get_closest_marker("real_user_data_dir") is None:
-        monkeypatch.setattr("src.utils.paths.user_data_dir", _fake_user_data_dir)
+        # Patch the DEEP seam, not ``user_data_dir`` itself: the pin resolves THROUGH
+        # ``_user_scope_data_dir``, so patching only the public function would leave the
+        # real ladder (and ``handshake_dir``) resolving the real profile while the
+        # headline truth table still went green.
+        monkeypatch.setattr("src.utils.paths._user_scope_data_dir", _fake_user_scope_data_dir)
         # Belt-and-suspenders for the relocation seam (Slice 11): migration bypasses
         # ``user_data_dir`` and resolves the platform/legacy dirs directly, so redirect
         # BOTH into (non-existent) tmp paths. A stray ``migrate_legacy_data_dir()`` in a
@@ -222,6 +244,7 @@ def isolated_user_profile(request: pytest.FixtureRequest, tmp_path: Path, monkey
     try:
         yield data_dir
     finally:
+        reset_data_dir_pin()
         keyring.set_keyring(real_keyring)
         _close_and_restore_handlers(root, root_snapshot)
         _close_and_restore_handlers(etl, etl_snapshot)

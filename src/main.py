@@ -21,6 +21,7 @@ import logging
 import os
 import sys
 from datetime import date
+from pathlib import Path
 from typing import IO, Callable
 
 from src.config.app_config import AppConfig
@@ -38,7 +39,7 @@ from src.etl.pipeline import (
 from src.etl.sync_window import in_sync_window, next_resume_date
 from src.sftp.uploader import SFTPUploader
 from src.utils.logger import get_logger
-from src.utils.paths import migrate_legacy_data_dir
+from src.utils.paths import MachineScopeRefused, handshake_dir, migrate_legacy_data_dir, pin_data_dir
 from src.utils.validators import validate_sftp_host, validate_sis_type
 from src.utils.version import app_version, startup_banner
 
@@ -69,7 +70,7 @@ _ = (
 )
 
 
-def _configure_cli_logging() -> logging.Logger:
+def _configure_cli_logging(log_file: Path | None = None) -> logging.Logger:
     """Configure the shared file-log sink for a CLI run and return the app logger.
 
     Deferred out of import time (D3): importing ``src.main`` — e.g. to reach a
@@ -77,8 +78,36 @@ def _configure_cli_logging() -> logging.Logger:
     a handler to the real user log (the source of the "dummy" Run History records).
     Every CLI entry path calls this exactly once so the run and its exit-code-3
     summary are written to ``etl_tool.log``.
+
+    ``log_file`` is passed by exactly one caller — :func:`_report_machine_scope_refusal`,
+    where the profile resolver itself has refused and the normal sink cannot be resolved.
     """
-    return get_logger(__name__)
+    return get_logger(__name__, log_file=log_file)
+
+
+def _report_machine_scope_refusal(exc: MachineScopeRefused) -> int:
+    """Report a refused machine-scoped profile and return the documented exit code 1.
+
+    The failure has no other catcher: ``cli()`` handles only ``SystemExit``, so without
+    this the scheduled nightly would die with a bare traceback on a stderr the Task
+    Scheduler discards — a silent nightly, which is the exact failure mode plan 0049
+    exists to remove.
+
+    The sink is the per-user :func:`~src.utils.paths.handshake_dir` (always resolvable —
+    it never consults the switch), and the line carries a stable anchor plus the bounded
+    reason and the path, so a district's log has one thing to grep for. Configuring that
+    sink is itself best-effort: if even that fails, the error still goes out through
+    logging's last resort rather than being swallowed.
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        directory = handshake_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        logger = _configure_cli_logging(directory / "etl_tool.log")
+    except OSError as sink_exc:
+        logger.error("Could not open a log file to report the failure below (%s).", sink_exc)
+    logger.error("DistrictSync cannot start [machine-scope refused: %s] — %s", exc.reason.value, exc)
+    return 1
 
 
 def main(sis_type: str, input_path: str, output_path: str) -> None:
@@ -441,6 +470,15 @@ def _cli(argv: list[str] | None) -> int:
     # live sys.stdout instead of None. No-op on POSIX and wherever there is no
     # parent console. See _attach_parent_console.
     console_attached = _attach_parent_console()
+
+    # Resolve the data directory ONCE, here, BEFORE the log sink opens inside it
+    # (plan 0049 D0): the sink's own path depends on the answer, and a machine-scope
+    # refusal must be REPORTED rather than escape as a traceback. Inert with the switch
+    # off — the resolved location is exactly the per-user ladder's.
+    try:
+        pin_data_dir()
+    except MachineScopeRefused as exc:
+        return _report_machine_scope_refusal(exc)
 
     # CLI entry path: configure the shared file-log sink now (deferred from import
     # time so importing src.main in tests never touches the real user profile).

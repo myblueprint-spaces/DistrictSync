@@ -1,6 +1,7 @@
 import logging
 import logging.config
 import logging.handlers
+from pathlib import Path
 
 from src.utils.paths import bundle_config_dir, user_log_file
 
@@ -12,20 +13,25 @@ _LOG_MAX_BYTES = 5_242_880
 _LOG_BACKUP_COUNT = 3
 
 
-def get_logger(name: str = __name__) -> logging.Logger:
+def get_logger(name: str = __name__, *, log_file: Path | None = None) -> logging.Logger:
     """Configure and return a logger instance with standard formatting.
 
-    Log output goes to a persistent, absolute path
-    (``~/.districtsync/etl_tool.log``) so logs survive PyInstaller
-    one-file exe restarts and are visible to Run History regardless
+    Log output goes to a persistent, absolute path (``paths.user_log_file()``) so logs
+    survive PyInstaller one-file exe restarts and are visible to Run History regardless
     of which working directory the ETL was launched from.
+
+    ``log_file`` overrides that sink for the ONE caller that cannot use it: when
+    ``paths.user_data_dir()`` REFUSES a machine-scoped profile (plan 0049 S-1a-i.4),
+    ``user_log_file()`` re-raises the same refusal, so ``main._cli`` reports the failure
+    into the always-resolvable per-user ``paths.handshake_dir()`` instead. The rotation
+    limits stay single-sourced here either way.
     """
     config_path = bundle_config_dir() / "logging.conf"
     # Use forward slashes: logging.conf substitutes this into a Python
     # literal that gets eval()'d, and Windows backslashes trigger
     # "unicodeescape" SyntaxError (e.g. "\U" in user names). Windows
     # APIs accept forward slashes, so this is safe on all platforms.
-    logfile = user_log_file().as_posix()
+    logfile = (log_file if log_file is not None else user_log_file()).as_posix()
 
     if config_path.exists():
         # logging.conf references %(logfile)s which we inject here so

@@ -57,6 +57,74 @@ class TestFormatUserError:
         assert "etl_tool.log" in message
 
 
+class TestMachineScopeRefusalCopy:
+    """A refused shared profile is the ONE failure the generic dialog would lie about."""
+
+    @staticmethod
+    def _refusal(path: Path):
+        from src.utils.paths import MachineScopeRefused, MachineScopeRefusedReason
+
+        return MachineScopeRefused(MachineScopeRefusedReason.INHERITED_ACL, path)
+
+    def test_never_claims_the_nightly_is_unaffected(self, monkeypatch, tmp_path):
+        # The nightly reads the SAME shared folder and fails the same way, so the generic
+        # reassurance is false here — a true sentence beats a calm one.
+        monkeypatch.setattr(launcher, "resolve_log_path", lambda: tmp_path / "etl_tool.log")
+        shared = tmp_path / "ProgramData" / "DistrictSync"
+
+        message = launcher.format_user_error(self._refusal(shared))
+
+        assert "not affected" not in message
+        assert "is affected too" in message
+
+    def test_names_the_shared_folder_and_a_plain_language_cause(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(launcher, "resolve_log_path", lambda: tmp_path / "etl_tool.log")
+        shared = tmp_path / "ProgramData" / "DistrictSync"
+
+        message = launcher.format_user_error(self._refusal(shared))
+
+        assert str(shared) in message
+        assert "permissions were never locked down" in message
+        assert "inherited_acl" not in message  # the enum value is for the log, not the admin
+        assert "etl_tool.log" in message
+        assert "Traceback" not in message
+
+    def test_every_reason_has_its_own_plain_sentence(self):
+        from src.utils.paths import MachineScopeRefusedReason
+
+        assert set(launcher._MACHINE_SCOPE_CAUSES) == set(MachineScopeRefusedReason)
+        assert all(sentence.endswith(".") for sentence in launcher._MACHINE_SCOPE_CAUSES.values())
+        assert len(set(launcher._MACHINE_SCOPE_CAUSES.values())) == len(MachineScopeRefusedReason)
+
+    def test_any_other_failure_keeps_todays_copy(self, monkeypatch, tmp_path):
+        # The positive twin: the branch is keyed on the TYPE, so every other boot failure
+        # still gets the reassurance that is true for it.
+        monkeypatch.setattr(launcher, "resolve_log_path", lambda: tmp_path / "etl_tool.log")
+        message = launcher.format_user_error(RuntimeError("flet exploded"))
+        assert "scheduled nightly sync is not affected" in message
+
+    def test_log_path_falls_back_to_the_handshake_dir_when_the_profile_refuses(self, monkeypatch, tmp_path):
+        # user_log_file() re-raises the refusal, so the traceback would otherwise land in
+        # a bare relative file inside the _MEIPASS temp dir that is deleted on exit.
+        per_user = tmp_path / "per-user" / "DistrictSync"
+
+        def _boom() -> Path:
+            raise self._refusal(tmp_path / "shared")
+
+        monkeypatch.setattr(launcher, "user_log_file", _boom)
+        monkeypatch.setattr(launcher, "handshake_dir", lambda: per_user)
+
+        assert launcher.resolve_log_path() == per_user / "etl_tool.log"
+
+    def test_a_broken_paths_module_still_falls_back_to_the_bare_filename(self, monkeypatch):
+        # Unchanged for every other failure: this is the "paths.py itself is broken" case.
+        def _boom() -> Path:
+            raise RuntimeError("no sink")
+
+        monkeypatch.setattr(launcher, "user_log_file", _boom)
+        assert launcher.resolve_log_path() == Path("etl_tool.log")
+
+
 class TestWriteTraceback:
     def test_writes_traceback_to_log(self, monkeypatch, tmp_path):
         log = tmp_path / "etl_tool.log"

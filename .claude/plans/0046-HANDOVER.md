@@ -1,5 +1,7 @@
 # Handover — DistrictSync: run the nightly scheduled task as a service account (plan 0046)
 
+> **SUPERSEDED 2026-09-17.** Everything in §12 shipped in v3.21.0 (0047 A1/A2 · 0046 B/C/D). The gMSA parking banner below is REVERSED by DECISIONS 2026-09-17 — gMSA continues as **plan 0049** (`0049-machine-scope-gmsa.md`). §5–§6 remain the verified-facts record; read them before touching 0049.
+
 You are taking over a piece of work mid-flight. Slice 1 has landed on `main`. Slices 2–4 are
 not built. The requirements were just re-evidenced from the owner's email and they **changed
 the shape of the problem**, so do not treat the existing plan file as settled.

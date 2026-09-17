@@ -1,6 +1,6 @@
 # 0046 — Run the nightly task as a service account
 
-- **Status:** REVISED 2026-09-16 — see the *Revision* block below. Slice 1 LANDED (#117); Slice A split out to **plan 0047** (in flight, ships first); B/C/D await 0047's land and are spec'd JIT.
+- **Status:** CLOSED 2026-09-17 — Slice 1 (#117), B (#124), C (#125), D (#126) LANDED and released in v3.21.0; Slice A shipped as **plan 0047**. The parked gMSA / machine-scope half continues as **plan 0049** (`0049-machine-scope-gmsa.md`), which supersedes the *Revision* block's N1/N2 stands (DECISIONS 2026-09-17). The Investigations and Review sections below remain the evidence of record.
 - **Roadmap item:** partially discharges *"Service-account / machine-scope secret storage (SYSTEM/gMSA task principals; non-keyring secret sources) — enterprise-scope, L"*. This plan takes the **password-account half only**.
 - **Supersedes:** the 2026-06-05 decision *"the task's run-as account must equal the setup account"* (`docs/claugentic-DECISIONS.md:444`).
 - **References:** plan 0034 (reconcile), plan 0041 (COM scheduler), `docs/DESIGN_SYSTEM.md`
