@@ -9,7 +9,9 @@ import logging
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
 
+from src.etl import pipeline
 from src.etl.pipeline import (
     TransformOutputs,
     compute_anomalies,
@@ -23,6 +25,7 @@ from src.main import (
     _sftp_upload,
     extract_required_files,
 )
+from src.utils import paths as paths_module
 
 # -----------------------------------------------------------------------
 # extract_required_files
@@ -675,3 +678,92 @@ class TestRunTransform:
         field_orders = run_transform(raw_data, mappings, self._global_config()).field_orders
 
         assert field_orders["Widgets"] == ["First", "Second", "Third"]
+
+
+# -----------------------------------------------------------------------
+# _delivery_staging_dir — WHO stages WHERE (plan 0049 S-1a-ii.2)
+# -----------------------------------------------------------------------
+
+
+class TestDeliveryStagingDir:
+    """``runs/tmp`` is for the scheduled nightly on a machine-scoped install ONLY.
+
+    The admin's manual Convert and a hand-run CLI have a loaded profile and keep
+    ``%TEMP%`` — their zip is student PII and must not sit in the one directory the
+    service principal holds Modify on.
+    """
+
+    @staticmethod
+    def _machine(monkeypatch, tmp_path):
+        shared = tmp_path / "ProgramData" / "DistrictSync"
+        shared.mkdir(parents=True)
+        monkeypatch.setattr(paths_module, "machine_data_dir", lambda: shared)
+        monkeypatch.setattr(paths_module, "_machine_switch_on", lambda: True)
+        monkeypatch.setattr(paths_module, "_assert_machine_dir_trusted", lambda path: None)
+        paths_module.reset_data_dir_pin()
+        return shared
+
+    def test_scheduled_on_machine_scope_stages_under_runs_tmp(self, monkeypatch, tmp_path):
+        shared = self._machine(monkeypatch, tmp_path)
+        assert pipeline._delivery_staging_dir("scheduled") == shared / "runs" / "tmp"
+
+    @pytest.mark.parametrize("source", ["manual", "cli", "unknown", None])
+    def test_every_other_source_on_machine_scope_keeps_temp(self, monkeypatch, tmp_path, source):
+        self._machine(monkeypatch, tmp_path)
+        assert pipeline._delivery_staging_dir(source) is None
+
+    @pytest.mark.parametrize("source", ["scheduled", "manual", "cli", None])
+    def test_per_user_always_keeps_temp(self, monkeypatch, tmp_path, source):
+        monkeypatch.setattr(paths_module, "_machine_switch_on", lambda: False)
+        paths_module.reset_data_dir_pin()
+        assert pipeline._delivery_staging_dir(source) is None
+
+    def test_the_decision_reaches_upload_csvs(self, monkeypatch, tmp_path):
+        """The pure rule above is only worth anything if the uploader is actually told."""
+        shared = self._machine(monkeypatch, tmp_path)
+        seen = {}
+
+        class _Uploader:
+            def __init__(self, **kwargs):
+                pass
+
+            def upload_csvs(self, output_dir, sis_type=None, *, manifest, staging_dir=None):
+                seen["staging_dir"] = staging_dir
+                return ["Students.csv"]
+
+        cfg = MagicMock()
+        cfg.sftp_is_configured.return_value = True
+        cfg.sftp_host = "sftp.ca.spacesedu.com"
+        cfg.sftp_port = 22
+        cfg.sftp_username = "user"
+        cfg.sftp_remote_path = "/upload"
+        monkeypatch.setattr("src.config.app_config.AppConfig.load", classmethod(lambda cls: cfg))
+        monkeypatch.setattr("src.etl.pipeline.SFTPUploader", _Uploader)
+
+        assert _sftp_upload(str(tmp_path), manifest={"Students.csv"}, source="scheduled") is True
+        assert seen["staging_dir"] == shared / "runs" / "tmp"
+
+    def test_a_manual_run_reaches_upload_csvs_with_no_staging_dir(self, monkeypatch, tmp_path):
+        """Positive twin — the wiring above is a real decision, not a constant."""
+        self._machine(monkeypatch, tmp_path)
+        seen = {}
+
+        class _Uploader:
+            def __init__(self, **kwargs):
+                pass
+
+            def upload_csvs(self, output_dir, sis_type=None, *, manifest, staging_dir=None):
+                seen["staging_dir"] = staging_dir
+                return ["Students.csv"]
+
+        cfg = MagicMock()
+        cfg.sftp_is_configured.return_value = True
+        cfg.sftp_host = "sftp.ca.spacesedu.com"
+        cfg.sftp_port = 22
+        cfg.sftp_username = "user"
+        cfg.sftp_remote_path = "/upload"
+        monkeypatch.setattr("src.config.app_config.AppConfig.load", classmethod(lambda cls: cfg))
+        monkeypatch.setattr("src.etl.pipeline.SFTPUploader", _Uploader)
+
+        assert _sftp_upload(str(tmp_path), manifest={"Students.csv"}, source="manual") is True
+        assert seen["staging_dir"] is None

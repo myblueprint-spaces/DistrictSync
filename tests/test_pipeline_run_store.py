@@ -744,3 +744,95 @@ class TestCorruptUserOverlayRecordsAFailedRun:
         errors = "\n".join(r.getMessage() for r in caplog.records)
         assert f"{self.SIS}_mapping.yaml" in errors, errors
         assert "not found" not in errors.lower(), errors
+
+
+# --------------------------------------------------------------------------- #
+# run_as — an additive RECORD KEY, never a column (plan 0049 S-1a-ii.3)         #
+# --------------------------------------------------------------------------- #
+class TestRunAsRidesTheRecord:
+    """Which OS account a night ran as, carried in the record dict both sinks share.
+
+    Deliberately NOT a ``runs`` column: the only reader (``read_run_records``) returns the
+    parsed JSON blob, so a column would be invisible to it, and the ``ALTER TABLE`` +
+    ``PRAGMA user_version`` pair has a measured brick state (two autocommit commits; a
+    crash between them re-ALTERs forever). See the plan's S-1a-ii.3.
+    """
+
+    def test_a_pipeline_run_carries_the_process_account(self, gde_input: Path, gde_output: Path) -> None:
+        from src.utils.accounts import process_account
+
+        run_pipeline("myedbc", str(gde_input), str(gde_output), source="scheduled")
+
+        records = read_run_records()
+        assert records is not None and records
+        assert records[0]["run_as"] == process_account()
+        assert records[0]["run_as"]  # total by contract — never blank
+
+    def test_a_manual_run_carries_it_too(self, gde_input: Path, gde_output: Path) -> None:
+        from src.ui_flet.screens.convert import convert_job
+        from src.utils.accounts import process_account
+
+        AppConfig(input_dir=str(gde_input), output_dir=str(gde_output), sis_type="myedbc").save()
+        convert_job("myedbc", str(gde_input))
+
+        records = read_run_records()
+        assert records is not None and records
+        assert records[0]["source"] == "manual"
+        assert records[0]["run_as"] == process_account()
+
+    def test_the_log_line_and_the_store_row_carry_the_same_account(
+        self, gde_input: Path, gde_output: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """One dict, two sinks — the diagnostic line must not describe a different run."""
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"):
+            run_pipeline("myedbc", str(gde_input), str(gde_output), source="cli")
+
+        line = next(m for m in (r.getMessage() for r in caplog.records) if m.startswith("__DISTRICTSYNC_RUN__"))
+        logged = json.loads(line.split(" ", 1)[1])
+        records = read_run_records()
+        assert records is not None
+        assert logged["run_as"] == records[0]["run_as"]
+
+    def test_the_schema_version_is_untouched_on_a_fresh_db(self, gde_input: Path, gde_output: Path) -> None:
+        """No ``user_version`` bump, with the positive twin that the value round-trips anyway."""
+        import sqlite3
+
+        from src.utils.paths import user_history_db
+
+        run_pipeline("myedbc", str(gde_input), str(gde_output), source="cli")
+
+        with sqlite3.connect(user_history_db()) as conn:
+            assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 1
+            assert {row[1] for row in conn.execute("PRAGMA table_info(runs)")} == {
+                "id",
+                "timestamp",
+                "sis_type",
+                "source",
+                "status",
+                "error_category",
+                "schema_version",
+                "record",
+            }
+
+        records = read_run_records()
+        assert records is not None and records[0]["run_as"]
+
+    def test_an_older_record_without_the_key_still_reads(self) -> None:
+        """A DB written by <= v3.21.0 has no ``run_as`` — the reader must not care."""
+        from src.history.store import write_run_record
+
+        legacy = pipeline.build_run_record(
+            status="success",
+            elapsed=1.0,
+            entity_counts={"Students": 1},
+            source="cli",
+            sis_type="myedbc",
+            error_category="none",
+        )
+        legacy.pop("run_as")
+        assert write_run_record(legacy, source="cli") is True
+
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert "run_as" not in records[0]
+        assert to_run_rows(records)  # the Run History reader still renders it
