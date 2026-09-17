@@ -74,3 +74,38 @@ jobs:
               )
           print(f"validated {len(names)} mapping configs")
           PY
+
+  # A SECOND pytest leg on Windows (plan 0049 S-1a-i.5). The suite carries
+  # ``WINDOWS_ONLY``-marked tests — the real DPAPI round trips, the winreg access-mask
+  # parity pin — that have never once run in CI: the job above is ubuntu-only, so they
+  # skipped on every pull request and were verified only on a developer's machine.
+  # Machine scope seals a credential with DPAPI, so "verified locally" is not enough.
+  #
+  # Deliberately NOT a copy of the job above:
+  #   * NO coverage gate. Coverage stays the ubuntu job's single gate — a second
+  #     ``--cov-fail-under`` over a different skip set is a second, differently
+  #     calibrated gate that would fail for reasons nobody changed.
+  #   * NO lint / type / security / config steps — those are OS-independent and already
+  #     enforced once.
+  #   * The ubuntu job's name and steps are UNCHANGED, so the existing required check
+  #     keeps its identity.
+  # No test may depend on the runner's real elevation state or on how this box is
+  # provisioned: every such branch is driven by monkeypatch on both legs.
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+          pip install paramiko keyring  # optional SFTP deps (needed by sftp/scheduler modules)
+
+      - name: Run tests
+        run: python -m pytest tests/ -q

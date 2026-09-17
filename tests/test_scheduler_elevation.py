@@ -204,10 +204,15 @@ class TestElevationHelpers:
 
 
 class TestSweepOrphans:
+    # Seeding moved from ``paths.user_data_dir()`` to ``paths.handshake_dir()`` (plan 0049
+    # S-1a-i): the handshake files are a per-user, CurrentUser-DPAPI artefact and no longer
+    # follow the profile into a shared machine-scoped directory, so the sweep looks
+    # somewhere else and a test seeding the profile would sweep an empty directory.
     def test_deletes_old_keeps_fresh(self) -> None:
         from src.utils import paths
 
-        directory = paths.user_data_dir()
+        directory = paths.handshake_dir()
+        directory.mkdir(parents=True, exist_ok=True)
         old = directory / "dsync_elev_old.req"
         old.write_text("x", encoding="utf-8")
         fresh = directory / "dsync_elev_fresh.req"
@@ -224,7 +229,8 @@ class TestSweepOrphans:
     def test_sweep_ignores_unrelated_files(self) -> None:
         from src.utils import paths
 
-        directory = paths.user_data_dir()
+        directory = paths.handshake_dir()  # moved with the writers — see the note above
+        directory.mkdir(parents=True, exist_ok=True)
         other = directory / "config.json"
         other.write_text("{}", encoding="utf-8")
         old = time.time() - 7200
@@ -233,6 +239,78 @@ class TestSweepOrphans:
         elevation.sweep_orphans()
 
         assert other.exists()  # not a dsync_elev_* handshake file → untouched
+
+    def test_returns_zero_when_the_handshake_dir_does_not_exist(self, monkeypatch, tmp_path) -> None:
+        # sweep_orphans() runs UNCONDITIONALLY at both entry points, so it must never
+        # materialise the directory: on a machine-scoped install that would give every
+        # nightly under a service principal an empty second profile (plan 0049 D0).
+        absent = tmp_path / "no-profile-here"
+        monkeypatch.setattr("src.utils.paths.handshake_dir", lambda: absent)
+
+        assert elevation.sweep_orphans() == 0
+        assert not absent.exists()
+
+    def test_the_sweep_really_deletes_when_the_dir_is_there(self, monkeypatch, tmp_path) -> None:
+        # The positive twin for the assertion above: the same call on the same seam DOES
+        # sweep, so "returned 0 and created nothing" cannot be green for the wrong reason.
+        present = tmp_path / "profile"
+        present.mkdir()
+        stale = present / "dsync_elev_old.req"
+        stale.write_text("x", encoding="utf-8")
+        two_hours_ago = time.time() - 7200
+        os.utime(stale, (two_hours_ago, two_hours_ago))
+        monkeypatch.setattr("src.utils.paths.handshake_dir", lambda: present)
+
+        assert elevation.sweep_orphans() == 1
+        assert not stale.exists()
+
+
+class TestHandshakeFilesStayPerUser:
+    """The request/result blobs never follow the profile into a shared directory."""
+
+    def test_write_request_uses_the_handshake_dir_and_creates_it(self, monkeypatch, tmp_path) -> None:
+        target = tmp_path / "per-user" / "DistrictSync"
+        monkeypatch.setattr("src.utils.paths.handshake_dir", lambda: target)
+        monkeypatch.setattr(elevation, "protect_blob", lambda raw: b"sealed:" + raw)
+        monkeypatch.setattr(elevation, "_set_owner_only_dacl", lambda path: None)
+
+        path = elevation.write_request({"k": "v"})
+
+        assert path.parent == target
+        assert path.exists()
+
+    def test_new_result_path_uses_the_handshake_dir_and_reserves_only(self, monkeypatch, tmp_path) -> None:
+        target = tmp_path / "per-user" / "DistrictSync"
+        monkeypatch.setattr("src.utils.paths.handshake_dir", lambda: target)
+
+        path = elevation.new_result_path()
+
+        assert path.parent == target
+        assert target.is_dir()  # the directory is prepared for the child...
+        assert not path.exists()  # ...but the result FILE is the child's to write
+
+    def test_the_writers_never_use_the_machine_scoped_profile(self, monkeypatch, tmp_path) -> None:
+        # The load-bearing one: with machine scope ON, the handshake must stay per-user.
+        # ``runs/`` grants the service principal Modify by design, and a SID-locked
+        # password-bearing blob must not sit where another principal can write.
+        machine = tmp_path / "ProgramData" / "DistrictSync"
+        machine.mkdir(parents=True)
+        per_user = tmp_path / "per-user" / "DistrictSync"
+        per_user.mkdir(parents=True)
+        monkeypatch.setattr("src.utils.paths.machine_data_dir", lambda: machine)
+        monkeypatch.setattr("src.utils.paths._machine_switch_on", lambda: True)
+        monkeypatch.setattr("src.utils.paths._read_dir_security", lambda p: ("S-1-5-32-544", 0x1000))
+        monkeypatch.setattr("src.utils.paths._user_scope_data_dir", lambda *, create: per_user)
+        monkeypatch.setattr(elevation, "protect_blob", lambda raw: b"sealed")
+        monkeypatch.setattr(elevation, "_set_owner_only_dacl", lambda path: None)
+        from src.utils import paths
+
+        paths.reset_data_dir_pin()
+
+        assert paths.user_data_dir() == machine  # the profile really is the shared one
+        assert elevation.write_request({"k": "v"}).parent == per_user
+        assert elevation.new_result_path().parent == per_user
+        assert list(machine.glob("dsync_elev_*")) == []
 
 
 # ---------------------------------------------------------------------------
