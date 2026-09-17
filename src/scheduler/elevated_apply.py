@@ -57,6 +57,11 @@ _REQUIRED_REGISTER_FIELDS = frozenset(
     {"op", "task_name", "exe", "arguments", "working_dir", "run_time", "user", "run_highest"}
 )
 
+# ``provision`` registers the nightly as its last step, so it carries every register field
+# PLUS the per-user profile the parent resolved (which the child re-derives and cross-checks
+# — a request file is attacker-influencable in ways argv is not).
+_REQUIRED_PROVISION_FIELDS = _REQUIRED_REGISTER_FIELDS | {"source_data_dir"}
+
 # The child's OWN refusal vocabulary — named so the classifier can decide each one explicitly
 # (plan 0047) instead of matching a literal typed twice. Every value is admin-facing copy and
 # must stay free of the markers `messages.carries_foreign_marker` guards (pinned in the tests).
@@ -103,7 +108,10 @@ def run_elevated_apply(args: list[str]) -> int:
 
 
 def _apply(req_path: Path, res_path: Path) -> int:
-    from src.scheduler import elevation, task_com
+    # Lazy, like every other import here: ``provisioning`` imports ``windows``, which
+    # imports THIS module for the cross-SID sentinel, so a module-level import would close
+    # the cycle at whichever of the three got imported first.
+    from src.scheduler import elevation, provisioning, task_com
 
     # --- read + unseal the request (fail closed at every rung) ----------------------
     try:
@@ -147,9 +155,22 @@ def _apply(req_path: Path, res_path: Path) -> int:
             _do_register(payload)
         elif op == "delete":
             _do_delete(payload)
+        elif op == "provision":
+            _do_provision(payload)
+        elif op == "grant_current_user":
+            _do_grant_current_user(payload)
+        elif op == "prune_principal":
+            _do_prune_principal(payload)
         else:
             _write_result(res_path, False, _MSG_REQUEST_UNREADABLE)
             return 0
+    except provisioning.ProvisionRefused as exc:
+        # A BOUNDED step id (plus an icacls exit code where one exists) and nothing else —
+        # never a resolved path, never stderr, never either of the two passwords the
+        # provision payload can carry. Ordered ABOVE the task_com rung only for clarity;
+        # the two exception types are unrelated.
+        _write_result(res_path, False, exc.message)
+        return 0
     except task_com.TaskComError as exc:
         _write_result(res_path, False, exc.message)
         return 0
@@ -201,3 +222,48 @@ def _do_delete(payload: dict[str, object]) -> None:
     from src.utils.validators import validate_task_name
 
     task_com.delete_task_by_name(validate_task_name(str(payload.get("task_name", ""))))
+
+
+# --------------------------------------------------------------------------- #
+# Machine scope (plan 0049 S-1b-i). NOTHING in the app reaches these yet —      #
+# Schedule-time dispatch is S-2. The engine is in src/scheduler/provisioning.py.#
+# --------------------------------------------------------------------------- #
+
+
+def _do_provision(payload: dict[str, object]) -> None:
+    """Provision this computer for a shared profile, then register the nightly into it.
+
+    The registration is handed to ``apply_provision`` as a callable rather than repeated
+    there, so the task is created by the SAME re-validating ``_do_register`` the plain
+    ``register`` op uses — the structural single source, and the reason a bad password
+    still surfaces as its ``task_com`` canonical instead of a provisioning step id.
+
+    **The task fields are validated BEFORE the sequence starts, not only inside that
+    callable.** Registration is step 8, i.e. AFTER the HKLM commit — so a payload carrying
+    (say) a malformed ``run_time`` would otherwise permanently switch the install to
+    machine scope and only then refuse, leaving a provisioned computer with no nightly.
+    Validating here keeps the whole operation a no-op for a malformed request. The
+    callable still re-validates: this is a pre-flight, not a replacement for the floor.
+    """
+    from src.scheduler import provisioning
+    from src.utils.validators import validate_run_time, validate_task_name
+
+    if not set(payload) >= _REQUIRED_PROVISION_FIELDS:
+        raise ValueError("missing fields")
+    validate_task_name(str(payload["task_name"]))
+    validate_run_time(str(payload["run_time"]))
+    provisioning.apply_provision(payload, register=lambda: _do_register({**payload, "op": "register"}))
+
+
+def _do_grant_current_user(payload: dict[str, object]) -> None:
+    from src.scheduler import provisioning
+
+    provisioning.apply_grant_current_user(payload)
+
+
+def _do_prune_principal(payload: dict[str, object]) -> None:
+    from src.scheduler import provisioning
+    from src.utils.validators import validate_task_name
+
+    validate_task_name(str(payload.get("task_name", "")))
+    provisioning.apply_prune_principal(payload)

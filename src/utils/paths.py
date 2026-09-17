@@ -57,8 +57,19 @@ _LEGACY_DIR_NAME = ".districtsync"
 # ``_override_data_dir`` and ``user_data_dir`` for the contract and the why.
 _DATA_DIR_ENV_VAR = "DISTRICTSYNC_DATA_DIR"
 
+# ``platformdirs``' OWN environment override prefix (``WIN_PD_OVERRIDE_LOCAL_APPDATA``,
+# ``WIN_PD_OVERRIDE_COMMON_APPDATA``, …). NOT ours and never set by this app — see
+# :func:`machine_data_dir`, which REFUSES while any of them is in play.
+_PD_OVERRIDE_PREFIX = "WIN_PD_OVERRIDE_"
+
 # Breadcrumb dropped in the legacy dir after a successful migration.
 _MOVED_BREADCRUMB = "MOVED.txt"
+
+# The machine-scoped profile's run-artefact subtree (the ONLY one the task principal may
+# write) and the run store's file name. Spelled once — :func:`history_db_in`,
+# :func:`user_log_file` and the elevated provisioner all derive from these.
+MACHINE_RUNS_SUBDIR = "runs"
+RUN_STORE_NAME = "history.db"
 
 # --------------------------------------------------------------------------- #
 # Machine scope (plan 0049 D0) — a SWITCH, not a discovery.                    #
@@ -92,6 +103,29 @@ _SE_DACL_PROTECTED = 0x1000
 # ``SE_FILE_OBJECT`` / ``OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION``.
 _SE_FILE_OBJECT = 1
 _OWNER_AND_DACL_INFORMATION = 0x1 | 0x4
+_DACL_INFORMATION = 0x4
+
+# ``ACCESS_ALLOWED_ACE_TYPE`` — the ONLY ACE type the open-group walk may refuse on. A
+# DENY ace for Everyone is *more* restrictive, and refusing it would turn a hardening
+# measure into a startup failure.
+_ACCESS_ALLOWED_ACE_TYPE = 0
+
+# The offset of ``SidStart`` inside ``ACCESS_ALLOWED_ACE`` / ``ACCESS_DENIED_ACE``:
+# ``ACE_HEADER`` (AceType + AceFlags + AceSize = 4 bytes) followed by ``Mask`` (4 bytes).
+_ACE_SID_OFFSET = 8
+
+# Groups that every (or nearly every) local account lands in. An ALLOW ace for any of
+# them on the shared profile means the LocalMachine-sealed delivery secret and the
+# admin's trust-bearing settings are readable by a standard user — the exact confidentiality
+# boundary D3 says the NTFS DACL is. Compared as SID STRINGS: ``Everyone`` / ``Users`` are
+# localised, so a name comparison silently passes on a German Windows.
+OPEN_GROUP_SIDS = frozenset(
+    {
+        "S-1-1-0",  # Everyone
+        "S-1-5-11",  # NT AUTHORITY\Authenticated Users
+        "S-1-5-32-545",  # BUILTIN\Users
+    }
+)
 
 
 class MachineScopeRefusedReason(StrEnum):
@@ -100,7 +134,7 @@ class MachineScopeRefusedReason(StrEnum):
     S-1b's auto-grant screen branches on ``INACCESSIBLE`` (D5: "switch on ∧ access
     denied") and ``--diagnose`` prints the reason. A single untyped ``RuntimeError`` would
     force both to string-match ``str(exc)`` — the fragility ``setup_errors`` exists to
-    avoid. S-1b adds ``OPEN_ACE`` when it adds the explicit-ACE walk.
+    avoid.
     """
 
     SWITCH_UNREADABLE = "switch_unreadable"
@@ -110,6 +144,12 @@ class MachineScopeRefusedReason(StrEnum):
     FOREIGN_OWNER = "foreign_owner"
     INHERITED_ACL = "inherited_acl"
     INACCESSIBLE = "inaccessible"
+    # S-1b-i.1: the explicit open-group ACE walk, promised by S-1a's predicate docstring.
+    OPEN_ACE = "open_ace"
+    # S-1b-i.2, MEASURED: ``platformdirs`` 4.9.6 consults ``WIN_PD_OVERRIDE_*`` BEFORE
+    # ``SHGetKnownFolderPath`` (``platformdirs/windows.py:356-361``), so an unprivileged
+    # environment variable can redirect the machine root.
+    REDIRECTED = "redirected"
 
 
 class MachineScopeRefused(RuntimeError):
@@ -256,10 +296,28 @@ def _override_data_dir() -> Path | None:
 def machine_data_dir() -> Path:
     """The shared, machine-scoped data directory (``C:\\ProgramData\\DistrictSync``).
 
-    PURE — resolves the location only; it creates nothing and checks nothing. The elevated
-    ``provision`` op (plan 0049 S-1b) creates it, strips inheritance and applies the DACL;
-    :func:`_assert_machine_dir_trusted` is what decides whether the app may USE it.
+    Resolves the location only; it creates nothing and applies nothing. The elevated
+    ``provision`` op (plan 0049 S-1b) creates it WITH its owner and DACL in one
+    ``CreateDirectoryW`` call; :func:`assert_machine_dir_trusted` is what decides whether
+    the app may USE it.
+
+    **It REFUSES while any ``WIN_PD_OVERRIDE_*`` variable is set** (S-1b-i.2). MEASURED on
+    ``platformdirs`` 4.9.6: ``get_win_folder`` consults ``WIN_PD_OVERRIDE_<CSIDL>`` before
+    ``SHGetKnownFolderPath`` (``platformdirs/windows.py:356-361``). Without this guard an
+    unprivileged environment variable redirects the very directory the provisioner
+    ``/setowner``s, ACLs, seals a LocalMachine secret into and commits HKLM against — and
+    the app would then read its settings from wherever that variable pointed. The refusal
+    covers the whole prefix rather than the one CSIDL we happen to use today: a future
+    platformdirs could route this call through a different folder id.
+
+    Raises:
+        MachineScopeRefused: a ``WIN_PD_OVERRIDE_*`` variable is redirecting the location.
     """
+    redirected = sorted(
+        name for name, value in os.environ.items() if name.upper().startswith(_PD_OVERRIDE_PREFIX) and value.strip()
+    )
+    if redirected:
+        raise MachineScopeRefused(MachineScopeRefusedReason.REDIRECTED, ", ".join(redirected))
     return Path(platformdirs.site_data_dir(_APP_NAME, appauthor=False))
 
 
@@ -384,6 +442,138 @@ def _read_dir_security(path: Path) -> tuple[str, int]:  # pragma: no cover - Win
         kernel32.LocalFree(descriptor)
 
 
+def _read_dacl_aces(path: Path) -> tuple[tuple[int, str], ...]:  # pragma: no cover - Windows-only ctypes
+    """Return ``((ace type, trustee SID string), …)`` for ``path``'s DACL.
+
+    The second raw-syscall seam, beside :func:`_read_dir_security` — deliberately its own
+    call rather than a widened return, because they answer two different questions and ten
+    pinned tests drive the first one's shape.
+
+    A **NULL or absent DACL** is reported as one synthetic ``Everyone`` ALLOW entry: both
+    mean "no access control at all", and returning an empty tuple would make the open-group
+    walk pass the most open state there is.
+
+    Raises ``OSError`` on any failure — the caller turns that into ``INACCESSIBLE``, never
+    into a pass. Same ctypes convention as ``scheduler/elevation.py``:
+    ``WinDLL(..., use_last_error=True)``, explicit argtypes/restype, ``LocalFree`` in a
+    ``finally``.
+
+    The ``sys.platform`` guard makes the off-Windows answer a FAIL-CLOSED ``OSError``
+    rather than the ``AttributeError`` ``ctypes.WinDLL`` would otherwise raise — an
+    exception type the caller does not catch would escape a security predicate as a crash.
+    Machine scope cannot be on off Windows (``_machine_switch_on`` returns False there), so
+    this is unreachable at runtime; it is the type-checker's narrowing point and the
+    honest shape.
+    """
+    if sys.platform != "win32":
+        raise OSError("Directory ACLs can only be read on Windows.")
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_int,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = ctypes.c_uint32
+    advapi32.GetAclInformation.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32]
+    advapi32.GetAclInformation.restype = ctypes.c_bool
+    advapi32.GetAce.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.GetAce.restype = ctypes.c_bool
+    advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p)]
+    advapi32.ConvertSidToStringSidW.restype = ctypes.c_bool
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+
+    dacl = ctypes.c_void_p()
+    descriptor = ctypes.c_void_p()
+    status = advapi32.GetNamedSecurityInfoW(
+        str(path),
+        _SE_FILE_OBJECT,
+        _DACL_INFORMATION,
+        None,
+        None,
+        ctypes.byref(dacl),
+        None,
+        ctypes.byref(descriptor),
+    )
+    if status != 0:
+        raise OSError(f"GetNamedSecurityInfoW (DACL) failed for {path} (error {status}).")
+    try:
+        if not dacl:
+            # A NULL DACL grants everyone full control. Report it as exactly that.
+            return ((_ACCESS_ALLOWED_ACE_TYPE, "S-1-1-0"),)
+
+        class _AclSizeInformation(ctypes.Structure):
+            _fields_ = (
+                ("AceCount", ctypes.c_uint32),
+                ("AclBytesInUse", ctypes.c_uint32),
+                ("AclBytesFree", ctypes.c_uint32),
+            )
+
+        info = _AclSizeInformation()
+        # 2 == AclSizeInformation.
+        if not advapi32.GetAclInformation(dacl, ctypes.byref(info), ctypes.sizeof(info), 2):
+            raise OSError(f"GetAclInformation failed for {path} (error {ctypes.get_last_error()}).")  # type: ignore[attr-defined]
+
+        aces: list[tuple[int, str]] = []
+        for index in range(info.AceCount):
+            ace = ctypes.c_void_p()
+            if not advapi32.GetAce(dacl, index, ctypes.byref(ace)):
+                raise OSError(f"GetAce({index}) failed for {path} (error {ctypes.get_last_error()}).")  # type: ignore[attr-defined]
+            ace_type = ctypes.cast(ace, ctypes.POINTER(ctypes.c_uint8))[0]
+            sid_ptr = ctypes.c_void_p((ace.value or 0) + _ACE_SID_OFFSET)
+            sid_text = ctypes.c_wchar_p()
+            if not advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(sid_text)):
+                raise OSError(f"ConvertSidToStringSidW failed for {path} (error {ctypes.get_last_error()}).")  # type: ignore[attr-defined]
+            try:
+                aces.append((int(ace_type), str(sid_text.value)))
+            finally:
+                kernel32.LocalFree(sid_text)
+        return tuple(aces)
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
+def assert_no_open_aces(path: Path) -> None:
+    """Raise ``MachineScopeRefused(OPEN_ACE)`` if any open group can reach ``path``.
+
+    The explicit walk S-1a's predicate docstring promised. ``SE_DACL_PROTECTED`` proves
+    inheritance was stripped; it does NOT prove the resulting DACL is closed — an admin who
+    hand-creates the folder, or an ``icacls /grant`` that resolved oddly, can leave
+    ``Users:(OI)(CI)(RX)`` on a protected, Administrators-owned directory. That directory
+    holds a LocalMachine-sealed delivery password whose only confidentiality boundary IS
+    this DACL (D3).
+
+    Only **ALLOW** aces count (:data:`_ACCESS_ALLOWED_ACE_TYPE`) — a DENY ace for Everyone
+    is a hardening measure, and refusing it would invert the check.
+
+    Fails closed: an unreadable DACL is ``INACCESSIBLE``, never a pass.
+    """
+    try:
+        aces = _read_dacl_aces(path)
+    except OSError as exc:
+        raise MachineScopeRefused(MachineScopeRefusedReason.INACCESSIBLE, path) from exc
+    for ace_type, sid in aces:
+        if ace_type == _ACCESS_ALLOWED_ACE_TYPE and sid in OPEN_GROUP_SIDS:
+            raise MachineScopeRefused(MachineScopeRefusedReason.OPEN_ACE, path)
+
+
+def assert_machine_dir_trusted(path: Path) -> None:
+    """The trust predicate's PUBLIC face — used by the elevated provisioner's verify step.
+
+    Delegates rather than aliases, so ``_assert_machine_dir_trusted`` stays the ONE
+    monkeypatch seam every existing test (and this module's own resolver) drives: a patch
+    on the private name is honoured through this call too.
+    """
+    _assert_machine_dir_trusted(path)
+
+
 def _assert_machine_dir_trusted(path: Path) -> None:
     """Raise :class:`MachineScopeRefused` unless ``path`` is a profile we may trust.
 
@@ -400,8 +590,8 @@ def _assert_machine_dir_trusted(path: Path) -> None:
 
     Reparse is checked BEFORE the directory test only so a directory symlink reports the
     precise reason; both outcomes are a refusal. The explicit open-group ACE walk
-    (Everyone / Authenticated Users / Users) is S-1b's, together with its ``OPEN_ACE``
-    reason — that slice writes the DACL and reads it back through ``icacls``.
+    (:func:`assert_no_open_aces`) runs LAST, so the cheap ``lstat`` rungs still report the
+    precise reason for a missing or planted directory before any DACL is walked.
     """
     try:
         info = os.lstat(path)
@@ -424,6 +614,7 @@ def _assert_machine_dir_trusted(path: Path) -> None:
         raise MachineScopeRefused(MachineScopeRefusedReason.FOREIGN_OWNER, path)
     if not control & _SE_DACL_PROTECTED:
         raise MachineScopeRefused(MachineScopeRefusedReason.INHERITED_ACL, path)
+    assert_no_open_aces(path)
 
 
 def _user_scope_data_dir(*, create: bool) -> Path:
@@ -522,6 +713,23 @@ def reset_data_dir_pin() -> None:
     _PIN = None
 
 
+def per_user_data_dir() -> Path:
+    """The PER-USER profile root, resolved WITHOUT consulting the machine-scope switch.
+
+    Non-creating. Two callers, both of which need the per-user answer specifically rather
+    than "wherever this install reads its settings":
+
+    * :func:`handshake_dir` — the elevation blobs must stay per-user in every scope;
+    * the elevated ``provision`` op — it MIGRATES this directory, and it re-derives the
+      answer itself so it can refuse a payload that names a different one (a request file
+      is attacker-influencable, and the child is the privileged half).
+
+    Public because ``src/`` has no precedent for one module reaching into another's
+    privates, and a security-relevant resolution is the wrong place to start.
+    """
+    return _user_scope_data_dir(create=False)
+
+
 def handshake_dir() -> Path:
     """The PER-USER directory for elevation handshake files — in EVERY scope, non-creating.
 
@@ -535,7 +743,7 @@ def handshake_dir() -> Path:
     :func:`~src.scheduler.elevation.new_result_path` mkdir explicitly, and
     ``sweep_orphans`` returns 0 when the directory is absent.
     """
-    return _user_scope_data_dir(create=False)
+    return per_user_data_dir()
 
 
 def user_data_dir() -> Path:
@@ -734,7 +942,7 @@ def user_log_file() -> Path:
     """
     base = user_data_dir()
     if is_machine_scope():
-        return base / "runs" / f"etl_tool-{sanitise_account_for_filename(process_account())}.log"
+        return base / MACHINE_RUNS_SUBDIR / f"etl_tool-{sanitise_account_for_filename(process_account())}.log"
     return base / "etl_tool.log"
 
 
@@ -749,7 +957,18 @@ def user_history_db() -> Path:
     principal's runs land in ONE ledger that Run History can read — the gap plan 0046
     Slice C could only document.
     """
-    base = user_data_dir()
-    if is_machine_scope():
-        return base / "runs" / "history.db"
-    return base / "history.db"
+    return history_db_in(user_data_dir(), machine_scope=is_machine_scope())
+
+
+def history_db_in(root: Path, *, machine_scope: bool) -> Path:
+    """Where the run store lives inside a profile ``root`` — the ONE layout rule.
+
+    Extracted so the elevated provisioner can assert its migrated ``history.db`` landed
+    exactly where :func:`user_history_db` will look for it, WITHOUT re-spelling the rule.
+    Step 6 of ``provision`` exists to catch a directory the app would later reject; a
+    second spelling of the layout is precisely the drift it could not catch.
+
+    ``machine_scope`` is REQUIRED and undefaulted: a defaulted value here silently picks
+    a profile layout, which is the class of mistake this plan exists to remove.
+    """
+    return root / MACHINE_RUNS_SUBDIR / RUN_STORE_NAME if machine_scope else root / RUN_STORE_NAME
