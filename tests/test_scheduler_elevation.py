@@ -300,6 +300,20 @@ class TestHandshakeFilesStayPerUser:
         monkeypatch.setattr("src.utils.paths.machine_data_dir", lambda: machine)
         monkeypatch.setattr("src.utils.paths._machine_switch_on", lambda: True)
         monkeypatch.setattr("src.utils.paths._read_dir_security", lambda p: ("S-1-5-32-544", 0x1000))
+        # The trust predicate makes THREE raw reads since S-1b-i added the open-group ACE
+        # walk. Seeding only the first two left this test calling the real Win32 API: it
+        # happened to pass on Windows (a user tmp dir carries no open-group ALLOW ace) and
+        # raised OSError -> INACCESSIBLE on CI's Linux leg. A provisioned DACL, as
+        # ``(ace type, SID)`` pairs: SYSTEM, Administrators, the setup user, the principal.
+        monkeypatch.setattr(
+            "src.utils.paths._read_dacl_aces",
+            lambda p: (
+                (0, "S-1-5-18"),
+                (0, "S-1-5-32-544"),
+                (0, "S-1-5-21-1-2-3-1001"),
+                (0, "S-1-5-21-1-2-3-1002"),
+            ),
+        )
         monkeypatch.setattr("src.utils.paths._user_scope_data_dir", lambda *, create: per_user)
         monkeypatch.setattr(elevation, "protect_blob", lambda raw: b"sealed")
         monkeypatch.setattr(elevation, "_set_owner_only_dacl", lambda path: None)

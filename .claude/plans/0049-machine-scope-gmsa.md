@@ -561,3 +561,300 @@ per-user profile" and an unreadable switch cannot prove the switch is unset.
 5. All local gates green (pytest+cov · ruff check · ruff format --check · mypy non-UI · bandit
    `-c pyproject.toml` · tree-check · `check_no_emails.py` · validate-config inline), and **CI's
    own `test pass` line read and quoted on both legs** before the slice is called landed.
+
+## Spec — S-1b (provisioning)  _(Stage 4, 2026-09-17; revised after the 2-lens review)_
+
+Implements the S-1b row of `## Slices` against `main` @ `406e5d3` (S-1a landed: #129/#130).
+Design of record: `## Design` D4, D5, D7.
+
+Reviewed by security and reliability-resilience (opus) in design mode. **Both returned
+CHANGES_REQUIRED, with two findings MEASURED on this machine.** Dispositions in `### S-1b.8`.
+Three amendments depart from the plan's letter; all three are named there.
+
+**Still inert.** S-1b builds the ops that *can* turn machine scope on; **nothing calls them** —
+Schedule-time dispatch is S-2. That is deliberate: the riskiest code in the plan lands and gets
+tested before any UI can reach it.
+
+Two halves: **S-1b-i** (elevated engine) and **S-1b-ii** (surfaces). **Two PRs off `main` in
+sequence — never stacked.** `ci.yml` fires only on PRs targeting `main`, so a stacked PR silently
+carries no test gate (learned on #130).
+
+---
+
+## S-1b-i — the elevated engine
+
+### S-1b-i.1 — The directory is created WITH its DACL, atomically
+
+This replaces the plan's D4 step-2 sequence (`create → strip inheritance → verify empty → apply
+DACL → /setowner`), which **cannot work as written.** Two measurements:
+
+- `icacls <dir> /inheritance:r` leaves a **zero-ACE** DACL, which denies `FILE_LIST_DIRECTORY` to
+  everyone including the owner: `Path.iterdir()` then raises `PermissionError [WinError 5]`. The
+  "verify empty" check that the whole anti-plant design rests on can never observe a file — it
+  fails every run, or an implementer degrades the error to "looks empty" and promotes a directory
+  containing the attacker's file.
+- `shutil.rmtree` on that same directory raises `PermissionError [WinError 5]`, so the rollback
+  cannot remove what it created. Every pre-commit failure would leave a standing, unlistable
+  directory owned by the elevated admin (not Administrators, since `/setowner` had not run yet),
+  which step 1 then refuses forever as `FOREIGN_OWNER`.
+
+**Instead:** build the D2 descriptor as SDDL, convert with
+`ConvertStringSecurityDescriptorToSecurityDescriptorW`, and pass it to `CreateDirectoryW` via
+`SECURITY_ATTRIBUTES`. Owner (`O:BA`) and the protected DACL (`D:P(...)`) exist **at creation**.
+There is no window to plant into, nothing to verify afterwards, and `Administrators:(OI)(CI)F`
+means the elevated child can always `rmtree` its own rollback.
+
+- **Creation is the atomic gate:** `CreateDirectoryW` fails with `ERROR_ALREADY_EXISTS` if
+  anything is there. Route that to step 1's refusal — **never** to an adopt-and-fix path. This is
+  what makes "never adopt a directory the app did not create" structural rather than a promise.
+- All principals in the SDDL are **SID strings** (`BA`/`SY` well-known abbreviations, or explicit
+  `S-1-...`), never localised names. `paths._TRUSTED_OWNER_SIDS` already exists because
+  `BUILTIN\Administrators` is localised; an `icacls ... /grant Administrators:F` would fail on a
+  non-English Windows.
+- `runs/` is created the same way, with the principal's additional `(OI)(CI)M`. **`provision`
+  creates it** — S-1a-i deliberately left `user_log_file()` non-creating, because an
+  admin-created `runs/` would inherit the root's RX and silently break the principal's log.
+- Where `icacls` is still used (the `grant`/`prune` ops, which modify an existing DACL), **every
+  non-zero exit is fatal.** That is the inverse of `elevation._set_owner_only_dacl`, which logs a
+  warning and continues because DPAPI CurrentUser is its real boundary. Here the DACL *is* the
+  boundary, and the note must say so where the pattern is borrowed.
+
+### S-1b-i.2 — `machine_data_dir()` is hardened (a landed-code fix)
+
+**MEASURED: platformdirs 4.9.6 checks `WIN_PD_OVERRIDE_*` environment variables before
+`SHGetKnownFolderPath`** (`platformdirs/windows.py:356-361`). So the machine root — the directory
+this slice `/setowner`s, ACLs, seals a LocalMachine secret into, and commits HKLM against — is
+redirectable by an unprivileged environment variable.
+
+- `machine_data_dir()` **refuses** (raises `MachineScopeRefused`) when any `WIN_PD_OVERRIDE_*` is
+  set. One resolution, once, at the top of `provision`, threaded through every step as a local —
+  never re-resolved per step, so the validated path and the used path cannot differ.
+- **CLAUDE.md is corrected in this slice.** Its `DISTRICTSYNC_DATA_DIR` paragraph says
+  platformdirs "ignores a `LOCALAPPDATA` env var (`SHGetKnownFolderPath`)" and infers that a
+  frozen exe "can't be redirected any other way there". True of `LOCALAPPDATA`; false of
+  platformdirs' own `WIN_PD_OVERRIDE_LOCAL_APPDATA`. Correct the sentence rather than leave a
+  security-relevant claim that a reader would rely on.
+
+### S-1b-i.3 — `elevated_apply`: three new ops
+
+Extend the existing `if/elif` on `payload["op"]` (`_apply`, `:143-162`) — three entries do not
+earn a table. Each op validates its own required fields the way `_do_register` does, and keeps
+the `{ok, message}` contract.
+
+**`provision`**, fail-closed, in order:
+1. **Refuse under an override.** `_override_data_dir() is not None` → refuse, in **both** halves.
+   `DISTRICTSYNC_DATA_DIR` is mandated for every local, CI and QA run, and a UAC-launched child
+   gets an environment rebuilt from the consenting token — so without this the owner's own
+   fresh-profile QA walk would permanently switch their laptop to machine scope and copy their
+   real `config.json` (identity address included) into `C:\ProgramData`. The parent also sends
+   its resolved source path in the payload; the child refuses on disagreement with its own.
+2. **Path exists?** → step 8's resumable rule decides; otherwise refuse, naming the path.
+3. **Create with the SDDL** (S-1b-i.1), plus `runs/`.
+4. **Migrate** (S-1b-i.4).
+5. **Secret** — write through `MachineSecretStore` (verify-before-promote, landed in S-1a-ii).
+6. **Verify with our own predicate, not with exit codes.** Call `_assert_machine_dir_trusted()`
+   **and** the new ACE walk on the provisioned directory, and assert the migrated `history.db`
+   landed where `user_history_db()` will look for it (`runs/`). Any refusal here is a pre-commit
+   failure. Without this, a grant that resolved oddly commits a switch pointing at a directory
+   the trust predicate will reject — and since D0 forbids falling through, the app then refuses
+   to start for the admin *and* the nightly, recoverable only by hand-editing HKLM.
+7. **Commit: write the HKLM switch**, using `paths.MACHINE_SCOPE_KEY_ACCESS` — import it, never
+   re-spell it. A writer in the 32-bit view commits `WOW6432Node\DistrictSync`, reports success,
+   and leaves the app per-user with the config and secret already copied.
+8. `task_com.register_task_definition(params)` → confirm read-back, as today.
+
+- **Rollback:** any failure before step 7 removes the directory it created and reports the step
+  id. Removal failure is its own step id — never silent.
+- **Resumable, not wedged (amendment 1).** "Passes the trust predicate ∧ switch OFF" is the
+  **resume** case: re-run steps 3b–8 idempotently. Only an elevated administrator can produce an
+  Administrators-owned, `SE_DACL_PROTECTED` directory, so it is provably ours and provably
+  incomplete — this is not the adoption the security lens rejected. Everything that fails the
+  predicate stays a hard refusal. Without this rule, a kill between the secret write and the
+  commit — the child *is* killed, `run_elevated` bounds it at 120 s (`windows.py:122`) and that
+  budget must cover UAC dwell plus a full `history.db` backup on an AV-scanned server — strands a
+  sealed credential in a directory every future attempt refuses forever.
+
+**`grant_current_user`** — one additive `:M` ACE. The grantee is derived **only from the child's
+own token** (`current_run_as_user()`), **never from the payload**: a payload-named account would
+let any admin-consented request grant an arbitrary principal Modify on the shared profile.
+Consequence to state in the docs, not solve here: root ACEs only ever grow — a granted admin
+keeps Modify on `config.json` and read access to `sftp_secret.bin` after demotion, and only the
+*task principal* has a prune. → ROADMAP.
+
+**`prune_principal`** — remove the recorded principal's ACEs, and **only after the delete
+read-back confirms MISSING**. An unconfirmed delete leaves the ACE and reports the step: pruning
+a live task's principal makes it hit `MachineScopeRefused(INACCESSIBLE)` every night and exit 1
+with no surface anywhere — exactly the silent-nightly failure this plan exists to remove. The
+secret stays (Convert's manual delivery needs it); the docs state that the setup user's `:M` is
+what owns it thereafter.
+
+**Result vocabulary:** a fixed `StrEnum` of step ids plus the **icacls exit code only**. Never
+stderr, never a resolved path, never a secret. The non-leak tests extend to **both** secrets
+(SFTP password and task password) across result, message and log.
+
+### S-1b-i.4 — Migration (its own function; `migrate_legacy_data_dir` untouched)
+
+**Neither `sqlite3.Connection.backup()` nor `PRAGMA integrity_check` exists anywhere in this repo
+today** — new code with its own tests, not a pattern being reused.
+
+- `config.json` — **parse then write**, never a byte copy: a torn source must fail here, not at
+  the next `AppConfig.load()`.
+- `history.db` — `Connection.backup()` into staging, then `PRAGMA integrity_check` **and** a
+  row-count comparison **taken inside the same read transaction as the backup** (a second query
+  against a live source races a concurrent writer and would fail a perfectly good copy).
+- `mappings/` and `known_hosts` — plain copies; a self-service district's overlay (plan 0044)
+  lives there and the nightly must find it.
+- Technique from `migrate_legacy_data_dir` (`paths.py:634`): stage into a sibling temp dir,
+  promote with one `os.replace`, retry `PermissionError` three times with backoff, `rmtree`
+  staging on any other failure, never delete the source.
+
+---
+
+## S-1b-ii — the surfaces
+
+### S-1b-ii.1 — Post-provision session steps (parent side)
+
+- **Gate on the parent's own re-read of the switch** (`paths._machine_switch_on()`), **never on
+  the child's claim** — run it on *every* outcome, including TIMEOUT and `read_result() is None`.
+  The child is killed on the bounded wait, so the result file is absent on exactly the failures
+  where it may nonetheless have committed; trusting its absence keeps the session writing through
+  a stale per-user pin, and every edit made after the commit vanishes at the next launch.
+- Then: `reset_data_dir_pin()` → re-pin → **assert `is_machine_scope()` is True** before anything
+  destructive → re-point the log sink → rename the per-user `config.json` and `history.db`
+  (+ `-wal`/`-shm`) to `*.pre-machine-<ts>` → write `MOVED.txt`.
+- **Re-enter the app body** through the `_enter_app` seam rather than "reloading `AppConfig`":
+  `build_app_body` gives each screen its own instance (`shell.py:333/344/352/359`), so a reload
+  produces an object nobody holds while Settings keeps a pre-provision instance whose `save()`
+  resolves the path at call time.
+- **The three-facet schedule save happens strictly AFTER the re-pin.** Before it, the facets land
+  in the `config.json` that is renamed seconds later — a machine-scoped install reporting "no
+  nightly scheduled" against a live task.
+- **The rename must actually fence (amendment 2).** `AppConfig.load()` maps `FileNotFoundError`
+  to defaults with no log (`app_config.py:336-337`), `save()` recreates the file, and
+  `store._open` creates the DB — so a process still pinned per-user silently writes into a new
+  orphan profile. `AppConfig.save()` and `write_run_record` **refuse with a WARNING when
+  `MOVED.txt` sits in the resolved directory**. (`migrate_legacy_data_dir` writes `MOVED.txt`
+  into the *legacy* dir it left behind, so there is no collision: a `MOVED.txt` beside a live
+  profile unambiguously means "superseded".)
+
+### S-1b-ii.2 — The grant screen (amendment 3: a pre-shell window, then re-exec)
+
+The plan's D5 puts this at `screens/grant_access.py` behind the shell. **That mount point does
+not exist at the moment of failure:** `launcher.main` calls `pin_data_dir()` inside its try,
+*before* `ft.run(shell.main, ...)`; an `INACCESSIBLE` refusal lands in the `except` →
+`_show_error_dialog` → `sys.exit(1)`. `shell.main` is never entered and could not survive anyway
+— `AppConfig.load()` re-resolves `user_data_dir()` and re-raises.
+
+- Render it from the launcher's **refusal path**, where `_MACHINE_SCOPE_CAUSES` already lives
+  (`launcher.py:42-50`) — a single-purpose pre-shell window, not a shell screen.
+- **Branch on the typed `reason`**, never on `str(exc)`.
+- After a successful grant, **re-exec the process**. A second `ft.run` in one process is not
+  proven here, and guessing is how a boot path becomes unreproducible.
+- **D5's non-administrator promise cannot be kept, and the copy must say so.** The elevation
+  handshake is DPAPI **CurrentUser**; `elevated_apply` maps a cross-SID unprotect to
+  `DSYNC_DIFFERENT_ACCOUNT`, so over-the-shoulder consent by a *different* admin fails closed.
+  The screen branches on that sentinel with honest copy ("the administrator who approved is not
+  you — sign in as an administrator on this computer, or ask one to open DistrictSync once"),
+  instead of promising something the handshake refuses. One filled primary, `ErrorCard` floor.
+  Load the `districtsync-design` skill before writing it.
+
+### S-1b-ii.3 — `--diagnose` (D7, read-only)
+
+- **Reachable in the state it exists for.** `_cli` pins and `return`s the refusal *before*
+  argparse is built (`main.py:478-481`), so a flag parsed normally is unreachable on a refused
+  machine scope — the plan's own requirement and its wiring contradicted each other. Recognise
+  `--diagnose` in the **argv pre-check beside `--elevated-apply`**, and guard each
+  profile-resolving line individually (`read_run_records` → `user_history_db()` →
+  `user_data_dir()` can re-raise).
+- Prints: resolved data dir + scope + HKLM values; machine-dir owner / reparse / DACL summary;
+  secret store selected + `has_secret` + an identity-match **boolean**; schedule read-back incl.
+  `run_as`; last run record. Exits 0.
+- **It is NOT "PII-free" — the plan's D7 over-claims and this spec corrects it.** It prints
+  Windows account names (`run_as`, `ProvisionedBy`, every DACL principal), the resolved profile
+  path (which embeds the signed-in username) and the SFTP username. The support copy says
+  **"carries no passwords — it does name Windows accounts and folders, so treat it like a log"**.
+- Reuse the house conventions: `_sftp_show`'s aligned-label block and
+  `_report_machine_scope_refusal`'s bracketed anchor. If any line is ever smoke-tested, follow
+  `--version`'s CI-pinned-prefix convention.
+
+---
+
+### S-1b.5 — Tests
+
+- **Provision**: refuse under an override (both halves) · `ERROR_ALREADY_EXISTS` routes to the
+  refusal, never to adoption · created dir passes `_assert_machine_dir_trusted` **and** the ACE
+  walk immediately, with no separate DACL step (the positive twin for S-1b-i.1) · step-6
+  verification rejects a tampered DACL before commit · rollback removes the dir **and** a removal
+  failure gets its own step id · resume case: trusted ∧ switch-off re-runs and commits · every
+  failing-predicate case stays a hard refusal.
+- **Migration, non-vacuous**: commit a row, leave the `-wal` **uncheckpointed**, assert the row
+  arrives in the promoted copy **and** is absent from a main-file-only byte copy. A test that
+  passes against `shutil.copy2` proves nothing about the mechanism it exists to prove.
+- **DACL, Windows-only real**: create-with-SDDL then `icacls` read-back — `Users` absent,
+  principal RX at root and M on `runs/`, owner Administrators, inheritance protected.
+- **ACE walk**: each open-group SID refuses with `OPEN_ACE`; a correctly-ACL'd dir passes.
+- **`machine_data_dir()`** refuses under `WIN_PD_OVERRIDE_*` (positive twin: resolves without it).
+- **`grant_current_user`** grants the child's token account and **ignores a payload-named
+  account** (assert the payload name gets no ACE) · `prune_principal` refuses on an unconfirmed
+  delete and runs on a confirmed-MISSING one · prune leaves the secret.
+- **Parent-side**: post-provision steps fire on TIMEOUT / absent result when the switch reads on
+  · the `MOVED.txt` fence refuses a save and a run-record write, with a positive twin that both
+  succeed without it · facet save lands in the machine `config.json`.
+- **`--diagnose`**: runs and names the reason on a refused machine scope · prints no password in
+  any state incl. secret-present · exits 0.
+- **Non-leak table extended to BOTH secrets** across result / message / log.
+- **AC1's no-registry-write test MOVES deliberately** — S-1b adds the writer. Replace it with a
+  narrower pin: the only `winreg` write in `src/` is the elevated `provision` op, using
+  `MACHINE_SCOPE_KEY_ACCESS`. Say so in the diff.
+- `mypy --platform linux` before pushing — `winreg` write APIs are the trap that reddened #129.
+
+### S-1b.6 — Docs
+
+`ARCHITECTURE_TREE` line for the grant window. `headless-sftp-setup.md` gains the D3 **posture
+statement** (protected to local administrators, SYSTEM and the service account on this computer;
+**a file-level or image backup carries it** — exclude `sftp_secret.bin` or treat backups as
+sensitive; the compensating control is that the SFTP password is per-district and rotatable;
+**never** "useless off-box"). `CLAUDE.md`: the three ops, and the `WIN_PD_OVERRIDE_*` correction
+(S-1b-i.2). DECISIONS: one entry for the create-with-SDDL amendment and its two measurements.
+**No CHANGELOG** — still nothing a user can reach.
+
+### S-1b.7 — Out of scope
+
+Schedule-time dispatch, pre-UAC gates, confirm copy (**S-2**) · `PrincipalKind` (S-3) · the gMSA
+disclosure (S-4). **Roadmap, not this slice:** nothing sweeps quarantined `history.corrupt-*.db`
+files (pre-existing); root ACEs only grow, so a demoted admin keeps access until un-provisioning
+exists.
+
+### S-1b.8 — Review dispositions
+
+**Accepted from security (10/10):** create-with-SDDL replacing strip-then-verify (MEASURED:
+zero-ACE DACL makes `iterdir` raise, and `rmtree` fail) · restore-access-before-remove, subsumed
+by the SDDL fix · verify with our own predicate before commit · `CreateDirectoryW` as the atomic
+gate · `WIN_PD_OVERRIDE_*` hardening (MEASURED in the installed package) · refuse under the
+override in both halves + parent-sent source path · grantee from the child's token only, plus the
+honest non-admin copy · resumable trusted-∧-switch-off · prune only after a confirmed delete ·
+`--diagnose` reachability and the PII-free over-claim.
+**Accepted from resilience (10/10):** the wedged-partial-provision critical (answered by the
+resume rule rather than a `.provisioning` marker — the trust predicate already proves the
+directory is ours, so no new artefact is needed) · parent re-reads the switch · `--diagnose`
+reachability · pre-shell grant window + re-exec · the `MOVED.txt` fence · override refusal ·
+one-invocation DACL (subsumed by SDDL) · SID form · non-vacuous migration test · `_enter_app`
+re-entry and facet-save ordering.
+**Amendments to the plan:** (1) provisioning is resumable from a trusted-but-uncommitted
+directory, where D4 implies a single forward pass; (2) `AppConfig.save()` and `write_run_record`
+gain a `MOVED.txt` refusal, which D4 does not mention and without which its "stale writer must
+fail loudly" has no mechanism; (3) the grant screen is a pre-shell window with a re-exec, not the
+`screens/grant_access.py` D5 describes.
+
+### S-1b.9 — Acceptance criteria
+
+1. Nothing in the app calls the three ops; machine scope still cannot turn on in the field.
+2. Every provisioning outcome is one of: no directory · a trusted directory that the next attempt
+   **resumes** · a committed, verified machine profile. No state wedges provisioning, and none
+   strands a sealed secret where a future attempt would refuse.
+3. The switch is only ever committed against a directory that passes the app's own trust
+   predicate, and the parent only acts on a switch it read itself.
+4. No secret value in any result, message or log, for either secret; `--diagnose` prints no
+   password and its copy does not claim more than that.
+5. All local gates green **including `mypy --platform linux`**, and CI's own `test` and
+   `test-windows` lines read and quoted, on a PR based on `main`.
