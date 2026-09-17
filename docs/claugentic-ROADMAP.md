@@ -269,7 +269,8 @@ _**2026-08-17 refresh** (D-0037-6, run as a documented substitute for the missin
 
 **Owner-deferred (explicit decisions, not debt):**
 - Email/push alerting on failed **or missed** nightly runs — the pull-cockpit ceiling stands by owner choice (2026-07-15). Revisit when a real support load justifies it.
-- Service-account / machine-scope secret storage (SYSTEM/gMSA task principals; non-keyring secret sources) — enterprise-scope, L.
+- Service-account principal support beyond a named account + password — gMSA / SYSTEM / LOCAL SERVICE / NETWORK SERVICE task principals — and the machine-scope secret storage those principals would need for SFTP delivery (Credential Manager has no cross-user scope, and a gMSA or SYSTEM account cannot log on interactively to seed its own credential — see `docs/claugentic-DECISIONS.md`, the 2026-09-16 gMSA-parked entry). The named-account + password half of this item **shipped** in plan 0046 Slice B. Parked 2026-09-16 on owner direction ("gMSA is out until explicitly asked for. Keep it simple."); research preserved in `.claude/plans/0046-HANDOVER.md` §5/§6 so it is not re-derived if revisited — enterprise-scope, L.
+- **UPN form (`user@domain`) for the scheduled-task run-as account.** `validate_run_as_user` accepts `DOMAIN\user`, `.\user` and a bare local name, but not `user@domain`. No district has asked for it (plan 0046 N8); widening a security-boundary regex on zero demand was declined. Revisit only on real demand.
 
 **Trigger-armed:**
 - Upgrade Flet to stable 1.0 when it leaves beta (still `0.85.3` everywhere): bump + re-pin → UI suite + exe smoke + manual graceful-shutdown → update `FLET_1.0_CONVENTIONS.md` → re-verify packaging.
