@@ -269,7 +269,16 @@ def _read_machine_switch_value() -> tuple[object, int]:  # pragma: no cover - Wi
     The raw syscall seam, isolated so every decision built on it is tested through a
     monkeypatch on every OS. Raises ``FileNotFoundError`` when the key or the value is
     absent (the normal state), and any other ``OSError`` on a real read failure.
+
+    The ``sys.platform`` guard is not defensive — it is what lets a type-checker running on
+    Linux skip this body. ``winreg``'s typeshed stubs mark every attribute Windows-only, so
+    without it CI's Linux mypy leg fails on ``OpenKey``/``QueryValueEx`` while a local
+    Windows run passes. :func:`_machine_switch_on` already returns before calling here off
+    Windows, so the raise is unreachable at runtime.
     """
+    if sys.platform != "win32":
+        raise FileNotFoundError("the machine-scope switch is Windows-only")
+
     import winreg
 
     with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, MACHINE_SCOPE_KEY_PATH, 0, MACHINE_SCOPE_KEY_ACCESS) as key:
