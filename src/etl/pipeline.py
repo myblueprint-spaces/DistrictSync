@@ -35,6 +35,8 @@ from src.etl.transformers.grades import resolve_timetable_scope
 from src.history.store import VALID_SOURCES, write_run_record
 from src.quality.report import DataQualityReport, declared_blank_fields
 from src.sftp.uploader import SFTPUploader
+from src.utils import paths
+from src.utils.accounts import process_account
 
 logger = logging.getLogger(__name__)
 
@@ -534,12 +536,23 @@ def build_run_record(
 
     ``data_errors`` is the compact ``{"total": N, "by_field": {...}}`` summary — a separate
     axis from ``status`` (which stays ``success``/``failed`` for the ETL run itself).
+
+    ``run_as`` (plan 0049 S-1a-ii.3) names the OS account the run executed as. It is set
+    HERE, in the one builder both paths go through (``run_pipeline``'s four sinks and
+    ``convert._record_manual_run``), so the two can never drift and no future sink can
+    forget it. Deliberately a record KEY and not a ``runs`` column: the store's only reader
+    returns the parsed JSON blob, so a column would be invisible to it, and the additive
+    ``ALTER TABLE`` + ``PRAGMA user_version`` pair has a measured brick state (two
+    autocommit commits; a crash between them re-ALTERs every night thereafter). It is an
+    OS account name, never a student identifier — the same class of value the log already
+    carries, and it stays local.
     """
     record: dict[str, Any] = {
         "timestamp": timestamp or datetime.now().isoformat(timespec="seconds"),
         "status": status,
         "source": source,
         "sis_type": sis_type,
+        "run_as": process_account(),
         "error_category": error_category,
         "duration_s": round(elapsed, 1),
         "sftp_attempted": sftp_attempted,
@@ -900,7 +913,12 @@ def run_pipeline(
             # glob (a stray admin file in that folder must not egress to SpacesEDU).
             if sftp:
                 sftp_attempted = True
-                sftp_ok = _sftp_upload(output_path, sis_type, manifest=DataLoader.output_filenames(outputs))
+                sftp_ok = _sftp_upload(
+                    output_path,
+                    sis_type,
+                    manifest=DataLoader.output_filenames(outputs),
+                    source=resolved_source,
+                )
 
         # Dry-run summary
         #
@@ -989,8 +1007,43 @@ def run_pipeline(
         raise
 
 
-def _sftp_upload(output_path: str, sis_type: str | None = None, *, manifest: Collection[str]) -> bool:
+def _delivery_staging_dir(source: str | None) -> Path | None:
+    """Where the delivery ZIP is BUILT — ``None`` means the system temp dir (plan 0049 S-1a-ii.2).
+
+    ``<machine profile>/runs/tmp`` for the scheduled nightly on a machine-scoped install
+    ONLY, on both halves of an ``and``:
+
+    * *machine-scoped* — the service principal may have no loaded user profile, so
+      ``%TEMP%`` is not a location it can be relied on to have;
+    * *scheduled* — the admin's manual Convert and a hand-run CLI DO have a loaded profile
+      and keep ``%TEMP%``. ``runs/`` grants the service principal Modify by design and
+      their ZIP is student PII about to leave the building, so it must not sit where
+      another principal could swap it between build and put.
+
+    Never raises on its own account: ``is_machine_scope()`` is already pinned by
+    ``pin_data_dir()`` at both entry points, and the one caller
+    (:func:`_sftp_upload`) turns any surprise into a logged delivery failure rather than
+    swallowing it here.
+    """
+    if source != "scheduled" or not paths.is_machine_scope():
+        return None
+    return paths.machine_data_dir() / "runs" / "tmp"
+
+
+def _sftp_upload(
+    output_path: str,
+    sis_type: str | None = None,
+    *,
+    manifest: Collection[str],
+    source: str | None = None,
+) -> bool:
     """Upload THIS run's generated CSV files via SFTP. Returns True on success.
+
+    ``source`` is the run's already-resolved source tag (:func:`_resolve_source`), used
+    for ONE decision — where the ZIP is staged (:func:`_delivery_staging_dir`). It is
+    optional because omitting it selects the conservative branch every install uses today
+    (the system temp dir); ``None`` honestly means "the caller did not say", never a
+    claim that this was a CLI run.
 
     ``manifest`` is the authoritative payload — the filenames this run wrote
     (``DataLoader.output_filenames(outputs)``), threaded through so delivery ships the
@@ -1019,7 +1072,12 @@ def _sftp_upload(output_path: str, sis_type: str | None = None, *, manifest: Col
             username=cfg.sftp_username,
             remote_path=cfg.sftp_remote_path,
         )
-        uploaded = uploader.upload_csvs(Path(output_path), sis_type=sis_type, manifest=manifest)
+        uploaded = uploader.upload_csvs(
+            Path(output_path),
+            sis_type=sis_type,
+            manifest=manifest,
+            staging_dir=_delivery_staging_dir(source),
+        )
         if uploaded:
             logger.info(f"SFTP upload complete: {len(uploaded)} file(s) — {uploaded}")
             return True

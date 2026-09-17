@@ -71,7 +71,8 @@ _Last reconciled on `feat/pre-partner-completion` @ b772054 (2026-07-20)._
 
 ## src/sftp/
 
-- `src/sftp/uploader.py` — `SFTPUploader`: paramiko SSHClient to an `ALLOWED_SFTP_HOSTS` host; keyring passwords (`KEYRING_SERVICE`); zips **rostering** CSVs into `districtsync_<sis>_YYYY-MM-DD.zip`, `STANDALONE_CSV_FILENAMES` (attendance + 2 myB+ feeds) outside it; `test_connection` (auth IS the test, D6; listing-denied → `(True, LISTING_DENIED_NOTE)`, missing path → fail), `upload_csvs()` (fail-loud on empty dir), `get_stored_password()`.
+- `src/sftp/secret_store.py` — WHERE the delivery password lives, by SCOPE (0049 S-1a-ii): `UserSecretStore` (keyring, username-only key — `host` ignored, so 20 live installs stay readable) or `MachineSecretStore` (`sftp_secret.bin`, DPAPI LocalMachine+UI_FORBIDDEN, identity bound in the ENTROPY, verify-BEFORE-promote via a unique `.tmp`, stale-tmp sweep, TOTAL `has_secret`); `select_store()` picks ONE — never both, never a fallback chain.
+- `src/sftp/uploader.py` — `SFTPUploader`: paramiko SSHClient, `ALLOWED_SFTP_HOSTS` host; passwords via `secret_store.select_store()`; zips **rostering** CSVs into `districtsync_<sis>_YYYY-MM-DD.zip`, `STANDALONE_CSV_FILENAMES` (attendance + 2 myB+) outside it; `test_connection` (auth IS the test, D6; listing-denied → `(True, LISTING_DENIED_NOTE)`, no path → fail), `upload_csvs()` (fail-loud when empty; `staging_dir=`), `get_stored_password()`.
 
 ---
 
