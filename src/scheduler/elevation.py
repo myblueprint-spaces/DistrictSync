@@ -11,7 +11,8 @@ ever running as administrator.
     (which may contain a Windows account password) is JSON-encoded and sealed with
     **DPAPI at CurrentUser scope** (:func:`protect_blob`) plus a fixed app-scoped
     optional-entropy constant, then written to a random-named ``dsync_elev_*.req``
-    file under :func:`~src.utils.paths.user_data_dir` with an explicit owner-only
+    file under :func:`~src.utils.paths.handshake_dir` — the PER-USER location in every
+    scope, never a shared machine-scoped profile — with an explicit owner-only
     DACL. **CurrentUser scope is the confidentiality boundary:** only the same
     user SID can decrypt the blob — an over-the-shoulder UAC consent under a
     *different* administrator account literally cannot decrypt it, so the child
@@ -64,6 +65,7 @@ from enum import Enum
 from pathlib import Path
 
 from src.utils import paths
+from src.utils.dpapi import CRYPTPROTECT_UI_FORBIDDEN, dpapi_call
 from src.utils.helpers import subprocess_no_window_flags, system_binary
 
 logger = logging.getLogger(__name__)
@@ -75,16 +77,13 @@ logger = logging.getLogger(__name__)
 DPAPI_ENTROPY_UTF8 = "DistrictSync/elevation/v1"
 _DPAPI_ENTROPY = DPAPI_ENTROPY_UTF8.encode("utf-8")
 
-# Random-named handshake files live under user_data_dir with this prefix so the
+# Random-named handshake files live under handshake_dir() with this prefix so the
 # startup sweep can find orphans and so they are excluded from any *.csv delivery glob.
 _HANDSHAKE_PREFIX = "dsync_elev_"
 
 # The child result is a tiny sanitized {ok, message} JSON. Cap the read so a corrupt /
 # runaway file can never be slurped whole — anything larger is treated as unparseable (None).
 _MAX_RESULT_BYTES = 64 * 1024
-
-# DPAPI: no UI ever, CurrentUser scope (the default — LocalMachine 0x4 is NEVER set).
-_CRYPTPROTECT_UI_FORBIDDEN = 0x1
 
 # ShellExecuteEx / process-wait constants.
 _SEE_MASK_NOCLOSEPROCESS = 0x00000040
@@ -116,60 +115,24 @@ class ElevationOutcome:
 # --------------------------------------------------------------------------- #
 
 
-class _DataBlob(ctypes.Structure):
-    """Win32 ``DATA_BLOB`` — a length-prefixed byte buffer for the DPAPI APIs."""
-
-    _fields_ = (("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_char)))
-
-
-def _to_blob(data: bytes) -> tuple[_DataBlob, ctypes.Array[ctypes.c_char]]:
-    """Wrap ``data`` in a ``DATA_BLOB``; the returned buffer must be kept alive by the caller."""
-    buf = ctypes.create_string_buffer(data, len(data))
-    blob = _DataBlob(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
-    return blob, buf
-
-
-def _dpapi(func_name: str, data: bytes, entropy: bytes) -> bytes:  # pragma: no cover - Windows-only ctypes
+def _dpapi(func_name: str, data: bytes, entropy: bytes) -> bytes:
     """Call ``CryptProtectData`` / ``CryptUnprotectData`` at CurrentUser scope.
 
-    Raises ``OSError`` on any API failure (a wrong-entropy or cross-SID unprotect
-    returns FALSE → we raise, so the caller fails closed). Never widens to
-    LocalMachine scope. The plaintext buffer the API allocates is ``LocalFree``'d.
-    """
-    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)  # type: ignore[attr-defined]
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-    func = getattr(crypt32, func_name)
-    func.argtypes = [
-        ctypes.POINTER(_DataBlob),
-        ctypes.c_wchar_p,
-        ctypes.POINTER(_DataBlob),
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_uint32,
-        ctypes.POINTER(_DataBlob),
-    ]
-    func.restype = ctypes.c_bool
+    Name, signature and behaviour are unchanged; the ctypes body moved to
+    :func:`src.utils.dpapi.dpapi_call` (plan 0049 S-1a-i.1) so the machine secret store
+    can reuse it without ``src/sftp`` importing from ``src/scheduler``.
 
-    in_blob, _in_buf = _to_blob(data)
-    ent_blob, _ent_buf = _to_blob(entropy)
-    out_blob = _DataBlob()
-    ok = func(
-        ctypes.byref(in_blob),
-        None,
-        ctypes.byref(ent_blob),
-        None,
-        None,
-        ctypes.c_uint32(_CRYPTPROTECT_UI_FORBIDDEN),
-        ctypes.byref(out_blob),
-    )
-    if not ok:
-        raise OSError(f"{func_name} failed (error {ctypes.get_last_error()}).")  # type: ignore[attr-defined]
-    try:
-        raw = ctypes.string_at(out_blob.pbData, out_blob.cbData)
-    finally:
-        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-        kernel32.LocalFree(ctypes.cast(out_blob.pbData, ctypes.c_void_p))
-    return raw
+    ``flags=CRYPTPROTECT_UI_FORBIDDEN`` — **not** ``0``, and never
+    ``CRYPTPROTECT_LOCAL_MACHINE``. The first is load-bearing: without it DPAPI may raise
+    a modal prompt inside the ``SW_HIDE`` elevated child or the non-interactive nightly,
+    turning a clean ``OSError`` into a bounded-wait hang. The second is the 2026-06-25
+    decision — this blob crosses a privilege boundary within ONE user, and the CurrentUser
+    SID binding IS its confidentiality boundary.
+
+    Raises ``OSError`` on any API failure (a wrong-entropy or cross-SID unprotect returns
+    FALSE → we raise, so the caller fails closed).
+    """
+    return dpapi_call(func_name, data, entropy, flags=CRYPTPROTECT_UI_FORBIDDEN)
 
 
 def protect_blob(data: bytes) -> bytes:  # pragma: no cover - thin Windows-only wrapper
@@ -245,18 +208,33 @@ def write_request(payload: dict[str, object]) -> Path:
     Returns the request file path. The bytes on disk are DPAPI-opaque (CurrentUser
     scope + app entropy) — NOT plaintext-readable — and the file is given an
     owner-only DACL. The caller deletes it after the elevated operation.
+
+    The file lives under :func:`~src.utils.paths.handshake_dir` — the PER-USER location
+    in every scope (plan 0049 D0). On a machine-scoped install the profile is shared and
+    ``runs/`` grants the service principal Modify; a CurrentUser-sealed, SID-locked blob
+    must not follow the profile into a directory another principal can write. The
+    directory is created HERE (``handshake_dir`` itself never creates).
     """
     raw = json.dumps(payload).encode("utf-8")
     protected = protect_blob(raw)
-    path = paths.user_data_dir() / f"{_HANDSHAKE_PREFIX}{secrets.token_hex(16)}.req"
+    directory = paths.handshake_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{_HANDSHAKE_PREFIX}{secrets.token_hex(16)}.req"
     path.write_bytes(protected)
     _set_owner_only_dacl(path)
     return path
 
 
 def new_result_path() -> Path:
-    """Reserve (do NOT create) a random result-file path the elevated child will write."""
-    return paths.user_data_dir() / f"{_HANDSHAKE_PREFIX}{secrets.token_hex(16)}.res"
+    """Reserve (do NOT create) a random result-file path the elevated child will write.
+
+    Same per-user :func:`~src.utils.paths.handshake_dir` as :func:`write_request`; the
+    DIRECTORY is created here so the elevated child always has somewhere to write, while
+    the result FILE itself is left for the child.
+    """
+    directory = paths.handshake_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"{_HANDSHAKE_PREFIX}{secrets.token_hex(16)}.res"
 
 
 def read_result(path: Path) -> dict[str, object] | None:
@@ -286,9 +264,16 @@ def sweep_orphans(max_age_s: float = 3600.0) -> int:
     Called at both app entry points so a crash between write and cleanup cannot
     leave a lingering (SID-locked, DPAPI-sealed) request file around. Fresh files
     (an in-flight handshake) are left untouched. Never raises — returns the count deleted.
+
+    Sweeps :func:`~src.utils.paths.handshake_dir` (per-user in every scope) and returns
+    **0 when that directory does not exist**: this runs UNCONDITIONALLY at both entry
+    points, so materialising the directory here would have every nightly under a service
+    principal create an empty second profile — the split-brain plan 0049 D0 forbids.
     """
     try:
-        directory = paths.user_data_dir()
+        directory = paths.handshake_dir()
+        if not directory.is_dir():
+            return 0
         candidates = list(directory.glob(f"{_HANDSHAKE_PREFIX}*"))
     except OSError:
         return 0

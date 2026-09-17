@@ -48,6 +48,19 @@ greening without editing the test files. When no sub-agent tool is available, th
 self-authored — which is genuinely weaker, must be said so, and should be compensated with
 falsification (perturb each guard, observe red, restore) rather than claimed as independent.
 
+*Grown 2026-09-17 (plan 0049 S-1a-i — `paths`' machine-scope ladder + trust predicate,
+`utils/accounts.py`, `utils/dpapi.py`).* The entry extends to **syscall-backed** predicates
+(registry, Win32 security, DPAPI) with one addition: put each raw syscall behind its own
+one-line seam (`_read_machine_switch_value`, `_read_dir_security`) so the decision table
+around it is red-first testable on **every** OS, and give the syscall itself a real-API test
+that runs where the API exists. Two things the edge table could NOT prove on its own and had
+to be added beside it: (1) a **word-level spy** — a DPAPI round trip passes with the wrong
+protection scope, so only asserting the exact `dwFlags` reaching the API proves the scope;
+(2) a **mechanical twin** for a "nothing can reach this state" claim — a source scan, itself
+paired with a planted-file test proving the scanner has teeth. 12/12 falsification probes
+went red; the tests were self-authored (no sub-agent tool in this session), as the caveat
+above requires it to be said.
+
 ### Config-schema keys, shipped DATA rows, and repo-hygiene gates
 _Recorded 2026-07-29 (plan 0038 S3 — `district_domains` + its validator, the six domain rows, `scripts/check_no_emails.py`)._
 

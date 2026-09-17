@@ -495,3 +495,597 @@ class TestWindowIconPath:
         monkeypatch.setattr(sys, "frozen", True, raising=False)
         monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
         assert paths_module.window_icon_path() == tmp_path / "assets" / "myblueprint.ico"
+
+
+# ===========================================================================
+#  Machine scope (plan 0049 S-1a-i) — the switch, the trust predicate, the pin
+# ===========================================================================
+#
+#  Governing invariant: with the switch OFF this whole section is inert — every
+#  assertion below that describes a machine-scoped install is reached only through
+#  monkeypatched seams, and `AC1`'s mechanical twin (no registry WRITE API anywhere
+#  under src/) is what makes "nothing in the field can turn it on" a fact.
+
+
+MACHINE_SCOPE_KEY = paths_module.MACHINE_SCOPE_KEY_PATH
+Reason = paths_module.MachineScopeRefusedReason
+# Captured at IMPORT, before the autouse isolation fixture forces the switch off — the
+# registry-read tests below drive the REAL function through its own monkeypatched seam.
+_REAL_MACHINE_SWITCH_ON = paths_module._machine_switch_on
+WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="winreg is a Windows-only module")
+
+_TRUSTED_SECURITY = ("S-1-5-32-544", paths_module._SE_DACL_PROTECTED)
+
+
+@pytest.fixture
+def machine_dir(tmp_path, monkeypatch):
+    """Redirect ``machine_data_dir()`` into tmp and return the (not yet created) path.
+
+    Never the real ``C:\\ProgramData\\DistrictSync``: these tests must not read, create
+    or trust anything outside tmp.
+    """
+    target = tmp_path / "ProgramData" / "DistrictSync"
+    monkeypatch.setattr(paths_module, "machine_data_dir", lambda: target)
+    return target
+
+
+@pytest.fixture
+def switch(monkeypatch):
+    """Drive the HKLM switch directly (the registry read has its own tests below)."""
+
+    def _set(on: bool) -> None:
+        monkeypatch.setattr(paths_module, "_machine_switch_on", lambda: on)
+
+    return _set
+
+
+@pytest.fixture
+def security(monkeypatch):
+    """Drive the owner-SID / DACL-control read (the ctypes syscall is the seam)."""
+
+    def _set(owner_sid: str, control: int) -> None:
+        monkeypatch.setattr(paths_module, "_read_dir_security", lambda path: (owner_sid, control))
+
+    return _set
+
+
+@pytest.fixture
+def user_scope_spy(monkeypatch, data_dirs):
+    """Record every per-user resolution so a silent FALL-THROUGH is visible."""
+    calls: list[bool] = []
+
+    def _resolve(*, create: bool) -> Path:
+        calls.append(create)
+        if create:
+            data_dirs.new.mkdir(parents=True, exist_ok=True)
+        return data_dirs.new
+
+    monkeypatch.setattr(paths_module, "_user_scope_data_dir", _resolve)
+    return calls
+
+
+class TestMachineDataDir:
+    def test_calls_platformdirs_site_dir_with_pinned_args(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        def _spy(appname, **kwargs):
+            captured["appname"] = appname
+            captured["kwargs"] = kwargs
+            return os.path.join(os.sep + "tmp", "DistrictSync")
+
+        monkeypatch.setattr(paths_module.platformdirs, "site_data_dir", _spy)
+        result = paths_module.machine_data_dir()
+
+        assert captured["appname"] == "DistrictSync"
+        assert captured["kwargs"] == {"appauthor": False}
+        assert isinstance(result, Path)
+
+    def test_creates_nothing(self, tmp_path, monkeypatch):
+        target = tmp_path / "ProgramData" / "DistrictSync"
+        monkeypatch.setattr(paths_module.platformdirs, "site_data_dir", lambda *a, **k: str(target))
+        assert paths_module.machine_data_dir() == target
+        assert not target.exists()
+
+
+class TestMachineSwitchRead:
+    """The HKLM read: absent is NORMAL, unreadable is a REFUSAL, never a fall-through."""
+
+    def _reader(self, monkeypatch, result=None, exc: BaseException | None = None):
+        def _read() -> tuple[object, int]:
+            if exc is not None:
+                raise exc
+            assert result is not None
+            return result
+
+        monkeypatch.setattr(paths_module, "_read_machine_switch_value", _read)
+        monkeypatch.setattr(paths_module.sys, "platform", "win32")
+
+    def test_dword_one_is_on(self, monkeypatch):
+        self._reader(monkeypatch, result=(1, paths_module._REG_DWORD))
+        assert _REAL_MACHINE_SWITCH_ON() is True
+
+    def test_absent_key_is_off_and_silent(self, monkeypatch, caplog):
+        # The state of every install in the field: a missing key is deterministic
+        # FileNotFoundError and must not log a warning every single run.
+        self._reader(monkeypatch, exc=FileNotFoundError(2, "not found"))
+        with caplog.at_level(logging.DEBUG, logger="src.utils.paths"):
+            assert _REAL_MACHINE_SWITCH_ON() is False
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            ("1", 1),  # REG_SZ "1" — the shape a hand-edit produces
+            (0, 4),  # REG_DWORD 0 — explicitly off
+            (2, 4),  # REG_DWORD 2 — not the documented value
+        ],
+    )
+    def test_wrong_type_or_value_is_off_with_one_warning_naming_the_key(self, monkeypatch, caplog, result):
+        self._reader(monkeypatch, result=result)
+        with caplog.at_level(logging.WARNING, logger="src.utils.paths"):
+            assert _REAL_MACHINE_SWITCH_ON() is False
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        assert MACHINE_SCOPE_KEY in warnings[0].getMessage()
+
+    def test_permission_error_refuses_rather_than_falling_back(self, monkeypatch):
+        # "Any exception -> off" is the forbidden fall-through moved one step earlier:
+        # on a provisioned install it silently selects the principal's blank profile.
+        self._reader(monkeypatch, exc=PermissionError(5, "access is denied"))
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            _REAL_MACHINE_SWITCH_ON()
+        assert excinfo.value.reason is Reason.SWITCH_UNREADABLE
+        assert MACHINE_SCOPE_KEY in str(excinfo.value)
+
+    def test_generic_oserror_refuses_too(self, monkeypatch):
+        self._reader(monkeypatch, exc=OSError(1359, "internal error"))
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            _REAL_MACHINE_SWITCH_ON()
+        assert excinfo.value.reason is Reason.SWITCH_UNREADABLE
+
+    def test_non_windows_never_reads_the_registry(self, monkeypatch):
+        def _boom() -> tuple[object, int]:
+            raise AssertionError("the registry must not be consulted off Windows")
+
+        monkeypatch.setattr(paths_module, "_read_machine_switch_value", _boom)
+        monkeypatch.setattr(paths_module.sys, "platform", "linux")
+        assert _REAL_MACHINE_SWITCH_ON() is False
+
+    @WINDOWS_ONLY
+    def test_access_mask_and_value_type_match_winreg(self):
+        # The two constants are spelled numerically because ``winreg`` does not import
+        # off Windows. A 32-bit-view read would answer about WOW6432Node\DistrictSync —
+        # a different key — so this parity test is what keeps the number honest.
+        import winreg
+
+        assert paths_module.MACHINE_SCOPE_KEY_ACCESS == winreg.KEY_READ | winreg.KEY_WOW64_64KEY
+        assert paths_module._REG_DWORD == winreg.REG_DWORD
+
+    @WINDOWS_ONLY
+    def test_the_real_registry_read_is_well_formed(self):
+        # A real-syscall smoke (the new windows-latest CI leg is where this first runs):
+        # it proves the OpenKey/QueryValueEx call marshals — a wrong argument order or a
+        # bad access mask surfaces as TypeError / PermissionError, neither of which is an
+        # accepted outcome here. The ANSWER is machine state and is deliberately NOT
+        # asserted: no test may depend on how the runner's box is provisioned.
+        try:
+            value, value_type = paths_module._read_machine_switch_value()
+        except FileNotFoundError:
+            return  # the normal, un-provisioned state
+        assert isinstance(value_type, int)
+        assert value is not None
+
+
+class TestMachineDirTrust:
+    """Fails CLOSED: every unreadable or unexpected fact is a typed refusal."""
+
+    def test_trusted_admin_owned_protected_dir_passes(self, machine_dir, security):
+        machine_dir.mkdir(parents=True)
+        security(*_TRUSTED_SECURITY)
+        paths_module._assert_machine_dir_trusted(machine_dir)  # no raise
+
+    def test_system_owned_dir_passes(self, machine_dir, security):
+        machine_dir.mkdir(parents=True)
+        security("S-1-5-18", paths_module._SE_DACL_PROTECTED)
+        paths_module._assert_machine_dir_trusted(machine_dir)  # no raise
+
+    def test_missing_dir_refuses(self, machine_dir, security):
+        security(*_TRUSTED_SECURITY)
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            paths_module._assert_machine_dir_trusted(machine_dir)
+        assert excinfo.value.reason is Reason.MISSING
+        assert str(machine_dir) in str(excinfo.value)
+
+    def test_a_file_refuses(self, machine_dir, security):
+        machine_dir.parent.mkdir(parents=True)
+        machine_dir.write_text("not a directory", encoding="utf-8")
+        security(*_TRUSTED_SECURITY)
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            paths_module._assert_machine_dir_trusted(machine_dir)
+        assert excinfo.value.reason is Reason.NOT_A_DIRECTORY
+
+    def test_reparse_point_refuses(self, machine_dir, security, monkeypatch):
+        machine_dir.mkdir(parents=True)
+        security(*_TRUSTED_SECURITY)
+        real_lstat = os.lstat
+
+        def _fake_lstat(path):
+            result = real_lstat(path)
+            return SimpleNamespace(st_mode=result.st_mode, st_reparse_tag=0xA0000003)
+
+        monkeypatch.setattr(paths_module.os, "lstat", _fake_lstat)
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            paths_module._assert_machine_dir_trusted(machine_dir)
+        assert excinfo.value.reason is Reason.REPARSE
+
+    def test_foreign_owner_refuses(self, machine_dir, security):
+        # A standard user can pre-create and OWN C:\ProgramData\DistrictSync (its default
+        # ACL grants Users create-subdirectory + CREATOR OWNER full control), so ownership
+        # is the fact that separates a provisioned profile from a planted one.
+        machine_dir.mkdir(parents=True)
+        security("S-1-5-21-1111111111-2222222222-3333333333-1001", paths_module._SE_DACL_PROTECTED)
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            paths_module._assert_machine_dir_trusted(machine_dir)
+        assert excinfo.value.reason is Reason.FOREIGN_OWNER
+
+    def test_owner_is_compared_as_a_SID_string_not_a_name(self):
+        # BUILTIN\Administrators is LOCALISED; a name comparison would fail on a German
+        # or French Windows and pass on a machine that renamed a group to match.
+        assert frozenset({"S-1-5-32-544", "S-1-5-18"}) == paths_module._TRUSTED_OWNER_SIDS
+        assert all(sid.startswith("S-1-") for sid in paths_module._TRUSTED_OWNER_SIDS)
+
+    def test_inherited_acl_refuses(self, machine_dir, security):
+        # Inheritance still on => C:\ProgramData's Users:(OI)(CI)(RX) is live, and the
+        # LocalMachine-sealed secret S-1a-ii writes there would be world-readable.
+        machine_dir.mkdir(parents=True)
+        security("S-1-5-32-544", 0x8004)  # SE_DACL_PRESENT, not SE_DACL_PROTECTED
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            paths_module._assert_machine_dir_trusted(machine_dir)
+        assert excinfo.value.reason is Reason.INHERITED_ACL
+
+    def test_unreadable_security_refuses_as_inaccessible(self, machine_dir, monkeypatch):
+        machine_dir.mkdir(parents=True)
+
+        def _boom(path):
+            raise OSError(5, "access is denied")
+
+        monkeypatch.setattr(paths_module, "_read_dir_security", _boom)
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            paths_module._assert_machine_dir_trusted(machine_dir)
+        assert excinfo.value.reason is Reason.INACCESSIBLE
+
+    def test_unreadable_stat_refuses_as_inaccessible(self, machine_dir, security, monkeypatch):
+        machine_dir.mkdir(parents=True)
+        security(*_TRUSTED_SECURITY)
+
+        def _boom(path):
+            raise PermissionError(5, "access is denied")
+
+        monkeypatch.setattr(paths_module.os, "lstat", _boom)
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            paths_module._assert_machine_dir_trusted(machine_dir)
+        assert excinfo.value.reason is Reason.INACCESSIBLE
+
+    def test_every_reason_is_reachable_and_spelled_once(self):
+        # A bounded vocabulary S-1b's auto-grant screen branches on: string-matching
+        # str(exc) is the fragility `setup_errors` exists to avoid.
+        assert {r.value for r in Reason} == {
+            "switch_unreadable",
+            "missing",
+            "not_a_directory",
+            "reparse",
+            "foreign_owner",
+            "inherited_acl",
+            "inaccessible",
+        }
+
+
+class TestResolutionLadder:
+    """Switch on => the machine dir or a REFUSAL. Never the per-user profile."""
+
+    def test_switch_on_and_trusted_returns_the_machine_dir(self, machine_dir, switch, security, user_scope_spy):
+        machine_dir.mkdir(parents=True)
+        switch(True)
+        security(*_TRUSTED_SECURITY)
+
+        assert paths_module.user_data_dir() == machine_dir
+        assert paths_module.is_machine_scope() is True
+        assert user_scope_spy == []  # the per-user ladder never ran
+
+    def test_switch_off_returns_todays_answer(self, data_dirs, switch, user_scope_spy):
+        switch(False)
+        assert paths_module.user_data_dir() == data_dirs.new
+        assert paths_module.is_machine_scope() is False
+        assert user_scope_spy == [True]
+
+    @pytest.mark.parametrize(
+        ("state", "reason"),
+        [
+            ("missing", Reason.MISSING),
+            ("file", Reason.NOT_A_DIRECTORY),
+            ("foreign", Reason.FOREIGN_OWNER),
+            ("inherited", Reason.INHERITED_ACL),
+            ("unreadable", Reason.INACCESSIBLE),
+        ],
+    )
+    def test_every_refusal_reason_stops_the_ladder_dead(
+        self, machine_dir, switch, security, user_scope_spy, monkeypatch, data_dirs, state, reason
+    ):
+        switch(True)
+        if state == "missing":
+            security(*_TRUSTED_SECURITY)
+        elif state == "file":
+            machine_dir.parent.mkdir(parents=True)
+            machine_dir.write_text("x", encoding="utf-8")
+            security(*_TRUSTED_SECURITY)
+        elif state == "foreign":
+            machine_dir.mkdir(parents=True)
+            security("S-1-5-21-1-2-3-1001", paths_module._SE_DACL_PROTECTED)
+        elif state == "inherited":
+            machine_dir.mkdir(parents=True)
+            security("S-1-5-32-544", 0x8004)
+        else:
+            machine_dir.mkdir(parents=True)
+            monkeypatch.setattr(paths_module, "_read_dir_security", lambda p: (_ for _ in ()).throw(OSError("denied")))
+
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            paths_module.user_data_dir()
+
+        assert excinfo.value.reason is reason
+        # No fall-through, proven three ways: the per-user resolver never ran, the
+        # per-user dir was not created, and nothing was cached for the next caller.
+        assert user_scope_spy == []
+        assert not data_dirs.new.exists()
+        assert paths_module._PIN is None
+
+    def test_switch_unreadable_stops_the_ladder_dead(self, switch, user_scope_spy, monkeypatch, data_dirs):
+        def _refuse() -> bool:
+            raise paths_module.MachineScopeRefused(Reason.SWITCH_UNREADABLE, MACHINE_SCOPE_KEY)
+
+        monkeypatch.setattr(paths_module, "_machine_switch_on", _refuse)
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            paths_module.user_data_dir()
+        assert excinfo.value.reason is Reason.SWITCH_UNREADABLE
+        assert user_scope_spy == []
+        assert not data_dirs.new.exists()
+
+    def test_a_refusal_does_not_poison_the_pin(self, machine_dir, switch, security):
+        switch(True)
+        security(*_TRUSTED_SECURITY)
+        with pytest.raises(paths_module.MachineScopeRefused):
+            paths_module.user_data_dir()
+        # The positive twin: once the folder is there, the very next call succeeds —
+        # so the refusal was a decision, not a latched dead state.
+        machine_dir.mkdir(parents=True)
+        assert paths_module.user_data_dir() == machine_dir
+
+    def test_override_wins_over_the_switch_and_is_never_machine_scope(
+        self, tmp_path, monkeypatch, machine_dir, security, data_dirs
+    ):
+        # Step 0 stays absolute. The override is a support/test seam pointed at an
+        # un-ACL'd throwaway dir, so it must never select the shared profile (and, in
+        # S-1a-ii, never the LocalMachine secret store).
+        machine_dir.mkdir(parents=True)
+        security(*_TRUSTED_SECURITY)
+        consulted: list[bool] = []
+
+        def _switch() -> bool:
+            consulted.append(True)
+            return True
+
+        monkeypatch.setattr(paths_module, "_machine_switch_on", _switch)
+        override = tmp_path / "override-profile"
+        monkeypatch.setenv(paths_module._DATA_DIR_ENV_VAR, str(override))
+
+        assert paths_module.user_data_dir() == override.resolve()
+        assert paths_module.is_machine_scope() is False
+        assert consulted == []  # the switch is not even read
+
+        # Positive twin: with the override gone, the same switch IS consulted.
+        monkeypatch.delenv(paths_module._DATA_DIR_ENV_VAR)
+        paths_module.reset_data_dir_pin()
+        assert paths_module.user_data_dir() == machine_dir
+        assert consulted == [True]
+
+    def test_non_windows_is_never_machine_scope(self, monkeypatch, data_dirs, machine_dir, security):
+        machine_dir.mkdir(parents=True)
+        security(*_TRUSTED_SECURITY)
+        monkeypatch.setattr(paths_module.sys, "platform", "linux")
+        monkeypatch.setattr(paths_module, "_read_machine_switch_value", lambda: (1, paths_module._REG_DWORD))
+        assert paths_module.is_machine_scope() is False
+        assert paths_module.user_data_dir() == data_dirs.new
+
+
+class TestThePin:
+    def test_resolves_once_per_process(self, data_dirs, monkeypatch):
+        reads: list[int] = []
+
+        def _switch() -> bool:
+            reads.append(1)
+            return False
+
+        monkeypatch.setattr(paths_module, "_machine_switch_on", _switch)
+        for _ in range(3):
+            paths_module.user_data_dir()
+            paths_module.is_machine_scope()
+        assert reads == [1]
+
+    def test_reset_re_resolves(self, data_dirs, monkeypatch):
+        reads: list[int] = []
+
+        def _switch() -> bool:
+            reads.append(1)
+            return False
+
+        monkeypatch.setattr(paths_module, "_machine_switch_on", _switch)
+        paths_module.user_data_dir()
+        paths_module.reset_data_dir_pin()
+        paths_module.user_data_dir()
+        assert reads == [1, 1]
+
+    def test_path_and_scope_are_decided_together_in_either_call_order(self, machine_dir, switch, security, data_dirs):
+        machine_dir.mkdir(parents=True)
+        switch(True)
+        security(*_TRUSTED_SECURITY)
+        # Scope asked FIRST — the path must still be the machine dir (one decision).
+        assert paths_module.is_machine_scope() is True
+        assert paths_module.user_data_dir() == machine_dir
+
+    def test_the_answer_cannot_change_mid_run(self, data_dirs, machine_dir, switch, security):
+        switch(False)
+        first = paths_module.user_data_dir()
+        assert first == data_dirs.new
+        # The world changes underneath a running process; the pin does not.
+        machine_dir.mkdir(parents=True)
+        switch(True)
+        security(*_TRUSTED_SECURITY)
+        assert paths_module.user_data_dir() == first
+        assert paths_module.is_machine_scope() is False
+
+    def test_pin_data_dir_logs_the_dir_and_the_scope(self, data_dirs, switch, caplog):
+        switch(False)
+        with caplog.at_level(logging.INFO, logger="src.utils.paths"):
+            resolved = paths_module.pin_data_dir()
+        assert resolved == data_dirs.new
+        line = " ".join(r.getMessage() for r in caplog.records)
+        assert str(data_dirs.new) in line
+        assert "machine scope: no" in line
+
+    def test_pin_data_dir_says_yes_on_a_machine_scoped_install(self, machine_dir, switch, security, caplog):
+        machine_dir.mkdir(parents=True)
+        switch(True)
+        security(*_TRUSTED_SECURITY)
+        with caplog.at_level(logging.INFO, logger="src.utils.paths"):
+            assert paths_module.pin_data_dir() == machine_dir
+        assert "machine scope: yes" in " ".join(r.getMessage() for r in caplog.records)
+
+    def test_pin_data_dir_propagates_the_typed_refusal(self, machine_dir, switch, security):
+        switch(True)
+        security(*_TRUSTED_SECURITY)
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            paths_module.pin_data_dir()
+        assert excinfo.value.reason is Reason.MISSING
+
+
+class TestHandshakeDir:
+    """The elevation handshake stays PER-USER and NON-CREATING, in every scope."""
+
+    def test_never_the_machine_dir(self, machine_dir, switch, security, data_dirs):
+        machine_dir.mkdir(parents=True)
+        data_dirs.new.mkdir(parents=True)
+        switch(True)
+        security(*_TRUSTED_SECURITY)
+
+        assert paths_module.user_data_dir() == machine_dir  # scope really is machine
+        assert paths_module.handshake_dir() == data_dirs.new
+        assert paths_module.handshake_dir() != machine_dir
+
+    def test_equals_the_profile_when_the_switch_is_off(self, data_dirs, switch):
+        data_dirs.new.mkdir(parents=True)
+        switch(False)
+        assert paths_module.handshake_dir() == paths_module.user_data_dir()
+
+    def test_follows_the_override(self, tmp_path, monkeypatch, data_dirs):
+        override = tmp_path / "override-profile"
+        monkeypatch.setenv(paths_module._DATA_DIR_ENV_VAR, str(override))
+        assert paths_module.handshake_dir() == override.resolve()
+
+    def test_creates_nothing(self, data_dirs, switch):
+        # sweep_orphans() runs unconditionally at BOTH entry points, so a creating
+        # resolver would have every nightly as the service principal materialise an
+        # empty second profile — the split-brain D0 exists to forbid.
+        switch(False)
+        assert not data_dirs.new.exists()
+        assert paths_module.handshake_dir() == data_dirs.new
+        assert not data_dirs.new.exists()
+        # Positive twin: the profile resolver on the same state DOES create it.
+        assert paths_module.user_data_dir() == data_dirs.new
+        assert data_dirs.new.exists()
+
+    def test_prefers_an_existing_legacy_profile(self, data_dirs, switch):
+        switch(False)
+        data_dirs.legacy.mkdir(parents=True)
+        assert paths_module.handshake_dir() == data_dirs.legacy
+
+
+class TestScopedFileNames:
+    def test_per_user_names_are_unchanged(self, data_dirs, switch):
+        switch(False)
+        assert paths_module.user_log_file() == data_dirs.new / "etl_tool.log"
+        assert paths_module.user_history_db() == data_dirs.new / "history.db"
+
+    def test_machine_scope_splits_the_log_per_writer_under_runs(self, machine_dir, switch, security, monkeypatch):
+        machine_dir.mkdir(parents=True)
+        switch(True)
+        security(*_TRUSTED_SECURITY)
+        monkeypatch.setattr(paths_module, "process_account", lambda: "CORP\\svc$")
+
+        log = paths_module.user_log_file()
+        assert log == machine_dir / "runs" / "etl_tool-corp_svc.log"
+        assert paths_module.user_history_db() == machine_dir / "runs" / "history.db"
+
+    def test_machine_scope_log_name_is_filename_safe(self, machine_dir, switch, security, monkeypatch):
+        machine_dir.mkdir(parents=True)
+        switch(True)
+        security(*_TRUSTED_SECURITY)
+        monkeypatch.setattr(paths_module, "process_account", lambda: "")
+        assert paths_module.user_log_file() == machine_dir / "runs" / "etl_tool-unknown.log"
+
+    def test_mappings_and_known_hosts_stay_at_the_root(self, machine_dir, switch, security):
+        # A self-service district's overlay (plan 0044) must reach the nightly.
+        machine_dir.mkdir(parents=True)
+        switch(True)
+        security(*_TRUSTED_SECURITY)
+        assert paths_module.user_known_hosts_file() == machine_dir / "known_hosts"
+        assert paths_module.user_mappings_dir() == machine_dir / "mappings"
+
+
+class TestMigrationIsUntouchedByTheSwitch:
+    def test_legacy_still_lands_in_the_per_user_platform_dir(self, data_dirs, machine_dir, switch, security):
+        # The positive twin for "migrate_legacy_data_dir() is untouched": with the switch
+        # ON, a legacy profile must still migrate to %LOCALAPPDATA%, never into the
+        # shared dir (it is a per-user relocation and the machine dir is provisioned).
+        machine_dir.mkdir(parents=True)
+        switch(True)
+        security(*_TRUSTED_SECURITY)
+        TestMigrateLegacyDataDir._seed_legacy(data_dirs.legacy)
+
+        assert paths_module.migrate_legacy_data_dir() is True
+        assert (data_dirs.new / "config.json").exists()
+        assert not (machine_dir / "config.json").exists()
+
+
+class TestNothingInTheFieldCanTurnTheSwitchOn:
+    """AC1's MECHANICAL twin — the claim is a fact, not a promise."""
+
+    _WRITE_APIS = ("SetValueEx", "CreateKey", "KEY_WRITE", "KEY_ALL_ACCESS", "DeleteValue")
+
+    @staticmethod
+    def _scan(files: list[Path]) -> list[str]:
+        hits: list[str] = []
+        for path in files:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                for api in TestNothingInTheFieldCanTurnTheSwitchOn._WRITE_APIS:
+                    if api in line:
+                        hits.append(f"{path}:{lineno}: {api}")
+        return hits
+
+    def test_no_registry_write_api_anywhere_under_src(self):
+        src_root = Path(__file__).resolve().parents[1] / "src"
+        files = sorted(p for p in src_root.rglob("*.py") if "__pycache__" not in p.parts)
+        assert files, "the scan must actually see the source tree"
+        assert self._scan(files) == []
+
+    def test_the_scanner_has_teeth(self, tmp_path):
+        # The positive twin: the same scan FINDS a write, so the green above is a fact.
+        planted = tmp_path / "writer.py"
+        planted.write_text(
+            "import winreg\n"
+            "key = winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\\\\DistrictSync')\n"
+            "winreg.SetValueEx(key, 'MachineScope', 0, winreg.REG_DWORD, 1)\n",
+            encoding="utf-8",
+        )
+        hits = self._scan([planted])
+        assert any("SetValueEx" in hit for hit in hits)
+        assert any("CreateKey" in hit for hit in hits)

@@ -23,10 +23,31 @@ import traceback
 from pathlib import Path
 
 from src.utils.logger import get_logger
-from src.utils.paths import migrate_legacy_data_dir, user_log_file
+from src.utils.paths import (
+    MachineScopeRefused,
+    MachineScopeRefusedReason,
+    handshake_dir,
+    migrate_legacy_data_dir,
+    pin_data_dir,
+    user_log_file,
+)
 from src.utils.version import startup_banner
 
 _LOG_NAME = "etl_tool.log"
+
+# Plain-language cause for a refused shared (machine-scoped) profile — one per bounded
+# reason, so the dialog can say WHAT is wrong instead of showing an enum value to a
+# non-technical admin. Keyed on the reason rather than on ``str(exc)`` (the exception's
+# own sentence is for the log). Plan 0049 S-1b's auto-grant screen reuses this map.
+_MACHINE_SCOPE_CAUSES = {
+    MachineScopeRefusedReason.SWITCH_UNREADABLE: "Windows would not let DistrictSync read this computer's shared-settings setting.",
+    MachineScopeRefusedReason.MISSING: "The shared folder is not there.",
+    MachineScopeRefusedReason.NOT_A_DIRECTORY: "Something other than a folder is in its place.",
+    MachineScopeRefusedReason.REPARSE: "The shared folder is a shortcut or link to somewhere else.",
+    MachineScopeRefusedReason.FOREIGN_OWNER: "The shared folder is not owned by this computer's administrators.",
+    MachineScopeRefusedReason.INHERITED_ACL: "The shared folder's permissions were never locked down.",
+    MachineScopeRefusedReason.INACCESSIBLE: "Windows would not let DistrictSync check the shared folder's permissions.",
+}
 
 
 def boot_logging() -> None:
@@ -58,13 +79,23 @@ def resolve_log_path() -> Path:
     """Canonical ETL log path — the same sink the ETL writes to.
 
     Reuses ``src/utils/paths.user_log_file()`` (single source of truth) so the
-    early-failure traceback lands where Run History / support already look. If that
-    helper itself is unavailable (paths.py broken), falls back to a bare filename in
-    the current directory — deliberately NOT re-deriving the app-data location here,
-    which would duplicate the single ``paths.py`` seam.
+    early-failure traceback lands where Run History / support already look.
+
+    When the profile itself was REFUSED (a machine-scoped install whose shared folder is
+    missing or untrusted — plan 0049 D0), ``user_log_file()`` re-raises that refusal, and
+    the traceback falls back to the always-resolvable per-user ``handshake_dir()``. The
+    bare-filename last resort stays for the case it was written for — ``paths.py`` itself
+    broken — where re-deriving the app-data location here would duplicate the seam; in a
+    frozen exe that filename lands in a ``_MEIPASS`` temp dir that is deleted on exit, so
+    it is a genuine last resort, not a good answer.
     """
     try:
         return user_log_file()
+    except MachineScopeRefused:
+        try:
+            return handshake_dir() / _LOG_NAME
+        except Exception:
+            return Path(_LOG_NAME)
     except Exception:
         return Path(_LOG_NAME)
 
@@ -74,8 +105,25 @@ def format_user_error(exc: BaseException) -> str:
 
     The traceback is for the log; the dialog is for a non-technical admin. Names
     where the details went so they (or support) can find them.
+
+    A refused shared profile gets its OWN copy: the generic message's reassurance
+    ("your scheduled nightly sync is not affected — it runs separately") is FALSE for
+    exactly this failure — the nightly reads the same shared folder and fails the same
+    way — and a true sentence is worth more here than a calm one.
     """
     log_path = resolve_log_path()
+    if isinstance(exc, MachineScopeRefused):
+        cause = _MACHINE_SCOPE_CAUSES.get(exc.reason, "DistrictSync could not use the shared folder on this computer.")
+        return (
+            "DistrictSync couldn't open its window.\n\n"
+            "This computer shares DistrictSync's settings between accounts, and the shared "
+            f"folder can't be used:\n{exc.path}\n\n"
+            f"{cause}\n\n"
+            "Your nightly sync uses the same folder, so it is affected too. An administrator "
+            "needs to repair the folder — nothing was changed.\n\n"
+            f"Technical details were saved to:\n{log_path}\n\n"
+            "Please share that file with support."
+        )
     return (
         "DistrictSync couldn't open its window.\n\n"
         "Your scheduled nightly sync is not affected — it runs separately.\n\n"
@@ -187,6 +235,11 @@ def main() -> None:  # pragma: no cover - view glue (ft.run + dialog)
         # dir), so it still records the traceback even if ``boot_logging`` was the
         # thing that failed.
         migrate_legacy_data_dir()
+        # Resolve the data directory ONCE, before the sink opens inside it (plan 0049 D0)
+        # — so the banner reports the profile this session will actually use, and a
+        # machine-scope refusal surfaces in the dialog below instead of deep inside the
+        # log setup. Inert with the switch off.
+        pin_data_dir()
         boot_logging()
 
         # Best-effort sweep of any orphaned elevation-handshake files (D5) — never fatal.

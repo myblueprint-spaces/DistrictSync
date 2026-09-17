@@ -10,20 +10,32 @@ in the frozen exe because the launcher chdirs to ``sys._MEIPASS`` (a
 temp directory that's deleted on exit) and the scheduled-task runtime
 has cwd set to ``%SystemRoot%\\System32``. Both scenarios need
 absolute paths resolved against the right anchor.
+
+Since plan 0049 the writable profile also has a SCOPE: per-user (every install in the
+field) or machine-wide, shared by every principal on the computer. The scope is a
+switch, not a discovery; it is decided together with the path, ONCE per process
+(:func:`user_data_dir` / :func:`is_machine_scope` / :func:`pin_data_dir`); and with the
+switch on it either yields a directory that passes :func:`_assert_machine_dir_trusted`
+or REFUSES — it never falls back to the per-user profile. See :class:`MachineScopeRefused`.
 """
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import time
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 
 import platformdirs
+
+from src.utils.accounts import process_account, sanitise_account_for_filename
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +59,77 @@ _DATA_DIR_ENV_VAR = "DISTRICTSYNC_DATA_DIR"
 
 # Breadcrumb dropped in the legacy dir after a successful migration.
 _MOVED_BREADCRUMB = "MOVED.txt"
+
+# --------------------------------------------------------------------------- #
+# Machine scope (plan 0049 D0) — a SWITCH, not a discovery.                    #
+# --------------------------------------------------------------------------- #
+# ``HKLM\SOFTWARE\DistrictSync`` → ``MachineScope`` (REG_DWORD 1) is world-readable and
+# admin-only-writable, so a standard user cannot pre-create anything that redirects the
+# app. It is written ONLY by the elevated ``provision`` op (plan 0049 S-1b), as its commit
+# point — which is why ``is_machine_scope()`` is False on every install in the field today.
+MACHINE_SCOPE_KEY_PATH = r"SOFTWARE\DistrictSync"
+MACHINE_SCOPE_VALUE_NAME = "MachineScope"
+
+# ``winreg.KEY_READ | winreg.KEY_WOW64_64KEY``. Spelled numerically because ``winreg`` does
+# not import off Windows (this module is imported on every OS), and pinned to the winreg
+# constants by a Windows-only parity test. EXPORTED because S-1b's writer must open the key
+# with the same view: a writer in the redirected 32-bit view would commit
+# ``WOW6432Node\DistrictSync``, report success, and leave the app per-user with the config
+# and the secret already copied.
+MACHINE_SCOPE_KEY_ACCESS = 0x20119
+_REG_DWORD = 4
+
+# The only owners a machine-scoped profile may have. Compared as SID STRINGS, never account
+# names: ``BUILTIN\Administrators`` is localised, so a name comparison fails on a German or
+# French Windows and passes on a box that renamed a group to match.
+_TRUSTED_OWNER_SIDS = frozenset({"S-1-5-32-544", "S-1-5-18"})  # Administrators, SYSTEM
+
+# ``SE_DACL_PROTECTED`` — inheritance has been stripped from the directory's DACL. Without
+# it ``C:\ProgramData``'s inherited ``Users:(OI)(CI)(RX)`` is still live, and the
+# LocalMachine-sealed delivery secret S-1a-ii writes there would be world-readable.
+_SE_DACL_PROTECTED = 0x1000
+
+# ``SE_FILE_OBJECT`` / ``OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION``.
+_SE_FILE_OBJECT = 1
+_OWNER_AND_DACL_INFORMATION = 0x1 | 0x4
+
+
+class MachineScopeRefusedReason(StrEnum):
+    """Why a machine-scoped profile was refused — a BOUNDED vocabulary.
+
+    S-1b's auto-grant screen branches on ``INACCESSIBLE`` (D5: "switch on ∧ access
+    denied") and ``--diagnose`` prints the reason. A single untyped ``RuntimeError`` would
+    force both to string-match ``str(exc)`` — the fragility ``setup_errors`` exists to
+    avoid. S-1b adds ``OPEN_ACE`` when it adds the explicit-ACE walk.
+    """
+
+    SWITCH_UNREADABLE = "switch_unreadable"
+    MISSING = "missing"
+    NOT_A_DIRECTORY = "not_a_directory"
+    REPARSE = "reparse"
+    FOREIGN_OWNER = "foreign_owner"
+    INHERITED_ACL = "inherited_acl"
+    INACCESSIBLE = "inaccessible"
+
+
+class MachineScopeRefused(RuntimeError):
+    """The machine-scope switch is ON but the shared profile cannot be trusted.
+
+    **Never fall through to the per-user profile.** A switch pointing at a missing or
+    untrusted directory is a support case, not a fresh install: falling back would give a
+    provisioned install two profiles — the admin's settings in one, the nightly writing
+    the other — which is precisely the exit-3-every-night split-brain machine scope exists
+    to fix. Raised at resolution time and caught at both entry points, which report it.
+    """
+
+    def __init__(self, reason: MachineScopeRefusedReason, path: Path | str) -> None:
+        self.reason = reason
+        self.path = str(path)
+        super().__init__(
+            f"DistrictSync could not use the shared (machine-scoped) profile: "
+            f"{self.path} ({reason.value}). Nothing was read or written — an administrator "
+            f"needs to repair the shared folder or the HKLM\\{MACHINE_SCOPE_KEY_PATH} setting."
+        )
 
 
 def bundle_root() -> Path:
@@ -170,10 +253,289 @@ def _override_data_dir() -> Path | None:
     return expanded.resolve()
 
 
-def user_data_dir() -> Path:
-    """Persistent per-user data directory (logs, custom mappings, app config, run store).
+def machine_data_dir() -> Path:
+    """The shared, machine-scoped data directory (``C:\\ProgramData\\DistrictSync``).
 
-    Resolution is deterministic and never strands a user between two locations:
+    PURE — resolves the location only; it creates nothing and checks nothing. The elevated
+    ``provision`` op (plan 0049 S-1b) creates it, strips inheritance and applies the DACL;
+    :func:`_assert_machine_dir_trusted` is what decides whether the app may USE it.
+    """
+    return Path(platformdirs.site_data_dir(_APP_NAME, appauthor=False))
+
+
+def _read_machine_switch_value() -> tuple[object, int]:  # pragma: no cover - Windows-only registry read
+    """Read ``HKLM\\SOFTWARE\\DistrictSync\\MachineScope`` → ``(value, REG_* type)``.
+
+    The raw syscall seam, isolated so every decision built on it is tested through a
+    monkeypatch on every OS. Raises ``FileNotFoundError`` when the key or the value is
+    absent (the normal state), and any other ``OSError`` on a real read failure.
+    """
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, MACHINE_SCOPE_KEY_PATH, 0, MACHINE_SCOPE_KEY_ACCESS) as key:
+        return winreg.QueryValueEx(key, MACHINE_SCOPE_VALUE_NAME)
+
+
+def _machine_switch_on() -> bool:
+    """Whether this computer is provisioned for a SHARED (machine-scoped) profile.
+
+    Three outcomes, deliberately not two:
+      * absent key/value → ``False``, SILENTLY. This is every install in the field and a
+        deterministic ``FileNotFoundError``; warning about it nightly would be noise.
+      * present but not ``REG_DWORD`` ``1`` → ``False`` + ONE warning naming the key. A
+        hand-edited ``REG_SZ "1"`` is a mistake worth surfacing, not an instruction.
+      * any other ``OSError`` → :class:`MachineScopeRefused`, **not** ``False``. "Any
+        exception → off" is the forbidden fall-through moved one step earlier: an
+        unreadable switch cannot prove the switch is unset, and on a provisioned install
+        that answer silently selects the principal's blank profile.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        value, value_type = _read_machine_switch_value()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise MachineScopeRefused(
+            MachineScopeRefusedReason.SWITCH_UNREADABLE, f"HKLM\\{MACHINE_SCOPE_KEY_PATH}"
+        ) from exc
+    if value_type != _REG_DWORD or value != 1:
+        logger.warning(
+            "HKLM\\%s\\%s is %r (type %s), not REG_DWORD 1 — treating machine scope as OFF",
+            MACHINE_SCOPE_KEY_PATH,
+            MACHINE_SCOPE_VALUE_NAME,
+            value,
+            value_type,
+        )
+        return False
+    return True
+
+
+def _read_dir_security(path: Path) -> tuple[str, int]:  # pragma: no cover - Windows-only ctypes
+    """Return ``(owner SID string, security-descriptor control word)`` for ``path``.
+
+    The raw syscall seam (``GetNamedSecurityInfoW`` + ``ConvertSidToStringSidW`` +
+    ``GetSecurityDescriptorControl``), following ``scheduler/elevation.py``'s ctypes
+    convention: ``WinDLL(..., use_last_error=True)``, explicit argtypes/restype,
+    ``LocalFree`` in a ``finally``. Raises ``OSError`` on any failure — the caller turns
+    that into an ``INACCESSIBLE`` refusal, never into a pass.
+    """
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_int,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = ctypes.c_uint32
+    advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p)]
+    advapi32.ConvertSidToStringSidW.restype = ctypes.c_bool
+    advapi32.GetSecurityDescriptorControl.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint16),
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    advapi32.GetSecurityDescriptorControl.restype = ctypes.c_bool
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+
+    owner_sid = ctypes.c_void_p()
+    descriptor = ctypes.c_void_p()
+    status = advapi32.GetNamedSecurityInfoW(
+        str(path),
+        _SE_FILE_OBJECT,
+        _OWNER_AND_DACL_INFORMATION,
+        ctypes.byref(owner_sid),
+        None,
+        None,
+        None,
+        ctypes.byref(descriptor),
+    )
+    if status != 0:
+        raise OSError(f"GetNamedSecurityInfoW failed for {path} (error {status}).")
+    try:
+        sid_text = ctypes.c_wchar_p()
+        if not advapi32.ConvertSidToStringSidW(owner_sid, ctypes.byref(sid_text)):
+            raise OSError(f"ConvertSidToStringSidW failed for {path} (error {ctypes.get_last_error()}).")  # type: ignore[attr-defined]
+        try:
+            owner = str(sid_text.value)
+        finally:
+            kernel32.LocalFree(sid_text)
+        control = ctypes.c_uint16()
+        revision = ctypes.c_uint32()
+        if not advapi32.GetSecurityDescriptorControl(descriptor, ctypes.byref(control), ctypes.byref(revision)):
+            raise OSError(f"GetSecurityDescriptorControl failed for {path} (error {ctypes.get_last_error()}).")  # type: ignore[attr-defined]
+        return owner, int(control.value)
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
+def _assert_machine_dir_trusted(path: Path) -> None:
+    """Raise :class:`MachineScopeRefused` unless ``path`` is a profile we may trust.
+
+    All of: it exists and is a directory · it is not a reparse point · its OWNER is
+    ``BUILTIN\\Administrators`` or ``SYSTEM`` · DACL inheritance is disabled
+    (``SE_DACL_PROTECTED``).
+
+    **Fails closed** — any failure to read the ownership or the control word is
+    ``INACCESSIBLE``, never a pass. Ownership is the fact that separates a provisioned
+    profile from a planted one: ``C:\\ProgramData``'s default ACL lets ANY standard user
+    create and own a subdirectory there. Inheritance is checked here, in the slice before
+    the one that writes a credential, because an admin who hand-creates the directory
+    passes owner-and-reparse with ``Users:(OI)(CI)(RX)`` still inherited.
+
+    Reparse is checked BEFORE the directory test only so a directory symlink reports the
+    precise reason; both outcomes are a refusal. The explicit open-group ACE walk
+    (Everyone / Authenticated Users / Users) is S-1b's, together with its ``OPEN_ACE``
+    reason — that slice writes the DACL and reads it back through ``icacls``.
+    """
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError as exc:
+        raise MachineScopeRefused(MachineScopeRefusedReason.MISSING, path) from exc
+    except OSError as exc:
+        raise MachineScopeRefused(MachineScopeRefusedReason.INACCESSIBLE, path) from exc
+
+    if getattr(info, "st_reparse_tag", 0) != 0:
+        raise MachineScopeRefused(MachineScopeRefusedReason.REPARSE, path)
+    if not stat.S_ISDIR(info.st_mode):
+        raise MachineScopeRefused(MachineScopeRefusedReason.NOT_A_DIRECTORY, path)
+
+    try:
+        owner_sid, control = _read_dir_security(path)
+    except OSError as exc:
+        raise MachineScopeRefused(MachineScopeRefusedReason.INACCESSIBLE, path) from exc
+
+    if owner_sid not in _TRUSTED_OWNER_SIDS:
+        raise MachineScopeRefused(MachineScopeRefusedReason.FOREIGN_OWNER, path)
+    if not control & _SE_DACL_PROTECTED:
+        raise MachineScopeRefused(MachineScopeRefusedReason.INHERITED_ACL, path)
+
+
+def _user_scope_data_dir(*, create: bool) -> Path:
+    """Persistent PER-USER data directory — the ladder every install has always used.
+
+    Extracted verbatim from the pre-0049 ``user_data_dir()`` body, which now sits behind
+    the machine-scope decision (see :func:`user_data_dir` for the full contract).
+
+    ``create`` is REQUIRED and undefaulted. ``create=False`` is the non-creating
+    resolution :func:`handshake_dir` needs: that resolver runs unconditionally at both
+    entry points, so a creating one would have every nightly under a service principal
+    materialise an empty second profile. Keeping ONE resolver (rather than a second,
+    near-identical ladder) also keeps ONE test-isolation seam.
+
+    Raises:
+        ValueError: the override is set but not absolute (see :func:`_override_data_dir`).
+        RuntimeError: the override is set but unusable as a directory (``create`` only).
+    """
+    override = _override_data_dir()
+    if override is not None:
+        if create:
+            try:
+                override.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise RuntimeError(
+                    f"{_DATA_DIR_ENV_VAR}={override} could not be used as the profile directory "
+                    f"({exc}). Unset it or point it at a writable absolute path."
+                ) from exc
+        return override
+    new = _platform_data_dir()
+    if new.exists():
+        return new
+    legacy = _legacy_data_dir()
+    if legacy.exists():
+        return legacy
+    if create:
+        new.mkdir(parents=True, exist_ok=True)
+    return new
+
+
+# The resolved profile, decided ONCE per process: ``(path, machine_scope)``. Path and scope
+# are decided in one breath so they can never disagree, and the answer cannot change
+# mid-run (a mid-run flip would split a single run's writes across two profiles).
+# Resolution is idempotent, so a rare double-resolve from two threads is harmless.
+_PIN: tuple[Path, bool] | None = None
+
+
+def _pinned() -> tuple[Path, bool]:
+    """Resolve (once) and return ``(profile path, machine scope)``.
+
+    Ladder: ``DISTRICTSYNC_DATA_DIR`` wins outright and is **never** machine scope (it is a
+    support/test seam pointed at a throwaway, un-ACL'd directory) → the HKLM switch, whose
+    directory must pass :func:`_assert_machine_dir_trusted` or the whole resolution is
+    REFUSED → the per-user ladder. A refusal leaves the pin unset, so the next caller
+    re-decides rather than inheriting a latched failure.
+    """
+    global _PIN
+    if _PIN is None:
+        if _override_data_dir() is not None:
+            _PIN = (_user_scope_data_dir(create=True), False)
+        elif _machine_switch_on():
+            shared = machine_data_dir()
+            _assert_machine_dir_trusted(shared)
+            _PIN = (shared, True)
+        else:
+            _PIN = (_user_scope_data_dir(create=True), False)
+    return _PIN
+
+
+def is_machine_scope() -> bool:
+    """Whether this install reads and writes the SHARED machine-scoped profile.
+
+    The ONE predicate consumers branch on (S-1a-ii's secret-store selection, S-2's copy).
+    Resolves the pin if it is not yet set, so it can never disagree with
+    :func:`user_data_dir`.
+    """
+    return _pinned()[1]
+
+
+def pin_data_dir() -> Path:
+    """Force resolution NOW, log the answer, and return the profile directory.
+
+    Called at both entry points (``main._cli``, ``ui_flet/launcher.main``) BEFORE the log
+    sink is configured — the sink's own path depends on this answer, and a
+    :class:`MachineScopeRefused` must be reported rather than escape as a traceback into a
+    stderr the Task Scheduler discards.
+    """
+    path, machine = _pinned()
+    logger.info("DistrictSync data dir: %s (machine scope: %s)", path, "yes" if machine else "no")
+    return path
+
+
+def reset_data_dir_pin() -> None:
+    """Forget the resolved profile (tests; S-1b's post-provision re-pin)."""
+    global _PIN
+    _PIN = None
+
+
+def handshake_dir() -> Path:
+    """The PER-USER directory for elevation handshake files — in EVERY scope, non-creating.
+
+    The request/result blobs are a per-session, CurrentUser-DPAPI artefact: on a
+    machine-scoped install the profile is shared and ``runs/`` grants the service principal
+    Modify, so they must not follow the profile into a directory another principal can
+    write. It also stays resolvable when :func:`user_data_dir` REFUSES, which is what lets
+    both entry points report a machine-scope refusal into a real log file.
+
+    Creates nothing — :func:`src.scheduler.elevation.write_request` /
+    :func:`~src.scheduler.elevation.new_result_path` mkdir explicitly, and
+    ``sweep_orphans`` returns 0 when the directory is absent.
+    """
+    return _user_scope_data_dir(create=False)
+
+
+def user_data_dir() -> Path:
+    """The resolved data directory (logs, custom mappings, app config, run store).
+
+    Machine scope (plan 0049 D0) is decided FIRST and ONCE per process — see
+    :func:`_pinned` for the ladder and :func:`is_machine_scope` for the predicate. With the
+    switch off (every install in the field) this is exactly the per-user ladder it has
+    always been:
       0. ``DISTRICTSYNC_DATA_DIR`` (see :func:`_override_data_dir`) — when set it
          **wins outright**: the entire profile lives there, with NO legacy fallback
          and NO migration (``migrate_legacy_data_dir`` is a no-op while it is set,
@@ -200,25 +562,11 @@ def user_data_dir() -> Path:
             than fall through to the platform dir — a silent fallback would write the
             profile somewhere the operator did not ask for and did not know to look,
             which is precisely the confusion the override exists to remove.
+        MachineScopeRefused: (a ``RuntimeError``) the machine-scope switch is ON but the
+            shared directory is missing or untrusted. Never falls back to the per-user
+            profile — see :class:`MachineScopeRefused`.
     """
-    override = _override_data_dir()
-    if override is not None:
-        try:
-            override.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise RuntimeError(
-                f"{_DATA_DIR_ENV_VAR}={override} could not be used as the profile directory "
-                f"({exc}). Unset it or point it at a writable absolute path."
-            ) from exc
-        return override
-    new = _platform_data_dir()
-    if new.exists():
-        return new
-    legacy = _legacy_data_dir()
-    if legacy.exists():
-        return legacy
-    new.mkdir(parents=True, exist_ok=True)
-    return new
+    return _pinned()[0]
 
 
 def _write_moved_breadcrumb(legacy: Path, new: Path) -> None:
@@ -366,8 +714,19 @@ def user_mappings_dir() -> Path:
 
 
 def user_log_file() -> Path:
-    """Canonical log-file path, shared by CLI, wizard, and scheduled runs."""
-    return user_data_dir() / "etl_tool.log"
+    """Canonical log-file path, shared by CLI, wizard, and scheduled runs.
+
+    Per-user (every install in the field): ``<profile>/etl_tool.log`` — unchanged.
+
+    Machine-scoped: ``<profile>/runs/etl_tool-<sanitised account>.log``. The name is
+    per-WRITER because a shared profile has two of them — the admin's session and the
+    nightly's service principal — and two processes on one ``RotatingFileHandler`` tear
+    each other's rotations apart. ``runs/`` is the only subtree the principal may write.
+    """
+    base = user_data_dir()
+    if is_machine_scope():
+        return base / "runs" / f"etl_tool-{sanitise_account_for_filename(process_account())}.log"
+    return base / "etl_tool.log"
 
 
 def user_history_db() -> Path:
@@ -376,5 +735,12 @@ def user_history_db() -> Path:
     Resolves through ``user_data_dir()`` at call time — never a module-level
     constant — so the test-isolation seam redirects it too (a store keyed off an
     import-time path would write the real ``history.db`` from every pipeline test).
+
+    Machine-scoped installs put it under ``runs/`` (with its WAL sidecars), so every
+    principal's runs land in ONE ledger that Run History can read — the gap plan 0046
+    Slice C could only document.
     """
-    return user_data_dir() / "history.db"
+    base = user_data_dir()
+    if is_machine_scope():
+        return base / "runs" / "history.db"
+    return base / "history.db"
