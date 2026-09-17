@@ -230,6 +230,12 @@ _ACCOUNT_SWITCH_NOTE_UNKNOWN = (
     "as. Choose Remove nightly sync, then schedule it again with the account you want — what "
     "you've typed here stays in the box."
 )
+# The headline over a REFUSED attempt (2026-09-17). Deliberately says what did not happen and
+# claims nothing about whether a task exists: the account-switch refusal renders over a nightly
+# sync that IS scheduled, so "couldn't schedule the nightly sync" would contradict the readout
+# right above it. The DETAIL is always one of the three notes above — the refusal never gets a
+# second wording of a reason the field note already gives.
+_REGISTER_REFUSED_HEADLINE = "We didn't make that change"
 # Owner decision 2 (2026-09-16): the one-time ``--sftp-configure`` step is named HERE as well as
 # in the partner guide. Credential Manager has no cross-user scope, so a delivery password stored
 # by the admin is STRUCTURALLY invisible to a task running as the service account — the single
@@ -2113,6 +2119,44 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             schedule_registered=bool(cfg.schedule_registered),
         )
 
+    def _account_block_note(block: RegisterBlock, facts: ScheduleAccountFacts) -> str:
+        """The ONE wording per principal gate reason (pure assembly; ``""`` for the rest).
+
+        Read by BOTH the inline note under the account field and the card a refused attempt
+        paints into ``result_slot``, so the two surfaces state the same cause by construction
+        rather than by review. INCOMPLETE / RUN_TIME return ``""`` — the folders card and the
+        run-time field own those, and INCOMPLETE is deliberately silent here.
+        """
+        if block is RegisterBlock.ACCOUNT_SHAPE:
+            return _ACCOUNT_SHAPE_NOTE
+        if block is RegisterBlock.ACCOUNT_NEEDS_PASSWORD:
+            return _ACCOUNT_PASSWORD_NOTE
+        if block is RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE:
+            recorded = facts.recorded
+            return (
+                _ACCOUNT_SWITCH_NOTE_UNKNOWN
+                if recorded is None
+                else _ACCOUNT_SWITCH_NOTE.format(recorded=recorded or _keyring_owner_account())
+            )
+        return ""
+
+    def _register_refusal_controls(block: RegisterBlock, facts: ScheduleAccountFacts) -> list[ft.Control]:
+        """What a REFUSED register press puts in ``result_slot`` — never what the last press left.
+
+        The slot is where every dispatched attempt reports (spinner, banner, failure card), so a
+        refusal that paints only the field note leaves the PREVIOUS attempt's failure card
+        standing and reads as "nothing happened" (the 2026-09-17 report: a failed register, then a
+        retry the gate refused, and the admin saw no change at all). A reason returns a card; the
+        two silent reasons return an empty list, which still REPLACES the stale card.
+
+        ``log_folder=False``: nothing was attempted, so the log holds nothing about this press —
+        offering it would send the admin to a file that cannot explain the refusal.
+        """
+        detail = _account_block_note(block, facts)
+        if not detail:
+            return []
+        return [components.ErrorCard(_REGISTER_REFUSED_HEADLINE, detail, log_folder=False)]
+
     def _account_note_controls() -> list[ft.Control]:
         """The inline block reason + the service-account delivery note (pure assembly).
 
@@ -2124,18 +2168,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         facts = _account_facts()
         controls: list[ft.Control] = []
         block = register_block(cfg.is_complete(), run_time_field.value or "", account=facts)
-        note = ""
-        if block is RegisterBlock.ACCOUNT_SHAPE:
-            note = _ACCOUNT_SHAPE_NOTE
-        elif block is RegisterBlock.ACCOUNT_NEEDS_PASSWORD:
-            note = _ACCOUNT_PASSWORD_NOTE
-        elif block is RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE:
-            recorded = facts.recorded
-            note = (
-                _ACCOUNT_SWITCH_NOTE_UNKNOWN
-                if recorded is None
-                else _ACCOUNT_SWITCH_NOTE.format(recorded=recorded or _keyring_owner_account())
-            )
+        note = _account_block_note(block, facts)
         if note:
             controls.append(ft.Text(note, size=13, color=tokens.color_status_failed))
         # Owner decision 2: named only where it is TRUE and actionable — delivery is on AND a
@@ -2191,15 +2224,15 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         dispatches NOTHING, and the Settings-Save note must not claim "updating…" for it.
         The button/Enter callers ignore the return value.
         """
-        block = register_block(
-            cfg.is_complete(),
-            run_time_field.value or "",
-            account=_account_facts(force_blank_password=force_blank_password),
-        )
+        facts = _account_facts(force_blank_password=force_blank_password)
+        block = register_block(cfg.is_complete(), run_time_field.value or "", account=facts)
         if block is not RegisterBlock.NONE:
-            # Paints the principal reasons; silent for INCOMPLETE / RUN_TIME, preserving today's
-            # bare early return (the run-time error has its own inline slot below).
+            # The note under the field stays (it is still right) but can no longer be the ONLY
+            # feedback — it sits nowhere near the card the admin is looking at. The result slot is
+            # REPLACED on every refusal, painted for the principal reasons and CLEARED for the two
+            # silent ones, so a previous attempt's failure card can never survive a fresh press.
             _paint_account_note()
+            result_slot.controls = _register_refusal_controls(block, facts)
             page.update()
             return False
 

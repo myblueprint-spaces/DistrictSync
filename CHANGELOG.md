@@ -9,6 +9,19 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Fixed
+
+- **Trying to schedule the nightly sync again now always shows what happened.**
+  When a scheduling attempt failed, its red message stayed on screen — so if the
+  next attempt was refused before it started (say, because the nightly sync is
+  already scheduled to run as a different Windows account, or that account's
+  password box is empty), nothing on screen changed and the button looked dead.
+  A fresh attempt now always replaces that message: with the reason it was
+  refused, including the "choose **Remove nightly sync**, then schedule it
+  again" step where that is the fix — or with nothing at all when the missing
+  answer is sitting empty in the run time box just above. Nothing about when a
+  schedule is allowed has changed — only what you are told.
+
 ## [3.21.0] - 2026-09-17
 
 ### Added
