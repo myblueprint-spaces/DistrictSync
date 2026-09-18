@@ -378,6 +378,24 @@ def _machine_switch_on() -> bool:
     return True
 
 
+def machine_switch_on() -> bool:
+    """The switch's PUBLIC face — the parent's OWN re-read after an elevated ``provision``.
+
+    Delegates rather than aliases (the :func:`assert_machine_dir_trusted` pattern), so the
+    ONE monkeypatch seam every test drives stays :func:`_machine_switch_on`.
+
+    It exists because the post-provision handover may NOT be gated on the child's claim
+    (plan 0049 S-1b-ii.1): the child is killed on the bounded wait, so the result file is
+    absent on exactly the failures where it may nonetheless have committed. Reading the
+    switch ourselves is the only answer that is true in that state.
+
+    Raises:
+        MachineScopeRefused: ``SWITCH_UNREADABLE`` — the caller decides, and the handover
+            treats "cannot prove it is on" as off rather than renaming a live profile.
+    """
+    return _machine_switch_on()
+
+
 def _read_dir_security(path: Path) -> tuple[str, int]:  # pragma: no cover - Windows-only ctypes
     """Return ``(owner SID string, security-descriptor control word)`` for ``path``.
 
@@ -804,6 +822,41 @@ def _write_moved_breadcrumb(legacy: Path, new: Path) -> None:
         )
     except OSError as exc:  # pragma: no cover - cosmetic; migration already succeeded
         logger.warning("Could not write migration breadcrumb in %s (%s)", legacy, exc)
+
+
+def write_moved_breadcrumb(superseded: Path, live: Path) -> None:
+    """Public face of the ``MOVED.txt`` breadcrumb — the PUBLIC face, not a second spelling.
+
+    Delegates to :func:`_write_moved_breadcrumb` (the same delegate pattern
+    :func:`assert_machine_dir_trusted` uses) so the machine-scope handover
+    (:mod:`src.scheduler.provision_session`) drops the same file, with the same words, as
+    the legacy migration — and so a test that patches the private name still sees this
+    call. Best-effort; never raises.
+    """
+    _write_moved_breadcrumb(superseded, live)
+
+
+def profile_superseded(directory: Path) -> bool:
+    """Whether a ``MOVED.txt`` breadcrumb marks ``directory`` as a profile we LEFT.
+
+    **The fence** (plan 0049 S-1b-ii.1, amendment 2). After provisioning copies the
+    per-user profile into the shared one, the per-user ``config.json`` and ``history.db``
+    are renamed aside — but a rename alone fences nothing: :meth:`AppConfig.load` maps
+    ``FileNotFoundError`` to defaults with no log, and both :meth:`AppConfig.save` and the
+    run store's ``_open`` recreate what they cannot find. A process still pinned to the
+    per-user profile (a second window, or a nightly that started before the handover)
+    would therefore write a brand-new ORPHAN profile there, silently, and every edit in it
+    would be invisible to the shared install. The two writers consult this first and refuse.
+
+    ``MOVED.txt`` beside a live profile unambiguously means "superseded": the legacy
+    migration writes its breadcrumb into the dir it LEFT, and the resolver never returns a
+    legacy dir once the platform one exists.
+
+    Total by construction — ``Path.is_file()`` answers ``False`` rather than raising on an
+    unreadable directory. That direction is deliberate: a transient stat failure must not
+    start refusing every settings write on an install that was never provisioned.
+    """
+    return (directory / _MOVED_BREADCRUMB).is_file()
 
 
 def _override_suppresses_migration() -> bool:

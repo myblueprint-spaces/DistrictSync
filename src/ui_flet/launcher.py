@@ -17,6 +17,7 @@ the dialog rendering are thin and coverage-omitted.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import traceback
@@ -132,6 +133,25 @@ def format_user_error(exc: BaseException) -> str:
         f"Technical details were saved to:\n{log_path}\n\n"
         "Please share that file with support if this keeps happening."
     )
+
+
+def offers_grant_window(exc: BaseException) -> bool:
+    """Whether this boot failure is the one a ONE-TIME Windows grant can fix (0049 S-1b-ii.2).
+
+    A second administrator on a machine-scoped install is refused the shared folder's
+    security descriptor — ``MachineScopeRefusedReason.INACCESSIBLE`` — and an additive ace
+    is the whole fix. Every other refusal describes a folder a grant cannot repair, and the
+    elevated op refuses those outright; they keep the plain-language repair dialog.
+
+    Branches on the TYPED reason (through :func:`src.ui_flet.grant_access.offers_grant`),
+    never on ``str(exc)``. The import is lazy for the same reason every other import in this
+    module is: a boot path must not pull the scheduler in before it needs it.
+    """
+    if not isinstance(exc, MachineScopeRefused):
+        return False
+    from src.ui_flet.grant_access import offers_grant
+
+    return offers_grant(exc.reason)
 
 
 def _write_traceback(exc: BaseException) -> None:
@@ -257,6 +277,21 @@ def main() -> None:  # pragma: no cover - view glue (ft.run + dialog)
         ft.run(shell.main, assets_dir=assets_dir if Path(assets_dir).exists() else None)
     except Exception as exc:
         _write_traceback(exc)
+        # A second administrator on a machine-scoped install gets the auto-grant window
+        # instead of the repair dialog (0049 S-1b-ii.2 / D5): the folder is fine, Windows
+        # simply has not been told about this account. The sink is re-opened first (the
+        # normal one never got configured — the pin raised above it), so the grant attempt
+        # is in a real log file; ``resolve_log_path`` already falls back to the always
+        # resolvable per-user handshake dir when the profile itself refuses. On a successful
+        # grant the window re-execs and this process never returns.
+        if offers_grant_window(exc):
+            # A missing log must never cost the admin the window itself.
+            with contextlib.suppress(Exception):
+                get_logger("src.ui_flet", log_file=resolve_log_path())
+            from src.ui_flet.grant_window import show_grant_window
+
+            if show_grant_window():
+                sys.exit(1)
         _show_error_dialog(format_user_error(exc))
         sys.exit(1)
 

@@ -405,6 +405,35 @@ the break it was meant to cover. DistrictSync's Settings screen says so
 plainly once both a window and a foreign account are in effect; the one
 remedy that works today is removing the nightly schedule for the break.
 
+### What protects the delivery password — and what a backup carries
+
+The SpacesEDU delivery password is never stored in plain text and never
+leaves the computer it was entered on, but it is worth being precise about
+what that does and does not mean.
+
+* **On a normal (per-account) install** it lives in the signed-in account's
+  own Windows Credential Manager, encrypted under that account's Windows
+  profile. Another account on the same computer cannot read it.
+* **When DistrictSync's settings are shared between the accounts on one
+  computer**, it lives instead in a single file,
+  `C:\ProgramData\DistrictSync\sftp_secret.bin`, encrypted for that computer
+  and readable only by the computer's local administrators, `SYSTEM`, and
+  the account the nightly sync runs as. That is what lets a service account
+  deliver without anyone signing in as it.
+
+**A file-level or image backup of the computer carries the credential with
+it.** That is true of both forms — the encryption keys live in the same
+machine or profile the backup copies. It is not "useless off the box", and
+we will not tell you it is. Treat backups of the DistrictSync folder (and
+of a machine image generally) as sensitive, or exclude
+`C:\ProgramData\DistrictSync\sftp_secret.bin` from file-level backups.
+
+The compensating control is that this password is **per-district and
+rotatable**: it is issued to your district alone, it grants upload access to
+your district's SpacesEDU drop folder and nothing else, and it can be
+rotated at any time — ask your SpacesEDU contact, then re-run
+`--sftp-configure` with the new one.
+
 ### Rotation
 
 If the service account's password is rotated — by policy or by hand — the
