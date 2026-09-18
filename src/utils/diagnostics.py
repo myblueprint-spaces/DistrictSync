@@ -130,15 +130,21 @@ def machine_scope_provenance() -> tuple[str, str]:
     (:data:`_HKLM_DISPLAY_VALUES`). A reader that invented its own spelling would render "set up
     by  on " forever and no test would notice.
 
-    TOTAL: an absent key (every per-user install), an unreadable one, a non-string value or a
-    non-Windows host all reduce to ``("", "")``. That is the conservative direction — the one
-    consumer, ``home_status.machine_scope_line``, drops to a form that CLAIMS no provenance
-    rather than rendering a blank name, and provenance is advisory copy that may never trap or
-    mislead an admin.
+    TOTAL against ANY exception, and that breadth is the point rather than laziness: this is
+    advisory copy resolved at MOUNT on Home and on Settings, so a raise here does not degrade a
+    sentence — it drops both surfaces to their ``ErrorCard`` and takes the verdict with it. The
+    conservative answer is ``("", "")``, which lands ``home_status.machine_scope_line`` on a form
+    that CLAIMS no provenance.
+
+    ``OSError`` alone was not enough, measured: ``read_hklm_values`` guards on ``sys.platform``
+    and then does ``import winreg``, so a caller that patches the platform on a non-Windows host
+    raises ``ModuleNotFoundError`` — an ``ImportError``, outside ``OSError`` entirely. That is not
+    a hypothetical: it reddened CI's Linux leg through three Settings tests and two Home ones,
+    while the Windows leg stayed green.
     """
     try:
         values = read_hklm_values()
-    except (OSError, ValueError):
+    except Exception:  # noqa: BLE001 - see the docstring: a mount may never fall over display copy
         return ("", "")
 
     def _text(name: str) -> str:

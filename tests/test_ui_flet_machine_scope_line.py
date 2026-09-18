@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import sys
 
 import pytest
 
@@ -159,6 +160,46 @@ class TestMachineScopeProvenance:
             lambda: {"MachineScope": 1, "ProvisionedAt": _WHEN, "ProvisionedBy": _WHO},
         )
         assert diagnostics.machine_scope_provenance() == (_WHO, _WHEN)
+
+    def test_a_non_windows_host_that_reaches_the_import_still_reduces_to_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``ImportError`` is outside ``OSError``, and this is where that mattered.
+
+        ``read_hklm_values`` guards on ``sys.platform`` and then does ``import winreg``. Any
+        caller that patches the platform to exercise a Windows path on a non-Windows host sails
+        past the guard and hits the import — ``ModuleNotFoundError``, which an ``(OSError,
+        ValueError)`` clause does not catch. It is not a hypothetical: this exact shape reddened
+        CI's Linux leg through three Settings tests and two Home ones while Windows stayed green,
+        because the raise happens at MOUNT and drops both surfaces to their ``ErrorCard``.
+
+        So the contract is TOTAL against any exception, and the test proves it with the real one.
+
+        Both halves of the reproduction matter. Patching the platform ALONE would sail past the
+        guard on Windows straight into a REAL registry read — green for the wrong reason, and on
+        a provisioned machine not even green. Blocking the module in ``sys.modules`` is what makes
+        ``import winreg`` raise on every OS, so this runs the LINUX failure on the Windows box
+        where the gates are actually run.
+        """
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setitem(sys.modules, "winreg", None)  # `import winreg` now raises ImportError
+        assert diagnostics.machine_scope_provenance() == ("", "")
+
+    @pytest.mark.parametrize(
+        "exc",
+        [ImportError("no winreg"), RuntimeError("something else"), ValueError("bad"), OSError("denied")],
+        ids=["import", "runtime", "value", "os"],
+    )
+    def test_any_raising_seam_reduces_to_empty(self, monkeypatch: pytest.MonkeyPatch, exc: Exception) -> None:
+        """The positive twin for the breadth: no exception class escapes to the caller. The
+        surfaces that consume this resolve it inline on mount, so "it raised" and "the app has no
+        verdict" are the same event."""
+
+        def _boom() -> dict[str, object]:
+            raise exc
+
+        monkeypatch.setattr(diagnostics, "read_hklm_values", _boom)
+        assert diagnostics.machine_scope_provenance() == ("", "")
 
     def test_an_absent_key_is_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Every install in the field today, plus every non-Windows host."""
