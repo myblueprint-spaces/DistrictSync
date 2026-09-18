@@ -1229,3 +1229,159 @@ elevation predicate per kind, **including the newly-reachable MSA no-password el
 in both halves · cron refusing MSA **by kind** with a password-free request · the read-back carrying
 `run_as`/`logon_type` and the mismatch WARNING failing open · the `24` count bumped if a canonical
 is added.
+
+---
+
+## Spec — S-4 (the gMSA option, Settings only)  _(Stage 4, 2026-09-18)_
+
+Design of record: `## Design` **D6** (the gMSA + Errors bullets) + the S-4 row of `## Slices`.
+Seams verified 2026-09-18 against `claude/0049-s3-principal-model` at `a5d2fad`.
+
+> **The honesty constraint outranks everything in this slice.** Nothing may claim gMSA works until
+> a district reports a green nightly. No domain controller exists here, so every surface this slice
+> adds says so, and the CHANGELOG says "available, untested". A caption that hedges is not a
+> weakness; it is the only true thing we can write.
+
+### S-4.1 — Four corrections to D6, and one addition
+
+1. **D6's `ACCOUNT_NEEDS_PASSWORD` bullet is incomplete.** Threading `kind` into
+   `ScheduleAccountFacts` stops the password rung firing — but `register_block`'s **ACCOUNT_SHAPE
+   rung runs first and unconditionally** (`setup_gates.py:213-217`), calling `validate_run_as_user`,
+   which rejects a trailing `$`. Every gMSA would be refused there, for the wrong reason, before the
+   password rung is reached. **Both rungs must dispatch on kind**, through the dispatcher S-3
+   already shipped (`task_com.validate_principal_account`) — never a second spelling.
+2. **`schedule_reconcile` owns no copy.** It returns only the `ScheduleReconcile` enum; all the
+   admin-facing prose lives in `downgrade_interrupt`. The S-4 Slices row conflates them. The work is
+   entirely inside `downgrade_interrupt`.
+3. **`downgrade_interrupt` has no kind signal, and its premise breaks.** Its docstring asserts that a
+   foreign principal implies a stored password *"the engine refuses to register one without it"* —
+   **false** the moment an MSA is registrable. `RegisteredSchedule` has no kind facet, so today the
+   only available signal is sniffing a trailing `$` on the recorded name. **We are not doing that:**
+   inferring a security kind from a character in a name is precisely the inference S-3 just deleted
+   from `apply_definition`, and re-introducing it one layer up would be incoherent. See S-4.3.
+4. **The wizard/Settings fork does not exist.** `_build_schedule_section` is byte-identical code for
+   both mounts (`screens/setup.py:1596` wizard, `:1922` Settings); the seven optional callbacks are
+   the only difference and none is a mode flag. D6 phrases the disclosure as if a fork were there to
+   extend. **S-4 introduces the first one.**
+5. **`apply_prune_principal` moves INTO scope.** S-3 left it validating with `validate_run_as_user`
+   and put it on the ROADMAP as unreachable. S-4 is the slice that makes it reachable: the moment a
+   gMSA can be scheduled, Remove must be able to prune its access, or a retired service account
+   keeps rights on `C:\ProgramData\DistrictSync` with nothing in the app able to revoke them.
+
+### S-4.2 — The disclosure (Settings mount only)
+
+`_build_schedule_section` gains **`allow_gmsa: bool = False`**, passed `True` only from
+`_mount_settings`. The default is the safe one, and the wizard keeps rejecting `$` exactly as today —
+a first-run admin choosing a credential model they cannot test is the wrong default, and the wizard
+has no room for three IT prerequisites.
+
+Built with **`components.check_row`** — "the ONE checkbox factory" — not the raw `ft.Switch` the
+seasonal-window section uses locally. The design system's build-via-factories rule outranks the
+nearer precedent; note in a comment that the two co-exist in this file and why this one chose the
+factory.
+
+Toggling it: switches the field's validator to `validate_gmsa_account`, **hides the password field**
+(an MSA has no password, and leaving a live control that cannot matter is the dead-control problem
+this file already names elsewhere), and reveals
+
+- the caption **"Not yet tested against a live domain. If it does not work, we will need the code
+  shown on screen and your IT team's help."** — new copy on the existing muted-note primitive
+  (`tokens.type_caption` + `color_muted`); there is no "untested" caption anywhere in `src/ui_flet`
+  to reuse, which is itself worth a comment;
+- the three IT prerequisites, as a checklist: the computer in `PrincipalsAllowedToRetrieveManagedPassword`,
+  `Install-ADServiceAccount` run on this computer, and "Log on as a batch job" granted;
+- the partner-doc link.
+
+Untoggling restores the password field and the `validate_run_as_user` path. The toggle is **session
+state, not config** — nothing about it is persisted; the recorded kind (S-4.3) is what survives.
+
+### S-4.3 — The recorded kind: a FOURTH atomic facet
+
+`AppConfig.schedule_run_as_kind` joins `schedule_unattended` / `schedule_task_args` /
+`schedule_run_as_user` — written only on a confirmed register, cleared on a confirmed unregister, in
+the **same save**. `RegisteredSchedule` gains it as a fourth facet. Its `schedule_` prefix keeps it
+out of `_ADVISORY_FIELD_PREFIXES`, so `_carries_chosen_settings` counts it, exactly as 0046 B
+reasoned for the third facet. **Never a password — a KIND only.**
+
+**The absent-value rule, evidenced:** a blank/absent kind beside a **non-blank** `run_as_user` means
+`PASSWORD` — before S-4 that was the only foreign kind the engine could register, so no deployed
+install can mean anything else by it. A blank kind beside a blank user means `INTERACTIVE_TOKEN`.
+This mirrors 0046 B's `""` = the signed-in account, and it is why no migration is needed.
+
+`downgrade_interrupt` takes the kind and gains an **MSA variant whose copy names no password**
+("your Windows account password" is the wrong credential for a gMSA, the same argument the
+service-account variant already makes one step less far). `offers_signed_in_only` stays `False`
+there, for the reason already documented: the register gate refuses a principal change on a live
+task, so that button would be dead.
+
+`principal_key` / `foreign_task_account` stay **name-keyed and unchanged** (verified 2026-09-17).
+
+### S-4.4 — Errors, keyed on kind
+
+`classify_schedule_error` gains a **required, undefaulted `kind: PrincipalKind`** — the same
+"required and undefaulted" treatment `account_is_current` got in 0047, and for the same reason: a
+defaulted kind would silently coach a gMSA admin about a password. Ripple, counted: **5 call sites
+in `screens/setup.py`** and **9 in tests** (6 of them inside
+`tests/test_partner_doc_schedule_copy_parity.py`). `test_ui_flet_setup_errors.py` already has a
+missing-keyword `TypeError` twin for `account_is_current`; the new kwarg needs its own.
+
+Two different edit shapes on two existing branches, not one new top-level branch:
+
+- **`MSG_ACCOUNT_NOT_RECOGNIZED`** (`HR_NONE_MAPPED`, `0x80070534` — measured, and where a mistyped
+  gMSA name already lands) **forks on kind**: the MSA arm leads *"Windows would not schedule the task
+  as `<account>`"*, renders the three prerequisites as a checklist, shows the code via the existing
+  `_code(canonical)` helper, and offers **no "try again"** — retrying a name the directory does not
+  know, or a computer the gMSA is not authorised for, changes nothing.
+- **`MSG_NO_LOGON_SESSION`** (`0x80070520` — SD60's policy failure) **gains one appended sentence**
+  pointing at the gMSA disclosure in Settings. Its existing copy is otherwise untouched: it is
+  correct, it is pinned, and it is the branch SD60 actually sees.
+
+A new canonical, if one proves necessary, bumps `tests/test_task_com.py`'s hardcoded `== 24` (still
+24, verified) and obeys `messages.py` — injective, secret-free, no foreign marker. **Prefer forking
+existing branches to adding a canonical**: the gMSA failure taxonomy is unmeasured, and inventing
+canonicals for failures nobody has seen is how a classifier acquires dead branches.
+
+### S-4.5 — Prune (the S-3 straggler)
+
+`apply_prune_principal` mirrors `_principal_account`'s dispatch (`provisioning.py:683-701`) —
+`kind = PrincipalKind(payload["kind"])` then `task_com.validate_principal_account(kind, requested)`.
+**The Remove op's payload builder must start carrying `kind`**, which `_principal_account`'s already
+does; find and fix the prune payload's own builder rather than assuming symmetry.
+
+The prune leg is the one that matters for a retired MSA: an unconfirmed delete must still leave the
+principal's aces alone (that invariant is unchanged — pruning a LIVE task's principal makes it fail
+every night with no surface anywhere).
+
+### S-4.6 — Docs
+
+`docs/partner/troubleshooting.md` §"Task Scheduler does not run the task" gains the gMSA material,
+and the parity test carries it **automatically**: `_DOC_QUOTES[_TROUBLESHOOTING]` is defined as
+"every pinned string except `_SCOPE_PINS`", so a new classifier-family row is required-present there
+with no separate registration. Add the row to `_PINNED` with its real producer call.
+
+`CHANGELOG.md` under `[Unreleased] → Added`: **"available, untested"**, in those terms. It must not
+read as a feature announcement.
+
+**The IT prerequisites also ship as a hand-to-IT document** — the three requirements, what
+DistrictSync will do, and what it cannot undo — so a district (and this project's own owner) can send
+one page to their IT team rather than reconstructing it from a UI checklist.
+
+### S-4.7 — Out of scope
+
+Any claim that gMSA works · the gMSA failure taxonomy beyond the two branches above (unmeasured; the
+`[HRESULT` log anchor carries the rest) · the wizard offering gMSA · un-provisioning · a UI that
+reads `ScheduleReadback.run_as` (S-3 left that narrowed, not closed).
+
+### S-4.8 — Tests
+
+`register_block` accepting a gMSA at BOTH rungs, with the per-user and PASSWORD rows byte-identical ·
+`ACCOUNT_NEEDS_PASSWORD` never firing for an MSA, with its positive twin still firing for PASSWORD ·
+the recorded-kind facet written on a confirmed register and cleared on a confirmed unregister, in one
+save · the absent-kind rule in both directions (blank + named user ⇒ PASSWORD; blank + blank ⇒
+INTERACTIVE_TOKEN) · `downgrade_interrupt`'s MSA variant naming no password, and the sweep that no
+variant's copy mentions a password for an MSA · `classify_schedule_error`'s missing-`kind` `TypeError`
+twin · the MSA error arm carrying the checklist and the code and NO "try again", with the
+PASSWORD arm byte-identical · the appended `MSG_NO_LOGON_SESSION` sentence, with the rest of that
+branch verbatim · the disclosure absent from the wizard mount and present in Settings, proven on both
+mounts · the password field hidden while the disclosure is on and restored when it is off ·
+`apply_prune_principal` accepting an MSA and still refusing a hostile name · the doc parity row.
