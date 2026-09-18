@@ -1344,7 +1344,11 @@ class TestReconcileSaveNote:
         )
         assert "updating" not in suffix.lower()
 
-    def test_reconcile_outcome_members_are_the_five_pre_0046_states_plus_the_two_account_ones(self):
+    def test_reconcile_outcome_members_are_the_five_pre_0046_states_plus_the_three_gate_ones(self):
+        """The five original states, 0046 B's two principal refusals, and 0049 S-2b's delivery
+        one. Enumerated rather than counted so a new member arrives as a visible test edit — the
+        note functions below both keep a totality tail, so an unbranched member would otherwise
+        paint a bare "Saved." and report nothing."""
         assert {o.value for o in ReconcileOutcome} == {
             "dispatched",
             "interrupted",
@@ -1353,7 +1357,26 @@ class TestReconcileSaveNote:
             "none",
             "blocked_account",
             "blocked_account_switch",
+            "blocked_delivery_secret",
         }
+
+    def test_the_delivery_refusal_never_points_at_the_windows_account(self):
+        """The reason it is not ``BLOCKED_ACCOUNT``. That copy reads "check the Windows account
+        and its password" — which would send an admin to the SERVICE ACCOUNT's credentials over
+        a fault in the SpacesEDU DELIVERY password. Landing on a dedicated member only helps if
+        its copy actually says something different, so both halves are pinned: the delivery cause
+        names delivery and offers the turn-it-off escape, and it never says "Windows account"."""
+        for note in (
+            folders_save_note(ReconcileOutcome.BLOCKED_DELIVERY_SECRET),
+            sftp_reconcile_suffix(ReconcileOutcome.BLOCKED_DELIVERY_SECRET),
+        ):
+            assert "delivery password" in note
+            assert "turn delivery off" in note
+            assert "Windows account" not in note
+            assert "run time" not in note
+        # The positive twin: the account cause DOES still say it, so the pin above is a real
+        # distinction and not a string that happens to be absent everywhere.
+        assert "Windows account" in folders_save_note(ReconcileOutcome.BLOCKED_ACCOUNT)
 
     def test_every_outcome_has_a_distinct_non_tail_note(self):
         """The ``return _FOLDERS_SAVED`` / ``return ""`` tails STAY as the totality guard — so a

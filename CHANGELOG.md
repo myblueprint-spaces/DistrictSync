@@ -9,6 +9,34 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Added
+
+- **A service account no longer needs its delivery password set up by hand.**
+  Scheduling the nightly sync to run as another Windows account used to mean
+  first running `--sftp-configure` as that account from a command prompt: the
+  delivery password is kept per Windows account, and a service account could
+  not read yours. DistrictSync now offers to change this computer over to
+  **settings for this computer** — your district, folders, delivery password
+  and run history move into one shared folder (`C:\ProgramData\DistrictSync`)
+  that the nightly task's account can read, so the manual step is no longer
+  needed. It lists exactly what will move and asks you to confirm first, and
+  Windows asks for permission before anything changes. Two things are worth
+  weighing before you say yes. Afterwards, any administrator of this computer
+  can open DistrictSync and change these settings, while an account that is not
+  an administrator cannot open it at all. And **this version cannot change it
+  back** — "Remove nightly sync" removes the scheduled task, it does not undo
+  this. Nothing changes unless you choose it: installing this version switches
+  nothing on its own, and a nightly sync already scheduled under an earlier
+  version keeps running exactly as it is.
+
+- **Home and Setup now say whose settings you are looking at.** On a computer
+  that has been changed over, both screens carry a line reading
+  *"Shared settings on this computer"*, naming who set it up and when where
+  DistrictSync has that on record — so a second administrator is not left
+  wondering why the app behaves differently from the one their colleague
+  described. An ordinary install shows no line there; that is the normal state,
+  not a fault. Your setup guide explains both, and
+  `DistrictSync-windows.exe --diagnose` prints the same answer from a terminal.
 ### Fixed
 
 - **DistrictSync no longer refuses to start after its settings folder is

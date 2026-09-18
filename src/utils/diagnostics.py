@@ -40,6 +40,14 @@ from src.utils.version import app_version
 REPORT_ANCHOR = "[districtsync-diagnose]"
 
 # The honesty line. NOT "no personal information" — see the module docstring.
+#: The two words the ``scope`` row can print. Named because the partner docs tell an admin to
+#: read this exact row to decide whether they still need the manual ``--sftp-configure`` step —
+#: a reworded value there would send a district down the wrong branch of a procedure whose
+#: wrong answer is silent (delivery stops, nothing alarms). Pinned in
+#: ``tests/test_partner_doc_schedule_copy_parity.py``.
+SCOPE_SHARED = "shared (this computer)"
+SCOPE_PER_USER = "this account only"
+
 PRIVACY_NOTE = "This report carries no passwords. It does name Windows accounts and folders, so treat it like a log."
 
 # ``_sftp_show``'s aligned-label block, one width for the whole report.
@@ -206,7 +214,7 @@ def _profile_lines() -> list[str]:
     return [
         "Profile:",
         _guarded("data dir", paths.user_data_dir),
-        _guarded("scope", lambda: "shared (this computer)" if paths.is_machine_scope() else "this account only"),
+        _guarded("scope", lambda: SCOPE_SHARED if paths.is_machine_scope() else SCOPE_PER_USER),
         _guarded("this account", process_account),
         _guarded("DISTRICTSYNC_DATA_DIR", lambda: paths._override_data_dir() or "not set"),
         _guarded("log file", paths.user_log_file),

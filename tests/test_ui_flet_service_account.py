@@ -22,6 +22,7 @@ import pytest
 import src.ui_flet.screens.setup as setup_mod
 from src.config.app_config import AppConfig
 from src.scheduler import task_com, windows
+from src.scheduler.provision_session import HandoverOutcome, ProvisionAttempt, ProvisionOutcome
 from src.sftp.uploader import SFTPUploader
 from src.ui_flet.setup_flow import (
     SCHEDULE_ACCOUNT_FIELD_LABEL,
@@ -154,6 +155,91 @@ def _drain(stub_page) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Provisioning harness (plan 0049 S-2b) — shared with the handover test file    #
+# --------------------------------------------------------------------------- #
+# Since S-2b a FOREIGN principal no longer reaches ``register_task`` from the Register button:
+# it reaches ``request_provision``, behind the machine-scope confirm. Every seam below is
+# monkeypatched, never real — ``request_provision`` raises a UAC prompt and ``complete_handover``
+# re-pins ``paths``, renames the live profile and re-points the log sink.
+def _capture_provision(monkeypatch, *, results=None) -> dict:
+    """Record what reaches ``request_provision``, and queue its outcomes.
+
+    The queue exists for the two-attempt sequences in
+    ``tests/test_ui_flet_schedule_refusal_feedback.py``; exhausting it falls through to
+    ``PROVISIONED``, so a test can never pass by silently re-reading a failure.
+    """
+    seen: dict = {"calls": 0}
+    queue = list(results or [])
+
+    def _fake(task_name, exe_path, sis_type, input_dir, output_dir, run_time, sftp=False, **kwargs):
+        seen["calls"] += 1
+        seen.update(kwargs)
+        seen["task_name"] = task_name
+        seen["sis_type"] = sis_type
+        seen["run_time"] = run_time
+        seen["sftp"] = sftp
+        return queue.pop(0) if queue else ProvisionAttempt(outcome=ProvisionOutcome.PROVISIONED)
+
+    monkeypatch.setattr(setup_mod, "request_provision", _fake)
+    return seen
+
+
+def _stub_handover(monkeypatch, *, handed_over=True, refused=None, persist_raises=None) -> dict:
+    """Drive ``complete_handover``'s CONTRACT without its side effects.
+
+    It models the real ordering exactly, because the assertions depend on it: a refusal returns
+    BEFORE ``persist`` (there is nowhere to persist to), and every other outcome calls
+    ``persist`` and then — only when the parent's switch read says this session handed over —
+    ``reenter``. ``persist_called`` is recorded so "the record was not written" can be proven to
+    be the VIEW's guard rather than a callback that never fired.
+    """
+    seen: dict = {"calls": 0, "persist_called": False, "reenter_called": False}
+
+    def _fake(*, persist, reenter):
+        seen["calls"] += 1
+        if refused is not None:
+            return HandoverOutcome(handed_over=False, refused=refused)
+        if persist_raises is not None:
+            seen["persist_called"] = True
+            raise persist_raises
+        persist()
+        seen["persist_called"] = True
+        if handed_over:
+            reenter()
+            seen["reenter_called"] = True
+        return HandoverOutcome(handed_over=handed_over)
+
+    monkeypatch.setattr(setup_mod, "complete_handover", _fake)
+    return seen
+
+
+def _scope_dialog(stub_page):
+    """The machine-scope confirm this press showed, or ``None``."""
+    for call in reversed(list(stub_page.show_dialog.call_args_list)):
+        dialog = call.args[0]
+        if getattr(getattr(dialog, "title", None), "value", None) == setup_mod.SCOPE_CONFIRM_TITLE:
+            return dialog
+    return None
+
+
+def _confirm_scope(stub_page) -> None:
+    """Press Continue on the confirm — the ONLY door to a provisioning dispatch."""
+    dialog = _scope_dialog(stub_page)
+    assert dialog is not None, "the machine-scope confirm was never shown"
+    action = next(b for b in dialog.actions if getattr(b, "content", None) == setup_mod.SCOPE_CONFIRM_CONTINUE_LABEL)
+    action.on_click(None)
+
+
+def _register_service_account(tree, stub_page, *, account=_SERVICE, password="pw") -> None:
+    """Type a service account, press Schedule, confirm, and drain the worker."""
+    _account_field(tree).value = account
+    _textfield_by_label(tree, "Windows account password").value = password
+    _press_register(tree)
+    _confirm_scope(stub_page)
+    _drain(stub_page)
+
+
+# --------------------------------------------------------------------------- #
 # G5 — the untouched prefill is byte-identical to the pre-B world               #
 # --------------------------------------------------------------------------- #
 class TestG5PrefillUnchanged:
@@ -203,18 +289,24 @@ class TestG5PrefillUnchanged:
     ["svc_x", "SVC_X", "  svc_x  ", "CORP\\svc_x", "corp\\SVC_X"],
 )
 def test_the_typed_account_is_sent_verbatim(tmp_path, stub_page, monkeypatch, typed):
-    """Stripped only. A sanitised or re-cased value would bypass ``register_task``'s
-    case-insensitive comparison — the very thing that makes the prefill safe."""
+    """Stripped only. A sanitised or re-cased value would bypass the engine's case-insensitive
+    comparison — the very thing that makes the prefill safe.
+
+    Asserted on ``request_provision`` since plan 0049 S-2b: a FOREIGN principal reaches the
+    provisioning round trip instead of ``register_task``, and that is the call which now carries
+    the account name to the elevated child. The invariant and the parametrization are unchanged;
+    what moved is which engine entry point has to honour them.
+    """
     cfg = _settings(tmp_path, monkeypatch)
-    seen = _capture_register(monkeypatch)
+    ordinary = _capture_register(monkeypatch)
+    seen = _capture_provision(monkeypatch)
+    _stub_handover(monkeypatch, handed_over=False)
     tree, _ = _schedule_section(cfg, stub_page)
-    _account_field(tree).value = typed
-    _textfield_by_label(tree, "Windows account password").value = "pw"
-    _press_register(tree)
-    _drain(stub_page)
+    _register_service_account(tree, stub_page, account=typed)
 
     assert seen["calls"] == 1
     assert seen["run_as_user"] == typed.strip()
+    assert ordinary["calls"] == 0, "a foreign principal must not take the un-provisioned path"
 
 
 def test_a_blank_account_field_sends_none(tmp_path, stub_page, monkeypatch):
@@ -232,20 +324,36 @@ def test_a_blank_account_field_sends_none(tmp_path, stub_page, monkeypatch):
 # --------------------------------------------------------------------------- #
 class TestTheRecord:
     def test_a_confirmed_register_writes_all_three_facets_in_one_save(self, tmp_path, stub_page, monkeypatch):
+        """Unchanged invariant, new route (0049 S-2b): the facets are written by the SAME
+        ``_persist_registered_record``, now handed to ``complete_handover`` as ``persist``."""
         cfg = _settings(tmp_path, monkeypatch)
         saves = {"n": 0}
         monkeypatch.setattr(AppConfig, "save", lambda self: saves.__setitem__("n", saves["n"] + 1))
-        _capture_register(monkeypatch)
+        _capture_provision(monkeypatch)
+        handover = _stub_handover(monkeypatch, handed_over=False)
         tree, _ = _schedule_section(cfg, stub_page)
-        _account_field(tree).value = _SERVICE
-        _textfield_by_label(tree, "Windows account password").value = "pw"
-        _press_register(tree)
-        _drain(stub_page)
+        _register_service_account(tree, stub_page)
 
+        assert handover["persist_called"] is True
         assert cfg.schedule_run_as_user == _SERVICE
         assert cfg.schedule_unattended is True
         assert cfg.schedule_task_args is not None
         assert saves["n"] == 1
+
+    def test_a_signed_in_register_still_writes_the_record_on_the_ordinary_path(self, tmp_path, stub_page, monkeypatch):
+        """The pre-S-2b path, unchanged: the signed-in account provisions nothing, so it never
+        reaches the confirm and the record is written by ``_on_register_success``."""
+        cfg = _settings(tmp_path, monkeypatch)
+        seen = _capture_register(monkeypatch)
+        tree, _ = _schedule_section(cfg, stub_page)
+        _textfield_by_label(tree, "Windows account password").value = "pw"
+        _press_register(tree)
+        _drain(stub_page)
+
+        assert _scope_dialog(stub_page) is None
+        assert seen["calls"] == 1
+        assert cfg.schedule_registered is True
+        assert cfg.schedule_unattended is True
 
     def test_a_confirmed_unregister_clears_all_three(self, tmp_path, stub_page, monkeypatch):
         cfg = _settings(
@@ -602,18 +710,41 @@ class TestHonestReporting:
         _drain(stub_page)
         return tree
 
-    def test_the_banner_names_the_registered_service_account(self, tmp_path, stub_page, monkeypatch):
-        tree = self._register_as(tmp_path, stub_page, monkeypatch, _SERVICE)
-        assert _has_text_containing(tree, f"Runs as {_SERVICE}")
-        assert not _has_text_containing(tree, f"Runs as {_SIGNED_IN}")
+    def _provision_as(self, tmp_path, stub_page, monkeypatch, account, *, attempt=None, **handover):
+        cfg = _settings(tmp_path, monkeypatch)
+        _capture_provision(monkeypatch, results=[attempt] if attempt is not None else None)
+        _stub_handover(monkeypatch, **handover)
+        tree, _ = _schedule_section(cfg, stub_page)
+        _register_service_account(tree, stub_page, account=account)
+        return tree
+
+    def test_the_provisioned_banner_never_names_the_signed_in_account(self, tmp_path, stub_page, monkeypatch):
+        """G3, carried onto the provisioning path. The banner names NO account — it says "the
+        account you entered" — which is what makes naming the wrong one impossible. The assertion
+        is on the signed-in name because that is the failure G3 exists to stop: a task on a
+        service account reporting somebody else's name back."""
+        tree = self._provision_as(tmp_path, stub_page, monkeypatch, _SERVICE, handed_over=True)
+        assert _has_text_containing(tree, setup_mod.HANDOVER_DONE_HEADLINE)
+        assert not _has_text_containing(tree, _SIGNED_IN)
 
     def test_the_banner_names_the_signed_in_account_on_an_untouched_prefill(self, tmp_path, stub_page, monkeypatch):
         tree = self._register_as(tmp_path, stub_page, monkeypatch, None)
         assert _has_text_containing(tree, f"Runs as {_SIGNED_IN}")
 
     def test_a_foreign_account_routes_account_is_current_False(self, tmp_path, stub_page, monkeypatch):
+        """0047 G4 on the provisioning path: a FAILED attempt's message goes through the SAME
+        classifier, and the personal-credential coaching (a Windows Hello PIN, a microsoft.com
+        password) must not be offered for a service account."""
         seen = _capture_classifier(monkeypatch)
-        self._register_as(tmp_path, stub_page, monkeypatch, _SERVICE, result=(False, task_com.MSG_LOGON_FAILURE))
+        self._provision_as(
+            tmp_path,
+            stub_page,
+            monkeypatch,
+            _SERVICE,
+            attempt=ProvisionAttempt(outcome=ProvisionOutcome.FAILED, message=task_com.MSG_LOGON_FAILURE),
+            handed_over=False,
+        )
+        assert seen["msg"] == task_com.MSG_LOGON_FAILURE
         assert seen["account_is_current"] is False
         out = setup_mod.classify_schedule_error(
             task_com.MSG_LOGON_FAILURE, False, account_is_current=seen["account_is_current"]

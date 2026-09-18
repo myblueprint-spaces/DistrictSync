@@ -260,6 +260,7 @@ def build_app_body(
     app_cfg: AppConfig,  # noqa: ARG001 - the persist-then-enter seam; see the docstring
     *,
     on_restart_identity: Callable[[], None] | None = None,
+    on_reenter: Callable[[], None] | None = None,
 ) -> ft.Control:
     """The rail + content host + screen map: the whole app, minus the window lifecycle.
 
@@ -284,6 +285,15 @@ def build_app_body(
     yet. So a mistyped or wrong-person address was unfixable for the whole of first-run. Only
     the wizard-hosting Home branch renders it; ``None`` (the default, and what every test and
     the Setup rail item pass) renders no affordance rather than a dead one.
+
+    ``on_reenter`` (plan 0049 S-2b.3) rebuilds this whole body and lands on Home. It is what
+    ``provision_session.complete_handover`` is handed as its re-entry callback: a machine-scope
+    handover re-points the profile mid-session, so every screen built against the OLD pin is
+    reading settings that have just been superseded. It deliberately does NOT go through
+    ``main``'s ``_enter_app`` — that one is idempotent behind a ``nonlocal entered`` latch, so
+    calling it again is a no-op — and it is optional for the same reason ``on_restart_identity``
+    is: absent ⇒ Setup renders no re-entry, and the handover's one-shot banner is painted in
+    place instead of parked for a surface that will never be built.
     """
     model = nav.nav_model()
     screens = build_screens(model.destinations)
@@ -311,10 +321,14 @@ def build_app_body(
     # `on_navigate` (plan 0044 S6) is the folders card's ONE route out: its Save can be
     # REFUSED for a district set up on this computer that has not passed a test conversion,
     # and the test lives on Mapping. Same lambda, same rail-follow, as Mapping/Convert/Home.
+    # `on_reenter` (0049 S-2b.3) is forwarded because the Schedule section's provisioning
+    # dispatch lives in this surface: a confirmed handover must rebuild the body it is mounted
+    # in, and only the shell can do that.
     screens["setup"] = lambda: build_setup(
         page,
         on_schedule_changed=_on_schedule_changed,
         on_navigate=lambda dest: select_by_id(dest),
+        on_reenter=on_reenter,
     )
     # Swap the `home` placeholder for the three-way Home surface UNCONDITIONALLY —
     # `build_home` owns the branch decision itself (branch (a) HOSTS the setup wizard when
@@ -335,6 +349,10 @@ def build_app_body(
         on_refresh=lambda: select_by_id("home"),
         on_schedule_changed=_on_schedule_changed,
         on_restart_identity=on_restart_identity,
+        # 0049 S-2b.3: branch (a) HOSTS the wizard, whose Schedule step can dispatch a
+        # provision, and branches (b)/(c) are where a completed handover's one-shot banner is
+        # rendered. Forwarded to the ONE place that decides which Home an admin gets.
+        on_reenter=on_reenter,
     )
     # Swap the `convert` placeholder for the real manual-convert surface (IA-5a).
     screens["convert"] = functools.partial(build_convert, page, on_navigate=lambda dest: select_by_id(dest))
@@ -553,7 +571,9 @@ def main(page: ft.Page) -> None:
        proven ``content_host`` pattern — no new Flet 0.85.3 API). ``needs_identity`` decides
        which; ``_enter_app`` runs at most once and builds the body from a FRESH
        ``AppConfig.load()`` after the gate, so a just-answered identity is in hand from the
-       first paint.
+       first paint. ``_rebuild_app_body`` is its latch-free sibling (0049 S-2b.3): a
+       machine-scope handover must rebuild the body it is mounted in, which is a second BUILD
+       and not a second ENTRY.
     5. **probes** — the off-thread Setup badge, at the tail of :func:`build_app_body`, so it
        never runs while the launch page is up.
 
@@ -650,10 +670,33 @@ def main(page: ft.Page) -> None:
         if entered:
             return
         body = build_app_body(
-            page, AppConfig.load() if app_config is None else app_config, on_restart_identity=_restart
+            page,
+            AppConfig.load() if app_config is None else app_config,
+            on_restart_identity=_restart,
+            on_reenter=_rebuild_app_body,
         )
         entered = True
         root_host.content = body
+        page.update()
+
+    def _rebuild_app_body() -> None:
+        """Rebuild the app body in place — deliberately IGNORING the ``entered`` latch.
+
+        The latch exists to stop the launch page's several affordances stacking two rails on
+        one host; it is not a statement that the body may only ever be built once. A
+        machine-scope handover (plan 0049 S-2b.3) re-points the profile mid-session, so every
+        screen built against the previous pin is now reading superseded settings — the body has
+        to be rebuilt, and routing that through ``_enter_app`` would be a silent no-op.
+
+        It raises on failure rather than flooring, because the caller
+        (``provision_session.complete_handover``'s ``reenter``) is the ONE place that can still
+        tell the admin what just happened irreversibly: swallowing the failure here would leave
+        them on a stale surface with no report. ``entered`` is left alone — it is already
+        ``True`` on every path that can reach this, and lowering it would re-arm the gate.
+        """
+        root_host.content = build_app_body(
+            page, AppConfig.load(), on_restart_identity=_restart, on_reenter=_rebuild_app_body
+        )
         page.update()
 
     def _show_gate(app_config: AppConfig) -> None:
