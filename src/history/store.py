@@ -98,6 +98,16 @@ def write_run_record(record: dict[str, Any], *, source: str) -> bool:
     CSVs unchanged — the enriched run-log line is the durable fallback). A corrupt DB is
     quarantined and recreated once, then the write retried on the fresh DB.
 
+    **The superseded fence (plan 0049 S-1b-ii.1)** refuses before any file is touched: a
+    ``MOVED.txt`` in the resolved profile means this directory was replaced by a
+    machine-scoped one. ``_open`` creates a missing DB, so without the fence a process
+    still pinned to the superseded profile would silently start a SECOND ledger there —
+    runs that Run History, reading the shared store, would never show. WARN + ``False``,
+    never a raise: this writer's non-fatal contract is what keeps a run's exit code its own.
+
+    The check is against the profile ROOT (``user_data_dir()``), not ``db_path.parent``:
+    on a machine-scoped install the store lives one level down, under ``runs/``.
+
     Args:
         record: the flat run-record dict (the exact shape the derivation modules read);
             stored verbatim as JSON plus a few promoted typed columns for filtering.
@@ -105,6 +115,14 @@ def write_run_record(record: dict[str, Any], *, source: str) -> bool:
             (so an unexpected value can't abort the write on the CHECK constraint).
     """
     db_path = paths.user_history_db()
+    profile = paths.user_data_dir()
+    if paths.profile_superseded(profile):
+        logger.warning(
+            "Not recording this run in %s: that folder has been superseded (MOVED.txt) — DistrictSync's "
+            "run history on this computer is now shared. The run is recorded in the diagnostic log only.",
+            profile,
+        )
+        return False
     src = source if source in VALID_SOURCES else "unknown"
     try:
         return _write(db_path, record, src)

@@ -132,13 +132,22 @@ class ClearOutcome:
 
 
 class SettingsOverwriteRefused(RuntimeError):
-    """A save was refused because it would replace settings we FAILED TO READ.
+    """A save was refused because writing it would DESTROY settings rather than record them.
 
-    Raised by :meth:`AppConfig.save` for exactly one shape: an instance whose
-    ``load_state`` is :attr:`ConfigLoadState.UNREADABLE` and whose settings are still the
-    untouched defaults ``load()`` invented — a payload that provably contains nothing the
-    admin chose. Writing it would atomically and durably swap the admin's district,
-    folders and delivery settings for blanks.
+    Raised by :meth:`AppConfig.save` for two shapes, both of which mean *the file this
+    process would write is not the file the admin's settings live in*:
+
+    1. an instance whose ``load_state`` is :attr:`ConfigLoadState.UNREADABLE` and whose
+       settings are still the untouched defaults ``load()`` invented — a payload that
+       provably contains nothing the admin chose. Writing it would atomically and durably
+       swap the admin's district, folders and delivery settings for blanks;
+    2. (plan 0049 S-1b-ii.1) the resolved directory carries a ``MOVED.txt`` breadcrumb —
+       this profile was SUPERSEDED by a machine-scoped one, and writing here would create
+       an orphan nobody reads. See :func:`src.utils.paths.profile_superseded`.
+
+    ONE exception type for both because every caller wants the same thing from either: the
+    write did not happen. ``identity_save`` rolls the instance back on it, the shell's
+    geometry save swallows it, and the wizard's finish line keeps the admin on the step.
 
     Raising (rather than returning quietly) follows the contract this module already
     holds for a failed promote: *a settings write that did not happen must never look
@@ -397,12 +406,27 @@ class AppConfig:
         repair) would stay UNREADABLE forever and quarantine its own freshly-written good
         bytes on every subsequent save, littering ``config.corrupt-*.json`` copies.
 
-        Raises :class:`SettingsOverwriteRefused` for the first case, or the underlying
-        ``OSError`` if the payload cannot be written (disk full, permission denied) — a
-        settings write that did not happen must never look like one that did (the
-        provenance is likewise NOT advanced on a failed write).
+        **The superseded fence (plan 0049 S-1b-ii.1)** runs BEFORE either guard and before
+        the directory is created: a ``MOVED.txt`` beside the resolved ``config.json`` means
+        this profile was replaced by a machine-scoped one, and a process still pinned here
+        would otherwise recreate the file it was just renamed away from — an orphan profile
+        the shared install never reads. WARN + refuse; see
+        :func:`src.utils.paths.profile_superseded`.
+
+        Raises :class:`SettingsOverwriteRefused` for the fence or the first case, or the
+        underlying ``OSError`` if the payload cannot be written (disk full, permission
+        denied) — a settings write that did not happen must never look like one that did
+        (the provenance is likewise NOT advanced on a failed write).
         """
         config_file = config_file_path()
+        if paths.profile_superseded(config_file.parent):
+            logger.warning(
+                "Refusing to write the settings file %s: this folder has been superseded (MOVED.txt) — "
+                "DistrictSync's settings on this computer are now shared. Restart DistrictSync so it "
+                "reads and writes the shared settings.",
+                config_file,
+            )
+            raise SettingsOverwriteRefused(f"{config_file.parent} has been superseded (MOVED.txt); refusing to write")
         load_was_unreadable = self.settings_unreadable()
         if load_was_unreadable and not self._carries_chosen_settings():
             logger.warning(

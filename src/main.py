@@ -451,6 +451,21 @@ def _cli(argv: list[str] | None) -> int:
 
         return run_elevated_apply(args_list[1:])
 
+    # --diagnose: the read-only support report (plan 0049 D7). Recognised HERE, beside
+    # --elevated-apply, and that position is the whole point: the preamble below PINS the
+    # data dir and RETURNS the refusal before argparse is even built, so a normally-parsed
+    # flag would be unreachable in the one state this command exists for — a machine-scoped
+    # install whose shared folder the app will not use. Reaching it must not depend on the
+    # profile resolving, so none of the preamble runs: no migration (a diagnostic must not
+    # move an admin's data), no log sink, no orphan sweep. The console attach is the ONE
+    # step it keeps, because the shipped exe is GUI-subsystem — without it every line of
+    # this report would print into a `sys.stdout` of `None`. Documented in --help's epilog.
+    if args_list and args_list[0] == "--diagnose":
+        _attach_parent_console()
+        from src.utils.diagnostics import run_diagnose
+
+        return run_diagnose()
+
     # No arguments → launch the UI (e.g. double-clicked from Explorer).
     # The launcher configures its own logging sink (launcher.boot_logging).
     # NOTE: the console attach below is deliberately AFTER this branch — the
@@ -509,6 +524,9 @@ def _cli(argv: list[str] | None) -> int:
             f"  (password read from ${SFTP_PASSWORD_ENV_VAR} env var, --sftp-password-stdin, or prompt)\n"
             "  DistrictSync --sftp-test       # verify stored credentials\n"
             "  DistrictSync --sftp-show       # print current SFTP configuration\n"
+            "\n"
+            "Support:\n"
+            "  DistrictSync --diagnose        # print a support report (no passwords)\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

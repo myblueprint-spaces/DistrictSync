@@ -607,6 +607,18 @@ def _run_elevated_child(req_path: Path, res_path: Path) -> ElevationOutcome:
     return elevation.run_elevated(str(exe), params, timeout_s=_ELEV_TIMEOUT_S)
 
 
+def run_elevated_child(req_path: Path, res_path: Path) -> ElevationOutcome:
+    """Public face of :func:`_run_elevated_child`, for the non-schedule elevated ops.
+
+    Plan 0049 S-1b-ii.2's grant window runs `grant_current_user` behind the same single UAC
+    prompt and the same DPAPI handshake, but it is not a schedule change and does not belong
+    in this module — it lives in ``src/scheduler/provision_session.py``. Delegating (rather
+    than that module re-deriving ``sys.executable`` + the ``-m src.main`` dev prefix) keeps
+    ONE spelling of how this app launches itself elevated.
+    """
+    return _run_elevated_child(req_path, res_path)
+
+
 def _map_pre_consent_failure(outcome: ElevationOutcome) -> str | None:
     """Map a DECLINED / LAUNCH_FAILED outcome to its canonical message, else None.
 
