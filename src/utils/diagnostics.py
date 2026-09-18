@@ -49,7 +49,13 @@ _LABEL_WIDTH = 22
 # ``provisioning._commit_machine_switch`` is the writer and there is no shared constant yet;
 # a reader that invented different names would silently print "not set" forever, so the
 # parity is pinned by a test instead.
-_HKLM_DISPLAY_VALUES = ("ProvisionedAt", "ProvisionedBy")
+_PROVISIONED_AT = "ProvisionedAt"
+_PROVISIONED_BY = "ProvisionedBy"
+#: Report order, which is NOT the order :func:`machine_scope_provenance` returns them in. The
+#: two are spelled once, above, and every consumer picks BY NAME: reading this tuple
+#: positionally is what silently swapped the pair once already, and the swap was invisible
+#: because the degraded copy it produced is also the correct answer on every other install.
+_HKLM_DISPLAY_VALUES = (_PROVISIONED_AT, _PROVISIONED_BY)
 
 
 def _row(label: str, value: object) -> str:
@@ -114,6 +120,32 @@ def read_hklm_values() -> dict[str, object]:  # pragma: no cover - Windows-only 
             except FileNotFoundError:
                 continue
     return values
+
+
+def machine_scope_provenance() -> tuple[str, str]:
+    """``(ProvisionedBy, ProvisionedAt)`` for display, ``("", "")`` when either is unavailable.
+
+    The UI's seam onto the two display values, routed through :func:`read_hklm_values` rather
+    than a second ``winreg`` call so the value NAMES are spelled exactly once in this process
+    (:data:`_HKLM_DISPLAY_VALUES`). A reader that invented its own spelling would render "set up
+    by  on " forever and no test would notice.
+
+    TOTAL: an absent key (every per-user install), an unreadable one, a non-string value or a
+    non-Windows host all reduce to ``("", "")``. That is the conservative direction — the one
+    consumer, ``home_status.machine_scope_line``, drops to a form that CLAIMS no provenance
+    rather than rendering a blank name, and provenance is advisory copy that may never trap or
+    mislead an admin.
+    """
+    try:
+        values = read_hklm_values()
+    except (OSError, ValueError):
+        return ("", "")
+
+    def _text(name: str) -> str:
+        value = values.get(name)
+        return value.strip() if isinstance(value, str) else ""
+
+    return (_text(_PROVISIONED_BY), _text(_PROVISIONED_AT))
 
 
 def _hklm_lines() -> list[str]:

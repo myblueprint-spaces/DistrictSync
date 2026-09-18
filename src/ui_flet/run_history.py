@@ -24,6 +24,9 @@ is the concrete fix for the Streamlit page's raw-``error`` column + log-path cap
 The ONE deliberate identity fact surfaced (0034 Slice 4) is the DISTRICT: when a record's
 ``sis_type`` differs from the active district, ``district_note`` carries the friendly district
 display (a bounded config id / display name — never a path, never the free-text error).
+The record's ``run_as`` (plan 0049) is an OS account name and therefore stays OUT: it is reduced
+at the boundary by ``run_as_display`` to a two-member bounded vocabulary, so the row says WHICH OF
+TWO accounts ran a night without ever carrying the name of either.
 
 **Totality:** every field is read via ``.get`` + ``_as_int`` (reused from ``home_status``), so a
 partial/old record yields a safe ``RunRow`` (missing timestamp → "recently"; missing counts → 0;
@@ -69,6 +72,7 @@ from src.ui_flet.humanize import (
     pluralize,
 )
 from src.ui_flet.schedule_status import ScheduleStatus
+from src.ui_flet.setup_gates import principal_key
 from src.ui_flet.verdict import Verdict
 
 
@@ -117,6 +121,11 @@ class RunRow:
         district_note: a muted "Different district: <name>" note when the record's district
             differs from the active one (a bounded district id/display — never a path), else
             ``None``.
+        run_as: the BOUNDED "which Windows account ran this" display — one of
+            :data:`RUN_AS_THIS_ACCOUNT` / :data:`RUN_AS_ANOTHER_ACCOUNT`, or ``""`` when it could
+            not be established. Never the raw ``DOMAIN\\user`` off the record: this row is bounded
+            to counts, bounded vocabularies and safe strings, and a raw account name repeated on
+            every historical row would be the first raw identifying value in it.
     """
 
     when: str
@@ -129,6 +138,57 @@ class RunRow:
     duration: str = "—"
     source: str = "—"
     district_note: str | None = None
+    run_as: str = ""
+
+
+# The bounded run-as vocabulary (plan 0049 S-2a.5). Two members plus ``""`` for "not
+# established" — the record's raw ``run_as`` is reduced against the account now running through
+# ``setup_gates.principal_key``, the ONE reduction every principal comparison in this app goes
+# through, so the column and the schedule gates can never disagree about what "another account"
+# means. A record written before the key existed (a pre-v3.22 upgrader) reduces to ``""``, which
+# is deliberately NOT a distinct value: it must not make the column appear on a per-user install
+# whose ledger simply straddles the upgrade.
+RUN_AS_THIS_ACCOUNT = "This account"
+RUN_AS_ANOTHER_ACCOUNT = "Another account"
+
+# Stated ONCE above the table when every row agrees — the alternative to a column with nothing
+# to say (``components.run_table``'s ``show_mbp`` precedent). Machine scope only: on a per-user
+# install every visible record was written by the account reading them, so this would answer a
+# question none of the 20 districts asked and break S-2a's own byte-identity promise.
+RUN_AS_ALL_THIS_ACCOUNT_NOTE = "Every run below ran as the Windows account you're using now."
+RUN_AS_ALL_ANOTHER_ACCOUNT_NOTE = "Every run below ran as another Windows account on this computer."
+
+
+def run_as_display(value: object, *, current_account: str) -> str:
+    """Reduce a record's ``run_as`` to the bounded display vocabulary (pure, TOTAL).
+
+    ``""`` means NOT ESTABLISHED — an absent/blank value (a record written before the key
+    existed), a non-string, or an unresolvable current account. Never a guess and never the raw
+    name: "not established" and "another account" are different facts, and collapsing them would
+    print a foreign-account claim over a record that carries no account at all.
+    """
+    recorded = value.strip() if isinstance(value, str) else ""
+    current = (current_account or "").strip()
+    if not recorded or not current:
+        return ""
+    return RUN_AS_ANOTHER_ACCOUNT if principal_key(recorded, current) else RUN_AS_THIS_ACCOUNT
+
+
+def run_as_summary_line(rows: list[RunRow], *, machine_scope: bool) -> str | None:
+    """The "state it once" line for a run-as column that would not vary (pure, TOTAL).
+
+    ``None`` unless this install reads the SHARED profile AND every row that established an
+    account agrees on one. On a per-user install it is always ``None`` — see
+    :data:`RUN_AS_ALL_THIS_ACCOUNT_NOTE`. With a mix, ``components.run_table`` renders the column
+    instead and this line would be redundant; with nothing established there is nothing to say.
+    """
+    if not machine_scope:
+        return None
+    distinct = {row.run_as for row in rows if row.run_as}
+    if len(distinct) != 1:
+        return None
+    only = next(iter(distinct))
+    return RUN_AS_ALL_THIS_ACCOUNT_NOTE if only == RUN_AS_THIS_ACCOUNT else RUN_AS_ALL_ANOTHER_ACCOUNT_NOTE
 
 
 # Plain per-run status labels keyed by the shared ``LatestReason`` (single-sourced precedence).
@@ -207,9 +267,13 @@ def derive_history_banner(
     # 0046 C / A9: the pause is FALSE on a foreign principal — the nightly gate reads the RUNNING
     # account's config, where no window exists. Single-sourced in ``sync_window_paused`` so this
     # banner, Home and the Setup badge can never disagree about one state.
+    # 0049 S-2a.1: ``shared_records`` rides the same ``ScheduleStatus`` (ONE carrier), so on a
+    # machine-scoped install — where the nightly reads the SAME shared config and the pause IS
+    # enforced — this banner and Home agree that the season is paused.
     foreign_account = schedule_status.foreign_account if schedule_status is not None else ""
+    shared_records = schedule_status.shared_records if schedule_status is not None else False
     paused = sync_window_paused(
-        app_config, now=now, foreign_account=foreign_account
+        app_config, now=now, foreign_account=foreign_account, shared_records=shared_records
     ) and not _schedule_confirmed_missing(schedule_status)
 
     # 0046 C / A5: the nightly's run records are written to ANOTHER account's profile, so this
@@ -475,6 +539,7 @@ def to_run_row(
     now: datetime | None = None,
     active_sis: str | None = None,
     district_displays: dict[str, str] | None = None,
+    current_account: str = "",
 ) -> RunRow:
     """Map one run record → a total, PII-free ``RunRow`` (never raises).
 
@@ -483,6 +548,12 @@ def to_run_row(
     (the active district id, injected by the view) enables the different-district note; ``None``
     (the default) derives no note. ``district_displays`` is an optional pre-resolved
     district-display cache (see ``to_run_rows``) so a single record resolves live when absent.
+
+    ``current_account`` (``accounts.process_account()``, injected by the view — this module is
+    pure and never reads the environment) enables the bounded ``run_as`` display. It DEFAULTS to
+    ``""`` deliberately: a caller that cannot name the account gets "not established" and no
+    column, which is display degradation, not a safety-relevant permissive default — nothing
+    about a run's verdict, delivery or counts depends on it.
     """
     sftp = _sftp_delivery(record)
     reason = classify_latest_reason(record)
@@ -498,10 +569,17 @@ def to_run_row(
         duration=_duration(record),
         source=_source_label(record),
         district_note=_district_note(record, active_sis, district_displays),
+        run_as=run_as_display(record.get("run_as"), current_account=current_account),
     )
 
 
-def to_run_rows(records: list[dict], *, now: datetime | None = None, active_sis: str | None = None) -> list[RunRow]:
+def to_run_rows(
+    records: list[dict],
+    *,
+    now: datetime | None = None,
+    active_sis: str | None = None,
+    current_account: str = "",
+) -> list[RunRow]:
     """Map a newest-first list of run records → ``RunRow``s (one per record, never raises).
 
     The view branches on ``None``/``[]`` BEFORE calling this — ``to_run_rows`` is only ever handed
@@ -516,4 +594,13 @@ def to_run_rows(records: list[dict], *, now: datetime | None = None, active_sis:
             sis = str(record.get("sis_type", "") or "").strip()
             if sis and sis != active and sis not in displays:
                 displays[sis] = friendly_district_name(sis)
-    return [to_run_row(record, now=now, active_sis=active_sis, district_displays=displays) for record in records]
+    return [
+        to_run_row(
+            record,
+            now=now,
+            active_sis=active_sis,
+            district_displays=displays,
+            current_account=current_account,
+        )
+        for record in records
+    ]
