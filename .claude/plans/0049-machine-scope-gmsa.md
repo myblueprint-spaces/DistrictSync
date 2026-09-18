@@ -1119,3 +1119,113 @@ withdrawn; the per-user scope line is not qualified but **deleted**, which answe
 Two independent lenses showed the predicate is wrong in both directions and its stated reason
 self-contradictory. It ships as a confirm-level warning, which keeps the admin informed without
 hard-blocking a district whose folders are genuinely reachable.
+
+---
+
+## Spec — S-3 (the principal model)  _(Stage 4, 2026-09-18)_
+
+Design of record: `## Design` **D1** + the S-3 row of `## Slices`. Seams verified 2026-09-18 against
+`claude/0049-s2b-provisioning-flow`.
+
+> **The governing rule.** Every one of today's three principal shapes reaches Windows with the
+> **byte-identical** `TASK_LOGON_*` and RunLevel it reaches today. This slice replaces an
+> *inference* with a *declaration*; it changes no behaviour for the 20 shipped districts. gMSA
+> becomes representable in the engine and is exposed to nobody until S-4.
+
+### S-3.1 — Five corrections the plan's own text gets wrong or leaves open
+
+1. **`screens/setup.py:2341` is not the caller.** It is `initial_value=cfg.input_dir` in the
+   Input-folder picker. The real sites are `screens/setup.py:3144-3153` (`scheduler.register(...)`)
+   and `3109-3123` (`request_provision(...)`) — **two**, and neither calls `register_task` directly.
+   `register_task` has exactly ONE caller in `src/`: `scheduler/__init__.py:118`.
+2. **`CronScheduler` does NOT refuse an MSA today, and D1's sentence assumes it does.** Its only
+   guard is `if run_as_password is not None: raise ValueError(...)` (`__init__.py:197-198`) — and an
+   MSA principal carries `password=None` by construction, exactly like today's interactive-token
+   path. So an MSA request would sail through into a cron line that silently drops the account. The
+   refusal must be **kind-aware**, not password-shaped.
+3. **`_do_register`'s ladder would refuse every gMSA — this is the make-or-break.**
+   `elevated_apply.py:204` calls `validate_run_as_user(payload["user"])` **unconditionally**, and
+   that validator's regex (`validators.py:52`) has **no `$` in its charset**. Every foreign-principal
+   register goes through elevation, so without a kind-aware ladder here, gMSA is unreachable no
+   matter what the rest of the slice does. `_do_provision` injects the same `_do_register`, so one
+   fix covers the provisioning path too (single source, verified).
+4. **`tests/test_task_com.py::test_the_sweep_sees_the_constants_at_all` hardcodes `== 24`.** Any new
+   canonical bumps it. That test working is the point; edit the number, never the sweep.
+5. **No existing test sends a `password=None` request down the elevated path.** Both `_register`
+   helpers in `tests/test_scheduler_elevation.py` always pass `run_as_password=_SECRET`, so today's
+   predicate (`has_password and ...`) is the only shape covered. D1's predicate
+   (`kind is not INTERACTIVE_TOKEN and not is_elevated()`) makes the no-password elevated path
+   **newly reachable** for MSA — it needs its own coverage, not an assumption.
+
+### S-3.2 — `PrincipalKind` and the unrepresentable states
+
+`task_com.RegisterParams` gains `kind: PrincipalKind`; the `password is not None` inference at
+`task_com.py:260` is **deleted**, not wrapped.
+
+| kind | user | password | logon | RunLevel |
+|---|---|---|---|---|
+| `INTERACTIVE_TOKEN` | must equal the current account | `None` | `TASK_LOGON_INTERACTIVE_TOKEN` | **LUA always** (`run_highest` ignored, as today) |
+| `PASSWORD` | any | **required** | `TASK_LOGON_PASSWORD` | per `run_highest` |
+| `MANAGED_SERVICE_ACCOUNT` | `DOMAIN\name$` | `None` | `TASK_LOGON_PASSWORD` | per `run_highest` |
+
+MSA uses `TASK_LOGON_PASSWORD`, **not** `TASK_LOGON_SERVICE_ACCOUNT` (5): verified first-hand that
+with a domain `UserId` the `<LogonType>` element is silently dropped from the serialized XML.
+`TASK_LOGON_S4U` stays undefined (`test_s4u_is_unrepresentable` is the pin).
+
+Refused in `__post_init__` — unrepresentable, never defaulted: PASSWORD without a password · MSA
+with a password · INTERACTIVE_TOKEN for a different user · an MSA name without `$` · a PASSWORD name
+with `$`. `TestLogonTypeMatrix` and `TestPasswordReachesOnlyTheComArgument` must stay green
+byte-identically — they pin the table above for the two shipped kinds.
+
+### S-3.3 — `validate_gmsa_account`
+
+A **shape check, and the docstring says so.** Trailing `$` mandatory; sAMAccountName charset;
+`DOMAIN\` optional; no length rule beyond the existing 256 cap. **Refuses by name**, in BOTH halves:
+the local computer account (`<COMPUTERNAME>$`, case-insensitive) and any `NT AUTHORITY\*` /
+well-known form — a computer account has the gMSA shape and `THISHOST$` is SYSTEM-equivalent.
+
+`validate_run_as_user` is **unchanged** (it still rejects `$`); only its N1 docstring sentence moves,
+because that sentence currently justifies the exclusion by saying the gMSA path is unsupported.
+
+### S-3.4 — The transport
+
+- `windows.register_task`: `run_as_user`/`run_as_password` → `principal: Principal(kind, user, password)`.
+  The `Scheduler` Protocol and both adapters follow. **`CronScheduler` refuses on KIND** (see
+  S-3.1.2) with a loud, plain message — not on the presence of a password.
+- Elevation predicate (`windows.py:475`) → `kind is not INTERACTIVE_TOKEN and not is_elevated()`.
+- `_MSG_ACCOUNT_NEEDS_PASSWORD` stays, for PASSWORD kind only.
+- Every new refusal goes through **`_fail`**. The AST funnel guard
+  (`test_scheduler_runas.py::TestNoUnfunnelledFailureReturn`) sees only a literal `return False, ...`
+  tuple — do not hand it one, and do not weaken it.
+- `elevated_apply`'s payload carries `kind`; `_do_register` re-validates **by kind** (S-3.1.3). New
+  canonicals, if any, obey `messages.py` (injective, secret-free, no foreign marker) and bump the
+  `24` count.
+
+### S-3.5 — Read-back, for display only
+
+`TaskFacts` and `ScheduleReadback` gain `run_as` + `logon_type`, read from
+`Definition.Principal.UserId` / `.LogonType` (`read_task` touches `Definition.Principal` for the
+first time — it reads only `Actions` today). A requested-vs-read-back mismatch is a **logged
+WARNING, fail-open** on any spelling it cannot normalise.
+
+`foreign_task_account(app_config)` keeps reading the **RECORD**, exactly as Slice C wired it. This
+slice adds a second, independent source of the same fact; it does not repoint the first. Nothing in
+the UI consumes `run_as` from the read-back in S-3 — the ROADMAP item about the record being the
+only principal source is **narrowed, not closed**.
+
+### S-3.6 — Out of scope
+
+The gMSA disclosure, its untested caption and the MSA error branch (all S-4) · any UI that reads
+`ScheduleReadback.run_as` · the gMSA failure taxonomy, which stays unmapped until measured against a
+live domain.
+
+### S-3.7 — Tests
+
+Every unrepresentable combination refused in `__post_init__`, each with a positive twin · the logon
+and RunLevel table above per kind, with the two shipped kinds asserted byte-identical · the
+elevation predicate per kind, **including the newly-reachable MSA no-password elevated path** ·
+`_do_register`'s kind-aware ladder accepting a gMSA and still refusing a hostile PASSWORD account ·
+`validate_gmsa_account`'s accept/refuse table incl. the computer-account and `NT AUTHORITY` refusals
+in both halves · cron refusing MSA **by kind** with a password-free request · the read-back carrying
+`run_as`/`logon_type` and the mismatch WARNING failing open · the `24` count bumped if a canonical
+is added.
