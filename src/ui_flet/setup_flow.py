@@ -885,12 +885,12 @@ _SFTP_RECONCILE_BLOCKED_ACCOUNT = (
 # the SpacesEDU DELIVERY password — the same misdirect ``BLOCKED``'s "fix the run time" made, one
 # field over. Names the card that owns the remedy, and offers the honest alternative, because the
 # password may have been saved by a different Windows account whose store this one cannot read.
-_FOLDERS_SAVED_BLOCKED_DELIVERY_SECRET = (
+_FOLDERS_SAVED_BLOCKED_DELIVERY_SECRET = (  # nosec B105 - the value is a banner, not a credential
     "Saved — the nightly schedule wasn't updated. DistrictSync can't read your saved delivery "
     "password, so it has nothing to give the other account. Re-enter it in the Delivery section "
     "and save again, or turn delivery off to schedule the sync without it."
 )
-_SFTP_RECONCILE_BLOCKED_DELIVERY_SECRET = (
+_SFTP_RECONCILE_BLOCKED_DELIVERY_SECRET = (  # nosec B105 - the value is a banner, not a credential
     " The nightly schedule wasn't updated — DistrictSync can't read the saved delivery password "
     "back, so it has nothing to give the other account. Enter it again above and save, or turn "
     "delivery off to schedule the sync without it."
@@ -939,7 +939,7 @@ class ReconcileOutcome(Enum):
     NONE = "none"
     BLOCKED_ACCOUNT = "blocked_account"
     BLOCKED_ACCOUNT_SWITCH = "blocked_account_switch"
-    BLOCKED_DELIVERY_SECRET = "blocked_delivery_secret"
+    BLOCKED_DELIVERY_SECRET = "blocked_delivery_secret"  # nosec B105 - an enum tag, not a credential
 
 
 def folders_save_note(outcome: ReconcileOutcome) -> str:
