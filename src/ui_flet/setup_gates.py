@@ -107,7 +107,15 @@ class ScheduleAccountFacts:
 
 class RegisterBlock(Enum):
     """Why the Register gate is closed — the SINGLE source the disabled button, the inline
-    field note, the ``on_submit`` floor and the Settings reconcile all read."""
+    field note, the ``on_submit`` floor and the Settings reconcile all read.
+
+    **DECLARATION order is not EVALUATION order.** The checks run
+    ``INCOMPLETE → RUN_TIME → ACCOUNT_SHAPE → ACCOUNT_SWITCH_NEEDS_REMOVE →
+    DELIVERY_SECRET_UNREADABLE → ACCOUNT_NEEDS_PASSWORD`` (see :func:`register_block`,
+    where the order is argued and asserted); the members below are in the order they were
+    ADDED. Do not "fix" one to match the other — reordering the members changes nothing,
+    and reordering the checks changes which cause an admin is told about first.
+    """
 
     NONE = "none"
     INCOMPLETE = "incomplete"
@@ -116,14 +124,37 @@ class RegisterBlock(Enum):
     # nosec B105 — an enum member NAMED "..._PASSWORD"; the value is a gate reason, not a secret.
     ACCOUNT_NEEDS_PASSWORD = "account_needs_password"  # nosec B105
     ACCOUNT_SWITCH_NEEDS_REMOVE = "account_switch_needs_remove"
+    #: Plan 0049 S-2b.1. Scheduling as a SERVICE ACCOUNT provisions this computer for a
+    #: shared profile, and step 5 of that provision seals the delivery password into it.
+    #: If we cannot read the password now, there is nothing to seed and the nightly would
+    #: come up delivering nothing — silently, because on a machine-scoped install
+    #: ``sftp_is_configured()`` then answers False and no run is attempted.
+    #:
+    #: **The view owns this member's NOTE**, exactly as it owns the other four (see
+    #: ``screens/setup.py``'s ``_ACCOUNT_*_NOTE`` constants and ``_account_block_note``).
+    #: Two things that note MUST say, because the admin may not be able to do the first:
+    #: re-save the delivery password in Delivery, AND — plainly — that turning delivery
+    #: off is the other way through, and that the nightly then writes the CSVs without
+    #: sending them. The password may have been saved by a DIFFERENT Windows account,
+    #: whose Credential Manager this one can never reach, so an escape that is only
+    #: discoverable by guessing is not an escape.
+    # nosec B105 — a gate reason naming a secret's READABILITY; the value is not a secret.
+    DELIVERY_SECRET_UNREADABLE = "delivery_secret_unreadable"  # nosec B105
 
 
-def register_block(config_complete: bool, run_time: str, *, account: ScheduleAccountFacts) -> RegisterBlock:
+def register_block(
+    config_complete: bool,
+    run_time: str,
+    *,
+    account: ScheduleAccountFacts,
+    delivery_secret_unreadable: bool,
+) -> RegisterBlock:
     """The Register-schedule gate with its REASON (pure, TOTAL).
 
     Order is load-bearing and asserted: config completeness, then run time (today's two
-    conditions, byte-identical), then the three principal conditions — the admin is told the
-    FIRST thing that is wrong, not the last.
+    conditions, byte-identical), then the account's SHAPE, then the switch refusal, then the
+    delivery secret, then the password rung — the admin is told the FIRST thing that is
+    wrong, not the last.
 
     **Shape is checked ONLY for a FOREIGN principal.** ``current_run_as_user()`` legitimately
     returns a name containing a space (``PC\\John Smith``), which ``_RUN_AS_USER_RE`` rejects;
@@ -148,6 +179,30 @@ def register_block(config_complete: bool, run_time: str, *, account: ScheduleAcc
     ``ACCOUNT_NEEDS_PASSWORD`` mirrors ``windows._MSG_ACCOUNT_NEEDS_PASSWORD``. It does not
     replace the engine refusal (which closes three blank-password paths structurally); it makes
     the common one legible BEFORE a UAC prompt is raised.
+
+    ``DELIVERY_SECRET_UNREADABLE`` (plan 0049 S-2b.1) sits AFTER the switch refusal and
+    BEFORE the password rung, and both halves of that placement are deliberate: a valid,
+    non-switching principal has to be established before a delivery fact is worth raising,
+    and the cheapest rung (a field that is simply empty) stays last.
+
+    **It fires only when the register would PROVISION**, and the conjunction is computed
+    HERE rather than by the caller so no call site can get it wrong: the requested
+    principal must be FOREIGN — through the same :func:`principal_key` reduction every
+    other principal comparison uses, never a second derivation of "is this a different
+    account?". On a per-user install scheduling as the signed-in account, an unreadable
+    delivery secret is a real problem but it is the Delivery section's, not this gate's,
+    and today's behaviour there stays byte-identical.
+
+    Args:
+        delivery_secret_unreadable: delivery is configured but its password cannot be
+            produced, so there would be nothing to seal into the shared profile. Required,
+            keyword-only and UNDEFAULTED for the same reason ``account`` is: this plan
+            exists because one defaulted parameter substituted a security principal.
+            Compute it with :func:`src.scheduler.provision_session.delivery_secret_unreadable`,
+            which reads through ``secret_store.select_store()`` — never "the keyring" by
+            name, because on a SECOND provisioning of an already machine-scoped install the
+            secret lives in the machine store and a literal keyring read would block a
+            perfectly healthy register.
     """
     if not bool(config_complete):
         return RegisterBlock.INCOMPLETE
@@ -168,24 +223,44 @@ def register_block(config_complete: bool, run_time: str, *, account: ScheduleAcc
         if not provably_same:
             return RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE
 
+    if typed_key and bool(delivery_secret_unreadable):
+        return RegisterBlock.DELIVERY_SECRET_UNREADABLE
+
     if typed_key and not account.password_supplied:
         return RegisterBlock.ACCOUNT_NEEDS_PASSWORD
     return RegisterBlock.NONE
 
 
-def can_register_schedule(config_complete: bool, run_time: str, *, account: ScheduleAccountFacts) -> bool:
+def can_register_schedule(
+    config_complete: bool,
+    run_time: str,
+    *,
+    account: ScheduleAccountFacts,
+    delivery_secret_unreadable: bool,
+) -> bool:
     """The Register-schedule gate (bool form) — ``register_block(...) is RegisterBlock.NONE``.
 
     The folders/district config must be complete, a non-blank run time entered, AND the
-    requested principal must be registrable (shape, password, and not an in-place switch).
-    Single-sources the gate the Register button encodes so the button's ``disabled`` state and
-    the run-time / account / Windows-password ``on_submit`` handlers agree.
+    requested principal must be registrable (shape, password, not an in-place switch, and —
+    when the register would provision — a delivery secret we can actually seed). Single-sources
+    the gate the Register button encodes so the button's ``disabled`` state and the run-time /
+    account / Windows-password ``on_submit`` handlers agree.
 
-    ``account`` is required keyword-only and deliberately UNDEFAULTED: a defaulted
-    ``ScheduleAccountFacts`` would let a forgotten call site skip the principal gate silently,
-    which is the exact shape CLAUDE.md bans on a safety-relevant parameter.
+    ``account`` and ``delivery_secret_unreadable`` are required keyword-only and deliberately
+    UNDEFAULTED: a defaulted ``ScheduleAccountFacts`` would let a forgotten call site skip the
+    principal gate silently, and a defaulted ``False`` would let one provision a computer with
+    no delivery credential to seed — both the exact shape CLAUDE.md bans on a safety-relevant
+    parameter.
     """
-    return register_block(config_complete, run_time, account=account) is RegisterBlock.NONE
+    return (
+        register_block(
+            config_complete,
+            run_time,
+            account=account,
+            delivery_secret_unreadable=delivery_secret_unreadable,
+        )
+        is RegisterBlock.NONE
+    )
 
 
 def can_save_sftp(

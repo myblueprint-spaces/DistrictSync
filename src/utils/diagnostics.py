@@ -40,6 +40,14 @@ from src.utils.version import app_version
 REPORT_ANCHOR = "[districtsync-diagnose]"
 
 # The honesty line. NOT "no personal information" — see the module docstring.
+#: The two words the ``scope`` row can print. Named because the partner docs tell an admin to
+#: read this exact row to decide whether they still need the manual ``--sftp-configure`` step —
+#: a reworded value there would send a district down the wrong branch of a procedure whose
+#: wrong answer is silent (delivery stops, nothing alarms). Pinned in
+#: ``tests/test_partner_doc_schedule_copy_parity.py``.
+SCOPE_SHARED = "shared (this computer)"
+SCOPE_PER_USER = "this account only"
+
 PRIVACY_NOTE = "This report carries no passwords. It does name Windows accounts and folders, so treat it like a log."
 
 # ``_sftp_show``'s aligned-label block, one width for the whole report.
@@ -49,7 +57,13 @@ _LABEL_WIDTH = 22
 # ``provisioning._commit_machine_switch`` is the writer and there is no shared constant yet;
 # a reader that invented different names would silently print "not set" forever, so the
 # parity is pinned by a test instead.
-_HKLM_DISPLAY_VALUES = ("ProvisionedAt", "ProvisionedBy")
+_PROVISIONED_AT = "ProvisionedAt"
+_PROVISIONED_BY = "ProvisionedBy"
+#: Report order, which is NOT the order :func:`machine_scope_provenance` returns them in. The
+#: two are spelled once, above, and every consumer picks BY NAME: reading this tuple
+#: positionally is what silently swapped the pair once already, and the swap was invisible
+#: because the degraded copy it produced is also the correct answer on every other install.
+_HKLM_DISPLAY_VALUES = (_PROVISIONED_AT, _PROVISIONED_BY)
 
 
 def _row(label: str, value: object) -> str:
@@ -116,6 +130,38 @@ def read_hklm_values() -> dict[str, object]:  # pragma: no cover - Windows-only 
     return values
 
 
+def machine_scope_provenance() -> tuple[str, str]:
+    """``(ProvisionedBy, ProvisionedAt)`` for display, ``("", "")`` when either is unavailable.
+
+    The UI's seam onto the two display values, routed through :func:`read_hklm_values` rather
+    than a second ``winreg`` call so the value NAMES are spelled exactly once in this process
+    (:data:`_HKLM_DISPLAY_VALUES`). A reader that invented its own spelling would render "set up
+    by  on " forever and no test would notice.
+
+    TOTAL against ANY exception, and that breadth is the point rather than laziness: this is
+    advisory copy resolved at MOUNT on Home and on Settings, so a raise here does not degrade a
+    sentence — it drops both surfaces to their ``ErrorCard`` and takes the verdict with it. The
+    conservative answer is ``("", "")``, which lands ``home_status.machine_scope_line`` on a form
+    that CLAIMS no provenance.
+
+    ``OSError`` alone was not enough, measured: ``read_hklm_values`` guards on ``sys.platform``
+    and then does ``import winreg``, so a caller that patches the platform on a non-Windows host
+    raises ``ModuleNotFoundError`` — an ``ImportError``, outside ``OSError`` entirely. That is not
+    a hypothetical: it reddened CI's Linux leg through three Settings tests and two Home ones,
+    while the Windows leg stayed green.
+    """
+    try:
+        values = read_hklm_values()
+    except Exception:  # noqa: BLE001 - see the docstring: a mount may never fall over display copy
+        return ("", "")
+
+    def _text(name: str) -> str:
+        value = values.get(name)
+        return value.strip() if isinstance(value, str) else ""
+
+    return (_text(_PROVISIONED_BY), _text(_PROVISIONED_AT))
+
+
 def _hklm_lines() -> list[str]:
     lines = [f"Shared-settings switch (HKLM\\{paths.MACHINE_SCOPE_KEY_PATH}):"]
     try:
@@ -168,7 +214,7 @@ def _profile_lines() -> list[str]:
     return [
         "Profile:",
         _guarded("data dir", paths.user_data_dir),
-        _guarded("scope", lambda: "shared (this computer)" if paths.is_machine_scope() else "this account only"),
+        _guarded("scope", lambda: SCOPE_SHARED if paths.is_machine_scope() else SCOPE_PER_USER),
         _guarded("this account", process_account),
         _guarded("DISTRICTSYNC_DATA_DIR", lambda: paths._override_data_dir() or "not set"),
         _guarded("log file", paths.user_log_file),

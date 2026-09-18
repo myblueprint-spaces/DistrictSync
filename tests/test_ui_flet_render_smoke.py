@@ -1169,6 +1169,10 @@ class TestWizardStepsRender:
             on_schedule_changed=None,
             on_window_valid=None,
             on_busy=None,
+            # A stub of a real signature has to tolerate the real signature GROWING, or every
+            # seam added to `_build_schedule_section` reddens a wizard test that is about
+            # something else entirely (plan 0049 S-2b added three).
+            **_extra,
         ):
             if on_status is not None:
                 on_status(live)  # deliver a LIVE read-back the moment the Schedule step builds
@@ -1178,6 +1182,10 @@ class TestWizardStepsRender:
                 run_as_user_value=lambda: "",
                 persist_run_time=lambda: False,
                 is_busy=lambda: False,
+                # 0049 S-2a.3: the stub has no read-back, and ``None`` asserts nothing — the
+                # delivery line's "no nightly sync is scheduled right now" arm fires on a
+                # CONFIRMED-MISSING task only, never on a schedule nobody looked at.
+                last_schedule_state=lambda: None,
             )
 
         monkeypatch.setattr(setup_mod, "_build_schedule_section", _stub_schedule)
@@ -1218,7 +1226,14 @@ class TestScheduleStepMidFlight:
         hooks: dict = {}
 
         def _stub_schedule(
-            page, config, *, on_status=None, on_schedule_changed=None, on_window_valid=None, on_busy=None
+            page,
+            config,
+            *,
+            on_status=None,
+            on_schedule_changed=None,
+            on_window_valid=None,
+            on_busy=None,
+            **_extra,  # see the sibling stub above — the real signature grows
         ):
             hooks["on_status"] = on_status
             hooks["on_busy"] = on_busy
@@ -1228,6 +1243,10 @@ class TestScheduleStepMidFlight:
                 run_as_user_value=lambda: "",
                 persist_run_time=lambda: False,
                 is_busy=lambda: False,
+                # 0049 S-2a.3: the stub has no read-back, and ``None`` asserts nothing — the
+                # delivery line's "no nightly sync is scheduled right now" arm fires on a
+                # CONFIRMED-MISSING task only, never on a schedule nobody looked at.
+                last_schedule_state=lambda: None,
             )
 
         monkeypatch.setattr(setup_mod, "_build_schedule_section", _stub_schedule)

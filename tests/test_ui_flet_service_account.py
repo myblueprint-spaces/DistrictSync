@@ -22,6 +22,7 @@ import pytest
 import src.ui_flet.screens.setup as setup_mod
 from src.config.app_config import AppConfig
 from src.scheduler import task_com, windows
+from src.scheduler.provision_session import HandoverOutcome, ProvisionAttempt, ProvisionOutcome
 from src.sftp.uploader import SFTPUploader
 from src.ui_flet.setup_flow import (
     SCHEDULE_ACCOUNT_FIELD_LABEL,
@@ -40,6 +41,14 @@ from tests.test_ui_flet_render_smoke import (
 
 _SIGNED_IN = "PC\\ted"
 _SERVICE = "CORP\\svc_districtsync"
+
+#: Both service-account delivery notes, named explicitly (plan 0049 S-2a.3). The copy rules that
+#: apply to the pair — the guide/Help pointers, and the address ban — are parametrized over this
+#: rather than asserted on the original alone, so a sibling added later cannot slip past them.
+_DELIVERY_NOTE_ATTRS = (
+    "_SERVICE_ACCOUNT_DELIVERY_NOTE",
+    "_SERVICE_ACCOUNT_DELIVERY_PROVISION_NOTE",
+)
 
 
 @pytest.fixture
@@ -146,6 +155,91 @@ def _drain(stub_page) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Provisioning harness (plan 0049 S-2b) — shared with the handover test file    #
+# --------------------------------------------------------------------------- #
+# Since S-2b a FOREIGN principal no longer reaches ``register_task`` from the Register button:
+# it reaches ``request_provision``, behind the machine-scope confirm. Every seam below is
+# monkeypatched, never real — ``request_provision`` raises a UAC prompt and ``complete_handover``
+# re-pins ``paths``, renames the live profile and re-points the log sink.
+def _capture_provision(monkeypatch, *, results=None) -> dict:
+    """Record what reaches ``request_provision``, and queue its outcomes.
+
+    The queue exists for the two-attempt sequences in
+    ``tests/test_ui_flet_schedule_refusal_feedback.py``; exhausting it falls through to
+    ``PROVISIONED``, so a test can never pass by silently re-reading a failure.
+    """
+    seen: dict = {"calls": 0}
+    queue = list(results or [])
+
+    def _fake(task_name, exe_path, sis_type, input_dir, output_dir, run_time, sftp=False, **kwargs):
+        seen["calls"] += 1
+        seen.update(kwargs)
+        seen["task_name"] = task_name
+        seen["sis_type"] = sis_type
+        seen["run_time"] = run_time
+        seen["sftp"] = sftp
+        return queue.pop(0) if queue else ProvisionAttempt(outcome=ProvisionOutcome.PROVISIONED)
+
+    monkeypatch.setattr(setup_mod, "request_provision", _fake)
+    return seen
+
+
+def _stub_handover(monkeypatch, *, handed_over=True, refused=None, persist_raises=None) -> dict:
+    """Drive ``complete_handover``'s CONTRACT without its side effects.
+
+    It models the real ordering exactly, because the assertions depend on it: a refusal returns
+    BEFORE ``persist`` (there is nowhere to persist to), and every other outcome calls
+    ``persist`` and then — only when the parent's switch read says this session handed over —
+    ``reenter``. ``persist_called`` is recorded so "the record was not written" can be proven to
+    be the VIEW's guard rather than a callback that never fired.
+    """
+    seen: dict = {"calls": 0, "persist_called": False, "reenter_called": False}
+
+    def _fake(*, persist, reenter):
+        seen["calls"] += 1
+        if refused is not None:
+            return HandoverOutcome(handed_over=False, refused=refused)
+        if persist_raises is not None:
+            seen["persist_called"] = True
+            raise persist_raises
+        persist()
+        seen["persist_called"] = True
+        if handed_over:
+            reenter()
+            seen["reenter_called"] = True
+        return HandoverOutcome(handed_over=handed_over)
+
+    monkeypatch.setattr(setup_mod, "complete_handover", _fake)
+    return seen
+
+
+def _scope_dialog(stub_page):
+    """The machine-scope confirm this press showed, or ``None``."""
+    for call in reversed(list(stub_page.show_dialog.call_args_list)):
+        dialog = call.args[0]
+        if getattr(getattr(dialog, "title", None), "value", None) == setup_mod.SCOPE_CONFIRM_TITLE:
+            return dialog
+    return None
+
+
+def _confirm_scope(stub_page) -> None:
+    """Press Continue on the confirm — the ONLY door to a provisioning dispatch."""
+    dialog = _scope_dialog(stub_page)
+    assert dialog is not None, "the machine-scope confirm was never shown"
+    action = next(b for b in dialog.actions if getattr(b, "content", None) == setup_mod.SCOPE_CONFIRM_CONTINUE_LABEL)
+    action.on_click(None)
+
+
+def _register_service_account(tree, stub_page, *, account=_SERVICE, password="pw") -> None:
+    """Type a service account, press Schedule, confirm, and drain the worker."""
+    _account_field(tree).value = account
+    _textfield_by_label(tree, "Windows account password").value = password
+    _press_register(tree)
+    _confirm_scope(stub_page)
+    _drain(stub_page)
+
+
+# --------------------------------------------------------------------------- #
 # G5 — the untouched prefill is byte-identical to the pre-B world               #
 # --------------------------------------------------------------------------- #
 class TestG5PrefillUnchanged:
@@ -195,18 +289,24 @@ class TestG5PrefillUnchanged:
     ["svc_x", "SVC_X", "  svc_x  ", "CORP\\svc_x", "corp\\SVC_X"],
 )
 def test_the_typed_account_is_sent_verbatim(tmp_path, stub_page, monkeypatch, typed):
-    """Stripped only. A sanitised or re-cased value would bypass ``register_task``'s
-    case-insensitive comparison — the very thing that makes the prefill safe."""
+    """Stripped only. A sanitised or re-cased value would bypass the engine's case-insensitive
+    comparison — the very thing that makes the prefill safe.
+
+    Asserted on ``request_provision`` since plan 0049 S-2b: a FOREIGN principal reaches the
+    provisioning round trip instead of ``register_task``, and that is the call which now carries
+    the account name to the elevated child. The invariant and the parametrization are unchanged;
+    what moved is which engine entry point has to honour them.
+    """
     cfg = _settings(tmp_path, monkeypatch)
-    seen = _capture_register(monkeypatch)
+    ordinary = _capture_register(monkeypatch)
+    seen = _capture_provision(monkeypatch)
+    _stub_handover(monkeypatch, handed_over=False)
     tree, _ = _schedule_section(cfg, stub_page)
-    _account_field(tree).value = typed
-    _textfield_by_label(tree, "Windows account password").value = "pw"
-    _press_register(tree)
-    _drain(stub_page)
+    _register_service_account(tree, stub_page, account=typed)
 
     assert seen["calls"] == 1
     assert seen["run_as_user"] == typed.strip()
+    assert ordinary["calls"] == 0, "a foreign principal must not take the un-provisioned path"
 
 
 def test_a_blank_account_field_sends_none(tmp_path, stub_page, monkeypatch):
@@ -224,20 +324,36 @@ def test_a_blank_account_field_sends_none(tmp_path, stub_page, monkeypatch):
 # --------------------------------------------------------------------------- #
 class TestTheRecord:
     def test_a_confirmed_register_writes_all_three_facets_in_one_save(self, tmp_path, stub_page, monkeypatch):
+        """Unchanged invariant, new route (0049 S-2b): the facets are written by the SAME
+        ``_persist_registered_record``, now handed to ``complete_handover`` as ``persist``."""
         cfg = _settings(tmp_path, monkeypatch)
         saves = {"n": 0}
         monkeypatch.setattr(AppConfig, "save", lambda self: saves.__setitem__("n", saves["n"] + 1))
-        _capture_register(monkeypatch)
+        _capture_provision(monkeypatch)
+        handover = _stub_handover(monkeypatch, handed_over=False)
         tree, _ = _schedule_section(cfg, stub_page)
-        _account_field(tree).value = _SERVICE
-        _textfield_by_label(tree, "Windows account password").value = "pw"
-        _press_register(tree)
-        _drain(stub_page)
+        _register_service_account(tree, stub_page)
 
+        assert handover["persist_called"] is True
         assert cfg.schedule_run_as_user == _SERVICE
         assert cfg.schedule_unattended is True
         assert cfg.schedule_task_args is not None
         assert saves["n"] == 1
+
+    def test_a_signed_in_register_still_writes_the_record_on_the_ordinary_path(self, tmp_path, stub_page, monkeypatch):
+        """The pre-S-2b path, unchanged: the signed-in account provisions nothing, so it never
+        reaches the confirm and the record is written by ``_on_register_success``."""
+        cfg = _settings(tmp_path, monkeypatch)
+        seen = _capture_register(monkeypatch)
+        tree, _ = _schedule_section(cfg, stub_page)
+        _textfield_by_label(tree, "Windows account password").value = "pw"
+        _press_register(tree)
+        _drain(stub_page)
+
+        assert _scope_dialog(stub_page) is None
+        assert seen["calls"] == 1
+        assert cfg.schedule_registered is True
+        assert cfg.schedule_unattended is True
 
     def test_a_confirmed_unregister_clears_all_three(self, tmp_path, stub_page, monkeypatch):
         cfg = _settings(
@@ -386,6 +502,15 @@ class TestTheInlineReason:
 # The delivery note (owner decision 2)                                         #
 # --------------------------------------------------------------------------- #
 class TestTheDeliveryNote:
+    """WHETHER a delivery note renders at all — delivery on, and a service account in play.
+
+    Every case below leaves the password field BLANK, which since plan 0049 S-2a.3 is what
+    selects the MANUAL form: the gate is closed, so pressing Schedule would provision nothing and
+    the "sign in as it once" instruction is still the truth. WHICH form renders is
+    ``TestTheDeliveryNoteIsKeyedOnWillProvision``'s subject; leave the password out of here so the
+    two classes keep testing two different things.
+    """
+
     _MARK = "--sftp-configure"
 
     def test_it_renders_for_a_typed_service_account_with_delivery_on(self, tmp_path, stub_page, monkeypatch):
@@ -422,12 +547,152 @@ class TestTheDeliveryNote:
         field.on_change(None)
         assert not _has_text_containing(tree, self._MARK)
 
-    def test_it_points_at_the_guide_and_the_help_page_and_carries_no_address(self):
-        note = setup_mod._SERVICE_ACCOUNT_DELIVERY_NOTE
-        assert self._MARK in note
+    @pytest.mark.parametrize("attr", _DELIVERY_NOTE_ATTRS, ids=_DELIVERY_NOTE_ATTRS)
+    def test_it_points_at_the_guide_and_the_help_page_and_carries_no_address(self, attr):
+        """Extended to bind BOTH forms (plan 0049 S-2a.3). The address ban is the reason: a
+        sibling note that grew one would be invisible to a test pinned at the manual form, and
+        ``scripts/check_no_emails.py`` would only catch it if the literal were an address rather
+        than a "write to us at" sentence. The guide and Help pointers are shared deliberately —
+        both forms leave the admin somewhere they can act."""
+        note = getattr(setup_mod, attr)
         assert "setup guide" in note
         assert "Help page" in note
         assert "@" not in note
+
+    def test_only_the_manual_form_carries_the_marker_the_render_tests_key_on(self):
+        """``_MARK`` is how every rendering assertion above tells the two forms apart, so it has
+        to be a real discriminator: a provision note that also mentioned ``--sftp-configure``
+        would make those tests pass on either string."""
+        assert self._MARK in setup_mod._SERVICE_ACCOUNT_DELIVERY_NOTE
+        assert self._MARK not in setup_mod._SERVICE_ACCOUNT_DELIVERY_PROVISION_NOTE
+        # The two say opposite things about who does the work; neither may drift into the other.
+        assert "DistrictSync can't do this for you" in setup_mod._SERVICE_ACCOUNT_DELIVERY_NOTE
+        assert "DistrictSync will save" in setup_mod._SERVICE_ACCOUNT_DELIVERY_PROVISION_NOTE
+
+
+# --------------------------------------------------------------------------- #
+# The delivery note is keyed on WILL-PROVISION, never on today's scope (0049)   #
+# --------------------------------------------------------------------------- #
+class TestTheDeliveryNoteIsKeyedOnWillProvision:
+    """Plan 0049 S-2a.3, the sharpest finding of the S-2 review.
+
+    Provisioning fires at the Schedule PRESS, so the install is still per-user at the moment this
+    note is painted — the admin is mid-keystroke in the account field. Keyed on today's scope the
+    note would say "DistrictSync can't do this for you, run ``--sftp-configure``" seconds before
+    the app does exactly that, and the admin would go and do the manual work anyway.
+
+    So the key is "would pressing Schedule provision?" — a foreign TYPED principal with every gate
+    open — and the tests below drive that distinction from both ends: the same install, the same
+    typed account, with and without the one field that opens the gate.
+    """
+
+    _MANUAL = "--sftp-configure"
+    _PROVISION = "DistrictSync will save"
+
+    @pytest.mark.parametrize("delivery", [False, True], ids=["delivery-off", "delivery-on"])
+    @pytest.mark.parametrize("provision", [False, True], ids=["manual", "will-provision"])
+    def test_no_foreign_principal_earns_no_note_at_all(self, delivery, provision):
+        """Both forms are ABOUT a second Windows account. With the nightly running as the admin's
+        own account there is no per-account credential problem to explain and nothing to promise
+        to fix."""
+        assert (
+            setup_mod.service_account_delivery_note(delivery_enabled=delivery, foreign=False, will_provision=provision)
+            == ""
+        )
+
+    @pytest.mark.parametrize("provision", [False, True], ids=["manual", "will-provision"])
+    def test_delivery_off_earns_no_note_at_all(self, provision):
+        """Owner decision 2: named only where it is TRUE and actionable. With no delivery
+        configured there is no password to move and no nightly upload to fail."""
+        assert (
+            setup_mod.service_account_delivery_note(delivery_enabled=False, foreign=True, will_provision=provision)
+            == ""
+        )
+
+    def test_a_provisioning_press_earns_the_promise(self):
+        assert (
+            setup_mod.service_account_delivery_note(delivery_enabled=True, foreign=True, will_provision=True)
+            == setup_mod._SERVICE_ACCOUNT_DELIVERY_PROVISION_NOTE
+        )
+
+    def test_a_non_provisioning_press_keeps_todays_note_byte_for_byte(self):
+        """AC1's per-user promise at this seam: an install that will NOT provision reads exactly
+        what it read before the slice, because the manual instruction is still the truth there."""
+        assert (
+            setup_mod.service_account_delivery_note(delivery_enabled=True, foreign=True, will_provision=False)
+            == setup_mod._SERVICE_ACCOUNT_DELIVERY_NOTE
+        )
+
+    def test_typing_a_service_account_on_a_per_user_install_promises_the_fix(self, tmp_path, stub_page, monkeypatch):
+        """THE headline case. A per-user install, delivery on, the admin types the service account
+        and its password: every gate is open, so pressing Schedule would provision — and the note
+        under the field must say so rather than send them off to a command line."""
+        cfg = _settings(tmp_path, monkeypatch, sftp_enabled=True)
+        monkeypatch.setattr(setup_mod.paths, "is_machine_scope", lambda: False)
+        tree, _ = _schedule_section(cfg, stub_page)
+        _account_field(tree).value = _SERVICE
+        _textfield_by_label(tree, "Windows account password").value = "pw"
+        _account_field(tree).on_change(None)
+
+        assert _has_text_containing(tree, self._PROVISION)
+        assert not _has_text_containing(tree, self._MANUAL)
+
+    def test_the_same_account_with_the_gate_closed_keeps_the_manual_note(self, tmp_path, stub_page, monkeypatch):
+        """The positive twin, and the proof the key is the GATE and not merely "a foreign account
+        was typed": same install, same account, no password — the press would be refused, nothing
+        would be provisioned, and the manual instruction is the only true one."""
+        cfg = _settings(tmp_path, monkeypatch, sftp_enabled=True)
+        monkeypatch.setattr(setup_mod.paths, "is_machine_scope", lambda: False)
+        tree, _ = _schedule_section(cfg, stub_page)
+        _account_field(tree).value = _SERVICE
+        _account_field(tree).on_change(None)
+
+        assert _has_text_containing(tree, self._MANUAL)
+        assert not _has_text_containing(tree, self._PROVISION)
+
+    @pytest.mark.parametrize("scope", [False, True], ids=["per-user", "machine-scoped"])
+    def test_the_rendered_note_does_not_move_with_the_scope(self, tmp_path, stub_page, monkeypatch, scope):
+        """The regression this class exists for. A future edit keying the note on
+        ``paths.is_machine_scope()`` would flip BOTH cases below; keyed on the gate, the scope is
+        not consulted at all and the same two inputs give the same two answers on either
+        install."""
+        cfg = _settings(tmp_path, monkeypatch, sftp_enabled=True)
+        monkeypatch.setattr(setup_mod.paths, "is_machine_scope", lambda: scope)
+        tree, _ = _schedule_section(cfg, stub_page)
+        field = _account_field(tree)
+
+        field.value = _SERVICE
+        field.on_change(None)
+        assert _has_text_containing(tree, self._MANUAL)  # gate closed → the manual truth
+
+        _textfield_by_label(tree, "Windows account password").value = "pw"
+        field.on_change(None)
+        assert _has_text_containing(tree, self._PROVISION)  # gate open → the promise
+        assert not _has_text_containing(tree, self._MANUAL)
+
+    def test_a_recorded_service_account_with_nothing_typed_is_not_a_provisioning_press(
+        self, tmp_path, stub_page, monkeypatch
+    ):
+        """``will_provision`` reads the TYPED principal, not the recorded one — the note is about
+        what THIS press would do. Here the switch gate refuses the press outright (a live task on
+        one account, a blank field meaning another), so nothing would be provisioned and the
+        manual note stands."""
+        cfg = _settings(
+            tmp_path,
+            monkeypatch,
+            sftp_enabled=True,
+            schedule_registered=True,
+            schedule_unattended=True,
+            schedule_run_as_user=_SERVICE,
+        )
+        cfg.schedule_task_args = _registered_args(cfg)
+        tree, _ = _schedule_section(cfg, stub_page)
+        field = _account_field(tree)
+        field.value = ""
+        field.on_change(None)
+
+        assert _has_text_containing(tree, self._MANUAL)
+        assert not _has_text_containing(tree, self._PROVISION)
 
 
 # --------------------------------------------------------------------------- #
@@ -445,18 +710,41 @@ class TestHonestReporting:
         _drain(stub_page)
         return tree
 
-    def test_the_banner_names_the_registered_service_account(self, tmp_path, stub_page, monkeypatch):
-        tree = self._register_as(tmp_path, stub_page, monkeypatch, _SERVICE)
-        assert _has_text_containing(tree, f"Runs as {_SERVICE}")
-        assert not _has_text_containing(tree, f"Runs as {_SIGNED_IN}")
+    def _provision_as(self, tmp_path, stub_page, monkeypatch, account, *, attempt=None, **handover):
+        cfg = _settings(tmp_path, monkeypatch)
+        _capture_provision(monkeypatch, results=[attempt] if attempt is not None else None)
+        _stub_handover(monkeypatch, **handover)
+        tree, _ = _schedule_section(cfg, stub_page)
+        _register_service_account(tree, stub_page, account=account)
+        return tree
+
+    def test_the_provisioned_banner_never_names_the_signed_in_account(self, tmp_path, stub_page, monkeypatch):
+        """G3, carried onto the provisioning path. The banner names NO account — it says "the
+        account you entered" — which is what makes naming the wrong one impossible. The assertion
+        is on the signed-in name because that is the failure G3 exists to stop: a task on a
+        service account reporting somebody else's name back."""
+        tree = self._provision_as(tmp_path, stub_page, monkeypatch, _SERVICE, handed_over=True)
+        assert _has_text_containing(tree, setup_mod.HANDOVER_DONE_HEADLINE)
+        assert not _has_text_containing(tree, _SIGNED_IN)
 
     def test_the_banner_names_the_signed_in_account_on_an_untouched_prefill(self, tmp_path, stub_page, monkeypatch):
         tree = self._register_as(tmp_path, stub_page, monkeypatch, None)
         assert _has_text_containing(tree, f"Runs as {_SIGNED_IN}")
 
     def test_a_foreign_account_routes_account_is_current_False(self, tmp_path, stub_page, monkeypatch):
+        """0047 G4 on the provisioning path: a FAILED attempt's message goes through the SAME
+        classifier, and the personal-credential coaching (a Windows Hello PIN, a microsoft.com
+        password) must not be offered for a service account."""
         seen = _capture_classifier(monkeypatch)
-        self._register_as(tmp_path, stub_page, monkeypatch, _SERVICE, result=(False, task_com.MSG_LOGON_FAILURE))
+        self._provision_as(
+            tmp_path,
+            stub_page,
+            monkeypatch,
+            _SERVICE,
+            attempt=ProvisionAttempt(outcome=ProvisionOutcome.FAILED, message=task_com.MSG_LOGON_FAILURE),
+            handed_over=False,
+        )
+        assert seen["msg"] == task_com.MSG_LOGON_FAILURE
         assert seen["account_is_current"] is False
         out = setup_mod.classify_schedule_error(
             task_com.MSG_LOGON_FAILURE, False, account_is_current=seen["account_is_current"]
@@ -629,11 +917,8 @@ class TestA6KeyringOwner:
         assert not hasattr(setup_mod, "_run_as_account")
         assert hasattr(setup_mod, "_keyring_owner_account")
 
-    def test_the_delivery_line_names_the_signed_in_account_not_the_principal(self, tmp_path, stub_page, monkeypatch):
-        """The positive twin of "the rendered string is unchanged": the account it names is
-        asserted NOT to be the registered principal. Credential Manager has no cross-user scope,
-        so naming the principal here would print a false all-clear on the most likely real
-        failure this feature creates."""
+    def _saved_delivery(self, tmp_path, stub_page, monkeypatch, *, readable="pw"):
+        """Drive a delivery Save to completion and hand back the rendered section."""
         cfg = _settings(
             tmp_path,
             monkeypatch,
@@ -649,14 +934,53 @@ class TestA6KeyringOwner:
         cfg.schedule_task_args = _registered_args(cfg)
         monkeypatch.setattr(setup_mod, "_keyring_owner_account", lambda: _SIGNED_IN)
         monkeypatch.setattr(SFTPUploader, "store_password", lambda self, pw: None)
-        monkeypatch.setattr(SFTPUploader, "get_stored_password", lambda self: "pw")
+        monkeypatch.setattr(SFTPUploader, "get_stored_password", lambda self: readable)
 
         tree = setup_mod._build_sftp_section(stub_page, cfg)
         _textfield_by_label(tree, "Password").value = "pw"
         _button_by_content(tree, "Save delivery settings").on_click(None)
+        return tree
+
+    def test_the_delivery_line_names_the_signed_in_account_not_the_principal(self, tmp_path, stub_page, monkeypatch):
+        """The positive twin of "the rendered string is unchanged": the account it names is
+        asserted NOT to be the registered principal. Credential Manager has no cross-user scope,
+        so naming the principal here would print a false all-clear on the most likely real
+        failure this feature creates.
+
+        The scope stub is EXPLICIT since plan 0049 S-2a.3 (it was ambient before, riding whatever
+        ``DISTRICTSYNC_DATA_DIR`` resolved to): this assertion is the slice's byte-identity pin for
+        form 2 of ``delivery_password_line``, and a pin that depends on the environment pins
+        nothing. The machine-scoped twin below is what proves the branch it now sits on is live."""
+        monkeypatch.setattr(setup_mod.paths, "is_machine_scope", lambda: False)
+        tree = self._saved_delivery(tmp_path, stub_page, monkeypatch)
 
         assert _has_text_containing(tree, f"Your delivery password is saved and readable by {_SIGNED_IN}.")
         assert not _has_text_containing(tree, f"readable by {_SERVICE}")
+
+    def test_the_machine_scoped_line_names_the_principal_and_drops_the_keyring_owner(
+        self, tmp_path, stub_page, monkeypatch
+    ):
+        """The twin, and the inversion that makes A6 a per-user rule rather than a universal one:
+        once the secret lives in the machine store the keyring owner is the WRONG name — that
+        keyring has been replaced — and the account the nightly runs as is the right one."""
+        monkeypatch.setattr(setup_mod.paths, "is_machine_scope", lambda: True)
+        tree = self._saved_delivery(tmp_path, stub_page, monkeypatch)
+
+        assert _has_text_containing(tree, f"saved on this computer, where {_SERVICE} can read it")
+        assert not _has_text_containing(tree, f"readable by {_SIGNED_IN}")
+
+    @pytest.mark.parametrize("scope", [False, True], ids=["per-user", "machine-scoped"])
+    def test_an_unreadable_credential_reports_through_the_same_one_function(
+        self, tmp_path, stub_page, monkeypatch, scope
+    ):
+        """The failure arm routes through ``delivery_password_line`` too, which is the only reason
+        a machine-scoped admin stops being told to "run the app as this account" — advice that
+        cannot work once no single account owns the secret. Per-user keeps it word for word."""
+        monkeypatch.setattr(setup_mod.paths, "is_machine_scope", lambda: scope)
+        tree = self._saved_delivery(tmp_path, stub_page, monkeypatch, readable=None)
+
+        assert _has_text_containing(tree, "Couldn't read")
+        assert _has_text_containing(tree, "run the app as this account") is (not scope)
 
 
 def test_the_engine_refusal_message_is_classified_not_swallowed():

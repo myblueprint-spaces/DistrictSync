@@ -51,6 +51,7 @@ from src.config.app_config import AppConfig
 from src.etl.sync_window import in_sync_window, next_resume_date
 from src.ui_flet.humanize import (
     AnomalyVariant,
+    friendly_absolute_date,
     friendly_anomaly_detail,
     friendly_date_short,
     friendly_timestamp,
@@ -704,9 +705,14 @@ def derive_home_status(
     # the RUNNING account's config, which for a service account has no window at all, so a green
     # "resumes <date>" would be painted over a sync that is still delivering. Single-sourced in
     # ``sync_window_paused``, so Home, the Run History banner and the Setup badge move together.
+    #
+    # 0049 S-2a.1: both facts ride the ``ScheduleStatus`` this derivation already receives (ONE
+    # carrier), so a machine-scoped install — where the nightly reads the SAME shared config and
+    # the pause IS in force — is never told its pause does not apply.
     foreign_account = schedule_status.foreign_account if schedule_status is not None else ""
+    shared_records = schedule_status.shared_records if schedule_status is not None else False
     paused = sync_window_paused(
-        app_config, now=now, foreign_account=foreign_account
+        app_config, now=now, foreign_account=foreign_account, shared_records=shared_records
     ) and not _schedule_confirmed_missing(schedule_status)
 
     # 0046 C / A5: the nightly's records live in another account's profile. This ONE rule stands in
@@ -1024,8 +1030,16 @@ def _foreign_records_elsewhere(
     * the local ledger CANNOT SPEAK — no records at all, or the newest is stale. With a fresh
       local record (a manual Convert) this surface has something true and current to say, and
       saying it is better than explaining an absence that isn't there.
+
+    Plan 0049 S-2a.1 adds the third: the records must actually BE elsewhere. On a machine-scoped
+    install the nightly writes into the SHARED store this reader reads, so the whole rule — and the
+    "they don't appear here" copy it routes to — is false. **Suppress only when
+    ``foreign_account and not shared_records``**; with shared records the ordinary missed-run /
+    stale / empty-state arms are correct again and own this install.
     """
     if schedule_status is None or not schedule_status.foreign_account:
+        return False
+    if schedule_status.shared_records:
         return False
     if schedule_status.state is not ScheduleState.LIVE:
         return False
@@ -1078,12 +1092,17 @@ def _is_missed_run(
     """
     if schedule_status is None or schedule_status.state is not ScheduleState.LIVE:
         return False
-    if schedule_status.foreign_account:
+    if schedule_status.foreign_account and not schedule_status.shared_records:
         # A5 (plan 0046 C) — see ``schedule_status._is_contradiction`` for the full argument: the
         # nightly runs as another account, so its run record was written to THAT profile's
         # history.db. The gap is where the record WENT, not a sync that failed to happen. The
         # signature is deliberately UNCHANGED: the fact rides the ``ScheduleStatus`` this predicate
         # already receives, so it can never disagree with the contradiction rule that shares it.
+        #
+        # 0049 S-2a.1: ``and not shared_records``. On a machine-scoped install that record lands in
+        # the SHARED store this predicate reads, so a gap is once again a sync that did not happen
+        # — and going quiet about it would disable the app's only "did it run?" signal on exactly
+        # the install we just fixed.
         return False
     if not is_stale(store_created_at or "", now, stale_after_hours=MISSED_RUN_AFTER_HOURS):
         return False
@@ -1177,7 +1196,9 @@ def welcome_band(app_config: AppConfig, *, records: list[dict] | None, store_cre
     )
 
 
-def sync_window_paused(app_config: AppConfig, *, now: datetime | None, foreign_account: str) -> bool:
+def sync_window_paused(
+    app_config: AppConfig, *, now: datetime | None, foreign_account: str, shared_records: bool
+) -> bool:
     """Whether an ENABLED seasonal window is currently OUTSIDE its active season (pure + TOTAL).
 
     Reuses the ENGINE predicate ``sync_window.in_sync_window`` (single source — the nightly gate
@@ -1195,11 +1216,18 @@ def sync_window_paused(app_config: AppConfig, *, now: datetime | None, foreign_a
     resumes Aug 11" over a sync that is running nightly and delivering rosters out of season would
     be a false green about the one thing this surface exists to report.
 
+    ``shared_records`` (plan 0049 S-2a.1) is REQUIRED keyword-only and is what makes that argument
+    conditional. On a machine-scoped install ``src/main.py``'s nightly gate resolves the SAME
+    shared ``config.json`` this surface just read, so the window IS enforced for the service
+    account and a suppressed pause would be the mirror-image false report: an amber "we expected a
+    nightly sync that didn't arrive" every summer night over a sync that is intentionally paused.
+    **Suppress only when ``foreign_account and not shared_records``.**
+
     This is the SINGLE-SOURCE pause fact Home, the Run History banner and the Setup nav badge all
     read, so the one change covers all three and they cannot disagree. The limitation itself is
     SURFACED, not solved — see ``screens/setup.sync_window_foreign_note`` and the ROADMAP item.
     """
-    if foreign_account:
+    if foreign_account and not shared_records:
         return False
     if not app_config.sync_window_enabled:
         return False
@@ -1214,6 +1242,48 @@ def sync_window_paused(app_config: AppConfig, *, now: datetime | None, foreign_a
         # A malformed boundary (gated at save, but be TOTAL) → behave as year-round; never crash,
         # never hide a real fault behind a broken window.
         return False
+
+
+# The shared-profile scope line (plan 0049 S-2a.4). Rendered on Home and in Settings, and ONLY on
+# a machine-scoped install: "Settings for your account only" on all 20 per-user districts answers
+# a question none of them asked, lands on the surface S7 deliberately stripped to the verdict, and
+# would break this slice's own byte-identity promise.
+#
+# What it is FOR is the second administrator: a colleague provisioned this computer, and the app
+# their district described now behaves differently for reasons nothing on screen explains. The
+# provenance form names who to ask.
+#: The LEAD both forms share, spelled once. The partner docs quote this phrase to tell an admin
+#: which kind of install they are looking at (`tests/test_partner_doc_schedule_copy_parity.py`
+#: pins it), so the two sentences below are BUILT from it rather than each repeating it: a
+#: reworded lead must move the doc, and it cannot move in one sentence and not the other.
+MACHINE_SCOPE_LINE_LEAD = "Shared settings on this computer"
+MACHINE_SCOPE_LINE_WITH_PROVENANCE = MACHINE_SCOPE_LINE_LEAD + ", set up by {who} on {when}."
+#: The degraded form. Reached when the registry cannot supply BOTH values — the key is
+#: hand-editable, and half a sentence ("set up by  on Sep 18, 2026") is worse than the fact alone.
+#: It still states the scope, which is the part the reader needs.
+MACHINE_SCOPE_LINE_PLAIN = MACHINE_SCOPE_LINE_LEAD + " — every account here uses the same DistrictSync setup."
+
+
+def machine_scope_line(*, machine_scope: bool, provisioned_by: str, provisioned_at: str) -> str | None:
+    """The "whose settings are these?" line — ``None`` on a per-user install (pure, TOTAL).
+
+    ``None`` is not a degraded case: it is the ONLY correct answer on every install in the field
+    today, and the reason this function takes ``machine_scope`` rather than being called
+    conditionally at two view sites that could drift apart.
+
+    The provenance form needs BOTH values; either one missing falls to
+    :data:`MACHINE_SCOPE_LINE_PLAIN`. The date is reduced through
+    ``humanize.friendly_absolute_date``, which returns ``""`` on anything it cannot parse — so a
+    hand-edited ``ProvisionedAt`` degrades the sentence instead of rendering a raw ISO string on
+    the app's calmest surface.
+    """
+    if not machine_scope:
+        return None
+    who = (provisioned_by or "").strip()
+    when = friendly_absolute_date(provisioned_at)
+    if not who or not when:
+        return MACHINE_SCOPE_LINE_PLAIN
+    return MACHINE_SCOPE_LINE_WITH_PROVENANCE.format(who=who, when=when)
 
 
 def _paused_status(app_config: AppConfig, *, now: datetime | None) -> HomeStatus:

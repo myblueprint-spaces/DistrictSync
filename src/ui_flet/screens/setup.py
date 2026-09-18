@@ -73,8 +73,15 @@ import flet as ft
 from src.config.app_config import AppConfig
 from src.config.authoring import current_digest
 from src.scheduler import get_scheduler, windows
+from src.scheduler.provision_session import (
+    ProvisionAttempt,
+    ProvisionOutcome,
+    complete_handover,
+    delivery_secret_unreadable,
+    request_provision,
+)
 from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
-from src.ui_flet import components, tokens
+from src.ui_flet import components, handover_result, tokens
 from src.ui_flet.config_editor import (
     CreatorForm,
     activation_allowed,
@@ -86,6 +93,8 @@ from src.ui_flet.filepicker import (
     validate_input_dir,
     validate_output_dir,
 )
+from src.ui_flet.handover_result import HandoverBanner
+from src.ui_flet.home_status import machine_scope_line
 from src.ui_flet.humanize import friendly_district_name, friendly_sftp_reason
 from src.ui_flet.identity_gate import (
     MatchOutcome,
@@ -93,6 +102,12 @@ from src.ui_flet.identity_gate import (
     stored_identity_domain,
     stored_identity_email,
 )
+
+# IMPORTED, not re-typed: `launcher` owns one plain-language cause per bounded
+# `MachineScopeRefusedReason` (with a completeness test), and the launcher's own next-launch
+# dialog shows the same words — a second copy would drift. No cycle: `launcher` reaches `shell`
+# (and therefore this file) only lazily, inside a function.
+from src.ui_flet.launcher import _MACHINE_SCOPE_CAUSES
 from src.ui_flet.mapping_catalog import (
     FilteredCatalog,
     disambiguated_labels,
@@ -121,7 +136,7 @@ from src.ui_flet.screens.creator import (
 )
 from src.ui_flet.screens.identity import NOT_LISTED_NOTE_TAIL as UNMATCHED_DISTRICT_NOTE
 from src.ui_flet.screens.identity import log_resolve, matched_headline
-from src.ui_flet.setup_errors import classify_schedule_error
+from src.ui_flet.setup_errors import classify_provision_step, classify_schedule_error
 from src.ui_flet.setup_flow import (
     SCHEDULE_ACCOUNT_FIELD_LABEL,
     TRANSITION_CUE,
@@ -176,7 +191,10 @@ from src.ui_flet.sftp_copy import (
     sftp_test_copy,
 )
 from src.ui_flet.verdict import Verdict
+from src.utils import paths
+from src.utils.diagnostics import machine_scope_provenance
 from src.utils.identity import extract_domain, normalize_email
+from src.utils.unc import describe_folder_reach
 from src.utils.validators import (
     ALLOWED_SFTP_HOSTS,
     IDENTITY_EMAIL_MAX_LEN,
@@ -230,6 +248,248 @@ _ACCOUNT_SWITCH_NOTE_UNKNOWN = (
     "as. Choose Remove nightly sync, then schedule it again with the account you want — what "
     "you've typed here stays in the box."
 )
+# nosec B105 — a constant NAMED "..._SECRET_NOTE"; the value is on-screen copy, not a secret.
+# The note for ``RegisterBlock.DELIVERY_SECRET_UNREADABLE`` (plan 0049 S-2b.1). It must say TWO
+# things, and the second is not optional: the admin may not HAVE the delivery password. It is
+# stored per Windows account, so a password saved by a colleague's account lives in a Credential
+# Manager this one can never read — an escape that is only discoverable by guessing is not an
+# escape, so turning delivery off is named here, with its cost stated plainly.
+_ACCOUNT_DELIVERY_SECRET_NOTE = (  # nosec B105
+    "DistrictSync can't read your delivery password on this account, so it has nothing to copy "
+    "into this computer's shared settings for the nightly sync to use. Open Delivery to SpacesEDU "
+    "below and save the password again, then schedule the nightly sync. If you don't have it — it "
+    "may have been saved by a different Windows account, which DistrictSync can't read — turn "
+    "delivery off instead: the nightly sync will still write your CSV files to the output folder, "
+    "it just won't send them to SpacesEDU."
+)
+
+# --------------------------------------------------------------------------- #
+# Machine-scope handover — the foreshadow, the confirm, the outcomes (0049 S-2b) #
+# --------------------------------------------------------------------------- #
+#: The shared folder, named in full. An admin asked to approve a permanent, machine-wide change
+#: is entitled to know WHERE — and it is the one path this surface prints, deliberately: it is a
+#: fixed product location, not a resolved user path.
+MACHINE_SCOPE_FOLDER = r"C:\ProgramData\DistrictSync"
+#: What lives in the profile, spelled ONCE. The foreshadow and the confirm must not list
+#: different contents of the same folder.
+_SCOPE_CONTENTS = "your district, folders, delivery password and run history"
+
+# The FORESHADOW (S-2b.2). Painted the moment the typed account goes foreign — `_paint_account_note`
+# repaints on every keystroke — because a permanent machine-wide relocation must not first be
+# mentioned at the point of no return. Two variants, because both states are real and reachable:
+# "Remove nightly sync" deliberately does NOT un-provision (the confirm says so), so an
+# already-shared computer genuinely reaches this field again, and telling that admin their
+# settings are about to MOVE would be false.
+_SCOPE_FORESHADOW_NOTE = (
+    f"Scheduling the nightly sync as another account moves this computer's DistrictSync settings — "
+    f"{_SCOPE_CONTENTS} — into one shared folder, so that account can read them when it runs. "
+    "You'll be asked to confirm first."
+)
+_SCOPE_FORESHADOW_NOTE_SHARED = (
+    "This computer already keeps its DistrictSync settings in one shared folder. Scheduling the "
+    "nightly sync as another account gives that account access to it. You'll be asked to confirm "
+    "first."
+)
+
+# The CONFIRM. Three sentences, and each one is load-bearing:
+#   1. WHAT moves (and to where);
+#   2. who can then reach these settings — every administrator of this computer, permanently,
+#      and nobody who is not an administrator at all;
+#   3. that it cannot be undone, INCLUDING by "Remove nightly sync", which is the one thing an
+#      admin would reasonably try. Un-provisioning is a ROADMAP item, so the copy says it does
+#      not exist rather than implying it does.
+SCOPE_CONFIRM_TITLE = "Set this computer up for shared settings?"
+_SCOPE_CONFIRM_MOVE = (
+    f"DistrictSync will move this computer's settings — {_SCOPE_CONTENTS} — into one shared "
+    f"folder, {MACHINE_SCOPE_FOLDER}, so the account you entered can read them when the nightly "
+    "sync runs."
+)
+_SCOPE_CONFIRM_ALREADY = (
+    f"This computer already keeps its DistrictSync settings — {_SCOPE_CONTENTS} — in one shared "
+    f"folder, {MACHINE_SCOPE_FOLDER}. The account you entered will be given access to it."
+)
+_SCOPE_CONFIRM_WHO = (
+    "Every administrator of this computer will then be able to open DistrictSync and take over "
+    "these settings, anyone who is not an administrator of this computer won't be able to open "
+    "DistrictSync here at all, and once an administrator has been given access DistrictSync "
+    "can't take it away again."
+)
+_SCOPE_CONFIRM_ONE_WAY = (
+    "This version of DistrictSync can't move the settings back, and Remove nightly sync won't "
+    "undo it — putting a computer back to per-account settings is something we still have to "
+    "build."
+)
+SCOPE_CONFIRM_CONTINUE_LABEL = "Set up shared settings"
+SCOPE_CONFIRM_CANCEL_LABEL = "Cancel"
+
+# The folder-reach WARNING inside the confirm (S-2b.1). It is a warning and never a gate: the
+# heuristic is wrong in both directions (`src/utils/unc.py` argues why), so it may not disable
+# the confirm and may not be worded as a finding. "We can't confirm" is the whole claim.
+SCOPE_FOLDER_WARNING_HEADLINE = "We can't confirm the account can reach these folders"
+_SCOPE_FOLDER_WARNING_DETAIL = (
+    "A drive letter like Z: only exists for the Windows account that mapped it, and a folder "
+    "inside someone's user profile usually isn't readable by anyone else. The nightly sync runs "
+    "as the account you entered, so it may not be able to open these."
+)
+# Said BEFORE the press, not after: swapping a folder re-renders this surface, so a note
+# painted afterwards would not survive the thing that proves the swap worked (the folders card
+# showing the new path).
+_SCOPE_FOLDER_REPLACE_HINT = (
+    "Swapping a folder here doesn't schedule anything — choose Schedule nightly sync again when you're ready."
+)
+SCOPE_FOLDER_INPUT_LABEL = "your input folder"
+SCOPE_FOLDER_OUTPUT_LABEL = "your output folder"
+SCOPE_FOLDER_REPLACE_LABEL = "Use {path} for {folder}"
+SCOPE_FOLDER_REPLACE_FAILED_NOTE = "We couldn't save that folder just now — nothing was changed. Please try again."
+
+# The TERMINAL refusal surface (S-2b.3). The child committed the HKLM switch and the parent's
+# own re-pin then refused the folder, so the data-dir pin is left UNSET: every later
+# `user_data_dir()` in this session raises, and the admin is sitting in a live window whose next
+# click can only crash. This card is therefore paired with disabling the rest of the surface —
+# a calm dead end beats a crash, and the next launch reports the same refusal through the
+# launcher's own dialog, which is where it can actually be repaired.
+SCOPE_REFUSED_HEADLINE = "DistrictSync can't use this computer's shared settings folder"
+SCOPE_REFUSED_DETAIL = (
+    "The shared folder was created, but DistrictSync will not use it as it stands. Nothing else "
+    "on this computer was changed, and your nightly sync was not scheduled. Close DistrictSync "
+    "and send the log file from the Help page to support."
+)
+
+# The non-handover failure headline for a provisioning attempt that never got as far as the
+# switch. It claims nothing about the scope, because nothing happened to it.
+SCOPE_ATTEMPT_FAILED_HEADLINE = "Couldn't set this computer up for shared settings"
+# The elevation-timeout arm, classified through the SAME canonical the ordinary register path
+# uses (`windows._MSG_ELEVATION_TIMEOUT`) rather than a second wording of "we can't tell".
+SCOPE_UNCONFIRMED_HEADLINE = "Couldn't confirm the change"
+# The child reported the WHOLE sequence done (the nightly included) and the parent's own switch
+# read still says this session is not on the shared profile. The task exists — the record was
+# written — so the copy leads with that and claims nothing about the scope but "we couldn't
+# confirm it". The next launch re-reads the switch and settles it.
+SCOPE_SWITCH_UNCONFIRMED_HEADLINE = "Nightly sync scheduled — shared settings not confirmed"
+SCOPE_SWITCH_UNCONFIRMED_DETAIL = (
+    "Your nightly sync is scheduled to run as the account you entered. DistrictSync couldn't "
+    "confirm that this computer switched to shared settings — close DistrictSync, open it again, "
+    "and check the line at the top of Settings. If it still doesn't mention shared settings, send "
+    "the log file from the Help page to support."
+)
+
+# --------------------------------------------------------------------------- #
+# The post-handover banner — rendered by HOME, spelled HERE.                   #
+# --------------------------------------------------------------------------- #
+# It lives in this file because this file owns the flow that produces it, and because the
+# dependency only runs one way: ``screens/home.py`` already imports this module, so the copy
+# can be single-sourced here and cannot be single-sourced there.
+#
+# Home renders it because Home is where re-entry LANDS: ``complete_handover``'s ``reenter``
+# rebuilds the app body, ``nav.initial_destination_id`` is Home in every state, and the Setup
+# surface that dispatched the change no longer exists by the time it finishes. It is the ONE
+# deliberate exception to verdict-first, bounded to a single paint — the admin just pressed a
+# button that permanently moved this computer's settings, and that outranks "did last night's
+# roster sync?" until it has been read once. ``handover_result.take()`` clears, so the next
+# mount is verdict-first again.
+HANDOVER_DONE_HEADLINE = "Shared settings are set up"
+HANDOVER_DONE_DETAIL = (
+    "This computer now keeps DistrictSync's settings in one shared folder, and the nightly sync "
+    "is scheduled to run as the account you entered."
+)
+# The scope change LEADS, and the registration failure is the SECOND sentence. A failed
+# register painting its own red card over a successful, irreversible handover is how an admin
+# comes to retry a move that cannot be repeated.
+HANDOVER_UNCONFIRMED_HEADLINE = "Shared settings are set up — the nightly sync isn't confirmed"
+HANDOVER_UNCONFIRMED_LEAD = (
+    "This computer now keeps DistrictSync's settings in one shared folder. That part is done and "
+    "does not need repeating."
+)
+
+
+def handover_banner(result: handover_result.HandoverResult) -> ft.Control:
+    """The one-shot post-handover surface. TOTAL over :class:`HandoverBanner`.
+
+    ``HandoverBanner.REFUSED`` is normally painted on the Setup surface instead — that outcome
+    leaves ``complete_handover`` returning BEFORE re-entry, so Setup is still mounted — but the
+    branch exists here anyway: a result that somehow reached the slot must be shown, never
+    silently dropped, and this function is the only renderer.
+
+    The refusal's CAUSE is ``launcher._MACHINE_SCOPE_CAUSES`` — the map that already owns one
+    plain-language sentence per bounded reason, and the same words the launcher's own
+    next-launch dialog uses. An unknown member (impossible today; the launcher has a
+    completeness test) drops the clause rather than rendering an enum value.
+    """
+    if result.banner is HandoverBanner.HANDED_OVER:
+        return components.HealthVerdictBanner(
+            Verdict.HEALTHY, headline=HANDOVER_DONE_HEADLINE, detail=HANDOVER_DONE_DETAIL
+        )
+    if result.banner is HandoverBanner.HANDED_OVER_NIGHTLY_UNCONFIRMED:
+        return components.HealthVerdictBanner(
+            Verdict.WARNING,
+            headline=HANDOVER_UNCONFIRMED_HEADLINE,
+            detail=f"{HANDOVER_UNCONFIRMED_LEAD} {result.detail}".strip(),
+        )
+    return components.ErrorCard(SCOPE_REFUSED_HEADLINE, _scope_refusal_detail(result.refused_reason))
+
+
+def _scope_refusal_detail(reason: paths.MachineScopeRefusedReason | None) -> str:
+    """The refused-re-pin sentence: the bounded cause, then what is and is not true."""
+    cause = _MACHINE_SCOPE_CAUSES.get(reason, "") if reason is not None else ""
+    return f"{cause} {SCOPE_REFUSED_DETAIL}".strip()
+
+
+def account_block_note(block: RegisterBlock, facts: ScheduleAccountFacts) -> str:
+    """The ONE wording per Register-gate reason (pure, TOTAL; ``""`` for the silent ones).
+
+    Read by BOTH the inline note under the account field and the card a refused attempt paints
+    into ``result_slot``, so the two surfaces state the same cause by construction rather than
+    by review. ``NONE``/``INCOMPLETE``/``RUN_TIME`` return ``""`` — the folders card and the
+    run-time field own those, and ``INCOMPLETE`` is deliberately silent here.
+
+    **A new ``RegisterBlock`` member with no branch here paints a dead control** — a disabled
+    primary with no visible cause. That is why this is module level rather than a closure
+    inside ``_build_schedule_section``: the completeness sweep in
+    ``tests/test_ui_flet_machine_scope_handover.py`` can only reach it from out here.
+    """
+    if block is RegisterBlock.ACCOUNT_SHAPE:
+        return _ACCOUNT_SHAPE_NOTE
+    if block is RegisterBlock.ACCOUNT_NEEDS_PASSWORD:
+        return _ACCOUNT_PASSWORD_NOTE
+    if block is RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE:
+        recorded = facts.recorded
+        return (
+            _ACCOUNT_SWITCH_NOTE_UNKNOWN
+            if recorded is None
+            else _ACCOUNT_SWITCH_NOTE.format(recorded=recorded or facts.current or _keyring_owner_account())
+        )
+    if block is RegisterBlock.DELIVERY_SECRET_UNREADABLE:
+        return _ACCOUNT_DELIVERY_SECRET_NOTE
+    return ""
+
+
+def _machine_scope_now() -> bool:
+    """``paths.is_machine_scope()``, made TOTAL for a paint path.
+
+    It RESOLVES the pin when one is not set, so it raises ``MachineScopeRefused`` on exactly
+    the state this slice can produce: a committed switch whose folder the app refuses. Display
+    copy may never take a surface down, and the clause is broad because the failures here are
+    not all ``OSError`` (a Windows-only import on a platform-patched test is an ``ImportError``
+    — see the note in ``src/utils/unc.py``). ``False`` is the safe answer: it foreshadows the
+    MOVE, which over-states nothing an admin has to act on.
+    """
+    try:
+        return paths.is_machine_scope()
+    except Exception:  # noqa: BLE001 - see the docstring; a note may never break the surface
+        return False
+
+
+#: A provisioning outcome that is not ``PROVISIONED``, ``REFUSED`` or ``FAILED`` maps onto the
+#: SAME canonical the ordinary register path produces for the same event, so ``setup_errors``
+#: classifies it through the branches that already exist rather than through a second
+#: vocabulary. ``UNAVAILABLE`` is the one without an elevation canonical — the handshake was
+#: never built — and takes the section's calm transient instead.
+_PROVISION_OUTCOME_CANONICAL: dict[ProvisionOutcome, str] = {
+    ProvisionOutcome.DECLINED: windows._MSG_UAC_DECLINED,
+    ProvisionOutcome.LAUNCH_FAILED: windows._MSG_ELEVATION_LAUNCH_FAILED,
+    ProvisionOutcome.UNCONFIRMED: windows._MSG_ELEVATION_TIMEOUT,
+    ProvisionOutcome.DIFFERENT_ACCOUNT: windows._MSG_DIFFERENT_ACCOUNT,
+}
 # The headline over a REFUSED attempt (2026-09-17). Deliberately says what did not happen and
 # claims nothing about whether a task exists: the account-switch refusal renders over a nightly
 # sync that IS scheduled, so "couldn't schedule the nightly sync" would contradict the readout
@@ -249,6 +509,34 @@ _SERVICE_ACCOUNT_DELIVERY_NOTE = (
     "support contact. DistrictSync can't do this for you, and the nightly delivery will fail "
     "until it's done."
 )
+# The sibling for the case where scheduling itself will solve it (plan 0049 S-2a.3). The note
+# above is keyed on WILL-PROVISION, never on today's scope: it renders while the admin is TYPING
+# the service account, on an install that is still per-user precisely because provisioning fires
+# at the Schedule press. Keyed on current scope it would say "DistrictSync can't do this for you,
+# run --sftp-configure" seconds before the app does exactly that.
+#
+# It deliberately does NOT contain the ``--sftp-configure`` marker: that literal is how the tests
+# tell the two forms apart, and a sibling that carried it would let a rendering assertion pass on
+# either. No email address (scripts/check_no_emails.py scans every tracked file).
+_SERVICE_ACCOUNT_DELIVERY_PROVISION_NOTE = (
+    "DistrictSync will save your delivery password on this computer so this account can read it "
+    "when the nightly sync runs. You won't need to sign in as it or set delivery up again. Your "
+    "DistrictSync setup guide has the full steps; the Help page has our support contact."
+)
+
+
+def service_account_delivery_note(*, delivery_enabled: bool, foreign: bool, will_provision: bool) -> str:
+    """Which delivery note a service-account principal earns — ``""`` for none (pure, TOTAL).
+
+    Named only where it is TRUE and actionable: delivery is ON and a service account is in play on
+    either side (typed now, or already registered). The WILL-PROVISION form replaces the manual
+    one whenever pressing Schedule would set the credential up — never on a scope reading, which
+    is still per-user at the moment the note is painted.
+    """
+    if not delivery_enabled or not foreign:
+        return ""
+    return _SERVICE_ACCOUNT_DELIVERY_PROVISION_NOTE if will_provision else _SERVICE_ACCOUNT_DELIVERY_NOTE
+
 
 # The finish line's save FAILED (0038 S6). Two things must be true of this line and neither is
 # decoration: it must not claim THIS save lost anything (it did not — the only field it adds is
@@ -306,17 +594,72 @@ SYNC_WINDOW_FOREIGN_NOTE = (
 )
 
 
+# The SHARED-PROFILE sibling (plan 0049 S-2a.2). On a machine-scoped install the A9 limitation is
+# GONE: ``src/main.py``'s nightly gate resolves the same shared ``config.json`` this window was
+# saved to, so the pause the admin set here is the pause the service account's run obeys.
+#
+# The claim is POSITIVE, which is exactly why this note — unlike its per-user sibling — needs the
+# schedule state. "Your pause applies to the nightly sync running as X" over a task Windows says is
+# GONE, or over one we could not read, would assert a nightly that may not exist; CLAUDE.md's own
+# rule is that a confirmed-MISSING schedule outranks the pause. So it renders on a CONFIRMED-LIVE
+# read-back and on nothing else.
+SYNC_WINDOW_SHARED_NOTE = (
+    "Your summer pause applies to the nightly sync running as {account}. This computer's "
+    "DistrictSync settings are shared, so the nightly reads the same pause you set here."
+)
+
+
 def sync_window_foreign_note(app_config: AppConfig, *, foreign_account: str) -> str | None:
     """The A9 limitation, stated only when it is BOTH enabled here AND unenforceable there.
 
     Returns ``None`` on every other combination — a limitation nobody has configured into is noise,
     and a note on an install with no foreign principal would be simply false. Pure and TOTAL.
+
+    Scoped to a PER-USER install: :func:`window_scope_note` is the one entry point, and it hands a
+    machine-scoped install to :func:`sync_window_shared_note` instead. The limitation this states
+    is real there no longer, so this string must never render on one.
     """
     if not foreign_account:
         return None
     if not app_config.sync_window_enabled:
         return None
     return SYNC_WINDOW_FOREIGN_NOTE.format(account=foreign_account)
+
+
+def sync_window_shared_note(app_config: AppConfig, *, foreign_account: str, state: ScheduleState | None) -> str | None:
+    """The shared-profile reassurance — stated ONLY over a schedule we have confirmed LIVE.
+
+    Pure and TOTAL. ``None`` unless the window is enabled here, the recorded principal is foreign,
+    AND the read-back confirmed the task exists: a MISSING task will not resume in the fall and an
+    UNKNOWN one was never seen, so neither may carry a claim about what "the nightly sync running
+    as X" does. ``state=None`` (not yet probed) asserts nothing either.
+    """
+    if not foreign_account:
+        return None
+    if not app_config.sync_window_enabled:
+        return None
+    if state is not ScheduleState.LIVE:
+        return None
+    return SYNC_WINDOW_SHARED_NOTE.format(account=foreign_account)
+
+
+def window_scope_note(
+    app_config: AppConfig,
+    *,
+    foreign_account: str,
+    shared_records: bool,
+    state: ScheduleState | None,
+) -> str | None:
+    """The ONE entry point for the seasonal-window principal note (pure, TOTAL).
+
+    Exactly one of the two siblings can fire, keyed on whether this install's profile is SHARED:
+    per-user keeps A9's limitation byte-identical, machine scope states the reassurance that
+    replaced it. Neither can ever render on the other's install, which is the whole point of
+    routing both through one function rather than two call sites.
+    """
+    if shared_records:
+        return sync_window_shared_note(app_config, foreign_account=foreign_account, state=state)
+    return sync_window_foreign_note(app_config, foreign_account=foreign_account)
 
 
 # Plain-language titles for the wizard steps (the "Step N of M · <title>" indicator).
@@ -519,6 +862,12 @@ class _ScheduleHandle:
     re-register). ``persist_run_time`` is the S3-b seam: persist a valid run-time edit as plain
     config when no schedule is registered (invalid → the section's inline error, nothing
     persisted).
+    ``last_schedule_state`` is the last CONFIRMED read-back (``None`` until one lands), which
+    the delivery section reads for the four-form password line (0049 S-2a.3): its
+    "no nightly sync is scheduled right now" arm may fire on a CONFIRMED-MISSING task and on
+    NOTHING else — an UNKNOWN read-back (a probe timeout, access denied, a task registered
+    elevated and unreadable by a filtered token) is not an absence, and rendering it as one
+    would tell an admin their nightly is gone on the evidence that we could not look.
     ``is_busy`` reports whether a register/unregister dispatched EARLIER is still applying
     (its UAC prompt/worker is in flight) — the reconcile must return ``IN_FLIGHT`` then,
     because ``schedule_registered`` and the durable record describe the PRE-dispatch world
@@ -531,6 +880,7 @@ class _ScheduleHandle:
     run_as_user_value: Callable[[], str]
     persist_run_time: Callable[[], bool]
     is_busy: Callable[[], bool]
+    last_schedule_state: Callable[[], ScheduleState | None]
 
 
 # --------------------------------------------------------------------------- #
@@ -542,6 +892,7 @@ def build_setup(
     on_schedule_changed: Callable[[], None] | None = None,
     on_complete: Callable[[], None] | None = None,
     on_navigate: Callable[[str], None] | None = None,
+    on_reenter: Callable[[], None] | None = None,
 ) -> ft.Control:  # pragma: no cover - Flet view glue
     """Build the Setup surface — the first-run wizard, or the Settings page once completed.
 
@@ -569,6 +920,12 @@ def build_setup(
     ``None`` (the default, and what Home's wizard host passes) renders each refusal note
     with no button rather than a dead one; the rail still carries Mapping either way, so a
     note alone is never a dead end.
+
+    ``on_reenter`` (plan 0049 S-2b.3) rebuilds the whole app body and lands on Home. Only the
+    shell can do that, so it is injected, and it is what ``complete_handover`` is handed after
+    a machine-scope handover re-points the profile mid-session. Absent (the default) the
+    handover's banner is painted on THIS surface instead of parked for a rebuild that will
+    never happen — never a dead affordance, the same rule ``on_navigate`` follows above.
     """
     cfg = AppConfig.load()
     root = ft.Column(spacing=22)
@@ -580,6 +937,7 @@ def build_setup(
             on_schedule_changed=on_schedule_changed,
             on_complete=on_complete,
             on_navigate=on_navigate,
+            on_reenter=on_reenter,
         )
     else:
         _mount_settings(
@@ -589,6 +947,7 @@ def build_setup(
             transition_cue=False,
             on_schedule_changed=on_schedule_changed,
             on_navigate=on_navigate,
+            on_reenter=on_reenter,
         )
     return root
 
@@ -604,6 +963,7 @@ def _mount_wizard(
     on_schedule_changed: Callable[[], None] | None = None,
     on_complete: Callable[[], None] | None = None,
     on_navigate: Callable[[str], None] | None = None,
+    on_reenter: Callable[[], None] | None = None,
 ) -> None:  # pragma: no cover - Flet view glue
     """Render the first-run wizard into ``root`` (resume derived from real state).
 
@@ -938,6 +1298,7 @@ def _mount_wizard(
                 transition_cue=True,
                 on_schedule_changed=on_schedule_changed,
                 on_navigate=on_navigate,
+                on_reenter=on_reenter,
             )
             page.update()
         except Exception:
@@ -1238,6 +1599,12 @@ def _mount_wizard(
             on_schedule_changed=on_schedule_changed,
             on_window_valid=_on_window_valid,
             on_busy=_on_schedule_busy,
+            on_reenter=on_reenter,
+            # 0049 S-2b.1: re-render THIS step, which is what makes the confirm's one-click
+            # folder swap honest — the Folders step reads its fields from `cfg` when it is
+            # built, so a write with no re-render would leave a stale value for its next Save.
+            on_remount=_render,
+            on_terminal=lambda keep: _freeze_setup_actions(root, keep=keep),
         )
         return card
 
@@ -1449,6 +1816,57 @@ def _mount_wizard(
 # --------------------------------------------------------------------------- #
 # Settings mode (D8): the flat scroll + one reconciling Save.                  #
 # --------------------------------------------------------------------------- #
+#: Every interactive control class this surface builds. The freeze below walks for these
+#: explicitly rather than setting ``disabled`` on the root: Flet's inherited-disabled would also
+#: kill the terminal card's own "Open log folder" button, which is the one action still worth
+#: offering when nothing else on the surface can be trusted.
+_INTERACTIVE_CONTROLS = (
+    ft.FilledButton,
+    ft.OutlinedButton,
+    ft.TextButton,
+    ft.IconButton,
+    ft.TextField,
+    ft.Dropdown,
+    ft.Switch,
+    ft.Checkbox,
+)
+
+
+def _freeze_setup_actions(root: ft.Control, *, keep: ft.Control | None = None) -> None:  # pragma: no cover - view glue
+    """Disable every action on the Setup surface except the ``keep`` subtree (0049 S-2b.3).
+
+    For exactly one state: the elevated child committed the machine-scope switch and the
+    parent's re-pin then REFUSED the folder, so ``paths`` holds no pin and every later
+    ``user_data_dir()`` in this session raises. A live window whose next click can only crash
+    is worse than a calm dead end, and the next launch reports the same refusal through the
+    launcher's own dialog — which is where an administrator can actually repair it.
+
+    ``keep`` is the control that explains the state, and it stays live so its log-folder
+    affordance still works. Walked rather than inherited (see ``_INTERACTIVE_CONTROLS``).
+    """
+    kept = {id(control) for control in _walk_controls(keep)} if keep is not None else set()
+    for control in _walk_controls(root):
+        if id(control) not in kept and isinstance(control, _INTERACTIVE_CONTROLS):
+            control.disabled = True
+
+
+def _walk_controls(control: ft.Control | None):  # pragma: no cover - view glue
+    """Depth-first walk over ``.controls`` + a single ``.content`` child (the tree tests use)."""
+    if control is None:
+        return
+    yield control
+    children: list[object] = []
+    nested = getattr(control, "controls", None)
+    if isinstance(nested, list):
+        children.extend(nested)
+    content = getattr(control, "content", None)
+    if isinstance(content, ft.Control):
+        children.append(content)
+    for child in children:
+        if isinstance(child, ft.Control):
+            yield from _walk_controls(child)
+
+
 def _registered_schedule(cfg: AppConfig) -> RegisteredSchedule:  # pragma: no cover - AppConfig→pure adapter
     """The durable "what the live task actually carries" record (the ONE resolution point).
 
@@ -1473,14 +1891,41 @@ def _mount_settings(  # pragma: no cover - Flet view glue
     transition_cue: bool,
     on_schedule_changed: Callable[[], None] | None = None,
     on_navigate: Callable[[str], None] | None = None,
+    on_reenter: Callable[[], None] | None = None,
 ) -> None:
     """Render the completed-install Settings scroll into ``root`` (folders + schedule + SFTP)."""
+
+    def _remount() -> None:
+        """Re-render this scroll from a FRESH config (0049 S-2b.1).
+
+        The confirm's one-click folder swap writes ``cfg`` and saves; the folders card seeded
+        its own fields at BUILD time, so without this the live control would contradict the
+        config and that card's next Save would write the stale value straight back. A fresh
+        ``AppConfig.load()``, for the same reason every screen re-reads per mount (D1).
+        """
+        _mount_settings(
+            page,
+            AppConfig.load(),
+            root,
+            transition_cue=False,
+            on_schedule_changed=on_schedule_changed,
+            on_navigate=on_navigate,
+            on_reenter=on_reenter,
+        )
+
     # The ONE reconcile the folders Save AND the SFTP Save both drive (D8/F1): any change to a
     # task-baked field (folders/district/SFTP flag/run time) on a registered schedule re-registers
     # through the SAME flow, so the nightly action can never go stale — and enabling SFTP in
     # Settings finally adds --sftp to an already-registered task (the F1 gap).
     # Build the schedule section FIRST so both Saves can drive its register flow.
-    schedule_card, sched_handle = _build_schedule_section(page, cfg, on_schedule_changed=on_schedule_changed)
+    schedule_card, sched_handle = _build_schedule_section(
+        page,
+        cfg,
+        on_schedule_changed=on_schedule_changed,
+        on_reenter=on_reenter,
+        on_remount=_remount,
+        on_terminal=lambda keep: _freeze_setup_actions(root, keep=keep),
+    )
 
     def _reconcile() -> ReconcileOutcome:
         # 2026-08-31 race guard: while a register/unregister dispatched earlier is still
@@ -1522,7 +1967,10 @@ def _mount_settings(  # pragma: no cover - Flet view glue
             sched_handle.persist_run_time()
         return ReconcileOutcome.NONE
 
-    sftp_card = _build_sftp_section(page, cfg, on_saved=_reconcile)
+    # 0049 S-2a.3: the delivery section's password line needs the schedule read-back to tell a
+    # CONFIRMED-MISSING task from one we simply could not read. Passed as the handle's accessor,
+    # not a snapshot — the probe lands asynchronously, after this mount has returned.
+    sftp_card = _build_sftp_section(page, cfg, on_saved=_reconcile, schedule_state=sched_handle.last_schedule_state)
     folders_card = _build_settings_folders(page, cfg, reconcile=_reconcile, on_navigate=on_navigate)
 
     # Direction B (0033 Slice 2): the Settings gradient hero demotes to a slim page header.
@@ -1532,6 +1980,17 @@ def _mount_settings(  # pragma: no cover - Flet view glue
     )
 
     controls: list[ft.Control] = [header]
+    # 0049 S-2a.4: directly under the header, because on a shared install "whose settings am I
+    # editing?" is the first question every card below inherits the answer to. ``None`` on a
+    # per-user install — see ``home_status.machine_scope_line``.
+    provisioned_by, provisioned_at = machine_scope_provenance()
+    scope_line = machine_scope_line(
+        machine_scope=paths.is_machine_scope(),
+        provisioned_by=provisioned_by,
+        provisioned_at=provisioned_at,
+    )
+    if scope_line is not None:
+        controls.append(ft.Text(scope_line, size=tokens.type_caption, color=tokens.color_muted))
     if transition_cue:
         controls.append(
             components.HealthVerdictBanner(Verdict.HEALTHY, headline="Setup complete", detail=TRANSITION_CUE)
@@ -1930,6 +2389,9 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     on_schedule_changed: Callable[[], None] | None = None,
     on_window_valid: Callable[[bool], None] | None = None,
     on_busy: Callable[[bool], None] | None = None,
+    on_reenter: Callable[[], None] | None = None,
+    on_remount: Callable[[], None] | None = None,
+    on_terminal: Callable[[ft.Control], None] | None = None,
 ) -> tuple[ft.Control, _ScheduleHandle]:
     """The scheduler section — run time + (where supported) run-as password → register (Slice 5/6).
 
@@ -1947,6 +2409,15 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     elevation-aware, save-after-success). Platform dispatch goes through the ONE
     ``get_scheduler()`` factory (W4a T2.3): affordances gate on the scheduler's honest
     capability flags, never on ``sys.platform`` here.
+
+    **Three plan-0049 S-2b seams, all optional and all "absent ⇒ no affordance":**
+    ``on_reenter`` rebuilds the app body after a machine-scope handover (only the shell can);
+    ``on_remount`` re-renders the HOST surface in place, which is what makes the confirm's
+    one-click folder replacement honest — the folders card reads its fields from ``cfg`` at
+    build time, so writing a path without re-mounting would leave a live control contradicting
+    the config and a later folders Save would write the stale value back; ``on_terminal``
+    receives the control to keep live and freezes the rest of the host, for the one outcome
+    that cannot be recovered from in-session (the refused re-pin).
     """
     scheduler = get_scheduler()
 
@@ -1998,6 +2469,13 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     result_slot = ft.Column(spacing=0, controls=[])
     readout_slot = ft.Column(spacing=0, controls=[])
 
+    # The last CONFIRMED read-back state, shared by the readout probe and the two surfaces that
+    # may not assert a schedule they have not seen: the shared-records seasonal-window note (which
+    # claims the pause applies only on LIVE) and — through ``_mount_settings``' ``on_status`` — the
+    # delivery-password line's "no nightly sync is scheduled right now" arm. ``None`` = not probed,
+    # which asserts nothing. A dict, not a bare name, so the closures share one mutable cell.
+    _last_schedule_state: dict[str, ScheduleState | None] = {"state": None}
+
     def _kick_readout_probe() -> None:
         """Fetch the real schedule OFF the UI thread and render the tri-state readout (where supported)."""
         if not scheduler.supports_read_schedule:
@@ -2013,11 +2491,18 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 hint_registered=cfg.schedule_registered,
                 latest_record_ts=None,
                 foreign_account=foreign_task_account(cfg),
+                # 0049 S-2a.1: the readout is also where the records-elsewhere sentence lands, so
+                # the shared-profile fact has to reach the derivation that composes it.
+                shared_records=paths.is_machine_scope(),
                 surface="setup",  # de-circularize the MISSING copy → "add one below" (finding #3)
             )
 
             async def _apply() -> None:
                 readout_slot.controls = [_schedule_readout_line(status)]
+                # 0049 S-2a.2: the seasonal-window note asserts the pause only on a CONFIRMED-LIVE
+                # task, so it can only be painted honestly once the read-back has landed.
+                _last_schedule_state["state"] = status.state
+                _paint_window_foreign_note()
                 if on_status is not None:
                     on_status(status)
                 page.update()
@@ -2098,6 +2583,39 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     def _elevated_now() -> bool:
         return scheduler.is_elevated()  # always False where elevation has no meaning (cron)
 
+    def _delivery_unreadable() -> bool:
+        """The delivery-secret gate input — ONE store read, resolved per PAINT PASS (0049 S-2b.1).
+
+        Effectful (it reads the machine store or the keyring through ``select_store()``), which
+        is why every paint pass resolves it ONCE and hands the value to both the button gate
+        and the field note rather than letting each call site read again. It is deliberately
+        NOT memoised for the section's lifetime: the note it drives tells the admin to save the
+        delivery password in the card below, and a cached ``True`` would keep the gate shut
+        after they did.
+
+        Total by the engine's own contract, and fails CLOSED — "we could not find out" is
+        reported as unreadable, because a wrong ``False`` hands them a permanently
+        machine-scoped computer whose nightly silently stops delivering.
+        """
+        return delivery_secret_unreadable(
+            enabled=bool(cfg.sftp_enabled),
+            host=cfg.sftp_host or "",
+            username=cfg.sftp_username or "",
+        )
+
+    def _gate_block(facts: ScheduleAccountFacts, unreadable: bool) -> RegisterBlock:
+        """``register_block`` with this section's two live inputs — the ONE spelling.
+
+        Both new keywords are required and undefaulted upstream; funnelling every call site
+        through here is what stops one of them being reconstructed differently.
+        """
+        return register_block(
+            cfg.is_complete(),
+            run_time_field.value or "",
+            account=facts,
+            delivery_secret_unreadable=unreadable,
+        )
+
     def _account_facts(*, force_blank_password: bool = False) -> ScheduleAccountFacts:
         """The ONE place the principal gate's inputs are assembled (0046 B).
 
@@ -2119,27 +2637,6 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             schedule_registered=bool(cfg.schedule_registered),
         )
 
-    def _account_block_note(block: RegisterBlock, facts: ScheduleAccountFacts) -> str:
-        """The ONE wording per principal gate reason (pure assembly; ``""`` for the rest).
-
-        Read by BOTH the inline note under the account field and the card a refused attempt
-        paints into ``result_slot``, so the two surfaces state the same cause by construction
-        rather than by review. INCOMPLETE / RUN_TIME return ``""`` — the folders card and the
-        run-time field own those, and INCOMPLETE is deliberately silent here.
-        """
-        if block is RegisterBlock.ACCOUNT_SHAPE:
-            return _ACCOUNT_SHAPE_NOTE
-        if block is RegisterBlock.ACCOUNT_NEEDS_PASSWORD:
-            return _ACCOUNT_PASSWORD_NOTE
-        if block is RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE:
-            recorded = facts.recorded
-            return (
-                _ACCOUNT_SWITCH_NOTE_UNKNOWN
-                if recorded is None
-                else _ACCOUNT_SWITCH_NOTE.format(recorded=recorded or _keyring_owner_account())
-            )
-        return ""
-
     def _register_refusal_controls(block: RegisterBlock, facts: ScheduleAccountFacts) -> list[ft.Control]:
         """What a REFUSED register press puts in ``result_slot`` — never what the last press left.
 
@@ -2152,34 +2649,77 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         ``log_folder=False``: nothing was attempted, so the log holds nothing about this press —
         offering it would send the admin to a file that cannot explain the refusal.
         """
-        detail = _account_block_note(block, facts)
+        detail = account_block_note(block, facts)
         if not detail:
             return []
         return [components.ErrorCard(_REGISTER_REFUSED_HEADLINE, detail, log_folder=False)]
 
-    def _account_note_controls() -> list[ft.Control]:
-        """The inline block reason + the service-account delivery note (pure assembly).
+    def _account_note_controls(
+        facts: ScheduleAccountFacts | None = None, unreadable: bool | None = None
+    ) -> list[ft.Control]:
+        """The inline block reason + the scope foreshadow + the service-account delivery note.
 
         A disabled primary with no visible cause is a dead control, so the Register gate's
         REASON is painted right under the field it is about, live on every keystroke.
+
+        ``facts`` / ``unreadable`` are the PAINT PASS's already-resolved inputs. They are
+        parameters rather than reads because ``unreadable`` costs a store read: the caller that
+        also re-gates the button resolves both once and hands them to both consumers. Omitted
+        (the plain repaint) they are resolved here — so no call site can forget one.
         """
         if account_field is None:
             return []
-        facts = _account_facts()
+        facts = _account_facts() if facts is None else facts
+        unreadable = _delivery_unreadable() if unreadable is None else unreadable
         controls: list[ft.Control] = []
-        block = register_block(cfg.is_complete(), run_time_field.value or "", account=facts)
-        note = _account_block_note(block, facts)
+        block = _gate_block(facts, unreadable)
+        note = account_block_note(block, facts)
         if note:
             controls.append(ft.Text(note, size=13, color=tokens.color_status_failed))
+        # 0049 S-2b.2 — the FORESHADOW. Keyed on the TYPED account alone, not on the gate: a
+        # permanent machine-wide relocation must be on screen while the admin is still typing
+        # the name, not first mentioned in the modal that is the point of no return. It is
+        # therefore shown even while the gate is closed — including under the delivery-secret
+        # note above, which is exactly the pairing that explains why that note matters.
+        if principal_key(facts.typed, facts.current) != "":
+            controls.append(
+                ft.Text(
+                    _SCOPE_FORESHADOW_NOTE_SHARED if _machine_scope_now() else _SCOPE_FORESHADOW_NOTE,
+                    size=tokens.type_caption,
+                    color=tokens.color_muted,
+                )
+            )
         # Owner decision 2: named only where it is TRUE and actionable — delivery is on AND a
         # service account is in play on either side (typed now, or already registered).
+        #
+        # 0049 S-2a.3: WHICH note is keyed on "would pressing Schedule provision?" — the TYPED
+        # principal being foreign and every gate open — never on ``is_machine_scope()``, which is
+        # still False at the moment this paints.
         foreign = principal_key(facts.typed, facts.current) != "" or principal_key(facts.recorded, facts.current) != ""
-        if cfg.sftp_enabled and foreign:
-            controls.append(ft.Text(_SERVICE_ACCOUNT_DELIVERY_NOTE, size=12, color=tokens.color_muted))
+        delivery_note = service_account_delivery_note(
+            delivery_enabled=bool(cfg.sftp_enabled),
+            foreign=foreign,
+            will_provision=principal_key(facts.typed, facts.current) != "" and block is RegisterBlock.NONE,
+        )
+        if delivery_note:
+            controls.append(ft.Text(delivery_note, size=tokens.type_caption, color=tokens.color_muted))
         return controls
 
-    def _paint_account_note() -> None:
-        account_note_slot.controls = _account_note_controls()
+    def _paint_account_note(facts: ScheduleAccountFacts | None = None, unreadable: bool | None = None) -> None:
+        account_note_slot.controls = _account_note_controls(facts, unreadable)
+
+    def _repaint_register_gate() -> None:
+        """ONE paint pass: one delivery-secret read feeding BOTH the button gate and the note.
+
+        Every caller that re-gates the button also repaints its reason (a disabled primary with
+        no visible cause is a dead control), and both reads are the same ``register_block``
+        call. Collapsing them here is what keeps the effectful ``_delivery_unreadable()`` to
+        one store read per pass rather than one per call site.
+        """
+        facts = _account_facts()
+        unreadable = _delivery_unreadable()
+        register_btn.disabled = _gate_block(facts, unreadable) is not RegisterBlock.NONE
+        _paint_account_note(facts, unreadable)
 
     # The section's own in-flight fact (2026-08-31): recorded UNCONDITIONALLY in _set_busy —
     # the same single place the buttons toggle — and exposed via the handle so the Settings
@@ -2216,24 +2756,62 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             _set_busy(False)
             raise
 
-    def _register(_e: ft.ControlEvent | None = None, *, force_blank_password: bool = False) -> bool:
+    def _register(
+        _e: ft.ControlEvent | None = None,
+        *,
+        force_blank_password: bool = False,
+        scope_confirmed: bool = False,
+    ) -> bool:
         """Start the off-thread register; True iff a register was actually DISPATCHED.
 
         The return value is the reconcile's honesty seam (0034 S3 residual): an early
         return (gate closed, or an invalid run time — whose inline error paints below)
         dispatches NOTHING, and the Settings-Save note must not claim "updating…" for it.
         The button/Enter callers ignore the return value.
+
+        ``scope_confirmed`` (0049 S-2b.2) is the confirm's ONE key. It is a parameter rather
+        than a latch on the section precisely so it cannot outlive the press it belongs to: a
+        foreign principal reaches the confirm dialog on EVERY press and dispatches only from
+        inside its Continue handler. Nothing else in this file passes it, and the default is
+        the refusing value.
         """
         facts = _account_facts(force_blank_password=force_blank_password)
-        block = register_block(cfg.is_complete(), run_time_field.value or "", account=facts)
+        unreadable = _delivery_unreadable()
+        block = _gate_block(facts, unreadable)
         if block is not RegisterBlock.NONE:
             # The note under the field stays (it is still right) but can no longer be the ONLY
             # feedback — it sits nowhere near the card the admin is looking at. The result slot is
             # REPLACED on every refusal, painted for the principal reasons and CLEARED for the two
             # silent ones, so a previous attempt's failure card can never survive a fresh press.
-            _paint_account_note()
+            _paint_account_note(facts, unreadable)
             result_slot.controls = _register_refusal_controls(block, facts)
             page.update()
+            return False
+
+        run_time = (run_time_field.value or "").strip()
+        try:
+            validate_run_time(run_time)
+        except ValueError:
+            result_slot.controls = [
+                components.ErrorCard(_RUN_TIME_ERROR_HEADLINE, _RUN_TIME_ERROR_DETAIL),
+            ]
+            page.update()
+            return False
+
+        # 0049 S-2b.2/3: a FOREIGN principal does not get the ordinary register — it gets the
+        # provisioning round trip, which permanently moves this computer's settings. The
+        # confirm is therefore structurally in front of the dispatch: no confirm, no dispatch,
+        # and the modal's own Continue handler is the only thing that can pass the key back.
+        #
+        # It sits AFTER the run-time check and BEFORE the password read, and both halves of that
+        # placement are deliberate. ``register_block`` only refuses a BLANK run time, so a
+        # MALFORMED one ("99:99") would otherwise ask an admin to approve an irreversible,
+        # machine-wide change and only then tell them the time was wrong. And the password is
+        # not read until the confirm is answered, so no credential sits in a closure for as
+        # long as a modal is on screen.
+        provisioning_run = _will_provision(facts)
+        if provisioning_run and not scope_confirmed:
+            _show_scope_confirm(lambda: _register(scope_confirmed=True))
             return False
 
         # I1/I3 (see module docstring — password contract): the Windows account password is a
@@ -2243,21 +2821,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         # EXPLICITLY blank password rather than depending on transient UI state — the logged-on-only
         # outcome no longer relies on the field happening to be empty at click time.
         password = None if force_blank_password else (password_field.value if password_field is not None else None)
-        run_time = (run_time_field.value or "").strip()
         # 0046 B: the TYPED account, verbatim (stripped only), or None for "the signed-in
         # account". ``principal_key`` is deliberately NOT used to decide what to send — if the
         # view's reduction ever drifted from the engine's, sending None for a genuinely foreign
         # account would be exactly the silent substitution Slice 1 exists to prevent.
         sent_account = _account_facts(force_blank_password=force_blank_password).typed or None
-
-        try:
-            validate_run_time(run_time)
-        except ValueError:
-            result_slot.controls = [
-                components.ErrorCard(_RUN_TIME_ERROR_HEADLINE, _RUN_TIME_ERROR_DETAIL),
-            ]
-            page.update()
-            return False
 
         exe_path = Path(sys.executable)
         transient = is_transient_location(str(exe_path))
@@ -2272,7 +2840,15 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             run_time=run_time,
         )
 
-        def _on_register_success(headline: str, detail: str, *, verdict: Verdict = Verdict.HEALTHY) -> None:
+        def _persist_registered_record() -> None:
+            """The three-facet register record — the ONE spelling, both dispatch paths.
+
+            Extracted at 0049 S-2b.3 because the provisioning path needs exactly this and
+            nothing else: ``complete_handover`` takes it as ``persist`` and runs it strictly
+            AFTER the re-pin, so the facets land in the SHARED ``config.json`` rather than in
+            the per-user one that is renamed seconds earlier. A second spelling of a
+            three-field atomic record is how one of them comes to be forgotten.
+            """
             cfg.schedule_time = run_time
             cfg.schedule_registered = True
             # 0034 S3-a/d: record what was ACTUALLY registered — the unattended fact (a boolean
@@ -2286,6 +2862,9 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             # two, so the record can never be half-evidenced.
             cfg.schedule_run_as_user = sent_account or ""
             cfg.save()
+
+        def _on_register_success(headline: str, detail: str, *, verdict: Verdict = Verdict.HEALTHY) -> None:
+            _persist_registered_record()
             # 2026-08-31 race guard, confirm-side: the args were captured at CLICK time — if a
             # Save changed the config while this apply was in flight (a delivery Save during the
             # UAC window), the task just registered is ALREADY stale. Say so in the success note
@@ -2323,11 +2902,8 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 
         async def _apply_result(ok: bool, msg: str) -> None:
             _set_busy(False)
-            register_btn.disabled = not can_register_schedule(
-                cfg.is_complete(), run_time_field.value or "", account=_account_facts()
-            )
+            _repaint_register_gate()
             unregister_btn.disabled = False
-            _paint_account_note()
             if ok and password:
                 # Only reachable where the password affordance exists (supports_unattended_password).
                 # G3: the banner names what was REGISTERED, never the signed-in account — a task
@@ -2370,6 +2946,198 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 result_slot.controls = [components.ErrorCard("Couldn't schedule the nightly sync", msg)]
             page.update()
             _refresh_readout()
+
+        def _nightly_sentence(attempt: ProvisionAttempt) -> str:
+            """The already-classified sentence about the NIGHTLY, for ``handover_result.compose``.
+
+            Classified here, not in the engine, because only the view holds the two facts
+            ``classify_schedule_error`` requires — ``elevated`` (the PARENT's token) and
+            ``account_is_current`` (which selects personal-credential coaching that is wrong,
+            and a credential-hygiene hazard, for a service account).
+
+            A ``REFUSED`` attempt goes through ``classify_provision_step`` and NOT through
+            ``classify_schedule_error``: that one keys on canonical messages by exact equality,
+            and ``ProvisionRefused.message`` is interpolated (a step, sometimes an icacls exit
+            code, sometimes a rollback clause), so it could never match a branch. The icacls
+            exit code is appended HERE because the copy table deliberately carries no code.
+            """
+            if attempt.outcome is ProvisionOutcome.REFUSED and attempt.step is not None:
+                detail = classify_provision_step(attempt.step)
+                if attempt.icacls_exit is not None:
+                    detail = f"{detail} (Windows permissions code {attempt.icacls_exit}.)"
+                return detail
+            if attempt.outcome is ProvisionOutcome.FAILED and attempt.message:
+                return classify_schedule_error(attempt.message, _elevated_now(), account_is_current=account_is_current)
+            canonical = _PROVISION_OUTCOME_CANONICAL.get(attempt.outcome, "")
+            if canonical:
+                return classify_schedule_error(canonical, _elevated_now(), account_is_current=account_is_current)
+            # PROVISIONED (``compose`` ignores the detail on that arm) and UNAVAILABLE — the
+            # handshake was never built, so there is no elevation canonical to classify.
+            return "" if attempt.outcome is ProvisionOutcome.PROVISIONED else _WORKER_ERROR_REGISTER
+
+        def _paint_scope_refusal(reason: paths.MachineScopeRefusedReason | None) -> None:
+            """The TERMINAL surface: the switch committed, the re-pin refused.
+
+            ``paths`` has no pin now, so every later ``user_data_dir()`` in this session
+            raises — the admin is in a live window whose next click can only crash. Both of
+            this section's buttons go dead and, when the host wired ``on_terminal``, the rest
+            of the surface with them. The card itself stays live (it is what ``on_terminal``
+            is told to keep) so its "Open log folder" affordance still works, which is the one
+            action left that helps.
+            """
+            card = components.ErrorCard(SCOPE_REFUSED_HEADLINE, _scope_refusal_detail(reason))
+            result_slot.controls = [card]
+            register_btn.disabled = True
+            unregister_btn.disabled = True
+            if on_terminal is not None:
+                # Advisory in the same sense ``on_schedule_changed`` is: a host that cannot
+                # freeze itself must not cost the admin the card explaining why.
+                with contextlib.suppress(Exception):
+                    on_terminal(card)
+
+        async def _apply_provision(attempt: ProvisionAttempt) -> None:
+            """Finish the handover on the LOOP, then paint whichever outcome it ended in.
+
+            ``complete_handover`` runs here rather than in the worker on purpose: its last step
+            REBUILDS the app body, and the rest of it is a registry read plus a handful of
+            renames — the same order of work ``_on_register_success`` already does on the loop.
+            """
+            _set_busy(False)
+            nightly = _nightly_sentence(attempt)
+            reentry = {"requested": False}
+
+            def _persist() -> None:
+                """The three-facet save — bound to the SUCCESS path and nothing else.
+
+                ``complete_handover`` calls this on every outcome, including a declined UAC and
+                a launch failure, because its own gate is the parent's switch read. Writing the
+                record on those paths would make Home report a healthy nightly over a task that
+                does not exist, which is why the guard is here rather than at the call site:
+                today's ``_on_register_success`` is reached only when ``ok``, and that guard may
+                not be dropped.
+                """
+                if attempt.outcome is not ProvisionOutcome.PROVISIONED:
+                    return
+                _persist_registered_record()
+
+            def _reenter() -> None:
+                """Record that the handover reached re-entry; the rebuild happens just below.
+
+                ``complete_handover`` calls this strictly AFTER ``persist`` and then does
+                nothing but build its return value, so deferring the rebuild by those few
+                statements preserves the spec's ordering rule exactly — and lets the one-shot
+                be composed from the REAL ``HandoverOutcome`` instead of one this file
+                fabricated. ``remember`` still happens before the rebuild, which is the
+                ordering that matters: the rebuild destroys this surface, banner and all.
+                """
+                reentry["requested"] = True
+
+            try:
+                handover = complete_handover(persist=_persist, reenter=_reenter)
+            except Exception as exc:  # noqa: BLE001 - the handover already happened; report it
+                # A raise out of ``persist`` propagates by design (a facet save that did not
+                # happen must not look like one that did). The scope may or may not have
+                # changed; say only what we know and leave the buttons live.
+                logger.error("The shared-settings change did not finish cleanly: %s", type(exc).__name__)
+                result_slot.controls = [components.ErrorCard(SCOPE_UNCONFIRMED_HEADLINE, _WORKER_ERROR_REGISTER)]
+                _repaint_register_gate()
+                unregister_btn.disabled = False
+                page.update()
+                _refresh_readout()
+                return
+
+            result = handover_result.compose(attempt, handover, nightly_detail=nightly)
+            if result is not None and reentry["requested"] and on_reenter is not None:
+                handover_result.remember(result)
+                try:
+                    on_reenter()
+                    page.update()
+                    return
+                except Exception as exc:  # noqa: BLE001 - fall back to reporting it in place
+                    logger.error("Could not rebuild DistrictSync after the change: %s", type(exc).__name__)
+                    # Drain what we just parked: this surface is still on screen and paints the
+                    # report itself below, and a result left in the slot would announce the
+                    # change a SECOND time on the next hop to Home.
+                    handover_result.take()
+
+            if result is not None and result.banner is HandoverBanner.REFUSED:
+                _paint_scope_refusal(result.refused_reason)
+                page.update()
+                return
+
+            _repaint_register_gate()
+            unregister_btn.disabled = False
+            if result is not None:
+                # Handed over, but nothing rebuilt (no ``on_reenter``, or the rebuild raised).
+                # The SAME banner Home would have shown — one renderer, one wording.
+                result_slot.controls = [handover_banner(result)]
+                if attempt.outcome is ProvisionOutcome.PROVISIONED and on_schedule_changed is not None:
+                    # The rail badge is re-probed by ``build_app_body``'s own tail on the
+                    # re-entry path, so this fires only where no rebuild happened.
+                    with contextlib.suppress(Exception):
+                        on_schedule_changed()
+            elif attempt.outcome is ProvisionOutcome.PROVISIONED:
+                # The child reported everything done and the parent's switch read disagrees.
+                # The nightly EXISTS (``persist`` just wrote the record); the scope change is
+                # what could not be confirmed, and the copy claims exactly that much.
+                result_slot.controls = [
+                    components.HealthVerdictBanner(
+                        Verdict.WARNING,
+                        headline=SCOPE_SWITCH_UNCONFIRMED_HEADLINE,
+                        detail=SCOPE_SWITCH_UNCONFIRMED_DETAIL,
+                    )
+                ]
+                if on_schedule_changed is not None:
+                    with contextlib.suppress(Exception):
+                        on_schedule_changed()
+            else:
+                # Nothing irreversible happened: the switch is off, this session did not hand
+                # over, and Setup is still mounted — so its ordinary result slot is the right
+                # place for the failure, and a one-shot banner would ambush the admin on Home
+                # for a change that never took place.
+                headline = (
+                    SCOPE_UNCONFIRMED_HEADLINE
+                    if attempt.outcome is ProvisionOutcome.UNCONFIRMED
+                    else SCOPE_ATTEMPT_FAILED_HEADLINE
+                )
+                result_slot.controls = [components.ErrorCard(headline, nightly)]
+            page.update()
+            _refresh_readout()
+
+        def _provision_work() -> None:  # runs OFF the UI thread (it blocks on the UAC prompt)
+            try:
+                attempt = request_provision(
+                    cfg.schedule_task_name,
+                    exe_path,
+                    cfg.sis_type,
+                    Path(cfg.input_dir),
+                    Path(cfg.output_dir),
+                    run_time,
+                    cfg.sftp_enabled,
+                    sftp_host=cfg.sftp_host or "",
+                    sftp_username=cfg.sftp_username or "",
+                    run_as_user=sent_account or "",
+                    # I1/I3: still handler-local. ``request_provision`` seals it into a DPAPI
+                    # payload — never argv, never an env var, never a log line, and it is not a
+                    # field of the ``ProvisionAttempt`` that comes back.
+                    run_as_password=(password or ""),
+                )
+            except Exception as exc:  # noqa: BLE001 - it contracts never to raise; belt anyway
+                logger.error("The shared-settings change raised unexpectedly: %s", type(exc).__name__)
+                attempt = ProvisionAttempt(outcome=ProvisionOutcome.UNAVAILABLE)
+            page.run_task(_apply_provision, attempt)
+
+        if provisioning_run:
+            register_btn.disabled = True
+            unregister_btn.disabled = True
+            result_slot.controls = [
+                components.inflight_row(
+                    "Asking Windows for permission, setting up shared settings and scheduling the nightly sync…"
+                )
+            ]
+            page.update()
+            _dispatch(_provision_work)
+            return True
 
         def _work() -> None:  # runs OFF the UI thread (the register call can block on the UAC prompt)
             try:
@@ -2417,9 +3185,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
 
         async def _apply_unregister(ok: bool, msg: str) -> None:
             _set_busy(False)
-            register_btn.disabled = not can_register_schedule(
-                cfg.is_complete(), run_time_field.value or "", account=_account_facts()
-            )
+            _repaint_register_gate()
             unregister_btn.disabled = False
             if not ok and msg == _WORKER_ERROR_UNREGISTER:
                 result_slot.controls = [components.ErrorCard("Couldn't remove the nightly sync", msg)]
@@ -2470,10 +3236,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     result_slot.controls = [components.ErrorCard(outcome.headline, outcome.detail)]
             # 0046 B: a confirmed removal clears the record, so the switch refusal note must go
             # with it — the admin can press Schedule immediately with the account still typed.
-            register_btn.disabled = not can_register_schedule(
-                cfg.is_complete(), run_time_field.value or "", account=_account_facts()
-            )
-            _paint_account_note()
+            _repaint_register_gate()
             page.update()
             _refresh_readout()
 
@@ -2511,6 +3274,139 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         cfg.schedule_time = decision.persist
         cfg.save()
         return True
+
+    def _will_provision(facts: ScheduleAccountFacts) -> bool:
+        """Would pressing Schedule PROVISION this computer for shared settings? (0049 S-2b)
+
+        The requested principal being FOREIGN is the whole condition, reduced through the SAME
+        :func:`principal_key` every other principal comparison in the app goes through — never
+        a second derivation of "is this a different account?". The capability flag rides along
+        because it is what the account field's very existence is gated on; a platform without
+        it cannot reach here anyway (no field ⇒ ``typed`` is ``""`` ⇒ the key reduces to the
+        signed-in account).
+
+        It is deliberately NOT gated on ``is_machine_scope()``. An already-shared computer
+        still has to give the new principal access to the shared folder — "Remove nightly sync"
+        does not un-provision, which is exactly what makes that state reachable — so the
+        surfaces branch on the scope for their COPY, never for whether to run.
+        """
+        return scheduler.supports_unattended_password and principal_key(facts.typed, facts.current) != ""
+
+    def _folder_reach_controls() -> list[ft.Control]:
+        """The confirm's folder-reach WARNING — never a gate (0049 S-2b.1).
+
+        ``unc.reach_unconfirmed`` is a heuristic that is wrong in BOTH directions, which is
+        why ``FOLDER_NOT_SHAREABLE`` was demoted out of ``RegisterBlock``: it clears a UNC path
+        the service account has no rights on, and it used to flag ``C:\\Users\\Public``, which
+        every account can read (the helper exempts it). So this may not disable the confirm and
+        may not be worded as a finding — "we can't confirm" is the whole claim it is entitled
+        to make.
+
+        A replacement button appears only for a folder Windows actually gave us a UNC target
+        for AND only when the host wired ``on_remount``: writing a path without re-rendering
+        would leave the folders card's live field contradicting the config, and its next Save
+        would write the stale value straight back.
+        """
+        pairs = (
+            (SCOPE_FOLDER_INPUT_LABEL, "input", describe_folder_reach(cfg.input_dir or "")),
+            (SCOPE_FOLDER_OUTPUT_LABEL, "output", describe_folder_reach(cfg.output_dir or "")),
+        )
+        unconfirmed = [(label, which, reach) for label, which, reach in pairs if reach.unconfirmed]
+        if not unconfirmed:
+            return []
+        listed = "  ".join(f"{label.capitalize()}: {reach.path}" for label, _which, reach in unconfirmed)
+        controls: list[ft.Control] = [
+            components.HealthVerdictBanner(
+                Verdict.WARNING,
+                headline=SCOPE_FOLDER_WARNING_HEADLINE,
+                detail=f"{listed}  {_SCOPE_FOLDER_WARNING_DETAIL} {_SCOPE_FOLDER_REPLACE_HINT}",
+            )
+        ]
+        if on_remount is None:
+            return controls
+        for label, which, reach in unconfirmed:
+            if not reach.unc_replacement:
+                continue
+            controls.append(
+                components.text_button(
+                    SCOPE_FOLDER_REPLACE_LABEL.format(path=reach.unc_replacement, folder=label),
+                    _folder_replacer(which, reach.unc_replacement),
+                    icon=ft.Icons.DRIVE_FILE_MOVE_ROUNDED,
+                )
+            )
+        return controls
+
+    def _folder_replacer(which: str, path: str) -> Callable[[ft.ControlEvent], None]:
+        """One-click swap of a mapped drive for the UNC target Windows resolved for it."""
+
+        def _apply(_e: ft.ControlEvent) -> None:
+            page.pop_dialog()
+            try:
+                if which == "input":
+                    cfg.input_dir = path
+                else:
+                    cfg.output_dir = path
+                cfg.save()
+            except Exception as exc:  # noqa: BLE001 - a refused save (the MOVED.txt fence) included
+                logger.warning("Could not save the network folder path: %s", type(exc).__name__)
+                result_slot.controls = [
+                    components.ErrorCard(_REGISTER_REFUSED_HEADLINE, SCOPE_FOLDER_REPLACE_FAILED_NOTE, log_folder=False)
+                ]
+                page.update()
+                return
+            # The host re-renders, so the folders card shows the new path — which is the proof
+            # the swap worked. The "press Schedule again" instruction was given in the warning
+            # ABOVE, before the click, because nothing painted here would survive this call.
+            if on_remount is not None:
+                with contextlib.suppress(Exception):
+                    on_remount()
+
+        return _apply
+
+    def _show_scope_confirm(on_confirm: Callable[[], None]) -> None:
+        """The point-of-no-return confirm for a machine-scope handover (0049 S-2b.2).
+
+        Three sentences, and each one is there because an admin who was not told it would be
+        entitled to feel misled: what moves and to where, who can reach it afterwards (every
+        administrator of this computer — permanently — and nobody else at all), and that it
+        cannot be undone, INCLUDING by the one thing they would try, "Remove nightly sync".
+
+        Same shape as ``_show_downgrade_dialog`` and for the same reason: NO filled default.
+        An irreversible, machine-wide change must be chosen, never defaulted into by pressing
+        the button the dialog visually pre-selects. Continue is the OUTLINED tier; Cancel is
+        text. The folder-reach warning rides inside and gates nothing.
+        """
+
+        def _cancel(_e: ft.ControlEvent) -> None:
+            page.pop_dialog()
+            # Nothing was attempted, so nothing is claimed and nothing is cleared: the account
+            # and password the admin typed stay exactly where they were.
+            page.update()
+
+        def _continue(_e: ft.ControlEvent) -> None:
+            page.pop_dialog()
+            on_confirm()
+
+        sentences = [
+            _SCOPE_CONFIRM_ALREADY if _machine_scope_now() else _SCOPE_CONFIRM_MOVE,
+            _SCOPE_CONFIRM_WHO,
+            _SCOPE_CONFIRM_ONE_WAY,
+        ]
+        body: list[ft.Control] = [
+            ft.Text(text, size=tokens.type_emphasis, color=tokens.color_text) for text in sentences
+        ]
+        body += _folder_reach_controls()
+        page.show_dialog(
+            ft.AlertDialog(
+                modal=True,
+                title=ft.Text(SCOPE_CONFIRM_TITLE),
+                content=ft.Column(spacing=tokens.space_md, tight=True, controls=body),
+                actions=[
+                    components.text_button(SCOPE_CONFIRM_CANCEL_LABEL, _cancel),
+                    components.secondary_button(SCOPE_CONFIRM_CONTINUE_LABEL, _continue),
+                ],
+            )
+        )
 
     def _show_downgrade_dialog(interrupt: DowngradeInterrupt) -> None:
         """The explicit-choice dialog before a reconcile re-register may downgrade (S3-a).
@@ -2593,13 +3489,14 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         # is the richer explanation for that state: it names the account whose password Windows
         # wants, and it is the path plan 0034 built.
         facts = _account_facts()
-        block = register_block(cfg.is_complete(), run_time_field.value or "", account=facts)
+        unreadable = _delivery_unreadable()
+        block = _gate_block(facts, unreadable)
         if block is RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE:
-            _paint_account_note()
+            _paint_account_note(facts, unreadable)
             page.update()
             return ReconcileOutcome.BLOCKED_ACCOUNT_SWITCH
         if block is RegisterBlock.ACCOUNT_SHAPE:
-            _paint_account_note()
+            _paint_account_note(facts, unreadable)
             page.update()
             return ReconcileOutcome.BLOCKED_ACCOUNT
         interrupt = downgrade_interrupt(
@@ -2620,8 +3517,18 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             # code: falling through to `_register` would early-return and the Save would paint
             # BLOCKED's "fix the run time" over a principal problem — exactly the misdirect
             # carried item 5 is about. A new RegisterBlock member lands here rather than there.
-            _paint_account_note()
+            #
+            # 0049 S-2b.1: DELIVERY_SECRET_UNREADABLE is the first member to make this arm a
+            # LIVE path rather than a floor. It gets its OWN outcome rather than borrowing
+            # BLOCKED_ACCOUNT's: that copy reads "check the Windows account and its password",
+            # which points an admin at the SERVICE ACCOUNT's credentials over a fault in the
+            # SpacesEDU DELIVERY password. Landing here to dodge BLOCKED's "fix the run time"
+            # and then printing the wrong field anyway would just move the misdirect one field
+            # over. The field note the repaint above puts on screen names the same remedy.
+            _paint_account_note(facts, unreadable)
             page.update()
+            if block is RegisterBlock.DELIVERY_SECRET_UNREADABLE:
+                return ReconcileOutcome.BLOCKED_DELIVERY_SECRET
             return ReconcileOutcome.BLOCKED_ACCOUNT
         return ReconcileOutcome.DISPATCHED if _register(None) else ReconcileOutcome.BLOCKED
 
@@ -2630,7 +3537,14 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     register_btn = components.primary_button(
         "Schedule nightly sync",
         _register,
-        disabled=not can_register_schedule(cfg.is_complete(), run_time_field.value or "", account=_account_facts()),
+        # The one gate read that cannot go through `_repaint_register_gate` — the button it
+        # assigns to does not exist yet. One delivery-secret read, same `_gate_block` spelling.
+        disabled=not can_register_schedule(
+            cfg.is_complete(),
+            run_time_field.value or "",
+            account=_account_facts(),
+            delivery_secret_unreadable=_delivery_unreadable(),
+        ),
         icon=ft.Icons.SCHEDULE_ROUNDED,
     )
     unregister_btn = components.secondary_button(
@@ -2640,12 +3554,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     )
 
     def _refresh_register_gate(_e: ft.ControlEvent | None = None) -> None:
-        register_btn.disabled = not can_register_schedule(
-            cfg.is_complete(), run_time_field.value or "", account=_account_facts()
-        )
         # The gate's REASON repaints with the gate itself, so a disabled primary always has a
-        # visible cause and the delivery note appears/disappears with the account as it is typed.
-        _paint_account_note()
+        # visible cause and the delivery note appears/disappears with the account as it is
+        # typed. Both come out of ONE `_repaint_register_gate` pass — and therefore one
+        # delivery-secret read per keystroke, not one per consumer.
+        _repaint_register_gate()
         page.update()
 
     run_time_field.on_change = _refresh_register_gate
@@ -2698,7 +3611,15 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     window_foreign_slot = ft.Column(spacing=0, controls=[])
 
     def _window_foreign_note() -> str | None:
-        return sync_window_foreign_note(cfg, foreign_account=foreign_task_account(cfg))
+        # 0049 S-2a.2: ONE entry point picks the sibling. The shared-profile form asserts the pause
+        # POSITIVELY, so it also needs the read-back state — hence ``_last_schedule_state``, and
+        # hence the repaint from the probe's own ``_apply``.
+        return window_scope_note(
+            cfg,
+            foreign_account=foreign_task_account(cfg),
+            shared_records=paths.is_machine_scope(),
+            state=_last_schedule_state["state"],
+        )
 
     def _paint_window_foreign_note() -> None:
         note = _window_foreign_note()
@@ -2784,6 +3705,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         run_as_user_value=lambda: "" if account_field is None else (account_field.value or "").strip(),
         persist_run_time=_persist_run_time_if_edited,
         is_busy=lambda: bool(_flight["busy"]),
+        last_schedule_state=lambda: _last_schedule_state["state"],
     )
     return card, handle
 
@@ -2807,6 +3729,70 @@ def _keyring_owner_account() -> str:
         return "this account"
 
 
+# The delivery-password line's four forms (plan 0049 S-2a.3). Per-user is form 2 and is BYTE
+# IDENTICAL to what shipped — the whole slice's promise on 20 districts rests on this one string.
+#
+# The account comes from the RECORD (``foreign_task_account``), not the read-back:
+# ``ScheduleReadback`` carries no principal until S-3, and the record is what this app itself
+# wrote at a confirmed registration. It fails to ``""`` on everything, which lands on the
+# account-less variant — the conservative direction, since an empty name must never be rendered.
+_DELIVERY_LINE_PER_USER = "Your delivery password is saved and readable by {owner}."
+_DELIVERY_LINE_SHARED_NAMED = "Your delivery password is saved on this computer, where {account} can read it."
+# D5 allows scheduling as the SIGNED-IN account on a machine-scoped install, and
+# ``schedule_run_as_user`` is ``""`` by contract there — so this variant is reachable in normal
+# use and must NOT fall back to ``_keyring_owner_account()``, which names a keyring the machine
+# store has replaced.
+_DELIVERY_LINE_SHARED_UNNAMED = (
+    "Your delivery password is saved on this computer, where the account that runs the nightly sync can read it."
+)
+# MISSING ONLY. An UNKNOWN read-back (a probe timeout, access denied, a task registered elevated
+# and unreadable by a filtered token) may never be rendered as an absence — it simply drops this
+# sentence and keeps the variant above.
+_DELIVERY_LINE_NO_SCHEDULE_TAIL = "No nightly sync is scheduled right now."
+_DELIVERY_LINE_UNREADABLE_SHARED = (
+    "Couldn't read the delivery password back from this computer's shared settings — the nightly "
+    "delivery won't run until it's saved again."
+)
+_DELIVERY_LINE_UNREADABLE_PER_USER = (
+    "Couldn't read the credential back on this account — SFTP uploads may fail. "
+    "Try again, or run the app as this account."
+)
+
+
+def delivery_password_line(
+    *,
+    secret_readable: bool,
+    machine_scope: bool,
+    principal: str,
+    schedule_state: ScheduleState | None,
+    keyring_owner: str,
+) -> str:
+    """The "where is the delivery password, and who can read it?" line (pure, TOTAL).
+
+    Four forms, in precedence order:
+
+    1. **no readable credential** → the warning that delivery will not run (per-user keeps today's
+       wording; the shared form drops "run the app as this account", which is wrong advice once
+       the secret lives in the machine store);
+    2. **per-user** → today's line, byte for byte — the keyring owner, never the task principal
+       (0046 A6: Credential Manager has no cross-user scope, so naming the principal there would
+       print a false all-clear on the most likely real failure);
+    3. **machine scope, a CONFIRMED-MISSING schedule** → the account-less line plus "no nightly
+       sync is scheduled right now". MISSING outranks a recorded principal: that record names a
+       task Windows says does not exist, so naming it would describe a nightly that is gone;
+    4. **machine scope otherwise** → named when the record has a principal, account-less when it
+       does not.
+    """
+    if not secret_readable:
+        return _DELIVERY_LINE_UNREADABLE_SHARED if machine_scope else _DELIVERY_LINE_UNREADABLE_PER_USER
+    if not machine_scope:
+        return _DELIVERY_LINE_PER_USER.format(owner=keyring_owner)
+    if schedule_state is ScheduleState.MISSING:
+        return f"{_DELIVERY_LINE_SHARED_UNNAMED} {_DELIVERY_LINE_NO_SCHEDULE_TAIL}"
+    account = (principal or "").strip()
+    return _DELIVERY_LINE_SHARED_NAMED.format(account=account) if account else _DELIVERY_LINE_SHARED_UNNAMED
+
+
 # --------------------------------------------------------------------------- #
 # SFTP section — reused verbatim by the wizard Delivery step AND Settings.      #
 # --------------------------------------------------------------------------- #
@@ -2816,6 +3802,7 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
     *,
     on_delivery: Callable[[DeliveryFact, str, str], None] | None = None,
     on_saved: Callable[[], ReconcileOutcome] | None = None,
+    schedule_state: Callable[[], ScheduleState | None] | None = None,
 ) -> ft.Control:
     """The SFTP section — store SpacesEDU credentials in the OS keyring + test (Slice 7, D6).
 
@@ -2825,6 +3812,13 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
     Save flips/confirms ``sftp_enabled``, it re-registers a live task so the nightly action gains
     (or keeps) ``--sftp`` (the F1 gap: enabling delivery post-registration must reconcile). The
     side-effect-free Test + Save-only keyring writes are UNCHANGED.
+
+    ``schedule_state`` (when given — Settings passes the schedule section's last read-back, see
+    ``_mount_settings``) lets the saved-password line say "no nightly sync is scheduled right now"
+    on a machine-scoped install. It is a CALLABLE because the read-back lands asynchronously, and
+    it is optional because the wizard's Delivery step has no schedule section to read: absent, the
+    state is ``None`` and the line asserts nothing about a schedule. It NEVER triggers a probe of
+    its own — a subprocess on the Save click is exactly the trade this surface has always refused.
     """
     host_dropdown = ft.Dropdown(
         label="SFTP host (SpacesEDU)",
@@ -2909,15 +3903,25 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
                 return
 
         read_back = uploader.get_stored_password()
+
+        def _password_line(*, readable: bool) -> str:
+            """The four-form line (0049 S-2a.3) — the ONE place this section states where the
+            password lives. Both outcomes route through it, so the failure arm cannot keep telling
+            a machine-scoped admin to "run the app as this account"."""
+            return delivery_password_line(
+                secret_readable=readable,
+                machine_scope=paths.is_machine_scope(),
+                principal=foreign_task_account(cfg),
+                schedule_state=schedule_state() if schedule_state is not None else None,
+                keyring_owner=_keyring_owner_account(),
+            )
+
         if not read_back:
             result_slot.controls = [
                 components.HealthVerdictBanner(
                     Verdict.FAILED,
                     headline="Couldn't read the SFTP credential back",
-                    detail=(
-                        "Couldn't read the credential back on this account — SFTP uploads may fail. "
-                        "Try again, or run the app as this account."
-                    ),
+                    detail=_password_line(readable=False),
                 )
             ]
             page.update()
@@ -2932,8 +3936,8 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
 
         # Vocabulary (W4a sweep): delivery-flavored plain language — "SFTP" stays only on the
         # sanctioned technical host FIELD label. Truthful for a blank-password Save too: the
-        # read-back above just verified a credential IS in the keyring and readable.
-        detail = f"Your delivery password is saved and readable by {_keyring_owner_account()}."
+        # read-back above just verified a credential IS in the store and readable.
+        detail = _password_line(readable=True)
         # F1 reconcile (Settings only): enabling/confirming delivery must add --sftp to an
         # already-registered nightly task, or tonight builds but never delivers. Routed through the
         # SAME task-args reconcile the folders Save uses; a blank-password re-register keeps the

@@ -149,6 +149,7 @@ from src.ui_flet.screens.creator import (
     pending_creator_sis,
 )
 from src.ui_flet.verdict import Verdict
+from src.utils import paths
 from src.utils.version import app_version
 
 logger = logging.getLogger(__name__)
@@ -500,6 +501,10 @@ def _surface(page: ft.Page, app_config: AppConfig, on_navigate: Callable[[str], 
                 task_name,
                 hint_registered=hint_registered,
                 foreign_account=foreign_task_account(app_config),
+                # 0049 S-2a.1: INERT here for the same reason ``foreign_account`` is (only
+                # ``status.state`` is read on this surface) and supplied anyway — a special case
+                # is how the next reader learns the wrong lesson.
+                shared_records=paths.is_machine_scope(),
             )
 
             async def _apply() -> None:
