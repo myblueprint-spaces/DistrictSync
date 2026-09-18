@@ -15,7 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from src.utils.validators import validate_month_day, validate_run_as_user
+from src.scheduler.task_com import PrincipalKind, validate_principal_account
+from src.utils.validators import validate_month_day
 
 
 def window_settings_valid(enabled: bool, start_md: str, end_md: str) -> bool:
@@ -96,6 +97,12 @@ class ScheduleAccountFacts:
         recorded: ``RegisteredSchedule.run_as_user`` — ``None`` = no usable record, ``""`` =
             recorded as the signed-in account.
         schedule_registered: whether a nightly task is believed live.
+        kind: which of :class:`~src.scheduler.task_com.PrincipalKind`'s shapes THIS press is
+            asking for (plan 0049 S-4) — the view's own declaration, taken from the Settings
+            gMSA disclosure, not read back off the name. It is REQUIRED and undefaulted like
+            every other field here: it decides which validator ``typed`` goes through, and the
+            two charsets are disjoint on exactly one character, so a defaulted kind would refuse
+            a legitimate managed service account for the wrong reason.
     """
 
     typed: str
@@ -103,6 +110,7 @@ class ScheduleAccountFacts:
     password_supplied: bool
     recorded: str | None
     schedule_registered: bool
+    kind: PrincipalKind
 
 
 class RegisterBlock(Enum):
@@ -156,11 +164,15 @@ def register_block(
     delivery secret, then the password rung — the admin is told the FIRST thing that is
     wrong, not the last.
 
-    **Shape is checked ONLY for a FOREIGN principal.** ``current_run_as_user()`` legitimately
-    returns a name containing a space (``PC\\John Smith``), which ``_RUN_AS_USER_RE`` rejects;
-    the field is PREFILLED with that value, so validating it unconditionally would close the
-    gate on mount for those districts, which register logged-on-only fine today (G5). This
-    mirrors the engine, which deliberately never validates the machine-derived fallback.
+    **Shape is checked ONLY for a FOREIGN principal, and against its DECLARED KIND.**
+    ``current_run_as_user()`` legitimately returns a name containing a space
+    (``PC\\John Smith``), which ``_RUN_AS_USER_RE`` rejects; the field is PREFILLED with that
+    value, so validating it unconditionally would close the gate on mount for those districts,
+    which register logged-on-only fine today (G5). This mirrors the engine, which deliberately
+    never validates the machine-derived fallback. Which validator runs comes from
+    ``account.kind`` through ``task_com.validate_principal_account`` (plan 0049 S-4) — both
+    rungs that can refuse an account dispatch on the kind, because this rung runs FIRST and
+    unconditionally, and a gMSA refused here never reaches the password rung at all.
 
     ``ACCOUNT_SWITCH_NEEDS_REMOVE`` fires when a task is registered and the requested principal
     is not PROVABLY the recorded one. Both directions, and the unknown record:
@@ -178,7 +190,8 @@ def register_block(
 
     ``ACCOUNT_NEEDS_PASSWORD`` mirrors ``windows._MSG_ACCOUNT_NEEDS_PASSWORD``. It does not
     replace the engine refusal (which closes three blank-password paths structurally); it makes
-    the common one legible BEFORE a UAC prompt is raised.
+    the common one legible BEFORE a UAC prompt is raised. It is skipped for
+    ``MANAGED_SERVICE_ACCOUNT``, which has no password to supply.
 
     ``DELIVERY_SECRET_UNREADABLE`` (plan 0049 S-2b.1) sits AFTER the switch refusal and
     BEFORE the password rung, and both halves of that placement are deliberate: a valid,
@@ -212,7 +225,15 @@ def register_block(
     typed_key = principal_key(account.typed, account.current)
     if typed_key:
         try:
-            validate_run_as_user(account.typed)
+            # 0049 S-4: dispatched on the DECLARED kind, through the ONE kind→validator
+            # dispatcher the engine and both halves of the elevation handshake already use.
+            # ``validate_run_as_user`` unconditionally would refuse every managed service
+            # account HERE, on the first rung, for the wrong reason — a trailing ``$`` is
+            # exactly what makes one — and the admin would never reach a sentence about
+            # credentials at all. Never a second spelling of the rule: if this file decided
+            # for itself what a ``$`` meant, the gate and the engine could disagree about
+            # which names are registrable.
+            validate_principal_account(account.kind, account.typed)
         except (ValueError, TypeError, AttributeError):
             return RegisterBlock.ACCOUNT_SHAPE
 
@@ -226,7 +247,16 @@ def register_block(
     if typed_key and bool(delivery_secret_unreadable):
         return RegisterBlock.DELIVERY_SECRET_UNREADABLE
 
-    if typed_key and not account.password_supplied:
+    if (
+        typed_key
+        # 0049 S-4: a managed service account HAS no password — the directory holds its
+        # credential — so this rung would close the gate on a request that is complete, and
+        # its note would send the admin to find something that does not exist. The engine
+        # makes the same distinction one layer down: ``windows.register_task``'s MSA branch
+        # deliberately has no ``_MSG_ACCOUNT_NEEDS_PASSWORD`` refusal.
+        and account.kind is not PrincipalKind.MANAGED_SERVICE_ACCOUNT
+        and not account.password_supplied
+    ):
         return RegisterBlock.ACCOUNT_NEEDS_PASSWORD
     return RegisterBlock.NONE
 

@@ -914,6 +914,17 @@ def _switch_by_label(tree, label):
     return next((s for s in _find(tree, ft.Switch) if (getattr(s, "label", "") or "") == label), None)
 
 
+def _checkbox_by_label(tree, label):
+    """The first ``ft.Checkbox`` whose label EXACTLY equals ``label`` (or None).
+
+    Added for plan 0049 S-4's gMSA disclosure, which is built with
+    ``components.check_row`` — the ONE checkbox factory — rather than the raw
+    ``ft.Switch`` the seasonal-window section next to it uses. Two control types now
+    co-exist in that card, so the finder pair mirrors them.
+    """
+    return next((c for c in _find(tree, ft.Checkbox) if (getattr(c, "label", "") or "") == label), None)
+
+
 # The five always-present Setup text fields Enter must submit (the Windows-password
 # field is Windows-only, so it is not asserted here — it renders + wires only on win32).
 _ENTER_SUBMIT_LABELS = [
@@ -1882,7 +1893,14 @@ def test_unproven_record_save_asks_before_it_could_downgrade_an_unattended_task(
     assert recorded["called"] == 0, "no blank-password register may fire on an unproven logon type"
     dialog = page.show_dialog.call_args[0][0]
     assert isinstance(dialog, ft.AlertDialog)
-    unknown = downgrade_interrupt(registered_foreign_account="", registered_unattended=None, password_supplied=False)
+    unknown = downgrade_interrupt(
+        registered_foreign_account="",
+        registered_unattended=None,
+        password_supplied=False,
+        # 0049 S-4: this surface's record is unproven, so the kind is unknown too — the
+        # facets move together, and `None` is what keeps the pre-S-4 can't-tell copy.
+        registered_kind=None,
+    )
     assert dialog.title.value == unknown.headline
     assert dialog.content.value == unknown.detail
 

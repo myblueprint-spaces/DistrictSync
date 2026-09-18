@@ -33,23 +33,38 @@ import pytest
 
 from src.scheduler import elevated_apply, task_com, windows
 from src.scheduler.provisioning import ProvisionRefused, ProvisionStep
+from src.scheduler.task_com import PrincipalKind
 from src.ui_flet import setup_errors
 from src.ui_flet.setup_errors import _unclassified_copy, classify_provision_step, classify_schedule_error
-from src.ui_flet.setup_flow import SCHEDULE_ACCOUNT_FIELD_LABEL
+from src.ui_flet.setup_flow import (
+    GMSA_PREREQUISITES,
+    GMSA_UNTESTED_CAPTION,
+    SCHEDULE_ACCOUNT_FIELD_LABEL,
+    SCHEDULE_GMSA_TOGGLE_LABEL,
+)
 
 # A fake secret + path smuggled inside ``msg`` — used to prove that a classified
 # (known-substring) branch returns FIXED copy that does NOT echo it.
 _SECRET_MSG = "Access is denied. DSYNC_TASK_PW=hunter2 C:\\Users\\x\\secret"
 
 
-def _classify(msg: str, elevated: bool, *, account_is_current: bool = True) -> str:
+def _classify(
+    msg: str,
+    elevated: bool,
+    *,
+    account_is_current: bool = True,
+    kind: PrincipalKind = PrincipalKind.PASSWORD,
+) -> str:
     """The ONE call shape this file uses — the next required keyword is one edit here.
 
     ``account_is_current`` has no default in production (a permissive default on the
     parameter that selects personal-credential coaching is the banned shape); a default
     HERE is fine and is what keeps the 25 call sites from each carrying the keyword.
+    ``kind`` (plan 0049 S-4) is the second such keyword and arrived as exactly the one-line
+    edit this docstring promised. Its default is ``PASSWORD`` because that is the kind every
+    pre-S-4 call site meant, so every row below keeps asserting today's copy.
     """
-    return classify_schedule_error(msg, elevated, account_is_current=account_is_current)
+    return classify_schedule_error(msg, elevated, account_is_current=account_is_current, kind=kind)
 
 
 def _first_sentence(text: str) -> str:
@@ -132,6 +147,17 @@ class TestClassifyScheduleError:
         # mypy error), never a silently-personal default.
         with pytest.raises(TypeError):
             classify_schedule_error(task_com.MSG_LOGON_FAILURE, False)  # type: ignore[call-arg]
+
+    def test_kind_is_a_required_keyword(self) -> None:
+        # 0049 S-4's twin of the row above, and the same argument: both non-MSA kinds coach a
+        # password, a managed service account has none, so a defaulted kind would send a gMSA
+        # admin hunting for a credential the directory holds. It is also NOT derivable from
+        # ``account_is_current`` — a gMSA is always foreign, but a foreign account is usually a
+        # password logon — so the parameter cannot be collapsed into the existing one.
+        with pytest.raises(TypeError):
+            classify_schedule_error(  # type: ignore[call-arg]
+                task_com.MSG_LOGON_FAILURE, False, account_is_current=True
+            )
 
     def test_com_unavailable_offers_convert_and_carries_no_code(self) -> None:
         out = _classify(task_com.MSG_COM_UNAVAILABLE, elevated=False)
@@ -432,9 +458,13 @@ def test_every_producible_message_is_classified_or_declared() -> None:
     unclassified: set[str] = set()
     for value, label in _producible().items():
         classified = any(
-            _classify(value, elevated=elevated, account_is_current=current) != _unclassified_copy(value)
+            _classify(value, elevated=elevated, account_is_current=current, kind=kind) != _unclassified_copy(value)
             for elevated in (True, False)
             for current in (True, False)
+            # 0049 S-4: the kind joins the matrix. A branch reachable ONLY for one kind (the
+            # managed-service-account arm) would otherwise be invisible to this sweep, and a
+            # canonical classified only there would read as unclassified-but-undeclared.
+            for kind in PrincipalKind
         )
         if not classified:
             unclassified.add(label)
@@ -477,10 +507,11 @@ def test_no_classifier_string_says_below_or_logged_in() -> None:
     for probe in probes:
         for elevated in (True, False):
             for current in (True, False):
-                out = _classify(probe, elevated=elevated, account_is_current=current)
-                assert "below" not in out, f"{probe!r} classifies with a direction word"
-                # The fallback echoes msg verbatim; only the classifier's OWN copy is swept.
-                assert "logged in" not in out.split("(Details:")[0]
+                for kind in PrincipalKind:
+                    out = _classify(probe, elevated=elevated, account_is_current=current, kind=kind)
+                    assert "below" not in out, f"{probe!r} classifies with a direction word"
+                    # The fallback echoes msg verbatim; only the classifier's OWN copy is swept.
+                    assert "logged in" not in out.split("(Details:")[0]
 
 
 # ---------------------------------------------------------------------------
@@ -648,3 +679,123 @@ class TestClassifyProvisionStep:
         assert classify_provision_step("a_step_from_the_future") == _unclassified_copy(  # type: ignore[arg-type]
             "a_step_from_the_future"
         )
+
+
+# ---------------------------------------------------------------------------
+# Plan 0049 S-4 — the managed-service-account arm, and the one appended sentence
+# ---------------------------------------------------------------------------
+_MSA = PrincipalKind.MANAGED_SERVICE_ACCOUNT
+
+
+class TestTheManagedServiceAccountArm:
+    """0x80070534 FORKS on the kind rather than gaining a new canonical.
+
+    The fork is the deliberate choice: this is where a mistyped gMSA name already lands
+    (measured 2026-09-16 on our own COM path), and the rest of that failure taxonomy is
+    unmeasured — inventing canonicals for failures nobody has seen is how a classifier
+    acquires dead branches.
+    """
+
+    def _msa(self) -> str:
+        return _classify(task_com.MSG_ACCOUNT_NOT_RECOGNIZED, elevated=True, account_is_current=False, kind=_MSA)
+
+    def _password(self) -> str:
+        return _classify(
+            task_com.MSG_ACCOUNT_NOT_RECOGNIZED,
+            elevated=True,
+            account_is_current=False,
+            kind=PrincipalKind.PASSWORD,
+        )
+
+    def test_it_is_not_the_generic_fallback(self) -> None:
+        assert self._msa() != _unclassified_copy(task_com.MSG_ACCOUNT_NOT_RECOGNIZED)
+
+    def test_it_leads_with_the_cause_and_names_neither_remedy_it_cannot_offer(self) -> None:
+        out = self._msa()
+        assert "Windows would not schedule the task as that managed service account" in _first_sentence(out)
+        # It says up front that we cannot tell which of the possibilities it is, rather than
+        # picking one and sending an admin down it.
+        assert "can't tell which" in out
+
+    def test_it_carries_the_three_prerequisites_verbatim(self) -> None:
+        out = self._msa()
+        for item in GMSA_PREREQUISITES:
+            assert item in out, f"the MSA arm no longer lists {item!r}"
+
+    def test_it_carries_the_windows_code(self) -> None:
+        # The one thing an admin can hand to their IT team, and the one thing we ask for back.
+        assert "0x80070534" in self._msa()
+
+    def test_it_offers_no_try_again(self) -> None:
+        # Retrying a name the directory does not know — or a computer the account is not
+        # authorised for — changes nothing, and all three fixes are somebody else's to make.
+        out = self._msa()
+        for phrase in ("try again", "try once more", "Try again"):
+            assert phrase not in out, f"the MSA arm offers {phrase!r} for a state retrying cannot fix"
+
+    def test_it_hedges(self) -> None:
+        assert GMSA_UNTESTED_CAPTION in self._msa()
+
+    def test_the_password_arm_is_unchanged_and_carries_no_gmsa_material(self) -> None:
+        """The NON-vacuous half: the fork must not have rewritten the branch SD-era districts
+        see. Its distinctive sentences survive, and none of the gMSA material leaks into it."""
+        out = self._password()
+        assert "Windows doesn't recognise that account name" in out
+        assert "This is about the name, not the password." in out
+        assert "0x80070534" in out
+        assert GMSA_UNTESTED_CAPTION not in out
+        for item in GMSA_PREREQUISITES:
+            assert item not in out
+
+    def test_the_two_non_msa_kinds_are_byte_identical(self) -> None:
+        """Only ONE kind forks. An interactive-token failure reads exactly like a password one,
+        so the fork cannot have quietly become a three-way branch."""
+        assert self._password() == _classify(
+            task_com.MSG_ACCOUNT_NOT_RECOGNIZED,
+            elevated=True,
+            account_is_current=False,
+            kind=PrincipalKind.INTERACTIVE_TOKEN,
+        )
+
+    def test_it_names_the_control_the_admin_is_looking_at(self) -> None:
+        assert SCHEDULE_ACCOUNT_FIELD_LABEL in self._msa()
+
+
+class TestThePolicyBranchGainedExactlyOneSentence:
+    """0x80070520 is SD60's actual branch. It is correct, it is pinned in the partner page, and
+    a managed service account is the one unattended option the policy does not block — so the
+    branch is EXTENDED by one sentence and otherwise left verbatim."""
+
+    def _out(self, kind: PrincipalKind = PrincipalKind.PASSWORD) -> str:
+        return _classify(task_com.MSG_NO_LOGON_SESSION, elevated=False, kind=kind)
+
+    def test_every_pre_s4_sentence_survives(self) -> None:
+        out = self._out()
+        for phrase in (
+            "Windows would not save the password for the nightly task",
+            "Network access: Do not allow storage of passwords and credentials for network authentication",
+            "a hardening setting your IT team controls; DistrictSync can't change it.",
+            "Send your IT team that setting's name and the code shown here",
+            "it will not run after a reboot with no one signed in.",
+            "0x80070520",
+        ):
+            assert phrase in out, f"the policy branch no longer says {phrase!r}"
+
+    def test_the_appended_sentence_points_at_the_disclosure_and_hedges(self) -> None:
+        out = self._out()
+        assert SCHEDULE_GMSA_TOGGLE_LABEL in out
+        assert "this policy does not block" in out
+        assert GMSA_UNTESTED_CAPTION in out
+
+    def test_it_is_appended_after_the_original_copy_not_woven_into_it(self) -> None:
+        """The original prose has to remain readable as itself: the addition is the LAST
+        paragraph, so an admin already following the pinned page reads the same thing first."""
+        out = self._out()
+        assert out.split("\n\n")[-1].startswith("If your IT team can provide a managed service account")
+
+    @pytest.mark.parametrize("kind", list(PrincipalKind))
+    def test_it_does_not_fork_on_kind(self, kind: PrincipalKind) -> None:
+        """Unconditional, deliberately: the admin who needs to hear about the alternative is
+        the one who just failed on the PASSWORD path, which is the only kind that reaches this
+        HRESULT in practice. Gating it on the MSA kind would hide it from exactly them."""
+        assert self._out(kind) == self._out()

@@ -38,19 +38,26 @@ from src.scheduler import windows
 from src.scheduler.task_com import (
     HR_NO_SUCH_LOGON_SESSION,
     MSG_ACCOUNT_INFO_NOT_SET,
+    MSG_ACCOUNT_NOT_RECOGNIZED,
     MSG_COM_UNAVAILABLE,
     MSG_LOGON_FAILURE,
     MSG_NO_LOGON_SESSION,
+    PrincipalKind,
     format_hresult,
 )
 from src.ui_flet.home_status import MACHINE_SCOPE_LINE_LEAD, machine_scope_line
 from src.ui_flet.setup_errors import classify_schedule_error
+from src.ui_flet.setup_flow import GMSA_IT_DOC_TITLE, GMSA_PREREQUISITES
 from src.utils.diagnostics import SCOPE_PER_USER, SCOPE_SHARED
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TROUBLESHOOTING = "docs/partner/troubleshooting.md"
 _HEADLESS = "docs/partner/headless-sftp-setup.md"
 _INSTALLATION = "docs/partner/installation.md"
+#: Plan 0049 S-4's hand-to-IT page. It exists so a district can send ONE page to whoever
+#: administers their directory instead of reconstructing three prerequisites from a UI
+#: checklist — which makes it a doc whose copy has to stay tied to the app's.
+_GMSA = "docs/partner/managed-service-accounts.md"
 
 #: The ``[HRESULT `` grep anchor, DERIVED from the one failure-log format string rather than
 #: retyped — the doc tells an admin to search ``etl_tool.log`` for exactly this.
@@ -64,39 +71,65 @@ _POLICY_CODE = format_hresult(HR_NO_SUCH_LOGON_SESSION)
 _PINNED: dict[str, tuple[str, str | None]] = {
     "credential_headline": (
         "Windows rejected the user name or password",
-        classify_schedule_error(MSG_LOGON_FAILURE, False, account_is_current=True),
+        classify_schedule_error(MSG_LOGON_FAILURE, False, account_is_current=True, kind=PrincipalKind.PASSWORD),
     ),
     "elevated_refusal_headline": (
         "Something on this computer is likely blocking the schedule change even after the "
         "permission prompt was approved",
-        classify_schedule_error(windows._MSG_ELEVATED_ACCESS_DENIED, False, account_is_current=True),
+        classify_schedule_error(
+            windows._MSG_ELEVATED_ACCESS_DENIED, False, account_is_current=True, kind=PrincipalKind.PASSWORD
+        ),
     ),
     "account_info_headline": (
         "Windows is missing the nightly task's own saved account details",
-        classify_schedule_error(MSG_ACCOUNT_INFO_NOT_SET, False, account_is_current=True),
+        classify_schedule_error(MSG_ACCOUNT_INFO_NOT_SET, False, account_is_current=True, kind=PrincipalKind.PASSWORD),
     ),
     "com_unavailable_headline": (
         "This copy of DistrictSync can't reach Windows Task Scheduler",
-        classify_schedule_error(MSG_COM_UNAVAILABLE, False, account_is_current=True),
+        classify_schedule_error(MSG_COM_UNAVAILABLE, False, account_is_current=True, kind=PrincipalKind.PASSWORD),
     ),
     "policy_headline": (
         "Windows would not save the password for the nightly task",
-        classify_schedule_error(MSG_NO_LOGON_SESSION, False, account_is_current=True),
+        classify_schedule_error(MSG_NO_LOGON_SESSION, False, account_is_current=True, kind=PrincipalKind.PASSWORD),
     ),
     "policy_setting_name": (
         "Network access: Do not allow storage of passwords and credentials for network authentication",
-        classify_schedule_error(MSG_NO_LOGON_SESSION, False, account_is_current=True),
+        classify_schedule_error(MSG_NO_LOGON_SESSION, False, account_is_current=True, kind=PrincipalKind.PASSWORD),
     ),
-    "policy_code": (_POLICY_CODE, classify_schedule_error(MSG_NO_LOGON_SESSION, False, account_is_current=True)),
+    "policy_code": (
+        _POLICY_CODE,
+        classify_schedule_error(MSG_NO_LOGON_SESSION, False, account_is_current=True, kind=PrincipalKind.PASSWORD),
+    ),
     # The doc must quote what the ADMIN SEES, not the engine constant that selects it:
     # `windows._MSG_DIFFERENT_ACCOUNT` is internal and never rendered, so pinning it tied the
     # doc to a string the classifier could stop producing without this test noticing. Pinning
     # the shipped lead WITH its producer is what makes the row bidirectional.
     "different_account_lead": (
         "The elevated step couldn't read the request DistrictSync prepared under your account",
-        classify_schedule_error(windows._MSG_DIFFERENT_ACCOUNT, False, account_is_current=True),
+        classify_schedule_error(
+            windows._MSG_DIFFERENT_ACCOUNT, False, account_is_current=True, kind=PrincipalKind.PASSWORD
+        ),
     ),
     "log_anchor": (_LOG_ANCHOR, None),
+    # Plan 0049 S-4. The managed-service-account arm of MSG_ACCOUNT_NOT_RECOGNIZED — a FORK of
+    # an existing branch rather than a new canonical, because 0x80070534 is where a mistyped
+    # gMSA name already lands (measured) and the rest of that failure taxonomy is unmeasured.
+    # Pinned on the LEAD, not on the checklist: the three prerequisites are proved separately
+    # (see ``test_the_it_prerequisites_are_the_apps_own_list``) because one of them contains a
+    # phrase ``_RETIRED_PHRASES`` still — correctly — bans from the failure page.
+    "msa_headline": (
+        "Windows would not schedule the task as that managed service account",
+        classify_schedule_error(
+            MSG_ACCOUNT_NOT_RECOGNIZED,
+            False,
+            account_is_current=False,
+            kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT,
+        ),
+    ),
+    # The hand-to-IT page's own title, which the Settings disclosure tells an admin to ask for
+    # by name. A document nobody can find under the name the app gave them is worse than no
+    # reference at all, so the title is a shipped string and is pinned like one.
+    "gmsa_doc_title": (GMSA_IT_DOC_TITLE, None),
     # Plan 0049. The service-account guide now opens by telling an admin to READ these three
     # strings off the app to decide whether they still need the manual ``--sftp-configure``
     # step. That decision's wrong answer is SILENT — delivery simply stops and nothing alarms
@@ -129,17 +162,32 @@ _DOC_QUOTES: dict[str, frozenset[str]] = {
     # and Step 4 of the install guide explains the line. Both quote the app verbatim.
     _HEADLESS: _SCOPE_PINS,
     _INSTALLATION: _SCOPE_PINS,
+    # Plan 0049 S-4: the hand-to-IT page opens with its own title, names the failure an admin
+    # will see, and explains the storage policy that pushes a district here in the first place
+    # — so it legitimately carries the policy family and the MSA lead, and nothing else.
+    _GMSA: frozenset({"gmsa_doc_title", "msa_headline", "policy_headline", "policy_setting_name", "policy_code"}),
     # The release notes announce the line by name (but not the terminal report's two scope
-    # words), so it declares the headline pin alone.
-    "CHANGELOG.md": frozenset({"machine_scope_lead"}),
+    # words). Plan 0049 S-4 adds two: the entry names the hand-to-IT page so a district can
+    # ask for it, and quotes the policy CODE so an admin can recognise their own situation
+    # from the release notes. It still carries no failure sentence.
+    "CHANGELOG.md": frozenset({"machine_scope_lead", "gmsa_doc_title", "policy_code"}),
     "docs/partner/faq.md": frozenset(),
     "docs/partner/help-centre-myedbc-districtsync-guide.md": frozenset(),
 }
 
 #: Retired with the PowerShell-era classifier branch (plan 0041 S1b) and with plan 0046's A7
 #: finding that the coaching is wrong against a service account. AC A2.7: none may survive in
-#: the partner page. Fixed literals, not constants — nothing in ``src/`` spells them any more,
-#: which is exactly why the doc had to be checked by hand until now.
+#: the partner page. Fixed literals, not constants — which is exactly why the doc had to be
+#: checked by hand until now.
+#:
+#: **Plan 0049 S-4 narrowed one of them, and deliberately did not weaken this sweep.**
+#: ``setup_flow.GMSA_PREREQUISITES`` now spells "Log on as a batch job" as a PREREQUISITE an
+#: IT team must satisfy for a managed service account — a different claim from the retired
+#: coaching, which told an admin on the PASSWORD path to go and grant it as if that were the
+#: fix. The failure page still may not carry it: the prerequisites are single-sourced in the
+#: Settings disclosure and in ``_GMSA``, and the failure page links to that page instead. So
+#: the phrase stays banned here and the list stays proved THERE
+#: (``test_the_it_prerequisites_are_the_apps_own_list``).
 _RETIRED_PHRASES: tuple[str, ...] = ("PIN", "microsoft.com", "Log on as a batch job")
 
 
@@ -220,6 +268,32 @@ def test_an_undeclared_quote_is_absent(relative: str) -> None:
     for name in sorted(set(_PINNED) - _DOC_QUOTES[relative]):
         quote = _PINNED[name][0]
         assert quote not in text, f"{relative} quotes {name} but does not declare it — add it to _DOC_QUOTES"
+
+
+def test_the_it_prerequisites_are_the_apps_own_list() -> None:
+    """The hand-to-IT page's three prerequisites must be the app's own, verbatim (plan 0049 S-4).
+
+    They cannot ride ``_PINNED``: that table is declared present in ``_TROUBLESHOOTING``, and
+    one of the three contains a phrase ``_RETIRED_PHRASES`` correctly bans from the failure
+    page. So the list is proved against its own doc instead — and against the SOURCE constant,
+    never a second copy, because an admin holding this page has to be reading the same three
+    things the Settings disclosure shows and the failure message lists.
+    """
+    assert len(GMSA_PREREQUISITES) == 3, "the prerequisite list changed shape — the doc needs re-reading"
+    text = _doc_text(_GMSA)
+    for item in GMSA_PREREQUISITES:
+        assert item in text, f"{_GMSA} no longer states the prerequisite verbatim — it should read {item!r}"
+
+
+def test_the_untested_hedge_survives_in_both_docs() -> None:
+    """The honesty constraint, pinned. Nothing may claim gMSA works, so both pages that offer
+    it have to say it has not been tested — and a reword that quietly drops the hedge is the
+    one change here that would mislead a district into treating it as a known fix."""
+    for relative in (_GMSA, _TROUBLESHOOTING):
+        assert "untested" in _doc_text(relative) or "not been tested" in _doc_text(relative), (
+            f"{relative} no longer hedges the gMSA option"
+        )
+    assert "untested" in _doc_text("CHANGELOG.md"), "the release notes no longer say 'untested'"
 
 
 @pytest.mark.parametrize("phrase", _RETIRED_PHRASES)

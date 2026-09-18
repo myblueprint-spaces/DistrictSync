@@ -55,13 +55,16 @@ def foreign_task_account(app_config: AppConfig) -> str:
     on any machine where the account resolution fails.
 
     ``supports_unattended`` is left at its default: only the ``run_as_user`` facet is read, and its
-    ``None``-iff-``args is None`` rule does not depend on that flag.
+    ``None``-iff-``args is None`` rule does not depend on that flag. ``raw_run_as_kind`` is supplied
+    because it is REQUIRED rather than because this resolver reads it (plan 0049 S-4) — the record's
+    facets are atomic, and a call site allowed to omit one is how the next facet stops being written.
     """
     try:
         record = registered_schedule(
             raw_task_args=app_config.schedule_task_args,
             unattended_flag=bool(app_config.schedule_unattended),
             raw_run_as_user=app_config.schedule_run_as_user,
+            raw_run_as_kind=app_config.schedule_run_as_kind,
         )
         recorded = record.run_as_user
         if not recorded:

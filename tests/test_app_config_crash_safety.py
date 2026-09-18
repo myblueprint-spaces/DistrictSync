@@ -703,6 +703,41 @@ class TestAnUnreadableLoadNeverSilentlyReplacesTheSettings:
         assert AppConfig.load().sis_type == "myedbc"
 
 
+class TestTheScheduleRecordFacetsAreCountedAdminChoices:
+    """The ``schedule_`` prefix is a NAMING CONTRACT, and this is what holds it (0046 B / 0049 S-4).
+
+    ``_carries_chosen_settings`` excludes ``_ADVISORY_FIELD_PREFIXES``; the four facets of the
+    registered-schedule record must NOT be in it, or a confirmed register on an install whose
+    ``config.json`` came back unreadable would be silently REFUSED and the app would then report
+    "no nightly scheduled" against a task Windows really holds. Renaming any of them into an
+    advisory family is the regression this pins shut.
+    """
+
+    @pytest.mark.parametrize(
+        ("field_name", "value"),
+        [
+            ("schedule_registered", True),
+            ("schedule_unattended", True),
+            ("schedule_task_args", {"sis_type": "myedbc"}),
+            ("schedule_run_as_user", r"CORP\svc"),
+            # 0049 S-4's fourth facet. It is a KIND, never a password.
+            ("schedule_run_as_kind", "managed_service_account"),
+        ],
+    )
+    def test_each_facet_alone_counts_as_a_chosen_setting(self, field_name, value) -> None:
+        cfg = AppConfig(load_state=ConfigLoadState.UNREADABLE)
+        setattr(cfg, field_name, value)
+        assert cfg._carries_chosen_settings() is True, field_name
+
+    def test_the_advisory_families_still_do_NOT_count(self) -> None:
+        """The positive twin for the rule itself: without it the parametrized rows above would
+        pass for any field at all, and the pin would say nothing about the prefix."""
+        for field_name, value in (("identity_email", "a@b.ca"), ("creator_district_number", "12")):
+            cfg = AppConfig(load_state=ConfigLoadState.UNREADABLE)
+            setattr(cfg, field_name, value)
+            assert cfg._carries_chosen_settings() is False, field_name
+
+
 class TestSyncWindowIsACountedAdminChoice:
     """The ``sync_window_*`` collision guard: they are admin CHOICES, not window geometry.
 

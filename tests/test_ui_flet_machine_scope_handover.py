@@ -32,6 +32,7 @@ from src.config.app_config import AppConfig
 from src.scheduler import task_com
 from src.scheduler.provision_session import ProvisionAttempt, ProvisionOutcome
 from src.scheduler.provisioning import ProvisionStep
+from src.scheduler.task_com import PrincipalKind
 from src.ui_flet import tokens
 from src.ui_flet.handover_result import HandoverBanner, HandoverResult
 from src.ui_flet.setup_errors import _unclassified_copy, classify_provision_step
@@ -257,7 +258,12 @@ class TestTheDeliverySecretGate:
         silent one is a decision somebody makes on purpose."""
         silent = {RegisterBlock.NONE, RegisterBlock.INCOMPLETE, RegisterBlock.RUN_TIME}
         facts = ScheduleAccountFacts(
-            typed=_SERVICE, current=_SIGNED_IN, password_supplied=False, recorded=None, schedule_registered=True
+            typed=_SERVICE,
+            current=_SIGNED_IN,
+            password_supplied=False,
+            recorded=None,
+            schedule_registered=True,
+            kind=PrincipalKind.PASSWORD,
         )
         for block in RegisterBlock:
             note = setup_mod.account_block_note(block, facts)
@@ -1003,6 +1009,7 @@ def test_the_gate_block_and_the_note_are_one_decision(tmp_path, stub_page, monke
         password_supplied=True,
         recorded="",
         schedule_registered=True,
+        kind=PrincipalKind.PASSWORD,
     )
     # A live task on the signed-in account + a typed service account = the SWITCH refusal, which
     # outranks the delivery secret. The note on screen must be that one, not the cheaper rung.

@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import pytest
 
+from src.scheduler.task_com import PrincipalKind
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.setup_flow import (
     CREATOR_STEP_ORDER,
+    GMSA_UNTESTED_CAPTION,
     SCHEDULE_ACCOUNT_FIELD_LABEL,
     STEP_ORDER,
     TOTAL_STEPS,
@@ -1021,8 +1023,16 @@ class TestRegisteredSchedule:
             raw_task_args=task_args_to_persisted(_task_args()),
             unattended_flag=True,
             supports_unattended=True,
+            raw_run_as_kind="",
         )
-        assert record == RegisteredSchedule(args=_task_args(), unattended=True, run_as_user="")
+        assert record == RegisteredSchedule(
+            args=_task_args(),
+            unattended=True,
+            run_as_user="",
+            # 0049 S-4: a blank recorded kind beside a BLANK user resolves to the signed-in
+            # account's logged-on-only logon — the other half of the absent-value rule.
+            run_as_kind=PrincipalKind.INTERACTIVE_TOKEN,
+        )
 
     @pytest.mark.parametrize("raw", [None, "not a dict", {}, {"input_dir": "/in"}])
     def test_an_absent_or_garbled_record_is_unknown_on_BOTH_facts(self, raw):
@@ -1030,7 +1040,11 @@ class TestRegisteredSchedule:
         # cleared by the same unregister): no args record ⇒ the unattended flag is equally
         # un-evidenced, so it must read unknown rather than its False default.
         record = registered_schedule(
-            raw_run_as_user="", raw_task_args=raw, unattended_flag=False, supports_unattended=True
+            raw_run_as_user="",
+            raw_task_args=raw,
+            unattended_flag=False,
+            supports_unattended=True,
+            raw_run_as_kind="",
         )
         assert record.args is None
         assert record.unattended is None
@@ -1039,7 +1053,11 @@ class TestRegisteredSchedule:
         # cron has no logon type — there is nothing an unproven re-register could downgrade, so
         # "unknown" would only produce a nonsense Windows-password prompt.
         record = registered_schedule(
-            raw_run_as_user="", raw_task_args=None, unattended_flag=False, supports_unattended=False
+            raw_run_as_user="",
+            raw_task_args=None,
+            unattended_flag=False,
+            supports_unattended=False,
+            raw_run_as_kind="",
         )
         assert record.unattended is False
 
@@ -1051,6 +1069,7 @@ class TestRegisteredSchedule:
             raw_task_args=task_args_to_persisted(_task_args()),
             unattended_flag=True,
             supports_unattended=False,
+            raw_run_as_kind="",
         )
         assert record.unattended is True
 
@@ -1058,7 +1077,10 @@ class TestRegisteredSchedule:
 class TestScheduleReconcile:
     def test_no_registered_task_needs_no_reconcile(self):
         record = registered_schedule(
-            raw_run_as_user="", raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False
+            raw_run_as_user="",
+            raw_task_args=task_args_to_persisted(_task_args()),
+            unattended_flag=False,
+            raw_run_as_kind="",
         )
         assert (
             schedule_reconcile(
@@ -1073,7 +1095,10 @@ class TestScheduleReconcile:
 
     def test_a_matching_record_is_up_to_date(self):
         record = registered_schedule(
-            raw_run_as_user="", raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False
+            raw_run_as_user="",
+            raw_task_args=task_args_to_persisted(_task_args()),
+            unattended_flag=False,
+            raw_run_as_kind="",
         )
         assert (
             schedule_reconcile(
@@ -1088,7 +1113,10 @@ class TestScheduleReconcile:
 
     def test_a_cosmetic_whitespace_difference_is_still_up_to_date(self):
         record = registered_schedule(
-            raw_run_as_user="", raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False
+            raw_run_as_user="",
+            raw_task_args=task_args_to_persisted(_task_args()),
+            unattended_flag=False,
+            raw_run_as_kind="",
         )
         assert (
             schedule_reconcile(
@@ -1103,7 +1131,10 @@ class TestScheduleReconcile:
 
     def test_a_changed_record_reregisters(self):
         record = registered_schedule(
-            raw_run_as_user="", raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False
+            raw_run_as_user="",
+            raw_task_args=task_args_to_persisted(_task_args()),
+            unattended_flag=False,
+            raw_run_as_kind="",
         )
         assert (
             schedule_reconcile(
@@ -1121,7 +1152,7 @@ class TestScheduleReconcile:
         # the new district, so any baseline derived from the current config equals `pending` and
         # the reconcile silently does nothing — while the live task still bakes the OLD district.
         # With no durable record the app cannot know what the task carries, so it must act.
-        record = registered_schedule(raw_run_as_user="", raw_task_args=None, unattended_flag=False)
+        record = registered_schedule(raw_run_as_user="", raw_task_args=None, unattended_flag=False, raw_run_as_kind="")
         assert (
             schedule_reconcile(
                 pending_run_as_user="",
@@ -1134,7 +1165,7 @@ class TestScheduleReconcile:
         )
 
     def test_an_absent_record_with_no_task_registered_is_still_NO_TASK(self):
-        record = registered_schedule(raw_run_as_user="", raw_task_args=None, unattended_flag=False)
+        record = registered_schedule(raw_run_as_user="", raw_task_args=None, unattended_flag=False, raw_run_as_kind="")
         assert (
             schedule_reconcile(
                 pending_run_as_user="",
@@ -1152,20 +1183,27 @@ class TestDowngradeInterruptOnAnUnknownRecord:
         # Never silently replace a possibly-unattended task with a logged-on-only one: on a
         # district server nobody is signed in, so that would stop the nightly sync entirely.
         assert (
-            downgrade_interrupt(registered_foreign_account="", registered_unattended=None, password_supplied=False)
+            downgrade_interrupt(
+                registered_foreign_account="", registered_unattended=None, password_supplied=False, registered_kind=None
+            )
             is not None
         )
 
     def test_an_unknown_logon_type_with_a_password_supplied_proceeds(self):
         # A supplied password keeps the task unattended either way — nothing can be downgraded.
         assert (
-            downgrade_interrupt(registered_foreign_account="", registered_unattended=None, password_supplied=True)
+            downgrade_interrupt(
+                registered_foreign_account="", registered_unattended=None, password_supplied=True, registered_kind=None
+            )
             is None
         )
 
     def test_the_unknown_copy_never_asserts_a_state_it_did_not_check(self):
         interrupt = downgrade_interrupt(
-            registered_foreign_account="", registered_unattended=None, password_supplied=False
+            registered_foreign_account="",
+            registered_unattended=None,
+            password_supplied=False,
+            registered_kind=None,
         )
         known = DowngradeInterrupt()
         assert interrupt is not None
@@ -1179,7 +1217,10 @@ class TestDowngradeInterruptOnAnUnknownRecord:
     def test_the_unknown_variant_offers_the_same_three_choices(self):
         # The view renders the labels straight off the interrupt — the choices must not diverge.
         interrupt = downgrade_interrupt(
-            registered_foreign_account="", registered_unattended=None, password_supplied=False
+            registered_foreign_account="",
+            registered_unattended=None,
+            password_supplied=False,
+            registered_kind=None,
         )
         known = DowngradeInterrupt()
         assert interrupt is not None
@@ -1231,6 +1272,7 @@ class TestDowngradeInterrupt:
             registered_foreign_account="",
             registered_unattended=registered_unattended,
             password_supplied=password_supplied,
+            registered_kind=None,
         )
         assert (result is not None) is interrupts
 
@@ -1238,7 +1280,10 @@ class TestDowngradeInterrupt:
         # Owner-approved copy (2026-07-15) — the two explicit choices, verbatim; calm framing;
         # no default that downgrades silently; cancel = no change.
         interrupt = downgrade_interrupt(
-            registered_foreign_account="", registered_unattended=True, password_supplied=False
+            registered_foreign_account="",
+            registered_unattended=True,
+            password_supplied=False,
+            registered_kind=None,
         )
         assert interrupt == DowngradeInterrupt()
         assert interrupt.headline == "Keep the nightly sync running when you're signed out?"
@@ -1403,13 +1448,16 @@ class TestRecordedPrincipal:
             raw_task_args=task_args_to_persisted(_task_args()),
             unattended_flag=True,
             raw_run_as_user="CORP\\svc_x",
+            raw_run_as_kind="",
         )
         assert record.run_as_user == "CORP\\svc_x"
 
     def test_no_args_record_means_the_principal_is_unknown_too(self):
         # The three facets are written and cleared TOGETHER, so an absent record makes all
         # three unknown — `""` would be an unchecked assertion, and the gate keys on it.
-        record = registered_schedule(raw_task_args=None, unattended_flag=False, raw_run_as_user="CORP\\svc_x")
+        record = registered_schedule(
+            raw_task_args=None, unattended_flag=False, raw_run_as_user="CORP\\svc_x", raw_run_as_kind=""
+        )
         assert record.args is None
         assert record.run_as_user is None
 
@@ -1422,6 +1470,7 @@ class TestRecordedPrincipal:
             raw_task_args=persisted["schedule_task_args"],
             unattended_flag=False,
             raw_run_as_user=persisted.get("schedule_run_as_user", ""),
+            raw_run_as_kind="",
         )
         assert record.run_as_user == ""
 
@@ -1429,14 +1478,19 @@ class TestRecordedPrincipal:
     def test_a_non_string_principal_degrades_to_the_signed_in_account(self, raw):
         # config.json is hand-editable; total and defensive, like the rest of the record.
         record = registered_schedule(
-            raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False, raw_run_as_user=raw
+            raw_task_args=task_args_to_persisted(_task_args()),
+            unattended_flag=False,
+            raw_run_as_user=raw,
+            raw_run_as_kind="",
         )
         assert record.run_as_user == ""
 
     def test_the_principal_is_a_required_keyword(self):
         with pytest.raises(TypeError):
             registered_schedule(  # type: ignore[call-arg]
-                raw_task_args=task_args_to_persisted(_task_args()), unattended_flag=False
+                raw_task_args=task_args_to_persisted(_task_args()),
+                unattended_flag=False,
+                raw_run_as_kind="",
             )
 
 
@@ -1446,6 +1500,7 @@ class TestReconcileOnThePrincipal:
             raw_task_args=task_args_to_persisted(_task_args()),
             unattended_flag=True,
             raw_run_as_user=run_as_user,
+            raw_run_as_kind="",
         )
 
     def test_an_account_only_change_reregisters(self):
@@ -1502,6 +1557,10 @@ class TestDowngradeInterruptForAServiceAccount:
             "registered_unattended": True,
             "password_supplied": False,
             "registered_foreign_account": "CORP\\svc_x",
+            # 0049 S-4: PASSWORD is what a pre-S-4 record of a foreign principal EVIDENCES,
+            # so every row in this class keeps asserting today's copy. The MSA kind has its
+            # own class below.
+            "registered_kind": PrincipalKind.PASSWORD,
         }
         kwargs.update(over)
         return downgrade_interrupt(**kwargs)  # type: ignore[arg-type]
@@ -1511,9 +1570,14 @@ class TestDowngradeInterruptForAServiceAccount:
 
     @pytest.mark.parametrize("registered_unattended", [True, False, None])
     def test_a_foreign_principal_interrupts_whatever_the_logon_record_claims(self, registered_unattended):
-        # A foreign principal IMPLIES a stored password (the engine refuses otherwise), so a
-        # record claiming `unattended=False` beside one is inconsistent — interrupting is the
-        # honest move, and it is the only way the admin hears which account's password is wanted.
+        # A record claiming `unattended=False` beside a foreign principal is inconsistent —
+        # interrupting is the honest move, and it is the only way the admin hears which
+        # account's password is wanted.
+        #
+        # 0049 S-4 narrowed the ORIGINAL reason given here ("a foreign principal IMPLIES a
+        # stored password — the engine refuses otherwise"): that stopped being true the moment
+        # a managed service account became registrable. The BEHAVIOUR is unchanged for this
+        # kind; the MSA kind gets its own arm, checked first, in the class below.
         assert self._variant(registered_unattended=registered_unattended) is not None
 
     def test_it_names_the_account_and_never_coaches_the_admins_OWN_password(self):
@@ -1545,6 +1609,7 @@ class TestDowngradeInterruptForAServiceAccount:
             registered_unattended=registered_unattended,
             password_supplied=False,
             registered_foreign_account="",
+            registered_kind=None,
         )
         expected = DowngradeInterrupt() if registered_unattended else None
         if registered_unattended is None:
@@ -1876,3 +1941,179 @@ def test_module_imports_nothing_impure():
     for name in sorted(imported):
         for ban in banned:
             assert name != ban and not name.startswith(f"{ban}."), f"{name} is banned here (via {ban})"
+
+
+# --------------------------------------------------------------------------- #
+# Plan 0049 S-4 — the recorded KIND (the fourth atomic facet)                   #
+# --------------------------------------------------------------------------- #
+class TestTheRecordedKind:
+    def _record(self, **over) -> RegisteredSchedule:
+        kwargs: dict = {
+            "raw_task_args": task_args_to_persisted(_task_args()),
+            "unattended_flag": True,
+            "raw_run_as_user": "CORP\\svc_x",
+            "raw_run_as_kind": PrincipalKind.PASSWORD.value,
+        }
+        kwargs.update(over)
+        return registered_schedule(**kwargs)  # type: ignore[arg-type]
+
+    def test_a_usable_record_carries_the_kind(self):
+        assert self._record().run_as_kind is PrincipalKind.PASSWORD
+
+    def test_a_recorded_managed_service_account_is_READ_BACK(self):
+        # The whole point of the facet: it is the ONLY way the app can know, because the kind
+        # cannot be recovered from anything else the record holds.
+        record = self._record(raw_run_as_kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT.value, raw_run_as_user="C\\s$")
+        assert record.run_as_kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT
+
+    def test_no_args_record_means_the_kind_is_unknown_too(self):
+        # ATOMIC: all FOUR facets are written together and cleared together, so an absent
+        # record makes all four unknown. `PASSWORD` here would be an unchecked assertion.
+        record = self._record(raw_task_args=None)
+        assert record.args is None
+        assert record.run_as_kind is None
+
+    def test_the_absent_value_rule_with_a_named_user_means_PASSWORD(self):
+        """The upgrade path, evidenced: before S-4 the engine could register exactly ONE
+        foreign principal and it required a password to do it (``register_task`` refuses a
+        foreign interactive-token request), so no deployed install can mean anything else."""
+        assert self._record(raw_run_as_kind="").run_as_kind is PrincipalKind.PASSWORD
+
+    def test_the_absent_value_rule_with_a_blank_user_means_INTERACTIVE_TOKEN(self):
+        """The other direction, and the one that matters for the 20 shipped districts: ``""``
+        is the signed-in account (0046 B), which is logged-on-only unless a password was typed.
+        This is why no migration is needed."""
+        record = self._record(raw_run_as_kind="", raw_run_as_user="")
+        assert record.run_as_kind is PrincipalKind.INTERACTIVE_TOKEN
+
+    def test_a_dollar_suffixed_name_is_NEVER_read_as_a_managed_service_account(self):
+        """THE anti-inference pin. Sniffing the ``$`` off a recorded name is precisely the
+        inference plan 0049 S-3 deleted from ``task_com.apply_definition``; re-introducing it
+        one layer up would be incoherent. An unrecorded kind resolves by the EVIDENCED rule,
+        never by the spelling of the account."""
+        record = self._record(raw_run_as_kind="", raw_run_as_user="CORP\\svc_x$")
+        assert record.run_as_kind is PrincipalKind.PASSWORD
+
+    @pytest.mark.parametrize("raw", [None, 7, ["password"], {"kind": "x"}, True, "not-a-kind", "  "])
+    def test_a_garbled_kind_degrades_to_the_evidenced_answer(self, raw):
+        # config.json is hand-editable and an elevation request is unsealed from disk; total
+        # and defensive, like every other reader of both.
+        assert self._record(raw_run_as_kind=raw).run_as_kind is PrincipalKind.PASSWORD
+
+    def test_the_kind_is_a_required_keyword(self):
+        with pytest.raises(TypeError):
+            registered_schedule(  # type: ignore[call-arg]
+                raw_task_args=task_args_to_persisted(_task_args()),
+                unattended_flag=False,
+                raw_run_as_user="CORP\\svc_x",
+            )
+
+
+class TestDowngradeInterruptForAManagedServiceAccount:
+    """The MSA variant: it interrupts, and it names no password anywhere.
+
+    Every other variant here asks for a credential. A gMSA's is held by the directory, so
+    "Windows needs that account's password again" would send an admin hunting for something
+    that does not exist — the same class of wrong coaching plan 0046's A7 found aimed at a
+    service account, one kind further on.
+    """
+
+    def _variant(self, **over):
+        kwargs = {
+            "registered_unattended": True,
+            "password_supplied": False,
+            "registered_foreign_account": "CORP\\svc_x$",
+            "registered_kind": PrincipalKind.MANAGED_SERVICE_ACCOUNT,
+        }
+        kwargs.update(over)
+        return downgrade_interrupt(**kwargs)  # type: ignore[arg-type]
+
+    def test_it_interrupts(self):
+        assert self._variant() is not None
+
+    def test_no_string_it_produces_mentions_a_password(self):
+        """The sweep. Asserted over EVERY field of the dataclass, not the three the
+        service-account variant checks, so a future field added with inherited copy is red."""
+        interrupt = self._variant()
+        assert interrupt is not None
+        for name, value in vars(interrupt).items():
+            if isinstance(value, str):
+                assert "password" not in value.lower(), f"the MSA variant's {name} mentions a password"
+
+    def test_it_names_the_account(self):
+        interrupt = self._variant()
+        assert interrupt is not None
+        assert "CORP\\svc_x$" in interrupt.detail
+        assert "CORP\\svc_x$" in interrupt.keep_unattended_label
+
+    def test_it_overrides_the_keep_label_the_other_variants_share(self):
+        """The FIRST variant to do so, and it has to: every other one offers to "re-enter the
+        Windows password"."""
+        plain = downgrade_interrupt(
+            registered_unattended=True,
+            password_supplied=False,
+            registered_foreign_account="",
+            registered_kind=PrincipalKind.PASSWORD,
+        )
+        interrupt = self._variant()
+        assert plain is not None and interrupt is not None
+        assert interrupt.keep_unattended_label != plain.keep_unattended_label
+
+    def test_the_signed_in_only_escape_is_withdrawn(self):
+        interrupt = self._variant()
+        assert interrupt is not None
+        assert interrupt.offers_signed_in_only is False
+        assert interrupt.signed_in_only_label == ""
+
+    def test_it_routes_a_principal_change_to_remove_then_schedule(self):
+        interrupt = self._variant()
+        assert interrupt is not None
+        assert "Remove nightly sync" in interrupt.detail
+
+    def test_it_hedges(self):
+        interrupt = self._variant()
+        assert interrupt is not None
+        assert GMSA_UNTESTED_CAPTION in interrupt.detail
+
+    def test_it_is_checked_BEFORE_the_foreign_account_arm(self):
+        """An MSA is always foreign, so the service-account arm would otherwise swallow it and
+        coach a password. This is the ordering, proved by the copy that comes out."""
+        interrupt = self._variant()
+        assert interrupt is not None
+        assert "managed service account" in interrupt.headline
+
+    def test_a_blank_recorded_account_degrades_rather_than_interpolating_nothing(self):
+        """Only reachable on a hand-edited record (a blank principal is the signed-in account,
+        which is never an MSA) — but an empty string dropped into the middle of a sentence is
+        the kind of thing a district screenshots."""
+        interrupt = self._variant(registered_foreign_account="")
+        assert interrupt is not None
+        assert "a managed service account," in interrupt.detail
+
+    @pytest.mark.parametrize("kind", [PrincipalKind.PASSWORD, PrincipalKind.INTERACTIVE_TOKEN, None])
+    def test_every_other_kind_keeps_the_pre_s4_copy(self, kind):
+        """The NON-vacuous half: the MSA arm must not have changed the two variants every
+        shipped install actually sees, nor the unknown-record one."""
+        produced = self._variant(registered_kind=kind)
+        expected = downgrade_interrupt(
+            registered_unattended=True,
+            password_supplied=False,
+            registered_foreign_account="CORP\\svc_x$",
+            registered_kind=PrincipalKind.PASSWORD,
+        )
+        assert produced == expected
+        assert produced is not None
+        assert "Windows needs that account's password again" in produced.detail
+
+    def test_a_supplied_password_still_short_circuits_first(self):
+        # Unreachable from the UI (the disclosure hides AND clears the field), and `None` is
+        # still the right answer: the re-register stays unattended, so there is no downgrade.
+        assert self._variant(password_supplied=True) is None
+
+    def test_the_new_keyword_is_required(self):
+        with pytest.raises(TypeError):
+            downgrade_interrupt(  # type: ignore[call-arg]
+                registered_unattended=True,
+                password_supplied=False,
+                registered_foreign_account="CORP\\svc_x",
+            )

@@ -835,9 +835,11 @@ class TestRequestProvision:
         attempt = _provision()
         assert attempt.outcome is provision_session.ProvisionOutcome.FAILED
         assert attempt.message == task_com.MSG_LOGON_FAILURE
-        assert classify_schedule_error(attempt.message, True, account_is_current=False) != _unclassified_copy(
-            attempt.message
-        )
+        from src.scheduler.task_com import PrincipalKind
+
+        assert classify_schedule_error(
+            attempt.message, True, account_is_current=False, kind=PrincipalKind.PASSWORD
+        ) != _unclassified_copy(attempt.message)
 
     def test_an_access_denied_from_the_child_is_relabelled(self, monkeypatch):
         """The prompt WAS approved, so the admin must not be told to answer it again (the
