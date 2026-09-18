@@ -56,7 +56,9 @@ doc is the reference. On any conflict, the harness + `docs/DESIGN_SYSTEM.md` win
 - `page_header(title, subtitle=None, trailing=None)` — slim white/transparent top block. `trailing` =
   a `district_chip` or the screen's one action. Replaces the old gradient heroes.
 - `HealthVerdictBanner(verdict, headline=, detail=, trailing=None)` — the verdict band. `trailing` =
-  the ONE fix action (a `primary_button`) or a link (`text_button`).
+  the ONE fix action: a `text_button` in the band's `color_on_*_tint` (the default — it clears AA and
+  keeps the screen's single filled primary elsewhere) or a `secondary_button`; `primary_button` ONLY
+  when that fix IS the screen's one primary action. Never an un-recoloured outlined border on a tint.
 - `metric_tile(label, value)` — a calm tile (navy `type_metric` numeral + uppercased muted caption).
 - `primary_button(...)` — the single filled action (hover/pressed/focus states; `disabled_bgcolor`
   for a gated fill). `secondary_button(...)` — outlined supporting action. `text_button(...)` —

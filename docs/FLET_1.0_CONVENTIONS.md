@@ -64,7 +64,7 @@
             path = f.path           # real server-side filesystem path
     ```
   - **`get_directory_path(dialog_title=None, initial_directory=None) -> str | None`** — async, returns the chosen dir path or `None` on cancel. This is the direct replacement for `pick_directory()`.
-  - **Boundary note (LANDED in PLAT-2):** a path returned from `FilePicker` is **untrusted input to the core** — validate it before persist/forward (it feeds `run_pipeline`'s `input_path`) the same way the CLI validates `--input`. `src/ui_flet/filepicker.py` does this: `validate_input_dir` (exists+is_dir, mirrors `pipeline.py:292`) / `validate_output_dir` (parent-structural) are pure + tested; `check_writable` is a separate effectful probe (TOCTOU-deferred to the loader's atomic `save_all`). Never pass a picked path straight into the core.
+  - **Boundary note (LANDED in PLAT-2):** a path returned from `FilePicker` is **untrusted input to the core** — validate it before persist/forward (it feeds `run_pipeline`'s `input_path`) the same way the CLI validates `--input`. `src/ui_flet/filepicker.py` does this: `validate_input_dir` (exists+is_dir, mirrors `pipeline.py:292`) / `validate_output_dir` (parent-structural) are pure + tested. There is deliberately NO writability probe at pick time (the retired `check_writable` was callerless and `os.access` is blind to Windows permissions) — writability is answered at RUN time by `etl.loader.output_target_problem`, with the loader's atomic `save_all` as the durable backstop. Never pass a picked path straight into the core.
 
 ## Worker-thread → UI marshalling (THE #1 correctness trap)
 - The ETL core (`run_pipeline`) is **synchronous/blocking** (pandas) → run it on a **worker thread** so the window never freezes.

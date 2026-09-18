@@ -113,6 +113,8 @@ Writes DataFrames to CSV (UTF-8 with BOM) with field ordering from YAML config. 
 
 `save_all` commit is **backup-and-restore atomic** (`_commit_staged`): each existing target is moved into `.bak_<ts>/` then the staged file promoted with `os.replace` (atomic same-fs overwrite, not `shutil.move` — fixes the Windows copy2+unlink within-file tear); any mid-commit failure rolls back (restore originals / remove new files) so the output dir is **never left torn**. Rollback runs inside the `except` and re-raises *before* the `finally` rmtrees `.bak_<ts>/` (restore-before-cleanup invariant).
 
+**Output-folder pre-flight (0050).** `loader.output_target_problem(path)` (`None` = usable, else a log-only reason) runs at both entry points **before any ETL work**, skipped when `dry_run`. GOTCHA: in `convert_job` it sits right after the blank-output guard, **NOT at that function's own `DataLoader` line**, which is *after* the whole ETL. The write additionally catches **`OSError` only** → `RunErrorCategory.OUTPUT` / `ConvertStatus.OUTPUT_FOLDER_UNUSABLE`. Rationale + the fail-loud reversal: `docs/claugentic-DECISIONS.md` (2026-09-17).
+
 ### Config (`src/config/`)
 - `models.py` — Pydantic v2 models for YAML mapping validation. 8 field mapping types detected by `classify_field()`: direct mapping, transform, fixed value, academic year, append year, email format, name config, ID-role pair. EntityConfig also supports `headers` dict for headerless files.
 - `loader.py` — YAML loading with `_base` inheritance (deep merge, cycle detection) and Pydantic validation. `load_config(sis_type)` returns a validated `MappingConfig`.

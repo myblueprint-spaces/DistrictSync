@@ -57,7 +57,7 @@ result model and must stay *path-free* (a roster path can never enter a summary 
 The output-folder path, by contrast, is app-owned config (never student PII) and belongs
 at the view layer — so the path-bearing decisions live HERE, cleanly apart from the
 path-free result model. No ``flet`` import; the OS-open helper is effectful-but-mockable
-(mirrors ``filepicker.check_writable``).
+— a real OS effect kept behind one named function so the pure decisions stay pure.
 """
 
 from __future__ import annotations
@@ -95,7 +95,7 @@ def can_run_convert(*, district_chosen: bool, output_dir_set: bool, input_valid:
     return bool(district_chosen) and bool(output_dir_set) and bool(input_valid)
 
 
-def resolved_output_caption(output_dir: str | None, *, setup_completed: bool = True) -> str:
+def resolved_output_caption(output_dir: str | None, *, setup_completed: bool = True, refused: bool = False) -> str:
     """The pre-run, read-only caption naming where files will be written (or the unset prompt).
 
     Set → "Files will be written to <dir> — change it in Settings." (pre-run visibility).
@@ -104,8 +104,21 @@ def resolved_output_caption(output_dir: str | None, *, setup_completed: bool = T
     setup completes there is no Settings scroll yet — the Setup *wizard* owns the folder,
     so the caption routes there instead of naming a surface that doesn't exist. Never a
     silent write into the input folder either way.
+
+    ``refused`` (plan 0050) is the "we just proved we can't write there" axis: a run that
+    was refused for an unusable output folder must NOT leave a promise that files *will
+    be written* to it sitting in the same viewport as the band disproving it. The folder
+    is still named — this caption is how the admin learns WHICH folder, without putting a
+    path in the verdict banner. It defaults to ``False`` so every pre-existing call site
+    is byte-identical, but the Convert screen never leans on that default: ``_render_result``
+    passes this axis on all of its branches and both ``on_error`` handlers reset it, which
+    is what stops a refusal's wording surviving onto a later successful run. (The
+    anomaly-ack accept/cancel handlers do not set it — they are unreachable from a
+    refusal, which returns a terminal status with no card to answer.)
     """
     if output_dir_is_set(output_dir):
+        if refused:
+            return f"We couldn't write to {(output_dir or '').strip()} — change it in Settings."
         return f"Files will be written to {(output_dir or '').strip()} — change it in Settings."
     if setup_completed:
         return "Set your output folder in Settings first — DistrictSync doesn't know where to write yet."

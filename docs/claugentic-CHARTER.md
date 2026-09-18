@@ -46,7 +46,9 @@ be stated as a DECISION before any code can quietly make it.
 test-author spawn** (clean context, given only the spec, never the solution) followed by
 greening without editing the test files. When no sub-agent tool is available, the tests are
 self-authored — which is genuinely weaker, must be said so, and should be compensated with
-falsification (perturb each guard, observe red, restore) rather than claimed as independent.
+falsification (perturb each guard, observe red, restore) rather than claimed as independent. **Every application of this entry to date has been
+self-authored** (no sub-agent tool in those sessions) and compensated that way; a growth
+note below does not repeat the caveat — it is stated here, once, for all of them.
 
 *Grown 2026-09-17 (plan 0049 S-1a-i — `paths`' machine-scope ladder + trust predicate,
 `utils/accounts.py`, `utils/dpapi.py`).* The entry extends to **syscall-backed** predicates
@@ -57,9 +59,13 @@ that runs where the API exists. Two things the edge table could NOT prove on its
 to be added beside it: (1) a **word-level spy** — a DPAPI round trip passes with the wrong
 protection scope, so only asserting the exact `dwFlags` reaching the API proves the scope;
 (2) a **mechanical twin** for a "nothing can reach this state" claim — a source scan, itself
-paired with a planted-file test proving the scanner has teeth. 12/12 falsification probes
-went red; the tests were self-authored (no sub-agent tool in this session), as the caveat
-above requires it to be said.
+paired with a planted-file test proving the scanner has teeth. 12/12 falsification probes went red.
+
+*Grown 2026-09-17 (plan 0050 — `etl.loader.output_target_problem`).* Extends to **effectful
+FILESYSTEM probes** unchanged (a `tmp_path` is the real API, so no seam is needed). One
+addition: a probe that leaves an ARTEFACT needs a test for its REAPER *and* one proving the
+reaper is prefix-scoped, or the cleanup silently becomes a second sweep competing with the
+module's existing ones. 14/14 falsification probes went red.
 
 ### Config-schema keys, shipped DATA rows, and repo-hygiene gates
 _Recorded 2026-07-29 (plan 0038 S3 — `district_domains` + its validator, the six domain rows, `scripts/check_no_emails.py`)._

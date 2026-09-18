@@ -4,7 +4,6 @@ Covers the trust-critical pieces (only the ``await``-the-native-dialog line is
 ``# pragma: no cover`` — it needs a live Flet loop / native window):
   * ``validate_input_dir`` — exists+is_dir, missing, file-as-path
   * ``validate_output_dir`` — ok, parent-is-file
-  * ``check_writable`` — tmp-writable vs unwritable (effectful, not "pure")
   * ``_ensure_picker`` — idempotent ``page.services`` append (mock page)
   * ``sanitize_initial_directory`` — the 0x80070057/0x80070002 crash guard
   * ``pick_directory``/``pick_files`` — native-dialog failure degrades to cancel
@@ -15,15 +14,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import sys
 from pathlib import Path
-
-import pytest
 
 from src.ui_flet.filepicker import (
     ValidationResult,
     _ensure_picker,
-    check_writable,
     sanitize_initial_directory,
     validate_input_dir,
     validate_output_dir,
@@ -77,25 +72,6 @@ class TestValidateOutputDir:
 
     def test_empty_string_is_rejected(self):
         assert validate_output_dir("").ok is False
-
-
-class TestCheckWritable:
-    def test_writable_tmp_dir(self, tmp_path: Path):
-        assert check_writable(str(tmp_path)) is True
-
-    def test_nonexistent_dir_falls_back_to_writable_parent(self, tmp_path: Path):
-        target = tmp_path / "new_subdir"
-        assert check_writable(str(target)) is True
-
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits don't gate os.access on Windows")
-    def test_unwritable_dir_is_rejected(self, tmp_path: Path):
-        locked = tmp_path / "locked"
-        locked.mkdir()
-        os.chmod(locked, 0o500)  # r-x: not writable
-        try:
-            assert check_writable(str(locked)) is False
-        finally:
-            os.chmod(locked, 0o700)  # restore so tmp cleanup can remove it
 
 
 class TestSanitizeInitialDirectory:

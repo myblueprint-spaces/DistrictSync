@@ -26,7 +26,6 @@ crashes).
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -52,10 +51,9 @@ class ValidationResult:
 
 
 # --------------------------------------------------------------------------- #
-# Boundary validation — split by PURITY (RC3)                                  #
+# Boundary validation — both PURE (RC3)                                        #
 #   * validate_input_dir   — PURE (read-only stat: exists + is_dir)            #
 #   * validate_output_dir  — PURE-STRUCTURAL (parent exists + is_dir)          #
-#   * check_writable       — EFFECTFUL (probes the filesystem; NOT "pure")     #
 # Paths are resolved first (``Path.resolve()``) to normalize. UNC paths        #
 # (``\\\\server\\share``) and symlinks are ACCEPTED — district servers use     #
 # them, and ``resolve()`` follows symlinks to a real target before the stat.   #
@@ -82,9 +80,13 @@ def validate_output_dir(path: str) -> ValidationResult:
 
     The output folder itself may not exist yet (the loader creates it), so we
     validate the *parent* is a real directory — which rejects a path whose
-    parent is a file (an impossible location). This is read-only stat; the real
-    write guarantee is the loader's backup-and-restore atomic ``save_all`` (see
-    ``check_writable``'s TOCTOU note), not a probe here.
+    parent is a file (an impossible location). This is read-only stat: it is
+    cheap enough to run on every keystroke, which is why it stays structural.
+
+    It deliberately does NOT answer "can we write there?" — that needs a real
+    filesystem effect and belongs at run time, where
+    ``etl.loader.output_target_problem`` performs it (and where its durable
+    backstop, the loader's backup-and-restore atomic ``save_all``, lives).
     """
     if not path or not path.strip():
         return ValidationResult(False, "Choose where DistrictSync should write the output CSV files.")
@@ -95,28 +97,6 @@ def validate_output_dir(path: str) -> ValidationResult:
     if resolved.exists() and not resolved.is_dir():
         return ValidationResult(False, "That's a file, not a folder. Pick a folder to write into.")
     return ValidationResult(True, "Looks good — output will be written here.")
-
-
-def check_writable(path: str) -> bool:
-    """EFFECTFUL: best-effort writability probe (``os.access``). NOT pure.
-
-    Touches the filesystem, so it is deliberately kept OUT of the "pure"
-    validators. **TOCTOU caveat:** writable at validate-time is not a guarantee
-    of writable at run-time (permissions/disk can change between the check and
-    the write). The real, durable safety net is the loader's backup-and-restore
-    atomic ``save_all`` (``src/etl/loader.py``), which never leaves the output
-    dir torn on a mid-write failure — this probe is only an early UX signal.
-
-    Returns ``True`` if the path (or its nearest existing ancestor) appears
-    writable; ``False`` otherwise. Never raises.
-    """
-    try:
-        resolved = Path(path).resolve()
-        probe = resolved if resolved.exists() else resolved.parent
-        return os.access(probe, os.W_OK)
-    except OSError as exc:
-        logger.warning("Writability probe failed for %r: %s", path, exc)
-        return False
 
 
 # --------------------------------------------------------------------------- #

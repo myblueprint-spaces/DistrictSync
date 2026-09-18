@@ -3,6 +3,7 @@
 import logging
 import os
 import re
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +12,12 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from src.etl.loader import _STALE_BAK_MIN_AGE_SECONDS, _STALE_TMP_MAX_AGE_DAYS, DataLoader
+from src.etl.loader import (
+    _STALE_BAK_MIN_AGE_SECONDS,
+    _STALE_TMP_MAX_AGE_DAYS,
+    DataLoader,
+    output_target_problem,
+)
 
 
 def _replace_side_effect(*, fail_role, fail_entity):
@@ -625,3 +631,135 @@ class TestArchiveStaleOutputs:
         assert len(archive_dirs) == 1
         assert (archive_dirs[0] / "CourseInfo.csv").read_text(encoding="utf-8") == "stale-courseinfo"
         assert not (archive_dirs[0] / "Classes.csv").exists()
+
+
+class TestOutputTargetProblem:
+    """Pins ``output_target_problem``: which folders it refuses, that it really creates
+    the folder, and that its ``.dsync_probe_*`` scratch dir is removed on success and
+    reaped (prefix-scoped) when a previous call stranded one. The reason is LOG-ONLY, so
+    the refusal rows assert a non-empty string rather than pinning wording.
+    """
+
+    def test_a_usable_directory_returns_none(self, tmp_path: Path):
+        # The positive twin every refusal below pairs with: the same call shape says
+        # "usable" for a folder that is.
+        assert output_target_problem(str(tmp_path)) is None
+
+    def test_a_creatable_nested_path_returns_none_and_is_created(self, tmp_path: Path):
+        target = tmp_path / "rosters" / "output"
+        assert output_target_problem(str(target)) is None
+        assert target.is_dir(), "the pre-flight does the real mkdir the loader would do"
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_a_blank_folder_is_refused(self, value: str):
+        problem = output_target_problem(value)
+        assert isinstance(problem, str) and problem
+
+    def test_a_leaf_that_is_a_file_is_refused(self, tmp_path: Path):
+        leaf = tmp_path / "output"
+        leaf.write_text("not a folder", encoding="utf-8")
+        problem = output_target_problem(str(leaf))
+        assert isinstance(problem, str) and problem
+        assert leaf.read_text(encoding="utf-8") == "not a folder"  # refusing touches nothing
+
+    def test_a_path_under_a_file_is_refused(self, tmp_path: Path):
+        blocker = tmp_path / "blocker.txt"
+        blocker.write_text("x", encoding="utf-8")
+        problem = output_target_problem(str(blocker / "output"))
+        assert isinstance(problem, str) and problem
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX permission bits don't gate directory creation on Windows"
+    )
+    def test_an_unwritable_directory_is_refused(self, tmp_path: Path):
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        os.chmod(locked, 0o500)  # r-x: the dir exists, but no subdir can be created in it
+        try:
+            problem = output_target_problem(str(locked))
+            assert isinstance(problem, str) and problem
+        finally:
+            os.chmod(locked, 0o700)  # restore so tmp cleanup can remove it
+
+    def test_the_probe_directory_is_removed_on_success(self, tmp_path: Path):
+        assert output_target_problem(str(tmp_path)) is None
+        assert list(tmp_path.iterdir()) == [], "the probe must not survive a successful check"
+
+    def test_a_stale_probe_directory_is_reaped(self, tmp_path: Path):
+        # Every other leftover class in an output folder has a reaper (.tmp_* at 7 days,
+        # .bak_* at 1 hour). A probe dir stranded by a failed rmdir would have NONE at any
+        # age — one per failed run, unbounded, on exactly the flaky shares this targets.
+        stale = tmp_path / ".dsync_probe_leftover"
+        stale.mkdir()
+        assert output_target_problem(str(tmp_path)) is None
+        assert not stale.exists(), "a stranded probe dir must be reaped by the next check"
+        assert list(tmp_path.iterdir()) == []
+
+    def test_the_reap_leaves_every_other_leftover_class_alone(self, tmp_path: Path):
+        # The reap is keyed on the probe's own distinct prefix — it must never become a
+        # second, quieter sweep competing with `_reconcile_output_dir`'s .bak_/.tmp_ rules
+        # (a .bak_* is DATA and is never deleted at any age).
+        for name in (".bak_20260101_000000_abcd1234", ".tmp_20260101_000000_abcd1234", "archive_20260101_000000"):
+            (tmp_path / name).mkdir()
+        (tmp_path / "Students.csv").write_text("id\n1\n", encoding="utf-8")
+        assert output_target_problem(str(tmp_path)) is None
+        assert sorted(p.name for p in tmp_path.iterdir()) == [
+            ".bak_20260101_000000_abcd1234",
+            ".tmp_20260101_000000_abcd1234",
+            "Students.csv",
+            "archive_20260101_000000",
+        ]
+
+    def test_a_failed_probe_cleanup_warns_but_still_reports_usable(self, tmp_path: Path, caplog):
+        # Cleanup of our OWN leftover must never turn a usable folder into a refusal —
+        # the next call's reap is what makes that self-healing.
+        with (
+            patch("src.etl.loader.Path.rmdir", side_effect=OSError("cannot remove")),
+            caplog.at_level(logging.WARNING, logger="src.etl.loader"),
+        ):
+            assert output_target_problem(str(tmp_path)) is None
+        assert caplog.records, "a failed probe cleanup must leave a trace"
+        # And the leftover it left behind is reaped by the very next check.
+        assert output_target_problem(str(tmp_path)) is None
+        assert list(tmp_path.iterdir()) == []
+
+    def test_the_reap_never_turns_a_usable_folder_into_a_refusal(self, tmp_path: Path, caplog):
+        # BOTH arms of the best-effort promise, because either one raising would make
+        # cleaning up an OLD leftover able to fail a folder that works.
+        stale = tmp_path / ".dsync_probe_leftover"
+        stale.mkdir()
+        with (
+            patch("src.etl.loader.shutil.rmtree", side_effect=OSError("in use")),
+            caplog.at_level(logging.WARNING, logger="src.etl.loader"),
+        ):
+            assert output_target_problem(str(tmp_path)) is None
+        assert caplog.records, "a failed reap must leave a trace"
+        assert stale.exists(), "the leftover survives a failed reap (and is retried next call)"
+
+        caplog.clear()
+        with (
+            patch("src.etl.loader.Path.glob", side_effect=OSError("cannot scan")),
+            caplog.at_level(logging.WARNING, logger="src.etl.loader"),
+        ):
+            assert output_target_problem(str(tmp_path)) is None
+        assert caplog.records, "a failed reap SCAN must leave a trace"
+
+    def test_a_probe_already_swept_by_a_concurrent_run_is_not_warned_about(self, tmp_path: Path, caplog):
+        # MEASURED race: `_reap_stale_probes` has no age gate, so a CONCURRENT run's LIVE
+        # probe IS in glob range and IS removed. Benign — but only because the owner's
+        # `rmdir` then fails FileNotFoundError, which must be treated as already-clean.
+        # Warning here would send a support engineer after a non-problem in a district log.
+        with (
+            patch("src.etl.loader.Path.rmdir", side_effect=FileNotFoundError(2, "No such file or directory")),
+            caplog.at_level(logging.WARNING, logger="src.etl.loader"),
+        ):
+            assert output_target_problem(str(tmp_path)) is None
+        assert caplog.records == [], "a probe a concurrent run already swept is not a warning"
+
+    def test_a_probe_dir_is_invisible_to_the_stale_output_detector(self, tmp_path: Path):
+        # Verified, not assumed: every output-dir scan that could see the probe is *.csv
+        # keyed or branches on .bak_/.tmp_ only.
+        (tmp_path / ".dsync_probe_live").mkdir()
+        loader = DataLoader(str(tmp_path))
+        assert loader.detect_stale_outputs({"Students"}) == []
+        assert loader.archive_stale_outputs({"Students"}) == []

@@ -47,6 +47,7 @@ class ConvertStatus(str, Enum):
     NO_INPUT = "no_input"  # nothing could be read from the picked folder
     NO_OUTPUT = "no_output"  # transform produced no entities
     INCOMPLETE_ROSTER = "incomplete_roster"  # other entities built, the roster anchor did not — refused
+    OUTPUT_FOLDER_UNUSABLE = "output_folder_unusable"  # output folder unreachable/unwritable (0050)
 
 
 @dataclass(frozen=True)
@@ -169,6 +170,33 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
             "The other roster files were built, but with no students they would point at people "
             "SpacesEDU has never seen — so nothing was saved and nothing was sent. Your last saved "
             "files are untouched. Check this district's student export, then convert again.",
+        )
+
+    if status is ConvertStatus.OUTPUT_FOLDER_UNUSABLE:
+        # Plan 0050. ONE string serves TWO paths — the pre-flight refusal (nothing ran)
+        # and the write-time ``OSError`` (the conversion ran, only the save failed) — so
+        # it says "nothing NEW was saved", which is true on both, never "nothing was
+        # converted", which would be false on the second and contradict its own headline.
+        #
+        # It deliberately does NOT promise "your existing files were not changed". That
+        # would be an absolute over a BEST-EFFORT rollback: ``_commit_staged`` restores
+        # per file inside ``try/except OSError`` and a restore that itself fails is
+        # logged at ERROR, not raised — and on the very fault this copy is for (a drive
+        # dropping mid-commit) the restore fails on the same dead path. "Nothing new was
+        # saved" is true whatever the rollback managed.
+        #
+        # The network/shared-folder clause is COACHING, not detection — nothing here
+        # inspects a path or branches on one, and it is deliberately wider than "network
+        # drive" so it does not bias diagnosis toward the single most-reported cause.
+        # Zero-arg like every other branch: the folder is named by the screen's CAPTION
+        # (``convert_output.resolved_output_caption``), never by this banner.
+        return (
+            Verdict.FAILED,
+            "We couldn't save to your output folder",
+            "DistrictSync couldn't write to your output folder, so nothing new was saved. Check the "
+            "output folder in Settings — if it's on a network drive or a shared folder, make sure you "
+            "can still open it. Then try again; if it keeps failing, the Help page has our support "
+            "contact.",
         )
 
     raise ValueError(f"Unmapped ConvertStatus: {status!r}")  # pragma: no cover - totality guard

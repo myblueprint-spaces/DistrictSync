@@ -101,6 +101,44 @@ class TestResolvedOutputCaption:
         assert "Set your output folder in Settings first" in caption
 
 
+class TestResolvedOutputCaptionRefused:
+    """Plan 0050: after a refused run the caption must stop promising a write it cannot do.
+
+    The screen renders this caption in the SAME viewport as the verdict band. Leaving
+    "Files will be written to <folder>" under a band saying we could not write there is a
+    direct self-contradiction; leaving the refusal wording over a LATER successful run is
+    the same fault inverted, which is why the screen sets this on every render path.
+    """
+
+    def test_refused_stops_promising_a_write(self) -> None:
+        caption = resolved_output_caption(r"C:\Users\admin\output", refused=True)
+        assert "will be written" not in caption
+        assert "We couldn't write to" in caption
+
+    def test_refused_still_names_the_folder_and_the_fix(self) -> None:
+        # This caption is how the admin learns WHICH folder - the banner stays path-free.
+        caption = resolved_output_caption(r"C:\Users\admin\output", refused=True)
+        assert r"C:\Users\admin\output" in caption
+        assert "change it in Settings" in caption
+
+    def test_not_refused_is_byte_identical_to_the_old_caption(self) -> None:
+        # The positive twin / back-compat pin: the default keeps every existing call site
+        # producing exactly what it produced before.
+        for completed in (True, False):
+            assert resolved_output_caption("/out", setup_completed=completed, refused=False) == (
+                resolved_output_caption("/out", setup_completed=completed)
+            )
+        assert (
+            resolved_output_caption("/out", refused=False) == "Files will be written to /out — change it in Settings."
+        )
+
+    @pytest.mark.parametrize("value", ["", "   ", None])
+    def test_an_unset_folder_keeps_its_own_routed_copy(self, value: str | None) -> None:
+        # Refusal is a fact about a folder that IS set; an unset one is a gate bug with
+        # its own (mode-aware) message and must not be reworded by this axis.
+        assert resolved_output_caption(value, refused=True) == resolved_output_caption(value)
+
+
 class TestOpenFolder:
     """Per-OS dispatch, fully mocked — no real file browser opens under test."""
 

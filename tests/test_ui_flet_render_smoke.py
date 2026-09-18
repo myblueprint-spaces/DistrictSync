@@ -2813,12 +2813,15 @@ def _built_result():
     return ConvertResult(status=ConvertStatus.DELIVERED, entity_counts={"Students": 12})
 
 
-def _convert_with_result(tmp_path, monkeypatch, *, sis_type, csv_names, result):
+def _convert_with_result(tmp_path, monkeypatch, *, sis_type, csv_names, result, on_navigate=None):
     """Mount Convert for ``sis_type`` and drive ``result`` through the REAL run flow.
 
     Returns ``(tree, page, result_slot)``. ``convert_job`` is stubbed (no ETL) but every
     other step is the production path: the button's ``_start_convert`` → ``JobRunner`` →
     the marshalled ``on_done`` → ``_render_result(result, identity)``.
+
+    ``on_navigate`` mirrors the shell's injection; ``None`` (the default) is the
+    un-injected mount, where a routed control must simply not be rendered.
     """
     import src.ui_flet.screens.convert as convert_mod
 
@@ -2828,7 +2831,7 @@ def _convert_with_result(tmp_path, monkeypatch, *, sis_type, csv_names, result):
 
     captured: list = []
     page = _driving_page(captured)
-    tree = build_convert(page)
+    tree = build_convert(page, on_navigate=on_navigate)
     _button_by_content(tree, "Convert now").on_click(None)
     assert len(captured) == 1, "the convert must marshal exactly one on_done"
     coro, args = captured[0]
@@ -3045,3 +3048,112 @@ class TestCheckRowFactory:
 
         assert seen == [True, False]
         assert all(isinstance(item, bool) for item in seen), "the event object reached the caller"
+
+
+# --------------------------------------------------------------------------- #
+# Output-folder refusal (plan 0050) — the routed fix, and no dead click         #
+# --------------------------------------------------------------------------- #
+def _unusable_output_result():
+    from src.ui_flet.convert_result import ConvertResult, ConvertStatus
+
+    return ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE)
+
+
+def test_output_folder_refusal_renders_the_band_and_a_routed_open_setup(tmp_path, monkeypatch):
+    """The refusal mounts on 0.85.3, reads as the OUTPUT fault, and routes to the fix.
+
+    DESIGN_SYSTEM principle 5 asks a failed band for the concrete next step, and Convert
+    has rendered every outcome with an empty ``trailing`` slot until now. The action is the
+    TEXT tier painted in the band's AA-gated on-tint colour — not filled (principle 2: the
+    screen's one filled primary stays "Convert now") and not outlined (an outlined border
+    on the failed tint measures under WCAG 2.2 SC 1.4.11's 3:1). Labelled for the rail item
+    that actually exists — "Open Setup", never "Open Settings".
+    """
+    from src.ui_flet.convert_result import ConvertResult as _CR
+    from src.ui_flet.convert_result import ConvertStatus, convert_error_copy, summarize
+
+    routed: list[str] = []
+    _tree, _page, result_slot = _convert_with_result(
+        tmp_path,
+        monkeypatch,
+        sis_type="sd74myedbc",
+        csv_names=_ROSTERING_CSVS,
+        result=_unusable_output_result(),
+        on_navigate=routed.append,
+    )
+
+    _verdict, headline, detail = summarize(_CR(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE))
+    assert _has_text_containing(result_slot, headline)
+    assert _has_text_containing(result_slot, detail)
+    # NOT the never-crash floor (whose copy is the input-folder misattribution itself).
+    assert not _has_text_containing(result_slot, convert_error_copy()[0])
+    assert not _has_text_containing(result_slot, convert_error_copy()[1])
+
+    button = _button_by_content(result_slot, "Open Setup")
+    assert isinstance(button, ft.TextButton), "the fix action is the TEXT tier (contrast + one-primary)"
+    assert not isinstance(button, (ft.FilledButton, ft.OutlinedButton))
+    button.on_click(None)
+    assert routed == ["setup"], "the routed fix must reach the destination id the rail uses"
+
+
+def test_output_folder_refusal_without_on_navigate_renders_no_button(tmp_path, monkeypatch):
+    """Absent handler => no affordance, never a dead one (the house rule) — and the band
+    still stands alone, because the copy names Settings in words."""
+    from src.ui_flet.convert_result import ConvertResult as _CR
+    from src.ui_flet.convert_result import ConvertStatus, summarize
+
+    _tree, _page, result_slot = _convert_with_result(
+        tmp_path,
+        monkeypatch,
+        sis_type="sd74myedbc",
+        csv_names=_ROSTERING_CSVS,
+        result=_unusable_output_result(),
+    )
+
+    _verdict, headline, _detail = summarize(_CR(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE))
+    assert _has_text_containing(result_slot, headline), "the verdict band stands without the button"
+    assert not [c for c in _iter_controls(result_slot) if getattr(c, "content", None) == "Open Setup"]
+
+
+def test_the_output_caption_stops_promising_a_write_then_restores_it(tmp_path, monkeypatch):
+    """The caption is built ONCE and lives for the whole mount, so it is a long-lived
+    ASSERTION in the same viewport as the band.
+
+    Refused -> it must stop saying "Files will be written to …" (the screen would
+    otherwise contradict itself). Then a LATER successful run on the same mount must
+    RESTORE it — the same stale-assertion fault, inverted, and the reason every render
+    path sets the caption rather than only the refusal branch.
+    """
+    import src.ui_flet.screens.convert as convert_mod
+
+    _deliver_ready_cfg(tmp_path, monkeypatch, sis_type="sd74myedbc", csv_names=_ROSTERING_CSVS)
+    monkeypatch.setattr(convert_mod, "_sftp_credential_present", lambda _cfg: True)
+
+    next_result: list = [_unusable_output_result()]
+    monkeypatch.setattr(convert_mod, "convert_job", lambda *_a, **_kw: next_result[0])
+
+    captured: list = []
+    page = _driving_page(captured)
+    tree = build_convert(page)
+
+    def _run_once() -> None:
+        _button_by_content(tree, "Convert now").on_click(None)
+        assert len(captured) == 1
+        coro, args = captured[0]
+        asyncio.run(coro(*args))
+        captured.clear()
+
+    assert _has_text_containing(tree, "Files will be written to"), "the pre-run caption is the baseline"
+
+    _run_once()
+    assert not _has_text_containing(tree, "Files will be written to"), (
+        "a folder we just proved unwritable must not still be promised a write"
+    )
+    assert _has_text_containing(tree, "We couldn't write to")
+
+    next_result[0] = _built_result()
+    _run_once()
+    assert _has_text_containing(tree, "Files will be written to"), (
+        "the refusal's wording must not survive onto a later successful run"
+    )
+    assert not _has_text_containing(tree, "We couldn't write to")
