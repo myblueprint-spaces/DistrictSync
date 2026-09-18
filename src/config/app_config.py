@@ -226,6 +226,24 @@ class AppConfig:
     # ``_ADVISORY_FIELD_PREFIXES`` by construction, so ``_carries_chosen_settings`` counts it
     # like every other admin choice. NEVER a password — a NAME only (I1/I3 untouched).
     schedule_run_as_user: str = ""
+    # The task principal's KIND (plan 0049 S-4) — the FOURTH facet of the same atomic record,
+    # written and cleared in the SAME save as the three above. A ``task_com.PrincipalKind``
+    # VALUE (the enum's stable wire string), stored as a plain ``str`` because this dataclass
+    # is JSON on disk and a scheduler import here would invert the config→scheduler dependency.
+    #
+    # It exists because the kind can no longer be inferred from the other facets. Until S-4 a
+    # foreign principal implied a stored password, so "is it unattended?" and "which credential
+    # does Windows want?" were one question; a managed service account is unattended and has NO
+    # password, and the only remaining in-band signal would be the ``$`` on the recorded NAME.
+    # Sniffing that is precisely the inference plan 0049 S-3 deleted from
+    # ``task_com.apply_definition``, so the kind is RECORDED instead.
+    #
+    # ``""`` on a deployed install is not a gap: ``task_com.principal_kind_from_record``
+    # resolves a blank kind from the recorded USER (non-blank ⇒ PASSWORD, blank ⇒
+    # INTERACTIVE_TOKEN), both of which are evidenced by what earlier builds could register.
+    # That is why no migration is needed. Same ``schedule_`` NAMING CONTRACT as the third
+    # facet, and NEVER a password — a KIND only.
+    schedule_run_as_kind: str = ""
 
     # Seasonal sync window (owner decision 2026-07-21) — an OPT-IN recurring
     # school-year window that governs the app's OWN automatic nightly run only. The

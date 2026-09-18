@@ -41,6 +41,9 @@ Step = provisioning.ProvisionStep
 
 _SETUP_SID = "S-1-5-21-1-2-3-1001"
 _PRINCIPAL_SID = "S-1-5-21-1-2-3-1002"
+#: 0049 S-4: the gMSA's own SID. A DISTINCT value, so a prune that reached the wrong
+#: principal cannot pass by resolving to the password service account's.
+_MSA_SID = "S-1-5-21-1-2-3-1003"
 
 
 # --------------------------------------------------------------------------- #
@@ -94,6 +97,10 @@ def rig(monkeypatch, machine_root):
             return _SETUP_SID
         if name.lower() in {"corp\\svc", "svc"}:
             return _PRINCIPAL_SID
+        # 0049 S-4: a managed service account resolves like any other domain principal — the
+        # trailing ``$`` is a naming convention, not something LookupAccountNameW cares about.
+        if name.lower() in {"corp\\svc$", "svc$"}:
+            return _MSA_SID
         # Windows resolves these perfectly well, so the rig must too — otherwise the
         # unprunable-principal fence is never what refuses them and a probe that deletes
         # the fence stays green (found by falsification, 2026-09-17).
@@ -595,6 +602,84 @@ class TestPrunePrincipal:
         payload = {"op": "prune_principal", "task_name": "DistrictSync_Daily", "user": "CORP\\svc"}
         payload.update(overrides)
         return payload
+
+    # --- plan 0049 S-4: the kind dispatch ---------------------------------------------
+    def test_a_managed_service_account_can_be_pruned(self, rig, machine_root):
+        """S-3 left this validating with ``validate_run_as_user``, which rejects a trailing
+        ``$`` — so the one principal that most needs pruning could not be pruned at all, and a
+        retired gMSA would keep its ACEs on the shared profile with nothing in the app able to
+        revoke them. S-4 mirrors ``_principal_account``'s kind dispatch."""
+        machine_root.mkdir(parents=True)
+        provisioning.apply_prune_principal(
+            self._payload(user="CORP\\svc$", kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT.value)
+        )
+        joined = " ".join(" ".join(a) for a in rig.icacls)
+        assert "/remove:g" in joined
+        assert "CORP\\svc$" in joined
+
+    def test_the_same_name_declared_a_password_logon_is_REFUSED(self, rig, machine_root):
+        """The positive twin that proves the DISPATCH admits it, not a widened charset: the
+        ``$``-disagreement is caught by the validator, and refusing is the safe direction —
+        no ACE is removed and the task is not even deleted."""
+        machine_root.mkdir(parents=True)
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            provisioning.apply_prune_principal(self._payload(user="CORP\\svc$", kind=PrincipalKind.PASSWORD.value))
+        assert exc.value.step is Step.PRINCIPAL
+        assert rig.icacls == []
+        assert rig.deleted == []
+
+    def test_an_ABSENT_kind_reads_as_a_password_logon(self, rig, machine_root):
+        """The absent-value rule, on the IPC side: a request built by a pre-S-4 parent carries
+        no ``kind``, and the only foreign principal those builds could register was a password
+        logon. So today's payload still prunes."""
+        machine_root.mkdir(parents=True)
+        provisioning.apply_prune_principal(self._payload())
+        assert rig.icacls
+
+    def test_an_absent_kind_still_refuses_a_dollar_suffixed_name(self, rig, machine_root):
+        """The other half of that rule, and the one that matters: an unrecorded kind may never
+        be READ as a managed service account off the ``$`` in the name — that is exactly the
+        inference S-3 deleted. It resolves to PASSWORD, whose validator refuses the name."""
+        machine_root.mkdir(parents=True)
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            provisioning.apply_prune_principal(self._payload(user="CORP\\svc$"))
+        assert exc.value.step is Step.PRINCIPAL
+        assert rig.icacls == []
+
+    @pytest.mark.parametrize("bogus", ["not-a-kind", "", 7, None, ["password"]])
+    def test_a_garbled_kind_degrades_rather_than_raising(self, rig, machine_root, bogus):
+        """A request file is unsealed from disk; an unrecognised value lands on the evidenced
+        answer rather than escaping the ``(ok, message)`` contract as a bare ``ValueError``."""
+        machine_root.mkdir(parents=True)
+        provisioning.apply_prune_principal(self._payload(kind=bogus))
+        assert rig.icacls
+
+    @pytest.mark.parametrize(
+        "hostile",
+        ["NT AUTHORITY\\SYSTEM$", "BUILTIN\\Administrators$", "a b$", "$"],
+    )
+    def test_a_hostile_gmsa_name_is_still_refused(self, rig, machine_root, hostile):
+        """The kind dispatch widens WHICH names are legal, never the fence:
+        ``validate_gmsa_account`` refuses a built-in authority by name as well as by charset."""
+        machine_root.mkdir(parents=True)
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            provisioning.apply_prune_principal(
+                self._payload(user=hostile, kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT.value)
+            )
+        assert exc.value.step is Step.PRINCIPAL
+        assert rig.icacls == []
+
+    def test_an_unconfirmed_delete_still_leaves_a_managed_service_accounts_ace(self, rig, machine_root):
+        """The invariant S-4 must not weaken: pruning a LIVE task's principal makes it fail
+        every night with no surface anywhere."""
+        machine_root.mkdir(parents=True)
+        rig.delete_confirms = False
+        with pytest.raises(provisioning.ProvisionRefused) as exc:
+            provisioning.apply_prune_principal(
+                self._payload(user="CORP\\svc$", kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT.value)
+            )
+        assert exc.value.step is Step.DELETE
+        assert rig.icacls == []
 
     def test_an_unconfirmed_delete_leaves_the_ace(self, rig, machine_root):
         machine_root.mkdir(parents=True)

@@ -1478,3 +1478,65 @@ class TestValidateGmsaAccount:
         with pytest.raises(ValueError, match="Invalid run-as user"):
             validate_run_as_user(r"CORP\svc_sync$")
         assert validate_run_as_user(r"CORP\svc_sync") == r"CORP\svc_sync"
+
+
+# ---------------------------------------------------------------------------
+# Plan 0049 S-4 — the RECORDED kind, and its absent value
+# ---------------------------------------------------------------------------
+class TestPrincipalKindFromRecord:
+    """``principal_kind_from_record`` is why plan 0049 S-4 needs no migration.
+
+    Two consumers read a principal that was written down before ``PrincipalKind`` existed as a
+    stored field — the durable ``AppConfig`` record and an elevation request built by an
+    earlier build's parent. Spelling the evidenced rule twice is how the two come to disagree
+    about what an upgrader's nightly runs as, so there is ONE function and this is its table.
+    """
+
+    def test_a_recorded_value_is_returned_as_itself(self):
+        for kind in PrincipalKind:
+            assert task_com.principal_kind_from_record(kind.value, user="CORP\\svc") is kind
+
+    def test_a_blank_kind_beside_a_named_user_is_a_PASSWORD_logon(self):
+        """EVIDENCE, not a default: before S-4 the engine could register exactly one foreign
+        principal and it required a password to do it — ``register_task`` refuses a foreign
+        interactive-token request with ``_MSG_ACCOUNT_NEEDS_PASSWORD`` — so no deployed
+        install can mean anything else by a named account with no recorded kind."""
+        assert task_com.principal_kind_from_record("", user="CORP\\svc") is PrincipalKind.PASSWORD
+
+    def test_a_blank_kind_beside_a_blank_user_is_an_INTERACTIVE_TOKEN(self):
+        """The other half, and the one the 20 shipped districts are in: ``""`` is the signed-in
+        account (0046 B), which is logged-on-only unless a password was typed."""
+        assert task_com.principal_kind_from_record("", user="") is PrincipalKind.INTERACTIVE_TOKEN
+
+    @pytest.mark.parametrize("blank", ["", "   ", None, 7, ["password"], {"kind": "x"}, True])
+    def test_every_unusable_value_lands_on_the_evidenced_answer(self, blank):
+        """TOTAL and defensive: ``config.json`` is hand-editable and a request file is unsealed
+        from disk. Neither may raise into a paint path or an elevated child's ladder."""
+        assert task_com.principal_kind_from_record(blank, user="CORP\\svc") is PrincipalKind.PASSWORD
+        assert task_com.principal_kind_from_record(blank, user="") is PrincipalKind.INTERACTIVE_TOKEN
+
+    def test_an_unrecognised_string_is_never_coerced_into_a_kind_it_resembles(self):
+        assert task_com.principal_kind_from_record("managed_service", user="CORP\\svc$") is PrincipalKind.PASSWORD
+
+    @pytest.mark.parametrize("account", ["CORP\\svc$", "svc$", "  CORP\\svc$  "])
+    def test_it_NEVER_infers_a_managed_service_account_from_the_name(self, account):
+        """THE anti-inference pin, and the reason this function exists at all.
+
+        Reading the ``$`` off a name is precisely the inference plan 0049 S-3 deleted from
+        ``apply_definition`` (which decided a security principal from whether a password
+        happened to be present). Re-introducing it one layer up, in the thing that decides
+        which VALIDATOR a name goes through, would be incoherent — and the direction matters:
+        the safe answer for an unrecorded kind is the one whose validator REFUSES the name.
+        """
+        assert task_com.principal_kind_from_record("", user=account) is PrincipalKind.PASSWORD
+
+    def test_a_recorded_managed_service_account_IS_honoured(self):
+        """The positive twin: the kind is unreachable by inference but perfectly reachable by
+        RECORD, which is the whole design — it has to have been written."""
+        assert (
+            task_com.principal_kind_from_record(PrincipalKind.MANAGED_SERVICE_ACCOUNT.value, user="CORP\\svc$")
+            is PrincipalKind.MANAGED_SERVICE_ACCOUNT
+        )
+
+    def test_surrounding_whitespace_on_a_recorded_value_is_tolerated(self):
+        assert task_com.principal_kind_from_record("  password  ", user="") is PrincipalKind.PASSWORD

@@ -12,6 +12,7 @@ import inspect
 import pytest
 
 from src.scheduler import windows
+from src.scheduler.task_com import PrincipalKind
 from src.ui_flet import setup_gates
 from src.ui_flet.setup_gates import (
     RegisterBlock,
@@ -223,6 +224,9 @@ def _prefill(**over: object) -> ScheduleAccountFacts:
         "password_supplied": False,
         "recorded": "",
         "schedule_registered": False,
+        # 0049 S-4: PASSWORD is the G5 baseline kind — an admin who typed a foreign account
+        # and its password. Overridable per row, which is how the gMSA rows are written.
+        "kind": PrincipalKind.PASSWORD,
     }
     kwargs.update(over)
     return ScheduleAccountFacts(**kwargs)  # type: ignore[arg-type]
@@ -478,3 +482,100 @@ def test_the_engine_refusal_is_still_the_structural_floor():
     blank-password paths."""
     assert isinstance(windows._MSG_ACCOUNT_NEEDS_PASSWORD, str)
     assert windows._MSG_ACCOUNT_NEEDS_PASSWORD
+
+
+# ---------------------------------------------------------------------------
+# Plan 0049 S-4 — the gMSA kind at BOTH rungs that can refuse an account
+# ---------------------------------------------------------------------------
+_GMSA = "CORP\\svc_districtsync$"
+_MSA_KIND = PrincipalKind.MANAGED_SERVICE_ACCOUNT
+
+
+def _block(**over: object) -> RegisterBlock:
+    """``register_block`` over ``_prefill``, with the two undefaulted keywords supplied."""
+    return register_block(
+        True,
+        "03:00",
+        account=_prefill(**over),
+        delivery_secret_unreadable=False,
+    )
+
+
+class TestTheGmsaPassesBothRungs:
+    """D6's ``ACCOUNT_NEEDS_PASSWORD`` bullet was incomplete, and this class is why.
+
+    The SHAPE rung runs FIRST and unconditionally. Before S-4 it called
+    ``validate_run_as_user``, which rejects a trailing ``$`` — so every gMSA was refused
+    there, for the wrong reason, and the password rung was never reached at all. Both rungs
+    now dispatch on the declared kind, through ``task_com.validate_principal_account``.
+    """
+
+    def test_a_gmsa_with_no_password_opens_the_gate(self) -> None:
+        assert _block(typed=_GMSA, kind=_MSA_KIND, password_supplied=False) is RegisterBlock.NONE
+
+    def test_the_same_name_declared_as_a_password_logon_is_refused_on_SHAPE(self) -> None:
+        """The positive twin that proves the DISPATCH is what admits it, not a widened charset.
+        ``SVC$`` as a password logon is a caller mixing up two credential stories, and the
+        validator for that kind still refuses the ``$``."""
+        assert _block(typed=_GMSA, kind=PrincipalKind.PASSWORD, password_supplied=True) is RegisterBlock.ACCOUNT_SHAPE
+
+    def test_the_password_rung_never_fires_for_a_managed_service_account(self) -> None:
+        # The directory holds the credential; there is nothing to supply, so a rung that asks
+        # for one would close the gate on a complete request.
+        assert _block(typed=_GMSA, kind=_MSA_KIND, password_supplied=False) is not RegisterBlock.ACCOUNT_NEEDS_PASSWORD
+
+    def test_its_positive_twin_still_fires_for_a_password_logon(self) -> None:
+        # The SAME facts minus the ``$`` and with the password kind: the rung is alive.
+        assert (
+            _block(typed="CORP\\svc_districtsync", kind=PrincipalKind.PASSWORD, password_supplied=False)
+            is RegisterBlock.ACCOUNT_NEEDS_PASSWORD
+        )
+
+    def test_an_unsuffixed_name_declared_as_a_managed_service_account_is_refused(self) -> None:
+        # The dispatch cannot launder one kind's name into the other's — in EITHER direction.
+        assert (
+            _block(typed="CORP\\svc_districtsync", kind=_MSA_KIND, password_supplied=False)
+            is RegisterBlock.ACCOUNT_SHAPE
+        )
+
+    @pytest.mark.parametrize("hostile", ["NT AUTHORITY\\SYSTEM$", "BUILTIN\\Administrators$", "  $", "a b$"])
+    def test_a_hostile_or_malformed_gmsa_name_is_still_refused(self, hostile: str) -> None:
+        """``validate_gmsa_account`` refuses a built-in authority BY NAME as well as by
+        charset, and this gate inherits that rather than restating it."""
+        assert _block(typed=hostile, kind=_MSA_KIND, password_supplied=False) is RegisterBlock.ACCOUNT_SHAPE
+
+    @pytest.mark.parametrize("kind", list(PrincipalKind))
+    def test_the_untouched_prefill_is_byte_identical_for_every_kind(self, kind: PrincipalKind) -> None:
+        """G5, restated for S-4: the 20 shipped districts never touch the field, so the
+        machine-derived name — which legitimately contains a space — must never be validated,
+        whatever kind the session happens to declare."""
+        assert _block(kind=kind) is RegisterBlock.NONE
+
+    def test_the_switch_refusal_still_outranks_the_kind(self) -> None:
+        """Ordering is unchanged: a live task on another principal is refused before any
+        credential question, gMSA included."""
+        assert (
+            _block(typed=_GMSA, kind=_MSA_KIND, recorded="", schedule_registered=True)
+            is RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE
+        )
+
+    def test_the_delivery_secret_rung_still_outranks_the_kind(self) -> None:
+        assert (
+            register_block(
+                True,
+                "03:00",
+                account=_prefill(typed=_GMSA, kind=_MSA_KIND, password_supplied=False),
+                delivery_secret_unreadable=True,
+            )
+            is RegisterBlock.DELIVERY_SECRET_UNREADABLE
+        )
+
+
+class TestTheKindIsARequiredFact:
+    def test_schedule_account_facts_cannot_be_built_without_it(self) -> None:
+        # Every field here is required and undefaulted, and this one decides which validator a
+        # typed name goes through — the two charsets are disjoint on exactly one character.
+        with pytest.raises(TypeError):
+            ScheduleAccountFacts(  # type: ignore[call-arg]
+                typed=_CURRENT, current=_CURRENT, password_supplied=False, recorded="", schedule_registered=False
+            )
