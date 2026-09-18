@@ -284,6 +284,250 @@ class TestConvertManual:
 
 
 # --------------------------------------------------------------------------- #
+# output-folder pre-flight (plan 0050) - an output fault is never an input fault #
+# --------------------------------------------------------------------------- #
+class TestOutputFolderPreflight:
+    """Plan 0050: an unusable OUTPUT folder is refused BEFORE any ETL work, named as an
+    OUTPUT fault, and recorded per each surface's own rule.
+
+    The bug this closes: Convert ran the entire ETL (80k+ rows, seconds of work) and then
+    failed at ``DataLoader`` construction / ``save_all`` with copy blaming the *input*
+    folder, while the scheduled path recorded an unreachable drive as a ``config``
+    problem. Three reproduced causes (unmapped drive, over-long path, unwritable folder)
+    plus a fourth already documented in this repo (an output CSV held open in Excel).
+    """
+
+    @staticmethod
+    def _unusable(tmp_path: Path) -> str:
+        """An output folder that cannot be created - a FILE squatting on the leaf name.
+
+        Chosen over an unmapped drive letter because it reproduces on every platform the
+        suite runs on, and it is the same ``mkdir`` failure the real causes produce.
+        """
+        leaf = tmp_path / "unusable_output"
+        leaf.write_text("a file, not a folder", encoding="utf-8")
+        return str(leaf)
+
+    # -- Convert (manual, watched) ------------------------------------------------- #
+
+    def test_convert_refuses_before_any_etl_work(self, gde_input: Path, tmp_path: Path, monkeypatch) -> None:
+        """THE goal-1 pin: the refusal happens before ``run_transform`` is ever called.
+
+        A pre-check placed at ``convert_job``'s ``DataLoader`` line instead of the top
+        would satisfy a naive reading of "before the loader" and leave every other
+        assertion here green - this is the one that catches it.
+        """
+        from src.ui_flet.convert_result import ConvertStatus
+        from src.ui_flet.screens import convert as convert_mod
+
+        calls: list = []
+        monkeypatch.setattr(convert_mod, "run_transform", lambda *a, **kw: calls.append(a))
+
+        AppConfig(input_dir=str(gde_input), output_dir=self._unusable(tmp_path), sis_type="myedbc").save()
+        before = sorted(p.name for p in gde_input.iterdir())
+
+        result = convert_mod.convert_job("myedbc", str(gde_input))
+
+        assert result.status is ConvertStatus.OUTPUT_FOLDER_UNUSABLE
+        assert calls == [], "the ETL must not run for a folder we already know we cannot write to"
+        assert read_run_records() == [], "a refusal the admin is watching is not a night in the ledger"
+        assert sorted(p.name for p in gde_input.iterdir()) == before, "the input folder is never touched"
+
+    def test_the_same_fixture_converts_when_the_folder_is_good(self, gde_input: Path, gde_output: Path) -> None:
+        """The positive twin: "nothing ran" above is only meaningful beside a run that does."""
+        from src.ui_flet.convert_result import ConvertStatus
+        from src.ui_flet.screens.convert import convert_job
+
+        AppConfig(input_dir=str(gde_input), output_dir=str(gde_output), sis_type="myedbc").save()
+        result = convert_job("myedbc", str(gde_input))
+        assert result.status is ConvertStatus.DELIVERED
+        assert result.entity_counts.get("Students", 0) == 2
+        records = read_run_records()
+        assert records and records[0]["status"] == "success"
+
+    def test_a_blank_output_folder_still_fails_loud(self, gde_input: Path) -> None:
+        """D10 is untouched: an UNSET folder is a gate bug and must keep raising, not
+        become a calm card. The pre-flight is consulted only for a folder that IS set."""
+        from src.ui_flet.screens.convert import convert_job
+
+        AppConfig(input_dir=str(gde_input), output_dir="", sis_type="myedbc").save()
+        with pytest.raises(ValueError, match="output folder"):
+            convert_job("myedbc", str(gde_input))
+
+    # -- the write-time window a pre-check structurally cannot see ----------------- #
+
+    def test_a_write_time_oserror_becomes_the_output_status(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        """The Excel-lock / drive-drops-mid-run shape: the folder passed the pre-flight and
+        then failed at the write. It must land on the SAME honest copy, not the generic
+        input-folder card the ``on_error`` floor renders."""
+        from src.etl.loader import DataLoader
+        from src.ui_flet.convert_result import ConvertStatus
+        from src.ui_flet.screens import convert as convert_mod
+
+        def _locked(*_a: object, **_kw: object) -> None:
+            raise PermissionError(13, "The process cannot access the file because it is being used")
+
+        monkeypatch.setattr(DataLoader, "save_all", _locked)
+        AppConfig(input_dir=str(gde_input), output_dir=str(gde_output), sis_type="myedbc").save()
+
+        result = convert_mod.convert_job("myedbc", str(gde_input))
+
+        assert result.status is ConvertStatus.OUTPUT_FOLDER_UNUSABLE
+        assert read_run_records() == [], "nothing was produced, so nothing goes in the ledger"
+        assert convert_mod.is_write_in_flight() is False, "the C6 flag must clear on the failure path too"
+
+    def test_a_write_time_valueerror_still_propagates(self, gde_input: Path, gde_output: Path, monkeypatch) -> None:
+        """The twin that stops the ``OSError`` catch widening: ``save_all`` raises
+        ``ValueError`` for a missing field-map column (``loader.select_ordered``), which is
+        a DATA fault and must keep reaching ``_on_error`` untouched."""
+        from src.etl.loader import DataLoader
+        from src.ui_flet.screens import convert as convert_mod
+
+        def _missing_column(*_a: object, **_kw: object) -> None:
+            raise ValueError("Cannot write Students.csv - columns missing from output: ['Grade']")
+
+        monkeypatch.setattr(DataLoader, "save_all", _missing_column)
+        AppConfig(input_dir=str(gde_input), output_dir=str(gde_output), sis_type="myedbc").save()
+
+        with pytest.raises(ValueError, match="columns missing from output"):
+            convert_mod.convert_job("myedbc", str(gde_input))
+        assert convert_mod.is_write_in_flight() is False
+
+    # -- the pipeline (scheduled / CLI) -------------------------------------------- #
+
+    def test_run_pipeline_exits_1_and_stores_the_output_category(
+        self, gde_input: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The SD51 shape: a mapped drive is per-logon-session, so the scheduled task's
+        session is where the output folder is most likely to be missing. It used to record
+        ``config``; it must now record ``output`` - and never the free text."""
+        with caplog.at_level(logging.INFO, logger="src.etl.pipeline"), pytest.raises(SystemExit) as exc_info:
+            run_pipeline("myedbc", str(gde_input), self._unusable(tmp_path), source="scheduled")
+        assert exc_info.value.code == 1
+
+        records = read_run_records()
+        assert records is not None and records
+        # Exactly ONE row: two identical rows (a double store write) would satisfy every
+        # other assertion here. The autouse isolated profile makes the count meaningful.
+        assert len(records) == 1
+        stored = records[0]
+        assert stored["status"] == "failed"
+        assert stored["error_category"] == "output"
+        assert "error" not in stored, "privacy split: the free-text reason goes to the log line only"
+
+        lines = [r.message for r in caplog.records if "__DISTRICTSYNC_RUN__" in r.message]
+        assert lines, "expected a structured run-log line"
+        payload = json.loads(lines[-1].split("__DISTRICTSYNC_RUN__ ")[1])
+        assert payload["error_category"] == "output"
+        assert payload["error"], "the rich free-text detail lives in the log, where support can read it"
+
+    def test_run_pipeline_write_time_oserror_stores_the_output_category(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        """A fault raised at the WRITE carries its own bounded category to the one failure
+        sink - the ``DeliveryIntegrityError`` pattern, not a third store sink."""
+        from src.etl.loader import DataLoader
+
+        def _locked(*_a: object, **_kw: object) -> None:
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(DataLoader, "save_all", _locked)
+        with pytest.raises(pipeline.OutputWriteError):
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+
+        records = read_run_records()
+        assert records is not None and records
+        assert records[0]["error_category"] == "output"
+        assert "error" not in records[0]
+
+    def test_a_missing_field_map_column_still_records_data(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        """The pipeline-side twin of the widening guard: ``ValueError`` out of ``save_all``
+        keeps its ``data`` category - the new catch is ``OSError`` only."""
+        from src.etl.loader import DataLoader
+
+        def _missing_column(*_a: object, **_kw: object) -> None:
+            raise ValueError("Cannot write Students.csv - columns missing from output: ['Grade']")
+
+        monkeypatch.setattr(DataLoader, "save_all", _missing_column)
+        with pytest.raises(ValueError, match="columns missing from output"):
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+
+        records = read_run_records()
+        assert records is not None and records
+        assert records[0]["error_category"] == "data"
+
+    def test_a_loader_construct_failure_after_a_clean_preflight_records_output(
+        self, gde_input: Path, gde_output: Path, monkeypatch
+    ) -> None:
+        """The pre-flight→construct window, closed (F2). The folder passed the probe and
+        broke a few lines later at ``DataLoader``'s own ``mkdir``; without the wrap that
+        ``FileNotFoundError``/``PermissionError`` falls to the generic classifier and
+        records ``config`` — the exact misclassification this slice exists to remove.
+        Convert's ``except OSError`` has always covered its loader construct; this is the
+        pipeline's symmetry."""
+
+        class _Boom:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                raise PermissionError(13, "Access is denied")
+
+        monkeypatch.setattr(pipeline, "output_target_problem", lambda _p: None)  # probe passes
+        monkeypatch.setattr(pipeline, "DataLoader", _Boom)
+
+        with pytest.raises(pipeline.OutputWriteError):
+            run_pipeline("myedbc", str(gde_input), str(gde_output))
+
+        records = read_run_records()
+        assert records is not None and len(records) == 1
+        assert records[0]["error_category"] == "output"
+
+    def test_a_dry_run_loader_failure_is_byte_identical(self, gde_input: Path, gde_output: Path, monkeypatch) -> None:
+        """The twin that keeps acceptance criterion 5 true: a PREVIEW never probed, so it
+        has no output claim to make and its failure must stay exactly what it was — the
+        raw ``OSError``, not an ``OutputWriteError``. ``creator_gate_job`` rides this path."""
+
+        class _Boom:
+            def __init__(self, *_a: object, **_kw: object) -> None:
+                raise PermissionError(13, "Access is denied")
+
+        monkeypatch.setattr(pipeline, "DataLoader", _Boom)
+
+        with pytest.raises(PermissionError) as exc_info:
+            run_pipeline("myedbc", str(gde_input), str(gde_output), dry_run=True)
+        assert not isinstance(exc_info.value, pipeline.OutputWriteError)
+        assert read_run_records() == []
+
+    def test_a_dry_run_neither_records_nor_probes(self, gde_input: Path, gde_output: Path, monkeypatch) -> None:
+        """``creator_gate_job`` (the mapping creator's test conversion) passes
+        ``dry_run=True``; the gate is what keeps that path byte-identical. A preview never
+        calls ``save_all``, so requiring writability would be a new gate on a path that
+        needs none - and a failed probe cleanup would leave a directory on a run
+        advertised as writing nothing."""
+        probes: list = []
+        monkeypatch.setattr(pipeline, "output_target_problem", lambda path: probes.append(path))
+
+        run_pipeline("myedbc", str(gde_input), str(gde_output), dry_run=True)
+
+        assert probes == [], "a preview must not probe the output folder"
+        assert read_run_records() == []
+
+    def test_a_real_run_does_probe(self, gde_input: Path, gde_output: Path, monkeypatch) -> None:
+        """The positive twin: "did not probe" above only means something beside a run that does."""
+        probes: list = []
+
+        def _spy(path: str) -> None:
+            probes.append(path)
+            return None
+
+        monkeypatch.setattr(pipeline, "output_target_problem", _spy)
+        run_pipeline("myedbc", str(gde_input), str(gde_output))
+        assert probes == [str(gde_output)]
+
+
+# --------------------------------------------------------------------------- #
 # deliver_job → deliver from disk (0034 Slice 2)                                #
 # --------------------------------------------------------------------------- #
 def _fake_uploader(calls: list[tuple[Path, str | None, set[str]]], *, fail: bool = False) -> type:

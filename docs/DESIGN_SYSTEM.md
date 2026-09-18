@@ -32,7 +32,10 @@ brand mark** (it signifies DistrictSync — "roster sync for SpacesEDU").
 4. **Plain language.** Admin-facing copy uses the vocabulary map, never jargon: SFTP → "Delivery to
    SpacesEDU", GDE → "MyEd BC extract files", "config" → "district".
 5. **Every failure routes to a fix.** A warning/failed band names the fault and offers the concrete
-   fix as the screen's single filled action (e.g. "Open Setup").
+   fix in its `trailing` slot (e.g. "Open Setup"). That action is a `text_button` painted the band's
+   own `color_on_*_tint`, or a `secondary_button`; it is **filled only when the band's fix is also
+   the screen's one primary action** — principle 2 outranks this one, and an outlined border on a
+   status tint measures ~1.6:1, under WCAG 2.2 SC 1.4.11's 3:1 for a component boundary (0050).
 6. **Honesty.** A band asserts only **checked** facts (e.g. "delivered" only after a confirmed
    upload) — the trust architecture the UI was built on.
 7. **Identification is never authentication (0038).** The launch page asks who looks after the sync

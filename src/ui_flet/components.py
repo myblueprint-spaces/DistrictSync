@@ -809,8 +809,11 @@ def HealthVerdictBanner(  # noqa: N802 - a view-factory named like a component
     TINT background with a 1px LINE border (never a saturated fill behind text), a SOLID
     status-colour circle carrying a WHITE ``ft.Icon`` as the non-colour cue, a
     ``type_section`` headline and ``type_body`` detail in the DEEP on-tint colour, and an
-    optional ``trailing`` slot (a "View Run History" link / an "Open Setup" primary —
-    the screen's single filled action when a fix is needed) pushed to the right.
+    optional ``trailing`` slot pushed to the right — a ``text_button`` painted this
+    band's ``color_on_*_tint`` (the default: AA-clear, and it leaves the screen's single
+    filled primary where it belongs) or a ``secondary_button``; ``primary_button`` ONLY
+    when the band's fix IS that screen's one primary action. An outlined border on a
+    status tint measures ~1.6:1 and fails WCAG 2.2 SC 1.4.11 unless recoloured (0050).
 
     Paints ``verdict_visuals(verdict)`` for the icon + disc colour and the default
     headline (overridable). The icon name resolves like ``nav.py``/``shell.py``

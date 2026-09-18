@@ -49,10 +49,18 @@ successful build, an explicit pre-flight-confirmed delivery. The ``upload_csvs``
 is wrapped TIGHTLY (only around the upload): a failure folds into a
 ``BUILT_NOT_DELIVERED`` result (the exit-3 shape — read from booleans by
 ``summarize``, NEVER routed through ``on_error``), carrying a fault CATEGORY only —
-never the raw exception / host / path (privacy). A ``save_all`` / ``load_config``
-failure in the earlier steps still PROPAGATES to ``on_error`` (fail-loud); the upload
-catch never widens over the build. A failed delivery never rolls back the build —
-the files stay written and the admin can retry.
+never the raw exception / host / path (privacy). A ``load_config`` failure, or a
+``save_all`` ``ValueError`` (a missing field-map column), still PROPAGATES to
+``on_error`` (fail-loud); the upload catch never widens over the build. A failed
+delivery never rolls back the build — the files stay written and the admin can retry.
+
+**The output-folder pre-flight (plan 0050):** ``convert_job`` calls
+``etl.loader.output_target_problem`` FIRST — before ``to_raw_dict`` and before a single
+roster byte is read — and an unusable folder returns ``OUTPUT_FOLDER_UNUSABLE`` with no
+ETL work done and no run record. The write is additionally wrapped in ``except OSError``
+(the Excel-lock / drive-drops-mid-run window a pre-check structurally cannot see) and
+folds into the SAME status. Both exist because every one of these faults used to surface
+as ``convert_error_copy``, which tells the admin to check their *input* folder.
 
 **Deliver from disk (0034 Slice 2):** EVERY deliver action — the post-build card, the
 BUILT_NOT_DELIVERED retry, and the standalone "Deliver the files in your output folder"
@@ -107,7 +115,7 @@ import flet as ft
 from src.config.app_config import AppConfig
 from src.config.loader import load_config
 from src.etl.extractor import DataExtractor
-from src.etl.loader import DataLoader
+from src.etl.loader import DataLoader, output_target_problem
 from src.etl.pipeline import (
     RunErrorCategory,
     advisory_expected_files,
@@ -217,6 +225,13 @@ def convert_job(
     stale-output archival + the quality report, then (only when ``sftp_requested``)
     an SFTP delivery.
 
+    **The output-folder pre-flight comes FIRST (plan 0050),** before ``to_raw_dict`` and
+    before ``_read_gde_bytes``: :func:`~src.etl.loader.output_target_problem` refuses an
+    unreachable / unwritable output folder with ``OUTPUT_FOLDER_UNUSABLE`` having done NO
+    ETL work, and the write below is wrapped in ``except OSError`` for the window a
+    pre-check cannot see. Neither writes a run record (see :func:`_record_manual_run`):
+    nothing was produced, and the admin is watching the surface that already shows it.
+
     **Two pre-write gates, in the CLI's order.**
 
     1. :func:`~src.etl.pipeline.check_delivery_integrity` — the SAME way-OUT gate
@@ -237,7 +252,8 @@ def convert_job(
 
     ETL-level failures (a missing field-map column → ``save_all``'s ``ValueError``,
     ``load_config``'s errors) propagate as exceptions → the runner's ``on_error``
-    (fail-loud). The SFTP leg is the ONLY step whose failure is caught in-job: the
+    (fail-loud). Exactly TWO steps catch in-job, each scoped tightly: the write's
+    ``OSError`` (→ ``OUTPUT_FOLDER_UNUSABLE``, above) and the SFTP leg — the
     ``upload_csvs`` call is wrapped TIGHTLY and folded into a ``BUILT_NOT_DELIVERED``
     result (the exit-3 shape — a CATEGORY only, never the raw exception/host/path),
     so a build failure is never mis-labelled "SFTP failed" and a failed delivery
@@ -260,6 +276,14 @@ def convert_job(
     if not output_dir_value:
         raise ValueError("No output folder is configured — set one in Settings before converting.")
     output_dir = Path(output_dir_value)
+
+    # Gate 0 — the OUTPUT-FOLDER PRE-FLIGHT (plan 0050). HERE, not at the `DataLoader(...)`
+    # line below, which sits AFTER the whole ETL (see the docstring). The free-text reason
+    # is LOG-ONLY — it can carry a path; the admin gets the bounded zero-arg copy.
+    output_problem = output_target_problem(output_dir_value)
+    if output_problem is not None:
+        logger.error("Output folder is not usable for district %r: %s", config_name, output_problem)
+        return ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE)
 
     raw = config.to_raw_dict()
     mappings = raw.get("mappings", {})
@@ -316,18 +340,26 @@ def convert_job(
             anomalies=tuple(anomalies),
         )
 
-    # Atomic write (raises ValueError on a missing field-map column → on_error).
-    # The write-in-flight flag (C6) is raised around the commit ONLY — the loader's
-    # backup-and-restore atomicity is the real net; the flag is reassurance for
-    # `shell._on_leave`. A `save_all` failure PROPAGATES (fail-loud), and the flag
-    # is cleared in the `finally` either way.
-    loader = DataLoader(str(output_dir))
+    # Atomic write. Plan 0050 REVERSES the old "a `save_all` failure PROPAGATES" rule,
+    # deliberately and for `OSError` ONLY: that is the same output-folder fault the
+    # pre-flight refuses, so it gets the same honest result instead of the input-folder
+    # `on_error` card. A `ValueError` (a missing field-map column) is a DATA fault and
+    # still propagates. No NEW output is written, so no run record either; what survives
+    # of the previous set is the loader's BEST-EFFORT rollback. `_WRITE_IN_FLIGHT` (C6)
+    # is still cleared in the `finally` on both paths.
     global _WRITE_IN_FLIGHT
-    _WRITE_IN_FLIGHT = True
     try:
-        loader.save_all(outputs, field_orders)
-    finally:
-        _WRITE_IN_FLIGHT = False
+        loader = DataLoader(str(output_dir))
+        _WRITE_IN_FLIGHT = True
+        try:
+            loader.save_all(outputs, field_orders)
+        finally:
+            _WRITE_IN_FLIGHT = False
+    except OSError:
+        # A RESULT on screen, but still a failure worth a trace — the card is bounded and
+        # category-only, so the raw path lives here or nowhere.
+        logger.error("Could not write to the output folder (district %r).", config_name, exc_info=True)
+        return ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE)
 
     # Archive (non-destructive) entity CSVs left in the output dir that this run
     # did NOT produce — mirrors run_pipeline: a stale CSV must never ship in an
@@ -658,11 +690,29 @@ def build_convert(
     # Read-only pre-run visibility: where files will be written (or the routed blocked
     # message when no output folder is set — wizard-aware before setup completes).
     # Warning-toned when unset so the blocked state reads.
-    output_caption = ft.Text(
-        resolved_output_caption(output_dir_value, setup_completed=setup_done),
-        size=13,
-        color=tokens.color_muted if output_set else tokens.color_status_warning,
-    )
+    output_caption = ft.Text(size=13)
+
+    def _refresh_output_caption(*, refused: bool = False) -> None:
+        """Paint the output-folder caption for the state now on screen (plan 0050).
+
+        The ONE place the caption's value AND its tone are decided — the control above is
+        constructed blank and this call (immediately below) does the initial paint, so the
+        expression is never hand-repeated.
+
+        The control is built ONCE and lives for the whole mount, so the caption is a
+        long-lived ASSERTION: after a refusal it would otherwise keep promising "Files
+        will be written to <folder>" in the same viewport as the band that just disproved
+        it — and, inverted, a refusal's wording would survive onto the next SUCCESSFUL
+        run. Four call sites cover every way the slot repaints: both job STARTS (so a
+        refusal's wording does not ride through the next run's spinner), ``_render_result``
+        on all of its branches, and both ``on_error`` handlers. (The anomaly-ack
+        accept/cancel handlers do not — they are unreachable from a refusal, which
+        returns a terminal status with no card to answer.)
+        """
+        output_caption.value = resolved_output_caption(output_dir_value, setup_completed=setup_done, refused=refused)
+        output_caption.color = tokens.color_muted if (output_set and not refused) else tokens.color_status_warning
+
+    _refresh_output_caption()
 
     # ------------------------------------------------------------------ #
     # File chips + missing-file warning (recomputed when the folder changes).
@@ -768,6 +818,7 @@ def build_convert(
         deliver_slot.controls = []
         result_slot.controls = []
         rendered["value"] = None
+        _refresh_output_caption()  # a new run supersedes any previous refusal's wording
         page.update()
 
         def _on_done(result: ConvertResult) -> None:
@@ -787,6 +838,7 @@ def build_convert(
             _set_running(False)
             result_slot.controls = [components.ErrorCard(*convert_error_copy())]
             rendered["value"] = None
+            _refresh_output_caption()  # a render path too: no refusal wording may survive here
             page.update()
 
         started = runner.run(
@@ -820,6 +872,7 @@ def build_convert(
         deliver_slot.controls = []
         result_slot.controls = []
         rendered["value"] = None
+        _refresh_output_caption()  # a new run supersedes any previous refusal's wording
         page.update()
 
         def _on_done(result: ConvertResult) -> None:
@@ -837,6 +890,7 @@ def build_convert(
             _set_running(False)
             result_slot.controls = [components.ErrorCard(*deliver_error_copy())]
             rendered["value"] = None
+            _refresh_output_caption()  # a render path too: no refusal wording may survive here
             page.update()
 
         started = runner.run(page, lambda: deliver_job(district), on_done=_on_done, on_error=_on_error)
@@ -942,6 +996,8 @@ def build_convert(
         pair is remembered in ``rendered`` for exactly as long as it is on screen.
         """
         rendered["value"] = None
+        # Set on EVERY branch below, not just the refusal one — see `_refresh_output_caption`.
+        _refresh_output_caption(refused=result.status is ConvertStatus.OUTPUT_FOLDER_UNUSABLE)
         if result.status is ConvertStatus.NEEDS_ANOMALY_ACK:
             # The card is a question about THIS run — remember which one, and freeze the
             # inputs while it waits so the answer can't drift onto another (FIX-2). The
@@ -951,8 +1007,26 @@ def build_convert(
             _apply_interaction(job_running=False)
             return
         verdict, headline, detail = summarize(result)
+        # The ONE routed fix this banner offers (plan 0050): DESIGN_SYSTEM principle 5
+        # asks a failed band for the concrete fix, and the output folder's fix is Settings.
+        # The TEXT tier, painted `color_on_failed_tint` — the band's own AA-gated on-tint
+        # colour (8.77:1). NOT filled: principle 2 (one filled primary per screen) outranks
+        # principle 5's "filled", and this screen's primary is "Convert now", the re-run.
+        # NOT outlined either: an outlined border on the failed tint measures 1.58:1, under
+        # WCAG 2.2 SC 1.4.11's 3:1 for a component boundary, and `secondary_button` is not
+        # one of the two tiers the banner's `trailing` slot sanctions. Gated on
+        # `on_navigate` (the shell injects it): absent ⇒ no affordance, never a dead one —
+        # the copy's "Check the output folder in Settings" stands alone without it.
+        # Labelled for the RAIL ITEM ("Setup"), never "Settings", which the rail lacks.
+        trailing: ft.Control | None = None
+        if result.status is ConvertStatus.OUTPUT_FOLDER_UNUSABLE and on_navigate is not None:
+            trailing = components.text_button(
+                "Open Setup",
+                lambda _e: on_navigate("setup"),
+                color=tokens.color_on_failed_tint,
+            )
         controls: list[ft.Control] = [
-            components.HealthVerdictBanner(verdict, headline=headline, detail=detail),
+            components.HealthVerdictBanner(verdict, headline=headline, detail=detail, trailing=trailing),
         ]
         if result.entity_counts:
             controls.append(_entity_tiles_row(result.entity_counts))

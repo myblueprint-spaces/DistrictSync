@@ -215,6 +215,74 @@ class TestStatusForIntegrityFault:
             status_for_integrity_fault("a_future_fault")
 
 
+class TestOutputFolderUnusableCopy:
+    """Plan 0050: all four known output-folder failures land on ONE honest verdict.
+
+    The bug: an unreachable drive, an over-long path, an unwritable folder and a CSV
+    held open in Excel all rendered ``convert_error_copy`` - "Check that your input
+    folder holds this district's MyEd BC extract files" - which is wrong in every one of
+    them. These assertions pin the fix at the copy level, where it is decided.
+    """
+
+    def _copy(self) -> tuple[str, str]:
+        _verdict, headline, detail = summarize(ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE))
+        return headline, detail
+
+    def test_it_is_a_failed_verdict(self) -> None:
+        verdict, _h, _d = summarize(ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE))
+        assert verdict is Verdict.FAILED
+
+    def test_it_names_the_output_folder_and_never_the_input_one(self) -> None:
+        headline, detail = self._copy()
+        assert "output folder" in headline.lower()
+        assert "output folder" in detail.lower()
+        assert "input folder" not in detail.lower(), "this is the misattribution the plan exists to remove"
+        assert "extract files" not in detail.lower()
+
+    def test_it_is_not_the_generic_on_error_copy(self) -> None:
+        # Acceptance criterion 2: none of the four causes may render convert_error_copy.
+        headline, detail = self._copy()
+        generic_headline, generic_detail = convert_error_copy()
+        assert headline != generic_headline
+        assert detail != generic_detail
+
+    def test_it_says_nothing_NEW_was_saved_not_nothing_was_converted(self) -> None:
+        # ONE string serves TWO paths. On the write-time path the conversion DID run and
+        # only the save failed, so "nothing was converted" would be false there and would
+        # contradict the headline ("We couldn't SAVE to your output folder").
+        _headline, detail = self._copy()
+        assert "nothing new was saved" in detail.lower()
+        assert "nothing was converted" not in detail.lower()
+
+    def test_it_never_promises_the_existing_files_are_untouched(self) -> None:
+        # The rollback this copy would be leaning on is BEST-EFFORT: `_commit_staged`
+        # restores per file inside `try/except OSError` and logs a failed restore at
+        # ERROR rather than raising, while `save_all`'s `finally` then discards the
+        # backup dir unconditionally. On a drive that drops mid-commit — one of the four
+        # causes this status exists for — the restore fails on the same dead path. So the
+        # absolute must not be made here; "nothing new was saved" is true regardless.
+        _headline, detail = self._copy()
+        assert "were not changed" not in detail
+        assert "untouched" not in detail.lower()
+
+    def test_it_ends_with_a_concrete_next_step(self) -> None:
+        _headline, detail = self._copy()
+        assert "Settings" in detail
+        assert "Help page" in detail
+
+    def test_the_copy_is_zero_arg_so_nothing_can_be_interpolated(self) -> None:
+        # A result carrying a path/district/column in every field must produce the SAME
+        # two strings as an empty one - the structural reason nothing can leak.
+        loaded = ConvertResult(
+            status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE,
+            entity_counts={"Students": 4},
+            data_errors_total=7,
+            anomalies=(r"C:\Users\admin\out sd48myedbc",),
+            quality_text=r"C:\Users\admin\out",
+        )
+        assert summarize(loaded)[1:] == self._copy()
+
+
 class TestSummarizeTotality:
     def test_every_status_has_a_mapping(self) -> None:
         """summarize is TOTAL over ConvertStatus — every member returns a valid triple."""

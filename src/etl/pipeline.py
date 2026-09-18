@@ -28,7 +28,7 @@ from src.config.app_config import AppConfig
 from src.config.loader import load_config
 from src.config.models import filter_enabled_entities
 from src.etl.extractor import DataExtractor
-from src.etl.loader import DataLoader
+from src.etl.loader import DataLoader, output_target_problem
 from src.etl.transformer import DataTransformer
 from src.etl.transformers.dates import SchoolYearDetermination
 from src.etl.transformers.grades import resolve_timetable_scope
@@ -85,6 +85,7 @@ class RunErrorCategory(str, Enum):
     INCOMPLETE_ROSTER = "incomplete_roster"  # the roster anchor produced nothing while dependent entities did
     CONFIG = "config"  # a config/validation problem surfaced as the failure
     DATA = "data"  # a build/write problem (missing field-map column, transform, loader)
+    OUTPUT = "output"  # the OUTPUT FOLDER is unreachable / unwritable (before or during the write)
     UNKNOWN = "unknown"  # an unclassified failure
 
 
@@ -348,6 +349,32 @@ class DeliveryIntegrityError(RuntimeError):
     def __init__(self, message: str, category: str) -> None:
         super().__init__(message)
         self.category = category
+
+
+class OutputWriteError(RuntimeError):
+    """The output folder failed AFTER a clean pre-flight — the window a pre-check cannot see.
+
+    :func:`~src.etl.loader.output_target_problem` closes the "unusable at t=0" window;
+    it cannot close a ``Students.csv`` locked by Excel between the check and the commit,
+    a network drive that drops mid-run, or a create-files-denied ACL. ``save_all``'s
+    ``OSError`` is re-raised as this type so the fault carries its own bounded category
+    to the ONE failure sink — the same "the exception knows its category" shape as
+    :class:`DeliveryIntegrityError`, rather than a second store sink.
+
+    Scoped to ``OSError`` deliberately: ``save_all`` also raises ``ValueError`` for a
+    missing field-map column (:meth:`DataLoader.select_ordered`), which is a DATA fault
+    and must keep its own category. Subclasses ``RuntimeError`` so it rides the existing
+    "``run_pipeline`` raises → ``main`` exits 1" wiring; exit 3 would be wrong — it
+    promises output IS on disk, and no NEW output is. What the previous output set looks
+    like afterwards is BEST-EFFORT, not guaranteed: :meth:`DataLoader._commit_staged`
+    rolls back per file inside ``try/except OSError`` and a restore that itself fails is
+    logged at ERROR, not raised (on a drive that drops mid-commit it fails on the same
+    dead path), after which ``save_all``'s ``finally`` discards the backup dir.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.category = RunErrorCategory.OUTPUT.value
 
 
 def check_delivery_integrity(
@@ -699,6 +726,12 @@ def _classify_error_category(exc: BaseException) -> str:
         # Must precede the RuntimeError branch below — DeliveryIntegrityError IS a
         # RuntimeError, and it already carries its own bounded category.
         return exc.category
+    if isinstance(exc, OutputWriteError):
+        # Same shape, same reason (also a RuntimeError, also a carrier): the site that
+        # raised it is the only one that KNOWS the fault came from the write, so it
+        # stamps the category there rather than having this function guess from a type
+        # (`OSError` alone cannot tell an output-folder failure from any other).
+        return exc.category
     if isinstance(exc, RuntimeError) and "No usable required input" in str(exc):
         return RunErrorCategory.NO_INPUT.value
     if isinstance(exc, FileNotFoundError):
@@ -758,9 +791,18 @@ def run_pipeline(
     both raise, so ``main`` exits **1** (no new exit code): no usable required
     input on the way IN, and :func:`check_delivery_integrity` on the way OUT
     (nothing produced, or the roster anchor missing while dependents were built).
+
     The out-gate refuses BEFORE any write, so the previous output set is left
     untouched. Neither affects the exit-3 contract: a delivery failure AFTER a
     successful write still leaves the CSVs in place (output is never rolled back).
+
+    A THIRD boundary sits between them (plan 0050): the OUTPUT folder is pre-flighted
+    (:func:`~src.etl.loader.output_target_problem`) before any ETL work, and the write
+    itself is wrapped so an ``OSError`` becomes an :class:`OutputWriteError`. A RECORDED
+    (non-dry) run whose output folder is unusable at either of those two points records
+    the bounded ``output`` category; a fault raised anywhere else still falls to the
+    generic classifier — notably a dry run, which skips the pre-flight and can still
+    reach ``DataLoader``'s own ``mkdir`` and be classified ``config``.
     """
     t0 = time.monotonic()
     resolved_source = _resolve_source(source)
@@ -822,8 +864,40 @@ def run_pipeline(
         mappings: dict[str, dict] = raw["mappings"]
         global_config: dict[str, Any] = raw["global_config"]
 
+        # Output-folder pre-flight (plan 0050) — the last boundary check before any ETL
+        # work, and here also immediately before the first output-dir contact, so the CLI
+        # creates the folder at exactly the point it does today. SKIPPED on a dry run,
+        # which never calls `save_all` — that gate is what keeps `creator_gate_job`
+        # byte-identical (see the docstring).
+        if not dry_run:
+            output_problem = output_target_problem(output_path)
+            if output_problem is not None:
+                error = f"Output folder is not usable: {output_problem}"
+                logger.error(error)
+                _record_early_failure(
+                    t0,
+                    source=resolved_source,
+                    sis_type=sis_type,
+                    error=error,
+                    category=RunErrorCategory.OUTPUT.value,
+                    dry_run=dry_run,
+                )
+                sys.exit(1)
+
         extractor = DataExtractor(input_path)
-        loader = DataLoader(output_path)
+        try:
+            loader = DataLoader(output_path)
+        except OSError as exc:
+            # Symmetry with `convert_job`, whose `except OSError` covers the loader
+            # CONSTRUCT as well as `save_all`: a folder that broke between the pre-flight
+            # a few lines up and this `mkdir` is an OUTPUT fault, and without this it
+            # would record `config` again — the exact misclassification this slice exists
+            # to remove. Only when the pre-flight actually ran: a dry run never probed, so
+            # it has no output claim to make and its failure stays byte-identical (that is
+            # what keeps `creator_gate_job` unchanged).
+            if dry_run:
+                raise
+            raise OutputWriteError(f"Could not open the output folder: {exc}") from exc
 
         required_files = extract_required_files(config)
         logger.info(f"Required files: {required_files}")
@@ -892,7 +966,16 @@ def run_pipeline(
         # an empty set, so the old `and outputs` short-circuit (which silently skipped
         # save + archive + upload and still reported success) is gone by construction.
         if not dry_run:
-            loader.save_all(outputs, field_orders)
+            # The write-time window the pre-flight structurally cannot see (a CSV locked
+            # by Excel, a drive dropping mid-run, a create-files-denied ACL). `OSError`
+            # ONLY — a `ValueError` here is a missing field-map column, a DATA fault that
+            # keeps its own category. No NEW output is written either way; what survives
+            # of the previous set is `_commit_staged`'s BEST-EFFORT rollback, which logs a
+            # failed restore at ERROR rather than raising (see `OutputWriteError`).
+            try:
+                loader.save_all(outputs, field_orders)
+            except OSError as exc:
+                raise OutputWriteError(f"Could not write the output files: {exc}") from exc
 
             # Archive (non-destructive) entity CSVs left in the output dir that
             # this run did NOT produce — they were not refreshed and would ship

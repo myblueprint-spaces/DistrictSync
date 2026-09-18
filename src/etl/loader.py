@@ -1,6 +1,7 @@
 import logging
 import os
 import shutil
+import tempfile
 import time
 import uuid
 from collections.abc import Iterable
@@ -27,6 +28,106 @@ _STALE_TMP_MAX_AGE_DAYS = 7
 # completes in seconds; one hour is a >1000x margin, so anything older is
 # genuinely stranded by a hard-killed run.
 _STALE_BAK_MIN_AGE_SECONDS = 3600
+
+# The output-folder pre-flight's own scratch dir (see :func:`output_target_problem`).
+# A DISTINCT prefix, deliberately: it must be invisible to every other output-dir sweep
+# and glob — ``_reconcile_output_dir`` branches on ``.bak_``/``.tmp_`` only,
+# ``detect_stale_outputs``/``archive_stale_outputs``/``SFTPUploader.upload_csvs``/
+# ``convert_output._top_level_csvs`` are all ``*.csv``-keyed — and it must be reapable by
+# name so a stranded one cannot accumulate.
+_PROBE_PREFIX = ".dsync_probe_"
+
+
+def _reap_stale_probes(directory: Path) -> None:
+    """Remove ``.dsync_probe_*`` dirs a previous pre-flight failed to clean up.
+
+    BEST-EFFORT and TOTAL — it can never raise, because a failure to tidy an OLD
+    leftover must not make a usable output folder report itself unusable. Every other
+    leftover class in an output folder already has a reaper at a chosen age
+    (:data:`_STALE_TMP_MAX_AGE_DAYS`, :data:`_STALE_BAK_MIN_AGE_SECONDS`); a probe dir
+    left by a failed ``rmdir`` would have **none, at any age** — one stray dir per failed
+    run, unbounded, on exactly the flaky network shares the pre-flight targets. Reaping
+    the glob before creating a new probe is what makes the check self-healing.
+
+    No age gate, unlike the ``.tmp_``/``.bak_`` sweeps — and the reason is NOT that the
+    reap cannot touch a live probe. It can, and does: a CONCURRENT run's live probe
+    (scheduled run + manual Convert into the same folder, the very hazard
+    :data:`_STALE_BAK_MIN_AGE_SECONDS` exists for) matches this glob and IS removed.
+    MEASURED, not assumed. That is harmless only for a specific reason: the owning call
+    then fails its own ``rmdir`` with ``FileNotFoundError``, which
+    :func:`output_target_problem` treats as already-clean — so no run is refused, no
+    warning is logged, and the probe proved what it needed to before it vanished.
+
+    **Therefore: anything that ever puts DATA in a probe dir must add an age gate FIRST.**
+    :func:`output_target_problem` deliberately signposts widening the probe (it does not
+    prove a FILE write today); doing that on top of this reap would mean a concurrent
+    ``rmtree`` deleting a directory another process is writing into.
+    """
+    try:
+        candidates = list(directory.glob(f"{_PROBE_PREFIX}*"))
+    except OSError as exc:
+        logger.warning(f"Could not scan the output folder for stale pre-flight probes: {exc}")
+        return
+    for entry in candidates:
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry)
+        except OSError as exc:
+            logger.warning(f"Could not remove stale pre-flight probe {entry.name}: {exc}")
+
+
+def output_target_problem(path: str) -> Optional[str]:
+    """Is this output folder usable? ``None`` when it is, else a **log-only** reason.
+
+    The pre-flight both entry points run BEFORE any ETL work (``run_pipeline`` and the
+    Convert screen's ``convert_job``), so an output-folder fault is never reported to an
+    admin as an input-folder or mapping fault. It lives beside :class:`DataLoader` because
+    it must stay in step with how the loader actually uses the directory —
+    ``ensure_directory`` (``mkdir(parents=True, exist_ok=True)``), then ``.tmp_<ts>_<uid>/``
+    staging (:meth:`save_all`) — a check written anywhere else could drift into a false
+    green.
+
+    **What it proves, precisely:** *subdirectory creation* in the output folder. It does
+    NOT prove writing a file inside that staging dir, nor ``os.replace`` over an existing
+    ``Students.csv`` held open in Excel. Those windows stay open by construction (a
+    pre-check cannot see a lock taken later) and are covered by the callers' write-time
+    ``OSError`` catch, not by a bigger probe.
+
+    **One ``try``, not a ladder.** ``mkdir(parents=True, exist_ok=True)`` re-raises
+    ``FileExistsError`` when the leaf exists and is not a directory, so a separate
+    not-a-file step is subsumed; a ``resolve()`` failure is subsumed by the same
+    ``except``. The distinct reason strings a ladder would buy are worthless for a value
+    that is log-only and never parsed — the ``WinError`` is already self-describing.
+
+    Returns:
+        ``None`` when the folder is usable, else a free-text reason for the DIAGNOSTIC
+        LOG only. It is never shown to an admin and never stored: the callers surface a
+        bounded, zero-argument category instead (the privacy split — the reason can carry
+        a path).
+    """
+    if not path or not path.strip():
+        return "No output folder is configured."
+    try:
+        resolved = Path(path.strip()).resolve()
+        resolved.mkdir(parents=True, exist_ok=True)
+        _reap_stale_probes(resolved)
+        probe = Path(tempfile.mkdtemp(prefix=_PROBE_PREFIX, dir=resolved))
+    except (OSError, ValueError) as exc:
+        # ValueError: a path the OS cannot even express (e.g. an embedded NUL) never
+        # reaches a syscall — it is exactly as unusable as one that does and fails.
+        return f"The output folder cannot be used ({type(exc).__name__}: {exc})"
+    try:
+        probe.rmdir()
+    except FileNotFoundError:
+        # Already gone — a concurrent run's `_reap_stale_probes` swept it (see that
+        # function). Nothing to clean up and nothing to report: warning here would send a
+        # support engineer after a benign race on a folder that just proved it works.
+        pass
+    except OSError as exc:
+        # Our own scratch dir — a cleanup hiccup must not fail a folder that just proved
+        # it works. The next call's reap removes it.
+        logger.warning(f"Could not remove the output-folder pre-flight probe {probe.name}: {exc}")
+    return None
 
 
 class DataLoader:
