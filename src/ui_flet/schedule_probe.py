@@ -79,6 +79,7 @@ def probe_schedule(
     *,
     hint_registered: bool,
     foreign_account: str,
+    shared_records: bool,
     latest_record_ts: str | None = None,
     surface: str = "home",
 ) -> ScheduleStatus:
@@ -92,6 +93,11 @@ def probe_schedule(
     rather than an internal :func:`foreign_task_account` call: this probe fires on nearly every nav
     click, and a disk read per click plus an untestable seam is a worse trade than one explicit
     argument. Each caller resolves it inside the worker thread it already owns.
+
+    ``shared_records`` (plan 0049 S-2a.1) is REQUIRED keyword-only and passed straight through too.
+    Every view call site sources it from ``paths.is_machine_scope()`` — the pinned, once-per-process
+    answer — for the same reason: a defaulted ``False`` would silently keep Slice C's suppressions
+    (and their now-false copy) on exactly the installs machine scope exists to fix.
     """
     readback = read_schedule(task_name)
     status = derive_schedule_status(
@@ -99,6 +105,7 @@ def probe_schedule(
         hint_registered=hint_registered,
         latest_record_ts=latest_record_ts,
         foreign_account=foreign_account,
+        shared_records=shared_records,
         surface=surface,
     )
     _log_divergence(task_name, status, hint_registered=hint_registered)
