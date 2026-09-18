@@ -7,9 +7,34 @@ from typing import Optional
 
 import pandas as pd
 
+from src.etl.column_names import normalize_column_name
 from src.utils.helpers import normalize_columns
 
 logger = logging.getLogger(__name__)
+
+# A file the config gives a `headers:` block to is declared HEADERLESS: the names are
+# injected positionally and `read_csv` runs with `header=None`. When such an export
+# starts emitting a header row anyway, that row lands in the frame as DATA (see
+# `DataExtractor._drop_echoed_header_row`). This is the fraction of DECLARED columns
+# whose name the first row must echo, AT ITS OWN POSITION, before the row is read as a
+# header rather than as a record. A majority is deliberately far above what any real
+# record could reach by coincidence and far below a demand for an exact match — the
+# export that forced this carried `Absence Code AM` where the config declares
+# `Absent Code AM`, so an all-or-nothing rule would have detected nothing.
+_HEADER_ECHO_MIN_RATIO = 0.5
+
+
+def _compare_token(value: object) -> str:
+    """Normalise ONE cell or declared name for header comparison only.
+
+    Wraps the canonical :func:`~src.etl.column_names.normalize_column_name`
+    (strip + lower) with the two tolerances a COMPARISON needs and a column NAME
+    must not have: a non-``str`` cell is coerced instead of raising (a data row
+    legitimately holds floats and ``NaN``), and internal whitespace is collapsed so
+    a header spelled ``Absent  Code AM`` still matches. Nothing here changes what a
+    column name IS — the frame's labels keep going through `normalize_columns`.
+    """
+    return " ".join(normalize_column_name(str(value)).split())
 
 
 class ExtractionError(Exception):
@@ -169,10 +194,65 @@ class DataExtractor:
         if loaded_df is None:
             raise ExtractionError(f"File exists but could not be parsed with any encoding/delimiter: {name}")
 
+        # An export that has grown a header row since its `headers:` block was written
+        # would otherwise deliver that row as a record (see the method's docstring).
+        loaded_df = self._drop_echoed_header_row(name, loaded_df, explicit_names)
+
         # Normalize column names here
         normalized = normalize_columns(loaded_df)
         logger.info(f"Successfully loaded {name}: {len(normalized)} rows")
         return normalized
+
+    @staticmethod
+    def _drop_echoed_header_row(name: str, df: pd.DataFrame, explicit_names: Optional[list[str]]) -> pd.DataFrame:
+        """Skip a header row in a file this district's config declares HEADERLESS.
+
+        A `headers:` block means "this export has no header line, use these names by
+        position", so the read runs with ``header=None`` and any header line the export
+        DOES carry becomes data row 0 — reaching the transformers as a record. SD51's
+        2026-09-17 runs failed nine times on ``no category mapping for (Absent
+        Code='Absence Code Am', Authorized='Authorized Am')``: a column HEADING parsed as
+        an absence code, after the district added a header to a previously headerless
+        daily-absence export.
+
+        **Detection is POSITIONAL on purpose.** A positional echo is what proves the
+        export's column ORDER still matches the declared one, and that is the only
+        condition under which removing the row leaves every remaining row correctly
+        sourced. A header whose names are present but MOVED is a different and worse
+        fault — the records below it are mis-sourced too — so it is reported and
+        deliberately NOT dropped, leaving the existing fail-loud paths to stop the run
+        instead of silently delivering shifted data.
+
+        Logs counts only, never a cell value: if this detection were ever wrong, the row
+        it named would be a real pupil's absence record.
+        """
+        if not explicit_names or df.empty:
+            return df
+
+        declared = [_compare_token(n) for n in explicit_names]
+        observed = [_compare_token(v) for v in df.iloc[0].tolist()]
+        width = min(len(declared), len(observed))
+        positional = sum(1 for i in range(width) if declared[i] and observed[i] == declared[i])
+
+        if positional / len(declared) >= _HEADER_ECHO_MIN_RATIO:
+            logger.info(
+                f"{name}: the first row echoes {positional} of {len(declared)} declared column names "
+                "at their own positions, so this export now carries a header row where the "
+                "configuration declares none. Reading it as a header, not as a record."
+            )
+            return df.iloc[1:].reset_index(drop=True)
+
+        declared_set = {token for token in declared if token}
+        loose = sum(1 for token in observed if token in declared_set)
+        if loose / len(declared) >= _HEADER_ECHO_MIN_RATIO:
+            logger.warning(
+                f"{name}: the first row looks like a header ({loose} of {len(declared)} declared column "
+                f"names appear in it) but only {positional} sit where this configuration declares them, "
+                "so the export's column ORDER no longer matches. The row was NOT skipped — every row "
+                "below it would be mis-read the same way. Update this district's `headers:` block to the "
+                "export's real column order."
+            )
+        return df
 
     @staticmethod
     def _detect_delimiter(raw: bytes) -> Optional[str]:

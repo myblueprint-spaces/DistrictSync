@@ -9,7 +9,34 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.22.0] - 2026-09-18
+
+An attendance extract that has started carrying a heading row now loads
+correctly instead of stopping the conversion, and a problem with your output
+folder is caught before any work is done and named for what it is.
+
 ### Fixed
+
+- **An attendance extract that has gained a heading row now loads correctly.**
+  Some MyEd BC absence extracts are supposed to arrive with no heading line, so
+  DistrictSync labels their columns by position. If your export later started
+  including a heading row, that row was read as though it were a pupil's
+  absence, and the conversion stopped with a message about a missing "category
+  mapping" that quoted a column heading. DistrictSync now recognises a heading
+  row in those files and reads it as one, so the same extract works whether or
+  not it has one — no setting to change. If the headings are present but in a
+  different order from the one your district's configuration expects, nothing is
+  skipped and the log says so, because in that case the columns themselves would
+  be read wrongly.
+
+- **A problem with your output folder is now caught first, and named.** A folder
+  that had gone away (an unmapped network drive), a path too long for Windows,
+  or a folder DistrictSync is not allowed to write to all used to let the whole
+  conversion run and then fail with a message about your *input* folder. The
+  output folder is now checked before any work starts, and the message says
+  what is actually wrong and points at the output folder in Settings. A nightly
+  sync that fails this way is recorded as an output problem rather than a
+  configuration one.
 
 - **Trying to schedule the nightly sync again now always shows what happened.**
   When a scheduling attempt failed, its red message stayed on screen — so if the
@@ -21,6 +48,16 @@ Per-release download links and auto-generated commit notes live on the
   again" step where that is the fix — or with nothing at all when the missing
   answer is sitting empty in the run time box just above. Nothing about when a
   schedule is allowed has changed — only what you are told.
+
+### Added
+
+- **`--diagnose`, a read-only support report.** Running
+  `DistrictSync.exe --diagnose` prints where DistrictSync is keeping its
+  settings, logs and run history, and whether delivery is configured, so a
+  support question can be answered without hunting through folders. It changes
+  nothing and carries no passwords, but it does name Windows accounts and
+  folders, so treat it as you would any other support detail — its own header
+  says so.
 
 ## [3.21.0] - 2026-09-17
 

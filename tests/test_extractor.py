@@ -471,3 +471,145 @@ class TestFilenameCaseInsensitivity:
         monkeypatch.setattr(extractor, "_resolve_case_insensitively", _boom)
 
         assert not extractor.load_data(["Students.txt"])["Students.txt"].empty
+
+
+# The 18 positional names the base config injects for StudentDailyAbsences.txt — the
+# real block from config/mappings/myedbc_mapping.yaml, because the behaviour under test
+# is exactly what a district's declared `headers:` list does.
+_DAILY_NAMES = [
+    "School Number",
+    "Student Number",
+    "Student Legal Last Name",
+    "Student Legal First Name",
+    "Grade",
+    "Homeroom",
+    "Teacher Name",
+    "Absence Date",
+    "Reason Code AM",
+    "Sub Allocation Code AM",
+    "Authorized AM",
+    "Reason Code PM",
+    "Sub Allocation Code PM",
+    "Authorized PM",
+    "Absent Code AM",
+    "Absent Code PM",
+    "Teacher ID",
+    "Portion Absent",
+]
+
+# One absence record in that layout: absent-code AM "A", authorized "Y".
+_DAILY_ROW = [
+    "5112005",
+    "2713855",
+    "Rivers",
+    "Sam",
+    "01",
+    "02",
+    "Teacher Name Here",
+    "07-Oct-2025",
+    "Illness",
+    "",
+    "Y",
+    "",
+    "",
+    "N",
+    "A",
+    "",
+    "655050",
+    "1.0000",
+]
+
+
+def _csv(*rows: list[str]) -> bytes:
+    return ("\n".join(",".join(r) for r in rows) + "\n").encode("utf-8")
+
+
+class TestEchoedHeaderRowInAHeaderlessExport:
+    """A file declared HEADERLESS that has grown a header row anyway.
+
+    `headers:` injects names positionally with ``header=None``, so a header line the
+    export starts emitting arrives as data row 0 and reaches the transformers as a
+    record. SD51's 2026-09-17 daily-absence runs failed nine times that way — the
+    heading ``Absence Code AM`` parsed as an absence code.
+    """
+
+    def test_a_grown_header_row_is_read_as_a_header_not_a_record(self):
+        """THE POSITIVE: the mechanism actually fires, and on SD51's exact shape.
+
+        The export's heading is Title Case and spells one column ``Absence Code AM``
+        where the config declares ``Absent Code AM`` — so an all-or-nothing match would
+        detect nothing. 16 of 18 still land at their declared positions.
+        """
+        heading = [n.replace("Absent Code", "Absence Code") for n in _DAILY_NAMES]
+
+        df = DataExtractor("x")._load_bytes("StudentDailyAbsences.txt", _csv(heading, _DAILY_ROW), _DAILY_NAMES)
+
+        assert len(df) == 1, "the heading must not survive as a record"
+        assert df["absent code am"].tolist() == ["A"]
+        assert df["authorized am"].tolist() == ["Y"]
+
+    def test_the_same_export_without_the_header_row_is_untouched(self):
+        """THE TWIN: the standard headerless GDE is byte-identical through the new path.
+
+        Paired with the test above deliberately — a drop that fired on both would
+        silently eat the first absence record of every district in the fleet.
+        """
+        grown = DataExtractor("x")._load_bytes(
+            "StudentDailyAbsences.txt",
+            _csv([n.replace("Absent Code", "Absence Code") for n in _DAILY_NAMES], _DAILY_ROW),
+            _DAILY_NAMES,
+        )
+        plain = DataExtractor("x")._load_bytes("StudentDailyAbsences.txt", _csv(_DAILY_ROW), _DAILY_NAMES)
+
+        assert len(plain) == 1
+        pd.testing.assert_frame_equal(plain, grown)
+
+    def test_a_first_row_that_is_real_data_is_never_dropped(self):
+        """Two absence records in, two out — the row-0 check is not a blanket skip."""
+        second = list(_DAILY_ROW)
+        second[1] = "2713999"
+
+        df = DataExtractor("x")._load_bytes("StudentDailyAbsences.txt", _csv(_DAILY_ROW, second), _DAILY_NAMES)
+
+        assert df["student number"].tolist() == ["2713855", "2713999"]
+
+    def test_a_header_whose_column_ORDER_moved_is_reported_and_NOT_dropped(self, caplog):
+        """Dropping it would leave every row below it mis-sourced — a worse fault.
+
+        The names are all present, so the loose check recognises a header; none sit
+        where the config declares them, so the run keeps its existing fail-loud path
+        instead of silently delivering shifted data.
+        """
+        moved = list(reversed([n.replace("Absent Code", "Absence Code") for n in _DAILY_NAMES]))
+
+        with caplog.at_level("WARNING"):
+            df = DataExtractor("x")._load_bytes("StudentDailyAbsences.txt", _csv(moved, _DAILY_ROW), _DAILY_NAMES)
+
+        assert len(df) == 2, "the heading row must still be there — nothing was silently repaired"
+        assert "column ORDER no longer matches" in caplog.text
+
+    def test_a_file_with_no_declared_headers_is_left_alone(self):
+        """No `headers:` block means the file carries its own header — never our business."""
+        raw = _csv(["Student Number", "Grade"], ["2713855", "01"])
+
+        df = DataExtractor("x")._load_bytes("StudentDemographicEnhanced.txt", raw, None)
+
+        assert df["student number"].tolist() == ["2713855"]
+
+    def test_an_export_of_nothing_but_a_header_row_yields_an_empty_frame(self):
+        """The skip-on-empty path downstream, not a crash."""
+        heading = [n.replace("Absent Code", "Absence Code") for n in _DAILY_NAMES]
+
+        df = DataExtractor("x")._load_bytes("StudentDailyAbsences.txt", _csv(heading), _DAILY_NAMES)
+
+        assert df.empty
+
+    def test_no_cell_value_is_ever_logged(self, caplog):
+        """If the detection were wrong, the row it named would be a pupil's record."""
+        heading = [n.replace("Absent Code", "Absence Code") for n in _DAILY_NAMES]
+
+        with caplog.at_level("INFO"):
+            DataExtractor("x")._load_bytes("StudentDailyAbsences.txt", _csv(heading, _DAILY_ROW), _DAILY_NAMES)
+
+        assert "2713855" not in caplog.text
+        assert "Rivers" not in caplog.text
