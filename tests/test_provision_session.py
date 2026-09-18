@@ -428,6 +428,13 @@ def _child(monkeypatch, *, result: ElevationResult, payload: dict | None = None)
             res_path.write_text(__import__("json").dumps(payload), encoding="utf-8")
         return ElevationOutcome(result)
 
+    # The real ``write_request`` still runs (so the file lifecycle stays under test), but its
+    # two Windows-only side effects are seams here: DPAPI reaches ``ctypes.WinDLL`` and the
+    # owner-only DACL shells out to ``icacls``. Both work on Windows and raise on CI's Linux
+    # leg — the same blind spot that reddened PR #129 and #132, in its third form. Stubbed
+    # exactly as ``tests/test_scheduler_elevation.py`` stubs them.
+    monkeypatch.setattr(provision_session.elevation, "protect_blob", lambda raw: b"sealed:" + raw)
+    monkeypatch.setattr(provision_session.elevation, "_set_owner_only_dacl", lambda path: None)
     monkeypatch.setattr(provision_session.elevation, "write_request", _write)
     monkeypatch.setattr(provision_session.windows, "run_elevated_child", _run)
     return sent
