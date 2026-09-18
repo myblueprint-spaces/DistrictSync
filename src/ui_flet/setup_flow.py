@@ -879,6 +879,22 @@ _SFTP_RECONCILE_BLOCKED_ACCOUNT = (
     " The nightly schedule wasn't updated — check the Windows account and its password in the Daily "
     "schedule section, then save again."
 )
+# Plan 0049 S-2b.1. A THIRD cause neither of the two above can name, and the reason it needs its
+# own string is the whole point of this family: ``BLOCKED_ACCOUNT`` says "check the Windows account
+# and its password", which would send an admin to their SERVICE-ACCOUNT credentials over a fault in
+# the SpacesEDU DELIVERY password — the same misdirect ``BLOCKED``'s "fix the run time" made, one
+# field over. Names the card that owns the remedy, and offers the honest alternative, because the
+# password may have been saved by a different Windows account whose store this one cannot read.
+_FOLDERS_SAVED_BLOCKED_DELIVERY_SECRET = (  # nosec B105 - the value is a banner, not a credential
+    "Saved — the nightly schedule wasn't updated. DistrictSync can't read your saved delivery "
+    "password, so it has nothing to give the other account. Re-enter it in the Delivery section "
+    "and save again, or turn delivery off to schedule the sync without it."
+)
+_SFTP_RECONCILE_BLOCKED_DELIVERY_SECRET = (  # nosec B105 - the value is a banner, not a credential
+    " The nightly schedule wasn't updated — DistrictSync can't read the saved delivery password "
+    "back, so it has nothing to give the other account. Enter it again above and save, or turn "
+    "delivery off to schedule the sync without it."
+)
 _SFTP_RECONCILE_BLOCKED_ACCOUNT_SWITCH = (
     " The nightly schedule wasn't updated — to run it as a different Windows account, choose Remove "
     "nightly sync in the Daily schedule section, then schedule it again."
@@ -908,6 +924,12 @@ class ReconcileOutcome(Enum):
     place — the admin removes the schedule and creates it again, with the delete and the create
     both in front of them). Added rather than folded into ``BLOCKED`` so today's two strings stay
     byte-identical by construction.
+
+    ``BLOCKED_DELIVERY_SECRET`` (plan 0049 S-2b.1) is the third, for the same reason again:
+    delivery is configured but its password cannot be read back, so provisioning has nothing to
+    seed the shared store with. It may NOT reuse ``BLOCKED_ACCOUNT`` — that copy says "check the
+    Windows account and its password", which points at the service account's credentials rather
+    than the delivery password, and a misdirect one field over is still a misdirect.
     """
 
     DISPATCHED = "dispatched"
@@ -917,6 +939,7 @@ class ReconcileOutcome(Enum):
     NONE = "none"
     BLOCKED_ACCOUNT = "blocked_account"
     BLOCKED_ACCOUNT_SWITCH = "blocked_account_switch"
+    BLOCKED_DELIVERY_SECRET = "blocked_delivery_secret"  # nosec B105 - an enum tag, not a credential
 
 
 def folders_save_note(outcome: ReconcileOutcome) -> str:
@@ -940,6 +963,8 @@ def folders_save_note(outcome: ReconcileOutcome) -> str:
         return _FOLDERS_SAVED_BLOCKED_ACCOUNT
     if outcome is ReconcileOutcome.BLOCKED_ACCOUNT_SWITCH:
         return _FOLDERS_SAVED_BLOCKED_ACCOUNT_SWITCH
+    if outcome is ReconcileOutcome.BLOCKED_DELIVERY_SECRET:
+        return _FOLDERS_SAVED_BLOCKED_DELIVERY_SECRET
     if outcome is ReconcileOutcome.IN_FLIGHT:
         return _FOLDERS_SAVED_IN_FLIGHT
     return _FOLDERS_SAVED
@@ -966,6 +991,8 @@ def sftp_reconcile_suffix(outcome: ReconcileOutcome) -> str:
         return _SFTP_RECONCILE_BLOCKED_ACCOUNT
     if outcome is ReconcileOutcome.BLOCKED_ACCOUNT_SWITCH:
         return _SFTP_RECONCILE_BLOCKED_ACCOUNT_SWITCH
+    if outcome is ReconcileOutcome.BLOCKED_DELIVERY_SECRET:
+        return _SFTP_RECONCILE_BLOCKED_DELIVERY_SECRET
     if outcome is ReconcileOutcome.IN_FLIGHT:
         return _SFTP_RECONCILE_IN_FLIGHT
     return ""

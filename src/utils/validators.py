@@ -6,6 +6,8 @@ SFTP connections, or config file paths must be validated here before use.
 
 from __future__ import annotations
 
+import os
+import platform
 import re
 import shlex
 import unicodedata
@@ -47,12 +49,42 @@ _MONTH_DAY_PROBE_YEAR = 2000
 # defence. It is kept as a narrow *shape* check on a security-relevant field: it
 # names the identity a stored-credential task runs as, it is applied only to a
 # CALLER-CHOSEN account (never the machine-derived fallback, which may legitimately
-# contain a space), and keeping it narrow is what makes ``$``-suffixed gMSA /
-# virtual accounts unrepresentable while that path is unsupported (plan 0046 N1).
+# contain a space), and it stays narrow because a password-logon account is the only
+# thing it is ever applied to — a ``$``-suffixed managed service account has its OWN
+# validator (:func:`validate_gmsa_account`) and its own kind (plan 0049 S-3).
 _RUN_AS_USER_RE = re.compile(r"^[A-Za-z0-9._-]+(?:\\[A-Za-z0-9._-]+)?$")
 
 # Maximum length for a run-as account string (DOMAIN\user).
 _RUN_AS_USER_MAX_LEN = 256
+
+# A managed service account (gMSA / sMSA), ``DOMAIN\name$`` or bare ``name$``. The trailing
+# ``$`` is MANDATORY — it is the whole difference between this and a password-logon account,
+# and it is what tells Windows to fetch the credential from the directory instead of from the
+# task's own stored blob. Charset deliberately identical to ``_RUN_AS_USER_RE``'s (a
+# reviewable subset of sAMAccountName), and exactly ONE ``$``, at the end.
+_GMSA_ACCOUNT_RE = re.compile(r"^(?:[A-Za-z0-9._-]+\\)?[A-Za-z0-9._-]+\$$")
+
+# Domain parts a managed-service-account name may never carry: every one of them names a
+# built-in Windows authority rather than a directory principal. The space in "NT AUTHORITY"
+# already fails the charset above, which is exactly why these are ALSO checked by name — a
+# future charset widening must not silently open a path to LocalSystem.
+_WELL_KNOWN_AUTHORITIES = frozenset({"nt authority", "nt service", "builtin"})
+
+# Bare account names a managed-service-account name may never be, compared with the trailing
+# ``$`` REMOVED — otherwise the comparison would be vacuous (the shape check guarantees a
+# trailing ``$``, and no well-known account name carries one), and a vacuous guard is worse
+# than none because it reads as protection.
+_WELL_KNOWN_ACCOUNTS = frozenset(
+    {
+        "system",
+        "localsystem",
+        "local service",
+        "localservice",
+        "network service",
+        "networkservice",
+        "trustedinstaller",
+    }
+)
 
 # The admin's identity email (plan 0038). 254 is the RFC 5321 maximum length of a
 # deliverable address (the SMTP ``MAIL FROM`` path limit minus its angle brackets), so it
@@ -148,6 +180,12 @@ def validate_run_as_user(user: str) -> str:
     account can contain a space (``PC\\John Smith``), and validating the fallback would
     stop that district scheduling at all (``register_task``'s G5 contract).
 
+    It still rejects a trailing ``$``, and that is now a POSITIVE statement rather than a
+    gap: a ``$``-suffixed name is a managed service account, which is a different
+    :class:`~src.scheduler.task_com.PrincipalKind` with a different validator
+    (:func:`validate_gmsa_account`) and a different credential story. One validator per
+    kind is what stops a name typo turning one into the other (plan 0049 S-3).
+
     Returns the stripped value on success; raises ``ValueError`` otherwise.
     """
     user = user.strip()
@@ -161,6 +199,84 @@ def validate_run_as_user(user: str) -> str:
             "letters, digits, dots, underscores, and hyphens (no spaces or special characters)."
         )
     return user
+
+
+def _this_computers_names() -> frozenset[str]:
+    """Every case-folded spelling of THIS computer's name, for the computer-account refusal.
+
+    Two sources, deliberately unioned rather than chained: ``%COMPUTERNAME%`` (what Windows
+    itself uses, and what a scheduled task's principal is written against) and
+    :func:`platform.node` plus its first label (which answers even when the environment
+    variable has been cleared, and covers a host that reports an FQDN). The union is the safe
+    direction — an unprivileged environment edit can only ADD a name to refuse, never remove
+    one, and removing one is the only edit that would widen what
+    :func:`validate_gmsa_account` accepts.
+    """
+    node = platform.node().strip()
+    candidates = {os.environ.get("COMPUTERNAME", "").strip(), node, node.split(".", 1)[0]}
+    return frozenset(name.casefold() for name in candidates if name)
+
+
+def validate_gmsa_account(value: str) -> str:
+    """**A SHAPE CHECK, not an existence check** — validate a managed service account name.
+
+    It answers exactly one question: *could this string be a managed service account?* It
+    does not ask the directory whether the account exists, whether this computer is allowed
+    to retrieve its password, or whether it holds "Log on as a batch job". None of that is
+    knowable without a domain, and a shape check that implied otherwise would be worse than
+    none: the admin would read a green field as a working configuration. Windows answers the
+    real questions at registration time, and those answers arrive as HRESULTs (a name the
+    directory cannot resolve is the measured ``0x80070534`` —
+    ``task_com.MSG_ACCOUNT_NOT_RECOGNIZED``).
+
+    Accepted: ``DOMAIN\\name$`` or a bare ``name$`` — letters, digits, ``.``, ``_``, ``-``, at
+    most one backslash domain separator, and a MANDATORY single trailing ``$``. Length is
+    capped at the same :data:`_RUN_AS_USER_MAX_LEN` as its sibling and no lower: a gMSA's
+    sAMAccountName is conventionally short, but "conventionally" is not a rule this layer may
+    invent.
+
+    **Refused BY NAME**, whatever the shape says:
+
+    * this computer's own account (``<COMPUTERNAME>$``, case-insensitive, and with or without
+      a domain prefix). A computer account is spelled *exactly* like a gMSA and its token is
+      SYSTEM-equivalent on the local machine, so accepting it would quietly schedule the
+      nightly as LocalSystem — a privilege escalation dressed as a typo;
+    * any built-in Windows authority (``NT AUTHORITY\\*``, ``NT SERVICE\\*``, ``BUILTIN\\*``)
+      or well-known account name. Most of those already fail the charset, which is precisely
+      why they are ALSO refused by name: the next person to widen the charset must not
+      silently open this door.
+
+    Both halves of the elevation handshake call this (the parent before it seals a request,
+    the privileged child after it unseals one), so neither is the only thing standing between
+    a hostile request file and ``RegisterTaskDefinition``.
+
+    Returns the stripped value on success; raises ``ValueError`` otherwise.
+    """
+    account = value.strip()
+    if not account:
+        raise ValueError("Managed service account must not be empty.")
+    if len(account) > _RUN_AS_USER_MAX_LEN:
+        raise ValueError(f"Managed service account is too long (max {_RUN_AS_USER_MAX_LEN} characters).")
+    if not _GMSA_ACCOUNT_RE.match(account):
+        raise ValueError(
+            f"Invalid managed service account '{account}'. Use 'DOMAIN\\name$' or 'name$' with only "
+            "letters, digits, dots, underscores, and hyphens, and a single trailing '$'."
+        )
+    domain, _, bare = account.rpartition("\\")
+    # ``bare`` always ends in ``$`` (the shape check guarantees it), so the well-known
+    # comparison drops that marker first — see the constant's own note on vacuity.
+    unmarked = bare[:-1].casefold()
+    if domain.casefold() in _WELL_KNOWN_AUTHORITIES or unmarked in _WELL_KNOWN_ACCOUNTS:
+        raise ValueError(
+            "That is a built-in Windows account, not a managed service account. "
+            "Use the service account your domain administrator created."
+        )
+    if unmarked in _this_computers_names():
+        raise ValueError(
+            "That is this computer's own account, not a managed service account. "
+            "Use the service account your domain administrator created."
+        )
+    return account
 
 
 def validate_month_day(md: str) -> str:

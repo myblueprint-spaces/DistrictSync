@@ -72,10 +72,12 @@ from src.config.app_config import AppConfig
 from src.config.loader import available_configs
 from src.history.store import read_run_records, store_meta
 from src.scheduler import get_scheduler
-from src.ui_flet import about, components, nav, tokens
+from src.ui_flet import about, components, handover_result, nav, tokens
+from src.ui_flet.handover_result import HandoverResult
 from src.ui_flet.home_status import (
     FixAction,
     derive_home_status,
+    machine_scope_line,
     quick_actions,
     sync_window_paused,
     welcome_band,
@@ -95,6 +97,8 @@ from src.ui_flet.screens import setup as setup_screen
 from src.ui_flet.screens.help import SUPPORT_EMAIL
 from src.ui_flet.screens.identity import NOT_LISTED_NOTE_TAIL as UNMATCHED_DISTRICT_NOTE
 from src.ui_flet.verdict import Verdict
+from src.utils import paths
+from src.utils.diagnostics import machine_scope_provenance
 from src.utils.identity import extract_domain, normalize_email
 from src.utils.validators import IDENTITY_EMAIL_MAX_LEN, validate_identity_email
 from src.utils.version import app_version
@@ -849,6 +853,8 @@ def _wizard_host(
     *,
     on_schedule_changed: Callable[[], None] | None,
     on_restart_identity: Callable[[], None] | None = None,
+    on_reenter: Callable[[], None] | None = None,
+    handover: HandoverResult | None = None,
 ) -> ft.Control:
     """Branch (a): Home IS the setup wizard until the finish line is reached (0038 S6).
 
@@ -869,6 +875,12 @@ def _wizard_host(
     wizard TOGETHER, on purpose: this branch has exactly one thing to offer, so a bare band
     over nothing, or a wizard under a line we failed to derive, are both worse than the
     honest card. All-or-nothing is the state to be in when the only surface is the task.
+
+    ``handover`` (0049 S-2b.3) is the drained one-shot, passed IN rather than taken here:
+    ``build_home`` owns the single drain so this branch's floor — whose copy says "Nothing has
+    been changed", which would be FALSE after a handover — can still carry the report. A
+    first-run admin reaches this branch after re-entry because ``setup_completed`` is still
+    false when the Schedule step dispatches.
     """
 
     def _on_setup_complete() -> None:
@@ -896,31 +908,33 @@ def _wizard_host(
 
     try:
         line = welcome_band(app_config, records=read_run_records(), store_created_at=_store_created_at())
-        return ft.Column(
-            spacing=tokens.space_xl,
-            controls=[
-                # Calm caption tier, NOT a heading: the wizard's own step header owns the
-                # title ramp — and the step COUNT, which is why this line carries none.
-                # (The gradient hero this replaces retired with the first-run module; the
-                # gradient's one home is the launch page.)
-                ft.Row(
-                    spacing=tokens.space_md,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        ft.Text(line, size=tokens.type_emphasis, color=tokens.color_muted, expand=True),
-                        *_restart_identity_controls(page, app_config, on_restart_identity),
-                    ],
-                ),
-                setup_screen.build_setup(
-                    page,
-                    on_schedule_changed=on_schedule_changed,
-                    on_complete=_on_setup_complete,
-                ),
-            ],
-        )
+        controls: list[ft.Control] = []
+        if handover is not None:
+            controls.append(setup_screen.handover_banner(handover))
+        controls += [
+            # Calm caption tier, NOT a heading: the wizard's own step header owns the
+            # title ramp — and the step COUNT, which is why this line carries none.
+            # (The gradient hero this replaces retired with the first-run module; the
+            # gradient's one home is the launch page.)
+            ft.Row(
+                spacing=tokens.space_md,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Text(line, size=tokens.type_emphasis, color=tokens.color_muted, expand=True),
+                    *_restart_identity_controls(page, app_config, on_restart_identity),
+                ],
+            ),
+            setup_screen.build_setup(
+                page,
+                on_schedule_changed=on_schedule_changed,
+                on_complete=_on_setup_complete,
+                on_reenter=on_reenter,
+            ),
+        ]
+        return ft.Column(spacing=tokens.space_xl, controls=controls)
     except Exception:  # noqa: BLE001 - the first-run floor: never a stack trace, never a false reassurance
         logger.warning("Could not open the setup wizard on Home.", exc_info=True)
-        return components.ErrorCard(
+        floor: ft.Control = components.ErrorCard(
             SETUP_UNAVAILABLE_HEADLINE,
             SETUP_UNAVAILABLE_DETAIL,
             action=components.secondary_button(
@@ -929,6 +943,15 @@ def _wizard_host(
                 icon=ft.Icons.HELP_OUTLINE_ROUNDED,
             ),
         )
+        if handover is None:
+            return floor
+        # The all-or-nothing rule above is about the BAND and the WIZARD — two things this
+        # branch is offering. A handover report is neither: it is the record of a change that
+        # already happened, and `SETUP_UNAVAILABLE_DETAIL` ("Nothing has been changed") is
+        # false while one is pending. It goes above the floor.
+        with contextlib.suppress(Exception):
+            return ft.Column(spacing=tokens.space_xl, controls=[setup_screen.handover_banner(handover), floor])
+        return floor
 
 
 def _store_created_at() -> str | None:
@@ -942,6 +965,7 @@ def _dashboard(
     app_config: AppConfig,
     on_navigate: Callable[[str], None],
     on_refresh: Callable[[], None] | None,
+    handover: HandoverResult | None = None,
 ) -> ft.Control:
     """Branches (b)/(c): read the store, derive the verdict, render verdict-first.
 
@@ -970,6 +994,17 @@ def _dashboard(
     # the eleven-YAML catalog the S4b cost note keeps off this path.
     output_entities = active_output_entities(app_config.sis_type)
 
+    # 0049 S-2a.4: "whose settings are these?", resolved ONCE per mount for the same reason as
+    # the two above — ``_render`` runs again when the schedule probe lands, and the provenance
+    # is a registry read, not a value that can change between the two paints. ``None`` on every
+    # per-user install, which is every install in the field today.
+    provisioned_by, provisioned_at = machine_scope_provenance()
+    scope_line = machine_scope_line(
+        machine_scope=paths.is_machine_scope(),
+        provisioned_by=provisioned_by,
+        provisioned_at=provisioned_at,
+    )
+
     container = ft.Column(spacing=22)
 
     def _render(schedule_status: ScheduleStatus | None) -> None:
@@ -984,10 +1019,16 @@ def _dashboard(
         # content element, then the detail (fix / identity cards / quick actions / the
         # clean-schedule confirmation card). ``status.metrics`` is deliberately NOT read — the
         # tile row it fed retired at 0038 S7.
-        controls: list[ft.Control] = [
-            _header(app_config, on_refresh),
-            components.HealthVerdictBanner(status.verdict, headline=status.headline, detail=status.detail),
-        ]
+        controls: list[ft.Control] = [_header(app_config, on_refresh)]
+        # 0049 S-2b.3: the FIRST content element, ABOVE the verdict band — the one deliberate
+        # exception to verdict-first this surface makes, and it lasts exactly one paint. The
+        # admin has just pressed a button that permanently moved this computer's settings; that
+        # outcome outranks "did last night's roster sync?" until it has been read once. Drained
+        # by `build_home`, so `_render` (which runs again when the schedule probe lands) cannot
+        # lose it to `take()`'s clear.
+        if handover is not None:
+            controls.append(setup_screen.handover_banner(handover))
+        controls.append(components.HealthVerdictBanner(status.verdict, headline=status.headline, detail=status.detail))
         if status.fix is not None:
             controls.append(_fix_button(status.fix, on_navigate))
         # 0038 S4b: the identity cards ride HERE — anchored to the verdict block, never to
@@ -1018,9 +1059,23 @@ def _dashboard(
             schedule_status is not None
             and schedule_status.state is ScheduleState.LIVE
             and not schedule_status.attention
-            and not sync_window_paused(app_config, now=None, foreign_account=schedule_status.foreign_account)
+            # 0049 S-2a.1: ``shared_records`` from the ONE predicate (pinned once per process) —
+            # on a machine-scoped install the nightly reads this very config, so the pause IS in
+            # force and this card must stay suppressed exactly as it is on a same-account install.
+            and not sync_window_paused(
+                app_config,
+                now=None,
+                foreign_account=schedule_status.foreign_account,
+                shared_records=paths.is_machine_scope(),
+            )
         ):
             controls.append(_schedule_card(schedule_status, on_navigate))
+        # 0049 S-2a.4: LAST, and muted. Verdict-first is the rule this surface is built on, and
+        # a provenance footnote is the quietest true thing on the page — it may not precede the
+        # verdict, and it may not be wedged between a fault and its fix (the same argument the
+        # identity cards' anchor comment makes).
+        if scope_line is not None:
+            controls.append(ft.Text(scope_line, size=tokens.type_caption, color=tokens.color_muted))
         container.controls = controls
 
     _render(None)  # initial paint from the store alone; the schedule read-back arrives async
@@ -1049,11 +1104,14 @@ def _probe_schedule_async(
 
         # 0046 C: resolve the recorded task principal HERE, inside the worker thread, so the
         # config read stays off the UI thread. It fails to "" on everything, and "" ALARMS.
+        # 0049 S-2a.1: the shared-profile fact rides along — it is what decides whether that
+        # foreign principal's records land elsewhere or in the ledger this surface reads.
         status = probe_schedule(
             app_config.schedule_task_name,
             hint_registered=app_config.schedule_registered,
             latest_record_ts=latest_ts,
             foreign_account=foreign_task_account(app_config),
+            shared_records=paths.is_machine_scope(),
         )
 
         async def _apply() -> None:
@@ -1075,6 +1133,7 @@ def build_home(
     on_refresh: Callable[[], None] | None = None,
     on_schedule_changed: Callable[[], None] | None = None,
     on_restart_identity: Callable[[], None] | None = None,
+    on_reenter: Callable[[], None] | None = None,
 ) -> ft.Control:
     """Build the three-way Home surface. ``on_navigate(dest_id)`` is injected by the shell.
 
@@ -1093,7 +1152,16 @@ def build_home(
     does from the Setup rail item. ``on_restart_identity`` (QA 2026-08-18) is likewise
     branch-(a)-only: it re-mounts the launch page, and the dashboard branches have Settings
     for that.
+
+    ``on_reenter`` (0049 S-2b.3) is forwarded to branch (a)'s hosted wizard, whose Schedule
+    step can dispatch a machine-scope handover. The one-shot RESULT of such a handover is
+    drained HERE — once per mount, before either branch is built — because this is the single
+    mount point, because ``take()`` clears and a drain inside a re-render would lose it, and
+    because both floors below claim nothing was changed, which a handover makes false.
     """
+    # Drained even when something raises below: an irreversible change must be reported on
+    # whatever surface the admin ends up looking at. `take()` is total and cannot raise.
+    handover = handover_result.take()
     if nav.needs_setup(app_config):
         return _wizard_host(
             page,
@@ -1101,12 +1169,14 @@ def build_home(
             on_navigate,
             on_schedule_changed=on_schedule_changed,
             on_restart_identity=on_restart_identity,
+            on_reenter=on_reenter,
+            handover=handover,
         )
 
     try:
-        return _dashboard(page, app_config, on_navigate, on_refresh)
+        return _dashboard(page, app_config, on_navigate, on_refresh, handover)
     except Exception:  # noqa: BLE001 - the reliability floor: a view bug shows a calm surface, never a trace
-        return components.ErrorCard(
+        floor: ft.Control = components.ErrorCard(
             "We couldn't show your sync status",
             "Your nightly sync keeps running in the background.",
             action=components.primary_button(
@@ -1114,3 +1184,12 @@ def build_home(
                 lambda _e: on_navigate("run_history"),
             ),
         )
+        if handover is None:
+            return floor
+        # The floor's reassurance is about the STATUS view, not about this computer's settings
+        # — so the handover report goes above it rather than being swallowed with the surface
+        # that was meant to carry it. Suppressed rather than nested in the same try: a banner
+        # that cannot be built must not cost the admin the floor as well.
+        with contextlib.suppress(Exception):
+            return ft.Column(spacing=tokens.space_xl, controls=[setup_screen.handover_banner(handover), floor])
+        return floor

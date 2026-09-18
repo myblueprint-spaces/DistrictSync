@@ -693,10 +693,21 @@ def run_table(rows: list[RunRow]) -> ft.Control:
     """The DS-1-styled ``ft.DataTable`` of past runs — the first ``ft.DataTable`` consumer.
 
     Columns mirror the proven Streamlit set MINUS the raw ``Error`` column (dropped for privacy):
-    **When · Status · Source · Students · Staff · Family · Classes · Enrollments · [Courses ·
-    Student courses] · SFTP · Warnings · Duration**. The 2 myBlueprint+ count columns render ONLY
-    when at least one displayed row has a non-zero count for them — decided TABLE-WIDE (one scan of
-    all rows), so a SpacesEDU district shows 5 count columns, not 7 with two all-zero columns.
+    **When · Status · Source · [Ran as] · Students · Staff · Family · Classes · Enrollments ·
+    [Courses · Student courses] · SFTP · Warnings · Duration**. The 2 myBlueprint+ count columns
+    render ONLY when at least one displayed row has a non-zero count for them — decided TABLE-WIDE
+    (one scan of all rows), so a SpacesEDU district shows 5 count columns, not 7 with two all-zero
+    columns.
+
+    **"Ran as" follows the same table-wide rule** (plan 0049 S-2a.5): it renders only when the
+    displayed rows carry MORE THAN ONE established value. On every per-user install each visible
+    record was written by the account reading it, so the column has nothing to say and does not
+    appear; a machine-scoped install where the admin and the nightly's service account both write
+    into one shared ledger is the case it exists for. Rows whose account could not be established
+    (``run_as == ""`` — a record written before the key existed) are NOT a distinct value, so an
+    upgraded ledger does not conjure the column; they render "—" when it is shown for other
+    reasons. ``run_history.run_as_summary_line`` states the fact once above the table when the
+    values agree.
 
     Every cell is a uniform string (a not-produced entity → "—"). Status is TEXT-first
     (``status_label``), with an optional AA-safe row tint from ``status_verdict`` (never
@@ -709,6 +720,8 @@ def run_table(rows: list[RunRow]) -> ft.Control:
     count_columns: list[tuple[str, str]] = list(_ROW_ROSTERING_COLUMNS) + [
         (key, label) for key, label in _ROW_MYBLUEPRINT_COLUMNS if show_mbp[key]
     ]
+    # Same table-wide decision for the run-as column — see the docstring.
+    show_run_as = len({row.run_as for row in rows if row.run_as}) > 1
 
     def _head(text: str) -> ft.Text:
         return ft.Text(text, size=12, weight=ft.FontWeight.W_700, color=tokens.color_muted)
@@ -718,6 +731,8 @@ def run_table(rows: list[RunRow]) -> ft.Control:
         ft.DataColumn(label=_head("Status")),
         ft.DataColumn(label=_head("Source")),
     ]
+    if show_run_as:
+        columns.append(ft.DataColumn(label=_head("Ran as")))
     columns += [ft.DataColumn(label=_head(label), numeric=True) for _key, label in count_columns]
     columns.append(ft.DataColumn(label=_head("Delivery")))
     columns.append(ft.DataColumn(label=_head("Warnings"), numeric=True))
@@ -730,6 +745,8 @@ def run_table(rows: list[RunRow]) -> ft.Control:
             _cell(row.status_label, weight=ft.FontWeight.W_700),
             _source_cell(row),
         ]
+        if show_run_as:
+            cells.append(_cell(row.run_as or "—"))
         for key, _label in count_columns:
             value = row.entity_counts.get(key)
             cells.append(_cell("—" if value is None else str(value)))

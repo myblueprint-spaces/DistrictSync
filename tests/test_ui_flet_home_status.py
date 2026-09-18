@@ -229,7 +229,11 @@ class TestEmptyState:
         # automation. Calm WARNING, NO fix CTA/badge (a manual-only district must not be nagged).
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
         missing = derive_schedule_status(
-            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+            ScheduleReadback(found=False),
+            hint_registered=False,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
         )
         status = derive_home_status([], cfg, now=_NOW, schedule_status=missing)
         assert status.verdict is Verdict.WARNING
@@ -242,7 +246,11 @@ class TestEmptyState:
         # confirmed gone needs it just as much. (Its headline stays the upgrader's.)
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", setup_completed=True)
         missing = derive_schedule_status(
-            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+            ScheduleReadback(found=False),
+            hint_registered=False,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
         )
         status = derive_home_status([], cfg, now=_NOW, store_created_at=self._STORE_STAMP, schedule_status=missing)
         assert status.headline == home_status_mod.EMPTY_FRESH_START_HEADLINE
@@ -338,7 +346,11 @@ class TestScheduleAttention:
 
     def test_expected_missing_routes_to_setup(self) -> None:
         sched = derive_schedule_status(
-            ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, foreign_account=""
+            ScheduleReadback(found=False),
+            hint_registered=True,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
         )
         status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=sched)
         assert status.verdict is Verdict.WARNING
@@ -354,6 +366,7 @@ class TestScheduleAttention:
             hint_registered=True,
             latest_record_ts=_RECENT,
             foreign_account="",
+            shared_records=False,
         )
         status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=sched)
         assert status.verdict is Verdict.WARNING
@@ -366,6 +379,7 @@ class TestScheduleAttention:
             hint_registered=True,
             latest_record_ts=None,
             foreign_account="",
+            shared_records=False,
         )
         status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=sched)
         assert status.verdict is Verdict.HEALTHY
@@ -377,7 +391,11 @@ class TestScheduleAttention:
     def test_unexpected_missing_does_not_warn(self) -> None:
         # A configured manual-only install that never scheduled → not a fault on Home.
         sched = derive_schedule_status(
-            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+            ScheduleReadback(found=False),
+            hint_registered=False,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
         )
         status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=sched)
         assert status.verdict is Verdict.HEALTHY
@@ -408,7 +426,11 @@ class TestFailureBeatsScheduleAttention:
     def _expected_missing() -> ScheduleStatus:
         """The Event-141 shape: the config expected a schedule, the OS definitively has none."""
         return derive_schedule_status(
-            ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, foreign_account=""
+            ScheduleReadback(found=False),
+            hint_registered=True,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
         )
 
     @staticmethod
@@ -419,6 +441,7 @@ class TestFailureBeatsScheduleAttention:
             hint_registered=True,
             latest_record_ts=_RECENT,
             foreign_account="",
+            shared_records=False,
         )
 
     @staticmethod
@@ -490,13 +513,18 @@ class TestFailureBeatsScheduleAttention:
             None,  # not probed yet (the first paint)
             _live_schedule(),  # a clean LIVE schedule
             derive_schedule_status(
-                ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+                ScheduleReadback(found=False),
+                hint_registered=False,
+                latest_record_ts=None,
+                foreign_account="",
+                shared_records=False,
             ),
             derive_schedule_status(
                 ScheduleReadback(found=None, error="denied"),
                 hint_registered=True,
                 latest_record_ts=None,
                 foreign_account="",
+                shared_records=False,
             ),
         ],
         ids=["unprobed", "live", "unexpected-missing", "unknown"],
@@ -651,6 +679,7 @@ class TestMissedRun:
             hint_registered=True,
             latest_record_ts=None,
             foreign_account="",
+            shared_records=False,
         )
         for sched in (None, unknown):
             status = derive_home_status(
@@ -666,7 +695,11 @@ class TestMissedRun:
         # An unexpected MISSING (manual-only install) is not a missed run — nothing was promised.
         cfg = AppConfig(input_dir="/in", output_dir="/out", sis_type="myedbc", schedule_registered=False)
         missing = derive_schedule_status(
-            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+            ScheduleReadback(found=False),
+            hint_registered=False,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
         )
         status = derive_home_status([], cfg, now=_NOW, store_created_at=self._ESTABLISHED, schedule_status=missing)
         assert status.headline != self._MISSED_HEADLINE
@@ -819,7 +852,11 @@ class TestSeasonalPause:
         # A genuinely gone task makes "resumes <date>" a lie — the MISSING attention still surfaces
         # (only the by-design LIVE fired-but-no-record contradiction is suppressed during a pause).
         missing = derive_schedule_status(
-            ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, foreign_account=""
+            ScheduleReadback(found=False),
+            hint_registered=True,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
         )
         status = derive_home_status([_record()], _windowed(), now=_SUMMER, schedule_status=missing)
         assert status.verdict is Verdict.WARNING
@@ -833,7 +870,11 @@ class TestSeasonalPause:
         # (it will never resume, so "resumes <date>" is a lie). The honest "add a nightly schedule"
         # WARNING must surface instead of the green paused headline.
         missing = derive_schedule_status(
-            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+            ScheduleReadback(found=False),
+            hint_registered=False,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
         )
         status = derive_home_status(
             [],
@@ -851,7 +892,11 @@ class TestSeasonalPause:
         # schedule must not read as a calm summer pause -> the normal record rules apply (here: an
         # old newest record -> the honest "No recent sync" WARNING), never the HEALTHY pause.
         missing = derive_schedule_status(
-            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+            ScheduleReadback(found=False),
+            hint_registered=False,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
         )
         old = (_SUMMER - timedelta(hours=STALE_AFTER_HOURS + 5)).isoformat(timespec="seconds")
         status = derive_home_status(
@@ -871,6 +916,7 @@ class TestSeasonalPause:
             hint_registered=True,
             latest_record_ts=_RECENT,
             foreign_account="",
+            shared_records=False,
         )
         status = derive_home_status([_record()], _windowed(), now=_SUMMER, schedule_status=contradiction)
         assert status.verdict is Verdict.HEALTHY
@@ -1043,6 +1089,7 @@ class TestHealthy:
             hint_registered=True,
             latest_record_ts=None,
             foreign_account="",
+            shared_records=False,
         )
         status = derive_home_status([_record()], _CONFIGURED, now=_NOW, schedule_status=unknown)
         assert status.headline == "Your roster is up to date"
@@ -1352,7 +1399,11 @@ class TestQuickActions:
 def _every_home_status() -> list[HomeStatus]:
     """Every ``HomeStatus`` the module's rules can produce over a spread of inputs."""
     missing = derive_schedule_status(
-        ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, foreign_account=""
+        ScheduleReadback(found=False),
+        hint_registered=True,
+        latest_record_ts=None,
+        foreign_account="",
+        shared_records=False,
     )
     records = [
         None,
@@ -1837,17 +1888,22 @@ class TestMissedRunGoesQuietOnlyForAForeignPrincipal:
 
 
 class TestSyncWindowPausedIsForeignAware:
-    """A9 — the pause is NOT IN FORCE for a task running as another account."""
+    """A9 — the pause is NOT IN FORCE for a task running as another account.
+
+    ``shared_records=False`` throughout: this class owns the PER-USER world, which is every
+    install in the field today. Its machine-scope counterpart is
+    ``TestSyncWindowPausedIsSharedRecordsAware`` below.
+    """
 
     def test_an_otherwise_paused_window_reports_unpaused_under_a_foreign_principal(self) -> None:
-        assert sync_window_paused(_windowed(), now=_SUMMER, foreign_account=_FOREIGN) is False
+        assert sync_window_paused(_windowed(), now=_SUMMER, foreign_account=_FOREIGN, shared_records=False) is False
 
     def test_positive_twin_the_same_window_still_reports_paused_on_a_same_account_install(self) -> None:
-        assert sync_window_paused(_windowed(), now=_SUMMER, foreign_account="") is True
+        assert sync_window_paused(_windowed(), now=_SUMMER, foreign_account="", shared_records=False) is True
 
     def test_foreign_account_is_required_keyword_only(self) -> None:
         with pytest.raises(TypeError):
-            sync_window_paused(_windowed(), now=_SUMMER)  # type: ignore[call-arg]
+            sync_window_paused(_windowed(), now=_SUMMER, shared_records=False)  # type: ignore[call-arg]
 
 
 class TestHomeNeverRendersAFalseAlarmUnderAForeignPrincipal:
@@ -1990,3 +2046,210 @@ class TestTheForeignPrincipalBranch:
             [], _CONFIGURED, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=_live_schedule()
         )
         assert status.headline != FOREIGN_PRINCIPAL_HEADLINE
+
+
+# --------------------------------------------------------------------------- #
+# Plan 0049 S-2a — shared records: the three Home predicates Slice C silenced    #
+# --------------------------------------------------------------------------- #
+from src.ui_flet.home_status import _foreign_records_elsewhere  # noqa: E402
+
+#: The rule, at all four corners: (foreign_account, shared_records) → is the alarm SUPPRESSED?
+#: **Suppress only when ``foreign_account and not shared_records``.** Slice C made "the records
+#: land in another profile" true by going quiet; machine scope makes it FALSE, and a predicate
+#: that stayed quiet there would disable Home's only "did the nightly run?" signal on exactly
+#: the install this plan just fixed.
+_SUPPRESSION_CORNERS = [
+    ("", False, False),
+    ("", True, False),
+    (_FOREIGN, False, True),
+    (_FOREIGN, True, False),
+]
+_CORNER_IDS = ["same-account-per-user", "same-account-shared", "foreign-per-user", "foreign-shared"]
+
+
+def _schedule_for(foreign_account: str, shared_records: bool, *, attention: bool = False) -> ScheduleStatus:
+    """A LIVE read-back at one corner of the truth table.
+
+    Both facts ride ONE ``ScheduleStatus`` on purpose (S-2a.1): every predicate below reads them
+    off the status it already receives, so they cannot disagree about a single install.
+    """
+    return ScheduleStatus(
+        state=ScheduleState.LIVE,
+        headline="Nightly sync is scheduled",
+        detail="registered",
+        next_run_display="3:00 AM",
+        attention=attention,
+        foreign_account=foreign_account,
+        shared_records=shared_records,
+    )
+
+
+class TestMissedRunSpeaksAgainOnASharedProfile:
+    """``_is_missed_run`` — the corner-by-corner table, twins included.
+
+    A5's silence was a claim about WHERE the record was written: ``src/history/store.py`` writes
+    under the RUNNING account's profile, so on a per-user install a foreign principal's record
+    never reaches this ledger and its absence proves nothing. On a machine-scoped install both
+    writers share one store, so a gap is once again a nightly that did not happen — and Home has
+    no other way to notice.
+    """
+
+    @pytest.mark.parametrize(("account", "shared", "suppressed"), _SUPPRESSION_CORNERS, ids=_CORNER_IDS)
+    def test_the_empty_ledger_table(self, account: str, shared: bool, suppressed: bool) -> None:
+        fired = _is_missed_run(
+            [], now=_NOW, store_created_at=_ESTABLISHED, schedule_status=_schedule_for(account, shared)
+        )
+        assert fired is (not suppressed)
+
+    @pytest.mark.parametrize(("account", "shared", "suppressed"), _SUPPRESSION_CORNERS, ids=_CORNER_IDS)
+    def test_the_stale_newest_record_table(self, account: str, shared: bool, suppressed: bool) -> None:
+        records = [_record(timestamp=_ANCIENT)]
+        fired = _is_missed_run(
+            records, now=_NOW, store_created_at=_ESTABLISHED, schedule_status=_schedule_for(account, shared)
+        )
+        assert fired is (not suppressed)
+
+    def test_the_signature_still_gained_no_parameter(self) -> None:
+        """The 0046 C rule, re-pinned for the new fact: it rides the ``ScheduleStatus``. A
+        ``shared_records=`` argument here would be a second carrier that could disagree with the
+        contradiction rule reading the status."""
+        import inspect
+
+        params = set(inspect.signature(_is_missed_run).parameters)
+        assert params == {"records", "now", "store_created_at", "schedule_status"}
+
+
+class TestForeignRecordsElsewhereRequiresTheRecordsToBeElsewhere:
+    """``_foreign_records_elsewhere`` — the rule whose whole NAME is the claim it makes.
+
+    It routes Home to "your nightly runs as X and its records don't appear here". On a shared
+    profile that sentence is false, so the rule must not fire at all and the ordinary
+    missed-run / stale / empty-state arms own the install again.
+    """
+
+    @pytest.mark.parametrize(("account", "shared", "elsewhere"), _SUPPRESSION_CORNERS, ids=_CORNER_IDS)
+    def test_the_table(self, account: str, shared: bool, elsewhere: bool) -> None:
+        """The same four corners, read the other way round: the rule fires EXACTLY where the
+        other two go quiet, because it is the one true sentence that replaces them."""
+        assert _foreign_records_elsewhere([], now=_NOW, schedule_status=_schedule_for(account, shared)) is elsewhere
+
+    def test_a_stale_local_record_does_not_resurrect_it_on_a_shared_profile(self) -> None:
+        """The per-user rule fires on an empty OR stale ledger. Shared records must close BOTH
+        arms, not just the empty one."""
+        records = [_record(timestamp=_ANCIENT)]
+        assert _foreign_records_elsewhere(records, now=_NOW, schedule_status=_schedule_for(_FOREIGN, True)) is False
+
+    def test_positive_twin_the_same_stale_record_still_fires_per_user(self) -> None:
+        records = [_record(timestamp=_ANCIENT)]
+        assert _foreign_records_elsewhere(records, now=_NOW, schedule_status=_schedule_for(_FOREIGN, False)) is True
+
+
+class TestSyncWindowPausedIsSharedRecordsAware:
+    """A9's argument, and the one fact that makes it conditional.
+
+    Per-user, the nightly gate in ``src/main.py`` resolves the RUNNING account's ``config.json``,
+    which for a service account holds no window at all — so a green "Paused for the summer,
+    resumes Aug 11" would be painted over a sync still delivering rosters. Machine-scoped, that
+    gate resolves the SAME shared config this surface just read, so the pause IS in force and
+    suppressing it produces the mirror-image false report: an amber "we expected a nightly sync
+    that didn't arrive" every summer night over a sync that is deliberately paused.
+    """
+
+    @pytest.mark.parametrize(("account", "shared", "suppressed"), _SUPPRESSION_CORNERS, ids=_CORNER_IDS)
+    def test_the_table(self, account: str, shared: bool, suppressed: bool) -> None:
+        paused = sync_window_paused(_windowed(), now=_SUMMER, foreign_account=account, shared_records=shared)
+        assert paused is (not suppressed)
+
+    def test_shared_records_is_required_keyword_only(self) -> None:
+        """A defaulted ``False`` would keep today's now-wrong suppression on exactly the installs
+        machine scope exists to fix."""
+        with pytest.raises(TypeError):
+            sync_window_paused(_windowed(), now=_SUMMER, foreign_account=_FOREIGN)  # type: ignore[call-arg]
+
+    def test_a_disabled_window_is_still_unpaused_on_a_shared_profile(self) -> None:
+        """The new fact only lifts the principal veto — it may not manufacture a pause nobody
+        configured. (Opt-in is opt-in: 20 districts run year-round.)"""
+        cfg = _windowed(sync_window_enabled=False)
+        assert sync_window_paused(cfg, now=_SUMMER, foreign_account=_FOREIGN, shared_records=True) is False
+
+    def test_an_in_season_window_is_still_unpaused_on_a_shared_profile(self) -> None:
+        """Positive twin for the test above, on the other axis: inside the season nothing is
+        paused regardless of scope."""
+        in_season = datetime(2026, 10, 1, 8, 0, 0)
+        assert sync_window_paused(_windowed(), now=in_season, foreign_account=_FOREIGN, shared_records=True) is False
+
+
+class TestHomeSpeaksPlainlyAgainOnASharedProfile:
+    """The derivation, end to end — the predicates above are not what an admin reads.
+
+    Each test has a per-user twin in ``TestHomeNeverRendersAFalseAlarmUnderAForeignPrincipal``
+    above, asserting the OPPOSITE outcome from the same inputs. Together they are the whole
+    slice: one bit of scope decides which of two true stories Home tells.
+    """
+
+    def test_the_missed_run_headline_returns(self) -> None:
+        status = derive_home_status(
+            [],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=_ESTABLISHED,
+            schedule_status=_schedule_for(_FOREIGN, True),
+        )
+        assert status.headline == _MISSED_HEADLINE
+
+    def test_the_stale_headline_returns(self) -> None:
+        records = [_record(timestamp=_ANCIENT)]
+        status = derive_home_status(
+            records,
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=None,
+            schedule_status=_schedule_for(_FOREIGN, True),
+        )
+        assert status.headline == _STALE_HEADLINE
+
+    def test_the_seasonal_paused_headline_returns(self) -> None:
+        status = derive_home_status(
+            [_record(timestamp=_SUMMER_ESTABLISHED)],
+            _windowed(),
+            now=_SUMMER,
+            store_created_at=_SUMMER_ESTABLISHED,
+            schedule_status=_schedule_for(_FOREIGN, True),
+        )
+        assert status.headline == _PAUSED_HEADLINE
+
+    @pytest.mark.parametrize("store_created_at", [None, _ESTABLISHED], ids=["fresh-store", "established-store"])
+    def test_the_records_are_elsewhere_branch_never_renders(self, store_created_at: str | None) -> None:
+        """It is the one sentence that must NOT survive machine scope: the records are here."""
+        status = derive_home_status(
+            [],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=store_created_at,
+            schedule_status=_schedule_for(_FOREIGN, True),
+        )
+        assert status.headline != FOREIGN_PRINCIPAL_HEADLINE
+
+    def test_negative_twin_it_does_render_on_the_same_inputs_per_user(self) -> None:
+        """One bit different — the whole change, in the shape an admin would notice."""
+        status = derive_home_status(
+            [],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=_ESTABLISHED,
+            schedule_status=_schedule_for(_FOREIGN, False),
+        )
+        assert status.headline == FOREIGN_PRINCIPAL_HEADLINE
+
+    def test_a_windows_reported_problem_still_wins_on_a_shared_profile(self) -> None:
+        """Untouched by this slice: ``LastTaskResult`` is evidence about the RUN, and the
+        schedule-attention rule speaks for it in every scope."""
+        status = derive_home_status(
+            [_record()],
+            _CONFIGURED,
+            now=_NOW,
+            store_created_at=_ESTABLISHED,
+            schedule_status=_schedule_for(_FOREIGN, True, attention=True),
+        )
+        assert status.verdict is Verdict.WARNING
+        assert status.fix is not None and status.fix.dest_id == "setup"

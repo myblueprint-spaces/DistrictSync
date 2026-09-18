@@ -419,7 +419,11 @@ class TestSeasonalPauseBanner:
         # Mirrors Home's FIX 2 gate so the two surfaces stay identical: a confirmed-gone task
         # suppresses the pause (it won't resume in the fall) — the banner must NOT read "Paused".
         missing = derive_schedule_status(
-            ScheduleReadback(found=False), hint_registered=False, latest_record_ts=None, foreign_account=""
+            ScheduleReadback(found=False),
+            hint_registered=False,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
         )
         old = (_SUMMER - timedelta(hours=40)).isoformat(timespec="seconds")
         cfg = _windowed(setup_completed=True, schedule_registered=False)
@@ -751,13 +755,18 @@ class TestHomeHistoryAgreementOnFailures:
     """
 
     _EXPECTED_MISSING = derive_schedule_status(
-        ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, foreign_account=""
+        ScheduleReadback(found=False),
+        hint_registered=True,
+        latest_record_ts=None,
+        foreign_account="",
+        shared_records=False,
     )
     _CONTRADICTION = derive_schedule_status(
         ScheduleReadback(found=True, last_run="2026-07-04T04:00:00"),
         hint_registered=True,
         latest_record_ts=_RECENT,
         foreign_account="",
+        shared_records=False,
     )
 
     @pytest.mark.parametrize(
@@ -812,6 +821,7 @@ def _real_foreign_status(*, last_result: int | None) -> ScheduleStatus:
         hint_registered=True,
         latest_record_ts=None,
         foreign_account=_FOREIGN,
+        shared_records=False,
     )
 
 
@@ -1010,3 +1020,233 @@ class TestForeignPrincipalCopyIsIdenticalAcrossBothSurfaces:
         source = inspect.getsource(run_history_mod)
         assert "runs under a different Windows account" not in source
         assert "run records are saved under" not in source
+
+
+# --------------------------------------------------------------------------- #
+# Plan 0049 S-2a.5 — "Ran as": one shared ledger, two writers                    #
+# --------------------------------------------------------------------------- #
+import flet as ft  # noqa: E402
+
+from src.ui_flet import components  # noqa: E402
+from src.ui_flet.run_history import (  # noqa: E402
+    RUN_AS_ALL_ANOTHER_ACCOUNT_NOTE,
+    RUN_AS_ALL_THIS_ACCOUNT_NOTE,
+    RUN_AS_ANOTHER_ACCOUNT,
+    RUN_AS_THIS_ACCOUNT,
+    run_as_display,
+    run_as_summary_line,
+)
+
+_ME = "CORP\\jsmith"
+_RUN_AS_COLUMN = "Ran as"
+
+
+def _row(run_as: str) -> RunRow:
+    """A minimal row carrying only the axis under test."""
+    return RunRow(when="recently", status_label="Delivered", status_verdict=Verdict.HEALTHY, run_as=run_as)
+
+
+def _headers(rows: list[RunRow]) -> list[str]:
+    table = components.run_table(rows)
+    assert isinstance(table, ft.DataTable)
+    return [column.label.value for column in table.columns]
+
+
+class TestRunAsDisplayIsBounded:
+    """The record carries a raw ``DOMAIN\\user``; the ROW may not.
+
+    ``RunRow``'s docstring bounds it to counts, bounded vocabularies and safe strings, and this
+    would otherwise be the first raw identifying value in it — repeated on every historical row of
+    a ledger an admin may screenshot into a support ticket. The reduction goes through
+    ``setup_gates.principal_key``, the ONE comparison every principal question in the app uses, so
+    the column and the schedule gates can never disagree about what "another account" means.
+    """
+
+    def test_the_account_now_running_reads_as_this_account(self) -> None:
+        assert run_as_display(_ME, current_account=_ME) == RUN_AS_THIS_ACCOUNT
+
+    def test_a_different_account_reads_as_another_account(self) -> None:
+        assert run_as_display("CONTOSO\\svc_districtsync", current_account=_ME) == RUN_AS_ANOTHER_ACCOUNT
+
+    def test_the_comparison_is_case_insensitive(self) -> None:
+        """Restating ``register_task``'s own equivalence — Windows account names are not
+        case-sensitive, and a case difference is not a second account."""
+        assert run_as_display("corp\\JSMITH", current_account=_ME) == RUN_AS_THIS_ACCOUNT
+
+    def test_surrounding_whitespace_is_not_a_second_account(self) -> None:
+        assert run_as_display("  CORP\\jsmith  ", current_account=_ME) == RUN_AS_THIS_ACCOUNT
+
+    @pytest.mark.parametrize(
+        "value",
+        [None, "", "   ", 7, {"account": _ME}],
+        ids=["absent", "empty", "whitespace", "non-string-int", "non-string-dict"],
+    )
+    def test_an_unusable_record_value_is_not_established(self, value: object) -> None:
+        """A record written before the key existed carries nothing. "Not established" and
+        "another account" are DIFFERENT facts — collapsing them would print a foreign-account
+        claim over a record that names no account at all."""
+        assert run_as_display(value, current_account=_ME) == ""
+
+    @pytest.mark.parametrize("current", ["", "   "], ids=["empty", "whitespace"])
+    def test_an_unresolvable_current_account_is_not_established(self, current: str) -> None:
+        """``accounts.process_account()`` can fail. With nothing to compare against, every row
+        would otherwise reduce to "another account" — a claim about the whole ledger built on a
+        lookup that failed."""
+        assert run_as_display("CONTOSO\\svc_districtsync", current_account=current) == ""
+
+    @pytest.mark.parametrize("recorded", [_ME, "CONTOSO\\svc_districtsync"], ids=["mine", "foreign"])
+    def test_it_never_echoes_the_raw_account_name(self, recorded: str) -> None:
+        """The privacy pin, stated over the two members and their inputs."""
+        rendered = run_as_display(recorded, current_account=_ME)
+        assert rendered in (RUN_AS_THIS_ACCOUNT, RUN_AS_ANOTHER_ACCOUNT)
+        assert "\\" not in rendered
+        assert "jsmith" not in rendered.lower()
+        assert "svc_districtsync" not in rendered.lower()
+
+    def test_the_vocabulary_has_exactly_two_members(self) -> None:
+        """Positive twin for the "bounded" claim: it is a closed set, not a formatter."""
+        produced = {
+            run_as_display(value, current_account=_ME)
+            for value in (_ME, "corp\\JSMITH", "CONTOSO\\svc", "OTHER\\admin", "", None)
+        }
+        assert produced == {RUN_AS_THIS_ACCOUNT, RUN_AS_ANOTHER_ACCOUNT, ""}
+
+
+class TestRunAsReachesTheRowThroughTheView:
+    """``to_run_row`` is pure and never reads the environment, so the view injects the account."""
+
+    def test_the_injected_account_decides_the_row(self) -> None:
+        mine = to_run_row(_record(run_as=_ME), now=_NOW, current_account=_ME)
+        theirs = to_run_row(_record(run_as="CONTOSO\\svc_districtsync"), now=_NOW, current_account=_ME)
+        assert mine.run_as == RUN_AS_THIS_ACCOUNT
+        assert theirs.run_as == RUN_AS_ANOTHER_ACCOUNT
+
+    def test_a_caller_that_cannot_name_the_account_gets_no_claim(self) -> None:
+        """The default is display degradation, not a safety-relevant permissive default: nothing
+        about a run's verdict, delivery or counts depends on it."""
+        assert to_run_row(_record(run_as=_ME), now=_NOW).run_as == ""
+
+    def test_a_record_without_the_key_is_total(self) -> None:
+        """Every record written before v3.22 — the ledger straddles the upgrade."""
+        assert to_run_row(_record(), now=_NOW, current_account=_ME).run_as == ""
+
+    def test_to_run_rows_threads_it_to_every_row(self) -> None:
+        records = [_record(run_as=_ME), _record(run_as="CONTOSO\\svc_districtsync"), _record()]
+        rows = to_run_rows(records, now=_NOW, current_account=_ME)
+        assert [row.run_as for row in rows] == [RUN_AS_THIS_ACCOUNT, RUN_AS_ANOTHER_ACCOUNT, ""]
+
+    def test_the_raw_account_never_reaches_any_row_field(self) -> None:
+        """The ``TestPrivacyNoLeak`` rule, extended to the new field and its source record."""
+        row = to_run_row(_record(run_as="CONTOSO\\svc_districtsync"), now=_NOW, current_account=_ME)
+        for value in (row.when, row.status_label, row.duration, row.source, str(row.district_note), row.run_as):
+            assert "svc_districtsync" not in value
+            assert "CONTOSO" not in value
+
+
+class TestRunAsSummaryLine:
+    """ "State it once" — the alternative to a column with nothing to say.
+
+    Per-user it is ALWAYS ``None``: every visible record was written by the account reading them,
+    so a line about accounts would answer a question none of the 20 districts asked and break
+    S-2a's byte-identity promise.
+    """
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            [_row(RUN_AS_THIS_ACCOUNT)],
+            [_row(RUN_AS_ANOTHER_ACCOUNT)],
+            [_row(RUN_AS_THIS_ACCOUNT), _row(RUN_AS_ANOTHER_ACCOUNT)],
+            [_row("")],
+            [],
+        ],
+        ids=["all-mine", "all-theirs", "mixed", "unestablished", "no-rows"],
+    )
+    def test_per_user_is_always_silent(self, rows: list[RunRow]) -> None:
+        assert run_as_summary_line(rows, machine_scope=False) is None
+
+    def test_it_speaks_when_every_row_is_this_account(self) -> None:
+        rows = [_row(RUN_AS_THIS_ACCOUNT), _row(RUN_AS_THIS_ACCOUNT)]
+        assert run_as_summary_line(rows, machine_scope=True) == RUN_AS_ALL_THIS_ACCOUNT_NOTE
+
+    def test_it_speaks_when_every_row_is_another_account(self) -> None:
+        rows = [_row(RUN_AS_ANOTHER_ACCOUNT), _row(RUN_AS_ANOTHER_ACCOUNT)]
+        assert run_as_summary_line(rows, machine_scope=True) == RUN_AS_ALL_ANOTHER_ACCOUNT_NOTE
+
+    def test_a_mix_is_silent_because_the_column_says_it_better(self) -> None:
+        """With a mix the table renders the column; a sentence claiming one answer would be
+        wrong, and one restating the column would be redundant."""
+        rows = [_row(RUN_AS_THIS_ACCOUNT), _row(RUN_AS_ANOTHER_ACCOUNT)]
+        assert run_as_summary_line(rows, machine_scope=True) is None
+
+    @pytest.mark.parametrize("rows", [[], [_row("")], [_row(""), _row("")]], ids=["no-rows", "one", "several"])
+    def test_nothing_established_is_silent(self, rows: list[RunRow]) -> None:
+        """A pre-upgrade ledger establishes no account, so there is nothing to state."""
+        assert run_as_summary_line(rows, machine_scope=True) is None
+
+    def test_unestablished_rows_do_not_break_an_otherwise_unanimous_ledger(self) -> None:
+        """The upgrade case, stated positively: old rows are silent, not dissenting."""
+        rows = [_row(RUN_AS_ANOTHER_ACCOUNT), _row(""), _row(RUN_AS_ANOTHER_ACCOUNT)]
+        assert run_as_summary_line(rows, machine_scope=True) == RUN_AS_ALL_ANOTHER_ACCOUNT_NOTE
+
+    def test_neither_sentence_names_an_account(self) -> None:
+        for note in (RUN_AS_ALL_THIS_ACCOUNT_NOTE, RUN_AS_ALL_ANOTHER_ACCOUNT_NOTE):
+            assert "\\" not in note
+            assert "svc" not in note.lower()
+
+
+class TestRunAsColumnRendersOnlyWhenItHasSomethingToSay:
+    """``run_table``'s table-wide rule, the ``show_mbp`` precedent applied to a 14th column.
+
+    A column reading the same value on every row of every per-user install is exactly the case
+    that precedent exists for. The sharp edge is the UPGRADE: a ledger where some rows predate
+    the ``run_as`` key must not conjure a column out of the difference between "another account"
+    and "we don't know", which is not a disagreement about who ran anything.
+    """
+
+    def test_a_uniform_ledger_does_not_render_it(self) -> None:
+        assert _RUN_AS_COLUMN not in _headers([_row(RUN_AS_THIS_ACCOUNT), _row(RUN_AS_THIS_ACCOUNT)])
+
+    def test_a_ledger_with_no_established_account_does_not_render_it(self) -> None:
+        """Every per-user install today, and every row written before the key existed."""
+        assert _RUN_AS_COLUMN not in _headers([_row(""), _row("")])
+
+    def test_a_ledger_straddling_the_upgrade_does_not_render_it(self) -> None:
+        """The case the rule is written for: ONE established value plus silent older rows is
+        still one value."""
+        rows = [_row(RUN_AS_ANOTHER_ACCOUNT), _row(""), _row(RUN_AS_ANOTHER_ACCOUNT)]
+        assert _RUN_AS_COLUMN not in _headers(rows)
+
+    def test_positive_twin_a_genuinely_mixed_ledger_renders_it(self) -> None:
+        """The shared-store case the column exists for — the admin and the nightly's service
+        account both writing into one ledger."""
+        assert _RUN_AS_COLUMN in _headers([_row(RUN_AS_THIS_ACCOUNT), _row(RUN_AS_ANOTHER_ACCOUNT)])
+
+    def test_a_mixed_ledger_renders_the_unestablished_rows_as_a_dash(self) -> None:
+        """Once the column is on for other reasons, a row that names no account says so the way
+        every other absent cell in this table does."""
+        rows = [_row(RUN_AS_THIS_ACCOUNT), _row(RUN_AS_ANOTHER_ACCOUNT), _row("")]
+        table = components.run_table(rows)
+        index = [column.label.value for column in table.columns].index(_RUN_AS_COLUMN)
+        assert [row.cells[index].content.value for row in table.rows] == [
+            RUN_AS_THIS_ACCOUNT,
+            RUN_AS_ANOTHER_ACCOUNT,
+            "—",
+        ]
+
+    def test_the_column_count_matches_the_cell_count_on_both_sides_of_the_rule(self) -> None:
+        """A table-wide decision applied to the header but not the cells (or the reverse) is a
+        render crash on a surface with no unit coverage of its own."""
+        for rows in (
+            [_row(RUN_AS_THIS_ACCOUNT), _row(RUN_AS_THIS_ACCOUNT)],
+            [_row(RUN_AS_THIS_ACCOUNT), _row(RUN_AS_ANOTHER_ACCOUNT)],
+        ):
+            table = components.run_table(rows)
+            for data_row in table.rows:
+                assert len(data_row.cells) == len(table.columns)
+
+    def test_the_other_columns_are_unchanged_when_it_is_absent(self) -> None:
+        """The per-user byte-identity promise, at the only place this slice touches the table."""
+        headers = _headers([_row(""), _row("")])
+        assert headers[:3] == ["When", "Status", "Source"]
+        assert headers[3] == "Students"

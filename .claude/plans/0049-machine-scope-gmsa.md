@@ -858,3 +858,530 @@ fail loudly" has no mechanism; (3) the grant screen is a pre-shell window with a
    password and its copy does not claim more than that.
 5. All local gates green **including `mypy --platform linux`**, and CI's own `test` and
    `test-windows` lines read and quoted, on a PR based on `main`.
+
+## Spec — S-2 (machine-scope the shipped path)  _(Stage 4, 2026-09-18; revised after the 2-lens review)_
+
+Design of record: `## Design` **D6** + the S-2 row of `## Slices`. Seams verified 2026-09-18 against
+`claude/0049-s1b-ii-surfaces` (S-1b-ii is PR #133; S-2 branches from it and retargets to `main` on
+merge — **never a stacked PR**, `ci.yml` only fires on PRs targeting `main`).
+
+Reviewed by product and honesty (opus) in design mode. **Product returned CHANGES_REQUIRED with two
+criticals; honesty returned OVERCLAIMS.** All 20 findings accepted, 4 in part. Dispositions in
+`### S-2.12`.
+
+> **The governing rule.** On a per-user install every string and predicate this slice touches is
+> byte-identical. On a machine-scoped install, no surface may claim the records are elsewhere or
+> that the seasonal pause is off. Slice C (0046) made those claims true by *suppressing* alarms
+> under a foreign principal; machine scope makes them false, and this slice supplies the one fact
+> they are missing.
+
+**Split into two slices** (the review grew it past one session): **S-2a** is the predicates and the
+copy, and stays **inert** — nothing dispatches provisioning. **S-2b** is the flow that makes it
+reachable. Two PRs off `main` in sequence.
+
+### S-2.1 — Three corrections the plan's own text gets wrong
+
+1. **`SYNC_WINDOW_FOREIGN_NOTE` / `sync_window_foreign_note` live in `src/ui_flet/screens/setup.py:302-319`**, not `schedule_status.py` as D6 implies.
+2. **The AST wiring test checks keyword *presence*, not value** (`tests/test_ui_flet_foreign_principal_wiring.py` L55-79, L82-98). Adding a `shared_records` parameter would therefore **not** fail it; a call site that forgot it would raise `TypeError` only at runtime. S-2a must add a **parallel assertion** for `shared_records` to both test classes. Mandatory (handover §4).
+3. **`ScheduleReadback` has no `run_as` until S-3** (D1). D6's "four forms derived from the read-back" is impossible here — the only account source in this slice is the **record** (`cfg.schedule_run_as_user`), which is what `foreign_task_account` already reads. The spec says "record" throughout, and S-3 may revisit.
+
+---
+
+## S-2a — the predicates and the copy (inert)
+
+### S-2a.1 — `shared_records`: the missing fact
+
+A **required keyword-only** `shared_records: bool` on `probe_schedule`, `derive_schedule_status` and
+`sync_window_paused`, sourced from `paths.is_machine_scope()` at each view call site. Required and
+undefaulted: a defaulted `False` would silently keep today's now-wrong claims on exactly the installs
+this plan exists to fix.
+
+**The rule everywhere: suppress only when `foreign_account and not shared_records`.**
+`schedule_status._is_contradiction` (L397-431) · `home_status._is_missed_run` (L1060-1092) ·
+`home_status._foreign_records_elsewhere` (L1008-1034) · `home_status.sync_window_paused` (L1180-1216,
+where the pause **is** enforced under machine scope because `main._cli` reads the shared config).
+
+Five view call sites for `probe_schedule` (`shell.py:442`, `screens/home.py:1052`,
+`screens/mapping.py:499`, `screens/run_history.py:153`, `screens/setup.py:2011`), two for
+`sync_window_paused` (`shell.py:453`, `screens/home.py:1021`), plus the two pure internal callers
+(`home_status.py:708`, `run_history.py:211`) that thread it through.
+
+### S-2a.2 — The two shared-records notes, and what they may not say
+
+- **`FOREIGN_RECORDS_NOTE` sibling.** Today's copy says the records "don't appear in Run History
+  here". Under machine scope that is false — but only **from provisioning onward**. Migration copies
+  the *provisioning admin's* `history.db`; the service account's own profile is never touched and
+  cannot be, so an install that ran for months under a foreign principal has a real, permanent gap.
+  The sibling therefore says **"its run records appear here from now on"**, and Run History keeps its
+  gap arm alive for older dates. Saying "its records are here" flatly would deny a gap the district
+  can see.
+- **The shared-records window note must take the schedule state.** `sync_window_foreign_note` has no
+  `ScheduleState` input today; it is safe only because it makes a *negative* claim. A positive "your
+  pause applies to the nightly running as X" would render over a MISSING or UNKNOWN task. Thread the
+  state and assert the pause **only on LIVE** — CLAUDE.md's own rule is that a confirmed-MISSING
+  schedule outranks the pause. The existing note fires only when **not** shared; the new one is a
+  separate string, and `TestSyncWindowForeignNote`'s ban on "we pause"/"automatically" binds the old
+  one only.
+
+### S-2a.3 — The delivery copy
+
+- **`_SERVICE_ACCOUNT_DELIVERY_NOTE`** (`screens/setup.py:245-251`, rendered at :2178) is keyed on
+  **"this Schedule will provision"** — foreign account ∧ the gates pass — **never on today's scope.**
+  It renders while the admin is *typing* the service account, on an install that is still per-user
+  because provisioning fires at the Schedule press; keyed on current scope it would say
+  "DistrictSync can't do this for you, run `--sftp-configure`" seconds before the app does exactly
+  that. Per-user-and-not-provisioning it is unchanged, because it is still true there.
+  `tests/test_ui_flet_service_account.py:430`'s `assert "@" not in note` binds **both** forms.
+- **The delivery-password line** (`screens/setup.py:2936`) gains four forms, from the **record** and
+  the scope:
+  1. machine ∧ a named principal → saved on this computer where `<account>` can read it;
+  2. per-user → **today's wording, byte-identical** (the `:658` verbatim pin must still match);
+  3. machine ∧ **MISSING** read-back → saved on this computer for whichever account runs the nightly,
+     and no nightly is scheduled right now. **MISSING only** — an UNKNOWN read-back (probe timeout,
+     access denied, a task registered elevated and unreadable by a filtered token) may never be
+     rendered as an absence, and simply drops the schedule sentence;
+  4. no readable credential → a WARNING that delivery will not run.
+  - **Form 1 needs an account-less variant:** D5 explicitly allows scheduling as the signed-in
+    account on a machine-scoped install, and `schedule_run_as_user` is `""` by contract there. It
+    must not render an empty name, and must not fall back to `_keyring_owner_account()` — that names
+    a keyring the machine store has replaced.
+- `_keyring_owner_account` keeps meaning the **keyring owner** on a per-user install and is never
+  repointed at the principal (A6; `test_the_old_name_is_gone` guards the rename).
+
+### S-2a.4 — Scope, made visible (machine-scoped only)
+
+The scope line renders **only when machine-scoped**. "Settings for your account only" on all 20
+per-user districts answers a question none of them asked, lands on the surface S7 deliberately
+stripped to the verdict, and breaks this slice's own byte-identity promise. When it does render it
+carries the `ProvisionedBy` / `ProvisionedAt` values D0 already stores for display: **"Shared
+settings on this computer, set up by X on DATE"** — which is also what tells a second administrator
+what happened to the app their colleague described. `src/ui_flet` reads `paths.is_machine_scope()`
+for the first time here; no wrapper exists and none should be invented.
+
+### S-2a.5 — `run_as` in Run History
+
+The record already carries it (`pipeline.build_run_record` stamps it at the single shared builder, so
+scheduled, manual and CLI records all have it). The gap is UI-only. **Render the column only when the
+displayed rows carry more than one distinct value** — `components.run_table` already decides
+table-wide that a column with nothing to say does not render (`show_mbp`), and a 14th column reading
+the same value on every row of every per-user install is exactly that case. When they do not vary,
+state it once above the table. Reduce the value through a bounded display rather than echoing
+`DOMAIN\jsmith` on every historical row — `RunRow`'s docstring bounds it to counts, bounded
+vocabularies and safe strings, and this would be the first raw identifying value in it.
+
+### S-2a.6 — Tests (S-2a)
+
+Per-user byte-identity over an **enumerated, named** set of strings and predicates (see AC1) ·
+`shared_records` truth table across the four predicates × {foreign, not} × {shared, not} · both
+window notes, incl. the new one over LIVE/MISSING/UNKNOWN · the four delivery forms each with a
+positive twin, form 2 matching the existing verbatim pin, form 1's account-less variant, form 3 on
+MISSING only and **not** on UNKNOWN · the delivery note keyed on will-provision, proven by the
+typing-a-service-account-on-a-per-user-install case · the scope line absent per-user and carrying
+provenance when machine · the `run_as` column appearing only when values vary · **the AST pins
+extended** with `shared_records` at every call site in both test classes.
+
+---
+
+## S-2b — the flow (this is what makes machine scope reachable)
+
+### S-2b.1 — One pre-UAC gate, and one confirm-level warning
+
+- **`RegisterBlock.DELIVERY_SECRET_UNREADABLE`** — delivery configured but the secret unreadable, so
+  there is nothing to seed the machine store with. Sits **after `ACCOUNT_SWITCH_NEEDS_REMOVE`,
+  before `ACCOUNT_NEEDS_PASSWORD`** (a valid, non-switching principal must be established first; the
+  cheapest rung stays last). **Reads through `select_store()`, never "the keyring" by name** — on a
+  second provisioning of an already machine-scoped install the secret lives in the machine store and
+  a literal keyring read would block a perfectly healthy register. Its note names the real remedy
+  (re-save the delivery password in Delivery) **and** states plainly that turning delivery off is the
+  other option and what it costs — the escape must be offered honestly, not discovered by an admin
+  who may not have the password because another Windows account saved it.
+- **`FOLDER_NOT_SHAREABLE` is NOT a `RegisterBlock` member.** Both lenses converged: the heuristic is
+  wrong at both ends (`C:\Users\Public\…` is genuinely shareable; a UNC path the account cannot reach
+  passes cleanly), and its stated reason contradicted itself — we cannot assert unreachability we
+  also say we cannot verify. It becomes a **warning inside the confirm**: *"we can't confirm the
+  account can reach this folder"*, exempting `C:\Users\Public`, offering a mapped drive's UNC target
+  as a one-click replacement, and routing to the Folders card.
+- `tests/test_ui_flet_setup_gates.py::test_every_member_is_reachable` asserts the reachable set equals
+  `set(RegisterBlock)` and **will fail the moment the new member exists** — extend it with a case that
+  produces it. That is the test working.
+
+### S-2b.2 — Foreshadow, then confirm
+
+- **Foreshadow in the account note** the moment the typed name goes foreign (`_paint_account_note`
+  repaints on every keystroke): scheduling as another account will move this computer's DistrictSync
+  settings so that account can read them, and you will be asked to confirm. A permanent machine-wide
+  relocation must not first be mentioned at the point of no return.
+- **The confirm is concrete**, naming `C:\ProgramData\DistrictSync` and what moves (district,
+  folders, delivery password, run history). Its three sentences, corrected against what S-1b
+  actually built:
+  1. what moves;
+  2. other administrators of this computer can then open DistrictSync and take over these settings —
+     **and** a non-administrator is locked out of the app entirely afterwards (no ACE →
+     `INACCESSIBLE` → the grant window, whose grantee comes from the elevated child's own token, so
+     an over-the-shoulder approval by a different admin is refused), **and** a granted admin's access
+     never lapses (root ACEs only grow; only the task principal has a prune);
+  3. this version cannot move them back, and **Remove nightly sync will not undo it**. Un-provisioning
+     is a ROADMAP item and the copy says so rather than implying it exists.
+
+### S-2b.3 — Dispatch, and every outcome it can end in
+
+`provisioning.build_provision_payload(...)` → the elevated child → `provision_session.complete_handover(persist=…, reenter=…)`
+on **every** outcome including a timeout (it gates on the parent's own re-read of the switch, never
+on the child's claim).
+
+- **`persist` is bound to the success path only.** It is the three-facet schedule save; on a declined
+  UAC, a launch failure or a child refusal it must be a no-op, or Home reports a healthy nightly over
+  a task that does not exist. Today `_on_register_success` is reached only when `ok`, and that guard
+  may not be dropped.
+- **`refused` gets a terminal surface.** If the child committed the switch and the parent's re-pin
+  then refuses, the pin is left unset and every later `user_data_dir()` in that session raises — the
+  admin is in a live window whose next click can only crash. Paint a terminal card (the shared
+  folder was created but DistrictSync cannot use it; nothing else on this computer changed; send the
+  log to support) **and disable further Setup actions** rather than let them keep pressing.
+- **Switch committed ∧ registration failed:** the banner leads with the scope change and carries the
+  registration failure as its second sentence. A failed register may never paint its stock red card
+  over a successful, irreversible handover — the admin would retry believing nothing happened.
+- **The result must survive `reenter`.** Re-entry rebuilds the app body and lands on Home
+  (`nav.initial_destination_id` is Home in every state), so a banner painted on Setup is destroyed by
+  the very call that completes the flow. Carry a one-shot handover result that the rebuilt surface
+  renders — Home's verdict block is where re-entry actually lands.
+- **Provisioning step ids need `setup_errors` branches.** `_apply_result` routes non-`ok` results
+  through `classify_schedule_error`, which keys on `task_com.MSG_*` / `windows._MSG_*` by **exact
+  equality**; the `provision` op returns a step-identifier vocabulary in neither set, so every
+  pre-commit refusal would land on the generic "try again" branch — for states retrying cannot fix.
+  Add a branch per step id, or map the vocabulary into a canonical before it reaches the classifier.
+
+### S-2b.4 — Docs
+
+- `docs/partner/headless-sftp-setup.md` §"Running the nightly sync as a service account" (L275-457):
+  **open with how a district can tell which kind of install they have** (the Settings scope line,
+  or `--diagnose`) and make the `runas … --sftp-configure` step (L301-303) conditional on that
+  observable fact — not on an internal mode. Every install provisioned before S-2 ships stays
+  per-user until Remove → Schedule, so an SD54/SD60 admin who reads "retired" and skips the step
+  would lose delivery with no alert. The two limitations — "why Run History goes quiet" (L388-396)
+  and the seasonal-window paragraph (L398-406) — become scope-conditional rather than deleted; both
+  remain true per-user. The D3 posture statement (L408-435) landed in S-1b-ii and is not S-2's.
+- `docs/partner/installation.md` Step 4 (L244-291) gains the scope line's meaning.
+- `CHANGELOG.md` under `[Unreleased] → Added`, plain-language: a service account no longer needs the
+  manual credential step, and what "settings for this computer" means.
+
+### S-2b.5 — Tests (S-2b)
+
+The gate and the confirm-level warning, each reachable and each with its note · dispatch cannot
+happen without the confirm · `complete_handover` called on **every** outcome incl. timeout · `persist`
+a no-op on every non-success path (positive twin: it runs on success) · each `HandoverOutcome` shape
+has a specified surface, incl. `refused` disabling further Setup actions · switch-committed ∧
+register-failed leads with the scope change · the one-shot result survives `reenter` · every
+provisioning step id classifies to something other than the generic branch.
+
+**Any test that forces machine scope on must seed all three of the trust predicate's raw reads**
+(`_machine_switch_on`, `_read_dir_security`, `_read_dacl_aces`) — seeding fewer reaches the real Win32
+API, which passes on Windows and raises on Linux (red CI on #132 and #133).
+`tests/test_paths.py::_TRUSTED_ACES` is the shape. Prove it locally by rigging the Windows-only entry
+point to raise and re-running the file.
+
+---
+
+### S-2.10 — Out of scope
+
+`PrincipalKind` and `ScheduleReadback.run_as` (S-3) · the gMSA disclosure (S-4) · un-provisioning
+(ROADMAP, named in the confirm copy) · verifying the principal's own folder access (a stated
+non-goal — the first nightly's exit code and `run_as` on the record tell the truth).
+
+### S-2.11 — Acceptance criteria
+
+1. With the switch off, the **enumerated** set of strings and predicates in S-2a.6 is byte-identical.
+   The test proves that enumeration — it does not prove completeness, and the AC says so rather than
+   claiming a mechanical twin this slice does not have.
+2. With it on, no surface claims the records are elsewhere, or that the seasonal pause is not in
+   force, or that a nightly is absent on an UNKNOWN read-back.
+3. Provisioning cannot be dispatched without the confirm; `complete_handover` runs on every outcome
+   including a killed child; every outcome it can return has a surface.
+4. All local gates green **including `mypy --platform linux`**, and CI's own `test` and
+   `test-windows` lines read and quoted on a PR based on `main`.
+
+### S-2.12 — Review dispositions
+
+**Accepted from product (10/10, 2 in part):** `refused` gets a terminal surface · the result survives
+`reenter` · switch-committed ∧ register-failed leads with the scope change · `persist` bound to
+success · foreshadow + a concrete confirm · `setup_errors` branches per step id ·
+`DELIVERY_SECRET_UNREADABLE` **in part** (kept as a gate per D4's accepted R6/P4 disposition, but the
+delivery-off escape is now stated honestly in its note) · `FOLDER_NOT_SHAREABLE` **fully** (demoted to
+a confirm warning) · scope line machine-only with provenance · the `run_as` column only when values vary.
+**Accepted from honesty (10/10, 2 in part):** form 3 MISSING-only · the delivery note keyed on
+will-provision · the confirm's two missing access facts · `FOLDER_NOT_SHAREABLE`'s self-contradictory
+reason · the record (not the read-back) as the account source, with form 1's account-less variant ·
+the shared-records note as "from now on" plus Run History's surviving gap arm · docs opening with how
+to tell which install you have · the window note threading the schedule state · the gate reading
+through `select_store()` · AC1 **in part** (the enumeration is named and the over-claimed "proven" is
+withdrawn; the per-user scope line is not qualified but **deleted**, which answers the same finding).
+**Departure from D4, recorded:** `FOLDER_NOT_SHAREABLE` was specified there as a `RegisterBlock` gate.
+Two independent lenses showed the predicate is wrong in both directions and its stated reason
+self-contradictory. It ships as a confirm-level warning, which keeps the admin informed without
+hard-blocking a district whose folders are genuinely reachable.
+
+---
+
+## Spec — S-3 (the principal model)  _(Stage 4, 2026-09-18)_
+
+Design of record: `## Design` **D1** + the S-3 row of `## Slices`. Seams verified 2026-09-18 against
+`claude/0049-s2b-provisioning-flow`.
+
+> **The governing rule.** Every one of today's three principal shapes reaches Windows with the
+> **byte-identical** `TASK_LOGON_*` and RunLevel it reaches today. This slice replaces an
+> *inference* with a *declaration*; it changes no behaviour for the 20 shipped districts. gMSA
+> becomes representable in the engine and is exposed to nobody until S-4.
+
+### S-3.1 — Five corrections the plan's own text gets wrong or leaves open
+
+1. **`screens/setup.py:2341` is not the caller.** It is `initial_value=cfg.input_dir` in the
+   Input-folder picker. The real sites are `screens/setup.py:3144-3153` (`scheduler.register(...)`)
+   and `3109-3123` (`request_provision(...)`) — **two**, and neither calls `register_task` directly.
+   `register_task` has exactly ONE caller in `src/`: `scheduler/__init__.py:118`.
+2. **`CronScheduler` does NOT refuse an MSA today, and D1's sentence assumes it does.** Its only
+   guard is `if run_as_password is not None: raise ValueError(...)` (`__init__.py:197-198`) — and an
+   MSA principal carries `password=None` by construction, exactly like today's interactive-token
+   path. So an MSA request would sail through into a cron line that silently drops the account. The
+   refusal must be **kind-aware**, not password-shaped.
+3. **`_do_register`'s ladder would refuse every gMSA — this is the make-or-break.**
+   `elevated_apply.py:204` calls `validate_run_as_user(payload["user"])` **unconditionally**, and
+   that validator's regex (`validators.py:52`) has **no `$` in its charset**. Every foreign-principal
+   register goes through elevation, so without a kind-aware ladder here, gMSA is unreachable no
+   matter what the rest of the slice does. `_do_provision` injects the same `_do_register`, so one
+   fix covers the provisioning path too (single source, verified).
+4. **`tests/test_task_com.py::test_the_sweep_sees_the_constants_at_all` hardcodes `== 24`.** Any new
+   canonical bumps it. That test working is the point; edit the number, never the sweep.
+5. **No existing test sends a `password=None` request down the elevated path.** Both `_register`
+   helpers in `tests/test_scheduler_elevation.py` always pass `run_as_password=_SECRET`, so today's
+   predicate (`has_password and ...`) is the only shape covered. D1's predicate
+   (`kind is not INTERACTIVE_TOKEN and not is_elevated()`) makes the no-password elevated path
+   **newly reachable** for MSA — it needs its own coverage, not an assumption.
+
+### S-3.2 — `PrincipalKind` and the unrepresentable states
+
+`task_com.RegisterParams` gains `kind: PrincipalKind`; the `password is not None` inference at
+`task_com.py:260` is **deleted**, not wrapped.
+
+| kind | user | password | logon | RunLevel |
+|---|---|---|---|---|
+| `INTERACTIVE_TOKEN` | must equal the current account | `None` | `TASK_LOGON_INTERACTIVE_TOKEN` | **LUA always** (`run_highest` ignored, as today) |
+| `PASSWORD` | any | **required** | `TASK_LOGON_PASSWORD` | per `run_highest` |
+| `MANAGED_SERVICE_ACCOUNT` | `DOMAIN\name$` | `None` | `TASK_LOGON_PASSWORD` | per `run_highest` |
+
+MSA uses `TASK_LOGON_PASSWORD`, **not** `TASK_LOGON_SERVICE_ACCOUNT` (5): verified first-hand that
+with a domain `UserId` the `<LogonType>` element is silently dropped from the serialized XML.
+`TASK_LOGON_S4U` stays undefined (`test_s4u_is_unrepresentable` is the pin).
+
+Refused in `__post_init__` — unrepresentable, never defaulted: PASSWORD without a password · MSA
+with a password · INTERACTIVE_TOKEN for a different user · an MSA name without `$` · a PASSWORD name
+with `$`. `TestLogonTypeMatrix` and `TestPasswordReachesOnlyTheComArgument` must stay green
+byte-identically — they pin the table above for the two shipped kinds.
+
+### S-3.3 — `validate_gmsa_account`
+
+A **shape check, and the docstring says so.** Trailing `$` mandatory; sAMAccountName charset;
+`DOMAIN\` optional; no length rule beyond the existing 256 cap. **Refuses by name**, in BOTH halves:
+the local computer account (`<COMPUTERNAME>$`, case-insensitive) and any `NT AUTHORITY\*` /
+well-known form — a computer account has the gMSA shape and `THISHOST$` is SYSTEM-equivalent.
+
+`validate_run_as_user` is **unchanged** (it still rejects `$`); only its N1 docstring sentence moves,
+because that sentence currently justifies the exclusion by saying the gMSA path is unsupported.
+
+### S-3.4 — The transport
+
+- `windows.register_task`: `run_as_user`/`run_as_password` → `principal: Principal(kind, user, password)`.
+  The `Scheduler` Protocol and both adapters follow. **`CronScheduler` refuses on KIND** (see
+  S-3.1.2) with a loud, plain message — not on the presence of a password.
+- Elevation predicate (`windows.py:475`) → `kind is not INTERACTIVE_TOKEN and not is_elevated()`.
+- `_MSG_ACCOUNT_NEEDS_PASSWORD` stays, for PASSWORD kind only.
+- Every new refusal goes through **`_fail`**. The AST funnel guard
+  (`test_scheduler_runas.py::TestNoUnfunnelledFailureReturn`) sees only a literal `return False, ...`
+  tuple — do not hand it one, and do not weaken it.
+- `elevated_apply`'s payload carries `kind`; `_do_register` re-validates **by kind** (S-3.1.3). New
+  canonicals, if any, obey `messages.py` (injective, secret-free, no foreign marker) and bump the
+  `24` count.
+
+### S-3.5 — Read-back, for display only
+
+`TaskFacts` and `ScheduleReadback` gain `run_as` + `logon_type`, read from
+`Definition.Principal.UserId` / `.LogonType` (`read_task` touches `Definition.Principal` for the
+first time — it reads only `Actions` today). A requested-vs-read-back mismatch is a **logged
+WARNING, fail-open** on any spelling it cannot normalise.
+
+`foreign_task_account(app_config)` keeps reading the **RECORD**, exactly as Slice C wired it. This
+slice adds a second, independent source of the same fact; it does not repoint the first. Nothing in
+the UI consumes `run_as` from the read-back in S-3 — the ROADMAP item about the record being the
+only principal source is **narrowed, not closed**.
+
+### S-3.6 — Out of scope
+
+The gMSA disclosure, its untested caption and the MSA error branch (all S-4) · any UI that reads
+`ScheduleReadback.run_as` · the gMSA failure taxonomy, which stays unmapped until measured against a
+live domain.
+
+### S-3.7 — Tests
+
+Every unrepresentable combination refused in `__post_init__`, each with a positive twin · the logon
+and RunLevel table above per kind, with the two shipped kinds asserted byte-identical · the
+elevation predicate per kind, **including the newly-reachable MSA no-password elevated path** ·
+`_do_register`'s kind-aware ladder accepting a gMSA and still refusing a hostile PASSWORD account ·
+`validate_gmsa_account`'s accept/refuse table incl. the computer-account and `NT AUTHORITY` refusals
+in both halves · cron refusing MSA **by kind** with a password-free request · the read-back carrying
+`run_as`/`logon_type` and the mismatch WARNING failing open · the `24` count bumped if a canonical
+is added.
+
+---
+
+## Spec — S-4 (the gMSA option, Settings only)  _(Stage 4, 2026-09-18)_
+
+Design of record: `## Design` **D6** (the gMSA + Errors bullets) + the S-4 row of `## Slices`.
+Seams verified 2026-09-18 against `claude/0049-s3-principal-model` at `a5d2fad`.
+
+> **The honesty constraint outranks everything in this slice.** Nothing may claim gMSA works until
+> a district reports a green nightly. No domain controller exists here, so every surface this slice
+> adds says so, and the CHANGELOG says "available, untested". A caption that hedges is not a
+> weakness; it is the only true thing we can write.
+
+### S-4.1 — Four corrections to D6, and one addition
+
+1. **D6's `ACCOUNT_NEEDS_PASSWORD` bullet is incomplete.** Threading `kind` into
+   `ScheduleAccountFacts` stops the password rung firing — but `register_block`'s **ACCOUNT_SHAPE
+   rung runs first and unconditionally** (`setup_gates.py:213-217`), calling `validate_run_as_user`,
+   which rejects a trailing `$`. Every gMSA would be refused there, for the wrong reason, before the
+   password rung is reached. **Both rungs must dispatch on kind**, through the dispatcher S-3
+   already shipped (`task_com.validate_principal_account`) — never a second spelling.
+2. **`schedule_reconcile` owns no copy.** It returns only the `ScheduleReconcile` enum; all the
+   admin-facing prose lives in `downgrade_interrupt`. The S-4 Slices row conflates them. The work is
+   entirely inside `downgrade_interrupt`.
+3. **`downgrade_interrupt` has no kind signal, and its premise breaks.** Its docstring asserts that a
+   foreign principal implies a stored password *"the engine refuses to register one without it"* —
+   **false** the moment an MSA is registrable. `RegisteredSchedule` has no kind facet, so today the
+   only available signal is sniffing a trailing `$` on the recorded name. **We are not doing that:**
+   inferring a security kind from a character in a name is precisely the inference S-3 just deleted
+   from `apply_definition`, and re-introducing it one layer up would be incoherent. See S-4.3.
+4. **The wizard/Settings fork does not exist.** `_build_schedule_section` is byte-identical code for
+   both mounts (`screens/setup.py:1596` wizard, `:1922` Settings); the seven optional callbacks are
+   the only difference and none is a mode flag. D6 phrases the disclosure as if a fork were there to
+   extend. **S-4 introduces the first one.**
+5. **`apply_prune_principal` moves INTO scope.** S-3 left it validating with `validate_run_as_user`
+   and put it on the ROADMAP as unreachable. S-4 is the slice that makes it reachable: the moment a
+   gMSA can be scheduled, Remove must be able to prune its access, or a retired service account
+   keeps rights on `C:\ProgramData\DistrictSync` with nothing in the app able to revoke them.
+
+### S-4.2 — The disclosure (Settings mount only)
+
+`_build_schedule_section` gains **`allow_gmsa: bool = False`**, passed `True` only from
+`_mount_settings`. The default is the safe one, and the wizard keeps rejecting `$` exactly as today —
+a first-run admin choosing a credential model they cannot test is the wrong default, and the wizard
+has no room for three IT prerequisites.
+
+Built with **`components.check_row`** — "the ONE checkbox factory" — not the raw `ft.Switch` the
+seasonal-window section uses locally. The design system's build-via-factories rule outranks the
+nearer precedent; note in a comment that the two co-exist in this file and why this one chose the
+factory.
+
+Toggling it: switches the field's validator to `validate_gmsa_account`, **hides the password field**
+(an MSA has no password, and leaving a live control that cannot matter is the dead-control problem
+this file already names elsewhere), and reveals
+
+- the caption **"Not yet tested against a live domain. If it does not work, we will need the code
+  shown on screen and your IT team's help."** — new copy on the existing muted-note primitive
+  (`tokens.type_caption` + `color_muted`); there is no "untested" caption anywhere in `src/ui_flet`
+  to reuse, which is itself worth a comment;
+- the three IT prerequisites, as a checklist: the computer in `PrincipalsAllowedToRetrieveManagedPassword`,
+  `Install-ADServiceAccount` run on this computer, and "Log on as a batch job" granted;
+- the partner-doc link.
+
+Untoggling restores the password field and the `validate_run_as_user` path. The toggle is **session
+state, not config** — nothing about it is persisted; the recorded kind (S-4.3) is what survives.
+
+### S-4.3 — The recorded kind: a FOURTH atomic facet
+
+`AppConfig.schedule_run_as_kind` joins `schedule_unattended` / `schedule_task_args` /
+`schedule_run_as_user` — written only on a confirmed register, cleared on a confirmed unregister, in
+the **same save**. `RegisteredSchedule` gains it as a fourth facet. Its `schedule_` prefix keeps it
+out of `_ADVISORY_FIELD_PREFIXES`, so `_carries_chosen_settings` counts it, exactly as 0046 B
+reasoned for the third facet. **Never a password — a KIND only.**
+
+**The absent-value rule, evidenced:** a blank/absent kind beside a **non-blank** `run_as_user` means
+`PASSWORD` — before S-4 that was the only foreign kind the engine could register, so no deployed
+install can mean anything else by it. A blank kind beside a blank user means `INTERACTIVE_TOKEN`.
+This mirrors 0046 B's `""` = the signed-in account, and it is why no migration is needed.
+
+`downgrade_interrupt` takes the kind and gains an **MSA variant whose copy names no password**
+("your Windows account password" is the wrong credential for a gMSA, the same argument the
+service-account variant already makes one step less far). `offers_signed_in_only` stays `False`
+there, for the reason already documented: the register gate refuses a principal change on a live
+task, so that button would be dead.
+
+`principal_key` / `foreign_task_account` stay **name-keyed and unchanged** (verified 2026-09-17).
+
+### S-4.4 — Errors, keyed on kind
+
+`classify_schedule_error` gains a **required, undefaulted `kind: PrincipalKind`** — the same
+"required and undefaulted" treatment `account_is_current` got in 0047, and for the same reason: a
+defaulted kind would silently coach a gMSA admin about a password. Ripple, counted: **5 call sites
+in `screens/setup.py`** and **9 in tests** (6 of them inside
+`tests/test_partner_doc_schedule_copy_parity.py`). `test_ui_flet_setup_errors.py` already has a
+missing-keyword `TypeError` twin for `account_is_current`; the new kwarg needs its own.
+
+Two different edit shapes on two existing branches, not one new top-level branch:
+
+- **`MSG_ACCOUNT_NOT_RECOGNIZED`** (`HR_NONE_MAPPED`, `0x80070534` — measured, and where a mistyped
+  gMSA name already lands) **forks on kind**: the MSA arm leads *"Windows would not schedule the task
+  as `<account>`"*, renders the three prerequisites as a checklist, shows the code via the existing
+  `_code(canonical)` helper, and offers **no "try again"** — retrying a name the directory does not
+  know, or a computer the gMSA is not authorised for, changes nothing.
+- **`MSG_NO_LOGON_SESSION`** (`0x80070520` — SD60's policy failure) **gains one appended sentence**
+  pointing at the gMSA disclosure in Settings. Its existing copy is otherwise untouched: it is
+  correct, it is pinned, and it is the branch SD60 actually sees.
+
+A new canonical, if one proves necessary, bumps `tests/test_task_com.py`'s hardcoded `== 24` (still
+24, verified) and obeys `messages.py` — injective, secret-free, no foreign marker. **Prefer forking
+existing branches to adding a canonical**: the gMSA failure taxonomy is unmeasured, and inventing
+canonicals for failures nobody has seen is how a classifier acquires dead branches.
+
+### S-4.5 — Prune (the S-3 straggler)
+
+`apply_prune_principal` mirrors `_principal_account`'s dispatch (`provisioning.py:683-701`) —
+`kind = PrincipalKind(payload["kind"])` then `task_com.validate_principal_account(kind, requested)`.
+**The Remove op's payload builder must start carrying `kind`**, which `_principal_account`'s already
+does; find and fix the prune payload's own builder rather than assuming symmetry.
+
+The prune leg is the one that matters for a retired MSA: an unconfirmed delete must still leave the
+principal's aces alone (that invariant is unchanged — pruning a LIVE task's principal makes it fail
+every night with no surface anywhere).
+
+### S-4.6 — Docs
+
+`docs/partner/troubleshooting.md` §"Task Scheduler does not run the task" gains the gMSA material,
+and the parity test carries it **automatically**: `_DOC_QUOTES[_TROUBLESHOOTING]` is defined as
+"every pinned string except `_SCOPE_PINS`", so a new classifier-family row is required-present there
+with no separate registration. Add the row to `_PINNED` with its real producer call.
+
+`CHANGELOG.md` under `[Unreleased] → Added`: **"available, untested"**, in those terms. It must not
+read as a feature announcement.
+
+**The IT prerequisites also ship as a hand-to-IT document** — the three requirements, what
+DistrictSync will do, and what it cannot undo — so a district (and this project's own owner) can send
+one page to their IT team rather than reconstructing it from a UI checklist.
+
+### S-4.7 — Out of scope
+
+Any claim that gMSA works · the gMSA failure taxonomy beyond the two branches above (unmeasured; the
+`[HRESULT` log anchor carries the rest) · the wizard offering gMSA · un-provisioning · a UI that
+reads `ScheduleReadback.run_as` (S-3 left that narrowed, not closed).
+
+### S-4.8 — Tests
+
+`register_block` accepting a gMSA at BOTH rungs, with the per-user and PASSWORD rows byte-identical ·
+`ACCOUNT_NEEDS_PASSWORD` never firing for an MSA, with its positive twin still firing for PASSWORD ·
+the recorded-kind facet written on a confirmed register and cleared on a confirmed unregister, in one
+save · the absent-kind rule in both directions (blank + named user ⇒ PASSWORD; blank + blank ⇒
+INTERACTIVE_TOKEN) · `downgrade_interrupt`'s MSA variant naming no password, and the sweep that no
+variant's copy mentions a password for an MSA · `classify_schedule_error`'s missing-`kind` `TypeError`
+twin · the MSA error arm carrying the checklist and the code and NO "try again", with the
+PASSWORD arm byte-identical · the appended `MSG_NO_LOGON_SESSION` sentence, with the rest of that
+branch verbatim · the disclosure absent from the wizard mount and present in Settings, proven on both
+mounts · the password field hidden while the disclosure is on and restored when it is off ·
+`apply_prune_principal` accepting an MSA and still refusing a hostile name · the doc parity row.

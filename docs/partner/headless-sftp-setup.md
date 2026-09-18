@@ -287,16 +287,95 @@ or a local admin account. It does not cover `SYSTEM`, a group-managed
 service account (gMSA), `LOCAL SERVICE` or `NETWORK SERVICE`; none of those
 are supported today (see the project ROADMAP).
 
-### The one-time `--sftp-configure` step — necessary, not optional
+### First — which kind of install is this?
 
-Windows Credential Manager has no cross-user scope: `keyring`'s Windows
-backend stores the SFTP password with `CRED_PERSIST_ENTERPRISE`, and
-Microsoft documents that persistence level as readable only "for this user
-on other computers" — never by a *different* account on the same machine
-(**Documented**, see the Windows `CREDENTIALW` reference). So a password
-stored under the admin's own login is structurally invisible to a task
-running as a service account. The only way that account gets its own
-readable credential is to run `--sftp-configure` as it, once:
+Several steps below depend on where this copy of DistrictSync keeps its
+settings, and there are two answers:
+
+- **Settings for your account only.** The district, folders, run history and
+  the SpacesEDU delivery password belong to the Windows account that entered
+  them, and no other account on the computer can read them. This is how
+  DistrictSync works out of the box, and it is how **every install set up
+  before this version still works**.
+- **Settings for this computer.** The same items live in one shared folder,
+  `C:\ProgramData\DistrictSync`, readable by the computer's administrators and
+  by the account the nightly sync runs as. That is what lets a service account
+  deliver to SpacesEDU without anyone signing in as it.
+
+**From the app.** Open DistrictSync and look just below the title on **Home**
+or on the **Setup** page. A shared install shows a line beginning
+*"Shared settings on this computer"* — naming who set it up and when, where
+DistrictSync has that on record. An account-only install shows no line there at
+all. **That absence is the normal state, not a fault**: there is no "settings for your
+account only" line to look for, because that is the answer for almost every
+install.
+
+**From a terminal.** Run the support report and read the `scope` row of its
+`Profile:` block:
+
+```cmd
+C:\DistrictSync\DistrictSync-windows.exe --diagnose
+```
+
+```text
+Profile:
+  data dir:             C:\ProgramData\DistrictSync
+  scope:                shared (this computer)
+```
+
+An account-only install prints `this account only` there instead, with a data
+folder under `AppData\Local`. The report carries no passwords, but it does name
+Windows accounts and folders — treat it like a log.
+
+**When a computer changes from one to the other.** Only when you schedule the
+nightly sync to run as a *different* Windows account from the Schedule step,
+and only after DistrictSync has listed what will move and you have confirmed
+it. Installing a new version never switches a computer on its own, and neither
+does an already-registered nightly sync — a task registered under an earlier
+version keeps running on account-only settings until you choose **Remove
+nightly sync** and schedule it again.
+
+!!! warning "The change is one-way in this version"
+    This release cannot move shared settings back to a single account, and
+    **"Remove nightly sync" does not undo it** — that removes the scheduled
+    task and leaves the shared folder in place. Reversing it is on the project
+    ROADMAP and there is no supported way to do it today. Decide before you
+    confirm, not after.
+
+One more thing to weigh before confirming: afterwards these settings are open
+to every administrator of this computer, who can open DistrictSync and change
+them. Another administrator is offered access the first time they open the app,
+which needs that administrator to approve the Windows permission prompt
+*themselves* — someone else approving on their behalf is refused by design. An
+account that is not an administrator of the computer cannot be granted access
+this way at all.
+
+### The one-time `--sftp-configure` step — on an account-only install
+
+**Do this when the check above says `this account only`** — which is every
+install in the field before this version, including one that is already running
+a nightly sync under a service account. Skipping it there leaves the nightly
+with no delivery password it can read, and nothing raises an alarm: the
+conversion still runs and the files simply never reach SpacesEDU.
+
+**On a shared install this step is not needed.** DistrictSync saves the
+delivery password into the shared folder when it switches the computer over,
+where the account the nightly runs as can read it; change it from **Setup →
+Delivery** in the app instead. If delivery is switched on and DistrictSync
+cannot read the saved password, the Schedule step refuses before anything is
+changed and asks you to re-enter it there — the other option is to turn
+delivery off, which means the nightly still converts your files but nothing is
+sent to SpacesEDU.
+
+The reason the step exists on an account-only install: Windows Credential
+Manager has no cross-user scope. `keyring`'s Windows backend stores the SFTP
+password with `CRED_PERSIST_ENTERPRISE`, and Microsoft documents that
+persistence level as readable only "for this user on other computers" — never
+by a *different* account on the same machine (**Documented**, see the Windows
+`CREDENTIALW` reference). So a password stored under the admin's own login is
+structurally invisible to a task running as a service account. The only way
+that account gets its own readable credential is to run `--sftp-configure` as
+it, once:
 
 ```cmd
 runas /user:<account> "C:\DistrictSync\DistrictSync-windows.exe --sftp-configure"
@@ -383,27 +462,55 @@ reports the schedule as missing rather than implying one still exists. The
 account and password typed into the form stay there, so retrying is one
 click. Do this interactively; it can't be scripted or run unattended.
 
-### Where things live afterward, and why Run History goes quiet
+**Scheduling under another Windows account is also what switches this computer
+to shared settings**, if it has not been switched already — DistrictSync lists
+what will move and asks you to confirm first, and Windows asks for permission
+for that change too, on top of the prompts counted above. Read "First — which
+kind of install is this?" before you begin, because this version cannot switch
+back.
 
-Once the nightly runs as the service account, its `config.json`,
-`history.db` (run history) and `etl_tool.log` all live under **that
-account's own** per-user data folder — not the admin's (on Windows,
-`%LOCALAPPDATA%\DistrictSync` resolved for the service account). The
-admin's own Run History and Home dashboard will show a permanent gap once
-the switch happens; DistrictSync reports that as an absence, not a fault,
-and uses Windows' own record of the task's last run instead. An IT team
-running a service account should expect to look at *that* account's own
-DistrictSync folder for logs and run history, not the admin's.
+### Where things live afterward
 
-If a seasonal pause (Setup → Schedule) is turned on, it stops applying once
-a service account runs the nightly. The pause setting is saved to the
-admin's own account's `config.json`; the nightly process, though, loads the
-settings of whichever account it runs *as* — and a service account has no
-DistrictSync profile of its own carrying that setting, so the window is
-simply never enforced there, and the sync keeps running straight through
-the break it was meant to cover. DistrictSync's Settings screen says so
-plainly once both a window and a foreign account are in effect; the one
-remedy that works today is removing the nightly schedule for the break.
+Both of the answers below are current; which one applies depends on the kind
+of install you have. Check it the way described at the top of this section if
+you are not sure.
+
+**On an account-only install — and this is why Run History goes quiet.** Once
+the nightly runs as the service account, its `config.json`, `history.db` (run
+history) and `etl_tool.log` all live under **that account's own** per-user data
+folder — not the admin's (on Windows, `%LOCALAPPDATA%\DistrictSync` resolved
+for the service account). The admin's own Run History and Home dashboard will
+show a permanent gap once the switch happens; DistrictSync reports that as an
+absence, not a fault, and uses Windows' own record of the task's last run
+instead. An IT team running a service account should expect to look at *that*
+account's own DistrictSync folder for logs and run history, not the admin's.
+
+**On a shared install.** All three live in `C:\ProgramData\DistrictSync` (the
+log and the run history under its `runs` folder), and the nightly's records
+appear in Run History like any other run — **from the switch onward**.
+Switching brings the settings and run history of the account that performed it
+into the shared folder; a service account's own earlier records are never
+touched and cannot be, so a computer that was already running a nightly sync
+under a service account keeps the gap for those earlier dates. New runs fill in
+from that point.
+
+**The seasonal pause (Setup → Schedule), and whether it applies.** On an
+account-only install it stops applying once a service account runs the nightly.
+The pause setting is saved to the admin's own account's `config.json`; the
+nightly process, though, loads the settings of whichever account it runs *as* —
+and a service account has no DistrictSync profile of its own carrying that
+setting, so the window is simply never enforced there, and the sync keeps
+running straight through the break it was meant to cover. The one remedy that
+works there today is removing the nightly schedule for the break. On a shared
+install the nightly loads the *same* settings you edited, so the pause does
+apply to it.
+
+DistrictSync's Settings screen tells you which of the two you are in: the
+account-only warning appears whenever both a pause and a service account are in
+effect, and the shared-install confirmation appears once DistrictSync can
+confirm the nightly task is registered. If it cannot read the task back at that
+moment it says nothing rather than guess, so check the schedule readout there
+too.
 
 ### What protects the delivery password — and what a backup carries
 

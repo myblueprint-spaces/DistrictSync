@@ -288,6 +288,31 @@ A successful dry run prints a summary like:
 2. Look for **DistrictSync_Daily** in the task list
 3. Right-click → **Run** to trigger a test run immediately
 
+### Whose settings are these? (Windows)
+
+Just below the title on **Home** and on the **Setup** page, a line may read
+**"Shared settings on this computer"**. It means this computer has been
+switched to a single shared DistrictSync setup in `C:\ProgramData\DistrictSync`
+— one district, one pair of folders, one delivery password and one run history,
+used by every Windows account on the machine — instead of each account keeping
+its own. Where DistrictSync has it on record, the line also names who set it up
+and when, so a second administrator can tell what happened rather than
+guessing.
+
+That only happens when someone schedules the nightly sync to run as a different
+Windows account and confirms the change. The
+[service-account guide](headless-sftp-setup.md#running-the-nightly-sync-as-a-service-account)
+covers what it does, what it is for, and what it cannot undo.
+
+**If you see no such line, nothing is wrong.** An ordinary install keeps its
+settings under your own Windows account, exactly as [Where does data
+live?](#where-does-data-live) above describes — that is the default, and there
+is no line for it because it is the answer for almost every install. You can
+confirm either way from a terminal with `DistrictSync-windows.exe --diagnose`,
+which prints a `scope` row reading `this account only` or
+`shared (this computer)`. That report contains no passwords, but it does name Windows
+accounts and folders, so treat it like a log.
+
 ---
 
 ## Step 5 — Check the log

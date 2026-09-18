@@ -27,6 +27,38 @@ change "simplified" it. Consult this before changing the named subsystem.
 
 ---
 
+- **The task principal is DECLARED (`task_com.PrincipalKind`), never inferred from whether a password is present — and no guard anywhere may key on the password to mean "unattended".** _(Plan 0049 S-3, 2026-09-18 · `src/scheduler/task_com.py`, `src/scheduler/windows.py`, `src/scheduler/__init__.py`, `src/scheduler/elevated_apply.py`, `src/utils/validators.py`.)_
+  `password is not None` has exactly two answers, so a third principal shape — a
+  managed service account, which is UNATTENDED and carries NO password — is
+  inexpressible under it; and an absent password is equally what a blank field, a
+  cleared UI local and a dropped payload key look like. The kind is therefore a
+  required, undefaulted field on both `Principal` (the REQUEST) and `RegisterParams`
+  (the COMMAND), `apply_definition` has ONE `RegisterTaskDefinition` call site and no
+  `if` at all, and the kind→logon table lives once in `logon_type_for`.
+  Three consequences that are the actual invariant, because each was a live bug the
+  moment a third kind existed: **(a)** the elevation predicate is
+  `kind is not INTERACTIVE_TOKEN`, not `has_password` — a passwordless MSA keyed on the
+  password would take the DIRECT path to a certain access-denied; **(b)**
+  `CronScheduler.register` refuses on the KIND — its `run_as_password is not None`
+  guard passed an MSA straight into a cron line that silently dropped the account;
+  **(c)** `elevated_apply._do_register` chooses the account validator by kind through
+  `task_com.validate_principal_account` — and since EVERY unattended register
+  self-elevates through that function, a `validate_run_as_user` whose charset has no
+  `$` made gMSA unreachable no matter what the rest of the engine could express. That
+  dispatch is the ONE kind→validator spelling for all four call sites in both
+  processes. `validate_gmsa_account` is a SHAPE check (its docstring says so) that
+  refuses BY NAME, in both halves, `<COMPUTERNAME>$` and every built-in authority — a
+  computer account has the gMSA shape and is SYSTEM-equivalent. The request/command
+  asymmetry is deliberate and must not be "tidied": `Principal` ALLOWS an
+  interactive-token request naming a foreign account so the boundary can answer with
+  `_MSG_ACCOUNT_NEEDS_PASSWORD`, and `RegisterParams` carries that fifth refusal
+  because the elevated child builds one from an unsealed request file. **Proof-it-took:**
+  eleven mutations (revert each guard to its password-shaped form, drop each refusal,
+  map MSA to `TASK_LOGON_SERVICE_ACCOUNT`, stop reading the principal back) each turn a
+  named test RED, and every refusal row has a positive twin.
+
+---
+
 - **No string `task_com._canonical_message` can RETURN may carry a marker another consumer keys on (`messages.ABSENT_TASK_MARKERS`, `ACCESS_DENIED_MARKERS`, `SECRET_SENTINEL_PREFIX`) unless it is the code that owns it — and every `MSG_`/`_MSG_`-named message binding swept in `task_com`/`windows`/`elevated_apply` has exactly ONE name.** _(Plan 0047, 2026-09-16 · `src/scheduler/task_com.py`, `src/scheduler/messages.py`.)_ The injectivity claim is scoped to what the sweep actually collects — a binding whose name starts with `MSG_`/`_MSG_` in those three modules. An inline literal at a `_fail` call site, or `linux.py`'s crontab messages, is invisible to it; those stay model-upheld, not swept.
   Three different consumers key on substrings of a schedule failure message, and
   a fourth keys on the whole string by exact equality:

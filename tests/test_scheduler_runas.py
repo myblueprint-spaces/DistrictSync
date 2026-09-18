@@ -28,7 +28,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.scheduler import task_com
-from src.scheduler.task_com import RegisterParams, apply_definition
+from src.scheduler.task_com import Principal, PrincipalKind, RegisterParams, apply_definition
+from src.scheduler.windows import current_run_as_user
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +46,23 @@ def _fake_com():
     return service, folder
 
 
-def _params(password="s3cret!", run_highest=True, user="CORP\\jane"):
+def _params(password="s3cret!", run_highest=True, user=None, kind=None):
+    """A ``RegisterParams`` for the COM boundary, with the principal DECLARED (0049 S-3).
+
+    ``kind`` is a required field now, so this helper derives the one today's two shipped
+    shapes imply — a password means PASSWORD, its absence means INTERACTIVE_TOKEN — which is
+    exactly what the deleted ``password is not None`` inference used to compute. That is what
+    keeps every assertion in the classes below unchanged.
+
+    The default ``user`` follows the kind: ``RegisterParams.__post_init__`` refuses an
+    interactive-token registration for anybody but the signed-in account, so the no-password
+    shape names THIS host's account instead of ``CORP\\jane``. Nothing on that path asserts
+    ``user`` — the password-bearing shape, which does, keeps ``CORP\\jane``.
+    """
+    if kind is None:
+        kind = PrincipalKind.PASSWORD if password is not None else PrincipalKind.INTERACTIVE_TOKEN
+    if user is None:
+        user = current_run_as_user() if kind is PrincipalKind.INTERACTIVE_TOKEN else "CORP\\jane"
     return RegisterParams(
         task_name="DistrictSync_Daily",
         exe=r"C:\DistrictSync\DistrictSync.exe",
@@ -54,6 +71,7 @@ def _params(password="s3cret!", run_highest=True, user="CORP\\jane"):
         run_time="03:00",
         user=user,
         password=password,
+        kind=kind,
         run_highest=run_highest,
     )
 
@@ -179,7 +197,7 @@ class TestRegisterTaskOrchestration:
             input_dir=Path(r"C:\data\in"),
             output_dir=Path(r"C:\data\out"),
             run_time="03:00",
-            run_as_password="pw",
+            principal=Principal(kind=PrincipalKind.PASSWORD, password="pw"),
         )
         assert ok is True
         assert "registered" in msg.lower()
@@ -201,6 +219,7 @@ class TestRegisterTaskOrchestration:
             input_dir=Path("i"),
             output_dir=Path("o"),
             run_time="03:00",
+            principal=Principal(kind=PrincipalKind.INTERACTIVE_TOKEN),
         )
         assert ok is True
         mock_confirm.assert_called_once()
@@ -220,7 +239,7 @@ class TestRegisterTaskOrchestration:
             input_dir=Path("i"),
             output_dir=Path("o"),
             run_time="03:00",
-            run_as_password="wrong",
+            principal=Principal(kind=PrincipalKind.PASSWORD, password="wrong"),
         )
         assert ok is False
         assert msg == "The user name or password is incorrect."
@@ -237,6 +256,7 @@ class TestRegisterTaskOrchestration:
             input_dir=Path("i"),
             output_dir=Path("o"),
             run_time="03:00",
+            principal=Principal(kind=PrincipalKind.INTERACTIVE_TOKEN),
         )
         assert ok is False
         assert msg == task_com.MSG_COM_UNAVAILABLE
@@ -253,8 +273,7 @@ class TestRegisterTaskOrchestration:
                     input_dir=Path("i"),
                     output_dir=Path("o"),
                     run_time="03:00",
-                    run_as_user="jane && calc",
-                    run_as_password="pw",
+                    principal=Principal(kind=PrincipalKind.PASSWORD, user="jane && calc", password="pw"),
                 )
             mock_bounded.assert_not_called()
 
@@ -272,7 +291,7 @@ class TestRegisterTaskOrchestration:
             input_dir=Path("i"),
             output_dir=Path("o"),
             run_time="03:00",
-            run_as_password="pw",
+            principal=Principal(kind=PrincipalKind.PASSWORD, password="pw"),
         )
         assert ok is True
         mock_elevated.assert_called_once()
@@ -299,7 +318,7 @@ class TestPasswordLeakClosure:
                 input_dir=Path("i"),
                 output_dir=Path("o"),
                 run_time="03:00",
-                run_as_password=self.SECRET,
+                principal=Principal(kind=PrincipalKind.PASSWORD, password=self.SECRET),
             )
         assert ok is True
         assert self.SECRET not in caplog.text
@@ -318,7 +337,7 @@ class TestPasswordLeakClosure:
                 input_dir=Path("i"),
                 output_dir=Path("o"),
                 run_time="03:00",
-                run_as_password=self.SECRET,
+                principal=Principal(kind=PrincipalKind.PASSWORD, password=self.SECRET),
             )
         assert ok is False
         assert self.SECRET not in caplog.text
@@ -451,8 +470,24 @@ def _params_of(reg):
 
 
 def _register(**overrides):
+    """``register_task`` in the CALLER's vocabulary, translated to a declared principal.
+
+    The test bodies still pass ``run_as_user`` / ``run_as_password`` — the two facts an admin
+    actually supplies — and this helper performs the ONE translation ``screens/setup.py``
+    now performs in ``_declared_principal``: a typed password means
+    ``PrincipalKind.PASSWORD``, its absence means ``INTERACTIVE_TOKEN``. So the pinned
+    behaviour below stays expressed in the terms it was written in, while the engine's
+    parameter is a declaration rather than a pair of values to be read as one.
+
+    ``kind`` may be passed explicitly for the third kind, which no UI can produce yet.
+    """
     from src.scheduler.windows import register_task
 
+    run_as_user = overrides.pop("run_as_user", None)
+    run_as_password = overrides.pop("run_as_password", None) or None
+    kind = overrides.pop("kind", None) or (
+        PrincipalKind.PASSWORD if run_as_password else PrincipalKind.INTERACTIVE_TOKEN
+    )
     kwargs = {
         "task_name": "DistrictSync_Daily",
         "exe_path": Path("x.exe"),
@@ -460,6 +495,7 @@ def _register(**overrides):
         "input_dir": Path("i"),
         "output_dir": Path("o"),
         "run_time": "03:00",
+        "principal": Principal(kind=kind, user=run_as_user or "", password=run_as_password),
     }
     kwargs.update(overrides)
     return register_task(**kwargs)
@@ -912,3 +948,533 @@ class TestFailLogLineCarriesNoSecret:
         assert "0x80070005" in caplog.text
         assert self.SECRET not in caplog.text
         assert "uniq-Kp3z-account" not in caplog.text
+
+
+# -----------------------------------------------------------------------
+# Plan 0049 S-3 — the PRINCIPAL MODEL: a declaration, not an inference
+# -----------------------------------------------------------------------
+#
+# `apply_definition` used to read the logon type out of `params.password is not None`. That
+# inference can express exactly two principal shapes, so the third — a managed service
+# account, which is UNATTENDED and carries NO password — could only be expressed by lying
+# about one of the two. And an absent password is also what a blank field, a cleared UI local
+# and a dropped payload key look like: the last thing a security principal should be decided
+# by is the accidental absence of a value.
+#
+# Everything below pins the replacement: the caller DECLARES a `PrincipalKind`, the
+# unrepresentable combinations are refused rather than defaulted, and the kind → (logon,
+# RunLevel) table is asserted per kind. Behaviour for the two shipped shapes is unchanged —
+# `TestLogonTypeMatrix`, `TestPasswordReachesOnlyTheComArgument`,
+# `TestForeignAccountRequiresItsPassword`, `TestTodaysBehaviourIsUnchanged` and
+# `TestBlankPasswordIsNeverUnattended` above are the pins for that, and none of them moved.
+
+_GMSA = r"CORP\svc_sync$"
+
+
+def _params_for(kind, *, user, password=None, run_highest=True):
+    """``RegisterParams`` for an explicitly named kind (``_params`` derives the other two)."""
+    return _params(password=password, run_highest=run_highest, user=user, kind=kind)
+
+
+class TestPrincipalKindVocabulary:
+    def test_exactly_three_kinds(self):
+        """A fourth kind is a design decision, not an edit: `TASK_LOGON_S4U` runs logged-off
+        with no network token and would silently break the nightly SFTP egress."""
+        assert {k.value for k in PrincipalKind} == {"interactive_token", "password", "managed_service_account"}
+
+    def test_the_values_are_the_ipc_wire_form(self):
+        """They cross a process boundary inside the DPAPI-sealed elevation request, so they
+        are stable strings a round trip must reproduce — never `auto()`."""
+        for kind in PrincipalKind:
+            assert PrincipalKind(kind.value) is kind
+
+    def test_an_unknown_kind_is_refused_not_coerced(self):
+        with pytest.raises(ValueError):
+            PrincipalKind("service_account")
+
+    def test_the_service_account_logon_constant_is_not_even_defined(self):
+        """MEASURED (plan 0049 handover §6): with a domain `UserId`, passing
+        TASK_LOGON_SERVICE_ACCOUNT (5) makes Windows DROP the `<LogonType>` element from the
+        serialized XML. A constant that cannot be reached cannot be reintroduced by a later
+        edit that "looks more correct"."""
+        assert not hasattr(task_com, "TASK_LOGON_SERVICE_ACCOUNT")
+        assert task_com.logon_type_for(PrincipalKind.MANAGED_SERVICE_ACCOUNT) == task_com.TASK_LOGON_PASSWORD
+
+
+class TestPrincipalRefusesTheUnrepresentable:
+    """Every unrepresentable kind/account/password combination, each with a POSITIVE twin.
+
+    Without the twins these rows would pass over a constructor that refused everything.
+    """
+
+    def test_password_without_a_password_is_refused(self):
+        with pytest.raises(ValueError):
+            Principal(kind=PrincipalKind.PASSWORD, user=_SERVICE_ACCOUNT)
+
+    def test_password_with_a_password_is_accepted(self):
+        principal = Principal(kind=PrincipalKind.PASSWORD, user=_SERVICE_ACCOUNT, password="pw")
+        assert (principal.user, principal.password) == (_SERVICE_ACCOUNT, "pw")
+
+    def test_a_blank_password_is_not_a_password(self):
+        """R2 at the single construction point: `""` normalises to `None` FIRST, so it can
+        never reach `RegisterTaskDefinition` as a TASK_LOGON_PASSWORD blank credential."""
+        with pytest.raises(ValueError):
+            Principal(kind=PrincipalKind.PASSWORD, user=_SERVICE_ACCOUNT, password="")
+
+    def test_a_managed_service_account_with_a_password_is_refused(self):
+        """The directory holds that credential. A password here means the caller believes
+        something false about the account, and Windows' answer would be an opaque HRESULT."""
+        with pytest.raises(ValueError):
+            Principal(kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT, user=_GMSA, password="pw")
+
+    def test_a_managed_service_account_without_one_is_accepted(self):
+        principal = Principal(kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT, user=_GMSA)
+        assert (principal.user, principal.password) == (_GMSA, None)
+
+    def test_an_interactive_token_with_a_password_is_refused(self):
+        with pytest.raises(ValueError):
+            Principal(kind=PrincipalKind.INTERACTIVE_TOKEN, password="pw")
+
+    def test_an_interactive_token_without_one_is_accepted(self):
+        assert Principal(kind=PrincipalKind.INTERACTIVE_TOKEN).password is None
+
+    def test_a_blank_password_normalises_to_none(self):
+        assert Principal(kind=PrincipalKind.INTERACTIVE_TOKEN, password="").password is None
+
+    def test_a_service_account_name_must_end_with_the_dollar(self):
+        with pytest.raises(ValueError):
+            Principal(kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT, user=r"CORP\svc_sync")
+
+    def test_a_password_account_may_not_end_with_the_dollar(self):
+        """The mirror image, and it matters as much: `SVC$` with a typed password is an admin
+        who has mixed up two credential stories, and `validate_run_as_user` would reject the
+        name anyway — this says WHY rather than "invalid characters"."""
+        with pytest.raises(ValueError):
+            Principal(kind=PrincipalKind.PASSWORD, user=r"CORP\svc_sync$", password="pw")
+
+    def test_a_password_account_without_one_is_accepted(self):
+        assert Principal(kind=PrincipalKind.PASSWORD, user=r"CORP\svc_sync", password="pw").user == r"CORP\svc_sync"
+
+    def test_no_refusal_message_echoes_the_account(self):
+        """The house rule `_MSG_ACCOUNT_NEEDS_PASSWORD` follows: a principal refusal names no
+        account. These messages reach a district's log through setup.py's worker handler."""
+        for kwargs in (
+            {"kind": PrincipalKind.PASSWORD, "user": "CORP\\uniq-Kp3z-account"},
+            {"kind": PrincipalKind.MANAGED_SERVICE_ACCOUNT, "user": "CORP\\uniq-Kp3z-account"},
+        ):
+            with pytest.raises(ValueError) as caught:
+                Principal(**kwargs)
+            assert "uniq-Kp3z-account" not in str(caught.value)
+
+    def test_the_repr_hides_the_password(self):
+        """Same load-bearing `repr=False` as `RegisterParams`: this object is passed through
+        the adapter layer, so any log line or failing assert could format it."""
+        rendered = repr(Principal(kind=PrincipalKind.PASSWORD, user="CORP\\jane", password="uniq-XYZZY-pw"))
+        assert "uniq-XYZZY-pw" not in rendered
+        assert "Principal" in rendered
+
+
+class TestPrincipalAllowsAForeignInteractiveRequest:
+    """The deliberate ASYMMETRY between the request object and the command object.
+
+    `Principal` does NOT refuse an interactive-token request naming a foreign account,
+    because that is what an admin who typed a service account and no password has asked
+    for — and the honest answer is `register_task`'s bounded
+    `_MSG_ACCOUNT_NEEDS_PASSWORD`, which tells them what to do next. A `ValueError` from a
+    constructor would replace that sentence with a traceback.
+    """
+
+    def test_the_request_is_constructible(self):
+        assert Principal(kind=PrincipalKind.INTERACTIVE_TOKEN, user=_SERVICE_ACCOUNT).user == _SERVICE_ACCOUNT
+
+    def test_and_register_task_answers_it_in_words(self, _setup_account):
+        """The positive half of the asymmetry — and the reason
+        `TestForeignAccountRequiresItsPassword` above did not have to change."""
+        from src.scheduler.windows import _MSG_ACCOUNT_NEEDS_PASSWORD
+
+        with _capture_registration() as reg:
+            ok, msg = _register(run_as_user=_SERVICE_ACCOUNT, run_as_password=None)
+        assert (ok, msg) == (False, _MSG_ACCOUNT_NEEDS_PASSWORD)
+        reg.assert_not_called()
+
+
+class TestRegisterParamsRefusesAForeignInteractiveToken:
+    """The fifth refusal, on the COMMAND object: "that other account, logged-on-only" is not
+    a thing Windows can do, so nothing may ever hand it to `RegisterTaskDefinition`.
+
+    This is the structural floor under `register_task`'s boundary check — a future caller
+    building the params directly cannot reintroduce the plan 0046 A1 substitution.
+    """
+
+    def test_a_foreign_account_is_refused(self, _setup_account):
+        with pytest.raises(ValueError):
+            _params_for(PrincipalKind.INTERACTIVE_TOKEN, user=_SERVICE_ACCOUNT)
+
+    def test_the_signed_in_account_is_accepted(self, _setup_account):
+        assert _params_for(PrincipalKind.INTERACTIVE_TOKEN, user=_SETUP_ACCOUNT).user == _SETUP_ACCOUNT
+
+    def test_the_comparison_is_case_insensitive(self, _setup_account):
+        """`setup_gates.principal_key` and `register_task` both state this equivalence;
+        a floor that disagreed would refuse a registration the boundary just allowed."""
+        assert _params_for(PrincipalKind.INTERACTIVE_TOKEN, user=_SETUP_ACCOUNT.upper()).user
+
+    def test_a_blank_account_is_refused(self, _setup_account):
+        """`register_task` resolves blank to the signed-in account BEFORE building the
+        params, so a blank arriving here means the resolution was skipped."""
+        with pytest.raises(ValueError):
+            _params_for(PrincipalKind.INTERACTIVE_TOKEN, user="")
+
+    def test_the_other_two_kinds_may_name_anybody(self, _setup_account):
+        """Not vacuous in the other direction: the refusal is INTERACTIVE-specific. An
+        unattended task for a foreign account is the whole point of plan 0046."""
+        assert _params_for(PrincipalKind.PASSWORD, user=_SERVICE_ACCOUNT, password="pw").user == _SERVICE_ACCOUNT
+        assert _params_for(PrincipalKind.MANAGED_SERVICE_ACCOUNT, user=_GMSA).user == _GMSA
+
+
+class TestRegisterParamsCarriesTheShapeFloorToo:
+    """The COMMAND object re-checks the four shape refusals, not just the fifth.
+
+    `Principal` is the request and `RegisterParams` is what we are about to hand
+    `RegisterTaskDefinition`, and the two are built at different places — the direct path
+    builds the params from a principal, but the ELEVATED CHILD builds them from an unsealed
+    request file in a privileged process. A floor that only the request object carried would
+    be no floor at all on exactly that side of the UAC boundary.
+    """
+
+    @pytest.mark.parametrize(
+        ("kind", "user", "password"),
+        [
+            (PrincipalKind.PASSWORD, _SERVICE_ACCOUNT, None),
+            (PrincipalKind.PASSWORD, _GMSA, "pw"),
+            (PrincipalKind.MANAGED_SERVICE_ACCOUNT, _GMSA, "pw"),
+            (PrincipalKind.MANAGED_SERVICE_ACCOUNT, _SERVICE_ACCOUNT, None),
+        ],
+        ids=[
+            "password-without-a-password",
+            "password-account-with-a-dollar",
+            "service-account-with-a-password",
+            "service-account-without-a-dollar",
+        ],
+    )
+    def test_each_unrepresentable_shape_is_refused(self, kind, user, password, _setup_account):
+        with pytest.raises(ValueError):
+            _params_for(kind, user=user, password=password)
+
+    @pytest.mark.parametrize(
+        ("kind", "user", "password"),
+        [
+            (PrincipalKind.PASSWORD, _SERVICE_ACCOUNT, "pw"),
+            (PrincipalKind.MANAGED_SERVICE_ACCOUNT, _GMSA, None),
+            (PrincipalKind.INTERACTIVE_TOKEN, _SETUP_ACCOUNT, None),
+        ],
+        ids=["stored-password", "managed-service-account", "interactive-token"],
+    )
+    def test_each_representable_shape_is_accepted(self, kind, user, password, _setup_account):
+        """The POSITIVE twins: without them the rows above would pass over a constructor
+        that refused every registration this product actually makes."""
+        params = _params_for(kind, user=user, password=password)
+        assert (params.kind, params.user, params.password) == (kind, user, password)
+
+    def test_the_kind_is_required_and_undefaulted(self):
+        """No permissive default on a safety-relevant parameter: a default would substitute
+        a security principal, which is the defect class this whole plan removes."""
+        with pytest.raises(TypeError):
+            RegisterParams(  # type: ignore[call-arg]
+                task_name="DistrictSync_Daily",
+                exe="x.exe",
+                arguments="--sis myedbc",
+                working_dir="C:\\DistrictSync",
+                run_time="03:00",
+                user=_SERVICE_ACCOUNT,
+                password="pw",
+                run_highest=True,
+            )
+
+
+class TestLogonAndRunLevelPerKind:
+    """The kind → (TASK_LOGON_*, RunLevel) table, asserted at the COM boundary.
+
+    The two shipped rows are byte-identical to `TestLogonTypeMatrix` above, deliberately:
+    that class pins today's behaviour through the old vocabulary, this one pins the same
+    facts through the new declaration, and a divergence between them is the regression.
+    """
+
+    def test_interactive_token_is_always_limited(self, _setup_account):
+        for run_highest in (True, False):
+            service, folder = _fake_com()
+            apply_definition(
+                service,
+                folder,
+                _params_for(PrincipalKind.INTERACTIVE_TOKEN, user=_SETUP_ACCOUNT, run_highest=run_highest),
+            )
+            _n, definition, _f, _u, password, logon = _register_call(folder)
+            assert (password, logon) == (None, task_com.TASK_LOGON_INTERACTIVE_TOKEN)
+            assert definition.Principal.RunLevel == task_com.TASK_RUNLEVEL_LUA
+
+    @pytest.mark.parametrize(
+        ("kind", "user", "password"),
+        [
+            (PrincipalKind.PASSWORD, _SERVICE_ACCOUNT, "pw"),
+            (PrincipalKind.MANAGED_SERVICE_ACCOUNT, _GMSA, None),
+        ],
+        ids=["stored-password", "managed-service-account"],
+    )
+    @pytest.mark.parametrize("run_highest", [True, False])
+    def test_both_unattended_kinds_honour_run_highest(self, kind, user, password, run_highest):
+        service, folder = _fake_com()
+        apply_definition(service, folder, _params_for(kind, user=user, password=password, run_highest=run_highest))
+        _n, definition, _f, sent_user, sent_password, logon = _register_call(folder)
+        assert (sent_user, sent_password) == (user, password)
+        assert logon == task_com.TASK_LOGON_PASSWORD
+        assert definition.Principal.RunLevel == (
+            task_com.TASK_RUNLEVEL_HIGHEST if run_highest else task_com.TASK_RUNLEVEL_LUA
+        )
+
+    def test_a_service_account_never_sends_the_service_account_logon_value(self):
+        """The measurement, at the boundary: 5 would make Windows drop `<LogonType>`."""
+        service, folder = _fake_com()
+        apply_definition(service, folder, _params_for(PrincipalKind.MANAGED_SERVICE_ACCOUNT, user=_GMSA))
+        assert folder.RegisterTaskDefinition.call_args[0][5] not in (2, 5)
+
+    def test_the_inference_is_deleted_not_wrapped(self):
+        """STRUCTURAL: `apply_definition` branches on NOTHING, so it cannot branch on the
+        password. Two arms — one per representable answer — is what made the third principal
+        shape inexpressible; wrapping the old `if` in a kind check would have left the same
+        two arms behind a new name. Asserted over the AST rather than the text, because the
+        docstrings in that module legitimately quote the inference they replaced.
+        """
+        import ast
+        import pathlib
+
+        tree = ast.parse(pathlib.Path(task_com.__file__).read_text(encoding="utf-8"))
+        body = next(
+            node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "apply_definition"
+        )
+        assert [n for n in ast.walk(body) if isinstance(n, ast.If)] == []
+        registrations = [
+            n
+            for n in ast.walk(body)
+            if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "RegisterTaskDefinition"
+        ]
+        assert len(registrations) == 1
+
+
+class TestElevationPredicateIsTheKind:
+    """`kind is not INTERACTIVE_TOKEN and not is_elevated()` — never "has a password".
+
+    A managed service account is unattended and carries NO password, so the old predicate
+    would have sent it down the DIRECT path to a certain access-denied. This is also the
+    newly-REACHABLE shape: before S-3 no request without a password could reach the elevated
+    path at all, which is why it gets its own row rather than riding the password one.
+    """
+
+    @patch("src.scheduler.windows._register_elevated")
+    @patch("src.scheduler.windows.is_elevated", return_value=False)
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    def test_a_service_account_elevates_with_no_password_at_all(self, _elev, mock_elevated):
+        mock_elevated.return_value = (True, "Schedule registered and confirmed.")
+        ok, _ = _register(kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT, run_as_user=_GMSA)
+        assert ok is True
+        mock_elevated.assert_called_once()
+        assert mock_elevated.call_args[1]["kind"] is PrincipalKind.MANAGED_SERVICE_ACCOUNT
+        assert mock_elevated.call_args[1]["run_as_password"] is None
+        assert mock_elevated.call_args[1]["user"] == _GMSA
+
+    @patch("src.scheduler.windows._register_elevated")
+    @patch("src.scheduler.windows.is_elevated", return_value=False)
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    def test_an_interactive_token_never_elevates(self, _elev, mock_elevated, _setup_account):
+        """The NEGATIVE twin: the logged-on-only path must stay non-admin, as it is today."""
+        with _capture_registration() as reg:
+            ok, _ = _register()
+        assert ok is True
+        mock_elevated.assert_not_called()
+        assert _params_of(reg).kind is PrincipalKind.INTERACTIVE_TOKEN
+
+    @patch("src.scheduler.windows.is_elevated", return_value=True)
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    def test_an_already_elevated_process_registers_directly_for_every_kind(self, _elev, _setup_account):
+        for kind, user, password in (
+            (PrincipalKind.INTERACTIVE_TOKEN, None, None),
+            (PrincipalKind.PASSWORD, _SERVICE_ACCOUNT, "pw"),
+            (PrincipalKind.MANAGED_SERVICE_ACCOUNT, _GMSA, None),
+        ):
+            with (
+                patch("src.scheduler.windows._register_elevated") as elevated,
+                _capture_registration() as reg,
+            ):
+                ok, _ = _register(kind=kind, run_as_user=user, run_as_password=password)
+            assert ok is True
+            elevated.assert_not_called()
+            assert _params_of(reg).kind is kind
+
+
+class TestManagedServiceAccountRegistration:
+    """The third kind end to end on the direct path (the autouse fixture pins elevated)."""
+
+    def test_it_registers_that_account_with_no_credential(self, _setup_account):
+        with _capture_registration() as reg:
+            ok, _ = _register(kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT, run_as_user=_GMSA)
+        assert ok is True
+        params = _params_of(reg)
+        assert (params.user, params.password) == (_GMSA, None)
+
+    def test_it_is_never_told_to_supply_a_password(self, _setup_account):
+        """`_MSG_ACCOUNT_NEEDS_PASSWORD` is the wrong instruction for a service account —
+        it would send an admin hunting a password the directory holds and they cannot see.
+        The refusal stays confined to the interactive kind (S-3.4)."""
+        from src.scheduler.windows import _MSG_ACCOUNT_NEEDS_PASSWORD
+
+        with _capture_registration():
+            ok, msg = _register(kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT, run_as_user=_GMSA)
+        assert (ok, msg) != (False, _MSG_ACCOUNT_NEEDS_PASSWORD)
+        assert ok is True
+
+    @pytest.mark.parametrize(
+        "account",
+        [r"CORP\svc sync$", "THISHOST$", r"BUILTIN\svc$"],
+        ids=["internal-space", "this-computers-own-account", "built-in-authority"],
+    )
+    def test_an_unusable_service_account_never_reaches_com(self, account, _setup_account):
+        """The PARENT half of the "refused by name in both halves" rule (S-3.3). The child
+        half is `tests/test_elevated_apply.py`; both reach it through the single
+        `task_com.validate_principal_account` dispatch."""
+        with patch.dict(os.environ, {"COMPUTERNAME": "THISHOST"}, clear=False):
+            with _capture_registration() as reg, pytest.raises(ValueError):
+                _register(kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT, run_as_user=account)
+            reg.assert_not_called()
+
+    def test_the_dispatch_is_the_one_shared_function(self):
+        """Four call sites in two processes need "validate this account by its kind". One
+        function, so the version that decides whether a `$` is a typo cannot fork."""
+        assert task_com.validate_principal_account(PrincipalKind.MANAGED_SERVICE_ACCOUNT, _GMSA) == _GMSA
+        assert task_com.validate_principal_account(PrincipalKind.PASSWORD, _SERVICE_ACCOUNT) == _SERVICE_ACCOUNT
+        with pytest.raises(ValueError):
+            task_com.validate_principal_account(PrincipalKind.PASSWORD, _GMSA)
+        with pytest.raises(ValueError):
+            task_com.validate_principal_account(PrincipalKind.MANAGED_SERVICE_ACCOUNT, _SERVICE_ACCOUNT)
+
+
+# -----------------------------------------------------------------------
+# validate_gmsa_account — a SHAPE check, and two refusals by NAME
+# -----------------------------------------------------------------------
+
+
+class TestValidateGmsaAccount:
+    @pytest.mark.parametrize(
+        "account",
+        [r"CORP\svc_sync$", "svc$", r"nw-domain\sd74-svc.sync_1$", r"  CORP\svc_sync$  "],
+        ids=["domain-qualified", "bare", "dotted-and-hyphenated", "surrounding-whitespace"],
+    )
+    def test_accepts_a_managed_service_account_name(self, account):
+        from src.utils.validators import validate_gmsa_account
+
+        assert validate_gmsa_account(account) == account.strip()
+
+    @pytest.mark.parametrize(
+        "account",
+        [
+            "",
+            "   ",
+            "svc_sync",
+            "svc$$",
+            "$",
+            r"CORP\\svc$",
+            r"CORP\svc sync$",
+            r"CORP\svc;calc$",
+            r"NT AUTHORITY\SYSTEM",
+        ],
+        ids=[
+            "empty",
+            "whitespace-only",
+            "no-dollar-suffix",
+            "two-dollars",
+            "dollar-only",
+            "double-backslash",
+            "internal-space",
+            "shell-metacharacters",
+            "well-known-authority-with-a-space",
+        ],
+    )
+    def test_refuses_anything_else(self, account):
+        from src.utils.validators import validate_gmsa_account
+
+        with pytest.raises(ValueError):
+            validate_gmsa_account(account)
+
+    def test_refuses_a_name_longer_than_the_shared_cap(self):
+        """The SAME 256 cap as `validate_run_as_user` and no lower: a gMSA sAMAccountName is
+        conventionally short, but "conventionally" is not a rule this layer may invent."""
+        from src.utils.validators import validate_gmsa_account
+
+        with pytest.raises(ValueError, match="too long"):
+            validate_gmsa_account("a" * 256 + "$")
+
+    def test_refuses_this_computers_own_account(self):
+        """A computer account is spelled EXACTLY like a gMSA and its token is
+        SYSTEM-equivalent on the local machine, so accepting `THISHOST$` would schedule the
+        nightly as LocalSystem — a privilege escalation dressed as a typo."""
+        from src.utils.validators import validate_gmsa_account
+
+        with patch.dict(os.environ, {"COMPUTERNAME": "THISHOST"}, clear=False):
+            for spelling in ("THISHOST$", "thishost$", r"CORP\ThisHost$"):
+                with pytest.raises(ValueError, match="this computer's own account"):
+                    validate_gmsa_account(spelling)
+
+    def test_another_computers_name_is_not_refused(self):
+        """The POSITIVE twin: the refusal is about THIS computer, not about any name that
+        happens to look like a host. Without this row the check above would pass over a
+        validator that refused every `$` name."""
+        from src.utils.validators import validate_gmsa_account
+
+        with patch.dict(os.environ, {"COMPUTERNAME": "THISHOST"}, clear=False):
+            assert validate_gmsa_account(r"CORP\OTHERHOST$") == r"CORP\OTHERHOST$"
+
+    def test_the_node_name_is_refused_even_with_the_environment_cleared(self):
+        """`%COMPUTERNAME%` is an unprivileged environment variable, so it is UNIONED with
+        `platform.node()` rather than chained: clearing it must not widen what is accepted.
+        The first label is covered too, for a host that reports an FQDN."""
+        import platform as platform_mod
+
+        from src.utils import validators as validators_mod
+
+        env = {k: v for k, v in os.environ.items() if k != "COMPUTERNAME"}
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(platform_mod, "node", return_value="nodehost.corp.local"),
+        ):
+            for spelling in ("nodehost$", "NODEHOST.corp.local$"):
+                with pytest.raises(ValueError, match="this computer's own account"):
+                    validators_mod.validate_gmsa_account(spelling)
+
+    @pytest.mark.parametrize(
+        "account",
+        [r"BUILTIN\svc$", r"builtin\svc$", "SYSTEM$", "localsystem$", "networkservice$"],
+    )
+    def test_refuses_a_built_in_windows_account_by_name(self, account):
+        """Most built-in forms already fail the charset (they carry a space), which is
+        exactly why they are ALSO refused by name: the next person to widen the charset must
+        not silently open a door to LocalSystem. The bare-name comparison drops the trailing
+        `$` first — otherwise it could never match anything and would be vacuous."""
+        from src.utils.validators import validate_gmsa_account
+
+        with pytest.raises(ValueError, match="built-in Windows account"):
+            validate_gmsa_account(account)
+
+    def test_the_docstring_says_it_is_only_a_shape_check(self):
+        """A shape check that read as an existence check would be worse than none: an admin
+        would take a green field for a working configuration. Windows answers the real
+        questions at registration time, as HRESULTs."""
+        from src.utils.validators import validate_gmsa_account
+
+        assert "SHAPE CHECK" in (validate_gmsa_account.__doc__ or "")
+        assert "not an existence check" in (validate_gmsa_account.__doc__ or "")
+
+    def test_validate_run_as_user_still_rejects_the_dollar_suffix(self):
+        """`validate_run_as_user` is UNCHANGED (S-3.3). One validator per kind is what stops
+        a name typo turning one credential story into the other."""
+        from src.utils.validators import validate_run_as_user
+
+        with pytest.raises(ValueError, match="Invalid run-as user"):
+            validate_run_as_user(r"CORP\svc_sync$")
+        assert validate_run_as_user(r"CORP\svc_sync") == r"CORP\svc_sync"

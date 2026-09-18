@@ -43,10 +43,14 @@ from src.scheduler.task_com import (
     MSG_NO_LOGON_SESSION,
     format_hresult,
 )
+from src.ui_flet.home_status import MACHINE_SCOPE_LINE_LEAD, machine_scope_line
 from src.ui_flet.setup_errors import classify_schedule_error
+from src.utils.diagnostics import SCOPE_PER_USER, SCOPE_SHARED
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TROUBLESHOOTING = "docs/partner/troubleshooting.md"
+_HEADLESS = "docs/partner/headless-sftp-setup.md"
+_INSTALLATION = "docs/partner/installation.md"
 
 #: The ``[HRESULT `` grep anchor, DERIVED from the one failure-log format string rather than
 #: retyped — the doc tells an admin to search ``etl_tool.log`` for exactly this.
@@ -93,17 +97,41 @@ _PINNED: dict[str, tuple[str, str | None]] = {
         classify_schedule_error(windows._MSG_DIFFERENT_ACCOUNT, False, account_is_current=True),
     ),
     "log_anchor": (_LOG_ANCHOR, None),
+    # Plan 0049. The service-account guide now opens by telling an admin to READ these three
+    # strings off the app to decide whether they still need the manual ``--sftp-configure``
+    # step. That decision's wrong answer is SILENT — delivery simply stops and nothing alarms
+    # — so a reworded string here is not cosmetic drift, it is a district losing its nightly
+    # upload with no signal. Proved against the real renderer, not against a second copy.
+    "machine_scope_lead": (
+        MACHINE_SCOPE_LINE_LEAD,
+        machine_scope_line(machine_scope=True, provisioned_by="", provisioned_at=""),
+    ),
+    "diagnose_scope_shared": (SCOPE_SHARED, None),
+    "diagnose_scope_per_user": (SCOPE_PER_USER, None),
 }
 
 #: doc -> the strings that doc is DECLARED to quote. Anything not listed must be ABSENT.
 #: The empty declarations are deliberate and load-bearing: they are what makes a NEW quote in
 #: a doc that has none today go red instead of arriving unpinned.
+#: The plan-0049 family: strings an admin READS OFF THE APP to decide which kind of install
+#: they have. They belong to the two install/service-account guides, not to the failure page.
+_SCOPE_PINS: frozenset[str] = frozenset({"machine_scope_lead", "diagnose_scope_shared", "diagnose_scope_per_user"})
+
 _DOC_QUOTES: dict[str, frozenset[str]] = {
-    _TROUBLESHOOTING: frozenset(_PINNED),
+    # Everything EXCEPT the scope family: the troubleshooting page is about schedule FAILURES,
+    # and this row deliberately stays "all of them" for that family so a new classifier quote
+    # lands pinned by default rather than arriving unnoticed.
+    _TROUBLESHOOTING: frozenset(_PINNED) - _SCOPE_PINS,
     # The harness docs describe the log line's shape, so they legitimately carry the anchor.
     "CLAUDE.md": frozenset({"log_anchor"}),
     "docs/claugentic-ARCHITECTURE_TREE.md": frozenset({"log_anchor"}),
-    "docs/partner/installation.md": frozenset(),
+    # Plan 0049 S-2b: the service-account guide leads with "which kind of install is this?",
+    # and Step 4 of the install guide explains the line. Both quote the app verbatim.
+    _HEADLESS: _SCOPE_PINS,
+    _INSTALLATION: _SCOPE_PINS,
+    # The release notes announce the line by name (but not the terminal report's two scope
+    # words), so it declares the headline pin alone.
+    "CHANGELOG.md": frozenset({"machine_scope_lead"}),
     "docs/partner/faq.md": frozenset(),
     "docs/partner/help-centre-myedbc-districtsync-guide.md": frozenset(),
 }
@@ -137,6 +165,33 @@ def test_the_derived_rows_are_really_derived() -> None:
     assert _LOG_ANCHOR == "[HRESULT ", f"the failure-log format moved — the anchor now reads {_LOG_ANCHOR!r}"
     assert _LOG_ANCHOR in windows._FAIL_LOG_FORMAT
     assert _POLICY_CODE == "0x80070520", f"HR_NO_SUCH_LOGON_SESSION now formats as {_POLICY_CODE}"
+
+
+def test_the_scope_words_are_read_from_the_constant_not_retyped() -> None:
+    """The anti-drift property for the two ``--diagnose`` scope words.
+
+    Pinning them against themselves would be vacuous — the real risk is that the report keeps
+    saying one thing while the constant this file imports says another, which happens the moment
+    someone hand-types the word back into ``_profile_lines``. So the pin is that each literal
+    appears EXACTLY ONCE in the module's source: at its own definition. A second occurrence means
+    a copy exists that this test does not govern.
+    """
+    source = (_REPO_ROOT / "src" / "utils" / "diagnostics.py").read_text(encoding="utf-8")
+    for word in (SCOPE_SHARED, SCOPE_PER_USER):
+        assert source.count(f'"{word}"') == 1, (
+            f"{word!r} is spelled more than once in diagnostics.py — the report and this pin can now disagree"
+        )
+
+
+def test_the_machine_scope_lead_really_leads_both_forms() -> None:
+    """The doc quotes a PREFIX, so the prefix has to be one the app always renders. Both
+    sentences are built from the constant, and this is the twin that proves the build survived
+    an edit — a lead that stopped being a prefix would leave the guide describing a line no
+    install shows."""
+    from src.ui_flet.home_status import MACHINE_SCOPE_LINE_PLAIN, MACHINE_SCOPE_LINE_WITH_PROVENANCE
+
+    assert MACHINE_SCOPE_LINE_WITH_PROVENANCE.startswith(MACHINE_SCOPE_LINE_LEAD)
+    assert MACHINE_SCOPE_LINE_PLAIN.startswith(MACHINE_SCOPE_LINE_LEAD)
 
 
 @pytest.mark.parametrize("name", sorted(_PINNED))
