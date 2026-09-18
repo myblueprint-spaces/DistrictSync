@@ -54,7 +54,7 @@ _MAX_REQUEST_BYTES = 64 * 1024
 DIFFERENT_ACCOUNT_SENTINEL = "DSYNC_DIFFERENT_ACCOUNT"
 
 _REQUIRED_REGISTER_FIELDS = frozenset(
-    {"op", "task_name", "exe", "arguments", "working_dir", "run_time", "user", "run_highest"}
+    {"op", "task_name", "exe", "arguments", "working_dir", "run_time", "user", "kind", "run_highest"}
 )
 
 # ``provision`` registers the nightly as its last step, so it carries every register field
@@ -187,8 +187,24 @@ def _apply(req_path: Path, res_path: Path) -> int:
 
 
 def _do_register(payload: dict[str, object]) -> None:
+    """Register the nightly in the privileged half, re-validating every field BY KIND.
+
+    **The account validator is chosen by the declared kind, and that is the make-or-break
+    line of plan 0049 S-3.** Until then this called ``validate_run_as_user`` unconditionally
+    — a deliberate fail-closed floor, and correct for the two kinds that existed. But that
+    validator's charset has no ``$`` in it, and EVERY unattended registration comes through
+    this function (a non-elevated ``register_task`` self-elevates for both unattended kinds),
+    so a managed service account would have been refused here no matter what the rest of the
+    engine could express. One validator per kind is what makes the third kind reachable —
+    and it narrows the floor rather than widening it: a password-logon account still cannot
+    carry a ``$``, and a service account still cannot be anything but ``DOMAIN\\name$``.
+
+    An unknown ``kind`` string raises ``ValueError`` from the enum call itself, which
+    ``_apply`` maps to ``_MSG_REQUEST_INVALID`` — a request naming a principal shape this
+    build does not have is refused, never coerced into one it does.
+    """
     from src.scheduler import task_com
-    from src.utils.validators import validate_run_as_user, validate_run_time, validate_task_name
+    from src.utils.validators import validate_run_time, validate_task_name
 
     if not set(payload) >= _REQUIRED_REGISTER_FIELDS:
         raise ValueError("missing fields")
@@ -196,12 +212,12 @@ def _do_register(payload: dict[str, object]) -> None:
     run_time = str(payload["run_time"])
     validate_run_time(run_time)
     password = payload.get("password") or None  # ONE spelling of "no password" (0046 A1)
-    # UNCONDITIONAL: this module promises to re-validate every input in the privileged
-    # half, and ``user`` is the field that names the principal an elevated registration
-    # creates. It used to be validated only when a password was present — the one input
-    # whose absence is exactly the case worth refusing. Nothing the parent sends reaches
-    # here unvalidated, so this is a fail-closed floor, not a second opinion.
-    user = validate_run_as_user(str(payload["user"]))
+    kind = task_com.PrincipalKind(str(payload["kind"]))
+    # UNCONDITIONAL, and now kind-aware: this module promises to re-validate every input in
+    # the privileged half, and ``user`` is the field that names the principal an elevated
+    # registration creates. It used to be validated only when a password was present — the
+    # one input whose absence is exactly the case worth refusing.
+    user = task_com.validate_principal_account(kind, str(payload["user"]))
 
     task_com.register_task_definition(
         task_com.RegisterParams(
@@ -212,6 +228,7 @@ def _do_register(payload: dict[str, object]) -> None:
             run_time=run_time,
             user=user,
             password=str(password) if password is not None else None,
+            kind=kind,
             run_highest=bool(payload["run_highest"]),
         )
     )
@@ -244,14 +261,20 @@ def _do_provision(payload: dict[str, object]) -> None:
     machine scope and only then refuse, leaving a provisioned computer with no nightly.
     Validating here keeps the whole operation a no-op for a malformed request. The
     callable still re-validates: this is a pre-flight, not a replacement for the floor.
+
+    ``kind`` joins that pre-flight for exactly the same reason (plan 0049 S-3). It is also
+    read much earlier than step 8 — ``apply_provision`` needs it to decide which validator
+    the principal's name goes through before it grants that principal anything on disk — so
+    an unrecognised value must refuse here, not halfway through a DACL.
     """
-    from src.scheduler import provisioning
+    from src.scheduler import provisioning, task_com
     from src.utils.validators import validate_run_time, validate_task_name
 
     if not set(payload) >= _REQUIRED_PROVISION_FIELDS:
         raise ValueError("missing fields")
     validate_task_name(str(payload["task_name"]))
     validate_run_time(str(payload["run_time"]))
+    task_com.PrincipalKind(str(payload["kind"]))  # an unknown kind refuses the whole op
     provisioning.apply_provision(payload, register=lambda: _do_register({**payload, "op": "register"}))
 
 

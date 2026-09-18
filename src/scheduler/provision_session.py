@@ -44,9 +44,10 @@ from src.scheduler import elevation, task_com, windows
 from src.scheduler.elevated_apply import DIFFERENT_ACCOUNT_SENTINEL
 from src.scheduler.elevation import ElevationResult
 from src.scheduler.provisioning import ProvisionRefused, ProvisionStep, build_provision_payload
+from src.scheduler.task_com import Principal, validate_principal_account
 from src.utils import paths
 from src.utils.logger import get_logger
-from src.utils.validators import validate_run_as_user, validate_run_time, validate_sis_type, validate_task_name
+from src.utils.validators import validate_run_time, validate_sis_type, validate_task_name
 
 logger = logging.getLogger(__name__)
 
@@ -420,8 +421,7 @@ def request_provision(
     *,
     sftp_host: str,
     sftp_username: str,
-    run_as_user: str,
-    run_as_password: str,
+    principal: Principal,
     run_highest: bool = True,
 ) -> ProvisionAttempt:
     """Provision this computer for shared settings and register the nightly — one UAC prompt.
@@ -442,13 +442,18 @@ def request_provision(
     function's gate is the parent's own switch read, and a child killed on the bounded wait
     may well have committed.
 
-    ``run_as_user`` / ``run_as_password`` are required and undefaulted: a provision only
-    ever happens for a foreign principal WITH its password, and
-    :func:`src.ui_flet.setup_gates.register_block` must read ``NONE`` before this is
-    called. Never raises — every failure is a bounded :class:`ProvisionAttempt`.
+    ``principal`` is required and undefaulted (plan 0049 S-3): a provision only ever happens
+    for a FOREIGN principal, and :func:`src.ui_flet.setup_gates.register_block` must read
+    ``NONE`` before this is called. It replaced the ``run_as_user`` / ``run_as_password``
+    pair for the reason the whole slice exists — the two unattended kinds differ in whether a
+    password exists at all, so "is there a password?" cannot decide which one was asked for.
+    The account goes through the validator its OWN kind names
+    (``task_com.validate_principal_account``), and a blank account is refused here rather
+    than resolved: there is nothing to provision for "the signed-in account".
+    Never raises — every failure is a bounded :class:`ProvisionAttempt`.
     """
     try:
-        user = validate_run_as_user(run_as_user)
+        user = validate_principal_account(principal.kind, principal.user)
     except (ValueError, TypeError, AttributeError):
         # Exactly what the child's ``_principal_account`` would refuse with, decided here so
         # the admin reads the account-name copy instead of a generic "couldn't start".
@@ -471,8 +476,9 @@ def request_provision(
             working_dir=str(working_dir),
             run_time=run_time,
             user=user,
+            kind=principal.kind,
             run_highest=run_highest,
-            password=run_as_password,
+            password=principal.password,
             sftp_host=sftp_host,
             sftp_username=sftp_username,
             sftp_password=_read_delivery_secret(enabled=sftp, host=sftp_host, username=sftp_username),

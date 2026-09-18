@@ -229,7 +229,9 @@ class ScheduleStatus:
     to ``AppConfig.schedule_run_as_user``, and ``setup_gates.principal_key`` reduces it to a
     different identity than the account now running. It is the sole authority for "a missing run
     record is EXPECTED here" — never inferred from an empty store, never from the config hint flag,
-    and never read back off the live task (``task_com.TaskFacts`` carries no principal at all).
+    and never read back off the live task. (``ScheduleReadback.run_as`` exists since plan 0049 S-3,
+    but it is display-only and nothing consumes it: a probe that can answer ``None`` must not be
+    able to switch a suppression on and off.)
 
     ONE fact, ONE carrier: ``_is_contradiction`` reads it directly and ``home_status._is_missed_run``
     reads it off the ``ScheduleStatus`` it already receives, so the two predicates can never

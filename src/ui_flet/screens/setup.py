@@ -80,6 +80,7 @@ from src.scheduler.provision_session import (
     delivery_secret_unreadable,
     request_provision,
 )
+from src.scheduler.task_com import Principal, PrincipalKind
 from src.sftp.uploader import LISTING_DENIED_NOTE, SFTPUploader
 from src.ui_flet import components, handover_result, tokens
 from src.ui_flet.config_editor import (
@@ -2827,6 +2828,32 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         # account would be exactly the silent substitution Slice 1 exists to prevent.
         sent_account = _account_facts(force_blank_password=force_blank_password).typed or None
 
+        def _declared_principal() -> Principal:
+            """WHO this press asks the nightly to run as — DECLARED, not inferred (0049 S-3).
+
+            The engine no longer reads a logon type out of "is there a password?"; the caller
+            says which of ``PrincipalKind``'s three shapes it means. This surface can name
+            exactly TWO of them, and that is a product fact rather than an engine limit:
+            there is no gMSA affordance in Settings until S-4, so a typed password is the
+            only thing that can distinguish an unattended request from a logged-on-only one
+            here. The ``$``-suffixed third kind stays unreachable from the UI on purpose.
+
+            Called INSIDE each worker, never on the UI thread. ``Principal`` REFUSES the
+            unrepresentable kind/account/password combinations with a ``ValueError``, and the
+            one an admin could type — a ``$``-suffixed account with a password — is ALREADY
+            refused in front of this by ``setup_gates.register_block``'s ``ACCOUNT_SHAPE``
+            rung, which runs ``validate_run_as_user`` over any foreign account before
+            anything is dispatched. So this call cannot raise from this surface; building it
+            inside the worker is what keeps that true if a future gate change lets one
+            through — the register worker's ``except ValueError`` already answers with
+            ``_WORKER_ERROR_ACCOUNT_SHAPE``, which is the right sentence for it.
+            """
+            return Principal(
+                kind=PrincipalKind.PASSWORD if password else PrincipalKind.INTERACTIVE_TOKEN,
+                user=sent_account or "",
+                password=password or None,
+            )
+
         exe_path = Path(sys.executable)
         transient = is_transient_location(str(exe_path))
         uac_path = scheduler.supports_unattended_password and bool(password) and not _elevated_now()
@@ -3116,11 +3143,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     cfg.sftp_enabled,
                     sftp_host=cfg.sftp_host or "",
                     sftp_username=cfg.sftp_username or "",
-                    run_as_user=sent_account or "",
-                    # I1/I3: still handler-local. ``request_provision`` seals it into a DPAPI
-                    # payload — never argv, never an env var, never a log line, and it is not a
-                    # field of the ``ProvisionAttempt`` that comes back.
-                    run_as_password=(password or ""),
+                    # I1/I3: the password is still handler-local. ``request_provision`` seals
+                    # it into a DPAPI payload — never argv, never an env var, never a log line,
+                    # and it is not a field of the ``ProvisionAttempt`` that comes back. Built
+                    # INSIDE the worker for the same reason the register twin is (below).
+                    principal=_declared_principal(),
                 )
             except Exception as exc:  # noqa: BLE001 - it contracts never to raise; belt anyway
                 logger.error("The shared-settings change raised unexpectedly: %s", type(exc).__name__)
@@ -3149,8 +3176,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     output_dir=Path(cfg.output_dir),
                     run_time=run_time,
                     sftp=cfg.sftp_enabled,
-                    run_as_user=sent_account,
-                    run_as_password=(password or None),
+                    principal=_declared_principal(),
                 )
             except ValueError:
                 # validate_run_as_user, raised inside register_task or the elevated child. The

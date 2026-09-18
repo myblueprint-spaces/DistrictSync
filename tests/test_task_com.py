@@ -431,3 +431,94 @@ class TestTaskComErrorShape:
             raise TaskComError(None, "x")
         except TaskComError as caught:
             assert caught.__context__ is None
+
+
+# ---------------------------------------------------------------------------
+# Plan 0049 S-3.5 — the read side's testable core, and the principal it now reads
+# ---------------------------------------------------------------------------
+
+
+class TestTaskFacts:
+    """``task_facts`` is the read-back twin of ``apply_definition``: a pure reduction of one
+    live-or-fake COM task object, so ``Definition.Principal`` can be pinned on Linux CI
+    where no apartment exists.
+
+    ``run_as`` / ``logon_type`` are DISPLAY facts (S-3.5). Every reduction is total — a
+    shape this cannot make sense of yields ``None``, never a raise and never a guess —
+    because "no answer" must be distinguishable from "a different answer": the one consumer
+    is a fail-open WARNING, and a guess there would invent a mismatch.
+    """
+
+    @staticmethod
+    def _task(**overrides):
+        from unittest.mock import MagicMock
+
+        task = MagicMock(name="IRegisteredTask")
+        task.NextRunTime = datetime(2026, 7, 9, 3, 0, tzinfo=timezone.utc)
+        task.LastRunTime = datetime(2026, 7, 8, 3, 0, tzinfo=timezone.utc)
+        task.LastTaskResult = 0
+        task.Definition.Actions.Count = 1
+        task.Definition.Actions.Item.return_value.Path = r"C:\DistrictSync\DistrictSync.exe"
+        task.Definition.Principal.UserId = "CORP\\svc_sync$"
+        task.Definition.Principal.LogonType = task_com.TASK_LOGON_PASSWORD
+        for name, value in overrides.items():
+            setattr(task.Definition.Principal, name, value)
+        return task
+
+    def test_it_reads_the_principal_off_the_definition(self):
+        facts = task_com.task_facts(self._task())
+        assert facts.run_as == "CORP\\svc_sync$"
+        assert facts.logon_type == task_com.TASK_LOGON_PASSWORD
+
+    def test_it_still_reads_everything_it_read_before(self):
+        """The POSITIVE twin of the extraction: moving this out of ``read_task`` must not
+        drop a field ``ScheduleReadback`` already carried."""
+        facts = task_com.task_facts(self._task())
+        assert facts.next_run == "2026-07-09T03:00:00"  # pywin32's lying +00:00 stripped
+        assert facts.last_run == "2026-07-08T03:00:00"
+        assert facts.last_result == 0
+        assert facts.action_path.endswith("DistrictSync.exe")
+
+    @pytest.mark.parametrize("value", ["", "   ", None])
+    def test_an_unreadable_account_is_none_not_a_guess(self, value):
+        assert task_com.task_facts(self._task(UserId=value)).run_as is None
+
+    @pytest.mark.parametrize("value", [None, "1", True, False, object()])
+    def test_an_unreadable_logon_type_is_none(self, value):
+        """``True`` is the interesting row: ``bool`` is an ``int`` subclass and would read as
+        ``1``, which IS ``TASK_LOGON_PASSWORD`` — a pywin32 shape change handing back a
+        boolean would otherwise be indistinguishable from a real unattended task."""
+        assert task_com.task_facts(self._task(LogonType=value)).logon_type is None
+
+    def test_a_real_logon_type_survives(self):
+        """Not vacuous: the totality rows above would all pass over a function that returned
+        ``None`` unconditionally."""
+        facts = task_com.task_facts(self._task(LogonType=task_com.TASK_LOGON_INTERACTIVE_TOKEN))
+        assert facts.logon_type == task_com.TASK_LOGON_INTERACTIVE_TOKEN
+
+    def test_a_raise_releases_this_frames_com_refs(self):
+        """The module's live-probed hazard, in the new frame. A ``com_error`` raised in here
+        leaves THIS frame in the propagating traceback, and a frame still holding ``actions``
+        / ``principal`` pins those interfaces past ``CoUninitialize`` — the "Win32 exception
+        occurred releasing IUnknown" failure. A caller's ``finally`` cannot release another
+        frame's locals, so this function owns the discipline for its own.
+        """
+        from unittest.mock import MagicMock, PropertyMock
+
+        task = self._task()
+        type(task).LastTaskResult = PropertyMock(side_effect=RuntimeError("COM went away"))
+        with pytest.raises(RuntimeError):
+            task_com.task_facts(task)
+        try:
+            task_com.task_facts(task)
+        except RuntimeError as exc:
+            frames = []
+            tb = exc.__traceback__
+            while tb is not None:
+                frames.append(tb.tb_frame)
+                tb = tb.tb_next
+            mine = [f for f in frames if f.f_code.co_name == "task_facts"]
+            assert mine, "the frame under test must appear in the traceback"
+            assert mine[0].f_locals["actions"] is None
+            assert mine[0].f_locals["principal"] is None
+        assert isinstance(task, MagicMock)  # the fake outlives the frame; the refs do not

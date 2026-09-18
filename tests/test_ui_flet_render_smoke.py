@@ -1496,13 +1496,19 @@ def _record_register(monkeypatch) -> dict:
 
     def _fake_register(**kwargs):
         recorded["called"] += 1
-        recorded["run_as_password"] = kwargs.get("run_as_password")
+        # Since plan 0049 S-3 the engine takes ONE declared ``task_com.Principal`` instead of
+        # a ``run_as_user`` / ``run_as_password`` pair; the password is still the only fact
+        # these rows care about, so it is read off the principal here.
+        principal = kwargs.get("principal")
+        recorded["principal"] = principal
+        recorded["run_as_password"] = None if principal is None else principal.password
         recorded["sis_type"] = kwargs.get("sis_type")
         return True, "ok"
 
     def _fake_cron(exe, sis, inp, out, run_time, *, sftp=False):
         recorded["called"] += 1
         recorded["run_as_password"] = None  # cron has no logon-type concept
+        recorded["principal"] = None
         recorded["sis_type"] = sis
         return True, "ok"
 
