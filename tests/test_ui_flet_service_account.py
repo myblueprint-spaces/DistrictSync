@@ -23,6 +23,7 @@ import src.ui_flet.screens.setup as setup_mod
 from src.config.app_config import AppConfig
 from src.scheduler import task_com, windows
 from src.scheduler.provision_session import HandoverOutcome, ProvisionAttempt, ProvisionOutcome
+from src.scheduler.task_com import PrincipalKind
 from src.sftp.uploader import SFTPUploader
 from src.ui_flet.setup_flow import (
     SCHEDULE_ACCOUNT_FIELD_LABEL,
@@ -100,6 +101,23 @@ def _registered_args(cfg: AppConfig) -> dict:
     )
 
 
+def _flatten_principal(seen: dict) -> None:
+    """Project the DECLARED principal back into the two facts the rows below assert on.
+
+    Since plan 0049 S-3 the engine takes ONE ``task_com.Principal`` instead of a
+    ``run_as_user`` / ``run_as_password`` pair, because the pair's *combination* used to
+    imply the logon type. What each row here is actually about — "the typed account reaches
+    the engine unchanged", "a blank field means the signed-in account" — did not change, so
+    the object is unpacked here rather than at thirty assertion sites. ``principal`` is kept
+    alongside it, and ``TestTheUiDeclaresOnlyTwoKinds`` asserts the kind directly.
+    """
+    principal = seen.get("principal")
+    if principal is None:
+        return
+    seen["run_as_user"] = principal.user or None
+    seen["run_as_password"] = principal.password
+
+
 def _capture_register(monkeypatch, *, result=(True, "ok")) -> dict:
     """Record what actually reaches ``register_task`` — the REGISTERED params, not the return."""
     seen: dict = {"calls": 0}
@@ -107,6 +125,7 @@ def _capture_register(monkeypatch, *, result=(True, "ok")) -> dict:
     def _fake(**kwargs):
         seen["calls"] += 1
         seen.update(kwargs)
+        _flatten_principal(seen)
         if isinstance(result, BaseException):
             raise result
         return result
@@ -174,6 +193,7 @@ def _capture_provision(monkeypatch, *, results=None) -> dict:
     def _fake(task_name, exe_path, sis_type, input_dir, output_dir, run_time, sftp=False, **kwargs):
         seen["calls"] += 1
         seen.update(kwargs)
+        _flatten_principal(seen)
         seen["task_name"] = task_name
         seen["sis_type"] = sis_type
         seen["run_time"] = run_time
@@ -987,3 +1007,92 @@ def test_the_engine_refusal_message_is_classified_not_swallowed():
     """The sweep's declared-but-now-classified arm forced this; keep it visible at the seam."""
     out = setup_mod.classify_schedule_error(windows._MSG_ACCOUNT_NEEDS_PASSWORD, False, account_is_current=False)
     assert SCHEDULE_ACCOUNT_FIELD_LABEL in out
+
+
+# --------------------------------------------------------------------------- #
+# The kind the UI DECLARES (plan 0049 S-3)                                     #
+# --------------------------------------------------------------------------- #
+class TestTheUiDeclaresOnlyTwoKinds:
+    """The engine can represent three principal kinds; this surface can NAME two.
+
+    That is a product fact, not an engine limit: there is no managed-service-account
+    affordance in Settings until S-4, so a typed password is the only thing that can
+    distinguish an unattended request from a logged-on-only one here. The governing rule of
+    S-3 is that gMSA "becomes representable in the engine and is exposed to NOBODY", so the
+    third kind being unreachable from every UI path is the thing to pin — it is what makes
+    the slice safe to land ahead of the disclosure, the caption and the error branch.
+    """
+
+    def test_a_typed_password_declares_the_password_kind(self, tmp_path, stub_page, monkeypatch):
+        cfg = _settings(tmp_path, monkeypatch)
+        seen = _capture_register(monkeypatch)
+        tree, _ = _schedule_section(cfg, stub_page)
+        _textfield_by_label(tree, "Windows account password").value = "hunter2"
+        _press_register(tree)
+        _drain(stub_page)
+
+        assert seen["calls"] == 1
+        assert seen["principal"].kind is PrincipalKind.PASSWORD
+        assert seen["principal"].password == "hunter2"
+
+    def test_a_blank_password_declares_the_interactive_token_kind(self, tmp_path, stub_page, monkeypatch):
+        """The NEGATIVE twin, and the G5 shape: the 20 shipped districts leave this field
+        empty, and their nightly must still be declared logged-on-only."""
+        cfg = _settings(tmp_path, monkeypatch)
+        seen = _capture_register(monkeypatch)
+        tree, _ = _schedule_section(cfg, stub_page)
+        _textfield_by_label(tree, "Windows account password").value = ""
+        _press_register(tree)
+        _drain(stub_page)
+
+        assert seen["calls"] == 1
+        assert seen["principal"].kind is PrincipalKind.INTERACTIVE_TOKEN
+        assert seen["principal"].password is None
+
+    def test_the_provisioning_route_declares_it_too(self, tmp_path, stub_page, monkeypatch):
+        """A FOREIGN principal reaches ``request_provision`` rather than ``register_task``
+        (S-2b), and that payload carries the kind to the elevated child — so this route
+        needs its own row, not an inference from the one above."""
+        cfg = _settings(tmp_path, monkeypatch)
+        seen = _capture_provision(monkeypatch)
+        _stub_handover(monkeypatch, handed_over=False)
+        tree, _ = _schedule_section(cfg, stub_page)
+        _register_service_account(tree, stub_page)
+
+        assert seen["calls"] == 1
+        assert seen["principal"].kind is PrincipalKind.PASSWORD
+
+    def test_no_surface_can_declare_a_managed_service_account(self, tmp_path, stub_page, monkeypatch):
+        """Structural: the module names exactly two kinds, and the third is absent from its
+        source. A caption, a disclosure and an error branch all have to land with it (S-4);
+        a kind reachable before its copy exists would be a dead end in front of an admin."""
+        import pathlib
+
+        source = pathlib.Path(setup_mod.__file__).read_text(encoding="utf-8")
+        assert "PrincipalKind.PASSWORD" in source  # positive twin: the file really names kinds
+        assert "PrincipalKind.INTERACTIVE_TOKEN" in source
+        assert "MANAGED_SERVICE_ACCOUNT" not in source
+
+    def test_a_dollar_suffixed_account_never_reaches_a_declaration_at_all(self, tmp_path, stub_page, monkeypatch):
+        """The one unrepresentable combination an admin could type — a ``$``-suffixed account
+        with a password — is refused by ``setup_gates.register_block``'s ``ACCOUNT_SHAPE``
+        rung, IN FRONT of the dispatch. So ``Principal``'s own refusal cannot fire from this
+        surface, which is why ``_declared_principal`` says so instead of carrying a handler
+        for an outcome it cannot produce. (The engine-side refusal is pinned in
+        ``tests/test_scheduler_runas.py``, where it is reachable.)
+        """
+        cfg = _settings(tmp_path, monkeypatch)
+        ordinary = _capture_register(monkeypatch)
+        provisioned = _capture_provision(monkeypatch)
+        _stub_handover(monkeypatch, handed_over=False)
+        tree, _ = _schedule_section(cfg, stub_page)
+        _account_field(tree).value = "CORP\\svc_sync$"
+        _textfield_by_label(tree, "Windows account password").value = "pw"
+        _press_register(tree)
+        _drain(stub_page)
+
+        assert ordinary["calls"] == 0
+        assert provisioned["calls"] == 0, "the gate must refuse before anything is dispatched"
+        # And the refusal is VISIBLE — a disabled primary with no cause is the defect plan
+        # 0046 B's `_paint_account_note` exists to prevent.
+        assert _has_text_containing(tree, setup_mod._ACCOUNT_SHAPE_NOTE)

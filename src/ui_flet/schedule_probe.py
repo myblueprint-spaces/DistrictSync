@@ -38,9 +38,13 @@ def foreign_task_account(app_config: AppConfig) -> str:
     principal unknown too — and unknown is ``""``, which ALARMS. Reading one facet of an atomic
     triple in isolation is exactly the drift ``RegisteredSchedule`` exists to prevent.
 
-    It can only ever be a fact the app WROTE at a confirmed registration. The live task's own
-    identity is genuinely unreadable — ``task_com.TaskFacts`` carries ``next_run`` / ``last_run`` /
-    ``last_result`` / ``action_path`` and NO principal — so inference was never on the table.
+    It can only ever be a fact the app WROTE at a confirmed registration. Since plan 0049 S-3
+    the read-back DOES carry the live task's ``run_as`` / ``logon_type``
+    (``task_com.TaskFacts``), but that is a DISPLAY fact and this resolver deliberately does not
+    move to it: the live read legitimately answers ``None`` (an elevated-registered task under a
+    filtered token, a timed-out probe), and a suppression that flickers with a probe result is
+    worse than one keyed on a value the app wrote itself. The ROADMAP item about the record being
+    the only principal source is narrowed by S-3, not closed.
 
     **FAILS TO ``""`` ON EVERYTHING**: no record, a blank record, a case-insensitive match with the
     signed-in account, an unreadable ``AppConfig``, or a raising ``get_scheduler().run_as_user()``.

@@ -55,9 +55,11 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Callable
 
 from src.scheduler.messages import carries_foreign_marker
+from src.utils.validators import validate_gmsa_account, validate_run_as_user
 
 logger = logging.getLogger(__name__)
 
@@ -204,14 +206,218 @@ TASK_INSTANCES_IGNORE_NEW = 2
 TRIGGER_BOUNDARY_DATE = "2024-01-01"
 
 
+# --- The principal model (plan 0049 S-3) --------------------------------------------
+class PrincipalKind(StrEnum):
+    """WHO a scheduled task runs as — **DECLARED** by the caller, never inferred here.
+
+    Until plan 0049 S-3 this module inferred the logon type from whether a password
+    happened to be present (``if params.password is not None``). That inference has exactly
+    two representable answers, so a third principal shape — a managed service account, which
+    carries NO password and is still unattended — could only be expressed by lying about one
+    of the two. Worse, an *absent* password is also what a blank field, a cleared UI local
+    and a dropped payload key all look like: the one thing a security principal must never be
+    decided by is the accidental absence of a value.
+
+    The values are the IPC wire form (the ``kind`` field of the DPAPI-sealed elevation
+    request), so they are stable strings and not `auto()`.
+
+    Three kinds, and there is deliberately no fourth: ``TASK_LOGON_S4U`` is not defined in
+    this module at all (it runs logged-off with no network token, silently breaking the
+    nightly SFTP egress — the 2026-06-25 regression class).
+    """
+
+    # (B105 is a false positive on both members below, as on ``messages.SECRET_SENTINEL_PREFIX``
+    # and ``windows._MSG_ACCOUNT_NEEDS_PASSWORD``: the NAME carries the word, the value is an
+    # IPC enum token, and no credential is involved — this enum exists precisely so that a
+    # credential's presence stops standing in for a principal.)
+    #: The signed-in account, logged-on-only, no stored credential. Today's default path.
+    INTERACTIVE_TOKEN = "interactive_token"  # nosec B105
+    #: Any account, running whether or not anybody is signed in, with its password stored
+    #: by Windows. Today's unattended path.
+    PASSWORD = "password"  # nosec B105
+    #: A domain-managed service account (gMSA / sMSA) — unattended, and the password is
+    #: fetched from the directory rather than stored by the task. Representable since S-3;
+    #: reachable from no UI until S-4.
+    MANAGED_SERVICE_ACCOUNT = "managed_service_account"
+
+
+# kind → the ``TASK_LOGON_*`` constant handed to ``RegisterTaskDefinition``. The ONE
+# spelling of this table; ``logon_type_for`` is how every consumer reads it.
+#
+# **MANAGED_SERVICE_ACCOUNT maps to TASK_LOGON_PASSWORD, not TASK_LOGON_SERVICE_ACCOUNT (5).**
+# Verified first-hand (plan 0049 handover §6): with a domain ``UserId`` the ``<LogonType>``
+# element is silently DROPPED from the serialized task XML when 5 is passed, so the task is
+# registered with no logon type at all. Passing 1 with a ``$``-suffixed userId and a NULL
+# password is what actually produces a working gMSA task. ``TASK_LOGON_SERVICE_ACCOUNT`` is
+# therefore not defined here either: an undefined constant cannot be reached by a future edit
+# that "looks more correct".
+_LOGON_FOR_KIND: dict[PrincipalKind, int] = {
+    PrincipalKind.INTERACTIVE_TOKEN: TASK_LOGON_INTERACTIVE_TOKEN,
+    PrincipalKind.PASSWORD: TASK_LOGON_PASSWORD,
+    PrincipalKind.MANAGED_SERVICE_ACCOUNT: TASK_LOGON_PASSWORD,
+}
+
+# The suffix that MAKES an account a managed service account. One character, and the whole
+# difference between two credential stories — which is why the two kinds have two validators.
+_MSA_SUFFIX = "$"
+
+
+def logon_type_for(kind: PrincipalKind) -> int:
+    """The ``TASK_LOGON_*`` constant a kind registers with. Total over the enum.
+
+    A function rather than a bare dict read so the table has one name a test can assert
+    against and one place the gMSA measurement above is explained.
+    """
+    return _LOGON_FOR_KIND[kind]
+
+
+def honours_run_highest(kind: PrincipalKind) -> bool:
+    """Whether ``run_highest`` means anything for this kind.
+
+    It does not for :attr:`PrincipalKind.INTERACTIVE_TOKEN`: that path is ALWAYS Limited
+    (``TASK_RUNLEVEL_LUA``) and a caller asking for Highest is ignored rather than refused —
+    today's semantics, pinned by ``TestLogonTypeMatrix``. Both unattended kinds honour it.
+    """
+    return kind is not PrincipalKind.INTERACTIVE_TOKEN
+
+
+def validate_principal_account(kind: PrincipalKind, user: str) -> str:
+    """Validate an account against its DECLARED kind — the ONE kind→validator dispatch.
+
+    Four call sites need exactly this decision, in two processes: the unelevated boundary
+    (``windows.register_task``), the privileged child (``elevated_apply._do_register``), and
+    both halves of the provisioning round trip. Spelling the dispatch four times is how one
+    of them ends up a version behind — and the version that matters here is the one that
+    decides whether a ``$``-suffixed name is a typo or a principal.
+
+    ``validate_gmsa_account`` for a managed service account, ``validate_run_as_user`` for
+    everything else. The two charsets are deliberately disjoint on that one character, so
+    the dispatch cannot launder one kind's name into the other's.
+
+    Blank is deliberately NOT handled here. Each caller has its own policy for ``""`` —
+    ``register_task`` resolves it to the signed-in account, ``provisioning`` to the setup
+    user, ``request_provision`` refuses it — and folding three policies behind a validator's
+    name is how a default gets made by accident.
+
+    Returns the validated account; raises ``ValueError`` otherwise.
+    """
+    if kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT:
+        return validate_gmsa_account(user)
+    return validate_run_as_user(user)
+
+
+def _assert_declared_principal(kind: PrincipalKind, user: str, password: str | None) -> None:
+    """Refuse the principal shapes Windows cannot register. Shared by both principal objects.
+
+    Four unrepresentable combinations, each a ``ValueError`` and none of them defaulted away:
+
+    * ``PASSWORD`` with no password — Windows stores no credential for a task it was not
+      given one for, so this would register something other than what was asked for;
+    * ``MANAGED_SERVICE_ACCOUNT`` with a password — the directory holds that credential; a
+      password here means the caller believes something false about the account;
+    * ``INTERACTIVE_TOKEN`` with a password — a credential with nowhere to go, which is how
+      a blank-field regression looked the last time (R2: ``""`` reaching
+      ``TASK_LOGON_PASSWORD`` as a blank credential);
+    * a name whose ``$`` suffix disagrees with the kind, in EITHER direction. ``SVC$`` as a
+      PASSWORD principal and ``SVC`` as a managed service account are both a caller having
+      mixed up two credential stories, and Windows' answer to either is an opaque HRESULT.
+
+    No message echoes the account name: these reach an admin through
+    ``setup.py``'s account-shape copy and a district's log, and the house rule (plan 0046,
+    ``_MSG_ACCOUNT_NEEDS_PASSWORD``) is that a refusal names no account.
+    """
+    account = (user or "").strip()
+    if kind is PrincipalKind.PASSWORD:
+        if password is None:
+            raise ValueError("A password-logon principal requires the account's password.")
+        if account.endswith(_MSA_SUFFIX):
+            raise ValueError("A '$'-suffixed account is a managed service account, not a password logon.")
+        return
+    if kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT:
+        if password is not None:
+            raise ValueError("A managed service account has no password to supply.")
+        if not account.endswith(_MSA_SUFFIX):
+            raise ValueError("A managed service account name must end with '$'.")
+        return
+    if password is not None:
+        raise ValueError("An interactive-token principal stores no password.")
+
+
+def _assert_is_the_current_account(user: str) -> None:
+    """Refuse an interactive-token registration for anybody but the signed-in account.
+
+    "That other account, logged-on-only" is not a thing Windows can do — an interactive-token
+    task has no stored credential, so it can only ever run in the session of the account that
+    owns it. Registering one for a foreign account is the silent-substitution defect plan 0046
+    A1 closed at the boundary; this is the structural floor under that boundary, so a future
+    caller cannot reintroduce it by constructing the params directly.
+
+    The import is LAZY because ``windows`` imports this module at module level on every OS: a
+    top-level import here would close that cycle. It is deliberately ``windows``'s
+    ``current_run_as_user`` and not ``utils.accounts.process_account`` — the boundary that
+    RESOLVES the account reads it through that function, and a floor keyed on a second,
+    near-identical resolver would refuse a legitimate registration the moment the two
+    disagreed (see that module's own "deliberately NOT here" note).
+    """
+    from src.scheduler.windows import current_run_as_user  # noqa: PLC0415 - lazy: import cycle
+
+    account = (user or "").strip()
+    if not account or account.casefold() != current_run_as_user().casefold():
+        raise ValueError("An interactive-token task can only run as the signed-in account.")
+
+
+@dataclass(frozen=True, repr=False)
+class Principal:
+    """The principal a caller ASKS for — kind, account, and (only where one belongs) password.
+
+    The transport type: it is what ``windows.register_task``, the ``Scheduler`` Protocol and
+    both platform adapters take, replacing the ``run_as_user`` / ``run_as_password`` pair
+    whose *combination* used to imply the logon type.
+
+    ``repr=False`` for the same load-bearing reason :class:`RegisterParams` has it: a default
+    dataclass repr would hand the password to any log line, f-string or failing assert that
+    formatted the object.
+
+    ``""`` as ``user`` means "the signed-in account" — the same equivalence
+    ``setup_gates.principal_key`` and ``register_task`` already state, spelled once. A blank
+    password is normalised to ``None`` HERE, at the single construction point, so the two
+    halves of "no password" cannot disagree again (R2).
+
+    **What this does NOT refuse: an interactive-token request naming a foreign account.**
+    That is a legitimate REQUEST — it is what an admin who typed a service account and no
+    password has asked for — and the honest answer to it is ``register_task``'s bounded
+    ``_MSG_ACCOUNT_NEEDS_PASSWORD`` refusal, which tells them what to do next. A
+    ``ValueError`` from a constructor would replace that sentence with a traceback. The
+    refusal lives on :class:`RegisterParams`, the object that represents a COMMAND we are
+    about to give Windows, where by construction the account has already been resolved.
+    """
+
+    kind: PrincipalKind
+    user: str = ""
+    password: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "password", self.password or None)
+        _assert_declared_principal(self.kind, self.user, self.password)
+
+
 @dataclass(frozen=True, repr=False)
 class RegisterParams:
     """Everything one task registration needs — including, on the unattended path, the PASSWORD.
 
     ``repr=False`` is load-bearing, not style: a default dataclass repr would hand the
     password to any log/f-string/assert that formats the params object. The pin lives in
-    ``tests/test_scheduler_runas.py``. ``run_time`` is the validated ``"HH:mm"`` string;
-    ``password=None`` selects the interactive-token (logged-on-only) path.
+    ``tests/test_scheduler_runas.py``. ``run_time`` is the validated ``"HH:mm"`` string.
+
+    ``kind`` is REQUIRED and undefaulted (plan 0049 S-3): it is the *declaration* that
+    replaced ``apply_definition``'s ``password is not None`` inference, and a default would
+    substitute a security principal — the exact class of defect this plan exists to remove.
+
+    This is the COMMAND, not the request: ``user`` is already resolved (blank has been
+    replaced by the signed-in account) and already validated by its kind's validator. That is
+    why ``__post_init__`` can refuse the fifth unrepresentable state — an interactive-token
+    registration for somebody else — which :class:`Principal` deliberately allows so the
+    boundary can answer it in words.
     """
 
     task_name: str
@@ -221,7 +427,13 @@ class RegisterParams:
     run_time: str
     user: str
     password: str | None
+    kind: PrincipalKind
     run_highest: bool
+
+    def __post_init__(self) -> None:
+        _assert_declared_principal(self.kind, self.user, self.password)
+        if self.kind is PrincipalKind.INTERACTIVE_TOKEN:
+            _assert_is_the_current_account(self.user)
 
 
 def apply_definition(service: Any, folder: Any, params: RegisterParams) -> None:
@@ -235,6 +447,13 @@ def apply_definition(service: Any, folder: Any, params: RegisterParams) -> None:
     Every value set here is explicit because **COM defaults differ on all five settings**
     (row 1): a naive registration would get PT72H, battery-disallowed, parallel instances —
     silently breaking laptop/UPS districts and the no-catch-up guarantee.
+
+    **There is ONE registration call and no branch on the password** (plan 0049 S-3). The
+    logon type comes from ``params.kind`` through :func:`logon_type_for` and the RunLevel from
+    :func:`honours_run_highest`; the password is passed through as it arrives, already
+    normalised and already checked against the kind by ``RegisterParams.__post_init__``. The
+    two-armed ``if params.password is not None`` this replaced could express only two of the
+    three principal shapes, and it decided a security principal from the presence of a value.
     """
     definition = service.NewTask(0)
 
@@ -257,29 +476,19 @@ def apply_definition(service: Any, folder: Any, params: RegisterParams) -> None:
     action.Arguments = params.arguments
     action.WorkingDirectory = params.working_dir
 
-    if params.password is not None:
-        # Unattended: explicit TASK_LOGON_PASSWORD — never parameter-set inference, never
-        # S4U (row 2; the 2026-06-25 regression class). run_highest is honoured HERE only.
-        definition.Principal.RunLevel = TASK_RUNLEVEL_HIGHEST if params.run_highest else TASK_RUNLEVEL_LUA
-        folder.RegisterTaskDefinition(
-            params.task_name,
-            definition,
-            TASK_CREATE_OR_UPDATE,
-            params.user,
-            params.password,
-            TASK_LOGON_PASSWORD,
-        )
-    else:
-        # Logged-on-only: interactive token, ALWAYS Limited — run_highest ignored (row 2).
-        definition.Principal.RunLevel = TASK_RUNLEVEL_LUA
-        folder.RegisterTaskDefinition(
-            params.task_name,
-            definition,
-            TASK_CREATE_OR_UPDATE,
-            params.user,
-            None,
-            TASK_LOGON_INTERACTIVE_TOKEN,
-        )
+    # Highest only where the kind honours it; the interactive-token path is ALWAYS Limited
+    # (row 2) — and ``run_highest`` is ignored there rather than refused, as it always was.
+    definition.Principal.RunLevel = (
+        TASK_RUNLEVEL_HIGHEST if (params.run_highest and honours_run_highest(params.kind)) else TASK_RUNLEVEL_LUA
+    )
+    folder.RegisterTaskDefinition(
+        params.task_name,
+        definition,
+        TASK_CREATE_OR_UPDATE,
+        params.user,
+        params.password,
+        logon_type_for(params.kind),
+    )
 
 
 def register_task_definition(params: RegisterParams) -> None:
@@ -331,12 +540,21 @@ class TaskFacts:
 
     Datetimes are already NAIVE-LOCAL ISO strings (or ``None`` under the never-run rule);
     ``last_result`` is already an unsigned int. No COM type crosses this boundary.
+
+    ``run_as`` / ``logon_type`` (plan 0049 S-3) are the task's own ``Definition.Principal``,
+    read for **display and diagnosis only**. They default to ``None`` so every field stays
+    total: a task registered by an older build, or one whose principal a filtered token
+    cannot read, simply has no answer here — and "no answer" must never read as a mismatch.
+    Nothing in the UI consumes them yet; ``schedule_probe.foreign_task_account`` still reads
+    the RECORD, deliberately (S-3.5).
     """
 
     next_run: str | None
     last_run: str | None
     last_result: int | None
     action_path: str | None
+    run_as: str | None = None
+    logon_type: int | None = None
 
 
 def com_error_scode(exc: BaseException) -> int | None:
@@ -461,33 +679,76 @@ def _unsigned_or_none(value: Any) -> int | None:
     return int(value) & 0xFFFFFFFF
 
 
+def _logon_or_none(value: Any) -> int | None:
+    """``Principal.LogonType`` → a plain int, or ``None`` for anything else. Total.
+
+    Deliberately NOT ``_unsigned_or_none``: a logon type is a small enumeration value, and
+    masking it to 32 bits would turn a nonsense reading into a plausible one. ``bool`` is
+    rejected explicitly even though it is an ``int`` subclass — ``True`` would read as ``1``,
+    which IS ``TASK_LOGON_PASSWORD``, so a pywin32 shape change handing back a boolean would
+    otherwise be indistinguishable from a real unattended task.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
+def task_facts(task: Any) -> TaskFacts:
+    """Reduce ONE live-or-fake COM task object to plain data (the read side's testable core).
+
+    The read-back twin of :func:`apply_definition`: tests drive it with MagicMocks and assert
+    the exact fields, while :func:`read_task` drives it with the real task inside an
+    apartment. Extracting it is what lets the ``Definition.Principal`` read be pinned on
+    Linux CI, where no COM apartment exists.
+
+    It carries its OWN ``finally`` re-binding for the reason the module docstring gives: a
+    ``com_error`` raised anywhere in here leaves THIS frame in the propagating traceback, and
+    a frame holding ``actions`` / ``principal`` would pin those interfaces past
+    ``CoUninitialize`` — the "releasing IUnknown" failure observed live. A caller's
+    ``finally`` cannot release another frame's locals.
+
+    ``Definition.Principal`` is read for display only (see :class:`TaskFacts`), and every
+    reduction is total: a shape this cannot make sense of yields ``None``, never a raise and
+    never a guess.
+    """
+    actions = principal = None
+    try:
+        action_path: str | None = None
+        actions = task.Definition.Actions
+        if actions.Count >= 1:
+            # 1-indexed COM collection; the FIRST action's Execute is the read-back
+            # contract (`action_path`) Home's moved-exe detection keys on (row 11).
+            action_path = str(actions.Item(1).Path or "").strip() or None
+        principal = task.Definition.Principal
+        return TaskFacts(
+            next_run=_iso_or_none(task.NextRunTime),
+            last_run=_iso_or_none(task.LastRunTime),
+            last_result=_unsigned_or_none(task.LastTaskResult),
+            action_path=action_path,
+            run_as=str(getattr(principal, "UserId", "") or "").strip() or None,
+            logon_type=_logon_or_none(getattr(principal, "LogonType", None)),
+        )
+    finally:
+        actions = principal = None  # noqa: F841 - releases THIS frame's COM refs pre-teardown
+
+
 def read_task(task_name: str) -> TaskFacts:
     """Read one task's facts from the live Task Scheduler.
 
     Raises :class:`TaskComError` (plain data — the caller classifies ``scode``) or, on a
     pywin32-less host, ``ImportError``. Every COM local is re-bound to ``None`` before the
-    apartment closes, on success and raise paths alike (module docstring).
+    apartment closes, on success and raise paths alike (module docstring) — including the
+    ones inside :func:`task_facts`, which owns that discipline for its own frame.
     """
     import pythoncom  # noqa: PLC0415 - lazy: Windows-only
 
     error: TaskComError | None = None
     with _apartment() as service:
-        folder = task = actions = None
+        folder = task = None
         try:
             folder = service.GetFolder(ROOT_FOLDER)
             task = folder.GetTask(task_name)
-            action_path: str | None = None
-            actions = task.Definition.Actions
-            if actions.Count >= 1:
-                # 1-indexed COM collection; the FIRST action's Execute is the read-back
-                # contract (`action_path`) Home's moved-exe detection keys on (row 11).
-                action_path = str(actions.Item(1).Path or "").strip() or None
-            return TaskFacts(
-                next_run=_iso_or_none(task.NextRunTime),
-                last_run=_iso_or_none(task.LastRunTime),
-                last_result=_unsigned_or_none(task.LastTaskResult),
-                action_path=action_path,
-            )
+            return task_facts(task)
         except pythoncom.com_error as exc:
             # Extract plain data and let the com_error DIE HERE (Python clears the `exc`
             # binding at except-exit). The raise happens OUTSIDE this handler — `raise …
@@ -499,7 +760,7 @@ def read_task(task_name: str) -> TaskFacts:
         finally:
             # Release every COM ref THIS frame holds — including the `as service` binding,
             # which otherwise outlives __exit__'s CoUninitialize by one frame-teardown.
-            folder = task = actions = service = None  # noqa: F841
+            folder = task = service = None  # noqa: F841
     if error is None:  # pragma: no cover - unreachable: every with-body path returns or sets error
         error = TaskComError(None, MSG_OPERATION_FAILED)
     raise error
