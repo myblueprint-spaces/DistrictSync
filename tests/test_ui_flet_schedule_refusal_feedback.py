@@ -27,6 +27,7 @@ import pytest
 
 import src.ui_flet.screens.setup as setup_mod
 from src.scheduler import windows
+from src.scheduler.provision_session import ProvisionAttempt, ProvisionOutcome
 from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.setup_flow import SCHEDULE_ACCOUNT_FIELD_LABEL
 from tests.test_ui_flet_render_smoke import (
@@ -39,13 +40,20 @@ from tests.test_ui_flet_render_smoke import (
 from tests.test_ui_flet_service_account import (
     _SERVICE,
     _SIGNED_IN,
+    _capture_provision,
+    _confirm_scope,
     _drain,
     _registered_args,
     _settings,
+    _stub_handover,
 )
 
 _FAILED_HEADLINE = "Couldn't confirm the schedule"  # the card the owner was looking at
 _PASSWORD_FIELD = "Windows account password"
+#: The wizard pair below types a SERVICE account, which since plan 0049 S-2b dispatches the
+#: provisioning round trip rather than ``register_task`` — so its failed-attempt card is the
+#: provisioning one. The defect being pinned is unchanged: a stale card surviving a fresh press.
+_PROVISION_FAILED_HEADLINE = setup_mod.SCOPE_ATTEMPT_FAILED_HEADLINE
 
 
 @pytest.fixture
@@ -207,41 +215,58 @@ def test_settings_a_dispatched_attempt_after_a_refusal_still_reaches_its_banner(
 # Wizard mount — the same sequence on the surface an admin meets first          #
 # --------------------------------------------------------------------------- #
 def test_wizard_refused_retry_replaces_the_failed_register_card(tmp_path, stub_page, monkeypatch):
-    """Same defect, wizard Schedule step: here the refusal is the missing service-account password."""
+    """Same defect, wizard Schedule step: here the refusal is the missing service-account password.
+
+    The dispatched attempt is the PROVISIONING one (0049 S-2b): a typed service account is
+    exactly what routes there, and it is the press an admin makes on this step. The sequence
+    under test is untouched — a failed attempt's card, then a press the gate refuses.
+    """
     _cfg, tree = _wizard_tree_on_schedule_step(tmp_path, stub_page, monkeypatch)
-    seen = _queue_register_results(monkeypatch, [(False, windows._MSG_ELEVATION_NO_RESULT)])
+    seen = _capture_provision(
+        monkeypatch,
+        results=[ProvisionAttempt(outcome=ProvisionOutcome.FAILED, message=windows._MSG_ELEVATION_NO_RESULT)],
+    )
+    _stub_handover(monkeypatch, handed_over=False)
 
     account = _textfield_by_label(tree, SCHEDULE_ACCOUNT_FIELD_LABEL)
     account.value = _SERVICE
     password = _textfield_by_label(tree, _PASSWORD_FIELD)
     password.value = "pw"
     _press_register(tree)
+    _confirm_scope(stub_page)
     _drain(stub_page)
     assert seen["calls"] == 1
-    assert _has_text(tree, _FAILED_HEADLINE)
+    assert _has_text(tree, _PROVISION_FAILED_HEADLINE)
 
     # The retry an admin who blames the password actually makes: clear it and try again.
     password.value = ""
     _enter_from(password)
     _drain(stub_page)
 
-    assert seen["calls"] == 1, "a refused attempt must not reach register_task"
-    assert not _has_text(tree, _FAILED_HEADLINE), "the previous attempt's failure card survived a fresh press"
+    assert seen["calls"] == 1, "a refused attempt must not reach the elevated child"
+    assert not _has_text(tree, _PROVISION_FAILED_HEADLINE), "the previous attempt's failure card survived a fresh press"
     card = _refusal_card(tree)
     assert card is not None, "the refusal painted nothing where the failure had been"
     assert _has_text(card, setup_mod._ACCOUNT_PASSWORD_NOTE)
 
 
 def test_wizard_a_dispatched_attempt_after_a_refusal_still_reaches_its_banner(tmp_path, stub_page, monkeypatch):
-    """The wizard's twin — the step can still report a success after clearing a refusal."""
+    """The wizard's twin — the step can still report a result after clearing a refusal."""
     _cfg, tree = _wizard_tree_on_schedule_step(tmp_path, stub_page, monkeypatch)
-    seen = _queue_register_results(monkeypatch, [(False, windows._MSG_ELEVATION_NO_RESULT)])
+    seen = _capture_provision(
+        monkeypatch,
+        results=[ProvisionAttempt(outcome=ProvisionOutcome.FAILED, message=windows._MSG_ELEVATION_NO_RESULT)],
+    )
+    # No re-entry: this asserts on the surface, so the banner has to be painted HERE. That is
+    # also the real shape of the wizard host, which passes no ``on_reenter`` in this test.
+    _stub_handover(monkeypatch, handed_over=False)
 
     account = _textfield_by_label(tree, SCHEDULE_ACCOUNT_FIELD_LABEL)
     account.value = _SERVICE
     password = _textfield_by_label(tree, _PASSWORD_FIELD)
     password.value = "pw"
     _press_register(tree)
+    _confirm_scope(stub_page)
     _drain(stub_page)
 
     password.value = ""  # refused — a foreign account with no password
@@ -249,13 +274,14 @@ def test_wizard_a_dispatched_attempt_after_a_refusal_still_reaches_its_banner(tm
     _drain(stub_page)
     assert _refusal_card(tree) is not None
 
-    password.value = "pw"  # the real retry
+    password.value = "pw"  # the real retry, which the queue now answers PROVISIONED
     password.on_change(None)
     _press_register(tree)
+    _confirm_scope(stub_page)
     _drain(stub_page)
 
     assert seen["calls"] == 2
-    assert _has_text(tree, "Nightly sync scheduled")
+    assert _has_text_containing(tree, setup_mod.SCOPE_SWITCH_UNCONFIRMED_HEADLINE)
     assert _refusal_card(tree) is None, "the refusal card outlived the attempt that replaced it"
 
 
