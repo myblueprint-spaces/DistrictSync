@@ -47,6 +47,8 @@ _MACHINE_SCOPE_CAUSES = {
     MachineScopeRefusedReason.FOREIGN_OWNER: "The shared folder is not owned by this computer's administrators.",
     MachineScopeRefusedReason.INHERITED_ACL: "The shared folder's permissions were never locked down.",
     MachineScopeRefusedReason.INACCESSIBLE: "Windows would not let DistrictSync check the shared folder's permissions.",
+    MachineScopeRefusedReason.OPEN_ACE: "The shared folder is readable by everyone who uses this computer.",
+    MachineScopeRefusedReason.REDIRECTED: "Something in this computer's environment is redirecting where shared settings are kept.",
 }
 
 

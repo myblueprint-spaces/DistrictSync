@@ -384,3 +384,217 @@ class TestPrincipalReValidation:
         service, folder = MagicMock(), MagicMock()
         task_com.apply_definition(service, folder, params)
         assert folder.RegisterTaskDefinition.call_args[0][5] == task_com.TASK_LOGON_INTERACTIVE_TOKEN
+
+
+# The two secrets the non-leak table below chases through every outcome. Module-level so a
+# RuntimeError message can interpolate them without a `self` in scope.
+_SFTP_LEAK = "uniq-sftp-pw-QQ42"  # nosec B105 - a test fixture value, not a credential
+_TASK_LEAK = "uniq-task-pw-ZZ91"  # nosec B105 - a test fixture value, not a credential
+
+
+class TestMachineScopeOps:
+    """The three S-1b-i ops (plan 0049). NOTHING in the app reaches them yet — S-2 wires
+    Schedule-time dispatch — so these tests ARE the only caller until then.
+
+    Every elevated path is driven through the seams, exactly as the register/delete rows
+    above are: no UAC prompt, no registry write, no ``C:\\ProgramData`` touched.
+    """
+
+    _SFTP_SECRET = "uniq-sftp-pw-QQ42"  # nosec B105 - a test fixture value, not a credential
+    _TASK_SECRET = "uniq-task-pw-ZZ91"  # nosec B105 - a test fixture value, not a credential
+
+    def _provision_payload(self, **overrides):
+        payload = _valid_register_payload(op="provision")
+        payload["source_data_dir"] = r"C:\Users\jane\AppData\Local\DistrictSync"
+        payload.update(overrides)
+        return payload
+
+    def test_provision_dispatches_to_the_engine_with_the_payload(self, tmp_path: Path) -> None:
+        req, res = _sealed(tmp_path, None)
+        raw = json.dumps(self._provision_payload()).encode()
+        with (
+            patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+            patch("src.scheduler.provisioning.apply_provision") as engine,
+        ):
+            elevated_apply.run_elevated_apply([str(req), str(res)])
+        assert _read(res) == {"ok": True, "message": ""}
+        assert engine.call_args[0][0]["op"] == "provision"
+        assert callable(engine.call_args[1]["register"])
+
+    def test_the_injected_register_is_the_shared_do_register(self, tmp_path: Path) -> None:
+        """Step 8 must go through the SAME re-validating path the plain op uses, so a bad
+        password still surfaces as its ``task_com`` canonical rather than a step id."""
+        req, res = _sealed(tmp_path, None)
+        raw = json.dumps(self._provision_payload()).encode()
+        with (
+            patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+            patch("src.scheduler.provisioning.apply_provision") as engine,
+            patch("src.scheduler.task_com.register_task_definition") as reg,
+        ):
+            elevated_apply.run_elevated_apply([str(req), str(res)])
+            engine.call_args[1]["register"]()
+        params = reg.call_args[0][0]
+        assert params.task_name == "DistrictSync_Daily"
+        assert params.user == "CORP\\jane"
+
+    def test_the_injected_register_re_validates_a_hostile_account(self, tmp_path: Path) -> None:
+        """The positive twin of the delegation above: the floor is inherited, not bypassed."""
+        req, res = _sealed(tmp_path, None)
+        raw = json.dumps(self._provision_payload(user="svc && calc")).encode()
+        with (
+            patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+            patch("src.scheduler.provisioning.apply_provision") as engine,
+            patch("src.scheduler.task_com.register_task_definition") as reg,
+        ):
+            elevated_apply.run_elevated_apply([str(req), str(res)])
+            with pytest.raises(ValueError):
+                engine.call_args[1]["register"]()
+            reg.assert_not_called()
+
+    def test_missing_provision_fields_are_refused_before_the_engine(self, tmp_path: Path) -> None:
+        req, res = _sealed(tmp_path, None)
+        raw = json.dumps({"op": "provision", "task_name": "DistrictSync_Daily"}).encode()
+        with (
+            patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+            patch("src.scheduler.provisioning.apply_provision") as engine,
+        ):
+            elevated_apply.run_elevated_apply([str(req), str(res)])
+            engine.assert_not_called()
+        out = _read(res)
+        assert out["ok"] is False
+        assert "not valid" in out["message"]
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [("task_name", "evil;calc|name"), ("run_time", "25:99")],
+    )
+    def test_task_fields_are_validated_BEFORE_the_sequence_starts(self, tmp_path: Path, field: str, value: str) -> None:
+        """Registration is step 8, i.e. AFTER the HKLM commit.
+
+        Validating these only inside the injected callable would let a malformed payload
+        permanently switch the install to machine scope and only then refuse — a
+        provisioned computer with no nightly on it. The whole op must be a no-op instead.
+        """
+        req, res = _sealed(tmp_path, None)
+        raw = json.dumps(self._provision_payload(**{field: value})).encode()
+        with (
+            patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+            patch("src.scheduler.provisioning.apply_provision") as engine,
+        ):
+            elevated_apply.run_elevated_apply([str(req), str(res)])
+            engine.assert_not_called()
+        out = _read(res)
+        assert out["ok"] is False
+        assert "not valid" in out["message"]
+
+    def test_a_refusal_surfaces_its_bounded_step_message(self, tmp_path: Path) -> None:
+        from src.scheduler import provisioning
+
+        req, res = _sealed(tmp_path, None)
+        raw = json.dumps(self._provision_payload()).encode()
+        refusal = provisioning.ProvisionRefused(provisioning.ProvisionStep.VERIFY)
+        with (
+            patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+            patch("src.scheduler.provisioning.apply_provision", side_effect=refusal),
+        ):
+            elevated_apply.run_elevated_apply([str(req), str(res)])
+        out = _read(res)
+        assert out["ok"] is False
+        assert out["message"] == refusal.message
+        assert "verify" in out["message"]
+
+    @pytest.mark.parametrize(
+        ("op", "target"),
+        [
+            ("grant_current_user", "apply_grant_current_user"),
+            ("prune_principal", "apply_prune_principal"),
+        ],
+    )
+    def test_grant_and_prune_dispatch(self, tmp_path: Path, op: str, target: str) -> None:
+        req, res = _sealed(tmp_path, None)
+        raw = json.dumps({"op": op, "task_name": "DistrictSync_Daily", "user": "CORP\\svc"}).encode()
+        with (
+            patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+            patch(f"src.scheduler.provisioning.{target}") as engine,
+        ):
+            elevated_apply.run_elevated_apply([str(req), str(res)])
+            engine.assert_called_once()
+        assert _read(res)["ok"] is True
+
+    def test_prune_re_validates_the_task_name_in_the_privileged_half(self, tmp_path: Path) -> None:
+        req, res = _sealed(tmp_path, None)
+        raw = json.dumps({"op": "prune_principal", "task_name": "evil;calc|name", "user": "CORP\\svc"}).encode()
+        with (
+            patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+            patch("src.scheduler.provisioning.apply_prune_principal") as engine,
+        ):
+            elevated_apply.run_elevated_apply([str(req), str(res)])
+            engine.assert_not_called()
+        assert _read(res)["ok"] is False
+
+    def test_neither_secret_reaches_the_result_on_any_outcome(self, tmp_path: Path) -> None:
+        """The non-leak table, extended to BOTH secrets: the delivery password the
+        provision payload seeds AND the task password it registers with."""
+        from src.scheduler import provisioning
+
+        payload = self._provision_payload(
+            password=self._TASK_SECRET,
+            sftp_host="sftp.example.org",
+            sftp_username="district",
+            sftp_password=self._SFTP_SECRET,
+        )
+        raw = json.dumps(payload).encode()
+        outcomes = (
+            None,
+            provisioning.ProvisionRefused(provisioning.ProvisionStep.SECRET),
+            provisioning.ProvisionRefused(provisioning.ProvisionStep.GRANT, icacls_exit=1332),
+            task_com.TaskComError(task_com.HR_LOGON_FAILURE, task_com.MSG_LOGON_FAILURE),
+            RuntimeError(f"boom {_TASK_LEAK} {_SFTP_LEAK}"),
+        )
+        for outcome in outcomes:
+            req, res = _sealed(tmp_path, None)
+            with (
+                patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+                patch("src.scheduler.provisioning.apply_provision", side_effect=outcome),
+            ):
+                elevated_apply.run_elevated_apply([str(req), str(res)])
+            written = res.read_text(encoding="utf-8")
+            assert self._TASK_SECRET not in written, f"task password leaked via {outcome!r}"
+            assert self._SFTP_SECRET not in written, f"delivery password leaked via {outcome!r}"
+
+    def test_neither_secret_reaches_a_log_record(self, tmp_path: Path, caplog) -> None:
+        """This module has no logger by design; assert that rather than assume it."""
+        import logging
+
+        from src.scheduler import provisioning
+
+        payload = self._provision_payload(
+            password=self._TASK_SECRET,
+            sftp_host="sftp.example.org",
+            sftp_username="district",
+            sftp_password=self._SFTP_SECRET,
+        )
+        raw = json.dumps(payload).encode()
+        req, res = _sealed(tmp_path, None)
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+            patch(
+                "src.scheduler.provisioning.apply_provision",
+                side_effect=provisioning.ProvisionRefused(provisioning.ProvisionStep.SECRET),
+            ),
+        ):
+            elevated_apply.run_elevated_apply([str(req), str(res)])
+        emitted = "\n".join(record.getMessage() for record in caplog.records)
+        assert self._TASK_SECRET not in emitted
+        assert self._SFTP_SECRET not in emitted
+
+    def test_the_new_ops_are_absent_from_help(self, capsys) -> None:
+        """An IPC mode with no human caller must not advertise itself."""
+        import src.main as main_mod
+
+        main_mod.cli(["--help"])
+        out = capsys.readouterr().out
+        assert "usage" in out.lower()  # help really printed (positive twin)
+        for op in ("--provision", "grant_current_user", "prune_principal"):
+            assert op not in out

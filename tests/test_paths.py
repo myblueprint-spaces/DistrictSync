@@ -516,6 +516,17 @@ WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="winreg is a W
 
 _TRUSTED_SECURITY = ("S-1-5-32-544", paths_module._SE_DACL_PROTECTED)
 
+# The DACL a provisioned profile actually gets (SYSTEM · Administrators · setup user ·
+# principal), as ``(ace type, SID)`` pairs — the shape ``_read_dacl_aces`` returns. Used as
+# the ``security`` fixture's default so every pre-S-1b row keeps asserting exactly what it
+# asserted before the trust predicate grew its open-group walk.
+_TRUSTED_ACES = (
+    (0, "S-1-5-18"),
+    (0, "S-1-5-32-544"),
+    (0, "S-1-5-21-1-2-3-1001"),
+    (0, "S-1-5-21-1-2-3-1002"),
+)
+
 
 @pytest.fixture
 def machine_dir(tmp_path, monkeypatch):
@@ -541,10 +552,19 @@ def switch(monkeypatch):
 
 @pytest.fixture
 def security(monkeypatch):
-    """Drive the owner-SID / DACL-control read (the ctypes syscall is the seam)."""
+    """Drive the owner-SID / DACL-control read AND the DACL ace walk (both are seams).
 
-    def _set(owner_sid: str, control: int) -> None:
+    ``aces`` defaults to a correctly-provisioned DACL so every call site written before
+    S-1b — all of which pass two positional arguments — keeps testing exactly what it
+    tested then. The third seam is here rather than in its own fixture because it belongs
+    to the same predicate: ``_assert_machine_dir_trusted`` now makes three reads, and a
+    driver that drove only two would leave the third hitting the real Win32 API (an
+    ``OSError`` → ``INACCESSIBLE`` on CI's Linux leg, a real ``%TEMP%`` DACL on Windows).
+    """
+
+    def _set(owner_sid: str, control: int, aces: tuple[tuple[int, str], ...] = _TRUSTED_ACES) -> None:
         monkeypatch.setattr(paths_module, "_read_dir_security", lambda path: (owner_sid, control))
+        monkeypatch.setattr(paths_module, "_read_dacl_aces", lambda path: aces)
 
     return _set
 
@@ -777,7 +797,89 @@ class TestMachineDirTrust:
             "foreign_owner",
             "inherited_acl",
             "inaccessible",
+            # S-1b-i: the open-group ace walk, and the WIN_PD_OVERRIDE_* redirect.
+            "open_ace",
+            "redirected",
         }
+
+
+class TestOpenGroupAceWalk:
+    """S-1b-i.1 — ``SE_DACL_PROTECTED`` proves inheritance was stripped, NOT that the
+    resulting DACL is closed. The shared profile holds a LocalMachine-sealed delivery
+    password whose only confidentiality boundary is this DACL."""
+
+    @pytest.mark.parametrize("open_sid", sorted(paths_module.OPEN_GROUP_SIDS))
+    def test_each_open_group_refuses(self, machine_dir, security, open_sid):
+        machine_dir.mkdir(parents=True)
+        security(*_TRUSTED_SECURITY, (*_TRUSTED_ACES, (0, open_sid)))
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            paths_module._assert_machine_dir_trusted(machine_dir)
+        assert excinfo.value.reason is Reason.OPEN_ACE
+
+    def test_a_correctly_acled_directory_passes(self, machine_dir, security):
+        machine_dir.mkdir(parents=True)
+        security(*_TRUSTED_SECURITY, _TRUSTED_ACES)
+        paths_module._assert_machine_dir_trusted(machine_dir)  # no raise
+        paths_module.assert_no_open_aces(machine_dir)  # no raise
+
+    def test_a_DENY_ace_for_an_open_group_is_not_a_refusal(self, machine_dir, security):
+        """A deny ace is MORE restrictive — refusing it would invert the check."""
+        machine_dir.mkdir(parents=True)
+        security(*_TRUSTED_SECURITY, (*_TRUSTED_ACES, (1, "S-1-1-0")))
+        paths_module.assert_no_open_aces(machine_dir)  # no raise
+
+    def test_an_unreadable_dacl_fails_closed(self, machine_dir, security, monkeypatch):
+        machine_dir.mkdir(parents=True)
+        security(*_TRUSTED_SECURITY)
+
+        def _boom(path):
+            raise OSError("the DACL could not be read")
+
+        monkeypatch.setattr(paths_module, "_read_dacl_aces", _boom)
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            paths_module.assert_no_open_aces(machine_dir)
+        assert excinfo.value.reason is Reason.INACCESSIBLE
+
+    def test_the_public_face_routes_through_the_private_seam(self, machine_dir, security, monkeypatch):
+        """``assert_machine_dir_trusted`` DELEGATES, so the private name stays the ONE
+        monkeypatch seam every other test (and two other test modules) already drive."""
+        calls: list[Path] = []
+        monkeypatch.setattr(paths_module, "_assert_machine_dir_trusted", lambda path: calls.append(path))
+        paths_module.assert_machine_dir_trusted(machine_dir)
+        assert calls == [machine_dir]
+
+
+class TestMachineDirRefusesAPlatformdirsRedirect:
+    """S-1b-i.2, MEASURED in the installed package: ``platformdirs`` 4.9.6 consults
+    ``WIN_PD_OVERRIDE_*`` BEFORE ``SHGetKnownFolderPath`` (``windows.py:356-361``)."""
+
+    @pytest.mark.parametrize("name", ["WIN_PD_OVERRIDE_COMMON_APPDATA", "WIN_PD_OVERRIDE_LOCAL_APPDATA"])
+    def test_a_redirect_refuses(self, monkeypatch, tmp_path, name):
+        monkeypatch.setenv(name, str(tmp_path / "planted"))
+        with pytest.raises(paths_module.MachineScopeRefused) as excinfo:
+            paths_module.machine_data_dir()
+        assert excinfo.value.reason is Reason.REDIRECTED
+
+    def test_without_one_it_resolves(self, monkeypatch):
+        """The positive twin — the guard must not refuse every call."""
+        for name in [n for n in os.environ if n.startswith("WIN_PD_OVERRIDE_")]:
+            monkeypatch.delenv(name, raising=False)
+        assert isinstance(paths_module.machine_data_dir(), Path)
+
+    def test_a_blank_value_is_not_a_redirect(self, monkeypatch):
+        """``FOO=`` in a shell is 'unset', exactly as ``_override_data_dir`` reads it."""
+        monkeypatch.setenv("WIN_PD_OVERRIDE_COMMON_APPDATA", "   ")
+        assert isinstance(paths_module.machine_data_dir(), Path)
+
+    def test_the_real_platformdirs_still_honours_the_variable(self, monkeypatch, tmp_path):
+        """Not vacuous: proves the threat is real in the INSTALLED version, so the guard
+        above is protecting against something rather than restating a belief."""
+        monkeypatch.setenv("WIN_PD_OVERRIDE_COMMON_APPDATA", str(tmp_path / "planted"))
+        resolved = paths_module.platformdirs.site_data_dir("DistrictSync", appauthor=False)
+        if sys.platform == "win32":
+            assert str(tmp_path / "planted") in resolved
+        else:
+            pytest.skip("WIN_PD_OVERRIDE_* is a Windows-only platformdirs feature")
 
 
 class TestResolutionLadder:
@@ -1056,9 +1158,31 @@ class TestMigrationIsUntouchedByTheSwitch:
 
 
 class TestNothingInTheFieldCanTurnTheSwitchOn:
-    """AC1's MECHANICAL twin — the claim is a fact, not a promise."""
+    """AC1's MECHANICAL twin — the claim is a fact, not a promise.
+
+    **S-1b-i MOVED this deliberately.** S-1a could assert that NO registry write API
+    existed anywhere under ``src/``; S-1b is the slice that adds the writer, so that
+    assertion is now false by design and keeping it would only mean never shipping the
+    commit point. The replacement is the narrowest pin that still carries AC1's weight:
+
+    * exactly ONE module under ``src/`` may hold a registry write API, and it is the
+      elevated provisioning engine (never a UI module, never the path resolver, never a
+      module an unelevated code path imports for something else);
+    * that writer opens the key through ``paths.MACHINE_SCOPE_KEY_ACCESS`` rather than
+      re-spelling an access mask — a writer in the redirected 32-bit view would commit
+      ``WOW6432Node\\DistrictSync``, report success, and leave the app per-user with the
+      config and the secret already copied;
+    * the scanner still has teeth (the planted-file twin below is unchanged).
+
+    What is no longer mechanically pinned, and is now carried by the ops being unreachable
+    instead: that the switch cannot be turned on in the FIELD. Nothing in the app calls the
+    three ops until S-2 wires Schedule-time dispatch.
+    """
 
     _WRITE_APIS = ("SetValueEx", "CreateKey", "KEY_WRITE", "KEY_ALL_ACCESS", "DeleteValue")
+
+    # The ONE module allowed to hold them.
+    _WRITER = Path("src") / "scheduler" / "provisioning.py"
 
     @staticmethod
     def _scan(files: list[Path]) -> list[str]:
@@ -1071,11 +1195,31 @@ class TestNothingInTheFieldCanTurnTheSwitchOn:
                         hits.append(f"{path}:{lineno}: {api}")
         return hits
 
-    def test_no_registry_write_api_anywhere_under_src(self):
+    @staticmethod
+    def _src_files() -> list[Path]:
         src_root = Path(__file__).resolve().parents[1] / "src"
-        files = sorted(p for p in src_root.rglob("*.py") if "__pycache__" not in p.parts)
+        return sorted(p for p in src_root.rglob("*.py") if "__pycache__" not in p.parts)
+
+    def test_the_only_registry_writer_under_src_is_the_elevated_provision_op(self):
+        files = self._src_files()
         assert files, "the scan must actually see the source tree"
-        assert self._scan(files) == []
+        repo_root = Path(__file__).resolve().parents[1]
+        others = [p for p in files if p.relative_to(repo_root) != self._WRITER]
+        assert self._scan(others) == []
+
+    def test_that_writer_really_does_hold_one(self):
+        """Not vacuous: an allowance for a module with no writer in it proves nothing."""
+        repo_root = Path(__file__).resolve().parents[1]
+        assert self._scan([repo_root / self._WRITER])
+
+    def test_the_writer_opens_the_key_through_the_exported_access_mask(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        source = (repo_root / self._WRITER).read_text(encoding="utf-8")
+        assert "paths.MACHINE_SCOPE_KEY_ACCESS | winreg.KEY_WRITE" in source
+        assert "winreg.KEY_WOW64_32KEY" not in source
+        # The key PATH is the exported constant too — never a second spelling.
+        assert "paths.MACHINE_SCOPE_KEY_PATH" in source
+        assert r'"SOFTWARE\DistrictSync"' not in source
 
     def test_the_scanner_has_teeth(self, tmp_path):
         # The positive twin: the same scan FINDS a write, so the green above is a fact.
