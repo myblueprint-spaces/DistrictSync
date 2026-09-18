@@ -86,6 +86,7 @@ from src.ui_flet.filepicker import (
     validate_input_dir,
     validate_output_dir,
 )
+from src.ui_flet.home_status import machine_scope_line
 from src.ui_flet.humanize import friendly_district_name, friendly_sftp_reason
 from src.ui_flet.identity_gate import (
     MatchOutcome,
@@ -176,6 +177,8 @@ from src.ui_flet.sftp_copy import (
     sftp_test_copy,
 )
 from src.ui_flet.verdict import Verdict
+from src.utils import paths
+from src.utils.diagnostics import machine_scope_provenance
 from src.utils.identity import extract_domain, normalize_email
 from src.utils.validators import (
     ALLOWED_SFTP_HOSTS,
@@ -249,6 +252,34 @@ _SERVICE_ACCOUNT_DELIVERY_NOTE = (
     "support contact. DistrictSync can't do this for you, and the nightly delivery will fail "
     "until it's done."
 )
+# The sibling for the case where scheduling itself will solve it (plan 0049 S-2a.3). The note
+# above is keyed on WILL-PROVISION, never on today's scope: it renders while the admin is TYPING
+# the service account, on an install that is still per-user precisely because provisioning fires
+# at the Schedule press. Keyed on current scope it would say "DistrictSync can't do this for you,
+# run --sftp-configure" seconds before the app does exactly that.
+#
+# It deliberately does NOT contain the ``--sftp-configure`` marker: that literal is how the tests
+# tell the two forms apart, and a sibling that carried it would let a rendering assertion pass on
+# either. No email address (scripts/check_no_emails.py scans every tracked file).
+_SERVICE_ACCOUNT_DELIVERY_PROVISION_NOTE = (
+    "DistrictSync will save your delivery password on this computer so this account can read it "
+    "when the nightly sync runs. You won't need to sign in as it or set delivery up again. Your "
+    "DistrictSync setup guide has the full steps; the Help page has our support contact."
+)
+
+
+def service_account_delivery_note(*, delivery_enabled: bool, foreign: bool, will_provision: bool) -> str:
+    """Which delivery note a service-account principal earns — ``""`` for none (pure, TOTAL).
+
+    Named only where it is TRUE and actionable: delivery is ON and a service account is in play on
+    either side (typed now, or already registered). The WILL-PROVISION form replaces the manual
+    one whenever pressing Schedule would set the credential up — never on a scope reading, which
+    is still per-user at the moment the note is painted.
+    """
+    if not delivery_enabled or not foreign:
+        return ""
+    return _SERVICE_ACCOUNT_DELIVERY_PROVISION_NOTE if will_provision else _SERVICE_ACCOUNT_DELIVERY_NOTE
+
 
 # The finish line's save FAILED (0038 S6). Two things must be true of this line and neither is
 # decoration: it must not claim THIS save lost anything (it did not — the only field it adds is
@@ -306,17 +337,72 @@ SYNC_WINDOW_FOREIGN_NOTE = (
 )
 
 
+# The SHARED-PROFILE sibling (plan 0049 S-2a.2). On a machine-scoped install the A9 limitation is
+# GONE: ``src/main.py``'s nightly gate resolves the same shared ``config.json`` this window was
+# saved to, so the pause the admin set here is the pause the service account's run obeys.
+#
+# The claim is POSITIVE, which is exactly why this note — unlike its per-user sibling — needs the
+# schedule state. "Your pause applies to the nightly sync running as X" over a task Windows says is
+# GONE, or over one we could not read, would assert a nightly that may not exist; CLAUDE.md's own
+# rule is that a confirmed-MISSING schedule outranks the pause. So it renders on a CONFIRMED-LIVE
+# read-back and on nothing else.
+SYNC_WINDOW_SHARED_NOTE = (
+    "Your summer pause applies to the nightly sync running as {account}. This computer's "
+    "DistrictSync settings are shared, so the nightly reads the same pause you set here."
+)
+
+
 def sync_window_foreign_note(app_config: AppConfig, *, foreign_account: str) -> str | None:
     """The A9 limitation, stated only when it is BOTH enabled here AND unenforceable there.
 
     Returns ``None`` on every other combination — a limitation nobody has configured into is noise,
     and a note on an install with no foreign principal would be simply false. Pure and TOTAL.
+
+    Scoped to a PER-USER install: :func:`window_scope_note` is the one entry point, and it hands a
+    machine-scoped install to :func:`sync_window_shared_note` instead. The limitation this states
+    is real there no longer, so this string must never render on one.
     """
     if not foreign_account:
         return None
     if not app_config.sync_window_enabled:
         return None
     return SYNC_WINDOW_FOREIGN_NOTE.format(account=foreign_account)
+
+
+def sync_window_shared_note(app_config: AppConfig, *, foreign_account: str, state: ScheduleState | None) -> str | None:
+    """The shared-profile reassurance — stated ONLY over a schedule we have confirmed LIVE.
+
+    Pure and TOTAL. ``None`` unless the window is enabled here, the recorded principal is foreign,
+    AND the read-back confirmed the task exists: a MISSING task will not resume in the fall and an
+    UNKNOWN one was never seen, so neither may carry a claim about what "the nightly sync running
+    as X" does. ``state=None`` (not yet probed) asserts nothing either.
+    """
+    if not foreign_account:
+        return None
+    if not app_config.sync_window_enabled:
+        return None
+    if state is not ScheduleState.LIVE:
+        return None
+    return SYNC_WINDOW_SHARED_NOTE.format(account=foreign_account)
+
+
+def window_scope_note(
+    app_config: AppConfig,
+    *,
+    foreign_account: str,
+    shared_records: bool,
+    state: ScheduleState | None,
+) -> str | None:
+    """The ONE entry point for the seasonal-window principal note (pure, TOTAL).
+
+    Exactly one of the two siblings can fire, keyed on whether this install's profile is SHARED:
+    per-user keeps A9's limitation byte-identical, machine scope states the reassurance that
+    replaced it. Neither can ever render on the other's install, which is the whole point of
+    routing both through one function rather than two call sites.
+    """
+    if shared_records:
+        return sync_window_shared_note(app_config, foreign_account=foreign_account, state=state)
+    return sync_window_foreign_note(app_config, foreign_account=foreign_account)
 
 
 # Plain-language titles for the wizard steps (the "Step N of M · <title>" indicator).
@@ -519,6 +605,12 @@ class _ScheduleHandle:
     re-register). ``persist_run_time`` is the S3-b seam: persist a valid run-time edit as plain
     config when no schedule is registered (invalid → the section's inline error, nothing
     persisted).
+    ``last_schedule_state`` is the last CONFIRMED read-back (``None`` until one lands), which
+    the delivery section reads for the four-form password line (0049 S-2a.3): its
+    "no nightly sync is scheduled right now" arm may fire on a CONFIRMED-MISSING task and on
+    NOTHING else — an UNKNOWN read-back (a probe timeout, access denied, a task registered
+    elevated and unreadable by a filtered token) is not an absence, and rendering it as one
+    would tell an admin their nightly is gone on the evidence that we could not look.
     ``is_busy`` reports whether a register/unregister dispatched EARLIER is still applying
     (its UAC prompt/worker is in flight) — the reconcile must return ``IN_FLIGHT`` then,
     because ``schedule_registered`` and the durable record describe the PRE-dispatch world
@@ -531,6 +623,7 @@ class _ScheduleHandle:
     run_as_user_value: Callable[[], str]
     persist_run_time: Callable[[], bool]
     is_busy: Callable[[], bool]
+    last_schedule_state: Callable[[], ScheduleState | None]
 
 
 # --------------------------------------------------------------------------- #
@@ -1522,7 +1615,10 @@ def _mount_settings(  # pragma: no cover - Flet view glue
             sched_handle.persist_run_time()
         return ReconcileOutcome.NONE
 
-    sftp_card = _build_sftp_section(page, cfg, on_saved=_reconcile)
+    # 0049 S-2a.3: the delivery section's password line needs the schedule read-back to tell a
+    # CONFIRMED-MISSING task from one we simply could not read. Passed as the handle's accessor,
+    # not a snapshot — the probe lands asynchronously, after this mount has returned.
+    sftp_card = _build_sftp_section(page, cfg, on_saved=_reconcile, schedule_state=sched_handle.last_schedule_state)
     folders_card = _build_settings_folders(page, cfg, reconcile=_reconcile, on_navigate=on_navigate)
 
     # Direction B (0033 Slice 2): the Settings gradient hero demotes to a slim page header.
@@ -1532,6 +1628,17 @@ def _mount_settings(  # pragma: no cover - Flet view glue
     )
 
     controls: list[ft.Control] = [header]
+    # 0049 S-2a.4: directly under the header, because on a shared install "whose settings am I
+    # editing?" is the first question every card below inherits the answer to. ``None`` on a
+    # per-user install — see ``home_status.machine_scope_line``.
+    provisioned_by, provisioned_at = machine_scope_provenance()
+    scope_line = machine_scope_line(
+        machine_scope=paths.is_machine_scope(),
+        provisioned_by=provisioned_by,
+        provisioned_at=provisioned_at,
+    )
+    if scope_line is not None:
+        controls.append(ft.Text(scope_line, size=tokens.type_caption, color=tokens.color_muted))
     if transition_cue:
         controls.append(
             components.HealthVerdictBanner(Verdict.HEALTHY, headline="Setup complete", detail=TRANSITION_CUE)
@@ -1998,6 +2105,13 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     result_slot = ft.Column(spacing=0, controls=[])
     readout_slot = ft.Column(spacing=0, controls=[])
 
+    # The last CONFIRMED read-back state, shared by the readout probe and the two surfaces that
+    # may not assert a schedule they have not seen: the shared-records seasonal-window note (which
+    # claims the pause applies only on LIVE) and — through ``_mount_settings``' ``on_status`` — the
+    # delivery-password line's "no nightly sync is scheduled right now" arm. ``None`` = not probed,
+    # which asserts nothing. A dict, not a bare name, so the closures share one mutable cell.
+    _last_schedule_state: dict[str, ScheduleState | None] = {"state": None}
+
     def _kick_readout_probe() -> None:
         """Fetch the real schedule OFF the UI thread and render the tri-state readout (where supported)."""
         if not scheduler.supports_read_schedule:
@@ -2013,11 +2127,18 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 hint_registered=cfg.schedule_registered,
                 latest_record_ts=None,
                 foreign_account=foreign_task_account(cfg),
+                # 0049 S-2a.1: the readout is also where the records-elsewhere sentence lands, so
+                # the shared-profile fact has to reach the derivation that composes it.
+                shared_records=paths.is_machine_scope(),
                 surface="setup",  # de-circularize the MISSING copy → "add one below" (finding #3)
             )
 
             async def _apply() -> None:
                 readout_slot.controls = [_schedule_readout_line(status)]
+                # 0049 S-2a.2: the seasonal-window note asserts the pause only on a CONFIRMED-LIVE
+                # task, so it can only be painted honestly once the read-back has landed.
+                _last_schedule_state["state"] = status.state
+                _paint_window_foreign_note()
                 if on_status is not None:
                     on_status(status)
                 page.update()
@@ -2173,9 +2294,18 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             controls.append(ft.Text(note, size=13, color=tokens.color_status_failed))
         # Owner decision 2: named only where it is TRUE and actionable — delivery is on AND a
         # service account is in play on either side (typed now, or already registered).
+        #
+        # 0049 S-2a.3: WHICH note is keyed on "would pressing Schedule provision?" — the TYPED
+        # principal being foreign and every gate open — never on ``is_machine_scope()``, which is
+        # still False at the moment this paints.
         foreign = principal_key(facts.typed, facts.current) != "" or principal_key(facts.recorded, facts.current) != ""
-        if cfg.sftp_enabled and foreign:
-            controls.append(ft.Text(_SERVICE_ACCOUNT_DELIVERY_NOTE, size=12, color=tokens.color_muted))
+        delivery_note = service_account_delivery_note(
+            delivery_enabled=bool(cfg.sftp_enabled),
+            foreign=foreign,
+            will_provision=principal_key(facts.typed, facts.current) != "" and block is RegisterBlock.NONE,
+        )
+        if delivery_note:
+            controls.append(ft.Text(delivery_note, size=tokens.type_caption, color=tokens.color_muted))
         return controls
 
     def _paint_account_note() -> None:
@@ -2698,7 +2828,15 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     window_foreign_slot = ft.Column(spacing=0, controls=[])
 
     def _window_foreign_note() -> str | None:
-        return sync_window_foreign_note(cfg, foreign_account=foreign_task_account(cfg))
+        # 0049 S-2a.2: ONE entry point picks the sibling. The shared-profile form asserts the pause
+        # POSITIVELY, so it also needs the read-back state — hence ``_last_schedule_state``, and
+        # hence the repaint from the probe's own ``_apply``.
+        return window_scope_note(
+            cfg,
+            foreign_account=foreign_task_account(cfg),
+            shared_records=paths.is_machine_scope(),
+            state=_last_schedule_state["state"],
+        )
 
     def _paint_window_foreign_note() -> None:
         note = _window_foreign_note()
@@ -2784,6 +2922,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         run_as_user_value=lambda: "" if account_field is None else (account_field.value or "").strip(),
         persist_run_time=_persist_run_time_if_edited,
         is_busy=lambda: bool(_flight["busy"]),
+        last_schedule_state=lambda: _last_schedule_state["state"],
     )
     return card, handle
 
@@ -2807,6 +2946,70 @@ def _keyring_owner_account() -> str:
         return "this account"
 
 
+# The delivery-password line's four forms (plan 0049 S-2a.3). Per-user is form 2 and is BYTE
+# IDENTICAL to what shipped — the whole slice's promise on 20 districts rests on this one string.
+#
+# The account comes from the RECORD (``foreign_task_account``), not the read-back:
+# ``ScheduleReadback`` carries no principal until S-3, and the record is what this app itself
+# wrote at a confirmed registration. It fails to ``""`` on everything, which lands on the
+# account-less variant — the conservative direction, since an empty name must never be rendered.
+_DELIVERY_LINE_PER_USER = "Your delivery password is saved and readable by {owner}."
+_DELIVERY_LINE_SHARED_NAMED = "Your delivery password is saved on this computer, where {account} can read it."
+# D5 allows scheduling as the SIGNED-IN account on a machine-scoped install, and
+# ``schedule_run_as_user`` is ``""`` by contract there — so this variant is reachable in normal
+# use and must NOT fall back to ``_keyring_owner_account()``, which names a keyring the machine
+# store has replaced.
+_DELIVERY_LINE_SHARED_UNNAMED = (
+    "Your delivery password is saved on this computer, where the account that runs the nightly sync can read it."
+)
+# MISSING ONLY. An UNKNOWN read-back (a probe timeout, access denied, a task registered elevated
+# and unreadable by a filtered token) may never be rendered as an absence — it simply drops this
+# sentence and keeps the variant above.
+_DELIVERY_LINE_NO_SCHEDULE_TAIL = "No nightly sync is scheduled right now."
+_DELIVERY_LINE_UNREADABLE_SHARED = (
+    "Couldn't read the delivery password back from this computer's shared settings — the nightly "
+    "delivery won't run until it's saved again."
+)
+_DELIVERY_LINE_UNREADABLE_PER_USER = (
+    "Couldn't read the credential back on this account — SFTP uploads may fail. "
+    "Try again, or run the app as this account."
+)
+
+
+def delivery_password_line(
+    *,
+    secret_readable: bool,
+    machine_scope: bool,
+    principal: str,
+    schedule_state: ScheduleState | None,
+    keyring_owner: str,
+) -> str:
+    """The "where is the delivery password, and who can read it?" line (pure, TOTAL).
+
+    Four forms, in precedence order:
+
+    1. **no readable credential** → the warning that delivery will not run (per-user keeps today's
+       wording; the shared form drops "run the app as this account", which is wrong advice once
+       the secret lives in the machine store);
+    2. **per-user** → today's line, byte for byte — the keyring owner, never the task principal
+       (0046 A6: Credential Manager has no cross-user scope, so naming the principal there would
+       print a false all-clear on the most likely real failure);
+    3. **machine scope, a CONFIRMED-MISSING schedule** → the account-less line plus "no nightly
+       sync is scheduled right now". MISSING outranks a recorded principal: that record names a
+       task Windows says does not exist, so naming it would describe a nightly that is gone;
+    4. **machine scope otherwise** → named when the record has a principal, account-less when it
+       does not.
+    """
+    if not secret_readable:
+        return _DELIVERY_LINE_UNREADABLE_SHARED if machine_scope else _DELIVERY_LINE_UNREADABLE_PER_USER
+    if not machine_scope:
+        return _DELIVERY_LINE_PER_USER.format(owner=keyring_owner)
+    if schedule_state is ScheduleState.MISSING:
+        return f"{_DELIVERY_LINE_SHARED_UNNAMED} {_DELIVERY_LINE_NO_SCHEDULE_TAIL}"
+    account = (principal or "").strip()
+    return _DELIVERY_LINE_SHARED_NAMED.format(account=account) if account else _DELIVERY_LINE_SHARED_UNNAMED
+
+
 # --------------------------------------------------------------------------- #
 # SFTP section — reused verbatim by the wizard Delivery step AND Settings.      #
 # --------------------------------------------------------------------------- #
@@ -2816,6 +3019,7 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
     *,
     on_delivery: Callable[[DeliveryFact, str, str], None] | None = None,
     on_saved: Callable[[], ReconcileOutcome] | None = None,
+    schedule_state: Callable[[], ScheduleState | None] | None = None,
 ) -> ft.Control:
     """The SFTP section — store SpacesEDU credentials in the OS keyring + test (Slice 7, D6).
 
@@ -2825,6 +3029,13 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
     Save flips/confirms ``sftp_enabled``, it re-registers a live task so the nightly action gains
     (or keeps) ``--sftp`` (the F1 gap: enabling delivery post-registration must reconcile). The
     side-effect-free Test + Save-only keyring writes are UNCHANGED.
+
+    ``schedule_state`` (when given — Settings passes the schedule section's last read-back, see
+    ``_mount_settings``) lets the saved-password line say "no nightly sync is scheduled right now"
+    on a machine-scoped install. It is a CALLABLE because the read-back lands asynchronously, and
+    it is optional because the wizard's Delivery step has no schedule section to read: absent, the
+    state is ``None`` and the line asserts nothing about a schedule. It NEVER triggers a probe of
+    its own — a subprocess on the Save click is exactly the trade this surface has always refused.
     """
     host_dropdown = ft.Dropdown(
         label="SFTP host (SpacesEDU)",
@@ -2909,15 +3120,25 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
                 return
 
         read_back = uploader.get_stored_password()
+
+        def _password_line(*, readable: bool) -> str:
+            """The four-form line (0049 S-2a.3) — the ONE place this section states where the
+            password lives. Both outcomes route through it, so the failure arm cannot keep telling
+            a machine-scoped admin to "run the app as this account"."""
+            return delivery_password_line(
+                secret_readable=readable,
+                machine_scope=paths.is_machine_scope(),
+                principal=foreign_task_account(cfg),
+                schedule_state=schedule_state() if schedule_state is not None else None,
+                keyring_owner=_keyring_owner_account(),
+            )
+
         if not read_back:
             result_slot.controls = [
                 components.HealthVerdictBanner(
                     Verdict.FAILED,
                     headline="Couldn't read the SFTP credential back",
-                    detail=(
-                        "Couldn't read the credential back on this account — SFTP uploads may fail. "
-                        "Try again, or run the app as this account."
-                    ),
+                    detail=_password_line(readable=False),
                 )
             ]
             page.update()
@@ -2932,8 +3153,8 @@ def _build_sftp_section(  # pragma: no cover - Flet view glue
 
         # Vocabulary (W4a sweep): delivery-flavored plain language — "SFTP" stays only on the
         # sanctioned technical host FIELD label. Truthful for a blank-password Save too: the
-        # read-back above just verified a credential IS in the keyring and readable.
-        detail = f"Your delivery password is saved and readable by {_keyring_owner_account()}."
+        # read-back above just verified a credential IS in the store and readable.
+        detail = _password_line(readable=True)
         # F1 reconcile (Settings only): enabling/confirming delivery must add --sftp to an
         # already-registered nightly task, or tonight builds but never delivers. Routed through the
         # SAME task-args reconcile the folders Save uses; a blank-password re-register keeps the

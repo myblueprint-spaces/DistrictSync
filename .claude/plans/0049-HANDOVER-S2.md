@@ -4,23 +4,26 @@ Paste the block at the bottom into a fresh session. Everything above it is the s
 
 ## Where the build actually is
 
-**On `main` (`89f0109`), merged and CI-green:**
+**On `main` (`3bb6b18`), merged and CI-green:**
 - **S-1a-i** (#129) — the resolution ladder with the HKLM machine-scope switch, `_assert_machine_dir_trusted`, the process-pinned profile, `handshake_dir()`, `src/utils/dpapi.py`, `src/utils/accounts.py`, and a `windows-latest` pytest leg in `ci.yml`.
 - **S-1a-ii** (#130) — `src/sftp/secret_store.py` (keyring ↔ DPAPI-LocalMachine behind `select_store()`), identity bound in the DPAPI entropy, verify-before-promote, `run_as` on the run record, scheduled-nightly zip staging.
 - **S-1b-i** (#132) — `src/scheduler/provisioning.py`: the elevated `provision` / `grant_current_user` / `prune_principal` ops, create-with-SDDL, `migrate_profile`, the open-group ACE walk.
 - A separate fix (#131) for a UI defect the owner reported: a gate-refused register left the previous failure card on screen.
+- **S-1b-ii** (#133, merged 2026-09-18) — `src/scheduler/provision_session.py` (`complete_handover`, `request_access`), the pre-shell grant window, `--diagnose`, and the `MOVED.txt` fence on `AppConfig.save()` / `write_run_record`. `origin/main` is now `3bb6b18`.
 
-**Open, green, awaiting the owner's merge:** **#133 — S-1b-ii** on `claude/0049-s1b-ii-surfaces`: `src/scheduler/provision_session.py` (`complete_handover`, `request_access`), the pre-shell grant window, `--diagnose`, and the `MOVED.txt` fence on `AppConfig.save()` / `write_run_record`.
+**In flight: S-2a** on `claude/0049-s2a-honest-predicates`, cut before #133 merged — **rebase it onto `origin/main` before opening the PR** (its parent branch is now in `main` via the merge commit, so the rebase is content-free). **Never stack a PR on a feature branch** — `ci.yml` fires only on PRs targeting `main`, so a stacked PR silently carries no test gate (learned the hard way on #130).
 
-**Next: S-2**, which is where machine scope stops being inert. Its branch must be cut from `claude/0049-s1b-ii-surfaces` (it calls `complete_handover`), and its PR retargeted to `main` once #133 merges. **Never stack a PR on a feature branch** — `ci.yml` fires only on PRs targeting `main`, so a stacked PR silently carries no test gate (learned the hard way on #130).
+**Then S-2b**, which is what actually makes machine scope reachable (the pre-UAC gates, the confirm, the dispatch and every outcome it can end in). It calls `complete_handover`.
 
 **After S-2:** the owner's manual walk #1 on a domain-joined laptop → **S-3** (the `PrincipalKind` engine model) → **S-4** (the gMSA option in Settings, labelled untested) → the owner's walk #2 → SD60.
 
 ## The specs are written and reviewed
 
-`.claude/plans/0049-machine-scope-gmsa.md` carries `## Spec — S-1a` and `## Spec — S-1b`, each with a `S-1x.8 Review dispositions` section recording what was accepted, what was trimmed, and which amendments depart from the plan's letter. **S-2 has no spec yet** — writing it is the first real task.
+`.claude/plans/0049-machine-scope-gmsa.md` carries `## Spec — S-1a`, `## Spec — S-1b` and `## Spec — S-2` (committed `ba4982a`), each with a review-dispositions section recording what was accepted, what was trimmed, and which amendments depart from the plan's letter.
 
-Plan `## Design` **D6** is S-2's design of record, and the S-2 row of `## Slices` is its scope list.
+**S-2 was reviewed by product + honesty and split in two** — product returned CHANGES_REQUIRED with two criticals, honesty returned OVERCLAIMS, and all 20 findings were accepted (4 in part). **S-2a** is the predicates and the copy and stays inert; **S-2b** is the flow. Two PRs off `main` in sequence. The one recorded departure from the approved design: `FOLDER_NOT_SHAREABLE` ships as a confirm-level warning rather than a `RegisterBlock` gate, because both lenses independently showed its predicate wrong in both directions and its stated reason self-contradictory.
+
+Plan `## Design` **D6** is S-2's design of record, and the S-2 row of `## Slices` is its scope list. **`### S-2.1` records three things the plan's own text gets wrong** — read it before trusting a line/module reference in D6.
 
 ## Three things that have gone wrong repeatedly — do not rediscover them
 
@@ -58,5 +61,5 @@ Context: SD60 is blocked (their GPO forbids stored task passwords; their IT uses
 
 Rules: you orchestrate and judge. Implementers and critics on opus, mappers on sonnet, always set model explicitly; the claugentic-dev-harness agent types no longer exist, so use general-purpose with the role written into the prompt. Per slice: JIT spec → a short adversarial review sized to the slice (S-2's is product + honesty, since it is mostly user-facing copy) → implement → verify → PR → read and quote CI's own `test` and `test-windows` lines → I merge. Never merge, never send email, never trigger a UAC prompt, never touch a PR you did not open. Keep messages short, and don't stop for per-slice approval — continue through S-2, S-3 and S-4, surfacing decisions in your reports.
 
-First actions: (a) check whether PR #133 has merged — if it has, cut the S-2 branch from an up-to-date `main`; if not, cut it from `claude/0049-s1b-ii-surfaces` and retarget the PR to `main` once #133 lands (never stack a PR on a feature branch — ci.yml only fires on PRs targeting main, so a stacked PR gets no test gate). (b) Write the S-2 spec from plan D6, run its review, then implement.
+First actions: (a) `git log` the branch `claude/0049-s2a-honest-predicates` and read `## Spec — S-2` in the plan — S-2a (the predicates and the copy, inert) is implemented and under test there; finish it, rebase onto `origin/main`, and open its PR. (b) Then spec-check and implement S-2b (the flow) as its own PR off `main`. Never stack a PR on a feature branch — ci.yml only fires on PRs targeting main, so a stacked PR gets no test gate.
 ```

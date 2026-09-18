@@ -26,15 +26,21 @@ def _derive(
     hint_registered: bool = True,
     latest_record_ts: str | None = None,
     foreign_account: str = "",
+    shared_records: bool = False,
 ) -> ScheduleStatus:
-    """Derive a status. ``foreign_account`` defaults to the SAME-ACCOUNT world, so every
-    pre-0046-C case in this file keeps asserting today's behaviour unchanged; the plan 0046 C
-    cases pass a name explicitly."""
+    """Derive a status. ``foreign_account`` defaults to the SAME-ACCOUNT world and
+    ``shared_records`` to the PER-USER world, so every pre-0046-C / pre-0049 case in this file
+    keeps asserting today's behaviour unchanged; the plan 0046 C and 0049 cases pass explicitly.
+
+    The defaults live HERE and not on the production signature on purpose — both arguments are
+    required keyword-only at the seam, and the tests below pin that.
+    """
     return derive_schedule_status(
         readback,
         hint_registered=hint_registered,
         latest_record_ts=latest_record_ts,
         foreign_account=foreign_account,
+        shared_records=shared_records,
     )
 
 
@@ -161,6 +167,7 @@ class TestMissing:
             hint_registered=False,
             latest_record_ts=None,
             foreign_account="",
+            shared_records=False,
             surface="home",
         )
         setup = derive_schedule_status(
@@ -168,6 +175,7 @@ class TestMissing:
             hint_registered=False,
             latest_record_ts=None,
             foreign_account="",
+            shared_records=False,
             surface="setup",
         )
         assert "in Setup" in home.detail
@@ -179,6 +187,7 @@ class TestMissing:
             hint_registered=True,
             latest_record_ts=None,
             foreign_account="",
+            shared_records=False,
             surface="setup",
         )
         assert "re-register it below" in setup.detail and "in Setup" not in setup.detail
@@ -406,8 +415,11 @@ class TestForeignPrincipalSuppressesTheRecordGap:
     def test_is_contradiction_itself_is_one_directional(self) -> None:
         from src.ui_flet.schedule_status import _is_contradiction
 
-        assert _is_contradiction(_GAP_READBACK, _GAP_NEWEST_RECORD, foreign_account="") is True
-        assert _is_contradiction(_GAP_READBACK, _GAP_NEWEST_RECORD, foreign_account=_SERVICE) is False
+        assert _is_contradiction(_GAP_READBACK, _GAP_NEWEST_RECORD, foreign_account="", shared_records=False) is True
+        assert (
+            _is_contradiction(_GAP_READBACK, _GAP_NEWEST_RECORD, foreign_account=_SERVICE, shared_records=False)
+            is False
+        )
 
     def test_foreign_account_is_required_keyword_only_on_is_contradiction(self) -> None:
         """A forgotten argument must be a TypeError, never a silently-defaulted suppression."""
@@ -590,3 +602,232 @@ class TestDocstringCorrection:
         # And the body genuinely does not — the docstring is now checkable against the code.
         body = inspect.getsource(_is_contradiction).split('"""')[-1]
         assert "last_result" not in body
+
+
+# --------------------------------------------------------------------------- #
+# Plan 0049 S-2a — ``shared_records``: the fact Slice C's suppressions lacked    #
+# --------------------------------------------------------------------------- #
+import pytest  # noqa: E402
+
+from src.ui_flet.schedule_status import (  # noqa: E402
+    FOREIGN_RECORDS_NOTE,
+    FOREIGN_RECORDS_SHARED_NOTE,
+)
+
+#: The four corners of the rule, as (foreign_account, shared_records, suppressed?).
+#: **Suppress only when ``foreign_account and not shared_records``** — every other corner alarms.
+_SUPPRESSION_TRUTH_TABLE = [
+    ("", False, False),
+    ("", True, False),
+    (_SERVICE, False, True),
+    (_SERVICE, True, False),
+]
+_TRUTH_TABLE_IDS = ["same-account-per-user", "same-account-shared", "foreign-per-user", "foreign-shared"]
+
+
+class TestSharedRecordsRestoresTheRecordGapAlarm:
+    """S-2a.1 — A5's suppression was a statement about WHERE the record went, not about faults.
+
+    ``src/history/store.py`` writes under ``paths.user_data_dir()`` of the RUNNING account, so on
+    a per-user install a foreign principal's record genuinely lands in a profile this reader
+    cannot see, and a gap here proves nothing. Machine scope repoints both writers at ONE shared
+    store, which makes the excuse false: a gap is once again a nightly that did not run, and
+    staying quiet would disable the app's only "did it run?" signal on exactly the install this
+    plan just fixed.
+    """
+
+    @pytest.mark.parametrize(
+        ("foreign_account", "shared_records", "suppressed"), _SUPPRESSION_TRUTH_TABLE, ids=_TRUTH_TABLE_IDS
+    )
+    def test_the_truth_table(self, foreign_account: str, shared_records: bool, suppressed: bool) -> None:
+        """One real record gap, all four corners. The positive twins are the three rows that do
+        NOT suppress — an alarm that only ever goes quiet is not a narrowing, it is a deletion."""
+        from src.ui_flet.schedule_status import _is_contradiction
+
+        fired = _is_contradiction(
+            _GAP_READBACK,
+            _GAP_NEWEST_RECORD,
+            foreign_account=foreign_account,
+            shared_records=shared_records,
+        )
+        assert fired is (not suppressed)
+
+    def test_the_alarm_reaches_the_derived_status_on_a_shared_profile(self) -> None:
+        """The predicate is not the product — the admin has to SEE it."""
+        status = _derive(
+            _GAP_READBACK, latest_record_ts=_GAP_NEWEST_RECORD, foreign_account=_SERVICE, shared_records=True
+        )
+        assert status.contradiction is True
+        assert status.attention is True
+        assert status.headline == "Your last scheduled run reported a problem"
+        assert needs_setup_badge(status) is True
+
+    def test_negative_twin_the_same_gap_on_the_same_principal_stays_quiet_per_user(self) -> None:
+        """Identical inputs, one bit different. This is the whole change, in two lines."""
+        status = _derive(
+            _GAP_READBACK, latest_record_ts=_GAP_NEWEST_RECORD, foreign_account=_SERVICE, shared_records=False
+        )
+        assert status.contradiction is False
+        assert status.attention is False
+
+    def test_shared_records_is_required_keyword_only_on_is_contradiction(self) -> None:
+        """A defaulted ``False`` would keep the now-wrong suppression on exactly the installs
+        machine scope exists to fix — so a forgotten argument must be a TypeError."""
+        from src.ui_flet.schedule_status import _is_contradiction
+
+        with pytest.raises(TypeError):
+            _is_contradiction(_GAP_READBACK, _GAP_NEWEST_RECORD, foreign_account=_SERVICE)  # type: ignore[call-arg]
+
+    def test_shared_records_is_required_keyword_only_on_derive(self) -> None:
+        with pytest.raises(TypeError):
+            derive_schedule_status(  # type: ignore[call-arg]
+                ScheduleReadback(found=True),
+                hint_registered=True,
+                latest_record_ts=None,
+                foreign_account=_SERVICE,
+            )
+
+    def test_the_dataclass_default_is_the_per_user_value(self) -> None:
+        """A hand-built ``ScheduleStatus`` — every pre-0049 fixture, and the view's own unprobed
+        state — must read as a per-user install, the value that changes nothing."""
+        assert ScheduleStatus(state=ScheduleState.LIVE, headline="h", detail="d").shared_records is False
+
+    def test_the_fact_rides_every_state(self) -> None:
+        """Home, Run History and the Setup badge read the field regardless of state, so all three
+        builders must carry it — a MISSING or UNKNOWN status that dropped it would hand the pure
+        consumers a per-user answer on a shared install."""
+        for readback in (
+            ScheduleReadback(found=True, next_run="2026-07-09T03:00:00"),
+            ScheduleReadback(found=False),
+            ScheduleReadback(found=None, error="denied"),
+        ):
+            assert _derive(readback, foreign_account=_SERVICE, shared_records=True).shared_records is True
+            assert _derive(readback, foreign_account=_SERVICE, shared_records=False).shared_records is False
+
+
+class TestForeignRecordsSharedNote:
+    """S-2a.2 — the sibling sentence, and the gap it may not deny.
+
+    Provisioning migrates the PROVISIONING ADMIN's ``history.db``. The service account's own
+    profile is never touched and cannot be, so an install that ran for months under a foreign
+    principal keeps a real, permanent hole in its ledger. "Its records are here" would deny a gap
+    the district can see in its own Run History; "appear here from now on" is the whole truth and
+    no more.
+    """
+
+    _LIVE = ScheduleReadback(found=True, next_run="2026-07-09T03:00:00", last_result=0)
+
+    def test_the_shared_note_renders_on_a_shared_profile(self) -> None:
+        status = _derive(self._LIVE, foreign_account=_SERVICE, shared_records=True)
+        assert FOREIGN_RECORDS_SHARED_NOTE.format(account=_SERVICE) in status.detail
+
+    def test_the_per_user_note_renders_on_a_per_user_install(self) -> None:
+        status = _derive(self._LIVE, foreign_account=_SERVICE, shared_records=False)
+        assert FOREIGN_RECORDS_NOTE.format(account=_SERVICE) in status.detail
+
+    @pytest.mark.parametrize("shared_records", [True, False], ids=["shared", "per-user"])
+    def test_exactly_one_of_the_two_is_ever_present(self, shared_records: bool) -> None:
+        """They make OPPOSITE claims about the same ledger. Both at once would be incoherent, and
+        the per-user sentence on a shared install would be simply false."""
+        status = _derive(self._LIVE, foreign_account=_SERVICE, shared_records=shared_records)
+        per_user = FOREIGN_RECORDS_NOTE.format(account=_SERVICE) in status.detail
+        shared = FOREIGN_RECORDS_SHARED_NOTE.format(account=_SERVICE) in status.detail
+        assert per_user is not shared
+
+    @pytest.mark.parametrize("shared_records", [True, False], ids=["shared", "per-user"])
+    def test_neither_renders_without_a_recorded_foreign_principal(self, shared_records: bool) -> None:
+        """Machine scope alone says nothing about WHO runs the nightly — D5 allows scheduling as
+        the signed-in account on a shared install, where there is no account to name."""
+        status = _derive(self._LIVE, foreign_account="", shared_records=shared_records)
+        assert "runs as" not in status.detail
+        assert status.detail == "Your nightly schedule is registered — next run at 3:00 AM."
+
+    def test_it_names_the_recorded_account(self) -> None:
+        status = _derive(self._LIVE, foreign_account=_SERVICE, shared_records=True)
+        assert _SERVICE in status.detail
+
+    def test_it_promises_only_from_now_on(self) -> None:
+        """The honesty pin. The pre-provisioning gap is real and PERMANENT — nothing can copy a
+        history that lives in the service account's own profile — so the sentence bounds its claim
+        in time and may never generalise over the whole ledger."""
+        assert "from now on" in FOREIGN_RECORDS_SHARED_NOTE
+        lowered = FOREIGN_RECORDS_SHARED_NOTE.lower()
+        for overclaim in ("all its run records", "every run record", "all of its", "complete history"):
+            assert overclaim not in lowered
+
+    def test_it_does_not_carry_the_per_user_denial(self) -> None:
+        """Positive twin for the sentence above: the claim it replaces really is the opposite one,
+        so a sibling that kept it would be self-contradicting."""
+        assert "don't appear in Run History here" in FOREIGN_RECORDS_NOTE
+        assert "don't appear" not in FOREIGN_RECORDS_SHARED_NOTE
+
+    def test_the_shared_note_precedes_the_run_result_note(self) -> None:
+        """Same fixed order as its per-user sibling: where the records go, THEN what Windows
+        reported about the last firing."""
+        status = _derive(
+            ScheduleReadback(found=True, next_run="2026-07-09T03:00:00", last_result=1),
+            foreign_account=_SERVICE,
+            shared_records=True,
+        )
+        note = FOREIGN_RECORDS_SHARED_NOTE.format(account=_SERVICE)
+        assert note in status.detail
+        assert status.detail.index(note) < status.detail.index("Windows")
+
+    def test_a_reported_problem_still_raises_attention_on_a_shared_profile(self) -> None:
+        """The one direction S-2a must never move: ``LastTaskResult`` is evidence about the RUN,
+        not a claim about where the record went. Shared records must not narrow THAT alarm."""
+        status = _derive(
+            ScheduleReadback(found=True, next_run="2026-07-09T03:00:00", last_result=1),
+            foreign_account=_SERVICE,
+            shared_records=True,
+        )
+        assert status.attention is True
+
+
+class TestPerUserCopyIsByteIdenticalUnderTheNewFact:
+    """AC1 — on all 20 per-user installs this slice changes nothing an admin can read.
+
+    ``shared_records=False`` is the only value any shipped install produces today, so these are
+    the strings the field sees and they must be untouched. The pairs also pin the narrower rule
+    that the SHARED value changes only what it is allowed to change.
+    """
+
+    _STATES = [
+        ScheduleReadback(found=True, next_run="2026-07-09T03:00:00", last_result=0),
+        ScheduleReadback(found=True, next_run=None, last_result=0),
+        ScheduleReadback(found=False),
+        ScheduleReadback(found=None, error="denied"),
+    ]
+    _STATE_IDS = ["live", "live-timeless", "missing", "unknown"]
+
+    @pytest.mark.parametrize("readback", _STATES, ids=_STATE_IDS)
+    @pytest.mark.parametrize("hint", [True, False], ids=["expected", "unexpected"])
+    def test_same_account_copy_does_not_move_when_the_profile_is_shared(
+        self, readback: ScheduleReadback, hint: bool
+    ) -> None:
+        """No recorded principal → no sentence about accounts on EITHER scope. The scope line
+        belongs on Home and in Settings (S-2a.4), never wedged into the schedule verdict."""
+        per_user = _derive(readback, hint_registered=hint, foreign_account="", shared_records=False)
+        shared = _derive(readback, hint_registered=hint, foreign_account="", shared_records=True)
+        assert (shared.headline, shared.detail) == (per_user.headline, per_user.detail)
+        assert (shared.attention, shared.contradiction) == (per_user.attention, per_user.contradiction)
+
+    @pytest.mark.parametrize("hint", [True, False], ids=["expected", "unexpected"])
+    def test_missing_and_unknown_copy_never_gains_a_shared_records_sentence(self, hint: bool) -> None:
+        """A gone task and an unseen one may not carry a claim about where their records go — in
+        EITHER direction. The per-user sibling is already pinned this way; the shared one inherits
+        the rule rather than being exempted from it."""
+        for readback in (ScheduleReadback(found=False), ScheduleReadback(found=None, error="denied")):
+            per_user = _derive(readback, hint_registered=hint, foreign_account=_SERVICE, shared_records=False)
+            shared = _derive(readback, hint_registered=hint, foreign_account=_SERVICE, shared_records=True)
+            assert (shared.headline, shared.detail) == (per_user.headline, per_user.detail)
+            assert "from now on" not in shared.detail
+
+    def test_the_live_foreign_detail_differs_only_in_that_one_sentence(self) -> None:
+        """The non-vacuous twin for the equalities above: the two scopes ARE distinguishable where
+        they are supposed to be, so those parity assertions are not passing on a no-op."""
+        readback = ScheduleReadback(found=True, next_run="2026-07-09T03:00:00", last_result=0)
+        per_user = _derive(readback, foreign_account=_SERVICE, shared_records=False)
+        shared = _derive(readback, foreign_account=_SERVICE, shared_records=True)
+        assert shared.detail != per_user.detail
+        assert shared.headline == per_user.headline
