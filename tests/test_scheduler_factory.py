@@ -28,6 +28,7 @@ import pytest
 from src.scheduler import CronScheduler, WindowsTaskScheduler, get_scheduler
 from src.scheduler import linux as linux_mod
 from src.scheduler import windows as windows_mod
+from src.scheduler.task_com import Principal, PrincipalKind
 
 _REGISTER_KWARGS = dict(
     task_name="DistrictSync_Daily",
@@ -89,16 +90,12 @@ class TestWindowsAdapter:
             return True, "ok"
 
         monkeypatch.setattr(windows_mod, "register_task", fake_register)
-        ok, msg = WindowsTaskScheduler().register(
-            **_REGISTER_KWARGS, run_as_user="DOMAIN\\admin", run_as_password="pw", run_highest=False
-        )
+        principal = Principal(kind=PrincipalKind.PASSWORD, user="DOMAIN\\admin", password="pw")
+        ok, msg = WindowsTaskScheduler().register(**_REGISTER_KWARGS, principal=principal, run_highest=False)
         assert (ok, msg) == (True, "ok")
-        assert recorded == {
-            **_REGISTER_KWARGS,
-            "run_as_user": "DOMAIN\\admin",
-            "run_as_password": "pw",
-            "run_highest": False,
-        }
+        # The DECLARED principal passes through as ONE object (plan 0049 S-3): the adapter may
+        # not unpack it, re-derive a logon type from it, or reconstruct it field by field.
+        assert recorded == {**_REGISTER_KWARGS, "principal": principal, "run_highest": False}
 
     def test_delete_success_never_elevates(self, monkeypatch):
         elevated_calls: list = []
@@ -157,7 +154,9 @@ class TestCronAdapter:
             return True, "Cron entry registered."
 
         monkeypatch.setattr(linux_mod, "register_cron", fake_cron)
-        ok, msg = CronScheduler().register(**_REGISTER_KWARGS)
+        ok, msg = CronScheduler().register(
+            **_REGISTER_KWARGS, principal=Principal(kind=PrincipalKind.INTERACTIVE_TOKEN)
+        )
         assert (ok, msg) == (True, "Cron entry registered.")
         assert recorded == {
             "exe": _REGISTER_KWARGS["exe_path"],
@@ -168,12 +167,40 @@ class TestCronAdapter:
             "sftp": True,
         }
 
-    def test_register_with_a_password_fails_loud(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "principal",
+        [
+            Principal(kind=PrincipalKind.PASSWORD, user="DOMAIN\\admin", password="pw"),
+            Principal(kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT, user="CORP\\svc_sync$"),
+        ],
+        ids=["stored-password", "managed-service-account"],
+    )
+    def test_register_of_an_unattended_principal_fails_loud(self, monkeypatch, principal):
+        """The refusal is on the KIND, not on the presence of a password (plan 0049 S-3).
+
+        The second row is the one that was not covered before and could not have been: the
+        guard read ``if run_as_password is not None``, and a managed service account carries
+        ``password=None`` by construction — exactly like the logged-on-only path. So an MSA
+        request sailed straight through into a cron line that silently dropped the account,
+        which is the precise misrepresentation ``supports_unattended_password`` exists to
+        prevent.
+        """
         monkeypatch.setattr(
-            linux_mod, "register_cron", lambda *a, **k: pytest.fail("must not touch crontab with a password")
+            linux_mod,
+            "register_cron",
+            lambda *a, **k: pytest.fail("must not touch crontab for an unattended principal"),
         )
         with pytest.raises(ValueError, match="not supported on this platform"):
-            CronScheduler().register(**_REGISTER_KWARGS, run_as_password="pw")
+            CronScheduler().register(**_REGISTER_KWARGS, principal=principal)
+
+    def test_the_refusal_says_what_cron_can_and_cannot_do(self):
+        """Plain language, and it names BOTH unattended shapes: an admin who reads this must
+        not have to guess which of the two cron refused, or why."""
+        from src.scheduler import _CRON_FOREIGN_PRINCIPAL_REFUSAL
+
+        assert "crontab" in _CRON_FOREIGN_PRINCIPAL_REFUSAL
+        assert "managed service account" in _CRON_FOREIGN_PRINCIPAL_REFUSAL
+        assert _CRON_FOREIGN_PRINCIPAL_REFUSAL.endswith("not supported on this platform.")
 
     def test_delete_delegates_to_the_sentinel_removal(self, monkeypatch):
         monkeypatch.setattr(linux_mod, "delete_cron", lambda: (True, "Cron entry removed."))

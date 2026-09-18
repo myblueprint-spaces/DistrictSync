@@ -914,6 +914,17 @@ def _switch_by_label(tree, label):
     return next((s for s in _find(tree, ft.Switch) if (getattr(s, "label", "") or "") == label), None)
 
 
+def _checkbox_by_label(tree, label):
+    """The first ``ft.Checkbox`` whose label EXACTLY equals ``label`` (or None).
+
+    Added for plan 0049 S-4's gMSA disclosure, which is built with
+    ``components.check_row`` — the ONE checkbox factory — rather than the raw
+    ``ft.Switch`` the seasonal-window section next to it uses. Two control types now
+    co-exist in that card, so the finder pair mirrors them.
+    """
+    return next((c for c in _find(tree, ft.Checkbox) if (getattr(c, "label", "") or "") == label), None)
+
+
 # The five always-present Setup text fields Enter must submit (the Windows-password
 # field is Windows-only, so it is not asserted here — it renders + wires only on win32).
 _ENTER_SUBMIT_LABELS = [
@@ -1169,6 +1180,10 @@ class TestWizardStepsRender:
             on_schedule_changed=None,
             on_window_valid=None,
             on_busy=None,
+            # A stub of a real signature has to tolerate the real signature GROWING, or every
+            # seam added to `_build_schedule_section` reddens a wizard test that is about
+            # something else entirely (plan 0049 S-2b added three).
+            **_extra,
         ):
             if on_status is not None:
                 on_status(live)  # deliver a LIVE read-back the moment the Schedule step builds
@@ -1178,6 +1193,10 @@ class TestWizardStepsRender:
                 run_as_user_value=lambda: "",
                 persist_run_time=lambda: False,
                 is_busy=lambda: False,
+                # 0049 S-2a.3: the stub has no read-back, and ``None`` asserts nothing — the
+                # delivery line's "no nightly sync is scheduled right now" arm fires on a
+                # CONFIRMED-MISSING task only, never on a schedule nobody looked at.
+                last_schedule_state=lambda: None,
             )
 
         monkeypatch.setattr(setup_mod, "_build_schedule_section", _stub_schedule)
@@ -1218,7 +1237,14 @@ class TestScheduleStepMidFlight:
         hooks: dict = {}
 
         def _stub_schedule(
-            page, config, *, on_status=None, on_schedule_changed=None, on_window_valid=None, on_busy=None
+            page,
+            config,
+            *,
+            on_status=None,
+            on_schedule_changed=None,
+            on_window_valid=None,
+            on_busy=None,
+            **_extra,  # see the sibling stub above — the real signature grows
         ):
             hooks["on_status"] = on_status
             hooks["on_busy"] = on_busy
@@ -1228,6 +1254,10 @@ class TestScheduleStepMidFlight:
                 run_as_user_value=lambda: "",
                 persist_run_time=lambda: False,
                 is_busy=lambda: False,
+                # 0049 S-2a.3: the stub has no read-back, and ``None`` asserts nothing — the
+                # delivery line's "no nightly sync is scheduled right now" arm fires on a
+                # CONFIRMED-MISSING task only, never on a schedule nobody looked at.
+                last_schedule_state=lambda: None,
             )
 
         monkeypatch.setattr(setup_mod, "_build_schedule_section", _stub_schedule)
@@ -1477,13 +1507,19 @@ def _record_register(monkeypatch) -> dict:
 
     def _fake_register(**kwargs):
         recorded["called"] += 1
-        recorded["run_as_password"] = kwargs.get("run_as_password")
+        # Since plan 0049 S-3 the engine takes ONE declared ``task_com.Principal`` instead of
+        # a ``run_as_user`` / ``run_as_password`` pair; the password is still the only fact
+        # these rows care about, so it is read off the principal here.
+        principal = kwargs.get("principal")
+        recorded["principal"] = principal
+        recorded["run_as_password"] = None if principal is None else principal.password
         recorded["sis_type"] = kwargs.get("sis_type")
         return True, "ok"
 
     def _fake_cron(exe, sis, inp, out, run_time, *, sftp=False):
         recorded["called"] += 1
         recorded["run_as_password"] = None  # cron has no logon-type concept
+        recorded["principal"] = None
         recorded["sis_type"] = sis
         return True, "ok"
 
@@ -1857,7 +1893,14 @@ def test_unproven_record_save_asks_before_it_could_downgrade_an_unattended_task(
     assert recorded["called"] == 0, "no blank-password register may fire on an unproven logon type"
     dialog = page.show_dialog.call_args[0][0]
     assert isinstance(dialog, ft.AlertDialog)
-    unknown = downgrade_interrupt(registered_foreign_account="", registered_unattended=None, password_supplied=False)
+    unknown = downgrade_interrupt(
+        registered_foreign_account="",
+        registered_unattended=None,
+        password_supplied=False,
+        # 0049 S-4: this surface's record is unproven, so the kind is unknown too — the
+        # facets move together, and `None` is what keeps the pre-S-4 can't-tell copy.
+        registered_kind=None,
+    )
     assert dialog.title.value == unknown.headline
     assert dialog.content.value == unknown.detail
 

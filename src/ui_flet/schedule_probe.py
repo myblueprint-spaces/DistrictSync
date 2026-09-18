@@ -38,9 +38,13 @@ def foreign_task_account(app_config: AppConfig) -> str:
     principal unknown too — and unknown is ``""``, which ALARMS. Reading one facet of an atomic
     triple in isolation is exactly the drift ``RegisteredSchedule`` exists to prevent.
 
-    It can only ever be a fact the app WROTE at a confirmed registration. The live task's own
-    identity is genuinely unreadable — ``task_com.TaskFacts`` carries ``next_run`` / ``last_run`` /
-    ``last_result`` / ``action_path`` and NO principal — so inference was never on the table.
+    It can only ever be a fact the app WROTE at a confirmed registration. Since plan 0049 S-3
+    the read-back DOES carry the live task's ``run_as`` / ``logon_type``
+    (``task_com.TaskFacts``), but that is a DISPLAY fact and this resolver deliberately does not
+    move to it: the live read legitimately answers ``None`` (an elevated-registered task under a
+    filtered token, a timed-out probe), and a suppression that flickers with a probe result is
+    worse than one keyed on a value the app wrote itself. The ROADMAP item about the record being
+    the only principal source is narrowed by S-3, not closed.
 
     **FAILS TO ``""`` ON EVERYTHING**: no record, a blank record, a case-insensitive match with the
     signed-in account, an unreadable ``AppConfig``, or a raising ``get_scheduler().run_as_user()``.
@@ -51,13 +55,16 @@ def foreign_task_account(app_config: AppConfig) -> str:
     on any machine where the account resolution fails.
 
     ``supports_unattended`` is left at its default: only the ``run_as_user`` facet is read, and its
-    ``None``-iff-``args is None`` rule does not depend on that flag.
+    ``None``-iff-``args is None`` rule does not depend on that flag. ``raw_run_as_kind`` is supplied
+    because it is REQUIRED rather than because this resolver reads it (plan 0049 S-4) — the record's
+    facets are atomic, and a call site allowed to omit one is how the next facet stops being written.
     """
     try:
         record = registered_schedule(
             raw_task_args=app_config.schedule_task_args,
             unattended_flag=bool(app_config.schedule_unattended),
             raw_run_as_user=app_config.schedule_run_as_user,
+            raw_run_as_kind=app_config.schedule_run_as_kind,
         )
         recorded = record.run_as_user
         if not recorded:
@@ -79,6 +86,7 @@ def probe_schedule(
     *,
     hint_registered: bool,
     foreign_account: str,
+    shared_records: bool,
     latest_record_ts: str | None = None,
     surface: str = "home",
 ) -> ScheduleStatus:
@@ -92,6 +100,11 @@ def probe_schedule(
     rather than an internal :func:`foreign_task_account` call: this probe fires on nearly every nav
     click, and a disk read per click plus an untestable seam is a worse trade than one explicit
     argument. Each caller resolves it inside the worker thread it already owns.
+
+    ``shared_records`` (plan 0049 S-2a.1) is REQUIRED keyword-only and passed straight through too.
+    Every view call site sources it from ``paths.is_machine_scope()`` — the pinned, once-per-process
+    answer — for the same reason: a defaulted ``False`` would silently keep Slice C's suppressions
+    (and their now-false copy) on exactly the installs machine scope exists to fix.
     """
     readback = read_schedule(task_name)
     status = derive_schedule_status(
@@ -99,6 +112,7 @@ def probe_schedule(
         hint_registered=hint_registered,
         latest_record_ts=latest_record_ts,
         foreign_account=foreign_account,
+        shared_records=shared_records,
         surface=surface,
     )
     _log_divergence(task_name, status, hint_registered=hint_registered)

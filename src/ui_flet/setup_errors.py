@@ -19,12 +19,14 @@ through ``task_com.hresult_for`` — the ONE place the message↔code pairing is
 render under the same red "Couldn't schedule the nightly sync" headline, so an outcome-first
 sentence repeats the headline and tells the admin nothing. Plain prose only (no
 ``**markdown**`` — the Flet ``HealthVerdictBanner``/``ErrorCard`` render ``detail`` as a plain
-``ft.Text``, which would show literal asterisks); ``\\n\\n`` is allowed. The vocabulary is the
-schedule section's own: *signed in / signed out*, controls named ("Schedule nightly sync",
-the Convert page), never a direction ("below" is wrong — the schedule readout renders ABOVE
-the result slot). No branch promises a fix the app cannot make: where a district's security
-policy blocks the registration, no app-side change makes the nightly sync run, and the copy
-says so.
+``ft.Text``, which would show literal asterisks); ``\\n\\n`` is allowed, and a checklist is
+therefore spelled as ``\\n\\n``-separated paragraphs each opening with a bullet CHARACTER (see
+``_GMSA_CHECKLIST``, plan 0049 S-4 — the one branch whose remedy is a list of things somebody
+else must do). The vocabulary is the schedule section's own: *signed in / signed out*, controls
+named ("Schedule nightly sync", the Convert page), never a direction ("below" is wrong — the
+schedule readout renders ABOVE the result slot). No branch promises a fix the app cannot make:
+where a district's security policy blocks the registration, no app-side change makes the
+nightly sync run, and the copy says so.
 
 **Security (I2).** The non-leak proof is MIXED, by construction:
 
@@ -45,6 +47,7 @@ CLIXML de-wrapping — went with the PowerShell transport at plan 0041 S1b.)
 from __future__ import annotations
 
 from src.scheduler.messages import ACCESS_DENIED_MARKERS
+from src.scheduler.provisioning import ProvisionStep
 from src.scheduler.task_com import (
     MSG_ACCESS_DENIED,
     MSG_ACCOUNT_INFO_NOT_SET,
@@ -53,6 +56,7 @@ from src.scheduler.task_com import (
     MSG_LOGON_FAILURE,
     MSG_NO_LOGON_SESSION,
     MSG_OPERATION_FAILED,
+    PrincipalKind,
     format_hresult,
     hresult_for,
 )
@@ -67,7 +71,21 @@ from src.scheduler.windows import (
     _MSG_ELEVATION_TIMEOUT,
     _MSG_UAC_DECLINED,
 )
-from src.ui_flet.setup_flow import SCHEDULE_ACCOUNT_FIELD_LABEL
+from src.ui_flet.setup_flow import (
+    GMSA_PREREQUISITES,
+    GMSA_UNTESTED_CAPTION,
+    SCHEDULE_ACCOUNT_FIELD_LABEL,
+    SCHEDULE_GMSA_TOGGLE_LABEL,
+)
+
+#: The prerequisite checklist as plain prose (plan 0049 S-4). The module's copy rules forbid
+#: markdown — a Flet ``ErrorCard`` renders ``detail`` as a plain ``ft.Text``, so ``**bold**``
+#: would show literal asterisks — and ``\n\n`` is the only break those rules sanction, so each
+#: item is its own paragraph prefixed with a bullet CHARACTER rather than a list marker.
+#: Built from :data:`~src.ui_flet.setup_flow.GMSA_PREREQUISITES`, never retyped: the Settings
+#: disclosure renders the same tuple as tick rows, and an admin comparing the two must not find
+#: two different lists.
+_GMSA_CHECKLIST = "\n\n".join(f"• {item}" for item in GMSA_PREREQUISITES)
 
 
 def _code(canonical: str) -> str:
@@ -85,7 +103,7 @@ def _carries_access_denied(msg: str) -> bool:
     return any(marker in lowered for marker in ACCESS_DENIED_MARKERS)
 
 
-def classify_schedule_error(msg: str, elevated: bool, *, account_is_current: bool) -> str:
+def classify_schedule_error(msg: str, elevated: bool, *, account_is_current: bool, kind: PrincipalKind) -> str:
     """Map a schedule failure message into a calm, actionable, cause-first message.
 
     Args:
@@ -105,6 +123,14 @@ def classify_schedule_error(msg: str, elevated: bool, *, account_is_current: boo
             Windows Hello PIN, a microsoft.com password) that is wrong — and misleading —
             for a service account. Today every call site passes ``True``; plan 0046-B passes
             the recorded principal and re-reads the ``False`` copy against the real field.
+        kind: which :class:`~src.scheduler.task_com.PrincipalKind` the failed operation
+            DECLARED. REQUIRED keyword, deliberately undefaulted, for the same reason
+            ``account_is_current`` is (plan 0049 S-4): both of its non-MSA values coach a
+            password, and a managed service account does not have one — so a defaulted kind
+            would send a gMSA admin looking for a credential the directory holds. Note that
+            ``account_is_current`` does not imply it: a gMSA is always foreign, but a foreign
+            account is usually a password logon, so neither parameter can be derived from the
+            other.
 
     Returns:
         A plain-language, cause-first message (plain prose — no markdown, so a Flet verdict
@@ -163,7 +189,19 @@ def classify_schedule_error(msg: str, elevated: bool, *, account_is_current: boo
             "Send your IT team that setting's name and the code shown here; until it's resolved you "
             "can run the sync by hand from the Convert page. If someone stays signed in overnight, "
             "you can instead clear the Windows account password field above and choose Schedule "
-            "nightly sync again — it will not run after a reboot with no one signed in." + _code(msg)
+            "nightly sync again — it will not run after a reboot with no one signed in."
+            + _code(msg)
+            # 0049 S-4: ONE appended sentence, and nothing above it touched. This is SD60's
+            # actual branch (0x80070520 — the policy that forbids storing a task's password),
+            # it is correct, and it is pinned in docs/partner/troubleshooting.md; a rewrite
+            # would be a regression dressed as an improvement. A managed service account is
+            # the one escape that does not need the policy lifted, because the directory holds
+            # the credential and nothing is stored on this computer — so the option is named
+            # here, hedged, rather than left for the admin to discover.
+            + "\n\n"
+            + "If your IT team can provide a managed service account (a gMSA), that is the one "
+            f"unattended option this policy does not block — tick '{SCHEDULE_GMSA_TOGGLE_LABEL}' "
+            f"in the Daily schedule section. {GMSA_UNTESTED_CAPTION}"
         )
     if msg == MSG_ACCOUNT_INFO_NOT_SET:
         # States the code's DOCUMENTED meaning and claims no cause — 0x8004130F's cause is not
@@ -194,6 +232,30 @@ def classify_schedule_error(msg: str, elevated: bool, *, account_is_current: boo
         # password — so this branch exists precisely to stop a name typo being coached as a
         # credential problem. Windows' own description for it is the field locator
         # "(21,8):UserId:", which reads as a parser error to an admin.
+        #
+        # 0049 S-4 FORKS it on the kind rather than adding a canonical, and that is the
+        # deliberate choice: this is where a mistyped gMSA name already lands (measured), the
+        # gMSA failure taxonomy beyond it is UNMEASURED, and inventing canonicals for failures
+        # nobody has seen is how a classifier acquires dead branches. The [HRESULT log anchor
+        # carries whatever else a district hits.
+        if kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT:
+            # NO "try again": retrying a name the directory does not know — or a computer the
+            # account is not authorised for — changes nothing, and the three things that WOULD
+            # change it are all somebody else's to do. So the copy is the one check the admin
+            # CAN make (the name in the box), then the checklist and the code to hand over. It
+            # says up front that we cannot tell which of the two causes it is, rather than
+            # picking one and sending them down it.
+            return (
+                "Windows would not schedule the task as that managed service account — either the "
+                "directory doesn't know the name, or this computer isn't set up to use the account. "
+                f"DistrictSync can't tell which from here. Check the name in the "
+                f"'{SCHEDULE_ACCOUNT_FIELD_LABEL}' box, then send your IT team this list and the "
+                "code shown here:"
+                "\n\n"
+                f"{_GMSA_CHECKLIST}"
+                "\n\n"
+                f"{GMSA_UNTESTED_CAPTION}" + _code(msg)
+            )
         return (
             "Windows doesn't recognise that account name. Check the spelling in the "
             f"'{SCHEDULE_ACCOUNT_FIELD_LABEL}' box, and include the domain if the account has one — "
@@ -275,3 +337,122 @@ def _unclassified_copy(msg: str) -> str:
         "the Help page has our support contact — include the detail shown here."
     )
     return lead if msg in _NO_DETAIL else f"{lead} (Details: {msg})"
+
+
+# --------------------------------------------------------------------------- #
+# Provisioning step ids (plan 0049 S-2b.1) — a SEPARATE classifier, on purpose. #
+# --------------------------------------------------------------------------- #
+#
+# ``classify_schedule_error`` keys by EXACT equality, and ``ProvisionRefused.message`` is
+# NOT a stable constant: its ``__init__`` interpolates the step, and optionally an icacls
+# exit code and a rollback sentence, so ONE ``ProvisionStep.CREATE`` failure produces
+# several different strings. Passing it to that function could therefore never match a
+# branch — now, or after someone added one. The bounded STEP is the thing that is stable,
+# so the step is what this classifier takes.
+#
+# Copy rules, beyond the ones the module docstring already sets:
+#
+# * **cause-first**, like every branch above it;
+# * **never "try again" for a state retrying cannot fix.** An override still in place, a
+#   pre-existing folder we may not adopt, a folder whose owner or permissions came out
+#   wrong, a rollback that left a directory behind, a prune that did not complete — all of
+#   those repeat identically forever, and an instruction to retry is how an admin spends an
+#   afternoon. Those branches name the precondition or the person instead;
+# * **no paths, no stderr, neither secret.** The step vocabulary exists precisely so a
+#   refusal cannot carry a resolved path (which embeds an account name) or an ``icacls``
+#   stderr line; re-introducing one in the COPY would give that back. The icacls exit code
+#   travels separately, on ``ProvisionAttempt``, where support can quote it.
+#
+# Completeness is a TEST (``tests/test_ui_flet_setup_errors.py``), following
+# ``launcher._MACHINE_SCOPE_CAUSES``: a new ``ProvisionStep`` with no copy is RED. The
+# reflection sweep in that file does NOT cover this — it derives its producible set from
+# ``task_com`` / ``windows`` / ``elevated_apply`` and would never see a new step id.
+_PROVISION_STEP_COPY: dict[ProvisionStep, str] = {
+    ProvisionStep.OVERRIDE: (
+        "DistrictSync is running with a custom settings folder (the DISTRICTSYNC_DATA_DIR setting on this "
+        "computer), and it will not move a computer's settings to a shared folder while that is in place — "
+        "nothing was changed. Remove that setting, restart DistrictSync, then set the nightly sync up again."
+    ),
+    ProvisionStep.SOURCE: (
+        "The elevated step was asked to copy settings from a different Windows account's folder than the one "
+        "it found, so it stopped before changing anything. That happens when DistrictSync is started by one "
+        "account and the Windows permission prompt is answered with another. Sign in to this computer as the "
+        "administrator who will look after DistrictSync, and set the nightly sync up from there."
+    ),
+    ProvisionStep.PRINCIPAL: (
+        "Windows didn't recognise the account you entered for the nightly sync, or wouldn't give it access to "
+        "the shared settings folder — so the nightly sync wasn't scheduled. Check the account name, including "
+        "its domain if it has one, then set the nightly sync up again."
+    ),
+    ProvisionStep.PRE_EXISTING: (
+        "There is already a folder where this computer keeps shared DistrictSync settings, and it isn't one "
+        "DistrictSync can safely use — so nothing was changed. DistrictSync will not adopt a folder it didn't "
+        "create. An administrator needs to remove or repair that folder; the Help page has our support contact."
+    ),
+    ProvisionStep.CREATE: (
+        "Windows wouldn't create the shared settings folder on this computer, so nothing was changed. Security "
+        "software sometimes blocks this. You can try once more; if it fails again, send your IT team the log "
+        "file from the Help page."
+    ),
+    ProvisionStep.MIGRATE: (
+        "This computer's existing DistrictSync settings couldn't be copied into the shared folder, so the move "
+        "was stopped and your settings are untouched. You can try once more — a file that was open at the time "
+        "is the usual reason; if it fails again, the Help page has our support contact."
+    ),
+    ProvisionStep.SECRET: (
+        "The delivery password couldn't be saved into the shared folder, so the move was stopped and this "
+        "computer is still keeping settings per Windows account. Open Delivery, enter the password again, then "
+        "set the nightly sync up again."
+    ),
+    ProvisionStep.VERIFY: (
+        "The shared settings folder was created, but its permissions didn't come out the way DistrictSync "
+        "requires, so nothing was switched over. Something on this computer is altering new folders' "
+        "permissions — send your IT team the log file from the Help page."
+    ),
+    ProvisionStep.COMMIT: (
+        "The shared settings folder was ready, but Windows wouldn't record that this computer should use it — "
+        "so DistrictSync is still keeping settings per Windows account and nothing was lost. Recording it "
+        "needs administrator rights. You can try once more; if it fails again, the Help page has our support "
+        "contact."
+    ),
+    ProvisionStep.ROLLBACK: (
+        "Something went wrong part-way through, and the folder DistrictSync had just created couldn't be "
+        "removed again. This computer is still keeping settings per Windows account. An administrator needs "
+        "to delete that leftover folder before the nightly sync can be set up for a service account; the Help "
+        "page has our support contact."
+    ),
+    ProvisionStep.GRANT: (
+        "Windows wouldn't add your account to the shared settings folder's permissions, so DistrictSync still "
+        "can't open it from this account. Ask an administrator of this computer to start DistrictSync once "
+        "while signed in as you, or send them the log file from the Help page."
+    ),
+    ProvisionStep.DELETE: (
+        "The nightly sync task couldn't be confirmed as removed, so the account it runs as still has access to "
+        "this computer's shared settings folder. Check the schedule shown above, then choose Remove nightly "
+        "sync again."
+    ),
+    ProvisionStep.PRUNE: (
+        "The nightly sync was removed, but the account it used to run as still has access to this computer's "
+        "shared settings folder. Nothing else changed, and the nightly sync really is gone. If that account "
+        "shouldn't keep access, ask your IT team to remove it."
+    ),
+}
+
+
+def classify_provision_step(step: ProvisionStep) -> str:
+    """Map an elevated provisioning refusal's STEP into calm, cause-first, actionable prose.
+
+    Separate from :func:`classify_schedule_error` because the two key on different things:
+    that one matches whole canonical MESSAGES by exact equality, and a provisioning refusal
+    has no stable message to match (see the comment above :data:`_PROVISION_STEP_COPY`).
+    Taking the bounded step instead is also what keeps the interpolated message — which can
+    carry an icacls exit code and a rollback clause — out of the admin-facing copy entirely.
+
+    Total over :class:`~src.scheduler.provisioning.ProvisionStep`: an unknown value (only
+    reachable if a member is added without copy, which the completeness test makes red)
+    degrades to the generic schedule fallback rather than raising into a paint path.
+    """
+    copy = _PROVISION_STEP_COPY.get(step)
+    if copy is None:
+        return _unclassified_copy(str(getattr(step, "value", step)))
+    return copy

@@ -28,6 +28,12 @@ def _read(res: Path) -> dict:
 
 
 def _valid_register_payload(**overrides) -> dict:
+    """A well-formed ``register`` request, with the principal DECLARED (plan 0049 S-3).
+
+    ``kind`` is a REQUIRED payload field now — a request that does not say which principal
+    shape it means is refused rather than having one inferred for it — so it is derived here
+    from the password the way the parent derives it, and any row may override it.
+    """
     payload = {
         "op": "register",
         "task_name": "DistrictSync_Daily",
@@ -40,6 +46,14 @@ def _valid_register_payload(**overrides) -> dict:
         "run_highest": True,
     }
     payload.update(overrides)
+    payload.setdefault(
+        "kind",
+        (
+            task_com.PrincipalKind.PASSWORD.value
+            if payload.get("password")
+            else task_com.PrincipalKind.INTERACTIVE_TOKEN.value
+        ),
+    )
     return payload
 
 
@@ -346,6 +360,11 @@ class TestPrincipalReValidation:
         raw = json.dumps(payload).encode()
         with (
             patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+            # ``RegisterParams`` refuses an INTERACTIVE_TOKEN registration for anybody but the
+            # signed-in account (plan 0049 S-3), and the no-password rows below name
+            # ``CORP\jane``. Pinning the current account to it keeps those rows about the thing
+            # they test — the account VALIDATOR — instead of about whose host runs the suite.
+            patch("src.scheduler.windows.current_run_as_user", return_value="CORP\\jane"),
             patch("src.scheduler.task_com.register_task_definition") as reg,
         ):
             code = elevated_apply.run_elevated_apply([str(req), str(res)])
@@ -598,3 +617,185 @@ class TestMachineScopeOps:
         assert "usage" in out.lower()  # help really printed (positive twin)
         for op in ("--provision", "grant_current_user", "prune_principal"):
             assert op not in out
+
+
+class TestTheChildsKindAwareLadder:
+    """Plan 0049 S-3.1.3 — the MAKE-OR-BREAK rung of the whole slice.
+
+    Until S-3 this module called `validate_run_as_user(payload["user"])` unconditionally.
+    That was a deliberate fail-closed floor and correct for the two kinds that existed —
+    but its regex has no `$` in its charset, and EVERY unattended registration comes
+    through here (a non-elevated `register_task` self-elevates for both unattended kinds).
+    So a managed service account was unreachable no matter what the engine could express.
+
+    The fix narrows the floor rather than widening it: one validator per kind, with the two
+    charsets disjoint on exactly the character that distinguishes the kinds.
+    """
+
+    _GMSA = "CORP\\svc_sync$"
+
+    def _run(self, tmp_path: Path, payload: dict):
+        req, res = _sealed(tmp_path, None)
+        raw = json.dumps(payload).encode()
+        with (
+            patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+            patch("src.scheduler.windows.current_run_as_user", return_value="CORP\\jane"),
+            patch("src.scheduler.task_com.register_task_definition") as reg,
+        ):
+            code = elevated_apply.run_elevated_apply([str(req), str(res)])
+        return code, _read(res), reg
+
+    def test_a_payload_without_a_kind_is_refused_before_any_com_call(self, tmp_path: Path) -> None:
+        """A request that does not SAY which principal shape it means gets no inference made
+        for it — the parent always writes the field, so its absence is a malformed request."""
+        payload = _valid_register_payload()
+        payload.pop("kind")
+        _code, out, reg = self._run(tmp_path, payload)
+        assert out["ok"] is False
+        assert "not valid" in out["message"]
+        reg.assert_not_called()
+
+    def test_a_payload_with_one_still_registers(self, tmp_path: Path) -> None:
+        """The positive twin: the new required field must not close the whole op."""
+        _code, out, reg = self._run(tmp_path, _valid_register_payload())
+        assert out["ok"] is True
+        assert reg.call_args[0][0].kind is task_com.PrincipalKind.PASSWORD
+
+    def test_an_unknown_kind_is_refused_not_coerced(self, tmp_path: Path) -> None:
+        _code, out, reg = self._run(tmp_path, _valid_register_payload(kind="service_account"))
+        assert out["ok"] is False
+        assert "not valid" in out["message"]
+        reg.assert_not_called()
+
+    def test_a_managed_service_account_is_accepted_with_no_password(self, tmp_path: Path) -> None:
+        """The rung that was impossible before. `validate_run_as_user` refuses this name."""
+        payload = _valid_register_payload(
+            kind=task_com.PrincipalKind.MANAGED_SERVICE_ACCOUNT.value,
+            user=self._GMSA,
+            password=None,
+        )
+        _code, out, reg = self._run(tmp_path, payload)
+        assert out["ok"] is True
+        params = reg.call_args[0][0]
+        assert (params.user, params.password) == (self._GMSA, None)
+        assert params.kind is task_com.PrincipalKind.MANAGED_SERVICE_ACCOUNT
+
+    def test_the_old_validator_would_have_refused_that_exact_name(self) -> None:
+        """Not a claim about history — an assertion of it, so the row above cannot quietly
+        become a test of nothing if the charsets are ever merged."""
+        from src.utils.validators import validate_run_as_user
+
+        with pytest.raises(ValueError):
+            validate_run_as_user(self._GMSA)
+
+    def test_a_hostile_account_is_still_refused_under_the_service_account_kind(self, tmp_path: Path) -> None:
+        """Declaring a kind does not buy a payload a looser validator."""
+        payload = _valid_register_payload(
+            kind=task_com.PrincipalKind.MANAGED_SERVICE_ACCOUNT.value,
+            user="svc && calc$",
+            password=None,
+        )
+        _code, out, reg = self._run(tmp_path, payload)
+        assert out["ok"] is False
+        assert "not valid" in out["message"]
+        reg.assert_not_called()
+
+    def test_a_password_account_may_not_wear_the_service_account_suffix(self, tmp_path: Path) -> None:
+        """The other direction of the same disjointness: `SVC$` with a stored password is a
+        caller who has mixed up two credential stories."""
+        payload = _valid_register_payload(kind=task_com.PrincipalKind.PASSWORD.value, user=self._GMSA)
+        _code, out, reg = self._run(tmp_path, payload)
+        assert out["ok"] is False
+        reg.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "account",
+        ["THISHOST$", "BUILTIN\\svc$"],
+        ids=["this-computers-own-account", "built-in-authority"],
+    )
+    def test_the_by_name_refusals_fire_in_the_privileged_half_too(self, tmp_path: Path, account: str) -> None:
+        """S-3.3: "refuses BY NAME, in BOTH halves". A computer account has the gMSA shape
+        and `THISHOST$` is SYSTEM-equivalent, so the half that actually calls
+        `RegisterTaskDefinition` under an elevated token is the half that must not accept it.
+        """
+        import os
+
+        payload = _valid_register_payload(
+            kind=task_com.PrincipalKind.MANAGED_SERVICE_ACCOUNT.value,
+            user=account,
+            password=None,
+        )
+        with patch.dict(os.environ, {"COMPUTERNAME": "THISHOST"}, clear=False):
+            _code, out, reg = self._run(tmp_path, payload)
+        assert out["ok"] is False
+        reg.assert_not_called()
+
+    def test_an_interactive_token_payload_is_still_validated_the_old_way(self, tmp_path: Path) -> None:
+        """The NEGATIVE twin of the dispatch: only the service-account kind changes validator.
+        (The parent never routes an interactive registration through elevation — the predicate
+        is `kind is not INTERACTIVE_TOKEN` — so this rung is a fail-closed floor, not a path.)
+        """
+        payload = _valid_register_payload(
+            kind=task_com.PrincipalKind.INTERACTIVE_TOKEN.value,
+            user=self._GMSA,
+            password=None,
+        )
+        _code, out, reg = self._run(tmp_path, payload)
+        assert out["ok"] is False
+        reg.assert_not_called()
+
+    def test_the_provision_op_declares_its_kind_too(self, tmp_path: Path) -> None:
+        """`_do_provision` injects THIS `_do_register`, so the provision payload carries the
+        same field — and an unknown value refuses the whole op BEFORE the sequence starts,
+        because the kind is read long before step 8 (the DACL grant needs the principal)."""
+        req, res = _sealed(tmp_path, None)
+        payload = _valid_register_payload(op="provision", kind="service_account")
+        payload["source_data_dir"] = "C:\\Users\\jane\\AppData\\Local\\DistrictSync"
+        raw = json.dumps(payload).encode()
+        with (
+            patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+            patch("src.scheduler.provisioning.apply_provision") as engine,
+        ):
+            elevated_apply.run_elevated_apply([str(req), str(res)])
+            engine.assert_not_called()
+        out = _read(res)
+        assert out["ok"] is False
+        assert "not valid" in out["message"]
+
+    def test_the_injected_register_inherits_the_kind_aware_ladder(self, tmp_path: Path) -> None:
+        """S-3.1.3 says one fix covers the provisioning path because the SAME `_do_register`
+        is injected. This verifies that rather than assuming it: a gMSA provision payload's
+        injected callable registers the service account, with no password."""
+        req, res = _sealed(tmp_path, None)
+        payload = _valid_register_payload(
+            op="provision",
+            kind=task_com.PrincipalKind.MANAGED_SERVICE_ACCOUNT.value,
+            user=self._GMSA,
+            password=None,
+        )
+        payload["source_data_dir"] = "C:\\Users\\jane\\AppData\\Local\\DistrictSync"
+        raw = json.dumps(payload).encode()
+        with (
+            patch("src.scheduler.elevation.unprotect_blob", return_value=raw),
+            patch("src.scheduler.provisioning.apply_provision") as engine,
+            patch("src.scheduler.task_com.register_task_definition") as reg,
+        ):
+            elevated_apply.run_elevated_apply([str(req), str(res)])
+            engine.call_args[1]["register"]()
+        params = reg.call_args[0][0]
+        assert (params.user, params.password) == (self._GMSA, None)
+        assert params.kind is task_com.PrincipalKind.MANAGED_SERVICE_ACCOUNT
+
+    def test_the_provisioning_engine_validates_the_principal_by_kind_as_well(self) -> None:
+        """The engine grants ACEs and looks up a SID for this name, so refusing a service
+        account THERE would leave the nightly registered to a principal the shared profile
+        had never granted anything to — the same hole, one layer up."""
+        from src.scheduler import provisioning
+
+        payload = {"user": self._GMSA, "kind": task_com.PrincipalKind.MANAGED_SERVICE_ACCOUNT.value}
+        assert provisioning._principal_account(payload, setup_account="CORP\\ted") == self._GMSA
+        with pytest.raises(provisioning.ProvisionRefused):
+            provisioning._principal_account(
+                {"user": self._GMSA, "kind": task_com.PrincipalKind.PASSWORD.value},
+                setup_account="CORP\\ted",
+            )

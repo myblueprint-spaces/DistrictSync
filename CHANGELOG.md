@@ -9,6 +9,58 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Added
+
+- **Managed service accounts (gMSA): available, untested.** Setup can now be
+  asked to schedule the nightly sync as a group managed service account —
+  type the account with its trailing `$` into **Windows account for the
+  nightly task** and tick **This is a managed service account (gMSA)**. The
+  Windows password box disappears, because the directory holds that
+  credential and there is nothing for you to type. **We have not been able to
+  test this against a live domain** — there is no domain controller in our
+  test environment — so it is offered as something to try with your IT team,
+  not as a known fix. The option says so on screen, and every failure message
+  it can produce carries the Windows code we would need to work it out with
+  you. Two districts may find it useful anyway — one whose security policy
+  refuses to store a task's password (Windows code `0x80070520`), and one
+  whose service-account password rotation keeps breaking the nightly task.
+  **It is not a free experiment:** scheduling the nightly sync as any account
+  other than your own also moves this computer's settings to a shared folder,
+  which this version cannot undo, and that part can succeed even if the gMSA
+  registration then fails — DistrictSync asks you to confirm the move first,
+  as it already does for a service account. The three things your IT team
+  must do before you try, and what DistrictSync can and cannot undo, are in
+  *Managed service accounts (gMSA) — what your IT team needs to do*. The
+  option is on the Setup screen of a configured install only; first-run setup
+  does not offer it.
+
+- **A service account no longer needs its delivery password set up by hand.**
+  Scheduling the nightly sync to run as another Windows account used to mean
+  first running `--sftp-configure` as that account from a command prompt: the
+  delivery password is kept per Windows account, and a service account could
+  not read yours. DistrictSync now offers to change this computer over to
+  **settings for this computer** — your district, folders, delivery password
+  and run history move into one shared folder (`C:\ProgramData\DistrictSync`)
+  that the nightly task's account can read, so the manual step is no longer
+  needed. It lists exactly what will move and asks you to confirm first, and
+  Windows asks for permission before anything changes. Two things are worth
+  weighing before you say yes. Afterwards, any administrator of this computer
+  can open DistrictSync and change these settings, while an account that is not
+  an administrator cannot open it at all. And **this version cannot change it
+  back** — "Remove nightly sync" removes the scheduled task, it does not undo
+  this. Nothing changes unless you choose it: installing this version switches
+  nothing on its own, and a nightly sync already scheduled under an earlier
+  version keeps running exactly as it is.
+
+- **Home and Setup now say whose settings you are looking at.** On a computer
+  that has been changed over, both screens carry a line reading
+  *"Shared settings on this computer"*, naming who set it up and when where
+  DistrictSync has that on record — so a second administrator is not left
+  wondering why the app behaves differently from the one their colleague
+  described. An ordinary install shows no line there; that is the normal state,
+  not a fault. Your setup guide explains both, and
+  `DistrictSync-windows.exe --diagnose` prints the same answer from a terminal.
+
 ## [3.22.0] - 2026-09-18
 
 An attendance extract that has started carrying a heading row now loads

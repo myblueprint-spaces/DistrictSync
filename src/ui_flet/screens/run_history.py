@@ -34,10 +34,12 @@ import flet as ft
 from src.config.app_config import AppConfig
 from src.history.store import read_run_records, store_meta
 from src.scheduler import get_scheduler
-from src.ui_flet import components
+from src.ui_flet import components, tokens
 from src.ui_flet.humanize import friendly_district_name
-from src.ui_flet.run_history import derive_history_banner, to_run_rows
+from src.ui_flet.run_history import derive_history_banner, run_as_summary_line, to_run_rows
 from src.ui_flet.schedule_status import ScheduleStatus
+from src.utils import paths
+from src.utils.accounts import process_account
 
 LIMIT = 50
 """The newest-N runs shown (mirrors the Streamlit page). A 2-3x/yr admin reviews a short list —
@@ -123,7 +125,13 @@ def _surface(page: ft.Page, app_config: AppConfig, on_refresh: Callable[[], None
         ]
         # None (unavailable) / [] (no runs) → banner alone (nothing to tabulate). Otherwise the table.
         if records:
-            rows = to_run_rows(records, active_sis=app_config.sis_type)[:LIMIT]
+            # 0049 S-2a.5: the account now running is injected (the derivation is pure and never
+            # reads the environment); the bounded per-row display and the table-wide "would this
+            # column say anything?" rule live in run_history/components, not here.
+            rows = to_run_rows(records, active_sis=app_config.sis_type, current_account=process_account())[:LIMIT]
+            summary = run_as_summary_line(rows, machine_scope=paths.is_machine_scope())
+            if summary:
+                controls.append(ft.Text(summary, size=tokens.type_caption, color=tokens.color_muted))
             controls.append(_scrollable_table(components.run_table(rows)))
         if on_refresh is not None:
             controls.append(_refresh_button(on_refresh))
@@ -150,11 +158,14 @@ def _probe_schedule_async(
         from src.ui_flet.schedule_probe import foreign_task_account, probe_schedule
 
         # 0046 C: resolved inside the worker thread (see screens/home.py) — fails to "", which alarms.
+        # 0049 S-2a.1: the shared-profile fact decides whether that principal's records are absent
+        # from THIS ledger or arriving in it from now on.
         status = probe_schedule(
             app_config.schedule_task_name,
             hint_registered=app_config.schedule_registered,
             latest_record_ts=latest_ts,
             foreign_account=foreign_task_account(app_config),
+            shared_records=paths.is_machine_scope(),
         )
 
         async def _apply() -> None:

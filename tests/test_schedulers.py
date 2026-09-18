@@ -15,6 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.scheduler.task_com import Principal, PrincipalKind
+
 # -----------------------------------------------------------------------
 # _build_action_args — the task action's command line (transport-independent)
 # -----------------------------------------------------------------------
@@ -95,6 +97,7 @@ class TestBuildActionArgs:
                     input_dir=Path("i"),
                     output_dir=Path("o"),
                     run_time="03:00",
+                    principal=Principal(kind=PrincipalKind.INTERACTIVE_TOKEN),
                 )
                 base.update(kwargs)
                 with pytest.raises(ValueError):
@@ -899,3 +902,190 @@ class TestMarkerListsAreSingleSourced:
         assert windows._sanitize_child_message("dsync_task_pw=hunter2") == windows._MSG_CHILD_DETAIL_UNAVAILABLE
         assert windows._sanitize_child_message("boom DSYNC_TASK_PW=leak") == windows._MSG_CHILD_DETAIL_UNAVAILABLE
         assert windows._sanitize_child_message("Schedule removed and confirmed.") == "Schedule removed and confirmed."
+
+
+# -----------------------------------------------------------------------
+# Plan 0049 S-3.5 — the principal on the read-back, and the fail-open mismatch WARNING
+# -----------------------------------------------------------------------
+
+
+class TestReadBackCarriesThePrincipal:
+    """``ScheduleReadback`` gained ``run_as`` / ``logon_type``, for DISPLAY only.
+
+    They are a SECOND, independent source of a fact ``AppConfig.schedule_run_as_user``
+    already records. ``schedule_probe.foreign_task_account`` deliberately keeps reading the
+    RECORD (S-3.5) — a live read that legitimately answers ``None`` must not be able to
+    switch a suppression on and off.
+    """
+
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_the_principal_rides_through_to_the_readback(self, mock_bounded):
+        from src.scheduler import task_com
+        from src.scheduler.windows import read_schedule
+
+        mock_bounded.return_value = TestReadSchedule._facts(
+            run_as="CORP\\svc_sync$", logon_type=task_com.TASK_LOGON_PASSWORD
+        )
+        rb = read_schedule("DistrictSync_Daily")
+        assert rb.found is True
+        assert rb.run_as == "CORP\\svc_sync$"
+        assert rb.logon_type == task_com.TASK_LOGON_PASSWORD
+
+    @patch("src.scheduler.windows.sys.platform", "win32")
+    @patch("src.scheduler.windows.task_com.bounded")
+    def test_an_older_task_with_no_principal_facts_is_none_not_absent(self, mock_bounded):
+        """The fields default to ``None`` so every ``ScheduleReadback`` stays total: a task
+        registered by an older build, or one whose principal a filtered token cannot read,
+        simply has no answer — and ``found`` is untouched by that."""
+        from src.scheduler.windows import read_schedule
+
+        mock_bounded.return_value = TestReadSchedule._facts()
+        rb = read_schedule("DistrictSync_Daily")
+        assert rb.found is True
+        assert (rb.run_as, rb.logon_type) == (None, None)
+
+    def test_a_missing_or_unknown_readback_carries_no_principal_either(self):
+        from src.scheduler.windows import ScheduleReadback
+
+        assert ScheduleReadback(found=False).run_as is None
+        assert ScheduleReadback(found=None).logon_type is None
+
+
+class TestPrincipalMismatchIsAFailOpenWarning:
+    """A requested-vs-read-back disagreement is EVIDENCE, never a verdict (S-3.5).
+
+    The registration is already confirmed when this runs. Two spellings of one account are
+    common and legitimate — ``CORP\\svc`` vs ``svc@corp.local`` vs a raw SID — so anything
+    the comparison cannot normalise is silence, not an alarm. That is the only safe
+    direction: a second source that could veto the first would turn a naming convention
+    nobody has measured into a broken nightly.
+    """
+
+    _KIND = PrincipalKind.PASSWORD
+
+    def _confirm(self, readback, *, requested_user="CORP\\jane", requested_kind=None):
+        from src.scheduler import windows
+
+        with patch("src.scheduler.windows.read_schedule", return_value=readback):
+            return windows._confirm_registration(
+                "DistrictSync_Daily",
+                on_unconfirmed="unconfirmed",
+                path_label="Registration",
+                requested_user=requested_user,
+                requested_kind=requested_kind or self._KIND,
+            )
+
+    def _readback(self, **overrides):
+        from src.scheduler import task_com
+        from src.scheduler.windows import ScheduleReadback
+
+        fields = {"found": True, "run_as": "CORP\\jane", "logon_type": task_com.TASK_LOGON_PASSWORD}
+        fields.update(overrides)
+        return ScheduleReadback(**fields)
+
+    def test_a_matching_principal_says_nothing(self, caplog):
+        import logging as logging_mod
+
+        with caplog.at_level(logging_mod.DEBUG):
+            ok, _msg = self._confirm(self._readback())
+        assert ok is True
+        assert "different account" not in caplog.text
+        assert "logon type" not in caplog.text
+
+    def test_the_account_comparison_is_case_insensitive(self, caplog):
+        """Windows account names are not case-sensitive; the same equivalence
+        ``setup_gates.principal_key`` and ``register_task`` state."""
+        import logging as logging_mod
+
+        with caplog.at_level(logging_mod.DEBUG):
+            ok, _msg = self._confirm(self._readback(run_as="corp\\JANE"))
+        assert ok is True
+        assert "different account" not in caplog.text
+
+    def test_a_different_account_warns_and_still_succeeds(self, caplog):
+        import logging as logging_mod
+
+        with caplog.at_level(logging_mod.DEBUG):
+            ok, msg = self._confirm(self._readback(run_as="CORP\\someone-else"))
+        assert (ok, msg) == (True, "Schedule registered and confirmed.")  # FAIL OPEN
+        warnings = [r for r in caplog.records if r.levelno == logging_mod.WARNING]
+        assert any("different account" in r.getMessage() for r in warnings)
+
+    def test_the_warning_names_no_account(self, caplog):
+        """These are ordinary lines in a district's ``etl_tool.log``, the account is
+        PII-adjacent, and the house rule (``_fail``) is that scheduler lines carry statuses
+        and codes, not identities."""
+        import logging as logging_mod
+
+        with caplog.at_level(logging_mod.DEBUG):
+            self._confirm(self._readback(run_as="CORP\\uniq-Kp3z-account"), requested_user="CORP\\uniq-Rr9w-account")
+        assert "uniq-Kp3z-account" not in caplog.text
+        assert "uniq-Rr9w-account" not in caplog.text
+
+    def test_a_different_logon_type_warns_with_both_numbers(self, caplog):
+        """The logon types ARE named: they are small integers, not identities, and "which of
+        the three kinds did Windows actually store?" is the whole diagnostic value."""
+        import logging as logging_mod
+
+        from src.scheduler import task_com
+
+        with caplog.at_level(logging_mod.DEBUG):
+            ok, _msg = self._confirm(self._readback(logon_type=task_com.TASK_LOGON_INTERACTIVE_TOKEN))
+        assert ok is True
+        line = next(r.getMessage() for r in caplog.records if "logon type" in r.getMessage())
+        assert str(task_com.TASK_LOGON_INTERACTIVE_TOKEN) in line
+        assert str(task_com.TASK_LOGON_PASSWORD) in line
+
+    def test_a_service_account_reads_back_as_the_password_logon_without_complaint(self, caplog):
+        """The measured gMSA fact, from the other side: a managed service account registers
+        with ``TASK_LOGON_PASSWORD``, so reading that back is agreement, not a mismatch."""
+        import logging as logging_mod
+
+        from src.scheduler import task_com
+
+        with caplog.at_level(logging_mod.DEBUG):
+            ok, _msg = self._confirm(
+                self._readback(run_as="CORP\\svc_sync$", logon_type=task_com.TASK_LOGON_PASSWORD),
+                requested_user="CORP\\svc_sync$",
+                requested_kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT,
+            )
+        assert ok is True
+        assert "logon type" not in caplog.text
+
+    @pytest.mark.parametrize(
+        ("run_as", "logon_type"),
+        [(None, None), ("", None), (None, 1)],
+        ids=["nothing-readable", "blank-account", "account-unreadable-logon-matches"],
+    )
+    def test_an_unreadable_principal_is_silence_not_an_alarm(self, run_as, logon_type, caplog):
+        """The fail-open direction, explicitly: a task whose principal the probe could not
+        read must not be reported as a mismatch."""
+        import logging as logging_mod
+
+        with caplog.at_level(logging_mod.DEBUG):
+            ok, _msg = self._confirm(self._readback(run_as=run_as, logon_type=logon_type))
+        assert ok is True
+        assert [r for r in caplog.records if r.levelno >= logging_mod.WARNING] == []
+
+    def test_an_unconfirmed_registration_never_reaches_the_comparison(self, caplog):
+        """``found=None`` is already the honest "we could not confirm" outcome; comparing a
+        principal we never read would add a second, contradictory story to the same line."""
+        import logging as logging_mod
+
+        from src.scheduler.windows import ScheduleReadback
+
+        with caplog.at_level(logging_mod.DEBUG):
+            ok, msg = self._confirm(ScheduleReadback(found=None))
+        assert (ok, msg) == (False, "unconfirmed")
+        assert "different account" not in caplog.text
+
+    def test_both_requested_facts_are_required_keywords(self):
+        """No permissive default on a safety-relevant parameter: a defaulted kind would
+        quietly compare every registration against the wrong logon type."""
+        from src.scheduler import windows
+
+        with pytest.raises(TypeError):
+            windows._confirm_registration(  # type: ignore[call-arg]
+                "T", on_unconfirmed="x", path_label="Registration"
+            )

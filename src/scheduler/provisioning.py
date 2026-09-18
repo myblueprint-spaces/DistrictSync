@@ -62,10 +62,10 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
+from src.scheduler import task_com
 from src.scheduler.windows import current_run_as_user
 from src.utils import paths
 from src.utils.helpers import subprocess_no_window_flags, system_binary
-from src.utils.validators import validate_run_as_user
 
 # --------------------------------------------------------------------------- #
 # The D2 descriptor.                                                          #
@@ -593,6 +593,7 @@ def build_provision_payload(
     working_dir: str,
     run_time: str,
     user: str,
+    kind: task_com.PrincipalKind,
     run_highest: bool,
     password: str | None = None,
     sftp_host: str = "",
@@ -610,7 +611,12 @@ def build_provision_payload(
     ``source_data_dir`` is stamped here so the child can refuse a request that names a
     different profile from the one it resolves itself.
 
-    Nothing calls this yet — Schedule-time dispatch is S-2.
+    ``kind`` is REQUIRED and undefaulted (plan 0049 S-3). The provision op registers the
+    nightly as its last step, through the SAME ``elevated_apply._do_register`` the plain
+    register op uses, so its payload must declare the principal the same way — and a
+    default here would be a substituted security principal wearing a payload builder's
+    clothes. It travels as the enum's stable string value: this dict is JSON, sealed and
+    unsealed across a process boundary.
 
     Raises:
         ProvisionRefused: with :attr:`ProvisionStep.OVERRIDE`.
@@ -625,6 +631,7 @@ def build_provision_payload(
         "working_dir": working_dir,
         "run_time": run_time,
         "user": user,
+        "kind": kind.value,
         "run_highest": run_highest,
         "password": password or "",
         "sftp_host": sftp_host,
@@ -673,12 +680,22 @@ def _sid_for(account: str) -> str:
 
 
 def _principal_account(payload: Mapping[str, object], *, setup_account: str) -> str:
-    """The account the nightly will run as. Blank means the setup user (0046's ``""``)."""
+    """The account the nightly will run as. Blank means the setup user (0046's ``""``).
+
+    The validator is chosen by the payload's declared ``kind`` (plan 0049 S-3), matching
+    ``elevated_apply._do_register``'s ladder rung for rung. It has to: this is the name that
+    gets ACEs on ``C:\\ProgramData\\DistrictSync`` and a SID looked up for it, and refusing
+    a managed service account here would leave the nightly registered to a principal the
+    shared profile had never granted anything to. An unknown kind is a refusal, never a
+    default — the enum call raises and it lands on the same ``PRINCIPAL`` step id as a
+    malformed name.
+    """
     requested = str(payload.get("user", "")).strip()
     if not requested:
         return setup_account
     try:
-        return validate_run_as_user(requested)
+        kind = task_com.PrincipalKind(str(payload.get("kind", "")))
+        return task_com.validate_principal_account(kind, requested)
     except ValueError as exc:
         raise ProvisionRefused(ProvisionStep.PRINCIPAL) from exc
 
@@ -913,6 +930,18 @@ def apply_prune_principal(payload: Mapping[str, object]) -> None:
     access rather than adding it — the damage is a locked-out profile, not an escalation,
     and this fence makes the unsafe call unrepresentable rather than merely unlikely.
 
+    **The name is validated against its KIND** (plan 0049 S-4), mirroring
+    :func:`_principal_account` rung for rung. Until S-4 this was ``validate_run_as_user``
+    unconditionally, which rejects a trailing ``$`` — so the one principal that most needs
+    pruning could not be pruned at all, and a retired managed service account would keep its
+    ACEs on the shared profile with nothing in the app able to revoke them. The kind travels
+    on the payload and an ABSENT one resolves through
+    ``task_com.principal_kind_from_record`` (the same evidenced rule the durable record uses):
+    a request built by an earlier build carries no ``kind``, and the only foreign principal
+    those builds could register was a password logon. An unrecognised value lands there too
+    rather than raising, and the ``$``-disagreement is then caught by the validator itself —
+    a ``SVC$`` name checked as a password logon is REFUSED, which is the safe direction.
+
     Raises:
         ProvisionRefused: with ``OVERRIDE``, ``PRE_EXISTING``, ``PRINCIPAL``, ``DELETE`` or ``PRUNE``.
     """
@@ -927,7 +956,8 @@ def apply_prune_principal(payload: Mapping[str, object]) -> None:
     if not requested:
         raise ProvisionRefused(ProvisionStep.PRINCIPAL)
     try:
-        principal = validate_run_as_user(requested)
+        kind = task_com.principal_kind_from_record(payload.get("kind"), user=requested)
+        principal = task_com.validate_principal_account(kind, requested)
     except ValueError as exc:
         raise ProvisionRefused(ProvisionStep.PRINCIPAL) from exc
     principal_sid = _sid_for(principal)

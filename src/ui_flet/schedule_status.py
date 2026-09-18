@@ -47,6 +47,19 @@ FOREIGN_RECORDS_NOTE = (
     "and don't appear in Run History here."
 )
 
+#: The SHARED-RECORDS sibling of :data:`FOREIGN_RECORDS_NOTE` (plan 0049 S-2a.2). On a
+#: machine-scoped install the nightly and this app read and write ONE profile, so "they don't
+#: appear in Run History here" is false — but only **from provisioning onward**. Provisioning
+#: migrates the admin's own ``history.db``; the service account's pre-provisioning profile is
+#: never touched and cannot be, so an install that ran for months under a foreign principal has
+#: a real, permanent gap the district can see in its own ledger. The sentence therefore says
+#: "appear here from now on" and never a flat "its records are here" — and Run History keeps its
+#: gap arm alive for the older dates.
+FOREIGN_RECORDS_SHARED_NOTE = (
+    "Your nightly sync runs as {account}. This computer's DistrictSync settings and run history "
+    "are shared, so its run records appear here from now on."
+)
+
 # Path components that mean the running exe lives in a transient location — pinning a task
 # to it risks the "task fires, exe is gone, nothing recorded" blind spot (the Downloads case).
 _TRANSIENT_DIR_PARTS: frozenset[str] = frozenset({"downloads", "temp", "tmp"})
@@ -216,7 +229,9 @@ class ScheduleStatus:
     to ``AppConfig.schedule_run_as_user``, and ``setup_gates.principal_key`` reduces it to a
     different identity than the account now running. It is the sole authority for "a missing run
     record is EXPECTED here" — never inferred from an empty store, never from the config hint flag,
-    and never read back off the live task (``task_com.TaskFacts`` carries no principal at all).
+    and never read back off the live task. (``ScheduleReadback.run_as`` exists since plan 0049 S-3,
+    but it is display-only and nothing consumes it: a probe that can answer ``None`` must not be
+    able to switch a suppression on and off.)
 
     ONE fact, ONE carrier: ``_is_contradiction`` reads it directly and ``home_status._is_missed_run``
     reads it off the ``ScheduleStatus`` it already receives, so the two predicates can never
@@ -230,6 +245,26 @@ class ScheduleStatus:
     by accident.
     """
 
+    shared_records: bool = False
+    """Whether this install reads and writes the SHARED machine-scoped profile (plan 0049 S-2a.1).
+
+    ``paths.is_machine_scope()``, resolved at the view seam that already does the I/O and carried
+    here for exactly the reason ``foreign_account`` is: ONE fact, ONE carrier. Every predicate that
+    suppresses an alarm under a foreign principal reads BOTH off the same ``ScheduleStatus``
+    (``_is_contradiction`` directly, ``home_status._is_missed_run`` /
+    ``home_status._foreign_records_elsewhere`` / the two ``sync_window_paused`` derivations off the
+    status they already receive), so they can never disagree about one install.
+
+    **The rule everywhere: suppress only when ``foreign_account and not shared_records``.** Slice C
+    (plan 0046) made "the records land in another profile" true by suppressing alarms; machine
+    scope makes it FALSE, and this is the one fact those predicates were missing.
+
+    The dataclass default is ``False`` — the value that keeps today's behaviour byte-identical —
+    while the INPUT on :func:`derive_schedule_status` is REQUIRED keyword-only: a defaulted
+    ``False`` at the seam would silently keep the now-wrong claims on exactly the installs this
+    plan exists to fix.
+    """
+
 
 def derive_schedule_status(
     readback: ScheduleReadback,
@@ -237,6 +272,7 @@ def derive_schedule_status(
     hint_registered: bool,
     latest_record_ts: str | None,
     foreign_account: str,
+    shared_records: bool,
     surface: str = "home",
 ) -> ScheduleStatus:
     """Derive the tri-state ``ScheduleStatus`` from a read-back + the config hint (pure, TOTAL).
@@ -260,6 +296,11 @@ def derive_schedule_status(
     disable the app's only "did it run?" signal). Resolved by the one impure
     ``schedule_probe.foreign_task_account``. It is threaded to ALL THREE builders — Home and Run
     History read the field regardless of state, so a MISSING/UNKNOWN status must carry it too.
+
+    ``shared_records`` (plan 0049 S-2a.1) is REQUIRED keyword-only for the same reason and is
+    threaded to all three builders too — the pure consumers read it off the status. See the field
+    docstring for the one rule it serves: suppress only when ``foreign_account and not
+    shared_records``.
     """
     if readback.found is True:
         return _live_status(
@@ -267,10 +308,16 @@ def derive_schedule_status(
             latest_record_ts=latest_record_ts,
             expected=hint_registered,
             foreign_account=foreign_account,
+            shared_records=shared_records,
         )
     if readback.found is False:
-        return _missing_status(expected=hint_registered, surface=surface, foreign_account=foreign_account)
-    return _unknown_status(expected=hint_registered, foreign_account=foreign_account)
+        return _missing_status(
+            expected=hint_registered,
+            surface=surface,
+            foreign_account=foreign_account,
+            shared_records=shared_records,
+        )
+    return _unknown_status(expected=hint_registered, foreign_account=foreign_account, shared_records=shared_records)
 
 
 def _live_status(
@@ -279,6 +326,7 @@ def _live_status(
     latest_record_ts: str | None,
     expected: bool,
     foreign_account: str,
+    shared_records: bool,
 ) -> ScheduleStatus:
     """Build the LIVE status — a registered task, with next-run copy + contradiction detection.
 
@@ -297,8 +345,16 @@ def _live_status(
     Run History already own the "a run failed" narrative (exactly why ``_is_contradiction`` was
     written not to fire on a non-benign ``last_result`` alone), so their copy stays byte-identical
     apart from the one appended run-result sentence.
+
+    ``shared_records`` (plan 0049 S-2a) lifts step 1's suppression and swaps step 3's sentence for
+    :data:`FOREIGN_RECORDS_SHARED_NOTE`. Step 4's second arm is deliberately UNCHANGED: Windows'
+    own ``LastTaskResult`` reporting a problem is evidence about the RUN, not a claim about where
+    the record went, so narrowing an alarm there would be the one direction this plan must never
+    move.
     """
-    contradiction = _is_contradiction(readback, latest_record_ts, foreign_account=foreign_account)
+    contradiction = _is_contradiction(
+        readback, latest_record_ts, foreign_account=foreign_account, shared_records=shared_records
+    )
     if contradiction:
         # HEDGED copy (honesty): the evidence is only that a run fired without a store record —
         # it does NOT establish the run failed, or that the app was moved. Name what we can see
@@ -316,6 +372,7 @@ def _live_status(
             next_run_display=None,
             attention=True,
             foreign_account=foreign_account,
+            shared_records=shared_records,
         )
 
     # The next-run time comes ONLY from the OS-reported NextRunTime — never the config hint
@@ -332,7 +389,8 @@ def _live_status(
     # take over the alarm. Sentences are appended in fixed order and only when non-empty.
     verdict = run_result_verdict(readback.last_result)
     if foreign_account:
-        detail = f"{detail} {FOREIGN_RECORDS_NOTE.format(account=foreign_account)}"
+        note = FOREIGN_RECORDS_SHARED_NOTE if shared_records else FOREIGN_RECORDS_NOTE
+        detail = f"{detail} {note.format(account=foreign_account)}"
     if verdict.note:
         detail = f"{detail} {verdict.note}"
     reported_problem = bool(foreign_account) and verdict.reported_a_problem
@@ -345,10 +403,13 @@ def _live_status(
         next_run_display=next_display,
         attention=reported_problem,
         foreign_account=foreign_account,
+        shared_records=shared_records,
     )
 
 
-def _missing_status(*, expected: bool, foreign_account: str, surface: str = "home") -> ScheduleStatus:
+def _missing_status(
+    *, expected: bool, foreign_account: str, shared_records: bool, surface: str = "home"
+) -> ScheduleStatus:
     """Build the MISSING status — a definitively-absent task; copy varies on expectation + surface.
 
     ``surface="setup"`` swaps the circular "in Setup" pointer for "below" (the fix is on THIS
@@ -366,6 +427,7 @@ def _missing_status(*, expected: bool, foreign_account: str, surface: str = "hom
             expected=True,
             attention=True,
             foreign_account=foreign_account,
+            shared_records=shared_records,
         )
     return ScheduleStatus(
         state=ScheduleState.MISSING,
@@ -374,10 +436,11 @@ def _missing_status(*, expected: bool, foreign_account: str, surface: str = "hom
         expected=False,
         attention=False,
         foreign_account=foreign_account,
+        shared_records=shared_records,
     )
 
 
-def _unknown_status(*, expected: bool, foreign_account: str) -> ScheduleStatus:
+def _unknown_status(*, expected: bool, foreign_account: str, shared_records: bool) -> ScheduleStatus:
     """Build the UNKNOWN status — the query failed; NEVER assert a schedule from the hint.
 
     Carries ``foreign_account`` (the RECORD is readable even when the OS query failed) but the
@@ -391,10 +454,17 @@ def _unknown_status(*, expected: bool, foreign_account: str) -> ScheduleStatus:
         expected=expected,
         attention=False,
         foreign_account=foreign_account,
+        shared_records=shared_records,
     )
 
 
-def _is_contradiction(readback: ScheduleReadback, latest_record_ts: str | None, *, foreign_account: str) -> bool:
+def _is_contradiction(
+    readback: ScheduleReadback,
+    latest_record_ts: str | None,
+    *,
+    foreign_account: str,
+    shared_records: bool,
+) -> bool:
     """Whether the task fired but the store has no row for that run (the record-gap blind spot).
 
     The SOLE trigger is the record gap: a real prior run (``last_run`` present, so the never-run
@@ -415,8 +485,13 @@ def _is_contradiction(readback: ScheduleReadback, latest_record_ts: str | None, 
     visible amber that the next registration heals. So a missing record, a recorded ``""``, a
     case-insensitive match and a failed account resolution ALL keep alarming (see
     ``schedule_probe.foreign_task_account``, which fails to ``""`` on every one of them).
+
+    ``shared_records`` (plan 0049 S-2a.1) is the OTHER half of that suppression and is REQUIRED
+    keyword-only for the same reason: on a machine-scoped install the nightly writes its record
+    into the SHARED store this reader reads, so the record gap A5 excuses is no longer expected and
+    the alarm must come back on. **Suppress only when ``foreign_account and not shared_records``.**
     """
-    if foreign_account:
+    if foreign_account and not shared_records:
         # A5: the nightly runs as another account, so its run record was written to THAT profile's
         # history.db (src/history/store.py writes under paths.user_data_dir() of the RUNNING
         # account). A gap here is the DOCUMENTED consequence of where the record was written, not

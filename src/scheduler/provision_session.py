@@ -4,23 +4,27 @@ Everything here runs UNELEVATED, in the session that asked for the change. Its o
 number is :mod:`src.scheduler.provisioning`, which runs behind the UAC boundary and may
 not log at all; this module is the side that has a log sink, a window and an ``AppConfig``.
 
-Two jobs:
+Four jobs:
 
+* :func:`request_provision` — the ``provision`` round trip behind one UAC prompt (S-2b.3):
+  build the payload, seal it, launch the elevated child, reduce whatever comes back to a
+  bounded :class:`ProvisionAttempt`. The caller then calls :func:`complete_handover` on
+  **every** outcome, including a timeout.
 * :func:`complete_handover` — the post-provision session steps. Gated on **the parent's
   OWN re-read of the HKLM switch** (:func:`src.utils.paths.machine_switch_on`), never on
   the child's claim: ``run_elevated`` kills the child on its bounded wait, so the result
   file is absent on exactly the failures where it may nonetheless have committed. Trusting
   that absence would keep the session writing through a stale per-user pin, and every edit
   made after the commit would vanish at the next launch.
+* :func:`delivery_secret_unreadable` — the pre-UAC gate input (S-2b.1). Provisioning seals
+  the delivery password into the shared profile; if there is nothing readable to seal, the
+  nightly would come up delivering nothing, silently.
 * :func:`request_access` — the ``grant_current_user`` round trip behind one UAC prompt, for
   a SECOND administrator on an already-provisioned computer. It deliberately depends on
   nothing the pin provides: the handshake lives under
   :func:`~src.utils.paths.handshake_dir`, which is per-user in every scope and still
   resolves when :func:`~src.utils.paths.user_data_dir` REFUSES — which is the only state
   this function is ever called in.
-
-**Nothing in the app calls :func:`complete_handover` yet** — Schedule-time dispatch is S-2.
-:func:`request_access` IS live, from the launcher's refusal path (S-1b-ii.2).
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -35,11 +40,14 @@ from enum import StrEnum
 from pathlib import Path
 
 from src.config.app_config import CONFIG_FILENAME
-from src.scheduler import elevation, windows
+from src.scheduler import elevation, task_com, windows
 from src.scheduler.elevated_apply import DIFFERENT_ACCOUNT_SENTINEL
 from src.scheduler.elevation import ElevationResult
+from src.scheduler.provisioning import ProvisionRefused, ProvisionStep, build_provision_payload
+from src.scheduler.task_com import Principal, validate_principal_account
 from src.utils import paths
 from src.utils.logger import get_logger
+from src.utils.validators import validate_run_time, validate_sis_type, validate_task_name
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +264,311 @@ def _breadcrumb(superseded: Path, live: Path) -> bool:
     """
     paths.write_moved_breadcrumb(superseded, live)
     return paths.profile_superseded(superseded)
+
+
+# --------------------------------------------------------------------------- #
+# The delivery secret — the ONE pre-UAC gate (S-2b.1)                          #
+# --------------------------------------------------------------------------- #
+
+
+def _delivery_configured(enabled: bool, host: str, username: str) -> bool:
+    """Is delivery set up enough for there to BE a secret? (pure)
+
+    Deliberately NOT ``AppConfig.sftp_is_configured()``: that method adds a
+    ``has_secret`` conjunct on a machine-scoped install, so asking it "is delivery
+    configured?" in order to decide "can we read its secret?" would answer the question
+    with itself — and on the SECOND provisioning of an already machine-scoped computer it
+    would report "not configured" for exactly the install whose secret we can read.
+    """
+    return bool(enabled and (host or "").strip() and (username or "").strip())
+
+
+def delivery_secret_unreadable(*, enabled: bool, host: str, username: str) -> bool:
+    """Is delivery configured with a secret we CANNOT read? (TOTAL — never raises)
+
+    The input to :data:`~src.ui_flet.setup_gates.RegisterBlock.DELIVERY_SECRET_UNREADABLE`.
+    Scheduling as a service account provisions this computer, and step 5 of that provision
+    seals the delivery password into the shared profile. With nothing to seal, the nightly
+    comes up delivering nothing and says nothing: on a machine-scoped install
+    ``sftp_is_configured()`` answers False without a secret, so no upload is even attempted.
+
+    **Read through** :func:`~src.sftp.secret_store.select_store`, never "the keyring" by
+    name. On a second provisioning the secret already lives in the machine store, and a
+    literal keyring read would block a perfectly healthy register.
+
+    Answered with ``has_secret``, which is total by its own contract and — unlike
+    ``get_password`` — never materialises the password to answer a boolean.
+
+    **Fails CLOSED.** "We could not find out" is reported as unreadable, because the cost
+    of the two mistakes is not symmetric: a wrong ``True`` shows a note naming a remedy the
+    admin can carry out in a minute, while a wrong ``False`` hands them a permanently
+    machine-scoped computer whose nightly silently stops delivering.
+    """
+    if not _delivery_configured(enabled, host, username):
+        return False
+    try:
+        from src.sftp import secret_store
+
+        return not secret_store.select_store().has_secret(host, username)
+    except Exception as exc:  # noqa: BLE001 - totality is the contract; the reason is logged
+        # ``has_secret`` is total by its own contract; this guards the SELECTION (a refused
+        # profile, a missing keyring backend, an import failure in a frozen build) so this
+        # function's promise does not depend on another module keeping its.
+        logger.warning("Could not confirm the delivery password is readable: %s", type(exc).__name__)
+        return True
+
+
+def _read_delivery_secret(*, enabled: bool, host: str, username: str) -> str:
+    """The delivery password to SEED the shared profile with — ``""`` when there is none.
+
+    The payload half of the same fact :func:`delivery_secret_unreadable` gates on, and the
+    only place in the parent that materialises the value. ``""`` is what
+    ``provisioning._seed_secret`` reads as "nothing was sent": it then writes no blob and
+    **makes no claim**, which is the correct end state for an install with delivery off.
+
+    Total, and silent about the value: the return is handed straight to
+    :func:`~src.scheduler.provisioning.build_provision_payload` and never logged, never
+    formatted into a message, never put on :class:`ProvisionAttempt`.
+    """
+    if not _delivery_configured(enabled, host, username):
+        return ""
+    try:
+        from src.sftp import secret_store
+
+        return secret_store.select_store().get_password(host, username) or ""
+    except Exception as exc:  # noqa: BLE001 - the gate already refused this; never raise here
+        logger.warning("Could not read the delivery password to copy into the shared folder: %s", type(exc).__name__)
+        return ""
+
+
+# --------------------------------------------------------------------------- #
+# provision — the round trip (S-2b.3)                                          #
+# --------------------------------------------------------------------------- #
+
+#: ``ProvisionRefused.__init__`` interpolates its step as ``"(step: <value>)"``. Recovered
+#: with a pattern rather than a second copy of the sentence, and the FIRST match is taken:
+#: a rollback failure appends a SECOND marker (``"(step: rollback)"``) after the primary
+#: one, and the primary step is the cause. Pinned against the real exception in
+#: ``tests/test_provision_session.py`` for every member, so a re-worded refusal is red here
+#: rather than silently generic.
+_STEP_MARKER = re.compile(r"\(step: ([a-z_]+)\)")
+#: The one diagnostic a refusal is allowed to carry besides the step — a small integer, not
+#: stderr (which quotes paths and account names).
+_ICACLS_MARKER = re.compile(r"\[icacls exit (-?\d+)\]")
+
+
+class ProvisionOutcome(StrEnum):
+    """The bounded result of :func:`request_provision` — a typed state, never a message.
+
+    Mirrors :class:`GrantOutcome`, for the same reason: the view branches on the MEMBER, so
+    a re-worded child message can never move a surface, and the one outcome that carries a
+    sentinel (:attr:`DIFFERENT_ACCOUNT`) can never republish it.
+
+    **There is deliberately no "committed but the nightly failed" member here.** The child
+    registers the task LAST, after the HKLM commit, so that state is real — but this
+    function cannot honestly report it: the message alone cannot tell a post-commit
+    registration failure from a child that refused before it started, and the child is
+    KILLED on a timeout, when it may have done everything. The authority on "did the switch
+    commit?" is the parent's own re-read inside :func:`complete_handover`, and the two
+    facts are combined — explicitly, and in one pure place — by
+    :func:`src.ui_flet.handover_result.compose`.
+    """
+
+    PROVISIONED = "provisioned"  # the child reported the whole sequence done, nightly included
+    REFUSED = "refused"  # the child refused with a bounded ProvisionStep
+    FAILED = "failed"  # the child ran and failed with a schedule-side canonical
+    DECLINED = "declined"  # the admin said No at the UAC prompt
+    LAUNCH_FAILED = "launch_failed"  # Windows would not show the prompt at all
+    UNCONFIRMED = "unconfirmed"  # timed out, or wrote no readable result
+    DIFFERENT_ACCOUNT = "different_account"  # a DIFFERENT administrator consented (cross-SID)
+    UNAVAILABLE = "unavailable"  # the handshake could not even be built (or not Windows)
+
+
+@dataclass(frozen=True)
+class ProvisionAttempt:
+    """What one elevated ``provision`` request came back with.
+
+    Attributes:
+        outcome: the bounded state. Everything the view branches on.
+        step: the refusal's step id, and ONLY for :attr:`ProvisionOutcome.REFUSED`. The
+            interpolated ``ProvisionRefused.message`` is deliberately NOT carried: it can
+            contain an icacls exit code and a rollback clause, and a view rendering it
+            would be rendering text no copy review ever saw. ``setup_errors``'
+            ``classify_provision_step`` turns this into prose.
+        icacls_exit: the one extra diagnostic a refusal may carry — a small integer support
+            can quote. ``None`` whenever the refusal had none.
+        message: the schedule-side canonical for :attr:`ProvisionOutcome.FAILED` ONLY, so
+            the view can run it through ``setup_errors.classify_schedule_error`` exactly as
+            an ordinary register failure. Already ``DSYNC_``-sanitized, and re-labelled to
+            ``_MSG_ELEVATED_ACCESS_DENIED`` where it applies, by the same rules
+            ``windows._register_elevated`` applies to its own child's message.
+    """
+
+    outcome: ProvisionOutcome
+    step: ProvisionStep | None = None
+    icacls_exit: int | None = None
+    message: str = ""
+
+
+def request_provision(
+    task_name: str,
+    exe_path: Path,
+    sis_type: str,
+    input_dir: Path,
+    output_dir: Path,
+    run_time: str,
+    sftp: bool = False,
+    *,
+    sftp_host: str,
+    sftp_username: str,
+    principal: Principal,
+    run_highest: bool = True,
+) -> ProvisionAttempt:
+    """Provision this computer for shared settings and register the nightly — one UAC prompt.
+
+    The argument shape mirrors :func:`src.scheduler.windows.register_task` rather than
+    :func:`~src.scheduler.provisioning.build_provision_payload`'s lower-level one, so the
+    view keeps passing the fields it already holds and the task's action line is composed
+    by ``windows._build_action_args`` — the SAME function the ordinary register path uses.
+    A second spelling of that command line is how a nightly ends up running with different
+    arguments depending on which door it was created through.
+
+    **The delivery secret is read HERE, not passed in.** The value then exists in exactly
+    one place (this frame) before it becomes a field of a DPAPI-sealed payload — never in a
+    view local, never in a closure the UI holds for the length of a session.
+
+    **Call** :func:`complete_handover` **on every outcome this returns**, including
+    :attr:`ProvisionOutcome.DECLINED` and :attr:`~ProvisionOutcome.UNCONFIRMED`. That
+    function's gate is the parent's own switch read, and a child killed on the bounded wait
+    may well have committed.
+
+    ``principal`` is required and undefaulted (plan 0049 S-3): a provision only ever happens
+    for a FOREIGN principal, and :func:`src.ui_flet.setup_gates.register_block` must read
+    ``NONE`` before this is called. It replaced the ``run_as_user`` / ``run_as_password``
+    pair for the reason the whole slice exists — the two unattended kinds differ in whether a
+    password exists at all, so "is there a password?" cannot decide which one was asked for.
+    The account goes through the validator its OWN kind names
+    (``task_com.validate_principal_account``), and a blank account is refused here rather
+    than resolved: there is nothing to provision for "the signed-in account".
+    Never raises — every failure is a bounded :class:`ProvisionAttempt`.
+    """
+    try:
+        user = validate_principal_account(principal.kind, principal.user)
+    except (ValueError, TypeError, AttributeError):
+        # Exactly what the child's ``_principal_account`` would refuse with, decided here so
+        # the admin reads the account-name copy instead of a generic "couldn't start".
+        return ProvisionAttempt(outcome=ProvisionOutcome.REFUSED, step=ProvisionStep.PRINCIPAL)
+
+    req_path: Path | None = None
+    res_path: Path | None = None
+    try:
+        # Validated in BOTH halves (the child re-validates every field): a request file is
+        # attacker-influencable in ways argv is not, and the parent has the log sink.
+        task_name = validate_task_name(task_name)
+        validate_run_time(run_time)
+        arguments, working_dir = windows._build_action_args(
+            exe_path, validate_sis_type(sis_type), input_dir, output_dir, sftp
+        )
+        payload = build_provision_payload(
+            task_name=task_name,
+            exe=str(exe_path),
+            arguments=arguments,
+            working_dir=str(working_dir),
+            run_time=run_time,
+            user=user,
+            kind=principal.kind,
+            run_highest=run_highest,
+            password=principal.password,
+            sftp_host=sftp_host,
+            sftp_username=sftp_username,
+            sftp_password=_read_delivery_secret(enabled=sftp, host=sftp_host, username=sftp_username),
+        )
+
+        logger.info("Setting this computer up for shared DistrictSync settings via one-time elevation (UAC).")
+        req_path = elevation.write_request(payload)
+        res_path = req_path.with_suffix(".res")
+        outcome = windows.run_elevated_child(req_path, res_path)
+
+        if outcome.result is ElevationResult.DECLINED:
+            return ProvisionAttempt(outcome=ProvisionOutcome.DECLINED)
+        if outcome.result is ElevationResult.LAUNCH_FAILED:
+            return ProvisionAttempt(outcome=ProvisionOutcome.LAUNCH_FAILED)
+        if outcome.result is ElevationResult.TIMEOUT:
+            # Post-consent, and the child is TERMINATED — it may have completed every step,
+            # including the commit. Its own result file is not evidence of anything here
+            # (``request_access`` makes the same refusal for the same reason), so the answer
+            # is UNCONFIRMED and ``complete_handover``'s switch read settles it.
+            return ProvisionAttempt(outcome=ProvisionOutcome.UNCONFIRMED)
+
+        result = elevation.read_result(res_path)
+        if result is None:
+            return ProvisionAttempt(outcome=ProvisionOutcome.UNCONFIRMED)
+        if result.get("ok"):
+            return ProvisionAttempt(outcome=ProvisionOutcome.PROVISIONED)
+        return _classify_child_refusal(str(result.get("message", "")))
+    except ProvisionRefused as exc:
+        # FIRST, because ``ProvisionRefused`` IS a ``RuntimeError`` — the generic rung below
+        # would otherwise swallow the one refusal that arrives with a step already in hand
+        # (``build_provision_payload``'s own ``OVERRIDE``) and report it as "unavailable".
+        return ProvisionAttempt(outcome=ProvisionOutcome.REFUSED, step=exc.step, icacls_exit=exc.icacls_exit)
+    except (OSError, RuntimeError, ValueError) as exc:
+        # The PRE-CONSENT handshake (DPAPI seal, profile dir, icacls) can raise straight past
+        # this contract — the same shape ``windows._register_elevated`` catches, for the same
+        # reason: a boot-path failure with no log line is what a district reports as
+        # "nothing happened".
+        logger.error("Could not start the shared-settings change (%s).", type(exc).__name__)
+        return ProvisionAttempt(outcome=ProvisionOutcome.UNAVAILABLE)
+    finally:
+        for path in (req_path, res_path):
+            if path is not None:
+                # Best-effort, exactly as ``windows._cleanup_handshake`` is: an unremovable
+                # handshake file is swept by ``elevation.sweep_orphans`` within the hour.
+                with contextlib.suppress(OSError):
+                    path.unlink(missing_ok=True)
+
+
+def _classify_child_refusal(child_message: str) -> ProvisionAttempt:
+    """Reduce an ``ok: False`` child result to a bounded attempt. Never echoes a sentinel.
+
+    Three shapes reach here, and they are told apart by what the message IS rather than by
+    what it says:
+
+    1. the cross-SID sentinel — a DIFFERENT administrator answered the prompt, so the child
+       could not read (or unseal) the request. Detected, never republished: the sentinel
+       carries the ``DSYNC_`` prefix no admin-facing string may carry;
+    2. a :class:`~src.scheduler.provisioning.ProvisionRefused` message — recognised by its
+       step marker, reduced to the STEP (plus the icacls exit code where one exists) and
+       otherwise discarded;
+    3. anything else — a ``task_com`` canonical from the registration the child runs last,
+       or one of ``elevated_apply``'s own refusals. Sanitized and re-labelled by the same
+       two rules ``windows._register_elevated`` applies, so the message the view hands to
+       ``classify_schedule_error`` is one that function can key on by exact equality.
+    """
+    if DIFFERENT_ACCOUNT_SENTINEL in child_message:
+        return ProvisionAttempt(outcome=ProvisionOutcome.DIFFERENT_ACCOUNT)
+
+    step_match = _STEP_MARKER.search(child_message)
+    if step_match is not None:
+        try:
+            step = ProvisionStep(step_match.group(1))
+        except ValueError:
+            # A step id this build does not know — an older/newer child. Treat it as a
+            # refusal without a step rather than as a schedule failure: it is still true
+            # that the child refused, and inventing a step would be worse than naming none.
+            return ProvisionAttempt(outcome=ProvisionOutcome.REFUSED)
+        exit_match = _ICACLS_MARKER.search(child_message)
+        return ProvisionAttempt(
+            outcome=ProvisionOutcome.REFUSED,
+            step=step,
+            icacls_exit=int(exit_match.group(1)) if exit_match is not None else None,
+        )
+
+    message = windows._sanitize_child_message(child_message)
+    if message == task_com.MSG_ACCESS_DENIED:
+        # The parent's own token is irrelevant here: the prompt WAS approved, so the admin
+        # must not be told to answer it again (the loop SD60 ran on 2026-09-14).
+        message = windows._MSG_ELEVATED_ACCESS_DENIED
+    return ProvisionAttempt(outcome=ProvisionOutcome.FAILED, message=message)
 
 
 # --------------------------------------------------------------------------- #

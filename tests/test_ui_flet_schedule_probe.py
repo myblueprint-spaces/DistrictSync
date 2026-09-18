@@ -23,26 +23,34 @@ def _patch_readback(monkeypatch, readback: ScheduleReadback) -> None:
 
 def test_probe_maps_found_true_to_live(monkeypatch) -> None:
     _patch_readback(monkeypatch, ScheduleReadback(found=True, next_run="2026-07-09T03:00:00.0000000"))
-    status = schedule_probe.probe_schedule("DistrictSync_Daily", hint_registered=True, foreign_account="")
+    status = schedule_probe.probe_schedule(
+        "DistrictSync_Daily", hint_registered=True, foreign_account="", shared_records=False
+    )
     assert status.state is ScheduleState.LIVE
 
 
 def test_probe_maps_found_false_to_missing(monkeypatch) -> None:
     _patch_readback(monkeypatch, ScheduleReadback(found=False))
-    status = schedule_probe.probe_schedule("DistrictSync_Daily", hint_registered=True, foreign_account="")
+    status = schedule_probe.probe_schedule(
+        "DistrictSync_Daily", hint_registered=True, foreign_account="", shared_records=False
+    )
     assert status.state is ScheduleState.MISSING
 
 
 def test_probe_maps_found_none_to_unknown(monkeypatch) -> None:
     _patch_readback(monkeypatch, ScheduleReadback(found=None, error="denied"))
-    status = schedule_probe.probe_schedule("DistrictSync_Daily", hint_registered=True, foreign_account="")
+    status = schedule_probe.probe_schedule(
+        "DistrictSync_Daily", hint_registered=True, foreign_account="", shared_records=False
+    )
     assert status.state is ScheduleState.UNKNOWN
 
 
 def test_expected_missing_logs_contradiction_warning(monkeypatch, caplog) -> None:
     _patch_readback(monkeypatch, ScheduleReadback(found=False))
     with caplog.at_level(logging.WARNING, logger="src.ui_flet.schedule_probe"):
-        schedule_probe.probe_schedule("DistrictSync_Daily", hint_registered=True, foreign_account="")
+        schedule_probe.probe_schedule(
+            "DistrictSync_Daily", hint_registered=True, foreign_account="", shared_records=False
+        )
     assert any("NOT found in Windows" in r.message for r in caplog.records)
     # PII-free: only the config-controlled task name appears.
     assert all("password" not in r.getMessage().lower() for r in caplog.records)
@@ -51,7 +59,9 @@ def test_expected_missing_logs_contradiction_warning(monkeypatch, caplog) -> Non
 def test_unexpected_missing_does_not_warn(monkeypatch, caplog) -> None:
     _patch_readback(monkeypatch, ScheduleReadback(found=False))
     with caplog.at_level(logging.WARNING, logger="src.ui_flet.schedule_probe"):
-        schedule_probe.probe_schedule("DistrictSync_Daily", hint_registered=False, foreign_account="")
+        schedule_probe.probe_schedule(
+            "DistrictSync_Daily", hint_registered=False, foreign_account="", shared_records=False
+        )
     assert not caplog.records
 
 
@@ -60,7 +70,11 @@ def test_contradiction_logs_warning(monkeypatch, caplog) -> None:
     _patch_readback(monkeypatch, ScheduleReadback(found=True, last_run="2026-07-08T03:00:00"))
     with caplog.at_level(logging.WARNING, logger="src.ui_flet.schedule_probe"):
         status = schedule_probe.probe_schedule(
-            "DistrictSync_Daily", hint_registered=True, latest_record_ts="2026-07-07T03:00:00", foreign_account=""
+            "DistrictSync_Daily",
+            hint_registered=True,
+            latest_record_ts="2026-07-07T03:00:00",
+            foreign_account="",
+            shared_records=False,
         )
     assert status.contradiction is True
     assert any("fired but DistrictSync did not record" in r.message for r in caplog.records)
@@ -69,7 +83,9 @@ def test_contradiction_logs_warning(monkeypatch, caplog) -> None:
 def test_clean_live_does_not_warn(monkeypatch, caplog) -> None:
     _patch_readback(monkeypatch, ScheduleReadback(found=True, next_run="2026-07-09T03:00:00"))
     with caplog.at_level(logging.WARNING, logger="src.ui_flet.schedule_probe"):
-        schedule_probe.probe_schedule("DistrictSync_Daily", hint_registered=True, foreign_account="")
+        schedule_probe.probe_schedule(
+            "DistrictSync_Daily", hint_registered=True, foreign_account="", shared_records=False
+        )
     assert not caplog.records
 
 
@@ -196,7 +212,9 @@ class TestForeignTaskAccountPositiveTwin:
 class TestProbePassesTheAccountThrough:
     def test_foreign_account_reaches_the_derived_status(self, monkeypatch) -> None:
         _patch_readback(monkeypatch, ScheduleReadback(found=True, next_run="2026-07-09T03:00:00"))
-        status = schedule_probe.probe_schedule("DistrictSync_Daily", hint_registered=True, foreign_account=_SERVICE)
+        status = schedule_probe.probe_schedule(
+            "DistrictSync_Daily", hint_registered=True, foreign_account=_SERVICE, shared_records=False
+        )
         assert status.foreign_account == _SERVICE
         assert _SERVICE in status.detail
 
@@ -205,7 +223,7 @@ class TestProbePassesTheAccountThrough:
         excludes ``src/ui_flet``, so nothing else would catch it."""
         _patch_readback(monkeypatch, ScheduleReadback(found=True))
         with pytest.raises(TypeError):
-            schedule_probe.probe_schedule("DistrictSync_Daily", hint_registered=True)  # type: ignore[call-arg]
+            schedule_probe.probe_schedule("DistrictSync_Daily", hint_registered=True, shared_records=False)  # type: ignore[call-arg]
 
 
 class TestNoAccountNameEverReachesTheLog:
@@ -214,7 +232,9 @@ class TestNoAccountNameEverReachesTheLog:
     def test_the_contradiction_warning_payload_is_byte_identical(self, monkeypatch, caplog) -> None:
         _patch_readback(monkeypatch, ScheduleReadback(found=False))
         with caplog.at_level(logging.WARNING):
-            schedule_probe.probe_schedule("DistrictSync_Daily", hint_registered=True, foreign_account=_SERVICE)
+            schedule_probe.probe_schedule(
+                "DistrictSync_Daily", hint_registered=True, foreign_account=_SERVICE, shared_records=False
+            )
         assert caplog.records, "the expected-missing divergence must still WARN"
         for record in caplog.records:
             assert _SERVICE not in record.getMessage()
@@ -231,6 +251,7 @@ class TestNoAccountNameEverReachesTheLog:
                     hint_registered=True,
                     latest_record_ts="2026-07-09T02:00:00",
                     foreign_account=account,
+                    shared_records=False,
                 )
             for record in caplog.records:
                 assert _SERVICE not in record.getMessage()

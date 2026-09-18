@@ -42,6 +42,7 @@ from datetime import date, timedelta
 from enum import Enum
 from typing import Literal
 
+from src.scheduler.task_com import PrincipalKind, principal_kind_from_record
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.setup_gates import principal_key
 from src.utils.validators import validate_month_day, validate_run_time
@@ -528,12 +529,53 @@ def task_args_from_persisted(raw: object) -> TaskArgs | None:
 #: quote it, so an admin is pointed at a control that is spelled the same way on screen.
 SCHEDULE_ACCOUNT_FIELD_LABEL = "Windows account for the nightly task"
 
+#: The gMSA disclosure's tick-box label (plan 0049 S-4) — single-sourced for exactly the reason
+#: the field label above is: the Settings view renders it, the downgrade interrupt's
+#: follow-through copy tells the admin to leave it ticked, and ``setup_errors``' managed-service
+#: -account arm names it. Three surfaces, one spelling.
+SCHEDULE_GMSA_TOGGLE_LABEL = "This is a managed service account (gMSA)"
+
+#: **The honesty constraint, spelled once (plan 0049 S-4).** No domain controller exists in this
+#: project, so nothing here has ever been run against a live directory. Every surface that offers
+#: the option says so, in these words, and this is the only string that says it — a second copy
+#: is how one of them comes to imply the option is tested. It names what we will need back
+#: (the on-screen Windows code, which every HRESULT-keyed classifier branch prints) rather than
+#: promising a fix, because a promise is the thing we cannot honestly make.
+GMSA_UNTESTED_CAPTION = (
+    "Not yet tested against a live domain. If it does not work, we will need the code shown on "
+    "screen and your IT team's help."
+)
+
+#: What a district's IT team must do BEFORE a managed service account can run the nightly task,
+#: as a checklist (plan 0049 S-4). Read by the Settings disclosure AND by ``setup_errors``'
+#: managed-service-account failure arm, because those are the two moments an admin needs them
+#: and a second copy would let the two drift. The hand-to-IT document states them verbatim too,
+#: tied back by ``tests/test_partner_doc_schedule_copy_parity.py``.
+#:
+#: None of the three is knowable from here: ``validators.validate_gmsa_account`` is a SHAPE
+#: check by design, and Windows answers the real questions only at registration time. So this is
+#: a list to hand to somebody, never a state this app can verify — which is also why the
+#: failure arm offers no "try again" and the disclosure renders them as read-only glyphs rather
+#: than tick boxes.
+GMSA_PREREQUISITES: tuple[str, ...] = (
+    "This computer is listed in the account's PrincipalsAllowedToRetrieveManagedPassword.",
+    "Install-ADServiceAccount has been run for the account on this computer.",
+    "The account is granted the 'Log on as a batch job' right on this computer.",
+)
+
+#: The hand-to-IT document's TITLE, spelled once (plan 0049 S-4). The Settings disclosure names
+#: it so an admin can ask for it by name, and ``docs/partner/managed-service-accounts.md`` opens
+#: with it — a parity test ties the two together, because a document nobody can find by the name
+#: the app gave them is worse than no reference at all. It is a NAME, not a link: the MkDocs site
+#: was removed, so a partner doc has no URL to click.
+GMSA_IT_DOC_TITLE = "Managed service accounts (gMSA) — what your IT team needs to do"
+
 
 @dataclass(frozen=True)
 class RegisteredSchedule:
     """What the app durably KNOWS about the live scheduled task — ``None`` means "we can't tell".
 
-    The three facets are written together by every confirmed register and cleared together by every
+    The four facets are written together by every confirmed register and cleared together by every
     confirmed unregister, so the record is **atomic**: either the facts are evidenced or none of
     them is. That is why an absent ``args`` also makes ``unattended`` unknown — the ``False``
     default of ``AppConfig.schedule_unattended`` is a dataclass default, not an observation.
@@ -552,11 +594,20 @@ class RegisteredSchedule:
             ``run_as_user=None`` unconditionally), so a pre-0046 record's ``""`` is EVIDENCED. A
             hand-edited ``config.json`` can still lie; every consequence of being wrong falls back
             to refusing a switch, never to performing one.
+        run_as_kind: the principal KIND the live task was registered with (plan 0049 S-4), or
+            ``None`` exactly when ``args`` is ``None`` — the fourth facet of the same atomic
+            record, so an absent record makes all four unknown. It is never ``None`` beside a
+            usable record: ``task_com.principal_kind_from_record`` resolves a blank stored value
+            from the recorded USER, and both of its answers are evidenced by what earlier builds
+            could register. Recorded rather than derived because a managed service account is
+            unattended WITHOUT a password, so ``unattended`` no longer implies which credential
+            Windows wants — and the ``$`` on the name is a spelling, not a security kind.
     """
 
     args: TaskArgs | None
     unattended: bool | None
     run_as_user: str | None
+    run_as_kind: PrincipalKind | None
 
 
 def registered_schedule(
@@ -564,6 +615,7 @@ def registered_schedule(
     raw_task_args: object,
     unattended_flag: bool,
     raw_run_as_user: object,
+    raw_run_as_kind: object,
     supports_unattended: bool = True,
 ) -> RegisteredSchedule:
     """Resolve the durable registered-schedule record from its persisted parts (pure, TOTAL).
@@ -578,12 +630,28 @@ def registered_schedule(
     ``unattended_flag`` is evidence and is honored on any platform (a ``config.json`` can travel),
     while the *absence* of evidence is treated as unknown only where an unattended logon type
     exists to lose.
+
+    ``raw_run_as_kind`` (plan 0049 S-4) is REQUIRED and undefaulted, for the same reason
+    ``raw_run_as_user`` is: a defaulted facet is one a new call site can quietly stop supplying,
+    and this one selects which credential story the admin is told about. Its blank/absent value
+    is resolved by ``task_com.principal_kind_from_record`` — the ONE spelling of that evidenced
+    rule, shared with the elevated prune.
     """
     args = task_args_from_persisted(raw_task_args)
     if args is None:
-        return RegisteredSchedule(args=None, unattended=None if supports_unattended else False, run_as_user=None)
+        return RegisteredSchedule(
+            args=None,
+            unattended=None if supports_unattended else False,
+            run_as_user=None,
+            run_as_kind=None,
+        )
     principal = raw_run_as_user.strip() if isinstance(raw_run_as_user, str) else ""
-    return RegisteredSchedule(args=args, unattended=bool(unattended_flag), run_as_user=principal)
+    return RegisteredSchedule(
+        args=args,
+        unattended=bool(unattended_flag),
+        run_as_user=principal,
+        run_as_kind=principal_kind_from_record(raw_run_as_kind, user=principal),
+    )
 
 
 class ScheduleReconcile(Enum):
@@ -745,6 +813,32 @@ _DOWNGRADE_SERVICE_ACCOUNT_KEEP_NEXT_DETAIL = (
     "Type that account's Windows password in the Daily schedule section, then choose Schedule "
     "nightly sync — your new settings will apply and the sync will keep running when you're signed out."
 )
+# The MANAGED-SERVICE-ACCOUNT variant (plan 0049 S-4). Every other variant here asks for a
+# credential; this one must not, and deliberately does not contain the word at all. The
+# directory holds a gMSA's credential, so there is nothing an admin could type, and the
+# service-account variant's "Windows needs that account's password again" would send them
+# hunting for something that does not exist — the same class of wrong coaching plan 0046's A7
+# found aimed at a service account, one kind further on.
+#
+# It still INTERRUPTS rather than proceeding silently, for a reason the other variants do not
+# have: re-creating the task is the untested path, so an admin is entitled to decide when it
+# happens and to be told in advance what we will need if it fails.
+_DOWNGRADE_MSA_HEADLINE = "Update the nightly sync that runs as a managed service account?"
+_DOWNGRADE_MSA_DETAIL = (
+    "Your nightly schedule runs as {account}, a managed service account — Windows gets that "
+    "account's credential from your directory, so there is nothing for you to type. Applying "
+    "your new settings re-creates the task as the same account, and Windows asks for permission "
+    f"once. {GMSA_UNTESTED_CAPTION} Check the schedule shown on this page afterwards, before "
+    "changing anything else. To run the sync as a different account instead, choose Remove "
+    "nightly sync first, then schedule it again."
+)
+_DOWNGRADE_MSA_KEEP_LABEL = "Update the schedule for {account}"
+_DOWNGRADE_MSA_KEEP_NEXT_HEADLINE = "Choose Schedule nightly sync to update it"
+_DOWNGRADE_MSA_KEEP_NEXT_DETAIL = (
+    f"In the Daily schedule section, leave '{SCHEDULE_GMSA_TOGGLE_LABEL}' ticked and choose "
+    "Schedule nightly sync — your new settings will apply and the sync will keep running when "
+    "no one is signed in. There is nothing for you to type."
+)
 _DOWNGRADE_CANCELLED_HEADLINE = "Schedule not updated"
 _DOWNGRADE_CANCELLED_DETAIL = (
     "Your settings are saved, but the nightly schedule still runs with your previous settings. "
@@ -768,7 +862,10 @@ class DowngradeInterrupt:
     never a dialog stash, never persisted). ``cancelled_*`` is the honest post-Cancel record.
     ``offers_signed_in_only`` is ``False`` for the service-account variant (plan 0046 B): the
     Register gate REFUSES a principal change on a live task, so that button would be a dead
-    control — and its label goes blank with it, so nothing can render it by accident.
+    control — and its label goes blank with it, so nothing can render it by accident. The
+    managed-service-account variant (plan 0049 S-4) withdraws it for the same reason, and is
+    also the first variant to override ``keep_unattended_label``: every other one offers to
+    "re-enter the Windows password", which is not a thing a gMSA has.
     """
 
     headline: str = _DOWNGRADE_HEADLINE
@@ -788,6 +885,7 @@ def downgrade_interrupt(
     registered_unattended: bool | None,
     password_supplied: bool,
     registered_foreign_account: str,
+    registered_kind: PrincipalKind | None,
 ) -> DowngradeInterrupt | None:
     """Whether a reconcile-triggered re-register must pause for the explicit downgrade choice.
 
@@ -806,17 +904,50 @@ def downgrade_interrupt(
     ``registered_foreign_account`` is the RECORDED principal when it is not the signed-in account
     (blank otherwise — the view reduces it through ``setup_gates.principal_key`` first). A
     non-blank value selects the service-account variant REGARDLESS of ``registered_unattended``:
-    a foreign principal implies a stored password (the engine refuses to register one without
-    it), so a record claiming otherwise is inconsistent and interrupting is the honest move. It
-    is also the only place the admin is told WHICH account's password Windows wants — every
-    pre-0046 string here says "your Windows account password", which is the wrong credential.
+    a record claiming a foreign principal is not unattended is inconsistent, so interrupting is
+    the honest move. It is also the only place the admin is told WHICH account's password Windows
+    wants — every pre-0046 string here says "your Windows account password", which is the wrong
+    credential.
+
+    ``registered_kind`` is the RECORDED :class:`~src.scheduler.task_com.PrincipalKind` (plan 0049
+    S-4), ``None`` when there is no usable record. It is REQUIRED and undefaulted because it
+    selects between two mutually exclusive credential stories, and the safe-looking default
+    (PASSWORD) is the wrong one for a gMSA. It is a RECORD, never a character in a name: sniffing
+    the ``$`` off ``registered_foreign_account`` would re-introduce one layer up exactly the
+    inference S-3 deleted from ``task_com.apply_definition``.
+
+    It also repairs this function's pre-S-4 premise, which asserted that a foreign principal
+    *implies* a stored password "the engine refuses to register one without it". That became
+    false the moment a managed service account was registrable, so the MSA arm is checked FIRST
+    and the service-account arm keeps only the claim it can still make.
 
     Applies ONLY to the reconcile path (Settings Save): a blank-password Register via the
     button is a legitimate explicit user choice (the wizard offers it) and never interrupts.
     """
     if password_supplied:
+        # Unchanged, and deliberately still first: a supplied password means the re-register
+        # stays unattended, so there is no downgrade to interrupt for. It is unreachable beside
+        # a recorded MSA from the UI (the disclosure hides and clears that field), and returning
+        # ``None`` is the right answer for the inconsistent state anyway — the re-register
+        # proceeds and the engine's own refusal is the honest report.
         return None
     account = (registered_foreign_account or "").strip()
+    if registered_kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT:
+        # Checked BEFORE the foreign-account arm because an MSA is always foreign, so that arm
+        # would otherwise swallow it and coach a password the account does not have. ``account``
+        # can only be blank here on a hand-edited record (a blank principal is the signed-in
+        # account, which is never an MSA); the copy degrades to naming the kind rather than
+        # interpolating an empty string into the middle of a sentence.
+        named = account or "a managed service account"
+        return DowngradeInterrupt(
+            headline=_DOWNGRADE_MSA_HEADLINE,
+            detail=_DOWNGRADE_MSA_DETAIL.format(account=named),
+            keep_unattended_label=_DOWNGRADE_MSA_KEEP_LABEL.format(account=named),
+            signed_in_only_label="",
+            keep_next_headline=_DOWNGRADE_MSA_KEEP_NEXT_HEADLINE,
+            keep_next_detail=_DOWNGRADE_MSA_KEEP_NEXT_DETAIL,
+            offers_signed_in_only=False,
+        )
     if account:
         return DowngradeInterrupt(
             headline=_DOWNGRADE_SERVICE_ACCOUNT_HEADLINE,
@@ -879,6 +1010,22 @@ _SFTP_RECONCILE_BLOCKED_ACCOUNT = (
     " The nightly schedule wasn't updated — check the Windows account and its password in the Daily "
     "schedule section, then save again."
 )
+# Plan 0049 S-2b.1. A THIRD cause neither of the two above can name, and the reason it needs its
+# own string is the whole point of this family: ``BLOCKED_ACCOUNT`` says "check the Windows account
+# and its password", which would send an admin to their SERVICE-ACCOUNT credentials over a fault in
+# the SpacesEDU DELIVERY password — the same misdirect ``BLOCKED``'s "fix the run time" made, one
+# field over. Names the card that owns the remedy, and offers the honest alternative, because the
+# password may have been saved by a different Windows account whose store this one cannot read.
+_FOLDERS_SAVED_BLOCKED_DELIVERY_SECRET = (  # nosec B105 - the value is a banner, not a credential
+    "Saved — the nightly schedule wasn't updated. DistrictSync can't read your saved delivery "
+    "password, so it has nothing to give the other account. Re-enter it in the Delivery section "
+    "and save again, or turn delivery off to schedule the sync without it."
+)
+_SFTP_RECONCILE_BLOCKED_DELIVERY_SECRET = (  # nosec B105 - the value is a banner, not a credential
+    " The nightly schedule wasn't updated — DistrictSync can't read the saved delivery password "
+    "back, so it has nothing to give the other account. Enter it again above and save, or turn "
+    "delivery off to schedule the sync without it."
+)
 _SFTP_RECONCILE_BLOCKED_ACCOUNT_SWITCH = (
     " The nightly schedule wasn't updated — to run it as a different Windows account, choose Remove "
     "nightly sync in the Daily schedule section, then schedule it again."
@@ -908,6 +1055,12 @@ class ReconcileOutcome(Enum):
     place — the admin removes the schedule and creates it again, with the delete and the create
     both in front of them). Added rather than folded into ``BLOCKED`` so today's two strings stay
     byte-identical by construction.
+
+    ``BLOCKED_DELIVERY_SECRET`` (plan 0049 S-2b.1) is the third, for the same reason again:
+    delivery is configured but its password cannot be read back, so provisioning has nothing to
+    seed the shared store with. It may NOT reuse ``BLOCKED_ACCOUNT`` — that copy says "check the
+    Windows account and its password", which points at the service account's credentials rather
+    than the delivery password, and a misdirect one field over is still a misdirect.
     """
 
     DISPATCHED = "dispatched"
@@ -917,6 +1070,7 @@ class ReconcileOutcome(Enum):
     NONE = "none"
     BLOCKED_ACCOUNT = "blocked_account"
     BLOCKED_ACCOUNT_SWITCH = "blocked_account_switch"
+    BLOCKED_DELIVERY_SECRET = "blocked_delivery_secret"  # nosec B105 - an enum tag, not a credential
 
 
 def folders_save_note(outcome: ReconcileOutcome) -> str:
@@ -940,6 +1094,8 @@ def folders_save_note(outcome: ReconcileOutcome) -> str:
         return _FOLDERS_SAVED_BLOCKED_ACCOUNT
     if outcome is ReconcileOutcome.BLOCKED_ACCOUNT_SWITCH:
         return _FOLDERS_SAVED_BLOCKED_ACCOUNT_SWITCH
+    if outcome is ReconcileOutcome.BLOCKED_DELIVERY_SECRET:
+        return _FOLDERS_SAVED_BLOCKED_DELIVERY_SECRET
     if outcome is ReconcileOutcome.IN_FLIGHT:
         return _FOLDERS_SAVED_IN_FLIGHT
     return _FOLDERS_SAVED
@@ -966,6 +1122,8 @@ def sftp_reconcile_suffix(outcome: ReconcileOutcome) -> str:
         return _SFTP_RECONCILE_BLOCKED_ACCOUNT
     if outcome is ReconcileOutcome.BLOCKED_ACCOUNT_SWITCH:
         return _SFTP_RECONCILE_BLOCKED_ACCOUNT_SWITCH
+    if outcome is ReconcileOutcome.BLOCKED_DELIVERY_SECRET:
+        return _SFTP_RECONCILE_BLOCKED_DELIVERY_SECRET
     if outcome is ReconcileOutcome.IN_FLIGHT:
         return _SFTP_RECONCILE_IN_FLIGHT
     return ""

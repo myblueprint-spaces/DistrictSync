@@ -21,6 +21,7 @@ import pytest
 
 from src.ui_flet.humanize import (
     AnomalyVariant,
+    friendly_absolute_date,
     friendly_anomaly_detail,
     friendly_date_short,
     friendly_district_name,
@@ -45,6 +46,59 @@ class TestFriendlyDateShort:
 
     def test_leap_day_is_total(self) -> None:
         assert friendly_date_short(_date(2028, 2, 29)) == "Feb 29"
+
+
+class TestFriendlyAbsoluteDate:
+    """The provenance date (plan 0049 S-2a.4): "Sep 18, 2026" — absolute, WITH the year.
+
+    The third date shape in this module, and the three are different because the FACTS are:
+    a seasonal window RECURS (so :func:`friendly_date_short` shows no year), a run is read
+    against "has it happened lately?" (so :func:`friendly_timestamp` is relative), and
+    provisioning happens ONCE — "set up by X 14 weeks ago" is the same fact told in the shape
+    that decays, and the second administrator reading it wants a date they can ask a colleague
+    about. A sweep below pins that the three really do differ, so a future "simplification"
+    that points two of them at one implementation is RED.
+
+    The input is a hand-editable registry value, so totality is not decoration: the ONE
+    consumer degrades to a sentence naming no date at all rather than printing a raw ISO
+    string on the app's calmest surface.
+    """
+
+    def test_it_is_a_plain_calendar_date_with_the_year(self) -> None:
+        assert friendly_absolute_date("2026-09-18T10:00:00") == "Sep 18, 2026"
+
+    def test_single_digit_day_has_no_leading_zero(self) -> None:
+        assert friendly_absolute_date("2026-09-07T10:00:00") == "Sep 7, 2026"
+
+    def test_a_date_only_value_parses(self) -> None:
+        """``ProvisionedAt`` is written by an elevated child; nothing forces a time component."""
+        assert friendly_absolute_date("2026-01-02") == "Jan 2, 2026"
+
+    def test_an_offset_aware_stamp_keeps_its_own_wall_clock_date(self) -> None:
+        """No timezone conversion — the value is a local provisioning moment, and shifting it
+        would move the date the admin would have written in their own notes."""
+        assert friendly_absolute_date("2026-09-18T23:30:00-06:00") == "Sep 18, 2026"
+
+    def test_surrounding_whitespace_is_tolerated(self) -> None:
+        assert friendly_absolute_date("  2026-09-18T10:00:00  ") == "Sep 18, 2026"
+
+    @pytest.mark.parametrize(
+        "value",
+        ["", "   ", "not-a-date", "2026-13-99", "18/09/2026", "CORP\\admin"],
+        ids=["empty", "whitespace", "garbage", "impossible", "non-iso", "an-account-name"],
+    )
+    def test_anything_unparseable_is_empty_never_a_guess_and_never_the_raw_string(self, value: str) -> None:
+        """``""`` is the signal the caller branches on. Echoing the input would put a raw
+        registry value — including, on a swapped read, an account NAME — into admin copy."""
+        assert friendly_absolute_date(value) == ""
+
+    def test_it_is_a_different_shape_from_the_other_two_date_helpers(self) -> None:
+        """The non-vacuous twin for this class's premise: the three helpers disagree, on
+        purpose. ``friendly_date_short`` drops the year; ``friendly_timestamp`` is relative."""
+        absolute = friendly_absolute_date("2026-09-18T10:00:00")
+        assert absolute != friendly_date_short(_date(2026, 9, 18))
+        assert "2026" in absolute and "2026" not in friendly_date_short(_date(2026, 9, 18))
+        assert "ago" not in absolute
 
 
 # The real bundled configs — used only for the "known district" and "unknown id"

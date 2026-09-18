@@ -7,19 +7,60 @@ button enforces (Slice 2, D-chrome / Problem #9).
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from src.scheduler import windows
+from src.scheduler.task_com import PrincipalKind
+from src.ui_flet import setup_gates
 from src.ui_flet.setup_gates import (
     RegisterBlock,
     ScheduleAccountFacts,
-    can_register_schedule,
     can_save_sftp,
     principal_key,
-    register_block,
     window_settings_valid,
     window_valid_from_config,
 )
+
+
+def register_block(
+    config_complete: bool,
+    run_time: str,
+    *,
+    account: ScheduleAccountFacts,
+    delivery_secret_unreadable: bool = False,
+) -> RegisterBlock:
+    """The ONE call shape this file uses — the next required keyword is one edit here.
+
+    ``delivery_secret_unreadable`` has NO default in production (a permissive default on the
+    parameter that decides whether a computer is provisioned with a delivery credential it
+    cannot read is the banned shape); a default HERE is what keeps the existing truth tables
+    from each carrying the keyword. The production signature's requiredness is asserted by
+    :func:`test_the_new_keywords_are_required_in_production`, so this default cannot hide it.
+    """
+    return setup_gates.register_block(
+        config_complete,
+        run_time,
+        account=account,
+        delivery_secret_unreadable=delivery_secret_unreadable,
+    )
+
+
+def can_register_schedule(
+    config_complete: bool,
+    run_time: str,
+    *,
+    account: ScheduleAccountFacts,
+    delivery_secret_unreadable: bool = False,
+) -> bool:
+    """The bool form, through the same one call shape (see :func:`register_block`)."""
+    return setup_gates.can_register_schedule(
+        config_complete,
+        run_time,
+        account=account,
+        delivery_secret_unreadable=delivery_secret_unreadable,
+    )
 
 
 class TestWindowSettingsValid:
@@ -133,7 +174,7 @@ class TestCanRegisterSchedule:
         # No permissive default on a safety-relevant parameter (CLAUDE.md): a forgotten call
         # site must not silently skip the principal gate.
         with pytest.raises(TypeError):
-            can_register_schedule(True, "03:00")  # type: ignore[call-arg]
+            setup_gates.can_register_schedule(True, "03:00")  # type: ignore[call-arg]
 
 
 class TestCanSaveSftp:
@@ -183,6 +224,9 @@ def _prefill(**over: object) -> ScheduleAccountFacts:
         "password_supplied": False,
         "recorded": "",
         "schedule_registered": False,
+        # 0049 S-4: PASSWORD is the G5 baseline kind — an admin who typed a foreign account
+        # and its password. Overridable per row, which is how the gMSA rows are written.
+        "kind": PrincipalKind.PASSWORD,
     }
     kwargs.update(over)
     return ScheduleAccountFacts(**kwargs)  # type: ignore[arg-type]
@@ -278,6 +322,15 @@ class TestRegisterBlock:
                 "03:00",
                 account=_prefill(typed="CORP\\svc_x", password_supplied=True, schedule_registered=True),
             ),
+            # 0049 S-2b.1: a foreign principal whose delivery secret we cannot read. This
+            # row is the point of the sweep — the set equality goes red the moment a member
+            # exists with nothing producing it.
+            register_block(
+                True,
+                "03:00",
+                account=_prefill(typed="CORP\\svc_x", password_supplied=True),
+                delivery_secret_unreadable=True,
+            ),
         }
         assert produced == set(RegisterBlock)
 
@@ -321,9 +374,208 @@ class TestAccountSwitchNeedsRemove:
         assert register_block(True, "03:00", account=facts) is not self._SWITCH
 
 
+# ---------------------------------------------------------------------------
+# Plan 0049 S-2b.1 — the delivery-secret gate
+# ---------------------------------------------------------------------------
+
+
+class TestDeliverySecretUnreadable:
+    """Scheduling as a service account PROVISIONS this computer, and step 5 of that
+    provision seals the delivery password into the shared profile. With nothing readable to
+    seal, the nightly comes up delivering nothing and says nothing — on a machine-scoped
+    install ``sftp_is_configured()`` answers False without a secret, so no upload is even
+    attempted. The gate is what turns that silence into a sentence."""
+
+    _BLOCK = RegisterBlock.DELIVERY_SECRET_UNREADABLE
+
+    def test_a_foreign_principal_with_an_unreadable_secret_is_blocked(self):
+        facts = _prefill(typed="CORP\\svc_x", password_supplied=True)
+        assert register_block(True, "03:00", account=facts, delivery_secret_unreadable=True) is self._BLOCK
+        assert can_register_schedule(True, "03:00", account=facts, delivery_secret_unreadable=True) is False
+
+    def test_the_same_facts_with_a_readable_secret_are_open(self):
+        """The positive twin: nothing else in this shape is closing the gate."""
+        facts = _prefill(typed="CORP\\svc_x", password_supplied=True)
+        assert register_block(True, "03:00", account=facts, delivery_secret_unreadable=False) is RegisterBlock.NONE
+
+    @pytest.mark.parametrize("password_supplied", [True, False])
+    def test_the_signed_in_account_is_byte_identical_to_today(self, password_supplied):
+        """A per-user install is NOT provisioning anything, so an unreadable delivery secret
+        is the Delivery section's problem and not this gate's. Both arms, because the
+        conjunction must not accidentally key on the password field instead."""
+        facts = _prefill(password_supplied=password_supplied)
+        assert register_block(True, "03:00", account=facts, delivery_secret_unreadable=True) is register_block(
+            True, "03:00", account=facts, delivery_secret_unreadable=False
+        )
+
+    @pytest.mark.parametrize("typed", ["", "   ", _CURRENT, "pc\\TED", "  PC\\ted  "])
+    def test_every_spelling_of_the_signed_in_account_is_exempt(self, typed):
+        """Foreign-ness comes from ``principal_key`` — the ONE reduction — so a re-cased or
+        whitespace-padded prefill can never be mistaken for a provisioning register."""
+        facts = _prefill(typed=typed)
+        assert register_block(True, "03:00", account=facts, delivery_secret_unreadable=True) is RegisterBlock.NONE
+
+    def test_it_outranks_the_password_rung(self):
+        """Check order: after the switch refusal, BEFORE the password. The cheapest rung
+        (a field that is simply empty) stays last."""
+        facts = _prefill(typed="CORP\\svc_x", password_supplied=False)
+        assert register_block(True, "03:00", account=facts, delivery_secret_unreadable=True) is self._BLOCK
+        # The twin, so the row above cannot pass for the wrong reason.
+        assert (
+            register_block(True, "03:00", account=facts, delivery_secret_unreadable=False)
+            is RegisterBlock.ACCOUNT_NEEDS_PASSWORD
+        )
+
+    def test_the_switch_refusal_still_comes_first(self):
+        """A valid, NON-SWITCHING principal has to be established before a delivery fact is
+        worth raising — the admin is routed to Remove → Schedule either way."""
+        facts = _prefill(typed="CORP\\svc_b", recorded="CORP\\svc_a", password_supplied=True, schedule_registered=True)
+        assert (
+            register_block(True, "03:00", account=facts, delivery_secret_unreadable=True)
+            is RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE
+        )
+
+    @pytest.mark.parametrize(
+        ("complete", "run_time", "expected"),
+        [(False, "03:00", RegisterBlock.INCOMPLETE), (True, "", RegisterBlock.RUN_TIME)],
+    )
+    def test_the_two_cheap_conditions_still_lead(self, complete, run_time, expected):
+        facts = _prefill(typed="CORP\\svc_x", password_supplied=True)
+        assert register_block(complete, run_time, account=facts, delivery_secret_unreadable=True) is expected
+
+    def test_a_shape_refusal_still_leads(self):
+        facts = _prefill(typed="CORP\\svc account", password_supplied=True)
+        assert (
+            register_block(True, "03:00", account=facts, delivery_secret_unreadable=True) is RegisterBlock.ACCOUNT_SHAPE
+        )
+
+
+def test_the_new_keywords_are_required_in_production():
+    """``delivery_secret_unreadable`` is keyword-only and UNDEFAULTED on BOTH functions.
+
+    This plan exists because one defaulted parameter substituted a security principal; a
+    defaulted ``False`` here would let a forgotten call site provision a computer with a
+    delivery credential it cannot read. The helpers at the top of this file default it for
+    brevity, which is exactly why the production signature is asserted rather than assumed.
+    """
+    for func in (setup_gates.register_block, setup_gates.can_register_schedule):
+        parameter = inspect.signature(func).parameters["delivery_secret_unreadable"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, func.__name__
+        assert parameter.default is inspect.Parameter.empty, func.__name__
+        with pytest.raises(TypeError):
+            func(True, "03:00", account=_prefill())  # type: ignore[call-arg]
+
+
+def test_declaration_order_is_not_evaluation_order():
+    """A pin on the comment in ``RegisterBlock``'s docstring, so nobody "fixes" one to match
+    the other: the checks run switch-then-password, the members are declared the other way
+    round, and reordering the CHECKS changes which cause an admin reads first."""
+    members = [member.name for member in RegisterBlock]
+    assert members.index("ACCOUNT_NEEDS_PASSWORD") < members.index("ACCOUNT_SWITCH_NEEDS_REMOVE")
+    switching = _prefill(typed="CORP\\svc_x", password_supplied=False, recorded="", schedule_registered=True)
+    assert register_block(True, "03:00", account=switching) is RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE
+
+
 def test_the_engine_refusal_is_still_the_structural_floor():
     """ACCOUNT_NEEDS_PASSWORD MIRRORS an engine refusal that must keep existing: the gate makes
     it legible BEFORE a UAC prompt, it never replaces the floor that closes all three
     blank-password paths."""
     assert isinstance(windows._MSG_ACCOUNT_NEEDS_PASSWORD, str)
     assert windows._MSG_ACCOUNT_NEEDS_PASSWORD
+
+
+# ---------------------------------------------------------------------------
+# Plan 0049 S-4 — the gMSA kind at BOTH rungs that can refuse an account
+# ---------------------------------------------------------------------------
+_GMSA = "CORP\\svc_districtsync$"
+_MSA_KIND = PrincipalKind.MANAGED_SERVICE_ACCOUNT
+
+
+def _block(**over: object) -> RegisterBlock:
+    """``register_block`` over ``_prefill``, with the two undefaulted keywords supplied."""
+    return register_block(
+        True,
+        "03:00",
+        account=_prefill(**over),
+        delivery_secret_unreadable=False,
+    )
+
+
+class TestTheGmsaPassesBothRungs:
+    """D6's ``ACCOUNT_NEEDS_PASSWORD`` bullet was incomplete, and this class is why.
+
+    The SHAPE rung runs FIRST and unconditionally. Before S-4 it called
+    ``validate_run_as_user``, which rejects a trailing ``$`` — so every gMSA was refused
+    there, for the wrong reason, and the password rung was never reached at all. Both rungs
+    now dispatch on the declared kind, through ``task_com.validate_principal_account``.
+    """
+
+    def test_a_gmsa_with_no_password_opens_the_gate(self) -> None:
+        assert _block(typed=_GMSA, kind=_MSA_KIND, password_supplied=False) is RegisterBlock.NONE
+
+    def test_the_same_name_declared_as_a_password_logon_is_refused_on_SHAPE(self) -> None:
+        """The positive twin that proves the DISPATCH is what admits it, not a widened charset.
+        ``SVC$`` as a password logon is a caller mixing up two credential stories, and the
+        validator for that kind still refuses the ``$``."""
+        assert _block(typed=_GMSA, kind=PrincipalKind.PASSWORD, password_supplied=True) is RegisterBlock.ACCOUNT_SHAPE
+
+    def test_the_password_rung_never_fires_for_a_managed_service_account(self) -> None:
+        # The directory holds the credential; there is nothing to supply, so a rung that asks
+        # for one would close the gate on a complete request.
+        assert _block(typed=_GMSA, kind=_MSA_KIND, password_supplied=False) is not RegisterBlock.ACCOUNT_NEEDS_PASSWORD
+
+    def test_its_positive_twin_still_fires_for_a_password_logon(self) -> None:
+        # The SAME facts minus the ``$`` and with the password kind: the rung is alive.
+        assert (
+            _block(typed="CORP\\svc_districtsync", kind=PrincipalKind.PASSWORD, password_supplied=False)
+            is RegisterBlock.ACCOUNT_NEEDS_PASSWORD
+        )
+
+    def test_an_unsuffixed_name_declared_as_a_managed_service_account_is_refused(self) -> None:
+        # The dispatch cannot launder one kind's name into the other's — in EITHER direction.
+        assert (
+            _block(typed="CORP\\svc_districtsync", kind=_MSA_KIND, password_supplied=False)
+            is RegisterBlock.ACCOUNT_SHAPE
+        )
+
+    @pytest.mark.parametrize("hostile", ["NT AUTHORITY\\SYSTEM$", "BUILTIN\\Administrators$", "  $", "a b$"])
+    def test_a_hostile_or_malformed_gmsa_name_is_still_refused(self, hostile: str) -> None:
+        """``validate_gmsa_account`` refuses a built-in authority BY NAME as well as by
+        charset, and this gate inherits that rather than restating it."""
+        assert _block(typed=hostile, kind=_MSA_KIND, password_supplied=False) is RegisterBlock.ACCOUNT_SHAPE
+
+    @pytest.mark.parametrize("kind", list(PrincipalKind))
+    def test_the_untouched_prefill_is_byte_identical_for_every_kind(self, kind: PrincipalKind) -> None:
+        """G5, restated for S-4: the 20 shipped districts never touch the field, so the
+        machine-derived name — which legitimately contains a space — must never be validated,
+        whatever kind the session happens to declare."""
+        assert _block(kind=kind) is RegisterBlock.NONE
+
+    def test_the_switch_refusal_still_outranks_the_kind(self) -> None:
+        """Ordering is unchanged: a live task on another principal is refused before any
+        credential question, gMSA included."""
+        assert (
+            _block(typed=_GMSA, kind=_MSA_KIND, recorded="", schedule_registered=True)
+            is RegisterBlock.ACCOUNT_SWITCH_NEEDS_REMOVE
+        )
+
+    def test_the_delivery_secret_rung_still_outranks_the_kind(self) -> None:
+        assert (
+            register_block(
+                True,
+                "03:00",
+                account=_prefill(typed=_GMSA, kind=_MSA_KIND, password_supplied=False),
+                delivery_secret_unreadable=True,
+            )
+            is RegisterBlock.DELIVERY_SECRET_UNREADABLE
+        )
+
+
+class TestTheKindIsARequiredFact:
+    def test_schedule_account_facts_cannot_be_built_without_it(self) -> None:
+        # Every field here is required and undefaulted, and this one decides which validator a
+        # typed name goes through — the two charsets are disjoint on exactly one character.
+        with pytest.raises(TypeError):
+            ScheduleAccountFacts(  # type: ignore[call-arg]
+                typed=_CURRENT, current=_CURRENT, password_supplied=False, recorded="", schedule_registered=False
+            )
