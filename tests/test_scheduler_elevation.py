@@ -29,6 +29,7 @@ import pytest
 
 from src.scheduler import elevated_apply, elevation, task_com, windows
 from src.scheduler.elevation import ElevationOutcome, ElevationResult
+from src.scheduler.task_com import Principal, PrincipalKind
 from src.scheduler.windows import ScheduleReadback
 
 WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="DPAPI is a Windows-only API")
@@ -425,8 +426,7 @@ class TestRegisterElevatedFlow:
             input_dir=Path("C:/input"),
             output_dir=Path("C:/output"),
             run_time="03:00",
-            run_as_user="CORP\\jane",
-            run_as_password=_SECRET,
+            principal=Principal(kind=PrincipalKind.PASSWORD, user="CORP\\jane", password=_SECRET),
         )
 
     def test_ok_confirmed_via_readback(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -839,8 +839,7 @@ class TestElevatedFailuresAreLogged:
             input_dir=Path("C:/input"),
             output_dir=Path("C:/output"),
             run_time="03:00",
-            run_as_user=self.ACCOUNT,
-            run_as_password=self.SECRET,
+            principal=Principal(kind=PrincipalKind.PASSWORD, user=self.ACCOUNT, password=self.SECRET),
         )
 
     def test_a_child_canonical_failure_carries_its_code(

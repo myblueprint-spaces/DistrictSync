@@ -31,6 +31,7 @@ from src.config.app_config import AppConfig, ConfigLoadState, SettingsOverwriteR
 from src.history import store
 from src.scheduler import provision_session
 from src.scheduler.elevation import ElevationOutcome, ElevationResult
+from src.scheduler.task_com import Principal, PrincipalKind
 from src.utils import paths as paths_module
 
 # The DACL a provisioned profile actually gets, as ``(ace type, SID)`` pairs — the shape
@@ -680,8 +681,7 @@ def _provision(**over: object) -> provision_session.ProvisionAttempt:
         "sftp": True,
         "sftp_host": "sftp.example.com",
         "sftp_username": "sd74",
-        "run_as_user": "CORP\\svc_districtsync",
-        "run_as_password": _PASSWORD,
+        "principal": Principal(kind=PrincipalKind.PASSWORD, user="CORP\\svc_districtsync", password=_PASSWORD),
     }
     kwargs.update(over)
     return provision_session.request_provision(**kwargs)  # type: ignore[arg-type]
@@ -875,7 +875,9 @@ class TestRequestProvision:
             return ElevationOutcome(ElevationResult.COMPLETED)
 
         monkeypatch.setattr(provision_session.windows, "run_elevated_child", _never)
-        attempt = _provision(run_as_user="CORP\\svc account")
+        attempt = _provision(
+            principal=Principal(kind=PrincipalKind.PASSWORD, user="CORP\\svc account", password=_PASSWORD)
+        )
         assert attempt.outcome is provision_session.ProvisionOutcome.REFUSED
         assert attempt.step is provision_session.ProvisionStep.PRINCIPAL
         assert launched == [], "a UAC prompt was raised for an account we already refused"
@@ -953,10 +955,15 @@ class TestRequestProvision:
         assert mine[:7] == theirs[:7]
 
     def test_the_credential_keywords_are_required_and_undefaulted(self):
+        """``principal`` replaced the ``run_as_user`` / ``run_as_password`` pair at plan 0049
+        S-3 — a provision names WHO, declared, rather than two values whose combination
+        implied it — and the undefaulted rule is what this slice exists to protect."""
         params = inspect.signature(provision_session.request_provision).parameters
-        for name in ("run_as_user", "run_as_password", "sftp_host", "sftp_username"):
+        for name in ("principal", "sftp_host", "sftp_username"):
             assert params[name].kind is inspect.Parameter.KEYWORD_ONLY, name
             assert params[name].default is inspect.Parameter.empty, name
+        assert "run_as_user" not in params
+        assert "run_as_password" not in params
 
 
 class TestStepMarkerParity:

@@ -16,18 +16,23 @@ DECISIONS 2026-06-25 — consult git history for the scripts themselves.
     the password can never leak through a formatted params object) into
     ``RegisterTaskDefinition``: an in-process BSTR argument. The password appears on
     NO argv, in NO process environment, in NO log, and in NO returned message.
-  - The logon type is an **explicit constant** — ``TASK_LOGON_PASSWORD`` (unattended)
-    or ``TASK_LOGON_INTERACTIVE_TOKEN`` + Limited (logged-on-only) — never
-    parameter-set inference, and ``TASK_LOGON_S4U`` is deliberately not even defined
-    (no network token → breaks SFTP egress; the 2026-06-25 regression class).
-    *run_highest* is honoured only WITH a password; without one the task is always
-    Limited.
-  - The PRINCIPAL is never substituted (plan 0046 A1). An explicit ``run_as_user`` that
-    differs from the account running setup registers only WITH that account's password,
-    or the call is REFUSED — it used to fall back to the current user and return
-    ``(True, "Schedule registered.")``, i.e. a wrong principal behind a green banner.
-    ``""`` and ``None`` are normalised to one meaning at entry, so a blank password can
-    no longer reach ``RegisterTaskDefinition`` as a TASK_LOGON_PASSWORD registration.
+  - The logon type is an **explicit constant chosen by a DECLARED principal kind**
+    (plan 0049 S-3): ``task_com.PrincipalKind`` → ``task_com.logon_type_for``, never
+    inferred from whether a password happens to be present. ``TASK_LOGON_PASSWORD``
+    for both unattended kinds (a managed service account included — measured: with a
+    domain ``UserId``, ``TASK_LOGON_SERVICE_ACCOUNT`` is silently dropped from the
+    serialized XML) and ``TASK_LOGON_INTERACTIVE_TOKEN`` + Limited for logged-on-only.
+    ``TASK_LOGON_S4U`` is deliberately not even defined (no network token → breaks
+    SFTP egress; the 2026-06-25 regression class). *run_highest* is honoured by both
+    unattended kinds and ignored on the interactive path, which is always Limited.
+  - The PRINCIPAL is never substituted (plan 0046 A1). An INTERACTIVE_TOKEN principal
+    naming an account other than the one running setup is REFUSED — it used to fall
+    back to the current user and return ``(True, "Schedule registered.")``, i.e. a
+    wrong principal behind a green banner. A blank password is normalised to ``None``
+    inside ``task_com.Principal``, at the single construction point, so it can no
+    longer reach ``RegisterTaskDefinition`` as a TASK_LOGON_PASSWORD registration; and
+    the unrepresentable kind/account/password combinations are refused by
+    ``RegisterParams.__post_init__`` rather than defaulted away.
   - The settings quintet (no catch-up, IgnoreNew, PT2H, both battery flags) is set
     explicitly in ``task_com.apply_definition`` — COM defaults differ on all five.
   - Failure messages are the ``task_com`` HRESULT-keyed canonicals
@@ -47,8 +52,9 @@ DECISIONS 2026-06-25 — consult git history for the scripts themselves.
     app-side change makes the sync run. The one documented silence is an already-absent task
     on the remove path.
 
-**Self-elevation (Plan 0029 D5; re-targeted at 0041 S1b):** the unattended
-(password / RunLevel Highest) registration genuinely requires an elevated caller.
+**Self-elevation (Plan 0029 D5; re-targeted at 0041 S1b):** an unattended
+registration — either unattended KIND, with or without a password (plan 0049 S-3) —
+genuinely requires an elevated caller.
 When the process is NOT already elevated, :func:`register_task` runs the operation
 behind ONE normal UAC prompt — the elevated child is **DistrictSync itself** in the
 dispatch-first ``--elevated-apply`` mode (``src/scheduler/elevated_apply.py``),
@@ -74,6 +80,7 @@ contract — only ``found=False`` may claim "not scheduled".
 
 Usage::
 
+    from src.scheduler.task_com import Principal, PrincipalKind
     from src.scheduler.windows import register_task, read_schedule, delete_task
 
     ok, msg = register_task(
@@ -84,6 +91,7 @@ Usage::
         output_dir=Path("C:/GDE2Data/output"),
         run_time="03:00",
         sftp=True,
+        principal=Principal(kind=PrincipalKind.INTERACTIVE_TOKEN),
     )
 """
 
@@ -106,8 +114,8 @@ from src.scheduler import elevation, task_com
 from src.scheduler.elevated_apply import DIFFERENT_ACCOUNT_SENTINEL as _DIFFERENT_ACCOUNT_SENTINEL
 from src.scheduler.elevation import ElevationOutcome, ElevationResult
 from src.scheduler.messages import SECRET_SENTINEL_PREFIX
+from src.scheduler.task_com import Principal, PrincipalKind
 from src.utils.validators import (
-    validate_run_as_user,
     validate_run_time,
     validate_sis_type,
     validate_task_name,
@@ -372,8 +380,7 @@ def register_task(
     run_time: str,
     sftp: bool = False,
     *,
-    run_as_user: str | None = None,
-    run_as_password: str | None = None,
+    principal: Principal,
     run_highest: bool = True,
 ) -> tuple[bool, str]:
     """Create or replace a Windows scheduled task — in-process COM (plan 0041 S1b).
@@ -393,25 +400,24 @@ def register_task(
         output_dir: Directory to write CSV files.
         run_time:  Daily run time in "HH:MM" 24-hour format.
         sftp:      If True, appends ``--sftp`` flag to the task command.
-        run_as_user: Windows account the task runs as. Omit (or pass the current
-                   account) for today's behaviour — the task is registered to
-                   :func:`current_run_as_user`. A DIFFERENT account is validated
-                   via :func:`validate_run_as_user` and **requires**
-                   ``run_as_password``: without one the call is REFUSED with
-                   ``_MSG_ACCOUNT_NEEDS_PASSWORD`` and nothing is registered.
-                   It is never silently replaced by the current user (plan 0046 A1).
-        run_as_password: The ``run_as_user`` account's Windows password. Empty
-                   string and ``None`` mean the same thing — normalised once, at
-                   entry, so this half and ``task_com.apply_definition`` cannot
-                   disagree about what "no password" is. When provided, the task
-                   is registered to run **whether the user is logged on or not**
-                   (explicit ``TASK_LOGON_PASSWORD`` — never parameter-set
-                   inference, never S4U). When omitted, the task runs only while
-                   the user is logged on (``TASK_LOGON_INTERACTIVE_TOKEN``) and no
-                   credential is stored.
-        run_highest: When True and a password is supplied, run with highest
-                   privileges (``TASK_RUNLEVEL_HIGHEST``). Ignored without a
-                   password (the logged-on-only path is always Limited).
+        principal: WHO the task runs as, **declared** — a
+                   :class:`task_com.Principal` carrying its kind, account and (only
+                   where one belongs) password. REQUIRED and undefaulted: it replaced
+                   the ``run_as_user`` / ``run_as_password`` pair whose combination
+                   used to *imply* the logon type, and a default would substitute a
+                   security principal (plan 0049 S-3). ``user=""`` means the
+                   signed-in account, and each kind is validated by its OWN
+                   validator — ``validate_run_as_user`` for a password logon,
+                   ``validate_gmsa_account`` for a managed service account. An
+                   INTERACTIVE_TOKEN principal naming a DIFFERENT account is REFUSED
+                   with ``_MSG_ACCOUNT_NEEDS_PASSWORD`` and nothing is registered; it
+                   is never silently replaced by the current user (plan 0046 A1).
+                   A MANAGED_SERVICE_ACCOUNT principal carries no password by
+                   construction and is therefore never refused for lacking one — the
+                   directory holds that credential.
+        run_highest: When True and the kind honours it (both unattended kinds), run
+                   with highest privileges (``TASK_RUNLEVEL_HIGHEST``). Ignored on
+                   the interactive-token path, which is always Limited.
 
     Returns:
         (success, message). Failure messages are the ``task_com`` canonical
@@ -436,47 +442,57 @@ def register_task(
     sis_type = validate_sis_type(sis_type)
     validate_run_time(run_time)
 
-    # ONE spelling of "no password" (R2). ``windows`` used to read ``""`` as *absent*
-    # (``bool``) while ``task_com.apply_definition`` reads it as *present* (``is not
-    # None``) — so a blank string registered TASK_LOGON_PASSWORD with a blank credential.
-    # Normalising here, at the single entry point, makes the two halves agree by
-    # construction instead of by the caller remembering to pass ``password or None``.
-    run_as_password = run_as_password or None
-    has_password = run_as_password is not None
-
-    requested = (run_as_user or "").strip()
+    # ``Principal`` normalised ``""`` to ``None`` at construction — ONE spelling of "no
+    # password" (R2), now structural. ``windows`` used to read ``""`` as *absent* (``bool``)
+    # while ``task_com.apply_definition`` read it as *present* (``is not None``), so a blank
+    # string registered TASK_LOGON_PASSWORD with a blank credential.
+    kind = principal.kind
+    run_as_password = principal.password
+    requested = principal.user.strip()
     current = current_run_as_user()
-    if requested and requested.casefold() != current.casefold():
-        # A DIFFERENT account than the one running setup. Caller input, so it is ALWAYS
-        # validated — and it can only be registered WITH its password: Windows stores no
-        # credential for an interactive-token task, so "this other account, logged-on-only"
-        # is not a thing Windows can do. We REFUSE rather than substitute the current user,
-        # which is what this function used to do while returning (True, "Schedule
-        # registered.") — a silently misregistered principal reported as success (A1/R1).
-        user = validate_run_as_user(requested)
-        if not has_password:
-            return _fail(task_name, _MSG_ACCOUNT_NEEDS_PASSWORD, verb="register")
-    elif has_password:
-        # Unattended registration for the CURRENT account — unchanged from today,
-        # including validating the machine-derived fallback on this branch.
-        user = validate_run_as_user(requested or current)
+
+    # One branch per KIND, and each account goes through its OWN validator. The shapes are
+    # mutually exclusive by construction (``Principal`` refuses a ``$``-suffixed password
+    # account and an unsuffixed managed service account), so this is a dispatch, not a guess.
+    if kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT:
+        # The directory holds this credential, so there is no "requires its password"
+        # refusal to make here — and ``_MSG_ACCOUNT_NEEDS_PASSWORD`` would be the wrong
+        # instruction, sending an admin to find a password that does not exist. No blank
+        # fallback either: "the signed-in account" is never a managed service account.
+        user = task_com.validate_principal_account(kind, requested)
+    elif kind is PrincipalKind.PASSWORD:
+        # Unattended, any account, WITH its password — the current account included, whose
+        # machine-derived fallback is validated on this branch exactly as it was before.
+        user = task_com.validate_principal_account(kind, requested or current)
+    elif requested and requested.casefold() != current.casefold():
+        # A DIFFERENT account than the one running setup, logged-on-only. Caller input, so it
+        # is ALWAYS validated — and it can only be registered WITH its password: Windows
+        # stores no credential for an interactive-token task, so "this other account,
+        # logged-on-only" is not a thing Windows can do. We REFUSE rather than substitute the
+        # current user, which is what this function used to do while returning
+        # (True, "Schedule registered.") — a misregistered principal reported as success
+        # (A1/R1). ``RegisterParams.__post_init__`` is the structural floor under this line.
+        user = task_com.validate_principal_account(kind, requested)
+        return _fail(task_name, _MSG_ACCOUNT_NEEDS_PASSWORD, verb="register")
     else:
-        # Logged-on-only. The machine-derived account is deliberately NOT validated: a
-        # legitimate local account can contain a space (``PC\John Smith``), which the
-        # regex rejects, and that district must keep registering exactly as it does today.
+        # Logged-on-only, the signed-in account. The machine-derived account is deliberately
+        # NOT validated: a legitimate local account can contain a space (``PC\John Smith``),
+        # which the regex rejects, and that district must keep registering as it does today.
         user = current
 
     arguments, working_dir = _build_action_args(exe_path, sis_type, input_dir, output_dir, sftp)
 
-    # Self-elevation (D5): an unattended (password / RunLevel Highest) registration
-    # genuinely requires an elevated caller. When we are NOT already elevated, run the
-    # registration behind ONE normal UAC prompt — the child is DistrictSync itself in
-    # --elevated-apply mode since S1b — while the app itself stays non-admin.
-    if has_password and sys.platform == "win32" and not is_elevated():
-        assert run_as_password is not None  # has_password is the same check  # nosec B101
+    # Self-elevation (D5): an UNATTENDED registration genuinely requires an elevated caller.
+    # When we are NOT already elevated, run the registration behind ONE normal UAC prompt —
+    # the child is DistrictSync itself in --elevated-apply mode since S1b — while the app
+    # itself stays non-admin. The predicate is the KIND, not the presence of a password
+    # (plan 0049 S-3): a managed service account is unattended and carries none, so keying
+    # on the password would have sent it down the direct path to a certain access-denied.
+    if kind is not PrincipalKind.INTERACTIVE_TOKEN and sys.platform == "win32" and not is_elevated():
         return _register_elevated(
             task_name=task_name,
             user=user,
+            kind=kind,
             run_time=run_time,
             exe_path=exe_path,
             arguments=arguments,
@@ -494,6 +510,7 @@ def register_task(
         run_time=run_time,
         user=user,
         password=run_as_password,
+        kind=kind,
         run_highest=run_highest,
     )
     try:
@@ -505,7 +522,13 @@ def register_task(
     except task_com.BoundedTimeout:
         # The worker may still complete after the bound — the verdict comes from the
         # real task, with the hedged elevation-timeout copy (same classifier branch).
-        return _confirm_registration(task_name, on_unconfirmed=_MSG_ELEVATION_TIMEOUT, path_label="Registration")
+        return _confirm_registration(
+            task_name,
+            on_unconfirmed=_MSG_ELEVATION_TIMEOUT,
+            path_label="Registration",
+            requested_user=user,
+            requested_kind=kind,
+        )
     except ImportError:
         return _fail(task_name, task_com.MSG_COM_UNAVAILABLE, verb="register")
     except task_com.TaskComError as exc:
@@ -668,7 +691,51 @@ def _cleanup_handshake(*handshake_paths: Path | None) -> None:
             path.unlink(missing_ok=True)
 
 
-def _confirm_registration(task_name: str, *, on_unconfirmed: str, path_label: str) -> tuple[bool, str]:
+def _warn_on_principal_mismatch(
+    task_name: str,
+    readback: ScheduleReadback,
+    *,
+    requested_user: str,
+    requested_kind: PrincipalKind,
+) -> None:
+    """WARN when a confirmed task does not read back as the principal we asked for.
+
+    **Fail-open by construction** (plan 0049 S-3.5): it logs and returns, and no caller reads
+    a value from it. The registration is already confirmed by the time this runs; a
+    disagreement here is evidence for a support case, never a verdict. Two spellings of one
+    account are common and legitimate — ``CORP\\svc`` vs the same account's UPN vs a raw SID
+    vs the ``$``-suffixed forms — so anything this cannot normalise is silence, not an alarm.
+    That is the only safe direction: read-back is a SECOND source of a fact
+    ``schedule_run_as_user`` already records, and a second source that can veto the first
+    would make a naming convention we have not measured into a broken nightly.
+
+    Neither line names an account. They are ordinary log lines in a district's
+    ``etl_tool.log``, the account is PII-adjacent, and the house rule (``_fail``,
+    ``_MSG_ACCOUNT_NEEDS_PASSWORD``) is that scheduler lines carry statuses and codes, not
+    identities. The logon types ARE named: they are small integers, and "which of the three
+    kinds did Windows actually store?" is the whole diagnostic value.
+    """
+    read_account = (readback.run_as or "").strip()
+    if read_account and requested_user.strip() and read_account.casefold() != requested_user.strip().casefold():
+        logger.warning("Scheduled task '%s' reads back under a different account than the one requested.", task_name)
+    expected_logon = task_com.logon_type_for(requested_kind)
+    if readback.logon_type is not None and readback.logon_type != expected_logon:
+        logger.warning(
+            "Scheduled task '%s' reads back with logon type %s; %s was requested.",
+            task_name,
+            readback.logon_type,
+            expected_logon,
+        )
+
+
+def _confirm_registration(
+    task_name: str,
+    *,
+    on_unconfirmed: str,
+    path_label: str,
+    requested_user: str,
+    requested_kind: PrincipalKind,
+) -> tuple[bool, str]:
     """Confirm a registration against the REAL task; unconfirmed → ``(False, on_unconfirmed)``.
 
     Success (exit code / child ``ok`` / a long-running TIMEOUT) is only ever asserted when
@@ -681,10 +748,17 @@ def _confirm_registration(task_name: str, *, on_unconfirmed: str, path_label: st
     that never happened. The anchored ``_fail`` line is written BESIDE that phase line: the
     phase (pre-consent / post-consent / unconfirmed) is context ``_FAIL_LOG_FORMAT`` does
     not carry, and the funnel ADDS a line, it never deletes context.
+
+    ``requested_user`` / ``requested_kind`` are REQUIRED for the same reason ``path_label``
+    is: this is the ONE place every register path reads the real task back, so it is the one
+    place that can compare what Windows stored against what was asked for, and a defaulted
+    kind would quietly compare against the wrong logon type. They feed
+    :func:`_warn_on_principal_mismatch` and nothing else — they cannot change the verdict.
     """
     readback = read_schedule(task_name)
     if readback.found is True:
         logger.info("Scheduled task '%s' registered and confirmed via read-back.", task_name)
+        _warn_on_principal_mismatch(task_name, readback, requested_user=requested_user, requested_kind=requested_kind)
         return True, "Schedule registered and confirmed."
     logger.warning("%s of '%s' could not be confirmed via read-back.", path_label, task_name)
     # WARNING, not ERROR: the task may well exist — the OUTCOME is unknown, not failed.
@@ -718,11 +792,12 @@ def _register_elevated(
     *,
     task_name: str,
     user: str,
+    kind: PrincipalKind,
     run_time: str,
     exe_path: Path,
     arguments: str,
     working_dir: Path,
-    run_as_password: str,
+    run_as_password: str | None,
     run_highest: bool,
 ) -> tuple[bool, str]:
     """Register the unattended task behind ONE UAC prompt; confirm via read-back.
@@ -734,11 +809,19 @@ def _register_elevated(
     single-source property is structural now, not a shared script string. Success requires
     BOTH the child's ``ok`` AND a positive ``read_schedule`` confirmation; the handshake
     files are deleted in ``finally``.
+
+    ``kind`` rides the payload so the privileged half re-validates the PRINCIPAL by its own
+    kind rather than re-inferring one (plan 0049 S-3): the child's ladder would otherwise put
+    every account through ``validate_run_as_user``, whose charset has no ``$`` — and since
+    every unattended registration comes through here, that single line decides whether a
+    managed service account is reachable at all. ``run_as_password`` is now ``str | None``
+    because a managed service account legitimately carries none.
     """
     payload: dict[str, object] = {
         "op": "register",
         "task_name": task_name,
         "user": user,
+        "kind": kind.value,
         "run_time": run_time,
         "exe": str(exe_path),
         "arguments": arguments,
@@ -765,14 +848,22 @@ def _register_elevated(
             # Post-consent timeout: the terminated child may already have registered — confirm.
             logger.warning("Elevated registration of '%s' timed out; confirming via read-back.", task_name)
             return _confirm_registration(
-                task_name, on_unconfirmed=_MSG_ELEVATION_TIMEOUT, path_label="Elevated registration"
+                task_name,
+                on_unconfirmed=_MSG_ELEVATION_TIMEOUT,
+                path_label="Elevated registration",
+                requested_user=user,
+                requested_kind=kind,
             )
 
         result = elevation.read_result(res_path)
         if result is None:
             logger.error("Elevated registration of '%s' produced no readable result.", task_name)
             return _confirm_registration(
-                task_name, on_unconfirmed=_MSG_ELEVATION_NO_RESULT, path_label="Elevated registration"
+                task_name,
+                on_unconfirmed=_MSG_ELEVATION_NO_RESULT,
+                path_label="Elevated registration",
+                requested_user=user,
+                requested_kind=kind,
             )
         if not result.get("ok"):
             child_msg = str(result.get("message", ""))
@@ -791,7 +882,11 @@ def _register_elevated(
             return _fail(task_name, msg, verb="register", scode=scode)
         # The child reported ok — CONFIRM against the real task (exit code alone is not success).
         return _confirm_registration(
-            task_name, on_unconfirmed=_MSG_ELEVATION_NO_RESULT, path_label="Elevated registration"
+            task_name,
+            on_unconfirmed=_MSG_ELEVATION_NO_RESULT,
+            path_label="Elevated registration",
+            requested_user=user,
+            requested_kind=kind,
         )
     except (OSError, RuntimeError, ValueError):
         # The PRE-CONSENT handshake (DPAPI seal, profile dir, icacls) could raise straight
@@ -892,6 +987,14 @@ class ScheduleReadback:
     HRESULT (0 = last run ok). All fields are total — a field the query couldn't
     supply is ``None``. ``error`` carries a canonical, secret-free one-liner on the
     ``found=None`` path (diagnostic only).
+
+    ``run_as`` / ``logon_type`` (plan 0049 S-3) are the live task's own
+    ``Definition.Principal``, and they are **for display and diagnosis only**. Today their
+    single consumer is :func:`_warn_on_principal_mismatch`, which logs and fails open. They
+    are a SECOND, independent source of a fact ``AppConfig.schedule_run_as_user`` already
+    records; ``schedule_probe.foreign_task_account`` deliberately keeps reading the RECORD,
+    because a live read that can come back ``None`` (an elevated-registered task under a
+    filtered token) must not be able to turn a suppression on and off.
     """
 
     found: bool | None
@@ -899,6 +1002,8 @@ class ScheduleReadback:
     last_run: str | None = None
     last_result: int | None = None
     action_path: str | None = None
+    run_as: str | None = None
+    logon_type: int | None = None
     error: str | None = None
 
 
@@ -913,7 +1018,8 @@ def read_schedule(task_name: str) -> ScheduleReadback:
 
     Classification (HRESULT-keyed — never Windows' locale-dependent message text):
       - the task reads back → ``found=True`` + facts (invariant-ISO datetimes, the
-        never-run 1899-epoch nulled, ``LastTaskResult`` unsigned).
+        never-run 1899-epoch nulled, ``LastTaskResult`` unsigned, and since plan 0049
+        S-3 the task's own ``run_as`` / ``logon_type``, for display only).
       - ``0x80070002`` (the definitive not-found; unwrapped from ``excepinfo`` — the
         outer ``hresult`` is just ``DISP_E_EXCEPTION``) → ``found=False``.
       - access denied, RPC failure, COM init failure, a timed-out worker, pywin32
@@ -959,4 +1065,6 @@ def read_schedule(task_name: str) -> ScheduleReadback:
         last_run=facts.last_run,
         last_result=facts.last_result,
         action_path=facts.action_path,
+        run_as=facts.run_as,
+        logon_type=facts.logon_type,
     )

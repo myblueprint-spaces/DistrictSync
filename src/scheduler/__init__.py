@@ -12,9 +12,10 @@ platform's :class:`Scheduler`, so UI callers never branch on ``sys.platform`` or
 and the Protocol models that honestly instead of papering over it:
 
 - ``supports_unattended_password`` — only Windows can register a task that runs while
-  nobody is signed in (stored-credential logon). :meth:`CronScheduler.register` FAILS
-  LOUD (``ValueError``) if a password is passed anyway — cron cannot store one, and
-  silently dropping it would misrepresent what was scheduled.
+  nobody is signed in (a stored credential, or a managed service account's directory-held
+  one). :meth:`CronScheduler.register` FAILS LOUD (``ValueError``) when the declared
+  ``PrincipalKind`` is either unattended kind — cron can express neither, and silently
+  dropping the account would misrepresent what was scheduled.
 - ``supports_read_schedule`` — only Windows can read the real task back.
   :meth:`CronScheduler.read_schedule` returns the honest UNKNOWN shape
   (``found=None`` — "could not confirm", never "absent"), exactly what
@@ -36,7 +37,19 @@ from typing import Protocol
 
 from src.scheduler import linux, windows
 from src.scheduler.messages import ACCESS_DENIED_MARKERS
+from src.scheduler.task_com import Principal, PrincipalKind
 from src.scheduler.windows import ScheduleReadback
+
+# What :meth:`CronScheduler.register` says when it is asked for a principal cron cannot
+# express. Plain language and LOUD (a ``ValueError``, not a ``(False, msg)``): a cron line
+# always runs as the crontab's owner, so silently dropping the account would leave a caller
+# believing an unattended task for somebody else exists. The tail is unchanged from the
+# password-shaped refusal this replaced, so nothing that matched it stops matching.
+_CRON_FOREIGN_PRINCIPAL_REFUSAL = (
+    "A cron entry always runs as the account that owns the crontab, so scheduling as "
+    "another Windows account (a stored password or a managed service account) is not "
+    "supported on this platform."
+)
 
 
 class Scheduler(Protocol):
@@ -65,11 +78,15 @@ class Scheduler(Protocol):
         output_dir: Path,
         run_time: str,
         sftp: bool = False,
-        run_as_user: str | None = None,
-        run_as_password: str | None = None,
+        principal: Principal,
         run_highest: bool = True,
     ) -> tuple[bool, str]:
-        """Create or replace the daily scheduled run; returns ``(success, message)``."""
+        """Create or replace the daily scheduled run; returns ``(success, message)``.
+
+        ``principal`` is REQUIRED and undefaulted on BOTH adapters (plan 0049 S-3): WHO the
+        nightly runs as is declared by the caller, and a platform that cannot express the
+        declared kind must say so rather than register something else.
+        """
         ...
 
     def delete(self, task_name: str) -> tuple[bool, str]:
@@ -110,8 +127,7 @@ class WindowsTaskScheduler:
         output_dir: Path,
         run_time: str,
         sftp: bool = False,
-        run_as_user: str | None = None,
-        run_as_password: str | None = None,
+        principal: Principal,
         run_highest: bool = True,
     ) -> tuple[bool, str]:
         """Register via :func:`src.scheduler.windows.register_task` (all kwargs pass through)."""
@@ -123,8 +139,7 @@ class WindowsTaskScheduler:
             output_dir=output_dir,
             run_time=run_time,
             sftp=sftp,
-            run_as_user=run_as_user,
-            run_as_password=run_as_password,
+            principal=principal,
             run_highest=run_highest,
         )
 
@@ -181,21 +196,28 @@ class CronScheduler:
         output_dir: Path,
         run_time: str,
         sftp: bool = False,
-        run_as_user: str | None = None,
-        run_as_password: str | None = None,
+        principal: Principal,
         run_highest: bool = True,
     ) -> tuple[bool, str]:
-        """Register via :func:`src.scheduler.linux.register_cron`; a password fails loud.
+        """Register via :func:`src.scheduler.linux.register_cron`; a foreign principal fails loud.
 
-        ``run_as_password`` raises ``ValueError`` — cron cannot store a credential, and
-        silently discarding it would let a caller believe an unattended stored-password
-        task exists (gate the affordance on ``supports_unattended_password`` instead).
-        ``run_as_user`` / ``run_highest`` are Windows logon concepts with no cron
+        **The refusal is on the KIND, not on the presence of a password** (plan 0049 S-3).
+        It used to be ``if run_as_password is not None`` — and a managed service account
+        carries ``password=None`` by construction, exactly like the logged-on-only path, so
+        an MSA request would have sailed straight through into a cron line that silently
+        dropped the account. Either unattended kind now raises ``ValueError``: cron cannot
+        store a credential and cannot fetch one from a directory, and letting a caller
+        believe otherwise is the failure mode (gate the affordance on
+        ``supports_unattended_password`` instead).
+
+        ``PrincipalKind.INTERACTIVE_TOKEN`` is the one kind cron CAN honour, and only
+        because cron's own principal is the crontab owner — the same account. Its
+        ``principal.user`` and ``run_highest`` are Windows logon concepts with no cron
         equivalent and are ignored, mirroring ``register_task``'s own no-password path.
         """
-        del task_name, run_as_user, run_highest  # no cron equivalent (see docstring)
-        if run_as_password is not None:
-            raise ValueError("Unattended (stored-password) scheduling is not supported on this platform.")
+        del task_name, run_highest  # no cron equivalent (see docstring)
+        if principal.kind is not PrincipalKind.INTERACTIVE_TOKEN:
+            raise ValueError(_CRON_FOREIGN_PRINCIPAL_REFUSAL)
         return linux.register_cron(exe_path, sis_type, input_dir, output_dir, run_time, sftp=sftp)
 
     def delete(self, task_name: str) -> tuple[bool, str]:

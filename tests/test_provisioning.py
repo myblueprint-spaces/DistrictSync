@@ -32,6 +32,7 @@ from typing import Any
 import pytest
 
 from src.scheduler import provisioning
+from src.scheduler.task_com import PrincipalKind
 from src.utils import paths as paths_module
 
 WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="Win32 security APIs are Windows-only")
@@ -147,6 +148,10 @@ def _payload(source: Path, **overrides: Any) -> dict[str, Any]:
         "working_dir": r"C:\DistrictSync",
         "run_time": "03:00",
         "user": "CORP\\svc",
+        # The principal is DECLARED, never inferred from the password (plan 0049 S-3): the
+        # engine reads this to choose which validator the account name goes through, BEFORE
+        # it grants that principal anything on disk.
+        "kind": PrincipalKind.PASSWORD.value,
         "run_highest": True,
     }
     payload.update(overrides)
@@ -191,6 +196,7 @@ class TestOverrideIsRefusedInBothHalves:
                 working_dir=r"C:\DistrictSync",
                 run_time="03:00",
                 user="CORP\\svc",
+                kind=PrincipalKind.PASSWORD,
                 run_highest=True,
             )
         assert exc.value.step is Step.OVERRIDE
@@ -203,10 +209,14 @@ class TestOverrideIsRefusedInBothHalves:
             working_dir=r"C:\DistrictSync",
             run_time="03:00",
             user="CORP\\svc",
+            kind=PrincipalKind.PASSWORD,
             run_highest=True,
         )
         assert payload["op"] == "provision"
         assert payload["source_data_dir"] == str(source_profile)
+        # The kind travels as the enum's stable string VALUE: this dict is JSON, sealed and
+        # unsealed across a process boundary.
+        assert payload["kind"] == "password"
 
 
 class TestSourcePathMustAgree:
