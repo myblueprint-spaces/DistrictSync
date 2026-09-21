@@ -9,6 +9,19 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Fixed
+
+- **DistrictSync no longer refuses to start after its settings folder is
+  recreated.** An install whose data had been moved from the older
+  `~/.districtsync` location kept a `MOVED.txt` note in that old folder. If the
+  current settings folder was later removed — an IT profile reset, a roaming
+  profile rebuild, or deleting it to start fresh — the app copied that old note
+  into the new folder, then read it as "this folder has been superseded" and
+  refused to save anything, failing at startup with no way to recover from
+  inside the app. The note is no longer copied forward. An install already
+  showing this error is fixed by deleting `MOVED.txt` from the settings folder
+  named in the message.
+
 ## [3.22.0] - 2026-09-18
 
 An attendance extract that has started carrying a heading row now loads

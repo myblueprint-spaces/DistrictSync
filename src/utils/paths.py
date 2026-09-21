@@ -852,6 +852,12 @@ def profile_superseded(directory: Path) -> bool:
     migration writes its breadcrumb into the dir it LEFT, and the resolver never returns a
     legacy dir once the platform one exists.
 
+    That sentence is only true because :func:`migrate_legacy_data_dir` EXCLUDES the
+    breadcrumb from the tree it copies — the two halves are coupled, so do not relax
+    either alone. Without the exclusion a SECOND migration (platform dir lost, legacy dir
+    intact) copies the old breadcrumb into the fresh profile and fences it: the app then
+    refuses every settings write, with no in-app way out.
+
     Total by construction — ``Path.is_file()`` answers ``False`` rather than raising on an
     unreadable directory. That direction is deliberate: a transient stat failure must not
     start refusing every settings write on an install that was never provisioned.
@@ -906,7 +912,14 @@ def migrate_legacy_data_dir() -> bool:
          ``-wal``/``-shm`` sidecars, as one unit — into a fresh staging dir under
          the NEW dir's *parent*. Same filesystem as the final location (so the
          promote is atomic), while the copy itself tolerates a cross-device
-         home→appdata layout.
+         home→appdata layout. EXCEPT ``MOVED.txt``, which is excluded: step 4
+         leaves one behind and step 1 never deletes the legacy dir, so a dir
+         migrated once carries a breadcrumb forever. Copying it forward would hand
+         the destination a supersede fence (:func:`profile_superseded`) and make
+         every settings write refuse. Reachable whenever the platform dir is later
+         lost while the legacy dir survives — an IT profile reset, a roaming-profile
+         rebuild, or a support "delete the folder and retry" — because that is
+         exactly the state step 1 re-arms on.
       3. Promote the fully-staged copy with a single ``os.replace``: the new dir
          becomes "live" only once EVERY file has copied. If any copy fails first,
          the new dir is never created, the staging copy is discarded, and the legacy
@@ -944,7 +957,17 @@ def migrate_legacy_data_dir() -> bool:
         new.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(tempfile.mkdtemp(prefix=f"{new.name}.migrating-", dir=new.parent))
         # Copy the whole tree into staging; promote only when it fully succeeds.
-        shutil.copytree(legacy, staging, dirs_exist_ok=True, copy_function=shutil.copy2)
+        # NEVER carry a MOVED.txt forward (see step 2 of the docstring). The legacy dir is
+        # a copy SOURCE that is never deleted, so one migrated once keeps its breadcrumb
+        # for good; copying it into the destination would make `profile_superseded(new)`
+        # true and fence every settings write on a profile that was only ever migrated.
+        shutil.copytree(
+            legacy,
+            staging,
+            dirs_exist_ok=True,
+            copy_function=shutil.copy2,
+            ignore=shutil.ignore_patterns(_MOVED_BREADCRUMB),
+        )
         # Windows AV/indexers can briefly hold a freshly-written directory, failing
         # the promote with a transient Access-denied — retry a couple of times
         # before falling back (the fallback itself stays safe either way).

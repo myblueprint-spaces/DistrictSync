@@ -335,6 +335,36 @@ class TestMigrateLegacyDataDir:
         # Subsequent resolution now returns the new location.
         assert paths_module.user_data_dir() == new
 
+    def test_re_migration_does_not_carry_the_breadcrumb_into_the_new_profile(self, data_dirs):
+        """A second migration must not hand the fresh profile a supersede fence.
+
+        The field shape: migrate once (breadcrumb left behind, legacy dir deliberately
+        never deleted), later LOSE the platform dir — an IT profile reset, a roaming
+        profile rebuild, a support "delete the folder and retry" — then launch again.
+        That is exactly the state the entry guard re-arms on. A breadcrumb copied forward
+        makes ``profile_superseded(new)`` true, so ``AppConfig.save`` raises and
+        ``write_run_record`` refuses: a profile that was only ever migrated is bricked
+        with no in-app way out.
+        """
+        self._seed_legacy(data_dirs.legacy)
+        assert paths_module.migrate_legacy_data_dir() is True
+        # The breadcrumb that re-arms this — left in a dir that is never deleted.
+        assert (data_dirs.legacy / "MOVED.txt").is_file()
+
+        shutil.rmtree(data_dirs.new)  # the platform profile is lost; legacy survives
+
+        assert paths_module.migrate_legacy_data_dir() is True
+
+        new = data_dirs.new
+        assert not (new / "MOVED.txt").exists()
+        assert paths_module.profile_superseded(new) is False
+        # Positive twin: the copy really ran. Without these, an empty or absent `new`
+        # would satisfy both assertions above for entirely the wrong reason.
+        assert (new / "config.json").read_text(encoding="utf-8") == '{"sis_type": "sd40myedbc"}'
+        assert (new / "mappings" / "custom.yaml").read_text(encoding="utf-8") == "custom: true\n"
+        # ...and the legacy dir still gets its own breadcrumb, pointing at the new one.
+        assert str(new) in (data_dirs.legacy / "MOVED.txt").read_text(encoding="utf-8")
+
     def test_wal_sidecars_move_as_a_unit(self, data_dirs):
         self._seed_legacy(data_dirs.legacy)
         assert paths_module.migrate_legacy_data_dir() is True
