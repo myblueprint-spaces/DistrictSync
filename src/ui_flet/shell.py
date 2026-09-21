@@ -435,22 +435,32 @@ def build_app_body(
         from src.ui_flet.home_status import sync_window_paused
         from src.ui_flet.schedule_probe import foreign_task_account, probe_schedule
         from src.ui_flet.schedule_status import needs_setup_badge
+        from src.utils import paths
 
         cfg = AppConfig.load()
         records = read_run_records()
         latest_ts = records[0].get("timestamp") if records else None
+        # 0049 S-2a.1: the shared-profile fact, read from the ONE predicate (pinned once per
+        # process, so this is not a registry read per probe). It decides whether Slice C's
+        # foreign-principal suppressions still apply on this install.
+        shared_records = paths.is_machine_scope()
         status = probe_schedule(
             cfg.schedule_task_name,
             hint_registered=cfg.schedule_registered,
             latest_record_ts=latest_ts,
             foreign_account=foreign_task_account(cfg),
+            shared_records=shared_records,
         )
         # Window-aware badge: during an enabled seasonal pause the fired-but-no-record
         # contradiction is by design (matches Home's calm "Paused" state) — a MISSING task
         # still badges. `sync_window_paused` is the SAME pure fact Home derives (single source).
         # 0046 C / A9: no pause is in force for a foreign principal (the nightly gate reads the
         # RUNNING account's config), so the badge must not be suppressed as if one were.
-        paused = sync_window_paused(cfg, now=None, foreign_account=status.foreign_account)
+        # 0049 S-2a.1: unless the profile is SHARED, where the nightly reads this very config and
+        # the pause IS in force — suppress only when foreign AND not shared.
+        paused = sync_window_paused(
+            cfg, now=None, foreign_account=status.foreign_account, shared_records=shared_records
+        )
         # First-run silence (0038 S6): Home HOSTS the wizard while `needs_setup`, so an
         # attention dot on the Setup rail item would flag the work in progress as a fault.
         # Read here, at probe time, from the SAME predicate Home branches on.

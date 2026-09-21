@@ -158,6 +158,34 @@ def friendly_date_short(d: date) -> str:
     return f"{d.strftime('%b')} {d.day}"
 
 
+def friendly_absolute_date(iso: str) -> str:
+    """An ISO timestamp → a plain ``"Sep 18, 2026"`` calendar date. TOTAL; ``""`` when unknown.
+
+    The third date shape in this module, and the three are deliberately different because the
+    FACTS are:
+
+    * :func:`friendly_date_short` shows no year — a seasonal window RECURS, so a year would
+      misinform;
+    * :func:`friendly_timestamp` is relative — a run is read against "has it happened lately?",
+      which is the question "3 weeks ago" answers and a calendar date does not;
+    * this one is absolute WITH the year, because provisioning happens ONCE. "Set up by X 14 weeks
+      ago" is the same fact told in the shape that decays, and the second administrator reading it
+      wants the date their colleague can be asked about.
+
+    Empty, whitespace or unparseable input returns ``""`` rather than a guess or the raw string:
+    the value comes from a hand-editable registry key, and its only consumer degrades to a form
+    that names no date at all.
+    """
+    text = (iso or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return ""
+    return f"{parsed.strftime('%b')} {parsed.day}, {parsed.year}"
+
+
 def friendly_district_name(sis_type: str, *, config_dir: Path | None = None) -> str:
     """Map a SIS id to its human ``district_name``; TOTAL — never raises, never crashes a view.
 

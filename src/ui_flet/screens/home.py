@@ -76,6 +76,7 @@ from src.ui_flet import about, components, nav, tokens
 from src.ui_flet.home_status import (
     FixAction,
     derive_home_status,
+    machine_scope_line,
     quick_actions,
     sync_window_paused,
     welcome_band,
@@ -95,6 +96,8 @@ from src.ui_flet.screens import setup as setup_screen
 from src.ui_flet.screens.help import SUPPORT_EMAIL
 from src.ui_flet.screens.identity import NOT_LISTED_NOTE_TAIL as UNMATCHED_DISTRICT_NOTE
 from src.ui_flet.verdict import Verdict
+from src.utils import paths
+from src.utils.diagnostics import machine_scope_provenance
 from src.utils.identity import extract_domain, normalize_email
 from src.utils.validators import IDENTITY_EMAIL_MAX_LEN, validate_identity_email
 from src.utils.version import app_version
@@ -970,6 +973,17 @@ def _dashboard(
     # the eleven-YAML catalog the S4b cost note keeps off this path.
     output_entities = active_output_entities(app_config.sis_type)
 
+    # 0049 S-2a.4: "whose settings are these?", resolved ONCE per mount for the same reason as
+    # the two above — ``_render`` runs again when the schedule probe lands, and the provenance
+    # is a registry read, not a value that can change between the two paints. ``None`` on every
+    # per-user install, which is every install in the field today.
+    provisioned_by, provisioned_at = machine_scope_provenance()
+    scope_line = machine_scope_line(
+        machine_scope=paths.is_machine_scope(),
+        provisioned_by=provisioned_by,
+        provisioned_at=provisioned_at,
+    )
+
     container = ft.Column(spacing=22)
 
     def _render(schedule_status: ScheduleStatus | None) -> None:
@@ -1018,9 +1032,23 @@ def _dashboard(
             schedule_status is not None
             and schedule_status.state is ScheduleState.LIVE
             and not schedule_status.attention
-            and not sync_window_paused(app_config, now=None, foreign_account=schedule_status.foreign_account)
+            # 0049 S-2a.1: ``shared_records`` from the ONE predicate (pinned once per process) —
+            # on a machine-scoped install the nightly reads this very config, so the pause IS in
+            # force and this card must stay suppressed exactly as it is on a same-account install.
+            and not sync_window_paused(
+                app_config,
+                now=None,
+                foreign_account=schedule_status.foreign_account,
+                shared_records=paths.is_machine_scope(),
+            )
         ):
             controls.append(_schedule_card(schedule_status, on_navigate))
+        # 0049 S-2a.4: LAST, and muted. Verdict-first is the rule this surface is built on, and
+        # a provenance footnote is the quietest true thing on the page — it may not precede the
+        # verdict, and it may not be wedged between a fault and its fix (the same argument the
+        # identity cards' anchor comment makes).
+        if scope_line is not None:
+            controls.append(ft.Text(scope_line, size=tokens.type_caption, color=tokens.color_muted))
         container.controls = controls
 
     _render(None)  # initial paint from the store alone; the schedule read-back arrives async
@@ -1049,11 +1077,14 @@ def _probe_schedule_async(
 
         # 0046 C: resolve the recorded task principal HERE, inside the worker thread, so the
         # config read stays off the UI thread. It fails to "" on everything, and "" ALARMS.
+        # 0049 S-2a.1: the shared-profile fact rides along — it is what decides whether that
+        # foreign principal's records land elsewhere or in the ledger this surface reads.
         status = probe_schedule(
             app_config.schedule_task_name,
             hint_registered=app_config.schedule_registered,
             latest_record_ts=latest_ts,
             foreign_account=foreign_task_account(app_config),
+            shared_records=paths.is_machine_scope(),
         )
 
         async def _apply() -> None:

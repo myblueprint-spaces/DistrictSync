@@ -574,7 +574,11 @@ class TestTheSetupBadgeDuringFirstRun:
         from src.ui_flet.schedule_status import ScheduleReadback, derive_schedule_status
 
         status = derive_schedule_status(
-            ScheduleReadback(found=False), hint_registered=True, latest_record_ts=None, foreign_account=""
+            ScheduleReadback(found=False),
+            hint_registered=True,
+            latest_record_ts=None,
+            foreign_account="",
+            shared_records=False,
         )
         assert status.attention is True, "the fixture must be a badge-worthy status"
         return status

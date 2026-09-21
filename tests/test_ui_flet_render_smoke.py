@@ -1178,6 +1178,10 @@ class TestWizardStepsRender:
                 run_as_user_value=lambda: "",
                 persist_run_time=lambda: False,
                 is_busy=lambda: False,
+                # 0049 S-2a.3: the stub has no read-back, and ``None`` asserts nothing — the
+                # delivery line's "no nightly sync is scheduled right now" arm fires on a
+                # CONFIRMED-MISSING task only, never on a schedule nobody looked at.
+                last_schedule_state=lambda: None,
             )
 
         monkeypatch.setattr(setup_mod, "_build_schedule_section", _stub_schedule)
@@ -1228,6 +1232,10 @@ class TestScheduleStepMidFlight:
                 run_as_user_value=lambda: "",
                 persist_run_time=lambda: False,
                 is_busy=lambda: False,
+                # 0049 S-2a.3: the stub has no read-back, and ``None`` asserts nothing — the
+                # delivery line's "no nightly sync is scheduled right now" arm fires on a
+                # CONFIRMED-MISSING task only, never on a schedule nobody looked at.
+                last_schedule_state=lambda: None,
             )
 
         monkeypatch.setattr(setup_mod, "_build_schedule_section", _stub_schedule)
