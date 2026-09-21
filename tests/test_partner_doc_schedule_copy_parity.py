@@ -285,15 +285,22 @@ def test_the_it_prerequisites_are_the_apps_own_list() -> None:
         assert item in text, f"{_GMSA} no longer states the prerequisite verbatim — it should read {item!r}"
 
 
-def test_the_untested_hedge_survives_in_both_docs() -> None:
-    """The honesty constraint, pinned. Nothing may claim gMSA works, so both pages that offer
-    it have to say it has not been tested — and a reword that quietly drops the hedge is the
-    one change here that would mislead a district into treating it as a known fix."""
+def test_the_unshareable_consequence_survives_in_both_docs() -> None:
+    """Replaces the "not yet tested" hedge, retired 2026-09-21 on the owner's decision.
+
+    What that row was really protecting is the one thing a district cannot discover by trying:
+    provisioning runs BEFORE registration, so the move to shared settings is already committed
+    when a gMSA register then fails, and this version has no way back. A reword that drops the
+    hedge is now fine; a reword that drops THAT is a district left with a changed computer and
+    no warning it was possible.
+    """
     for relative in (_GMSA, _TROUBLESHOOTING):
-        assert "untested" in _doc_text(relative) or "not been tested" in _doc_text(relative), (
-            f"{relative} no longer hedges the gMSA option"
+        assert "cannot move them back" in _doc_text(relative) or "cannot move back" in _doc_text(relative), (
+            f"{relative} no longer warns that the move to shared settings is one-way"
         )
-    assert "untested" in _doc_text("CHANGELOG.md"), "the release notes no longer say 'untested'"
+    assert "this version cannot undo" in _doc_text("CHANGELOG.md"), (
+        "the release notes no longer warn that the move to shared settings is one-way"
+    )
 
 
 @pytest.mark.parametrize("phrase", _RETIRED_PHRASES)
