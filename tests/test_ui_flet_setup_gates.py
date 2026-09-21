@@ -544,11 +544,25 @@ class TestTheGmsaPassesBothRungs:
         charset, and this gate inherits that rather than restating it."""
         assert _block(typed=hostile, kind=_MSA_KIND, password_supplied=False) is RegisterBlock.ACCOUNT_SHAPE
 
-    @pytest.mark.parametrize("kind", list(PrincipalKind))
+    @pytest.mark.parametrize(
+        # NOT ``list(PrincipalKind)``. G5 is about a machine-derived name that legitimately
+        # contains a space, and it applies to the two kinds the signed-in account can
+        # actually BE. An MSA is validated even when the name is not foreign — see
+        # ``TestAnMsaIsValidatedEvenWhenTheNameIsNotFOREIGN`` for the field defect that
+        # this parametrization hid by asserting the buggy behaviour.
+        "kind",
+        [PrincipalKind.INTERACTIVE_TOKEN, PrincipalKind.PASSWORD],
+    )
     def test_the_untouched_prefill_is_byte_identical_for_every_kind(self, kind: PrincipalKind) -> None:
         """G5, restated for S-4: the 20 shipped districts never touch the field, so the
-        machine-derived name — which legitimately contains a space — must never be validated,
-        whatever kind the session happens to declare."""
+        machine-derived name — which legitimately contains a space — must never be validated
+        for either kind the signed-in account can be.
+
+        The original form of this test swept ``list(PrincipalKind)`` and asserted ``NONE``
+        for the MSA kind too. That was wrong, and it is why the defect shipped: skipping the
+        rung did not let the prefill through, it moved the refusal into the worker, where it
+        reads as "Windows wouldn't accept that account name … try again".
+        """
         assert _block(kind=kind) is RegisterBlock.NONE
 
     def test_the_switch_refusal_still_outranks_the_kind(self) -> None:
@@ -579,3 +593,40 @@ class TestTheKindIsARequiredFact:
             ScheduleAccountFacts(  # type: ignore[call-arg]
                 typed=_CURRENT, current=_CURRENT, password_supplied=False, recorded="", schedule_registered=False
             )
+
+
+class TestAnMsaIsValidatedEvenWhenTheNameIsNotFOREIGN:
+    """The 2026-09-21 field defect, found on the owner's first real attempt at a gMSA.
+
+    Every gMSA row above types a FOREIGN name, which is why they all passed while the product
+    was broken. The shape rung is scoped to a foreign account by 0046's G5 rule so that a
+    legitimate ``PC\\John Smith`` prefill keeps registering — and that scoping is WRONG for a
+    managed service account, because the signed-in account can never BE one and **the field
+    arrives prefilled with it**. Ticking the disclosure and pressing Schedule therefore sailed
+    past this rung (``principal_key`` of the current account is ``""``), reached
+    ``Principal.__post_init__`` in the worker, and surfaced as the generic sentence "Windows
+    wouldn't accept that account name … try again" — which blames Windows for OUR refusal and
+    invites a retry that cannot work.
+    """
+
+    def test_the_prefilled_signed_in_account_is_refused_under_the_msa_kind(self) -> None:
+        """The exact reproduction: the tick box on, the prefill untouched."""
+        assert _block(typed=_CURRENT, kind=_MSA_KIND, password_supplied=False) is RegisterBlock.ACCOUNT_SHAPE
+
+    def test_a_blank_field_is_refused_under_the_msa_kind(self) -> None:
+        """Blank means "the signed-in account" everywhere else in this gate. There is no such
+        thing as a signed-in gMSA, so under this kind blank is a shape failure, not a default."""
+        assert _block(typed="", kind=_MSA_KIND, password_supplied=False) is RegisterBlock.ACCOUNT_SHAPE
+
+    def test_the_g5_prefill_rule_is_untouched_for_the_other_two_kinds(self) -> None:
+        """The non-vacuous half. G5 exists so a machine-derived name with a space still
+        registers; this fix narrows the MSA kind ONLY, and both shipped kinds answer exactly as
+        they did before."""
+        assert (
+            _block(typed=_CURRENT, kind=PrincipalKind.INTERACTIVE_TOKEN, password_supplied=False) is RegisterBlock.NONE
+        )
+        assert _block(typed=_CURRENT, kind=PrincipalKind.PASSWORD, password_supplied=True) is RegisterBlock.NONE
+
+    def test_a_valid_gmsa_name_still_opens_the_gate(self) -> None:
+        """So the fix refuses the wrong SHAPE, never the kind."""
+        assert _block(typed=_GMSA, kind=_MSA_KIND, password_supplied=False) is RegisterBlock.NONE

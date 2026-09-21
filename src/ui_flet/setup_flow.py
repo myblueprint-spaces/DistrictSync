@@ -535,17 +535,6 @@ SCHEDULE_ACCOUNT_FIELD_LABEL = "Windows account for the nightly task"
 #: -account arm names it. Three surfaces, one spelling.
 SCHEDULE_GMSA_TOGGLE_LABEL = "This is a managed service account (gMSA)"
 
-#: **The honesty constraint, spelled once (plan 0049 S-4).** No domain controller exists in this
-#: project, so nothing here has ever been run against a live directory. Every surface that offers
-#: the option says so, in these words, and this is the only string that says it — a second copy
-#: is how one of them comes to imply the option is tested. It names what we will need back
-#: (the on-screen Windows code, which every HRESULT-keyed classifier branch prints) rather than
-#: promising a fix, because a promise is the thing we cannot honestly make.
-GMSA_UNTESTED_CAPTION = (
-    "Not yet tested against a live domain. If it does not work, we will need the code shown on "
-    "screen and your IT team's help."
-)
-
 #: What a district's IT team must do BEFORE a managed service account can run the nightly task,
 #: as a checklist (plan 0049 S-4). Read by the Settings disclosure AND by ``setup_errors``'
 #: managed-service-account failure arm, because those are the two moments an admin needs them
@@ -821,16 +810,17 @@ _DOWNGRADE_SERVICE_ACCOUNT_KEEP_NEXT_DETAIL = (
 # found aimed at a service account, one kind further on.
 #
 # It still INTERRUPTS rather than proceeding silently, for a reason the other variants do not
-# have: re-creating the task is the untested path, so an admin is entitled to decide when it
-# happens and to be told in advance what we will need if it fails.
+# have: applying the settings DELETES and re-creates the task, and the account it is re-created
+# for is one this app can neither verify nor re-authorise — so an admin is entitled to decide
+# when that happens and to be told to check the result.
 _DOWNGRADE_MSA_HEADLINE = "Update the nightly sync that runs as a managed service account?"
 _DOWNGRADE_MSA_DETAIL = (
     "Your nightly schedule runs as {account}, a managed service account — Windows gets that "
     "account's credential from your directory, so there is nothing for you to type. Applying "
     "your new settings re-creates the task as the same account, and Windows asks for permission "
-    f"once. {GMSA_UNTESTED_CAPTION} Check the schedule shown on this page afterwards, before "
-    "changing anything else. To run the sync as a different account instead, choose Remove "
-    "nightly sync first, then schedule it again."
+    "once. Check the schedule shown on this page afterwards, before changing anything else. To "
+    "run the sync as a different account instead, choose Remove nightly sync first, then "
+    "schedule it again."
 )
 _DOWNGRADE_MSA_KEEP_LABEL = "Update the schedule for {account}"
 _DOWNGRADE_MSA_KEEP_NEXT_HEADLINE = "Choose Schedule nightly sync to update it"

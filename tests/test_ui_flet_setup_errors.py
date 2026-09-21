@@ -38,7 +38,6 @@ from src.ui_flet import setup_errors
 from src.ui_flet.setup_errors import _unclassified_copy, classify_provision_step, classify_schedule_error
 from src.ui_flet.setup_flow import (
     GMSA_PREREQUISITES,
-    GMSA_UNTESTED_CAPTION,
     SCHEDULE_ACCOUNT_FIELD_LABEL,
     SCHEDULE_GMSA_TOGGLE_LABEL,
 )
@@ -733,8 +732,28 @@ class TestTheManagedServiceAccountArm:
         for phrase in ("try again", "try once more", "Try again"):
             assert phrase not in out, f"the MSA arm offers {phrase!r} for a state retrying cannot fix"
 
-    def test_it_hedges(self) -> None:
-        assert GMSA_UNTESTED_CAPTION in self._msa()
+    def test_no_paragraph_is_left_empty_or_carries_only_the_code(self) -> None:
+        """The structural pin for where the Windows code sits (retired-hedge cleanup, 2026-09-21).
+
+        The code used to ride a trailing paragraph of its own behind the hedge sentence. With
+        the hedge gone it moved into the FIRST paragraph rather than being left as a dangling
+        " (Windows code 0x…)" fragment, and it must not drift onto the end of the checklist —
+        anything appended after the third bullet reads as part of that bullet.
+        """
+        paragraphs = self._msa().split("\n\n")
+        # Two prose paragraphs, then one per checklist bullet (``_GMSA_CHECKLIST`` joins them
+        # with the same break, because the copy rules sanction no list marker).
+        expected = 2 + len(GMSA_PREREQUISITES)
+        assert len(paragraphs) == expected, f"the MSA arm is no longer {expected} paragraphs: {paragraphs!r}"
+        for para in paragraphs:
+            assert para.strip(), "the MSA arm has an empty paragraph"
+            assert para.strip() != setup_errors._code(task_com.MSG_ACCOUNT_NOT_RECOGNIZED).strip(), (
+                "the Windows code is a paragraph of its own — a stub left by removed copy"
+            )
+        assert "0x80070534" in paragraphs[0], "the code left the first paragraph"
+        assert paragraphs[-1].endswith(GMSA_PREREQUISITES[-1]), (
+            "something is appended after the checklist's last bullet — it will read as part of it"
+        )
 
     def test_the_password_arm_is_unchanged_and_carries_no_gmsa_material(self) -> None:
         """The NON-vacuous half: the fork must not have rewritten the branch SD-era districts
@@ -743,7 +762,6 @@ class TestTheManagedServiceAccountArm:
         assert "Windows doesn't recognise that account name" in out
         assert "This is about the name, not the password." in out
         assert "0x80070534" in out
-        assert GMSA_UNTESTED_CAPTION not in out
         for item in GMSA_PREREQUISITES:
             assert item not in out
 
@@ -781,11 +799,10 @@ class TestThePolicyBranchGainedExactlyOneSentence:
         ):
             assert phrase in out, f"the policy branch no longer says {phrase!r}"
 
-    def test_the_appended_sentence_points_at_the_disclosure_and_hedges(self) -> None:
+    def test_the_appended_sentence_points_at_the_disclosure(self) -> None:
         out = self._out()
         assert SCHEDULE_GMSA_TOGGLE_LABEL in out
         assert "this policy does not block" in out
-        assert GMSA_UNTESTED_CAPTION in out
 
     def test_it_is_appended_after_the_original_copy_not_woven_into_it(self) -> None:
         """The original prose has to remain readable as itself: the addition is the LAST

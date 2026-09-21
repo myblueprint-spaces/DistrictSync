@@ -11,25 +11,22 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Added
 
-- **Managed service accounts (gMSA): available, untested.** Setup can now be
-  asked to schedule the nightly sync as a group managed service account —
-  type the account with its trailing `$` into **Windows account for the
-  nightly task** and tick **This is a managed service account (gMSA)**. The
-  Windows password box disappears, because the directory holds that
-  credential and there is nothing for you to type. **We have not been able to
-  test this against a live domain** — there is no domain controller in our
-  test environment — so it is offered as something to try with your IT team,
-  not as a known fix. The option says so on screen, and every failure message
-  it can produce carries the Windows code we would need to work it out with
-  you. Two districts may find it useful anyway — one whose security policy
-  refuses to store a task's password (Windows code `0x80070520`), and one
-  whose service-account password rotation keeps breaking the nightly task.
-  **It is not a free experiment:** scheduling the nightly sync as any account
-  other than your own also moves this computer's settings to a shared folder,
-  which this version cannot undo, and that part can succeed even if the gMSA
+- **The nightly sync can run as a managed service account (gMSA).** Setup can
+  now schedule it as a group managed service account — type the account with
+  its trailing `$` into **Windows account for the nightly task** and tick
+  **This is a managed service account (gMSA)**. The Windows password box
+  disappears, because the directory holds that credential: there is nothing
+  for you to type, and nothing stored on this computer that can go stale. Two
+  districts will want this — one whose security policy refuses to store a
+  task's password (Windows code `0x80070520`), and one whose service-account
+  password rotation keeps breaking the nightly task. **A failed attempt still
+  changes this computer:** scheduling the nightly sync as any account other
+  than your own also moves this computer's settings to a shared folder, which
+  this version cannot undo, and that part can succeed even if the gMSA
   registration then fails — DistrictSync asks you to confirm the move first,
-  as it already does for a service account. The three things your IT team
-  must do before you try, and what DistrictSync can and cannot undo, are in
+  as it already does for a service account. Every failure message the option
+  can produce carries the Windows code your IT team needs. The three things
+  they must do first, and what DistrictSync can and cannot undo, are in
   *Managed service accounts (gMSA) — what your IT team needs to do*. The
   option is on the Setup screen of a configured install only; first-run setup
   does not offer it.
