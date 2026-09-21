@@ -9,6 +9,16 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.23.0] - 2026-09-21
+
+A district can now run the nightly sync as a service account without anyone
+signing in as it first, and — where a district's IT policy forbids storing a
+task password — as a managed service account (gMSA) instead. Both work by
+moving this computer's DistrictSync settings into one shared folder that the
+nightly task's account can read. Nothing changes unless you choose it:
+installing this version switches nothing on its own, and a nightly sync
+already scheduled under an earlier version keeps running exactly as it is.
+
 ### Added
 
 - **The nightly sync can run as a managed service account (gMSA).** Setup can
