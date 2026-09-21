@@ -32,7 +32,9 @@ from __future__ import annotations
 import pytest
 
 from src.scheduler import elevated_apply, task_com, windows
-from src.ui_flet.setup_errors import _unclassified_copy, classify_schedule_error
+from src.scheduler.provisioning import ProvisionRefused, ProvisionStep
+from src.ui_flet import setup_errors
+from src.ui_flet.setup_errors import _unclassified_copy, classify_provision_step, classify_schedule_error
 from src.ui_flet.setup_flow import SCHEDULE_ACCOUNT_FIELD_LABEL
 
 # A fake secret + path smuggled inside ``msg`` — used to prove that a classified
@@ -538,3 +540,111 @@ class TestAccountNeedsPassword:
         # The positive twin of the sweep's declared-but-now-classified arm.
         assert "windows._MSG_ACCOUNT_NEEDS_PASSWORD" not in _DELIBERATELY_UNCLASSIFIED
         assert "windows._MSG_ACCOUNT_NEEDS_PASSWORD" not in _NEVER_REACHES
+
+
+# ---------------------------------------------------------------------------
+# Plan 0049 S-2b.1 — the provisioning step ids
+# ---------------------------------------------------------------------------
+
+
+#: Steps whose state repeats identically forever, so the copy must NOT tell an admin to
+#: retry. An override still in place, a folder we may not adopt, permissions that came out
+#: wrong, a leftover directory, an incomplete prune, a request from the wrong account —
+#: every retry fails the same way, and "try again" is how an admin spends an afternoon.
+_NO_RETRY_STEPS = frozenset(
+    {
+        ProvisionStep.OVERRIDE,
+        ProvisionStep.SOURCE,
+        ProvisionStep.PRE_EXISTING,
+        ProvisionStep.VERIFY,
+        ProvisionStep.ROLLBACK,
+        ProvisionStep.PRUNE,
+    }
+)
+
+_RETRY_PHRASES = ("try again", "try once more")
+
+
+class TestClassifyProvisionStep:
+    """A SEPARATE classifier, because ``ProvisionRefused.message`` is not a stable constant.
+
+    ``classify_schedule_error`` keys by exact equality, and that message interpolates the
+    step plus (optionally) an icacls exit code and a rollback sentence — so ONE
+    ``ProvisionStep.CREATE`` failure produces several strings and could never match a
+    branch. The bounded STEP is what is stable, so the step is what is classified.
+    """
+
+    def test_every_step_id_has_copy(self) -> None:
+        """The COMPLETENESS test, shaped on ``launcher._MACHINE_SCOPE_CAUSES``.
+
+        **This is the hole-closer.** The reflection sweep above
+        (``test_every_producible_message_is_classified_or_declared``) derives its producible
+        set from ``task_com`` / ``windows`` / ``elevated_apply`` ONLY, so it would never see
+        a new ``ProvisionStep`` with no copy. Without this test a new step id ships silently
+        and an admin reads the generic "you can try once more" for a state retrying cannot
+        fix. Proven non-vacuous by deleting a branch and watching this go red.
+        """
+        assert set(setup_errors._PROVISION_STEP_COPY) == set(ProvisionStep)
+        for step in ProvisionStep:
+            assert classify_provision_step(step), step.value
+
+    def test_no_two_steps_read_the_same(self) -> None:
+        """A shared sentence is a step id that was added without a decision."""
+        rendered = [classify_provision_step(step) for step in ProvisionStep]
+        assert len(set(rendered)) == len(list(ProvisionStep))
+
+    @pytest.mark.parametrize("step", list(ProvisionStep))
+    def test_it_is_never_the_generic_schedule_fallback(self, step: ProvisionStep) -> None:
+        assert classify_provision_step(step) != _unclassified_copy(step.value)
+        assert classify_provision_step(step) != _unclassified_copy(
+            ProvisionRefused(step).message,
+        )
+
+    @pytest.mark.parametrize("step", sorted(_NO_RETRY_STEPS))
+    def test_an_unfixable_state_is_never_told_to_retry(self, step: ProvisionStep) -> None:
+        out = classify_provision_step(step).lower()
+        for phrase in _RETRY_PHRASES:
+            assert phrase not in out, f"{step.value} offers a retry for a state retrying cannot fix"
+
+    def test_a_genuinely_transient_state_does_offer_a_retry(self) -> None:
+        """The positive twin: the rule above is a rule, not a blanket ban on the phrase."""
+        offered = {
+            step for step in ProvisionStep if any(phrase in classify_provision_step(step) for phrase in _RETRY_PHRASES)
+        }
+        assert offered, "no step offers a retry — the no-retry sweep is vacuous"
+        assert offered.isdisjoint(_NO_RETRY_STEPS)
+
+    @pytest.mark.parametrize("step", list(ProvisionStep))
+    def test_it_carries_no_path_no_stderr_and_no_code(self, step: ProvisionStep) -> None:
+        """The step vocabulary exists so a refusal cannot carry a resolved path (which
+        embeds an account name) or an ``icacls`` stderr line. Re-introducing one in the COPY
+        would hand that straight back; the exit code travels on ``ProvisionAttempt``."""
+        out = classify_provision_step(step)
+        for banned in ("\\", "/", "icacls", "stderr", "0x", "C:", "ProgramData"):
+            assert banned not in out, f"{step.value} leaks {banned!r}"
+
+    @pytest.mark.parametrize("step", list(ProvisionStep))
+    def test_it_is_plain_prose_a_flet_text_can_render(self, step: ProvisionStep) -> None:
+        # Same rule as every branch above: ErrorCard/HealthVerdictBanner render `detail` as
+        # a plain ft.Text, so markdown would show literal asterisks.
+        out = classify_provision_step(step)
+        assert "**" not in out
+        assert "below" not in out  # the readout renders ABOVE the result slot
+        assert out.endswith(".")
+
+    def test_the_interpolated_message_would_never_have_classified(self) -> None:
+        """Why this function exists at all, asserted rather than asserted-in-prose: the SAME
+        step produces different messages, and none of them matches a classifier branch."""
+        plain = ProvisionRefused(ProvisionStep.CREATE).message
+        with_code = ProvisionRefused(ProvisionStep.CREATE, icacls_exit=5).message
+        with_rollback = ProvisionRefused(ProvisionStep.CREATE, rollback_failed=True).message
+        assert len({plain, with_code, with_rollback}) == 3
+        for message in (plain, with_code, with_rollback):
+            assert _classify(message, elevated=True) == _unclassified_copy(message)
+
+    def test_an_unknown_step_degrades_instead_of_raising(self) -> None:
+        """Only reachable if a member is added without copy — which the completeness test
+        makes red — but a paint path may never raise, so it falls back rather than KeyError."""
+        assert classify_provision_step("a_step_from_the_future") == _unclassified_copy(  # type: ignore[arg-type]
+            "a_step_from_the_future"
+        )

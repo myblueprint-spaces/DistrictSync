@@ -1252,11 +1252,16 @@ def sync_window_paused(
 # What it is FOR is the second administrator: a colleague provisioned this computer, and the app
 # their district described now behaves differently for reasons nothing on screen explains. The
 # provenance form names who to ask.
-MACHINE_SCOPE_LINE_WITH_PROVENANCE = "Shared settings on this computer, set up by {who} on {when}."
+#: The LEAD both forms share, spelled once. The partner docs quote this phrase to tell an admin
+#: which kind of install they are looking at (`tests/test_partner_doc_schedule_copy_parity.py`
+#: pins it), so the two sentences below are BUILT from it rather than each repeating it: a
+#: reworded lead must move the doc, and it cannot move in one sentence and not the other.
+MACHINE_SCOPE_LINE_LEAD = "Shared settings on this computer"
+MACHINE_SCOPE_LINE_WITH_PROVENANCE = MACHINE_SCOPE_LINE_LEAD + ", set up by {who} on {when}."
 #: The degraded form. Reached when the registry cannot supply BOTH values — the key is
 #: hand-editable, and half a sentence ("set up by  on Sep 18, 2026") is worse than the fact alone.
 #: It still states the scope, which is the part the reader needs.
-MACHINE_SCOPE_LINE_PLAIN = "Shared settings on this computer — every account here uses the same DistrictSync setup."
+MACHINE_SCOPE_LINE_PLAIN = MACHINE_SCOPE_LINE_LEAD + " — every account here uses the same DistrictSync setup."
 
 
 def machine_scope_line(*, machine_scope: bool, provisioned_by: str, provisioned_at: str) -> str | None:
