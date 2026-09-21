@@ -50,6 +50,7 @@ trade in plan 0041.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 from collections.abc import Iterator
@@ -304,6 +305,37 @@ def validate_principal_account(kind: PrincipalKind, user: str) -> str:
     if kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT:
         return validate_gmsa_account(user)
     return validate_run_as_user(user)
+
+
+def principal_kind_from_record(raw_kind: object, *, user: str) -> PrincipalKind:
+    """Resolve a RECORDED kind, where a blank/absent value has an EVIDENCED meaning (plan 0049 S-4).
+
+    Two consumers need exactly this, and for the same reason: they read a principal that was
+    written down before :class:`PrincipalKind` existed as a stored field —
+    ``setup_flow.registered_schedule`` (``AppConfig.schedule_run_as_kind`` on an install that
+    registered under an earlier build) and ``provisioning.apply_prune_principal`` (an elevation
+    request built by an earlier build's parent). Spelling the rule twice is how the two come to
+    disagree about what an upgrader's nightly runs as.
+
+    **The absent-value rule is evidence, not a default.** A blank kind beside a NON-BLANK
+    account means :attr:`PrincipalKind.PASSWORD`: before S-4 the engine could register exactly
+    one foreign principal, and it required a password to do it (``register_task`` refuses a
+    foreign interactive-token request with ``_MSG_ACCOUNT_NEEDS_PASSWORD``), so no deployed
+    install can mean anything else by it. A blank kind beside a blank account means
+    :attr:`PrincipalKind.INTERACTIVE_TOKEN` — 0046 B's ``""`` = the signed-in account, which is
+    logged-on-only unless a password was typed. That is what makes this rule a migration
+    nobody has to run.
+
+    TOTAL and defensive, like every other reader of a hand-editable ``config.json`` or an
+    unsealed request: an unrecognised string falls back to the same evidenced answer a blank
+    one gets. It never raises into a paint path, and it can never invent
+    ``MANAGED_SERVICE_ACCOUNT`` — the one kind whose presence changes which validator a name
+    goes through has to have been WRITTEN, never inferred.
+    """
+    if isinstance(raw_kind, str):
+        with contextlib.suppress(ValueError):
+            return PrincipalKind(raw_kind.strip())
+    return PrincipalKind.PASSWORD if (user or "").strip() else PrincipalKind.INTERACTIVE_TOKEN
 
 
 def _assert_declared_principal(kind: PrincipalKind, user: str, password: str | None) -> None:

@@ -19,12 +19,14 @@ through ``task_com.hresult_for`` — the ONE place the message↔code pairing is
 render under the same red "Couldn't schedule the nightly sync" headline, so an outcome-first
 sentence repeats the headline and tells the admin nothing. Plain prose only (no
 ``**markdown**`` — the Flet ``HealthVerdictBanner``/``ErrorCard`` render ``detail`` as a plain
-``ft.Text``, which would show literal asterisks); ``\\n\\n`` is allowed. The vocabulary is the
-schedule section's own: *signed in / signed out*, controls named ("Schedule nightly sync",
-the Convert page), never a direction ("below" is wrong — the schedule readout renders ABOVE
-the result slot). No branch promises a fix the app cannot make: where a district's security
-policy blocks the registration, no app-side change makes the nightly sync run, and the copy
-says so.
+``ft.Text``, which would show literal asterisks); ``\\n\\n`` is allowed, and a checklist is
+therefore spelled as ``\\n\\n``-separated paragraphs each opening with a bullet CHARACTER (see
+``_GMSA_CHECKLIST``, plan 0049 S-4 — the one branch whose remedy is a list of things somebody
+else must do). The vocabulary is the schedule section's own: *signed in / signed out*, controls
+named ("Schedule nightly sync", the Convert page), never a direction ("below" is wrong — the
+schedule readout renders ABOVE the result slot). No branch promises a fix the app cannot make:
+where a district's security policy blocks the registration, no app-side change makes the
+nightly sync run, and the copy says so.
 
 **Security (I2).** The non-leak proof is MIXED, by construction:
 
@@ -54,6 +56,7 @@ from src.scheduler.task_com import (
     MSG_LOGON_FAILURE,
     MSG_NO_LOGON_SESSION,
     MSG_OPERATION_FAILED,
+    PrincipalKind,
     format_hresult,
     hresult_for,
 )
@@ -68,7 +71,21 @@ from src.scheduler.windows import (
     _MSG_ELEVATION_TIMEOUT,
     _MSG_UAC_DECLINED,
 )
-from src.ui_flet.setup_flow import SCHEDULE_ACCOUNT_FIELD_LABEL
+from src.ui_flet.setup_flow import (
+    GMSA_PREREQUISITES,
+    GMSA_UNTESTED_CAPTION,
+    SCHEDULE_ACCOUNT_FIELD_LABEL,
+    SCHEDULE_GMSA_TOGGLE_LABEL,
+)
+
+#: The prerequisite checklist as plain prose (plan 0049 S-4). The module's copy rules forbid
+#: markdown — a Flet ``ErrorCard`` renders ``detail`` as a plain ``ft.Text``, so ``**bold**``
+#: would show literal asterisks — and ``\n\n`` is the only break those rules sanction, so each
+#: item is its own paragraph prefixed with a bullet CHARACTER rather than a list marker.
+#: Built from :data:`~src.ui_flet.setup_flow.GMSA_PREREQUISITES`, never retyped: the Settings
+#: disclosure renders the same tuple as tick rows, and an admin comparing the two must not find
+#: two different lists.
+_GMSA_CHECKLIST = "\n\n".join(f"• {item}" for item in GMSA_PREREQUISITES)
 
 
 def _code(canonical: str) -> str:
@@ -86,7 +103,7 @@ def _carries_access_denied(msg: str) -> bool:
     return any(marker in lowered for marker in ACCESS_DENIED_MARKERS)
 
 
-def classify_schedule_error(msg: str, elevated: bool, *, account_is_current: bool) -> str:
+def classify_schedule_error(msg: str, elevated: bool, *, account_is_current: bool, kind: PrincipalKind) -> str:
     """Map a schedule failure message into a calm, actionable, cause-first message.
 
     Args:
@@ -106,6 +123,14 @@ def classify_schedule_error(msg: str, elevated: bool, *, account_is_current: boo
             Windows Hello PIN, a microsoft.com password) that is wrong — and misleading —
             for a service account. Today every call site passes ``True``; plan 0046-B passes
             the recorded principal and re-reads the ``False`` copy against the real field.
+        kind: which :class:`~src.scheduler.task_com.PrincipalKind` the failed operation
+            DECLARED. REQUIRED keyword, deliberately undefaulted, for the same reason
+            ``account_is_current`` is (plan 0049 S-4): both of its non-MSA values coach a
+            password, and a managed service account does not have one — so a defaulted kind
+            would send a gMSA admin looking for a credential the directory holds. Note that
+            ``account_is_current`` does not imply it: a gMSA is always foreign, but a foreign
+            account is usually a password logon, so neither parameter can be derived from the
+            other.
 
     Returns:
         A plain-language, cause-first message (plain prose — no markdown, so a Flet verdict
@@ -164,7 +189,19 @@ def classify_schedule_error(msg: str, elevated: bool, *, account_is_current: boo
             "Send your IT team that setting's name and the code shown here; until it's resolved you "
             "can run the sync by hand from the Convert page. If someone stays signed in overnight, "
             "you can instead clear the Windows account password field above and choose Schedule "
-            "nightly sync again — it will not run after a reboot with no one signed in." + _code(msg)
+            "nightly sync again — it will not run after a reboot with no one signed in."
+            + _code(msg)
+            # 0049 S-4: ONE appended sentence, and nothing above it touched. This is SD60's
+            # actual branch (0x80070520 — the policy that forbids storing a task's password),
+            # it is correct, and it is pinned in docs/partner/troubleshooting.md; a rewrite
+            # would be a regression dressed as an improvement. A managed service account is
+            # the one escape that does not need the policy lifted, because the directory holds
+            # the credential and nothing is stored on this computer — so the option is named
+            # here, hedged, rather than left for the admin to discover.
+            + "\n\n"
+            + "If your IT team can provide a managed service account (a gMSA), that is the one "
+            f"unattended option this policy does not block — tick '{SCHEDULE_GMSA_TOGGLE_LABEL}' "
+            f"in the Daily schedule section. {GMSA_UNTESTED_CAPTION}"
         )
     if msg == MSG_ACCOUNT_INFO_NOT_SET:
         # States the code's DOCUMENTED meaning and claims no cause — 0x8004130F's cause is not
@@ -195,6 +232,30 @@ def classify_schedule_error(msg: str, elevated: bool, *, account_is_current: boo
         # password — so this branch exists precisely to stop a name typo being coached as a
         # credential problem. Windows' own description for it is the field locator
         # "(21,8):UserId:", which reads as a parser error to an admin.
+        #
+        # 0049 S-4 FORKS it on the kind rather than adding a canonical, and that is the
+        # deliberate choice: this is where a mistyped gMSA name already lands (measured), the
+        # gMSA failure taxonomy beyond it is UNMEASURED, and inventing canonicals for failures
+        # nobody has seen is how a classifier acquires dead branches. The [HRESULT log anchor
+        # carries whatever else a district hits.
+        if kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT:
+            # NO "try again": retrying a name the directory does not know — or a computer the
+            # account is not authorised for — changes nothing, and the three things that WOULD
+            # change it are all somebody else's to do. So the copy is the one check the admin
+            # CAN make (the name in the box), then the checklist and the code to hand over. It
+            # says up front that we cannot tell which of the two causes it is, rather than
+            # picking one and sending them down it.
+            return (
+                "Windows would not schedule the task as that managed service account — either the "
+                "directory doesn't know the name, or this computer isn't set up to use the account. "
+                f"DistrictSync can't tell which from here. Check the name in the "
+                f"'{SCHEDULE_ACCOUNT_FIELD_LABEL}' box, then send your IT team this list and the "
+                "code shown here:"
+                "\n\n"
+                f"{_GMSA_CHECKLIST}"
+                "\n\n"
+                f"{GMSA_UNTESTED_CAPTION}" + _code(msg)
+            )
         return (
             "Windows doesn't recognise that account name. Check the spelling in the "
             f"'{SCHEDULE_ACCOUNT_FIELD_LABEL}' box, and include the domain if the account has one — "

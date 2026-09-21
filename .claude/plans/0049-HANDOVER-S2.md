@@ -1,65 +1,121 @@
-# Handover — plan 0049, resuming at S-2 (2026-09-18)
+# Handover — plan 0049, dev work COMPLETE (2026-09-18)
 
 Paste the block at the bottom into a fresh session. Everything above it is the state that block refers to.
 
 ## Where the build actually is
 
-**On `main` (`3bb6b18`), merged and CI-green:**
-- **S-1a-i** (#129) — the resolution ladder with the HKLM machine-scope switch, `_assert_machine_dir_trusted`, the process-pinned profile, `handshake_dir()`, `src/utils/dpapi.py`, `src/utils/accounts.py`, and a `windows-latest` pytest leg in `ci.yml`.
-- **S-1a-ii** (#130) — `src/sftp/secret_store.py` (keyring ↔ DPAPI-LocalMachine behind `select_store()`), identity bound in the DPAPI entropy, verify-before-promote, `run_as` on the run record, scheduled-nightly zip staging.
-- **S-1b-i** (#132) — `src/scheduler/provisioning.py`: the elevated `provision` / `grant_current_user` / `prune_principal` ops, create-with-SDDL, `migrate_profile`, the open-group ACE walk.
-- A separate fix (#131) for a UI defect the owner reported: a gate-refused register left the previous failure card on screen.
-- **S-1b-ii** (#133, merged 2026-09-18) — `src/scheduler/provision_session.py` (`complete_handover`, `request_access`), the pre-shell grant window, `--diagnose`, and the `MOVED.txt` fence on `AppConfig.save()` / `write_run_record`. `origin/main` is now `3bb6b18`.
+**All four remaining slices are implemented, CI-green, and OPEN — awaiting the owner's merge, in this order:**
 
-**In flight: S-2a** on `claude/0049-s2a-honest-predicates`, cut before #133 merged — **rebase it onto `origin/main` before opening the PR** (its parent branch is now in `main` via the merge commit, so the rebase is content-free). **Never stack a PR on a feature branch** — `ci.yml` fires only on PRs targeting `main`, so a stacked PR silently carries no test gate (learned the hard way on #130).
+| PR | Slice | CI |
+|---|---|---|
+| #136 | **S-2a** — honest predicates + copy (inert) | green |
+| #137 | **S-2b** — the provisioning flow (makes machine scope reachable) | green |
+| #138 | **S-3** — the principal model | green |
+| #139 | **S-4** — gMSA in Settings, labelled untested | green |
 
-**Then S-2b**, which is what actually makes machine scope reachable (the pre-UAC gates, the confirm, the dispatch and every outcome it can end in). It calls `complete_handover`.
+They are **stacked** — each branch is cut from the one before, so every PR's diff also shows its
+predecessors' commits until they land. All four target `main` deliberately: `ci.yml` fires only on
+PRs targeting `main`, so a stacked PR carries **no test gate at all** (learned on #130). Each diff
+collapses to its own slice as the one before it merges.
 
-**After S-2:** the owner's manual walk #1 on a domain-joined laptop → **S-3** (the `PrincipalKind` engine model) → **S-4** (the gMSA option in Settings, labelled untested) → the owner's walk #2 → SD60.
+**On `main` (merged earlier):** S-1a-i (#129), S-1a-ii (#130), S-1b-i (#132), S-1b-ii (#133), plus a
+UI fix (#131). **`main` also carries `v3.22.0`** (PR #135, the SD51 heading-row fix) — cut while
+S-2a/S-2b were in review, so **the shipped release contains none of the machine-scope work.**
 
-## The specs are written and reviewed
+## What remains, and whose it is
 
-`.claude/plans/0049-machine-scope-gmsa.md` carries `## Spec — S-1a`, `## Spec — S-1b` and `## Spec — S-2` (committed `ba4982a`), each with a review-dispositions section recording what was accepted, what was trimmed, and which amendments depart from the plan's letter.
+1. **The owner merges the four PRs**, in order. The agent never merges: `main` requires an approving
+   review, an author cannot approve their own PR, so merging would mean `--admin` — a deliberate
+   bypass of branch protection.
+2. **The owner's manual walk**, with their IT team, on a domain-joined laptop. Decision recorded
+   2026-09-18: *finish all the dev work first, then test* — the walks are not interleaved between
+   slices, and the IT prerequisites ask is the owner's, not a gate on the build.
+3. **Hand the owner a build**: `gh run download` the CI **pack** artifact from #139's run. Do NOT
+   point them at a release — none contains this work, and cutting one is the owner's call.
+4. **`docs/partner/managed-service-accounts.md`** (new in S-4) is the one-page hand-to-IT document:
+   the three gMSA prerequisites, what DistrictSync does, and what it cannot undo.
 
-**S-2 was reviewed by product + honesty and split in two** — product returned CHANGES_REQUIRED with two criticals, honesty returned OVERCLAIMS, and all 20 findings were accepted (4 in part). **S-2a** is the predicates and the copy and stays inert; **S-2b** is the flow. Two PRs off `main` in sequence. The one recorded departure from the approved design: `FOLDER_NOT_SHAREABLE` ships as a confirm-level warning rather than a `RegisterBlock` gate, because both lenses independently showed its predicate wrong in both directions and its stated reason self-contradictory.
+## Three NAMED holes — read these before claiming the plan is finished
 
-Plan `## Design` **D6** is S-2's design of record, and the S-2 row of `## Slices` is its scope list. **`### S-2.1` records three things the plan's own text gets wrong** — read it before trusting a line/module reference in D6.
+1. **`prune_principal` has a handler and an implementation but NO PRODUCER in `src/`.** Remove still
+   sends only `{"op": "delete"}`, so on a machine-scoped install a retired service account keeps RX
+   on `C:\ProgramData\DistrictSync` and M on `runs/`. S-4 made the op kind-aware and **nothing asks
+   it to run.** A genuine hole in the plan, not a slip by a slice — S-1b built it "inert until S-2"
+   and neither S-2's nor S-4's spec wired it. Needs two decisions: whether to prune on an
+   *unconfirmed* delete (the existing invariant says NO — pruning a live task's principal breaks the
+   nightly silently), and what to tell the admin when the prune fails after the task is gone.
+   Severity, honestly: a least-privilege gap, **not a new escalation** — the account already had that
+   access, and the delivery secret there is DPAPI **LocalMachine**, which the plan's own threat model
+   says any process on that machine can unseal regardless of the ACE.
+2. **`service_account_delivery_note`'s manual form says "sign in as it once"** — impossible for a
+   managed service account. Keyed on `foreign` + `will_provision`, not the kind, so it reaches an MSA
+   only in the one state where `DELIVERY_SECRET_UNREADABLE` closes the gate. Fixing it means a fourth
+   required keyword on a pure function with its own copy pins.
+3. **The read-back principal reaches no UI surface.** S-3 added `ScheduleReadback.run_as` /
+   `.logon_type`, but every principal fact on screen still comes from the RECORD — what this app
+   wrote at its last confirmed registration. A task re-pointed outside DistrictSync is described with
+   a stale name everywhere. Narrowed, not closed; the open question is what to say when the two
+   sources disagree *and* when the live one is unreadable.
 
-## Three things that have gone wrong repeatedly — do not rediscover them
+## Four things that have gone wrong repeatedly — do not rediscover them
 
-1. **Windows-only code is invisible to the local gates.** The suite runs on Windows here, so anything Windows-only is green locally and red on CI's Linux leg. Three instances on this plan: typeshed-guarded imports failing `mypy` (#129), a test that under-seeded a predicate's syscall seams and reached the real Win32 ACL API (#132), and a test rig that wrapped a seam but still called the real DPAPI behind it (#133). The gotcha list in `.claude/plans/0049-HANDOVER.md` §2 now carries the rule. **The cheap local proof** is to rig the Windows-only entry point to raise and re-run the file — e.g. set `elevation.dpapi_call` and `elevation._set_owner_only_dacl` to raise, then run the tests; if they pass, the path genuinely is not reached. That takes seconds against ~19 minutes of CI.
-2. **`mypy src/ --exclude 'src/ui_flet' --platform linux` is a required local gate**, not an optional one.
-3. **Never trigger a UAC prompt in an unattended session.** Every elevation is the owner's to approve personally. Drive elevated paths through the monkeypatched seams, as `tests/test_elevated_apply.py` does.
+1. **Windows-only code is invisible to the local gates.** The suite runs on Windows here, so anything
+   Windows-only is green locally and red on CI's Linux leg. Five instances on this plan. Two shapes:
+   a typeshed-guarded import failing `mypy --platform linux` (#129), and a **runtime** one — a
+   `sys.platform` guard does NOT protect a Windows-only import from a test that patches the platform,
+   and `ImportError` is outside `OSError` (#136, five tests). **The cheap local proof:** rig the
+   Windows-only entry point to raise (or `monkeypatch.setitem(sys.modules, "winreg", None)`) and
+   re-run the file. Seconds, against ~20 minutes of CI.
+2. **`mypy src/ --exclude 'src/ui_flet' --platform linux` is a REQUIRED local gate**, not optional.
+3. **Run `bandit` AFTER the last edit.** B105 keys on the *identifier* containing secret/password, not
+   the value, and **no other gate can see it** — #137's Linux leg died at 49s on three new copy
+   constants while ruff, mypy and 7271 tests were green.
+4. **Never trigger a UAC prompt in an unattended session.** Every elevation is the owner's to approve
+   personally. Drive elevated paths through monkeypatched seams, as `tests/test_elevated_apply.py`
+   does. **Any test forcing machine scope on must seed ALL THREE** of the trust predicate's raw reads
+   (`_machine_switch_on`, `_read_dir_security`, `_read_dacl_aces`) — seeding fewer reaches the real
+   Win32 API: green on Windows, red on Linux. That cost two PRs (#132, #133).
 
 ## Process the owner has set
 
-- Per slice: JIT spec → a short adversarial review sized to the slice → implement → verify → PR → **read and quote CI's own `test` and `test-windows` lines** → **the owner merges; the agent never does**.
-- The owner authorised continuing **without a per-slice approval pause** on 2026-09-18 ("continue until it's fully implemented"). Earlier slices used a ~6-line approval block; that gate is lifted, but surfacing real decisions in the report is not.
-- Keep messages short. The owner is fatigued by long ones.
-- **The `claugentic-dev-harness:*` subagent types are no longer available.** Use `general-purpose` for implementers and reviewers with the role instructions written into the prompt, and `Explore` for read-only mapping. Set `model` explicitly: implementers and critics on `opus`, mappers and digests on `sonnet`.
-- Honesty constraint that outranks everything: **nothing may claim gMSA works until a district reports a green nightly.** The S-4 UI carries "not yet tested against a live domain" and the CHANGELOG says "available, untested".
+- Per slice: JIT spec → a short adversarial review sized to the slice → implement → verify → PR →
+  **read and quote CI's own `test` and `test-windows` lines** → **the owner merges**.
+- Continue without a per-slice approval pause (authorised 2026-09-18). Surfacing real decisions in
+  the report is still required.
+- **Keep messages short.** The owner is fatigued by long ones.
+- The `claugentic-dev-harness:*` subagent types no longer exist. Use `general-purpose` with the role
+  written into the prompt, `Explore` for read-only mapping. Set `model` explicitly: implementers and
+  critics `opus`, mappers `sonnet`.
+- **A seam map before every spec.** The plan's own line references were wrong on S-2, S-3 and S-4 —
+  each spec's `S-x.1` section records the corrections. Do not brief an implementer from plan prose.
 
-## Owner-only items
+## Honesty constraints that outrank everything
 
-- The IT ask for the domain-joined laptop (a domain user with local admin; a gMSA with the laptop in `PrincipalsAllowedToRetrieveManagedPassword`, `Install-ADServiceAccount` run there, "Log on as a batch job"; whether that laptop's GPO sets the credential-storage policy). **It gates both manual walks and has not been sent.** Offered twice; the owner has not taken it up.
-- Every merge, every UAC click, the manual walks, and the reply to SD60.
+- **Nothing may claim gMSA works until a district reports a green nightly.** The S-4 UI says "not yet
+  tested against a live domain", the CHANGELOG says "available, untested". No domain controller
+  exists here.
+- **A failed provisioning attempt is NOT free** — provisioning runs before registration, so the
+  machine-scope switch is already committed when a register then fails. Both the CHANGELOG and the IT
+  page say so; an earlier draft of each claimed otherwise.
+- Every install provisioned before S-2 **stays per-user** until Remove -> Schedule. The partner guide
+  opens with how to tell which kind of install you have, and gates the manual `--sftp-configure` step
+  on that observable fact — because **the wrong answer there is silent**: delivery just stops.
 
 ---
 
 ## Paste this into the new session
 
 ```
-You are continuing plan 0049 (machine-scoped install + gMSA principal) for DistrictSync at slice S-2. I'm the owner.
+You are picking up plan 0049 (machine-scoped install + gMSA principal) for DistrictSync. I'm the owner. The DEV WORK IS DONE — do not rebuild it.
 
 Read in this order, then start:
-(1) .claude/plans/0049-HANDOVER-S2.md — every section; it says exactly where the build is.
-(2) CLAUDE.md.
-(3) .claude/plans/0049-machine-scope-gmsa.md — the approved design, its `## Design` D6 (S-2's design of record), the S-2 row of `## Slices`, and the `## Spec — S-1a` / `## Spec — S-1b` sections for the house style and the review dispositions.
-(4) .claude/plans/0049-HANDOVER.md §2 (gotchas), §4 (tests that must move deliberately), §8 (hard constraints).
+(1) .claude/plans/0049-HANDOVER-S2.md — every section; it says exactly where things stand.
+(2) CLAUDE.md — its machine-scope paragraph now describes S-2a through S-4 as shipped.
+(3) .claude/plans/0049-machine-scope-gmsa.md — the approved design and all four Spec sections. Read each spec's S-x.1 ("corrections") before trusting any line reference in the design.
 
-Context: SD60 is blocked (their GPO forbids stored task passwords; their IT uses gMSAs and asked for it by name). SD54 wants a service account without the manual runas step — S-2 is what delivers that. S-1a and S-1b are built and merged or in review; do not rebuild them.
+State: S-1a and S-1b are merged. S-2a/S-2b/S-3/S-4 are PRs #136/#137/#138/#139 — all CI-green, stacked, awaiting my merge. main carries v3.22.0, which contains NONE of this work.
 
-Rules: you orchestrate and judge. Implementers and critics on opus, mappers on sonnet, always set model explicitly; the claugentic-dev-harness agent types no longer exist, so use general-purpose with the role written into the prompt. Per slice: JIT spec → a short adversarial review sized to the slice (S-2's is product + honesty, since it is mostly user-facing copy) → implement → verify → PR → read and quote CI's own `test` and `test-windows` lines → I merge. Never merge, never send email, never trigger a UAC prompt, never touch a PR you did not open. Keep messages short, and don't stop for per-slice approval — continue through S-2, S-3 and S-4, surfacing decisions in your reports.
+First actions: (a) check which of #136-#139 have merged; if any are still open, tell me and stop rather than merging — I merge, never you. (b) If they have all merged, fetch me a Windows build from the CI pack artifact of the last one's run so I can test with my IT team; do not cut a release. (c) Then tell me which of the three NAMED HOLES in the handover you recommend doing first, and why — I'll decide.
 
-First actions: (a) `git log` the branch `claude/0049-s2a-honest-predicates` and read `## Spec — S-2` in the plan — S-2a (the predicates and the copy, inert) is implemented and under test there; finish it, rebase onto `origin/main`, and open its PR. (b) Then spec-check and implement S-2b (the flow) as its own PR off `main`. Never stack a PR on a feature branch — ci.yml only fires on PRs targeting main, so a stacked PR gets no test gate.
+Rules: you orchestrate and judge. A seam map before any spec; the plan's own line references have been wrong three times. Implementers and critics on opus, mappers on sonnet, always set model explicitly. Never merge, never send email, never trigger a UAC prompt, never cut a release without asking. Run bandit after the last edit and mypy with --platform linux. Keep messages short.
 ```

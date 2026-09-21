@@ -25,8 +25,13 @@ from src.scheduler import task_com, windows
 from src.scheduler.provision_session import HandoverOutcome, ProvisionAttempt, ProvisionOutcome
 from src.scheduler.task_com import PrincipalKind
 from src.sftp.uploader import SFTPUploader
+from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.setup_flow import (
+    GMSA_IT_DOC_TITLE,
+    GMSA_PREREQUISITES,
+    GMSA_UNTESTED_CAPTION,
     SCHEDULE_ACCOUNT_FIELD_LABEL,
+    SCHEDULE_GMSA_TOGGLE_LABEL,
     ReconcileOutcome,
     TaskArgs,
     task_args_to_persisted,
@@ -35,7 +40,10 @@ from src.ui_flet.setup_gates import principal_key
 from tests.test_ui_flet_render_smoke import (
     _benign_probe,
     _button_by_content,
+    _checkbox_by_label,
+    _has_text,
     _has_text_containing,
+    _pick_event,
     _settings_dirs,
     _textfield_by_label,
 )
@@ -139,18 +147,55 @@ def _capture_classifier(monkeypatch) -> dict:
     seen: dict = {}
     real = setup_mod.classify_schedule_error
 
-    def _spy(msg, elevated, *, account_is_current):
+    def _spy(msg, elevated, *, account_is_current, kind):
         seen["msg"] = msg
         seen["account_is_current"] = account_is_current
-        return real(msg, elevated, account_is_current=account_is_current)
+        seen["kind"] = kind
+        return real(msg, elevated, account_is_current=account_is_current, kind=kind)
 
     monkeypatch.setattr(setup_mod, "classify_schedule_error", _spy)
     return seen
 
 
 def _schedule_section(cfg, stub_page):
+    """The WIZARD mount's shape — ``allow_gmsa`` left at its default (plan 0049 S-4)."""
     card, handle = setup_mod._build_schedule_section(stub_page, cfg)
     return card, handle
+
+
+def _settings_schedule_section(cfg, stub_page):
+    """The SETTINGS mount's shape — the only one that offers the gMSA disclosure (S-4).
+
+    ``allow_gmsa=True`` is exactly what ``_mount_settings`` passes; it is spelled here rather
+    than driving the whole Settings scroll so the fork itself is what the rows below vary.
+    """
+    card, handle = setup_mod._build_schedule_section(stub_page, cfg, allow_gmsa=True)
+    return card, handle
+
+
+def _gmsa_box(tree):
+    return _checkbox_by_label(tree, SCHEDULE_GMSA_TOGGLE_LABEL)
+
+
+def _password_slot(tree):
+    """The Column holding the Windows-password field + its caption (S-4 hides it as a unit)."""
+    from tests.test_ui_flet_render_smoke import _iter_controls
+
+    for control in _iter_controls(tree):
+        children = getattr(control, "controls", None)
+        if not isinstance(children, list):
+            continue
+        if any(getattr(c, "label", None) == "Windows account password" for c in children):
+            return control
+    return None
+
+
+def _toggle_gmsa(tree, on: bool) -> None:
+    """Move the tick box the way flet does — ``check_row`` reads ``e.control.value``."""
+    box = _gmsa_box(tree)
+    assert box is not None, "the gMSA disclosure is not on this mount"
+    box.value = on
+    box.on_change(_pick_event(on))
 
 
 def _account_field(tree):
@@ -375,13 +420,14 @@ class TestTheRecord:
         assert cfg.schedule_registered is True
         assert cfg.schedule_unattended is True
 
-    def test_a_confirmed_unregister_clears_all_three(self, tmp_path, stub_page, monkeypatch):
+    def test_a_confirmed_unregister_clears_all_four(self, tmp_path, stub_page, monkeypatch):
         cfg = _settings(
             tmp_path,
             monkeypatch,
             schedule_registered=True,
             schedule_unattended=True,
             schedule_run_as_user=_SERVICE,
+            schedule_run_as_kind=PrincipalKind.PASSWORD.value,
         )
         cfg.schedule_task_args = _registered_args(cfg)
         monkeypatch.setattr("src.scheduler.windows.delete_task", lambda name: (True, "Schedule removed."))
@@ -393,6 +439,8 @@ class TestTheRecord:
         assert cfg.schedule_unattended is False
         assert cfg.schedule_task_args is None
         assert cfg.schedule_run_as_user == ""
+        # 0049 S-4: the FOURTH facet goes with the other three, in the same save.
+        assert cfg.schedule_run_as_kind == ""
 
     def test_remove_then_schedule_keeps_the_typed_account_in_the_box(self, tmp_path, stub_page, monkeypatch):
         """The refusal copy promises "what you've typed here stays in the box" — so nothing on
@@ -767,7 +815,7 @@ class TestHonestReporting:
         assert seen["msg"] == task_com.MSG_LOGON_FAILURE
         assert seen["account_is_current"] is False
         out = setup_mod.classify_schedule_error(
-            task_com.MSG_LOGON_FAILURE, False, account_is_current=seen["account_is_current"]
+            task_com.MSG_LOGON_FAILURE, False, account_is_current=seen["account_is_current"], kind=seen["kind"]
         )
         assert "PIN" not in out
         assert "microsoft.com" not in out
@@ -777,7 +825,7 @@ class TestHonestReporting:
         self._register_as(tmp_path, stub_page, monkeypatch, None, result=(False, task_com.MSG_LOGON_FAILURE))
         assert seen["account_is_current"] is True
         out = setup_mod.classify_schedule_error(
-            task_com.MSG_LOGON_FAILURE, False, account_is_current=seen["account_is_current"]
+            task_com.MSG_LOGON_FAILURE, False, account_is_current=seen["account_is_current"], kind=seen["kind"]
         )
         assert "PIN" in out
         assert "microsoft.com" in out
@@ -1005,7 +1053,9 @@ class TestA6KeyringOwner:
 
 def test_the_engine_refusal_message_is_classified_not_swallowed():
     """The sweep's declared-but-now-classified arm forced this; keep it visible at the seam."""
-    out = setup_mod.classify_schedule_error(windows._MSG_ACCOUNT_NEEDS_PASSWORD, False, account_is_current=False)
+    out = setup_mod.classify_schedule_error(
+        windows._MSG_ACCOUNT_NEEDS_PASSWORD, False, account_is_current=False, kind=PrincipalKind.PASSWORD
+    )
     assert SCHEDULE_ACCOUNT_FIELD_LABEL in out
 
 
@@ -1062,16 +1112,23 @@ class TestTheUiDeclaresOnlyTwoKinds:
         assert seen["calls"] == 1
         assert seen["principal"].kind is PrincipalKind.PASSWORD
 
-    def test_no_surface_can_declare_a_managed_service_account(self, tmp_path, stub_page, monkeypatch):
-        """Structural: the module names exactly two kinds, and the third is absent from its
-        source. A caption, a disclosure and an error branch all have to land with it (S-4);
-        a kind reachable before its copy exists would be a dead end in front of an admin."""
-        import pathlib
+    def test_the_WIZARD_mount_still_cannot_declare_a_managed_service_account(self, tmp_path, stub_page, monkeypatch):
+        """S-3 pinned this STRUCTURALLY (the third kind was absent from the module's source);
+        plan 0049 S-4 landed the caption, the disclosure and the error branch, so the pin moves
+        from "absent from the file" to "absent from THIS MOUNT" — which is the property that
+        actually matters and the one the S-4 spec chose: a first-run admin must not be offered a
+        credential model nobody has been able to test.
 
-        source = pathlib.Path(setup_mod.__file__).read_text(encoding="utf-8")
-        assert "PrincipalKind.PASSWORD" in source  # positive twin: the file really names kinds
-        assert "PrincipalKind.INTERACTIVE_TOKEN" in source
-        assert "MANAGED_SERVICE_ACCOUNT" not in source
+        Proved by the affordance, not by the source: with no tick box there is no input that can
+        produce the third kind, and the typed ``$`` account is refused by the shape rung ahead of
+        any dispatch (the row below this one)."""
+        cfg = _settings(tmp_path, monkeypatch)
+        tree, _ = _schedule_section(cfg, stub_page)
+        assert _gmsa_box(tree) is None
+        # The positive twin: the SAME config on the Settings mount does offer it, so this row
+        # cannot pass because the control was renamed or the tree walk broke.
+        settings_tree, _ = _settings_schedule_section(cfg, stub_page)
+        assert _gmsa_box(settings_tree) is not None
 
     def test_a_dollar_suffixed_account_never_reaches_a_declaration_at_all(self, tmp_path, stub_page, monkeypatch):
         """The one unrepresentable combination an admin could type — a ``$``-suffixed account
@@ -1095,4 +1152,314 @@ class TestTheUiDeclaresOnlyTwoKinds:
         assert provisioned["calls"] == 0, "the gate must refuse before anything is dispatched"
         # And the refusal is VISIBLE — a disabled primary with no cause is the defect plan
         # 0046 B's `_paint_account_note` exists to prevent.
+        assert _has_text_containing(tree, setup_mod._ACCOUNT_SHAPE_NOTE)
+
+
+# --------------------------------------------------------------------------- #
+# Plan 0049 S-4 — the gMSA disclosure (Settings mount only)                     #
+# --------------------------------------------------------------------------- #
+_GMSA = "CORP\\svc_districtsync$"
+
+
+def _register_gmsa(tree, stub_page, *, account=_GMSA) -> None:
+    """Tick the disclosure, type a gMSA, press Schedule, confirm the scope, drain the worker.
+
+    A gMSA is always FOREIGN, so the press routes through ``request_provision`` and the
+    machine-scope confirm exactly as a password service account does — that shared route is
+    why this helper mirrors ``_register_service_account`` rather than replacing it.
+    """
+    _toggle_gmsa(tree, True)
+    _account_field(tree).value = account
+    _press_register(tree)
+    _confirm_scope(stub_page)
+    _drain(stub_page)
+
+
+class TestTheDisclosureIsSettingsOnly:
+    """The FIRST wizard/Settings fork in ``_build_schedule_section``. Proven on BOTH mounts, so
+    "absent from the wizard" cannot pass because the control stopped existing anywhere."""
+
+    def test_the_wizard_mount_has_no_tick_box(self, tmp_path, stub_page, monkeypatch):
+        cfg = _settings(tmp_path, monkeypatch)
+        tree, _ = _schedule_section(cfg, stub_page)
+        assert _gmsa_box(tree) is None
+        assert not _has_text_containing(tree, GMSA_UNTESTED_CAPTION)
+
+    def test_the_settings_mount_has_one(self, tmp_path, stub_page, monkeypatch):
+        cfg = _settings(tmp_path, monkeypatch)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        assert _gmsa_box(tree) is not None
+
+    def test_the_REAL_settings_scroll_offers_it(self, tmp_path, stub_page, monkeypatch):
+        """Mounted through ``build_setup``, deliberately, NOT through
+        ``_settings_schedule_section``: that helper spells ``allow_gmsa=True`` itself, so every
+        other row in this file would stay green if ``_mount_settings`` stopped passing it. This
+        is the row that pins the CALL SITE."""
+        _settings(tmp_path, monkeypatch)
+        tree = build_setup(stub_page)
+        assert _gmsa_box(tree) is not None
+
+    def test_the_REAL_wizard_schedule_step_does_not(self, tmp_path, stub_page, monkeypatch):
+        """Its twin on the other mount, through the same real entry point — so "absent from the
+        wizard" is a fact about the shipped wizard rather than about a default this file chose."""
+        _settings(tmp_path, monkeypatch, setup_completed=False)
+        tree = build_setup(stub_page)
+        _button_by_content(tree, "Set up later").on_click(None)  # defer delivery → Schedule
+        assert _has_text(tree, "Step 4 of 5"), "the wizard did not reach its Schedule step"
+        assert _gmsa_box(tree) is None
+        assert _textfield_by_label(tree, "Windows account password") is not None  # the step IS there
+
+    def test_the_wizard_still_refuses_a_dollar_suffixed_account(self, tmp_path, stub_page, monkeypatch):
+        """With no way to declare the kind, the wizard's shape rung is still
+        ``validate_run_as_user`` — so today's refusal is byte-identical there."""
+        cfg = _settings(tmp_path, monkeypatch)
+        ordinary = _capture_register(monkeypatch)
+        provisioned = _capture_provision(monkeypatch)
+        _stub_handover(monkeypatch, handed_over=False)
+        tree, _ = _schedule_section(cfg, stub_page)
+        _account_field(tree).value = _GMSA
+        _press_register(tree)
+        _drain(stub_page)
+
+        assert ordinary["calls"] == 0
+        assert provisioned["calls"] == 0
+        assert _has_text_containing(tree, setup_mod._ACCOUNT_SHAPE_NOTE)
+
+
+class TestWhatTheDisclosureReveals:
+    def _on(self, tmp_path, stub_page, monkeypatch):
+        cfg = _settings(tmp_path, monkeypatch)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        _toggle_gmsa(tree, True)
+        return cfg, tree
+
+    def test_it_reveals_the_untested_caption(self, tmp_path, stub_page, monkeypatch):
+        _cfg, tree = self._on(tmp_path, stub_page, monkeypatch)
+        assert _has_text_containing(tree, GMSA_UNTESTED_CAPTION)
+
+    def test_it_reveals_all_three_prerequisites(self, tmp_path, stub_page, monkeypatch):
+        _cfg, tree = self._on(tmp_path, stub_page, monkeypatch)
+        for item in GMSA_PREREQUISITES:
+            assert _has_text_containing(tree, item), f"the disclosure does not show {item!r}"
+
+    def test_it_names_the_hand_to_IT_document(self, tmp_path, stub_page, monkeypatch):
+        # A document an admin cannot ask for by name is worse than no reference at all.
+        _cfg, tree = self._on(tmp_path, stub_page, monkeypatch)
+        assert _has_text_containing(tree, GMSA_IT_DOC_TITLE)
+
+    def test_nothing_is_revealed_while_it_is_off(self, tmp_path, stub_page, monkeypatch):
+        """The negative twin for all three rows above — and the state every configured install
+        mounts in."""
+        cfg = _settings(tmp_path, monkeypatch)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        assert not _has_text_containing(tree, GMSA_UNTESTED_CAPTION)
+        assert not _has_text_containing(tree, GMSA_IT_DOC_TITLE)
+        for item in GMSA_PREREQUISITES:
+            assert not _has_text_containing(tree, item)
+
+    def test_untoggling_takes_it_all_away_again(self, tmp_path, stub_page, monkeypatch):
+        _cfg, tree = self._on(tmp_path, stub_page, monkeypatch)
+        _toggle_gmsa(tree, False)
+        assert not _has_text_containing(tree, GMSA_UNTESTED_CAPTION)
+        for item in GMSA_PREREQUISITES:
+            assert not _has_text_containing(tree, item)
+
+
+class TestThePasswordFieldIsHiddenNotLeftDead:
+    """A managed service account has no password. A live credential field that cannot matter is
+    the dead-control problem this file already names, one step worse — it invites an admin to
+    type a secret into a control whose value would be refused."""
+
+    def test_the_slot_is_visible_before_the_toggle(self, tmp_path, stub_page, monkeypatch):
+        cfg = _settings(tmp_path, monkeypatch)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        slot = _password_slot(tree)
+        assert slot is not None and slot.visible is not False
+
+    def test_toggling_on_hides_it(self, tmp_path, stub_page, monkeypatch):
+        cfg = _settings(tmp_path, monkeypatch)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        _toggle_gmsa(tree, True)
+        assert _password_slot(tree).visible is False
+
+    def test_toggling_off_restores_it(self, tmp_path, stub_page, monkeypatch):
+        cfg = _settings(tmp_path, monkeypatch)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        _toggle_gmsa(tree, True)
+        _toggle_gmsa(tree, False)
+        assert _password_slot(tree).visible is True
+
+    def test_hiding_it_CLEARS_a_typed_credential(self, tmp_path, stub_page, monkeypatch):
+        """Not cosmetic: a password left in an off-screen field would still be read by
+        ``_account_facts``, producing the kind/password combination ``Principal`` refuses."""
+        cfg = _settings(tmp_path, monkeypatch)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        _textfield_by_label(tree, "Windows account password").value = "hunter2"
+        _toggle_gmsa(tree, True)
+        assert _textfield_by_label(tree, "Windows account password").value == ""
+
+
+class TestTheGmsaRegistersAndIsRecorded:
+    def test_it_declares_the_managed_service_account_kind_with_no_password(self, tmp_path, stub_page, monkeypatch):
+        cfg = _settings(tmp_path, monkeypatch)
+        seen = _capture_provision(monkeypatch)
+        _stub_handover(monkeypatch, handed_over=False)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        _register_gmsa(tree, stub_page)
+
+        assert seen["calls"] == 1
+        assert seen["principal"].kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT
+        assert seen["principal"].user == _GMSA
+        assert seen["principal"].password is None
+
+    def test_it_writes_the_fourth_facet_in_the_same_save(self, tmp_path, stub_page, monkeypatch):
+        cfg = _settings(tmp_path, monkeypatch)
+        saves = {"n": 0}
+        monkeypatch.setattr(AppConfig, "save", lambda self: saves.__setitem__("n", saves["n"] + 1))
+        _capture_provision(monkeypatch)
+        _stub_handover(monkeypatch, handed_over=False)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        _register_gmsa(tree, stub_page)
+
+        assert saves["n"] == 1, "the four facets must land in ONE save"
+        assert cfg.schedule_registered is True
+        assert cfg.schedule_run_as_user == _GMSA
+        assert cfg.schedule_run_as_kind == PrincipalKind.MANAGED_SERVICE_ACCOUNT.value
+
+    def test_it_records_the_task_as_UNATTENDED_despite_carrying_no_password(self, tmp_path, stub_page, monkeypatch):
+        """``bool(password)`` would record an unattended task as logged-on-only, and the
+        reconcile would then stop guarding it against a silent downgrade. The facet is keyed on
+        the KIND instead."""
+        cfg = _settings(tmp_path, monkeypatch)
+        _capture_provision(monkeypatch)
+        _stub_handover(monkeypatch, handed_over=False)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        _register_gmsa(tree, stub_page)
+
+        assert cfg.schedule_unattended is True
+
+    def test_a_password_register_still_records_the_password_kind(self, tmp_path, stub_page, monkeypatch):
+        """The NON-vacuous twin: the facet is not hardcoded to the new value."""
+        cfg = _settings(tmp_path, monkeypatch)
+        _capture_register(monkeypatch)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        _textfield_by_label(tree, "Windows account password").value = "pw"
+        _press_register(tree)
+        _drain(stub_page)
+
+        assert cfg.schedule_run_as_kind == PrincipalKind.PASSWORD.value
+        assert cfg.schedule_unattended is True
+
+    def test_a_blank_password_register_records_the_interactive_token_kind(self, tmp_path, stub_page, monkeypatch):
+        cfg = _settings(tmp_path, monkeypatch)
+        _capture_register(monkeypatch)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        _press_register(tree)
+        _drain(stub_page)
+
+        assert cfg.schedule_run_as_kind == PrincipalKind.INTERACTIVE_TOKEN.value
+        assert cfg.schedule_unattended is False
+
+
+class TestTheToggleIsSessionStateSeededFromTheRecord:
+    def test_merely_toggling_persists_nothing(self, tmp_path, stub_page, monkeypatch):
+        """The toggle is session state, not config: only a CONFIRMED register may write the
+        kind, so the tick box on its own must leave ``config.json`` alone."""
+        cfg = _settings(tmp_path, monkeypatch)
+        saves = {"n": 0}
+        monkeypatch.setattr(AppConfig, "save", lambda self: saves.__setitem__("n", saves["n"] + 1))
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        _toggle_gmsa(tree, True)
+        _toggle_gmsa(tree, False)
+
+        assert cfg.schedule_run_as_kind == ""
+        assert saves["n"] == 0
+
+    def test_a_recorded_gmsa_install_mounts_with_the_disclosure_ON(self, tmp_path, stub_page, monkeypatch):
+        """What makes "session state, not config" coherent: the RECORD is what survives. Without
+        this seed a Settings mount over a live gMSA task would meet its own prefilled ``$``
+        account with ``validate_run_as_user`` and refuse the install's own live principal."""
+        cfg = _settings(
+            tmp_path,
+            monkeypatch,
+            schedule_registered=True,
+            schedule_unattended=True,
+            schedule_run_as_user=_GMSA,
+            schedule_run_as_kind=PrincipalKind.MANAGED_SERVICE_ACCOUNT.value,
+        )
+        cfg.schedule_task_args = _registered_args(cfg)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+
+        assert _gmsa_box(tree).value is True
+        assert _password_slot(tree).visible is False
+        assert _has_text_containing(tree, GMSA_UNTESTED_CAPTION)
+
+    def test_a_password_install_mounts_with_it_OFF(self, tmp_path, stub_page, monkeypatch):
+        """The negative twin — and the state all 20 shipped districts mount in."""
+        cfg = _settings(
+            tmp_path,
+            monkeypatch,
+            schedule_registered=True,
+            schedule_unattended=True,
+            schedule_run_as_user=_SERVICE,
+            schedule_run_as_kind=PrincipalKind.PASSWORD.value,
+        )
+        cfg.schedule_task_args = _registered_args(cfg)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+
+        assert _gmsa_box(tree).value is False
+        assert _password_slot(tree).visible is not False
+
+    def test_an_upgrader_with_no_recorded_kind_mounts_with_it_OFF(self, tmp_path, stub_page, monkeypatch):
+        """The absent-value rule reaching the view: a v3.7-era record has a named principal and
+        no kind, which resolves to PASSWORD — never to the untested one."""
+        cfg = _settings(
+            tmp_path,
+            monkeypatch,
+            schedule_registered=True,
+            schedule_unattended=True,
+            schedule_run_as_user=_SERVICE,
+        )
+        cfg.schedule_task_args = _registered_args(cfg)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+
+        assert _gmsa_box(tree).value is False
+
+
+class TestTheGateAndItsReasonFollowTheToggle:
+    def test_the_gate_opens_for_a_gmsa_with_no_password(self, tmp_path, stub_page, monkeypatch):
+        cfg = _settings(tmp_path, monkeypatch)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        _toggle_gmsa(tree, True)
+        _account_field(tree).value = _GMSA
+        _account_field(tree).on_change(None)
+
+        assert _button_by_content(tree, "Schedule nightly sync").disabled is False
+        assert not _has_text_containing(tree, setup_mod._ACCOUNT_SHAPE_NOTE)
+        assert not _has_text_containing(tree, setup_mod._ACCOUNT_PASSWORD_NOTE)
+
+    def test_a_malformed_gmsa_name_gets_the_MSA_shape_note_not_the_general_one(self, tmp_path, stub_page, monkeypatch):
+        """The general shape note tells an admin to use letters/digits/dots/underscores/hyphens
+        only — which for a gMSA means dropping the ``$`` that makes it one. Forked on the
+        declared kind, so a disabled primary's visible cause is also the RIGHT cause."""
+        cfg = _settings(tmp_path, monkeypatch)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        _toggle_gmsa(tree, True)
+        _account_field(tree).value = r"CORP\svc districtsync$"
+        _account_field(tree).on_change(None)
+
+        assert _has_text_containing(tree, setup_mod._ACCOUNT_SHAPE_NOTE_MSA)
+        assert not _has_text_containing(tree, setup_mod._ACCOUNT_SHAPE_NOTE)
+
+    def test_untoggling_closes_it_again_with_a_visible_reason(self, tmp_path, stub_page, monkeypatch):
+        """The same name, now declared a password logon: the shape rung refuses the ``$`` and
+        the reason is painted under the field — a disabled primary always has a visible cause."""
+        cfg = _settings(tmp_path, monkeypatch)
+        tree, _ = _settings_schedule_section(cfg, stub_page)
+        _toggle_gmsa(tree, True)
+        _account_field(tree).value = _GMSA
+        _account_field(tree).on_change(None)
+        _toggle_gmsa(tree, False)
+
+        assert _button_by_content(tree, "Schedule nightly sync").disabled is True
         assert _has_text_containing(tree, setup_mod._ACCOUNT_SHAPE_NOTE)

@@ -139,7 +139,11 @@ from src.ui_flet.screens.identity import NOT_LISTED_NOTE_TAIL as UNMATCHED_DISTR
 from src.ui_flet.screens.identity import log_resolve, matched_headline
 from src.ui_flet.setup_errors import classify_provision_step, classify_schedule_error
 from src.ui_flet.setup_flow import (
+    GMSA_IT_DOC_TITLE,
+    GMSA_PREREQUISITES,
+    GMSA_UNTESTED_CAPTION,
     SCHEDULE_ACCOUNT_FIELD_LABEL,
+    SCHEDULE_GMSA_TOGGLE_LABEL,
     TRANSITION_CUE,
     DeliveryFact,
     DowngradeInterrupt,
@@ -232,6 +236,16 @@ _WORKER_ERROR_ACCOUNT_SHAPE = (
 _ACCOUNT_SHAPE_NOTE = (
     "That account name isn't valid. Use the account's Windows name — DOMAIN\\name if it has a "
     "domain. Letters, digits, dots, underscores and hyphens only; no spaces."
+)
+# The managed-service-account form (plan 0049 S-4). The note above is right for every other
+# principal and WRONG for this one in the one way that matters: a gMSA's name MUST end with the
+# ``$`` the general charset has no room for, so telling an admin who has just ticked the
+# disclosure to drop it would send them round in a circle. Which one paints is decided by the
+# DECLARED kind in ``account_block_note``, never by the spelling of what they typed.
+_ACCOUNT_SHAPE_NOTE_MSA = (
+    "That managed service account name isn't valid. Use DOMAIN\\name$ — the trailing $ is what "
+    "makes it a managed service account. Letters, digits, dots, underscores and hyphens only; no "
+    "spaces. If you meant an ordinary Windows account, clear the managed service account tick box."
 )
 # nosec B105 — a constant NAMED "..._PASSWORD_NOTE"; the value is on-screen copy, not a secret.
 _ACCOUNT_PASSWORD_NOTE = (  # nosec B105
@@ -449,6 +463,10 @@ def account_block_note(block: RegisterBlock, facts: ScheduleAccountFacts) -> str
     ``tests/test_ui_flet_machine_scope_handover.py`` can only reach it from out here.
     """
     if block is RegisterBlock.ACCOUNT_SHAPE:
+        # 0049 S-4: forked on the DECLARED kind, because the two charsets disagree on exactly
+        # the one character the admin has to get right.
+        if facts.kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT:
+            return _ACCOUNT_SHAPE_NOTE_MSA
         return _ACCOUNT_SHAPE_NOTE
     if block is RegisterBlock.ACCOUNT_NEEDS_PASSWORD:
         return _ACCOUNT_PASSWORD_NOTE
@@ -1871,8 +1889,8 @@ def _walk_controls(control: ft.Control | None):  # pragma: no cover - view glue
 def _registered_schedule(cfg: AppConfig) -> RegisteredSchedule:  # pragma: no cover - AppConfig→pure adapter
     """The durable "what the live task actually carries" record (the ONE resolution point).
 
-    A thin adapter over the pure ``setup_flow.registered_schedule``: it only supplies the two
-    persisted fields plus the running platform's unattended-logon capability. Both reconcile
+    A thin adapter over the pure ``setup_flow.registered_schedule``: it only supplies the four
+    persisted facets plus the running platform's unattended-logon capability. Both reconcile
     consumers (the task-args comparison and the logon-downgrade guard) read the record from HERE,
     so neither can re-derive a baseline from the *current* config (the W3-C silent no-op).
     """
@@ -1880,6 +1898,7 @@ def _registered_schedule(cfg: AppConfig) -> RegisteredSchedule:  # pragma: no co
         raw_task_args=cfg.schedule_task_args,
         unattended_flag=cfg.schedule_unattended,
         raw_run_as_user=cfg.schedule_run_as_user,
+        raw_run_as_kind=cfg.schedule_run_as_kind,
         supports_unattended=get_scheduler().supports_unattended_password,
     )
 
@@ -1926,6 +1945,9 @@ def _mount_settings(  # pragma: no cover - Flet view glue
         on_reenter=on_reenter,
         on_remount=_remount,
         on_terminal=lambda keep: _freeze_setup_actions(root, keep=keep),
+        # 0049 S-4: the ONLY mount that offers the gMSA disclosure. The wizard's call above
+        # leaves it at its default and keeps refusing a ``$``-suffixed account, deliberately.
+        allow_gmsa=True,
     )
 
     def _reconcile() -> ReconcileOutcome:
@@ -2393,6 +2415,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     on_reenter: Callable[[], None] | None = None,
     on_remount: Callable[[], None] | None = None,
     on_terminal: Callable[[ft.Control], None] | None = None,
+    allow_gmsa: bool = False,
 ) -> tuple[ft.Control, _ScheduleHandle]:
     """The scheduler section — run time + (where supported) run-as password → register (Slice 5/6).
 
@@ -2419,6 +2442,13 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     the config and a later folders Save would write the stale value back; ``on_terminal``
     receives the control to keep live and freezes the rest of the host, for the one outcome
     that cannot be recovered from in-session (the refused re-pin).
+
+    **``allow_gmsa`` is the FIRST wizard/Settings fork in this function** (plan 0049 S-4). Until
+    now the two mounts ran byte-identical code and differed only in which optional callbacks
+    they passed, none of which is a mode flag. It is ``True`` only from ``_mount_settings``, and
+    the default is the safe one: a first-run admin choosing a credential model nobody has been
+    able to test is the wrong default, the wizard has no room for three IT prerequisites, and
+    with it ``False`` the wizard keeps refusing a ``$``-suffixed account exactly as today.
     """
     scheduler = get_scheduler()
 
@@ -2541,6 +2571,16 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     password_field: ft.TextField | None = None
     account_field: ft.TextField | None = None
     account_note_slot = ft.Column(spacing=4, controls=[])
+    # The gMSA disclosure's SESSION state (plan 0049 S-4) — never persisted. A dict so the
+    # closures below share one mutable cell, the same shape ``_flight`` / ``_last_schedule_state``
+    # use. Its opening value is SEEDED from the durable record rather than defaulted to False:
+    # the record is the thing that survives, and a Settings mount over an install whose nightly
+    # already runs as a managed service account must come up with the disclosure on — otherwise
+    # the prefilled ``$`` account would meet ``validate_run_as_user`` and the gate would refuse
+    # the install's own live principal, with a note about spelling.
+    _gmsa = {"on": False}
+    gmsa_disclosure_slot = ft.Column(spacing=tokens.space_xs, controls=[])
+    password_slot = ft.Column(spacing=tokens.space_xs, controls=[])
     if scheduler.supports_unattended_password:
         # 0046 B: the static "This task will run as: X" caption becomes an editable field,
         # PREFILLED with the signed-in account. What makes the prefill safe is that the typed
@@ -2571,18 +2611,142 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 "Used once to schedule the task — DistrictSync does not store it."
             ),
         )
-        section_controls.append(password_field)
-        section_controls.append(
+        # 0049 S-4: the password field + its caption move into a SLOT so the disclosure can take
+        # them off screen. A managed service account has no password, and this file already names
+        # the dead-control problem ("a disabled primary with no visible cause"); a live credential
+        # field that cannot matter is the same defect one step further — it invites an admin to
+        # type a secret into a control whose value would be refused.
+        password_slot.controls = [
+            password_field,
             ft.Text(
                 "Leave the password blank to schedule a logged-on-only task "
                 "(it will not run after a reboot with no one signed in).",
                 size=12,
                 color=tokens.color_muted,
+            ),
+        ]
+        section_controls.append(password_slot)
+        if allow_gmsa:
+            _gmsa["on"] = _registered_schedule(cfg).run_as_kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT
+            # Built with ``components.check_row`` — "the ONE checkbox factory" — and NOT with the
+            # raw ``ft.Switch`` the seasonal-window section a few hundred lines below uses. Both
+            # patterns now co-exist in this file, so the choice is worth stating: the design
+            # system's build-via-factories rule is authoritative and outranks the nearer
+            # precedent (that switch predates the factory). ``check_row`` also hands the closure
+            # the new BOOLEAN rather than the event, which is what stops a screen reading a
+            # stale ``e.control.value``.
+            #
+            # The lambda is not redundant: the control has to be built HERE (its place in
+            # ``section_controls`` is its place on screen) while ``_on_gmsa_toggled`` needs the
+            # closures defined below it, so the reference has to be deferred to call time.
+            section_controls.append(
+                components.check_row(
+                    SCHEDULE_GMSA_TOGGLE_LABEL,
+                    value=_gmsa["on"],
+                    on_toggle=lambda on: _on_gmsa_toggled(on),
+                )
             )
-        )
+            section_controls.append(gmsa_disclosure_slot)
 
     def _elevated_now() -> bool:
         return scheduler.is_elevated()  # always False where elevation has no meaning (cron)
+
+    def _declared_kind() -> PrincipalKind:
+        """Which :class:`PrincipalKind` THIS press declares (plan 0049 S-3/S-4).
+
+        The ONE place the session's three-way answer is decided, read by the gate
+        (``_account_facts``), by the classifier call sites and by the ``Principal`` each worker
+        builds — so the thing the gate validated and the thing Windows is asked for cannot
+        diverge. The disclosure's tick box is the only input that can produce
+        ``MANAGED_SERVICE_ACCOUNT``; it exists on the Settings mount alone, so the wizard's
+        answer is structurally the same two kinds it has always had.
+
+        A typed password still selects ``PASSWORD`` over ``INTERACTIVE_TOKEN``, unchanged. It
+        cannot collide with the MSA arm: turning the disclosure on hides AND CLEARS the password
+        field, so ``password_supplied`` is False by the time this is read.
+        """
+        if _gmsa["on"]:
+            return PrincipalKind.MANAGED_SERVICE_ACCOUNT
+        typed_password = (password_field.value or "") if password_field is not None else ""
+        return PrincipalKind.PASSWORD if typed_password else PrincipalKind.INTERACTIVE_TOKEN
+
+    def _gmsa_disclosure_controls() -> list[ft.Control]:
+        """What the gMSA tick box reveals: the hedge, the three prerequisites, where to get them.
+
+        The caption is NEW copy on the existing muted-note primitive
+        (``tokens.type_caption`` + ``color_muted``) — worth saying, because there is no
+        "untested" caption anywhere else in ``src/ui_flet`` to reuse. Nothing in this app has
+        ever been run against a live domain controller, so it is the only honest thing the
+        surface can lead with, and it is single-sourced at
+        ``setup_flow.GMSA_UNTESTED_CAPTION`` (the downgrade interrupt and the classifier's MSA
+        arm say it in the same words).
+
+        The prerequisites render as READ-ONLY tick glyphs, deliberately not ``check_row``: none
+        of the three is knowable from here (``validate_gmsa_account`` is a shape check, and
+        Windows answers the real questions only at registration), so a control an admin could
+        tick would be recording a claim this app cannot check.
+
+        There is no clickable document link and that is not an omission: the MkDocs site was
+        removed, so a partner doc has no URL, and a bare one would be the dead click
+        ``screens/help.py`` renders selectable text beside every button to avoid. The document
+        is NAMED instead, so an admin can ask for it by name.
+        """
+        rows: list[ft.Control] = [
+            ft.Text(GMSA_UNTESTED_CAPTION, size=tokens.type_caption, color=tokens.color_muted),
+            ft.Text(
+                "Before this can work, your IT team needs to have done all three of these:",
+                size=tokens.type_caption,
+                color=tokens.color_muted,
+            ),
+        ]
+        rows += [
+            ft.Row(
+                spacing=tokens.space_sm,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+                controls=[
+                    # Sized from the type scale, not a bare px number: the glyph reads as part
+                    # of the caption line it sits beside, so one token governs both.
+                    ft.Icon(ft.Icons.CHECK_ROUNDED, size=tokens.type_section, color=tokens.color_muted),
+                    ft.Text(item, size=tokens.type_caption, color=tokens.color_muted, expand=True),
+                ],
+            )
+            for item in GMSA_PREREQUISITES
+        ]
+        rows.append(
+            ft.Text(
+                f"Your SpacesEDU contact can send you '{GMSA_IT_DOC_TITLE}' — one page your IT "
+                "team can work from. The Help page has our support contact.",
+                size=tokens.type_caption,
+                color=tokens.color_muted,
+            )
+        )
+        return rows
+
+    def _paint_gmsa_disclosure() -> None:
+        """Show/hide the two halves the tick box swaps. Called at build time and on every toggle.
+
+        Hiding the password field CLEARS it as well: a credential must not survive in a control
+        that is off screen, and leaving one there would let ``_account_facts`` read a password
+        for a principal that has none — the inconsistent state ``Principal.__post_init__``
+        refuses with a ``ValueError``, reported as a generic account-shape failure.
+        """
+        on = bool(_gmsa["on"])
+        password_slot.visible = not on
+        if on and password_field is not None:
+            password_field.value = ""
+        gmsa_disclosure_slot.controls = _gmsa_disclosure_controls() if on else []
+
+    def _on_gmsa_toggled(on: bool) -> None:
+        """The tick box's ONE handler: swap the two halves, then re-gate + repaint the reason.
+
+        Switching kind changes which validator ``typed`` goes through AND whether the password
+        rung applies, so the gate's answer can change without a keystroke. Routing through the
+        same ``_refresh_register_gate`` every field uses is what keeps the button's ``disabled``
+        state and the note under the field in step with the tick box.
+        """
+        _gmsa["on"] = bool(on)
+        _paint_gmsa_disclosure()
+        _refresh_register_gate()
 
     def _delivery_unreadable() -> bool:
         """The delivery-secret gate input — ONE store read, resolved per PAINT PASS (0049 S-2b.1).
@@ -2636,6 +2800,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             password_supplied=bool(password),
             recorded=record.run_as_user,
             schedule_registered=bool(cfg.schedule_registered),
+            # 0049 S-4: the SAME ``_declared_kind()`` the worker's ``Principal`` is built from,
+            # so the kind the gate validated against is the kind Windows is asked for. Reading
+            # it twice from two derivations is how a gate comes to pass a name its engine
+            # refuses.
+            kind=_declared_kind(),
         )
 
     def _register_refusal_controls(block: RegisterBlock, facts: ScheduleAccountFacts) -> list[ft.Control]:
@@ -2827,36 +2996,60 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         # view's reduction ever drifted from the engine's, sending None for a genuinely foreign
         # account would be exactly the silent substitution Slice 1 exists to prevent.
         sent_account = _account_facts(force_blank_password=force_blank_password).typed or None
+        # 0049 S-4: captured ONCE, at click time, from the section's single reduction — then
+        # read by the ``Principal`` each worker builds, by the unattended facet the record
+        # persists, by the spinner's copy and by the classifier the result paints with. A
+        # second read inside the worker could see a tick box the admin moved while a UAC
+        # prompt was up, and the record would then describe a different principal from the
+        # one Windows was asked for. ``force_blank_password`` is honoured through the same
+        # reduction: it blanks the password, which downgrades PASSWORD to INTERACTIVE_TOKEN
+        # and cannot touch the MSA answer (that arm has no password to blank).
+        declared_kind = (
+            PrincipalKind.INTERACTIVE_TOKEN
+            if force_blank_password and _declared_kind() is PrincipalKind.PASSWORD
+            else _declared_kind()
+        )
 
         def _declared_principal() -> Principal:
             """WHO this press asks the nightly to run as — DECLARED, not inferred (0049 S-3).
 
             The engine no longer reads a logon type out of "is there a password?"; the caller
-            says which of ``PrincipalKind``'s three shapes it means. This surface can name
-            exactly TWO of them, and that is a product fact rather than an engine limit:
-            there is no gMSA affordance in Settings until S-4, so a typed password is the
-            only thing that can distinguish an unattended request from a logged-on-only one
-            here. The ``$``-suffixed third kind stays unreachable from the UI on purpose.
+            says which of ``PrincipalKind``'s three shapes it means, through the section's ONE
+            ``_declared_kind()`` reduction — the same one the gate validated the typed name
+            against. Since S-4 the Settings mount can name all THREE: the gMSA tick box is the
+            only input that produces ``MANAGED_SERVICE_ACCOUNT``, and the wizard, which never
+            renders it, still names the same two kinds it always did.
 
-            Called INSIDE each worker, never on the UI thread. ``Principal`` REFUSES the
+            The password is passed only where one belongs. On the MSA arm it is dropped
+            explicitly rather than relied upon to be empty: the disclosure clears the field, so
+            it already is, but ``Principal`` REFUSES a managed service account carrying a
+            password, and a structural ``None`` beats a field that happens to be blank.
+
+            Called INSIDE each worker, never on the UI thread. ``Principal`` refuses the
             unrepresentable kind/account/password combinations with a ``ValueError``, and the
             one an admin could type — a ``$``-suffixed account with a password — is ALREADY
             refused in front of this by ``setup_gates.register_block``'s ``ACCOUNT_SHAPE``
-            rung, which runs ``validate_run_as_user`` over any foreign account before
-            anything is dispatched. So this call cannot raise from this surface; building it
-            inside the worker is what keeps that true if a future gate change lets one
-            through — the register worker's ``except ValueError`` already answers with
+            rung, which runs the kind's OWN validator over any foreign account before anything
+            is dispatched. So this call cannot raise from this surface; building it inside the
+            worker is what keeps that true if a future gate change lets one through — the
+            register worker's ``except ValueError`` already answers with
             ``_WORKER_ERROR_ACCOUNT_SHAPE``, which is the right sentence for it.
             """
-            return Principal(
-                kind=PrincipalKind.PASSWORD if password else PrincipalKind.INTERACTIVE_TOKEN,
-                user=sent_account or "",
-                password=password or None,
-            )
+            if declared_kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT:
+                return Principal(kind=declared_kind, user=sent_account or "", password=None)
+            return Principal(kind=declared_kind, user=sent_account or "", password=password or None)
 
         exe_path = Path(sys.executable)
         transient = is_transient_location(str(exe_path))
-        uac_path = scheduler.supports_unattended_password and bool(password) and not _elevated_now()
+        # 0049 S-4: keyed on the KIND, matching ``windows.register_task``'s own self-elevation
+        # predicate ("the KIND, not the presence of a password"). A managed service account is
+        # unattended and carries none, so keying the spinner's copy on the password would have
+        # promised no UAC prompt and then raised one.
+        uac_path = (
+            scheduler.supports_unattended_password
+            and declared_kind is not PrincipalKind.INTERACTIVE_TOKEN
+            and not _elevated_now()
+        )
         # 0034 S3-d: the exact task-baked args this registration carries (captured at click time,
         # alongside run_time) — persisted on confirmed success as the durable reconcile baseline.
         registered_args = TaskArgs.of(
@@ -2868,13 +3061,13 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         )
 
         def _persist_registered_record() -> None:
-            """The three-facet register record — the ONE spelling, both dispatch paths.
+            """The four-facet register record — the ONE spelling, both dispatch paths.
 
             Extracted at 0049 S-2b.3 because the provisioning path needs exactly this and
             nothing else: ``complete_handover`` takes it as ``persist`` and runs it strictly
             AFTER the re-pin, so the facets land in the SHARED ``config.json`` rather than in
             the per-user one that is renamed seconds earlier. A second spelling of a
-            three-field atomic record is how one of them comes to be forgotten.
+            four-field atomic record is how one of them comes to be forgotten.
             """
             cfg.schedule_time = run_time
             cfg.schedule_registered = True
@@ -2882,12 +3075,23 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             # only; the password itself stays handler-local per I1/I3) + the task-baked args.
             # Choosing the signed-in-only path re-registers with a blank password, so this line
             # also honestly flips the persisted flag to False on that path.
-            cfg.schedule_unattended = bool(password)
+            #
+            # 0049 S-4 keys it on the KIND rather than on ``bool(password)``. Byte-identical for
+            # the two pre-S-4 kinds (a typed password IS what makes the kind PASSWORD), and it
+            # is the only spelling that stays TRUE for a managed service account: that task runs
+            # while nobody is signed in and carries no password, so ``bool(password)`` would
+            # record an unattended task as logged-on-only and the reconcile would stop guarding
+            # it against a silent downgrade.
+            cfg.schedule_unattended = declared_kind is not PrincipalKind.INTERACTIVE_TOKEN
             cfg.schedule_task_args = task_args_to_persisted(registered_args)
             # 0046 B: the third facet of the ATOMIC record — the principal that was actually
             # registered. "" means the signed-in account. Written in the SAME save as the other
             # two, so the record can never be half-evidenced.
             cfg.schedule_run_as_user = sent_account or ""
+            # 0049 S-4: the FOURTH facet, in the same save for the same reason. It is the one
+            # fact nothing else can recover — the kind cannot be read back off the name without
+            # re-introducing the ``$`` inference S-3 deleted.
+            cfg.schedule_run_as_kind = declared_kind.value
             cfg.save()
 
         def _on_register_success(headline: str, detail: str, *, verdict: Verdict = Verdict.HEALTHY) -> None:
@@ -2957,7 +3161,12 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 result_slot.controls = [
                     components.ErrorCard(
                         "Couldn't confirm the schedule",
-                        classify_schedule_error(msg, _elevated_now(), account_is_current=account_is_current),
+                        classify_schedule_error(
+                            msg,
+                            _elevated_now(),
+                            account_is_current=account_is_current,
+                            kind=declared_kind,
+                        ),
                     )
                 ]
             elif scheduler.supports_unattended_password:
@@ -2965,7 +3174,12 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 result_slot.controls = [
                     components.ErrorCard(
                         "Couldn't schedule the nightly sync",
-                        classify_schedule_error(msg, _elevated_now(), account_is_current=account_is_current),
+                        classify_schedule_error(
+                            msg,
+                            _elevated_now(),
+                            account_is_current=account_is_current,
+                            kind=declared_kind,
+                        ),
                     )
                 ]
             else:
@@ -2994,10 +3208,14 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                     detail = f"{detail} (Windows permissions code {attempt.icacls_exit}.)"
                 return detail
             if attempt.outcome is ProvisionOutcome.FAILED and attempt.message:
-                return classify_schedule_error(attempt.message, _elevated_now(), account_is_current=account_is_current)
+                return classify_schedule_error(
+                    attempt.message, _elevated_now(), account_is_current=account_is_current, kind=declared_kind
+                )
             canonical = _PROVISION_OUTCOME_CANONICAL.get(attempt.outcome, "")
             if canonical:
-                return classify_schedule_error(canonical, _elevated_now(), account_is_current=account_is_current)
+                return classify_schedule_error(
+                    canonical, _elevated_now(), account_is_current=account_is_current, kind=declared_kind
+                )
             # PROVISIONED (``compose`` ignores the detail on that arm) and UNAVAILABLE — the
             # handshake was never built, so there is no elevation canonical to classify.
             return "" if attempt.outcome is ProvisionOutcome.PROVISIONED else _WORKER_ERROR_REGISTER
@@ -3034,7 +3252,7 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             reentry = {"requested": False}
 
             def _persist() -> None:
-                """The three-facet save — bound to the SUCCESS path and nothing else.
+                """The four-facet save — bound to the SUCCESS path and nothing else.
 
                 ``complete_handover`` calls this on every outcome, including a declined UAC and
                 a launch failure, because its own gate is the parent's switch read. Writing the
@@ -3207,7 +3425,14 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         # honest value comes from the registered principal, not the signed-in account. Inert
         # today (a delete never produces MSG_LOGON_FAILURE) — but a hardcoded True beside two
         # wired sites is exactly the drift the required keyword was introduced to prevent.
-        account_is_current = principal_key(_registered_schedule(cfg).run_as_user, _keyring_owner_account()) == ""
+        _removed_record = _registered_schedule(cfg)
+        account_is_current = principal_key(_removed_record.run_as_user, _keyring_owner_account()) == ""
+        # 0049 S-4: the RECORDED kind, read from the same record and before the same clear —
+        # a remove classifies against the principal that WAS registered, never against the
+        # section's live tick box, which the admin may have moved since. ``None`` (no usable
+        # record) falls back to PASSWORD: it is the kind every pre-S-4 foreign task had, and
+        # the copy it selects is today's, so an unproven record reads exactly as it does now.
+        removed_kind = _removed_record.run_as_kind or PrincipalKind.PASSWORD
 
         async def _apply_unregister(ok: bool, msg: str) -> None:
             _set_busy(False)
@@ -3234,20 +3459,27 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
                 result_slot.controls = [
                     components.ErrorCard(
                         "Schedule not removed",
-                        classify_schedule_error(msg, _elevated_now(), account_is_current=account_is_current),
+                        classify_schedule_error(
+                            msg,
+                            _elevated_now(),
+                            account_is_current=account_is_current,
+                            kind=removed_kind,
+                        ),
                     )
                 ]
             else:
                 outcome = interpret_unregister(ok, msg)
                 if outcome.success_shaped:
                     cfg.schedule_registered = False
-                    # 0034 S3 + 0046 B: no task exists any more — all THREE "what was registered"
-                    # facts go together (an honest record; a later register rewrites them).
-                    # ``account_field.value`` is deliberately NOT touched, so Remove → Schedule
-                    # works in one session without retyping the account.
+                    # 0034 S3 + 0046 B + 0049 S-4: no task exists any more — all FOUR "what was
+                    # registered" facts go together (an honest record; a later register rewrites
+                    # them). ``account_field.value`` and the gMSA tick box are deliberately NOT
+                    # touched, so Remove → Schedule works in one session without retyping the
+                    # account or re-reading the three prerequisites.
                     cfg.schedule_unattended = False
                     cfg.schedule_task_args = None
                     cfg.schedule_run_as_user = ""
+                    cfg.schedule_run_as_kind = ""
                     cfg.save()
                     if on_schedule_changed is not None:
                         # 0032 T1 #8: a confirmed removal invalidates the boot-time rail badge too.
@@ -3525,12 +3757,18 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
             _paint_account_note(facts, unreadable)
             page.update()
             return ReconcileOutcome.BLOCKED_ACCOUNT
+        record = _registered_schedule(cfg)
         interrupt = downgrade_interrupt(
-            registered_unattended=_registered_schedule(cfg).unattended,
+            registered_unattended=record.unattended,
             password_supplied=facts.password_supplied,
             registered_foreign_account=(
                 "" if principal_key(facts.recorded, facts.current) == "" else (facts.recorded or "")
             ),
+            # 0049 S-4: the RECORDED kind, not the section's live tick box — this dialog is
+            # about what the LIVE task is, and its whole job is to stop a re-register silently
+            # changing that. ``None`` (no usable record) keeps today's copy, which is the
+            # can't-tell variant the unknown-record path already owns.
+            registered_kind=record.run_as_kind,
         )
         if interrupt is not None:
             _show_downgrade_dialog(interrupt)
@@ -3719,6 +3957,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
     )
     _paint_window_foreign_note()
 
+    # 0049 S-4: paint the disclosure at BUILD time, because its opening state is SEEDED from the
+    # durable record rather than always-off — a Settings mount over a live gMSA task comes up
+    # with the tick box on, so the caption, the checklist and the hidden password field must
+    # already match it on the first frame.
+    _paint_gmsa_disclosure()
     # 0046 B: paint the gate's reason at BUILD time too — a section that mounts with the button
     # already disabled (a live task on a service account, say) must not show a dead primary.
     _paint_account_note()
