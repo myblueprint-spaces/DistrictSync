@@ -797,6 +797,39 @@ def _create_unitychristian_inputs(d: Path) -> None:
     ).to_csv(d / "EmergencyContactInformation.txt", index=False)
 
 
+def _create_sd67_inputs(d: Path) -> None:
+    """sd67myedbc: the mbp_all file set with SD67's ENHANCED demographic export.
+
+    The district sends ``StudentDemographicEnh.txt`` rather than the base's
+    ``StudentDemographicInformation.txt``; everything else is canonical MyEd BC.
+    Writing the file under the district's OWN name — rather than reusing the
+    canonical one — is what proves the config's three ``source_files`` overrides
+    (Students, Classes, Enrollments) all landed: miss any one of them and that
+    entity reads an absent file, which yields an EMPTY frame rather than an
+    error, so only a run over the renamed input can catch it.
+    """
+    _create_mbp_all_inputs(d)
+    (d / "StudentDemographicInformation.txt").unlink()
+    _write_student_demographic(d, "StudentDemographicEnh.txt")
+
+
+def _create_sd75_inputs(d: Path) -> None:
+    """sd75myedbc: the mbp_all file set with a population that STRADDLES its split.
+
+    Mission homerooms K-6 and timetables 7-12, one grade lower than the base. The
+    shared fixture is grades 3 / 10 / 12, which sits entirely clear of that boundary —
+    so every assertion about the split would pass whether it fell after grade 6 or
+    after grade 7. This moves two students to grades 6 and 7, on either side of the
+    line, which is the only population that can tell the two configs apart.
+    """
+    _create_mbp_all_inputs(d)
+    for filename, grade_col in (("StudentDemographicInformation.txt", "Grade"), ("StudentSchedule.txt", "Grade")):
+        frame = pd.read_csv(d / filename, dtype=str)
+        frame.loc[frame.index[0], grade_col] = "6"
+        frame.loc[frame.index[1], grade_col] = "7"
+        frame.to_csv(d / filename, index=False)
+
+
 def _create_sd83_inputs(d: Path) -> None:
     """sd83myedbc: the mbp_all file set with SD83's own STAFF header shape.
 
@@ -852,10 +885,10 @@ _DISTRICT_SETUP = {
     # GDEs (schedule, staff, emergency contacts, class info) the mbp_core
     # builder does not write.
     "sd27myedbc": _create_mbp_all_inputs,
-    "sd67myedbc": _create_mbp_all_inputs,
+    "sd67myedbc": _create_sd67_inputs,
     "sd69myedbc": _create_mbp_all_inputs,
     "sd71myedbc": _create_mbp_all_inputs,
-    "sd75myedbc": _create_mbp_all_inputs,
+    "sd75myedbc": _create_sd75_inputs,
     "sd10myedbc": _create_mbp_all_inputs,
     "sd38myedbc": _create_sd38_inputs,
     # Unity Christian School: standard MyEd BC file shape. Its grade-8 homerooms
@@ -1330,6 +1363,36 @@ class TestDistrictQuirks:
             "s003@sd51.bc.ca",
         }
 
+    # ---- SD67: ENHANCED demographic export + generated emails ----
+
+    @pytest.mark.parametrize("district_output", ["sd67myedbc"], indirect=True)
+    def test_sd67_generated_sd67_emails(self, district_output):
+        """The district's demographic export has inconsistent email entry, so every
+        address is generated from the student number instead of read per-row."""
+        _, out, _ = district_output
+        students = _read_output(out, "Students")
+        assert set(students["Email Address"]) == {
+            "s001@sd67.bc.ca",
+            "s002@sd67.bc.ca",
+            "s003@sd67.bc.ca",
+        }
+
+    @pytest.mark.parametrize("district_output", ["sd67myedbc"], indirect=True)
+    def test_sd67_emits_family_from_the_emergency_contact_export(self, district_output):
+        """SD67 enables Family, and a canonical contact export produces it.
+
+        Pinned because a 2026-09-22 SD67 run shipped without `Family.csv` and the
+        config was the first suspect. It is not: given the contact file this fixture
+        writes, Family is produced. The entity is dropped only when every contact row
+        is filtered out — no email, or a student number that is not on the active
+        roster — which is a DATA question, and each of those paths logs its own
+        distinct warning.
+        """
+        _, out, _ = district_output
+        family = _read_output(out, "Family")
+        assert not family.empty
+        assert set(family["Student User ID"]) <= set(_read_output(out, "Students")["Student Number"])
+
     # ---- SD54: withdraw-date-only active detection + surname.firstname emails ----
 
     @pytest.mark.parametrize("district_output", ["sd54myedbc"], indirect=True)
@@ -1475,6 +1538,37 @@ class TestDistrictQuirks:
         user_ids = set(_read_output(out, "Students")["User ID"])
         assert "S001" not in user_ids, "grade-3 S001 is outside the 7-12 scope"
         assert {"S002", "S003"} == user_ids
+
+    # ---- SD75: homeroom split one grade lower than the base (K-6 / 7-12) ----
+
+    @pytest.mark.parametrize("district_output", ["sd75myedbc"], indirect=True)
+    def test_sd75_grade_6_gets_a_homeroom_and_grade_7_gets_scheduled_classes(self, district_output):
+        """The split itself, asserted from BOTH sides of the line.
+
+        A homeroom grade gets a homeroom class INSTEAD of subject ones, so the two
+        halves are not independent — checking only that grade 7 gained a timetable
+        class would still pass if grade 6 had lost its homeroom too. `_create_sd75_inputs`
+        exists precisely so this boundary has a population to be asserted against.
+        """
+        _, out, _ = district_output
+        classes = _read_output(out, "Classes")
+        enrollments = _read_output(out, "Enrollments")
+        by_class = dict(zip(classes["Class ID"].astype(str), classes["Name"].astype(str)))
+
+        def class_ids_for(student: str) -> set[str]:
+            rows = enrollments[enrollments["User ID"].astype(str) == student]
+            return set(rows["Class ID"].astype(str))
+
+        grade_6, grade_7 = class_ids_for("S001"), class_ids_for("S002")
+
+        assert grade_6 == {"100_A1_2026"}, f"grade 6 should hold ONLY its homeroom: {sorted(grade_6)}"
+        assert grade_7, "grade 7 was rostered into nothing at all"
+        assert not [cid for cid in grade_7 if cid.endswith("_A1_2026")], (
+            f"grade 7 still has a homeroom class: {sorted(grade_7)}"
+        )
+        assert all(cid.startswith("MT") for cid in grade_7), (
+            f"grade 7 should hold timetable classes: {sorted(by_class.get(c, c) for c in grade_7)}"
+        )
 
     # ---- SD83: class_rostering_grades: "homeroom" (K-8 SpacesEDU, 9-12 mbp+) ----
 

@@ -1,5 +1,7 @@
 """Tests for the DataExtractor — file loading with encoding/delimiter fallback."""
 
+import logging
+
 import pandas as pd
 import pytest
 
@@ -66,13 +68,16 @@ class TestDataExtractor:
         assert len(result["a.txt"]) == 1
         assert len(result["b.txt"]) == 1
 
-    def test_empty_file_raises_extraction_error(self, tmp_path):
-        f = tmp_path / "empty.txt"
-        f.write_text("", encoding="utf-8")
+    def test_empty_file_yields_an_empty_frame_not_an_error(self, tmp_path):
+        """An export with nothing in it is "no records", not a parse failure (plan 0051
+        Slice 2). It used to raise, which is the SAME fact an ABSENT file already answers
+        with an empty frame — so a district with no family contacts, or an attendance band
+        with no absences, failed a nightly that had nothing wrong with it."""
+        (tmp_path / "empty.txt").write_bytes(b"")
 
-        extractor = DataExtractor(str(tmp_path))
-        with pytest.raises(ExtractionError, match="could not be parsed"):
-            extractor.load_data(["empty.txt"])
+        result = DataExtractor(str(tmp_path)).load_data(["empty.txt"])
+
+        assert result["empty.txt"].empty
 
     def test_headers_only_file_returns_empty_dataframe(self, tmp_path):
         f = tmp_path / "headers.txt"
@@ -135,9 +140,10 @@ class TestEncodingFallback:
 
     def test_all_encodings_succeed_binary_file(self, tmp_path):
         """pandas is permissive enough that even binary content loads without crash."""
-        # CP1252 accepts ALL byte values 0x00-0xFF, so ExtractionError is only
-        # raised for a completely empty file — not for arbitrary binary.
-        # This test documents that boundary.
+        # CP1252 accepts ALL byte values 0x00-0xFF, so arbitrary binary loads rather
+        # than raising. Since plan 0051 Slice 2 an empty file does not raise either (it
+        # loads as zero rows), so the remaining raise is content no reader can make sense
+        # of — see `TestAnEmptyExportIsNoRecordsNotAParseFailure` for that boundary.
         (tmp_path / "binary.txt").write_bytes(b"\x00\x01\x02Name,Grade\n1,2\n")
 
         extractor = DataExtractor(str(tmp_path))
@@ -242,156 +248,53 @@ class TestEncodingFallback:
         assert codes[2] == "7575030"
 
 
-class TestLoadFromBytes:
-    """In-memory entrypoint twins of the disk-path cases.
+class TestCasesMigratedFromTheRetiredBytesEntrypoint:
+    """The two cases the retired ``load_from_bytes`` class covered that disk did NOT.
 
-    Every case mirrors a disk test above but parses raw bytes via
-    `load_from_bytes`, proving the upload path inherits the same encoding/delimiter/
-    repair behaviour as the CLI disk path.
+    ``load_from_bytes`` was a second public parsing entrypoint left over from the
+    Streamlit UI; plan 0051 pointed Convert at ``load_data`` and retired it. Its test
+    class was mostly an exact mirror of the disk cases above (utf-8 comma, tab-separated,
+    latin1, name normalisation, multiple files, empty-file raise, headers-only frame,
+    cp1252, utf-8-with-junk) — those are deleted rather than moved, because a duplicate of
+    a test that still runs is not coverage. ``TestDiskBytesParity`` went with them: it
+    existed only to prove the two entrypoints agreed, which is a tautology once there is
+    one. ``test_not_supplied_source_is_absent_not_backfilled`` is deleted **with the
+    contract it pinned** — "must NOT back-fill empty frames for missing keys" was the old
+    design's invariant, and ``load_data`` deliberately does the opposite.
+
+    These two had no disk twin and are migrated rather than dropped.
     """
 
-    def test_load_utf8_comma_csv_bytes(self):
-        data = b"Name,Grade\nAlice,5\nBob,6\n"
-        result = DataExtractor("").load_from_bytes({"test.txt": data})
+    def test_headerless_injection_through_load_data(self, tmp_path):
+        """Headerless column-name injection, through the entrypoint PRODUCTION uses.
 
-        assert "test.txt" in result
-        assert len(result["test.txt"]) == 2
-        assert "name" in result["test.txt"].columns
-
-    def test_load_tab_separated_bytes(self):
-        data = b"Name\tGrade\nAlice\t5\nBob\t6\n"
-        result = DataExtractor("").load_from_bytes({"test.txt": data})
-
-        assert len(result["test.txt"]) == 2
-
-    def test_load_latin1_encoding_bytes(self):
-        data = "Name,Grade\nRené,5\nBjörk,6\n".encode("latin1")
-        result = DataExtractor("").load_from_bytes({"test.txt": data})
-
-        assert len(result["test.txt"]) == 2
-
-    def test_column_names_normalized_bytes(self):
-        data = b"  Student Number  , Grade ,School Number\n123,5,100\n"
-        result = DataExtractor("").load_from_bytes({"test.txt": data})
-
-        cols = result["test.txt"].columns.tolist()
-        assert "student number" in cols
-        assert "grade" in cols
-        assert "school number" in cols
-
-    def test_multiple_sources_bytes(self):
-        result = DataExtractor("").load_from_bytes({"a.txt": b"Col1\n1\n", "b.txt": b"Col2\n2\n"})
-
-        assert len(result) == 2
-        assert len(result["a.txt"]) == 1
-        assert len(result["b.txt"]) == 1
-
-    def test_empty_bytes_raises_extraction_error(self):
-        with pytest.raises(ExtractionError, match="could not be parsed"):
-            DataExtractor("").load_from_bytes({"empty.txt": b""})
-
-    def test_headers_only_bytes_returns_empty_dataframe(self):
-        result = DataExtractor("").load_from_bytes({"headers.txt": b"Name,Grade,School\n"})
-
-        assert "headers.txt" in result
-        assert len(result["headers.txt"]) == 0
-        assert "name" in result["headers.txt"].columns
-
-    def test_not_supplied_source_is_absent_not_backfilled(self):
-        """N2: a referenced-but-not-supplied source must NOT be back-filled with an
-        empty frame — it is simply absent from the result. Downstream code uses
-        `.get(name, pd.DataFrame())` to treat the absence as "skip this entity".
+        This was only ever covered on the bytes path, and the echoed-header class below
+        reaches for the private ``_load_bytes`` core — so nothing asserted that a
+        ``headers:`` block survives the trip through ``load_data`` at all. It is how
+        SD40's schedule and SD51's daily absences are read, so it is not a detail.
         """
-        result = DataExtractor("").load_from_bytes({"present.txt": b"Col1\n1\n"})
-
-        assert "present.txt" in result
-        assert "absent.txt" not in result  # not back-filled with an empty frame
-
-    def test_headerless_injection_via_bytes(self):
-        """Headerless files get their column names injected from file_headers,
-        identical to the disk path.
-        """
-        data = b"203496020,xxxx,XLDCA06\n203496021,yyyy,XMA-11\n"
+        (tmp_path / "history.txt").write_bytes(b"203496020,xxxx,XLDCA06\n203496021,yyyy,XMA-11\n")
         headers = {"history.txt": ["School Number", "Student Number", "Course Code"]}
-        result = DataExtractor("").load_from_bytes({"history.txt": data}, headers)
 
-        df = result["history.txt"]
+        df = DataExtractor(str(tmp_path)).load_data(["history.txt"], file_headers=headers)["history.txt"]
+
         assert list(df.columns) == ["school number", "student number", "course code"]
         assert len(df) == 2
         assert df["course code"].tolist() == ["XLDCA06", "XMA-11"]
 
+    def test_clean_utf8_accents_round_trip_exactly(self, tmp_path):
+        """Clean UTF-8 accented values survive EXACTLY.
 
-class TestLoadFromBytesEncodingDetection:
-    """Encoding-detection on bytes mirrors the disk-path heuristics."""
+        The nearest disk test (`test_non_ascii_values_survive_roundtrip`) writes latin1 and
+        asserts only that the ASCII part survived, so it would pass on mojibake. This one
+        would not.
+        """
+        (tmp_path / "x.txt").write_bytes("Name,City\nJosé,Montréal\n".encode())
 
-    def test_clean_utf8_bytes(self):
-        data = "Name,City\nJosé,Montréal\n".encode()
-        result = DataExtractor("").load_from_bytes({"x.txt": data})
+        result = DataExtractor(str(tmp_path)).load_data(["x.txt"])
 
         assert result["x.txt"]["name"].tolist() == ["José"]
         assert result["x.txt"]["city"].tolist() == ["Montréal"]
-
-    def test_utf8_with_junk_bytes_uses_replace(self):
-        """Mostly-valid UTF-8 with a few stray CP1252 bytes stays UTF-8 (replace),
-        not latin1 — genuine accented characters survive intact.
-        """
-        good = "Name,Memo\nJosé Muñoz,naïve note\n".encode()
-        junk = b"Ana,picks up 3" + b"\x96" + b"4pm " + b"\x93" + b"ok" + b"\x94" + b"\n"
-        result = DataExtractor("").load_from_bytes({"demo.txt": good + junk})
-
-        names = result["demo.txt"]["name"].tolist()
-        assert "José Muñoz" in names
-        assert "naïve" in result["demo.txt"]["memo"].tolist()[0]
-
-    def test_legacy_cp1252_bytes(self):
-        """A genuinely CP1252-encoded file decodes via cp1252/latin1, not mojibake."""
-        content = "Name,City\nMüller,Düsseldorf\nGarçon,Montréal\n"
-        result = DataExtractor("").load_from_bytes({"staff.txt": content.encode("cp1252")})
-
-        assert len(result["staff.txt"]) == 2
-        names = result["staff.txt"]["name"].tolist()
-        assert any("ller" in n for n in names), f"Expected decoded name, got: {names}"
-
-
-class TestDiskBytesParity:
-    """Slice-1 acceptance gate: disk and bytes paths must produce identical frames."""
-
-    def test_malformed_section_row_repaired_identically(self, tmp_path):
-        """A malformed-`Section` row (unquoted comma in the trailing column)
-        round-tripped through BOTH `load_data` (disk) and `load_from_bytes` (bytes)
-        must yield frame-equal results — proving the UI path now gets the repair pass.
-        """
-        header = "School Number,Student Number,Course Code,Full Course Code,Section\n"
-        # Last column "6B,R-B O3" is unquoted with a comma → 6 fields, not 5.
-        bad_row = '"203496020","xxxx","XLDCA06","XLDCA06---CKG-6B,R-B O3",6B,R-B O3\n'
-        good_row = '"203496021","yyyy","XMA-11","XMA-11---A",11A\n'
-        content = (header + bad_row + good_row).encode("utf-8")
-
-        (tmp_path / "history.txt").write_bytes(content)
-        disk = DataExtractor(str(tmp_path)).load_data(["history.txt"])["history.txt"]
-        mem = DataExtractor("").load_from_bytes({"history.txt": content})["history.txt"]
-
-        pd.testing.assert_frame_equal(disk, mem)
-        # And the repair actually fired: both kept the malformed row, merged.
-        assert disk["section"].tolist() == ["6B,R-B O3", "11A"]
-
-    def test_plain_csv_disk_bytes_parity(self, tmp_path):
-        content = b"Name,Grade\nAlice,5\nBob,6\n"
-        (tmp_path / "test.txt").write_bytes(content)
-
-        disk = DataExtractor(str(tmp_path)).load_data(["test.txt"])["test.txt"]
-        mem = DataExtractor("").load_from_bytes({"test.txt": content})["test.txt"]
-
-        pd.testing.assert_frame_equal(disk, mem)
-
-    def test_legacy_encoding_disk_bytes_parity(self, tmp_path):
-        content = "Name,City\nMüller,Düsseldorf\nGarçon,Montréal\n".encode("cp1252")
-        (tmp_path / "staff.txt").write_bytes(content)
-
-        disk = DataExtractor(str(tmp_path)).load_data(["staff.txt"])["staff.txt"]
-        mem = DataExtractor("").load_from_bytes({"staff.txt": content})["staff.txt"]
-
-        pd.testing.assert_frame_equal(disk, mem)
 
 
 class TestFilenameCaseInsensitivity:
@@ -613,3 +516,98 @@ class TestEchoedHeaderRowInAHeaderlessExport:
 
         assert "2713855" not in caplog.text
         assert "Rivers" not in caplog.text
+
+
+class TestAnEmptyExportIsNoRecordsNotAParseFailure:
+    """Plan 0051 Slice 2 — "there is nothing here" resolves to an empty frame.
+
+    The line is NARROW and the narrowness is the safety property: a file with CONTENT
+    that no encoding/delimiter can read is still a loud failure. Only bytes that carry
+    no record at all become an empty frame, and the set is exactly what used to raise —
+    measured against the real extractor, not reasoned about:
+
+      raised before  ->  0 bytes · newlines only · a BOM · a BOM plus newlines
+      parsed before  ->  whitespace with SPACES · ",,,\n" · "\t\t\n" · a header row
+
+    Nothing in the second column changes. Folding whitespace-with-spaces in would have
+    been a silent behaviour change on a path all 20 districts share, dressed up as a
+    bugfix — it parses to a junk frame today and the entity RUNS.
+    """
+
+    EMPTY_SHAPES = {
+        "zero bytes": b"",
+        "one newline": b"\n",
+        "crlf": b"\r\n",
+        "several newlines": b"\n\n\n",
+        "utf-8 BOM only": b"\xef\xbb\xbf",
+        "utf-8 BOM then crlf": b"\xef\xbb\xbf\r\n",
+        "utf-16 BOM only": b"\xff\xfe",
+    }
+
+    @pytest.mark.parametrize("label", sorted(EMPTY_SHAPES))
+    def test_an_empty_export_loads_as_an_empty_frame(self, tmp_path, label):
+        """A BOM is the one that matters in practice: PowerShell's `Out-File` and
+        `Export-Csv -Encoding UTF8` write one even when there is nothing to export, so a
+        predicate keyed on `bytes.strip()` alone would miss the most likely real shape."""
+        (tmp_path / "x.txt").write_bytes(self.EMPTY_SHAPES[label])
+
+        result = DataExtractor(str(tmp_path)).load_data(["x.txt"])
+
+        assert result["x.txt"].empty
+
+    @pytest.mark.parametrize("label", sorted(EMPTY_SHAPES))
+    def test_it_says_so_in_the_log_naming_the_file(self, tmp_path, caplog, label):
+        """THE DIAGNOSTIC OBLIGATION, not polish.
+
+        Before this slice an empty required source raised an `ExtractionError` that NAMED
+        the file. Now the run walks on to `incomplete_roster` / `NO_OUTPUT`, which names
+        the symptom and points nowhere near the filename — the exact loss plan 0051
+        criticises elsewhere. This log line is the only remaining trace, so the level and
+        the filename are both asserted.
+        """
+        (tmp_path / "StudentDailyAbsences.txt").write_bytes(self.EMPTY_SHAPES[label])
+
+        with caplog.at_level(logging.WARNING, logger="src.etl.extractor"):
+            DataExtractor(str(tmp_path)).load_data(["StudentDailyAbsences.txt"])
+
+        assert any(
+            rec.levelno == logging.WARNING and "StudentDailyAbsences.txt" in rec.message for rec in caplog.records
+        ), f"no WARNING naming the file for {label!r}: {[r.message for r in caplog.records]}"
+
+    #: Shapes that parse today and MUST keep parsing — the positive twin of the set above.
+    #: Without these, narrowing the predicate too far would go unnoticed.
+    STILL_PARSES = {
+        "whitespace with spaces": b"   \n",
+        "multi-line whitespace": b"  \n  \n",
+        "empty comma fields": b",,,\n",
+        "empty tab fields": b"\t\t\n",
+        "a header row only": b"Name,Grade\n",
+    }
+
+    @pytest.mark.parametrize("label", sorted(STILL_PARSES))
+    def test_shapes_that_parsed_before_are_untouched(self, tmp_path, label):
+        (tmp_path / "x.txt").write_bytes(self.STILL_PARSES[label])
+
+        result = DataExtractor(str(tmp_path)).load_data(["x.txt"])
+
+        assert result["x.txt"].columns.size > 0, "a parsed frame keeps its columns"
+
+    def test_content_that_cannot_be_parsed_STILL_RAISES(self, tmp_path):
+        """The positive twin that makes the whole class mean something.
+
+        Without it, "empty yields an empty frame" is one `except` away from "anything
+        unreadable yields an empty frame", which is the swallowed-error failure this
+        product's fail-loud rule exists to prevent. A real byte sequence is hard to
+        construct (latin1 never fails), so this asserts the GUARD rather than a shape:
+        the raise site is still reachable and still names the file.
+        """
+        (tmp_path / "broken.txt").write_bytes(b"Name,Grade\nA,5\n")
+        import src.etl.extractor as extractor_module
+
+        monkey = pytest.MonkeyPatch()
+        monkey.setattr(extractor_module.DataExtractor, "_read_with_fallback", staticmethod(lambda *a, **k: None))
+        try:
+            with pytest.raises(ExtractionError, match="broken.txt"):
+                DataExtractor(str(tmp_path)).load_data(["broken.txt"])
+        finally:
+            monkey.undo()

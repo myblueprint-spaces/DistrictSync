@@ -613,8 +613,8 @@ class TestDeliverFromDisk:
             raise AssertionError("deliver_job must not re-transform or read the input folder")
 
         monkeypatch.setattr(convert_screen, "run_transform", _boom)
-        monkeypatch.setattr(convert_screen, "_read_gde_bytes", _boom)
-        monkeypatch.setattr(convert_screen.DataExtractor, "load_from_bytes", _boom)
+        monkeypatch.setattr(convert_screen, "extract_required_files", _boom)
+        monkeypatch.setattr(convert_screen.DataExtractor, "load_data", _boom)
         calls: list[tuple[Path, str | None, set[str]]] = []
         monkeypatch.setattr(convert_screen, "SFTPUploader", _fake_uploader(calls))
 

@@ -1,9 +1,9 @@
 # SD67 - Okanagan Skaha: inherits from standard MyEducation BC mapping, with
 # the full myBlueprint+ tier enabled (phase-2 migration; K-12 students, 10-12
 # HS course feeds — both are the base defaults, so only the entity tier is
-# stated). Standard MyEd BC GDE file naming is assumed (no source_files
-# overrides here) — adjust once real GDE exports are available (see
-# docs/developer/adding-district.md, Steps 1-2).
+# stated). File naming is standard MyEd BC apart from the demographic extract,
+# which the district sends as the ENHANCED export (see the `mappings` block
+# below).
 _base: myedbc
 sis: MyEducationBC
 district_name: SD67 - Okanagan Skaha School District
@@ -22,3 +22,32 @@ global_config:
     - Enrollments
     - CourseInfo
     - StudentCourses
+
+# The district's demographic extract is the ENHANCED export, named
+# `StudentDemographicEnh.txt` rather than the base's
+# `StudentDemographicInformation.txt`. Restated at all THREE enabled sites that
+# read this role (Students, Classes, Enrollments) — `source_files` is a dict, so
+# deep merge would happily take a partial override and leave the other two
+# entities silently reading a filename this district never delivers (→ an empty
+# frame, not an error). Same shape as sd48/sd51myedbc.
+mappings:
+  Students:
+    source_files:
+      student_demographic: "StudentDemographicEnh.txt"
+    field_map:
+      # The district's own address scheme, generated rather than read: their
+      # demographic export's email entry is inconsistent, so the source column
+      # cannot be trusted per-row. Same pattern as sd10/sd51/sd74 — every active
+      # student gets a deterministic, correct address. NOT sanitized: the student
+      # number is already `[a-z0-9]`, and turning sanitizing on here would change
+      # nothing while implying the input needs scrubbing.
+      "Email Address":
+        format: "{student number}@sd67.bc.ca"
+
+  Classes:
+    source_files:
+      student_demographic: "StudentDemographicEnh.txt"
+
+  Enrollments:
+    source_files:
+      student_demographic: "StudentDemographicEnh.txt"
