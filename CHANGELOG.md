@@ -9,6 +9,14 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.24.0] - 2026-09-22
+
+A conversion is no longer decided by files your mapping doesn't use. Point
+Convert at your full MyEd BC export folder and it reads only the extracts your
+district's mapping actually names — the same files the nightly sync has always
+read. Two district mappings are updated (SD67, SD75). Nothing needs
+reconfiguring: installing this version changes no setting you have chosen.
+
 ### Fixed
 
 - **A file the mapping doesn't use can no longer stop a conversion.** Convert read
