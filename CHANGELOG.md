@@ -29,6 +29,9 @@ Per-release download links and auto-generated commit notes live on the
   absences, now converts normally and that one entity is skipped. A file with
   content that genuinely cannot be read still stops the run, and an empty *student*
   export is still refused rather than delivered as an empty roster.
+- **SD75 (Mission) homerooms now stop at grade 6.** Grade 7 moves from a
+  homeroom class to its timetabled classes, at the district's request; grades K-6
+  are unchanged.
 - **SD67 (Okanagan Skaha) reads the enhanced demographic export**
   (`StudentDemographicEnh.txt`), and its student email addresses are now
   generated as `<student number>@sd67.bc.ca` rather than read from the export,
