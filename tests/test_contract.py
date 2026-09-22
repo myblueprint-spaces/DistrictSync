@@ -797,6 +797,22 @@ def _create_unitychristian_inputs(d: Path) -> None:
     ).to_csv(d / "EmergencyContactInformation.txt", index=False)
 
 
+def _create_sd67_inputs(d: Path) -> None:
+    """sd67myedbc: the mbp_all file set with SD67's ENHANCED demographic export.
+
+    The district sends ``StudentDemographicEnh.txt`` rather than the base's
+    ``StudentDemographicInformation.txt``; everything else is canonical MyEd BC.
+    Writing the file under the district's OWN name — rather than reusing the
+    canonical one — is what proves the config's three ``source_files`` overrides
+    (Students, Classes, Enrollments) all landed: miss any one of them and that
+    entity reads an absent file, which yields an EMPTY frame rather than an
+    error, so only a run over the renamed input can catch it.
+    """
+    _create_mbp_all_inputs(d)
+    (d / "StudentDemographicInformation.txt").unlink()
+    _write_student_demographic(d, "StudentDemographicEnh.txt")
+
+
 def _create_sd83_inputs(d: Path) -> None:
     """sd83myedbc: the mbp_all file set with SD83's own STAFF header shape.
 
@@ -852,7 +868,7 @@ _DISTRICT_SETUP = {
     # GDEs (schedule, staff, emergency contacts, class info) the mbp_core
     # builder does not write.
     "sd27myedbc": _create_mbp_all_inputs,
-    "sd67myedbc": _create_mbp_all_inputs,
+    "sd67myedbc": _create_sd67_inputs,
     "sd69myedbc": _create_mbp_all_inputs,
     "sd71myedbc": _create_mbp_all_inputs,
     "sd75myedbc": _create_mbp_all_inputs,
