@@ -1,8 +1,8 @@
 # 0051 — Convert loads the config's file set, not the whole folder
 
-- **Status:** Slice 1 IMPLEMENTED (Stage 3 review returned CHANGES REQUIRED × 8, all folded in
-  below and into the code); Slice 2 spec'd, not started.
-- **Resumable from:** Slice 2.
+- **Status:** BOTH SLICES IMPLEMENTED. Stage 3 review returned CHANGES REQUIRED × 8, all folded
+  into the body and the code.
+- **Resumable from:** nothing outstanding; the release (version bump + tag) is the next step.
 - **Blockers:** none
 - **Flags:** Slice 2 changes shared ETL behaviour on a path all 20 districts run — see Risks.
   Slice 1 began landing in the working tree before Stage 3 closed (user instruction to proceed);
@@ -183,8 +183,14 @@ becomes an empty frame.
 "` and `b"		
 "` already yield 0-row frames.
 
-So: strip a leading BOM; if what remains is empty or a bare newline, log WARNING **naming the file**
-and return an empty frame.
+So: strip a leading BOM; if what remains is empty or nothing but line endings, log WARNING **naming
+the file** and return an empty frame. Implemented as `DataExtractor._carries_no_record`, whose
+matched set is EXACTLY what used to raise — measured, then pinned both ways: seven shapes that used
+to raise now load as zero rows, and five that parsed before (whitespace with SPACES, `,,,
+`,
+`		
+`, a header row) are asserted untouched. The ` ` strip covers the UTF-16 case, whose BOM
+leaves NUL padding behind.
 
 **The diagnostic obligation.** Today an empty required source raises an `ExtractionError` that NAMES
 the file. After Slice 2 the run walks on to `incomplete_roster` / `NO_OUTPUT`, which names the
@@ -299,11 +305,22 @@ transcriptions of observed behaviour, not predictions.
 Plus: `test_pipeline_parity.py::_run_ui_path` now calls the real `convert_job`, so the CLI↔UI
 byte-parity lock guards production rather than a copy of it.
 
-**Slice 2**
-6. An empty **named** source file yields an empty frame on `load_data` **and** produces a successful
-   run for an entity that legitimately has no rows.
-7. Its positive twin: a file with unparseable **content** still raises. Without this, (6) is a hole.
-8. An empty demographic export still ends at `incomplete_roster` — the fail-safe holds.
+**Slice 2** — `tests/test_extractor.py::TestAnEmptyExportIsNoRecordsNotAParseFailure` (15 red
+before) + two end-to-end cases in `test_convert_input_scoping.py`:
+
+6. Each of the seven empty shapes loads as an empty frame, **and** each logs a WARNING naming the
+   file — the diagnostic obligation, asserted on level and filename, because this log line is now
+   the only trace of an empty required source.
+7. The five shapes that parsed before still parse. Without this the predicate could be widened
+   later and nothing would notice.
+8. Its positive twin: the `ExtractionError` site is still reachable and still names the file, so
+   "empty yields an empty frame" cannot quietly become "anything unreadable does". Asserted by
+   forcing the reader to fail rather than by hunting for real unparseable bytes — latin1 never
+   raises, so no such byte sequence exists to write.
+9. End to end: an empty OPTIONAL export (family contacts) skips its entity and the run succeeds;
+   an empty DEMOGRAPHIC export is still refused as `incomplete_roster` and writes nothing. The
+   second is the fail-safe — the extractor no longer raises on it, so the way-OUT gate is what
+   stops it, and this is the test that notices if that gate ever moves.
 
 Full suite + SD74 snapshot + 20-config validation + ruff/mypy/bandit + tree-check per Definition of
 Done, and **CI's own result read and quoted** before either slice is called landed (land gate,

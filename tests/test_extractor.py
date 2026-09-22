@@ -1,5 +1,7 @@
 """Tests for the DataExtractor — file loading with encoding/delimiter fallback."""
 
+import logging
+
 import pandas as pd
 import pytest
 
@@ -66,13 +68,16 @@ class TestDataExtractor:
         assert len(result["a.txt"]) == 1
         assert len(result["b.txt"]) == 1
 
-    def test_empty_file_raises_extraction_error(self, tmp_path):
-        f = tmp_path / "empty.txt"
-        f.write_text("", encoding="utf-8")
+    def test_empty_file_yields_an_empty_frame_not_an_error(self, tmp_path):
+        """An export with nothing in it is "no records", not a parse failure (plan 0051
+        Slice 2). It used to raise, which is the SAME fact an ABSENT file already answers
+        with an empty frame — so a district with no family contacts, or an attendance band
+        with no absences, failed a nightly that had nothing wrong with it."""
+        (tmp_path / "empty.txt").write_bytes(b"")
 
-        extractor = DataExtractor(str(tmp_path))
-        with pytest.raises(ExtractionError, match="could not be parsed"):
-            extractor.load_data(["empty.txt"])
+        result = DataExtractor(str(tmp_path)).load_data(["empty.txt"])
+
+        assert result["empty.txt"].empty
 
     def test_headers_only_file_returns_empty_dataframe(self, tmp_path):
         f = tmp_path / "headers.txt"
@@ -135,9 +140,10 @@ class TestEncodingFallback:
 
     def test_all_encodings_succeed_binary_file(self, tmp_path):
         """pandas is permissive enough that even binary content loads without crash."""
-        # CP1252 accepts ALL byte values 0x00-0xFF, so ExtractionError is only
-        # raised for a completely empty file — not for arbitrary binary.
-        # This test documents that boundary.
+        # CP1252 accepts ALL byte values 0x00-0xFF, so arbitrary binary loads rather
+        # than raising. Since plan 0051 Slice 2 an empty file does not raise either (it
+        # loads as zero rows), so the remaining raise is content no reader can make sense
+        # of — see `TestAnEmptyExportIsNoRecordsNotAParseFailure` for that boundary.
         (tmp_path / "binary.txt").write_bytes(b"\x00\x01\x02Name,Grade\n1,2\n")
 
         extractor = DataExtractor(str(tmp_path))
@@ -510,3 +516,98 @@ class TestEchoedHeaderRowInAHeaderlessExport:
 
         assert "2713855" not in caplog.text
         assert "Rivers" not in caplog.text
+
+
+class TestAnEmptyExportIsNoRecordsNotAParseFailure:
+    """Plan 0051 Slice 2 — "there is nothing here" resolves to an empty frame.
+
+    The line is NARROW and the narrowness is the safety property: a file with CONTENT
+    that no encoding/delimiter can read is still a loud failure. Only bytes that carry
+    no record at all become an empty frame, and the set is exactly what used to raise —
+    measured against the real extractor, not reasoned about:
+
+      raised before  ->  0 bytes · newlines only · a BOM · a BOM plus newlines
+      parsed before  ->  whitespace with SPACES · ",,,\n" · "\t\t\n" · a header row
+
+    Nothing in the second column changes. Folding whitespace-with-spaces in would have
+    been a silent behaviour change on a path all 20 districts share, dressed up as a
+    bugfix — it parses to a junk frame today and the entity RUNS.
+    """
+
+    EMPTY_SHAPES = {
+        "zero bytes": b"",
+        "one newline": b"\n",
+        "crlf": b"\r\n",
+        "several newlines": b"\n\n\n",
+        "utf-8 BOM only": b"\xef\xbb\xbf",
+        "utf-8 BOM then crlf": b"\xef\xbb\xbf\r\n",
+        "utf-16 BOM only": b"\xff\xfe",
+    }
+
+    @pytest.mark.parametrize("label", sorted(EMPTY_SHAPES))
+    def test_an_empty_export_loads_as_an_empty_frame(self, tmp_path, label):
+        """A BOM is the one that matters in practice: PowerShell's `Out-File` and
+        `Export-Csv -Encoding UTF8` write one even when there is nothing to export, so a
+        predicate keyed on `bytes.strip()` alone would miss the most likely real shape."""
+        (tmp_path / "x.txt").write_bytes(self.EMPTY_SHAPES[label])
+
+        result = DataExtractor(str(tmp_path)).load_data(["x.txt"])
+
+        assert result["x.txt"].empty
+
+    @pytest.mark.parametrize("label", sorted(EMPTY_SHAPES))
+    def test_it_says_so_in_the_log_naming_the_file(self, tmp_path, caplog, label):
+        """THE DIAGNOSTIC OBLIGATION, not polish.
+
+        Before this slice an empty required source raised an `ExtractionError` that NAMED
+        the file. Now the run walks on to `incomplete_roster` / `NO_OUTPUT`, which names
+        the symptom and points nowhere near the filename — the exact loss plan 0051
+        criticises elsewhere. This log line is the only remaining trace, so the level and
+        the filename are both asserted.
+        """
+        (tmp_path / "StudentDailyAbsences.txt").write_bytes(self.EMPTY_SHAPES[label])
+
+        with caplog.at_level(logging.WARNING, logger="src.etl.extractor"):
+            DataExtractor(str(tmp_path)).load_data(["StudentDailyAbsences.txt"])
+
+        assert any(
+            rec.levelno == logging.WARNING and "StudentDailyAbsences.txt" in rec.message for rec in caplog.records
+        ), f"no WARNING naming the file for {label!r}: {[r.message for r in caplog.records]}"
+
+    #: Shapes that parse today and MUST keep parsing — the positive twin of the set above.
+    #: Without these, narrowing the predicate too far would go unnoticed.
+    STILL_PARSES = {
+        "whitespace with spaces": b"   \n",
+        "multi-line whitespace": b"  \n  \n",
+        "empty comma fields": b",,,\n",
+        "empty tab fields": b"\t\t\n",
+        "a header row only": b"Name,Grade\n",
+    }
+
+    @pytest.mark.parametrize("label", sorted(STILL_PARSES))
+    def test_shapes_that_parsed_before_are_untouched(self, tmp_path, label):
+        (tmp_path / "x.txt").write_bytes(self.STILL_PARSES[label])
+
+        result = DataExtractor(str(tmp_path)).load_data(["x.txt"])
+
+        assert result["x.txt"].columns.size > 0, "a parsed frame keeps its columns"
+
+    def test_content_that_cannot_be_parsed_STILL_RAISES(self, tmp_path):
+        """The positive twin that makes the whole class mean something.
+
+        Without it, "empty yields an empty frame" is one `except` away from "anything
+        unreadable yields an empty frame", which is the swallowed-error failure this
+        product's fail-loud rule exists to prevent. A real byte sequence is hard to
+        construct (latin1 never fails), so this asserts the GUARD rather than a shape:
+        the raise site is still reachable and still names the file.
+        """
+        (tmp_path / "broken.txt").write_bytes(b"Name,Grade\nA,5\n")
+        import src.etl.extractor as extractor_module
+
+        monkey = pytest.MonkeyPatch()
+        monkey.setattr(extractor_module.DataExtractor, "_read_with_fallback", staticmethod(lambda *a, **k: None))
+        try:
+            with pytest.raises(ExtractionError, match="broken.txt"):
+                DataExtractor(str(tmp_path)).load_data(["broken.txt"])
+        finally:
+            monkey.undo()

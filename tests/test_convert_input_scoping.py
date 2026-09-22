@@ -231,3 +231,43 @@ class TestAnUnreadableSourceFileFailsLoudly:
 
         with pytest.raises(PermissionError):
             convert_job("myedbc", str(gde_input))
+
+
+class TestAnEmptyNamedSourceFileNoLongerFailsTheRun:
+    """Plan 0051 Slice 2, end to end — the two outcomes that matter to a district."""
+
+    def test_an_empty_optional_export_skips_its_entity_and_the_run_succeeds(
+        self, gde_input: Path, gde_output: Path
+    ) -> None:
+        """A district with no family contacts this term ships an empty contact export.
+
+        That used to raise `ExtractionError` and fail the whole nightly — for a file whose
+        emptiness is a legitimate fact about the district, not a fault. Now the entity is
+        skipped and everything else converts, which is exactly what an ABSENT file has
+        always done.
+        """
+        _configure(gde_input, gde_output)
+        (gde_input / "EmergencyContactInformation.txt").write_bytes(b"")
+
+        result = convert_job("myedbc", str(gde_input))
+
+        assert result.status is ConvertStatus.DELIVERED
+        assert result.entity_counts.get("Students", 0) > 0
+        assert not (gde_output / "Family.csv").exists()
+
+    def test_an_empty_DEMOGRAPHIC_export_is_still_refused(self, gde_input: Path, gde_output: Path) -> None:
+        """The fail-safe, and the reason Slice 2 is not a swallowed error.
+
+        The catastrophic empty file is the roster anchor. It no longer raises at the
+        extractor, so what stops it is the way-OUT gate: `check_delivery_integrity` refuses
+        an output set whose roster is missing while dependent entities were built. If that
+        gate ever moved, this test is what notices — an empty demographic export must never
+        deliver.
+        """
+        _configure(gde_input, gde_output)
+        (gde_input / "StudentDemographicInformation.txt").write_bytes(b"")
+
+        result = convert_job("myedbc", str(gde_input))
+
+        assert result.status is ConvertStatus.INCOMPLETE_ROSTER
+        assert not (gde_output / "Students.csv").exists()

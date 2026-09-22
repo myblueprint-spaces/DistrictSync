@@ -22,6 +22,13 @@ Per-release download links and auto-generated commit notes live on the
   `studentdemographicenh.txt` and the mapping spells it `StudentDemographicEnh.txt`,
   Convert reads it — as the nightly sync already did. Before, it quietly found
   nothing and reported an incomplete roster.
+- **An export with nothing in it no longer fails the sync.** A source file that is
+  present but empty — no records at all — used to stop the whole run, even though a
+  file that is simply *missing* has always been handled gracefully. A district with
+  no family contacts to send, or an attendance export covering a week with no
+  absences, now converts normally and that one entity is skipped. A file with
+  content that genuinely cannot be read still stops the run, and an empty *student*
+  export is still refused rather than delivered as an empty roster.
 - **SD67 (Okanagan Skaha) reads the enhanced demographic export**
   (`StudentDemographicEnh.txt`), and its student email addresses are now
   generated as `<student number>@sd67.bc.ca` rather than read from the export,

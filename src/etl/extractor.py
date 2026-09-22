@@ -1,3 +1,4 @@
+import codecs
 import csv
 import io
 import logging
@@ -111,8 +112,10 @@ class DataExtractor:
         """
         Try to load each file with multiple encodings and delimiters.
         Returns a dict: { filename → DataFrame }.
-        A file that is not present on disk yields an empty DataFrame for that key.
-        A file that exists but cannot be parsed raises `ExtractionError`.
+        A file that is not present on disk yields an empty DataFrame for that key, and
+        so does one that is present but carries no record at all — "nothing here" is one
+        fact and gets one answer (see `_carries_no_record`). A file whose CONTENT cannot
+        be parsed by any encoding/delimiter still raises `ExtractionError`.
         """
         file_headers = file_headers or {}
         data: dict[str, pd.DataFrame] = {}
@@ -133,9 +136,8 @@ class DataExtractor:
                 logger.info(f"Matched '{filename}' on disk as '{resolved.name}' (case-insensitive).")
                 file_path = resolved
 
-            # Read the bytes once and dispatch to the shared bytes-core: disk and
-            # in-memory uploads parse through exactly the same encoding/delimiter/
-            # repair logic.
+            # Read the bytes once and dispatch to the parsing core, which owns the
+            # encoding detection, delimiter detection and malformed-row repair.
             raw = file_path.read_bytes()
             data[filename] = self._load_bytes(filename, raw, file_headers.get(filename))
 
@@ -150,10 +152,28 @@ class DataExtractor:
         """Parse one GDE file's raw bytes into a normalized DataFrame.
 
         The parsing core `load_data` dispatches to, per resolved file. Raises
-        `ExtractionError` when the bytes cannot be parsed by any encoding/delimiter.
+        `ExtractionError` when the bytes cannot be parsed by any encoding/delimiter —
+        but an export carrying NO RECORD AT ALL is not that (see `_carries_no_record`).
         """
         if explicit_names:
             logger.info(f"Using explicit headers for {name} ({len(explicit_names)} columns)")
+
+        # "There is nothing here" is NOT a parse failure. An ABSENT source file already
+        # yields an empty frame and skips the entity; a PRESENT-but-empty one used to
+        # raise and fail the whole run — the same "no records" fact answered two ways.
+        # A district legitimately exports nothing (no family contacts, an attendance band
+        # with no absences on a holiday), and the genuinely catastrophic case — an empty
+        # DEMOGRAPHIC export — is still caught downstream by `check_delivery_integrity`,
+        # which refuses to deliver a roster-less output set. So this is not a swallowed
+        # error: the way-out gate still holds, and the fail-loud path below is untouched
+        # for bytes that carry content nothing can read.
+        if self._carries_no_record(raw):
+            logger.warning(
+                f"{name} is present but contains no records (it is empty apart from any "
+                f"byte-order mark or line endings); loading it as zero rows. Any entity that "
+                f"reads only this file will be skipped — check the export if that is unexpected."
+            )
+            return pd.DataFrame()
 
         # Pick the delimiter from the (clean) header line rather than relying on
         # "first parse that doesn't raise". A free-text field containing stray
@@ -233,6 +253,43 @@ class DataExtractor:
                 "export's real column order."
             )
         return df
+
+    @staticmethod
+    def _carries_no_record(raw: bytes) -> bool:
+        """True when these bytes hold no record at all — not even a header line.
+
+        The predicate is deliberately NARROW, and the narrowness is the safety property:
+        it matches EXACTLY the byte shapes that used to raise, and nothing else. Measured
+        against the real reader rather than reasoned about:
+
+        * **Matched** (raised before): zero bytes · newlines only · a byte-order mark ·
+          a BOM followed by newlines.
+        * **NOT matched** (parsed before, and still do): whitespace containing SPACES,
+          which the python engine reads into a junk frame; ``,,,\\n`` and ``\\t\\t\\n``,
+          which yield 0-row frames with columns; and a header row, which is a real
+          declaration of shape.
+
+        The BOM is the case that matters in practice rather than in theory: PowerShell's
+        ``Out-File`` and ``Export-Csv -Encoding UTF8`` write one even when there is nothing
+        to export, so a predicate keyed on ``bytes.strip()`` alone would miss the most
+        likely real shape of an empty district export. UTF-16 marks are included because
+        `_detect_encoding` can legitimately land there.
+
+        Widening this to "anything unreadable" would make it the swallowed error the
+        fail-loud rule exists to prevent — a column/config mismatch must still stop a run.
+        Empty has no mismatch to hide.
+        """
+        for bom in (
+            codecs.BOM_UTF8,
+            codecs.BOM_UTF32_LE,
+            codecs.BOM_UTF32_BE,
+            codecs.BOM_UTF16_LE,
+            codecs.BOM_UTF16_BE,
+        ):
+            if raw.startswith(bom):
+                raw = raw[len(bom) :]
+                break
+        return raw.strip(b"\r\n\x00") == b""
 
     @staticmethod
     def _detect_delimiter(raw: bytes) -> Optional[str]:
