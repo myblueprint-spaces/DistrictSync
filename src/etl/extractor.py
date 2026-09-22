@@ -46,11 +46,13 @@ class DataExtractor:
     Responsible for loading each GDE file (CSV/TXT) into a pandas DataFrame.
     Normalizes column names (strip + lowercase) immediately after loading.
 
-    Two public entrypoints share one bytes-based parsing core (`_load_bytes`):
-    `load_data` (disk) reads each present file's bytes and dispatches to the core;
-    `load_from_bytes` (in-memory, e.g. browser uploads) dispatches directly. Both
-    inherit the same encoding-detection, delimiter-detection, and malformed-row
-    repair behaviour.
+    ONE public entrypoint, `load_data`, over a bytes-based parsing core (`_load_bytes`):
+    it resolves each configured filename on disk (exactly, then case-insensitively),
+    reads its bytes and dispatches to the core. A second public entrypoint,
+    `load_from_bytes`, existed for the retired Streamlit UI's uploads and was itself the
+    Convert/CLI divergence plan 0051 deleted — Convert read the folder's own contents
+    through it, so an extract no config names could fail a run. Do not reintroduce one:
+    a parsing path production does not run is a path free to drift.
     """
 
     def __init__(self, input_path: str):
@@ -139,28 +141,6 @@ class DataExtractor:
 
         return data
 
-    def load_from_bytes(
-        self,
-        sources: dict[str, bytes],
-        file_headers: Optional[dict[str, list[str]]] = None,
-    ) -> dict[str, pd.DataFrame]:
-        """
-        Parse already-in-memory GDE files (e.g. browser uploads) through the same
-        core as `load_data`. Returns a dict: { name → DataFrame }.
-
-        Only the supplied keys are parsed — a referenced-but-not-supplied source is
-        simply absent from the result (downstream code uses
-        `.get(name, pd.DataFrame())`, so the absence is treated as "skip this
-        entity"; this method must NOT back-fill empty frames for missing keys).
-        Content that cannot be parsed raises `ExtractionError`, matching disk.
-        """
-        file_headers = file_headers or {}
-        data: dict[str, pd.DataFrame] = {}
-        for name, raw in sources.items():
-            logger.info(f"Attempting to load (in-memory): {name}")
-            data[name] = self._load_bytes(name, raw, file_headers.get(name))
-        return data
-
     def _load_bytes(
         self,
         name: str,
@@ -169,7 +149,7 @@ class DataExtractor:
     ) -> pd.DataFrame:
         """Parse one GDE file's raw bytes into a normalized DataFrame.
 
-        Shared by `load_data` (disk) and `load_from_bytes` (uploads). Raises
+        The parsing core `load_data` dispatches to, per resolved file. Raises
         `ExtractionError` when the bytes cannot be parsed by any encoding/delimiter.
         """
         if explicit_names:
