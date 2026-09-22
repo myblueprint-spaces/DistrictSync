@@ -8,7 +8,7 @@ orchestration the ``JobRunner`` runs off the UI thread.
 
 **The adapter, not ``run_pipeline`` (parity lock):** ``convert_job`` mirrors the
 Streamlit ``02_Convert.run_conversion`` + the parity test's ``_run_ui_path`` —
-``load_config → to_raw_dict → load_from_bytes → run_transform → save_all`` — so the
+``load_config → to_raw_dict → load_data → run_transform → save_all`` — so the
 UI's output stays byte-for-byte identical to the CLI (locked by
 ``tests/test_pipeline_parity.py``). It is CALLED unchanged; nothing in
 ``src/etl``/``src/config`` is touched.
@@ -123,6 +123,8 @@ from src.etl.pipeline import (
     check_delivery_integrity,
     compute_anomalies,
     configured_entity_order,
+    extract_required_files,
+    has_no_usable_input,
     run_transform,
 )
 from src.history.store import write_run_record
@@ -220,13 +222,13 @@ def convert_job(
     """Run the parity-locked convert adapter and return a PII-free ``ConvertResult``.
 
     Off the UI thread (``JobRunner`` runs it via ``page.run_thread``):
-    ``load_config → load_from_bytes → run_transform → check_delivery_integrity →
+    ``load_config → load_data → run_transform → check_delivery_integrity →
     compute_anomalies`` and — only when clear or acknowledged — ``save_all`` +
     stale-output archival + the quality report, then (only when ``sftp_requested``)
     an SFTP delivery.
 
     **The output-folder pre-flight comes FIRST (plan 0050),** before ``to_raw_dict`` and
-    before ``_read_gde_bytes``: :func:`~src.etl.loader.output_target_problem` refuses an
+    before the input read: :func:`~src.etl.loader.output_target_problem` refuses an
     unreachable / unwritable output folder with ``OUTPUT_FOLDER_UNUSABLE`` having done NO
     ETL work, and the write below is wrapped in ``except OSError`` for the window a
     pre-check cannot see. Neither writes a run record (see :func:`_record_manual_run`):
@@ -295,11 +297,19 @@ def convert_job(
         for filename, header_list in entity_cfg.get("headers", {}).items():
             file_headers[filename] = header_list
 
-    # Read the GDE files' bytes from the picked folder, keyed by filename so config
-    # source_files resolve identically to a disk / CLI run.
-    sources = _read_gde_bytes(Path(input_dir))
-    raw_data = DataExtractor("").load_from_bytes(sources, file_headers)
-    if not raw_data:
+    # Read EXACTLY the files this config names, through the SAME disk path the CLI uses
+    # (plan 0051). Convert used to read every `.csv`/`.txt` in the picked folder and parse
+    # the lot, so an extract DistrictSync never reads could decide the run: SD67's died on
+    # an empty `AccidentInformation.txt` while their nightly over the same folder
+    # succeeded. Going through `load_data` also inherits the disk path's case-insensitive
+    # resolution and its case-COLLISION raise, which the bytes path never had.
+    required_files = extract_required_files(config)
+    raw_data = DataExtractor(str(input_dir)).load_data(required_files, file_headers=file_headers)
+
+    # NOT `not raw_data`: `load_data` inserts an EMPTY frame per file it cannot find, so a
+    # folder with nothing in it yields a FULL dict and the bare truthiness test would never
+    # fire again. Shared with `run_pipeline` so both paths answer this the same way.
+    if has_no_usable_input(raw_data):
         return ConvertResult(status=ConvertStatus.NO_INPUT)
 
     outputs, field_orders, data_errors, sy_determination = run_transform(raw_data, mappings, global_config)
@@ -497,27 +507,6 @@ def deliver_job(sis_type: str) -> ConvertResult:
     delivered = ConvertResult(status=ConvertStatus.DELIVERED_FROM_DISK, sftp_attempted=True, sftp_ok=True)
     _record_manual_run(delivered, sis_type=sis_type, elapsed=time.monotonic() - t0, delivery_only=True)
     return delivered
-
-
-def _read_gde_bytes(input_dir: Path) -> dict[str, bytes]:
-    """Read every GDE file (``.csv``/``.txt``) in the folder as bytes, keyed by filename.
-
-    Mirrors the disk/CLI run's folder read: source_files in the config resolve by
-    filename. A folder that isn't readable / has no GDE files yields ``{}`` (→ the
-    extractor returns nothing → ``NO_INPUT``), never a crash.
-    """
-    sources: dict[str, bytes] = {}
-    try:
-        entries = sorted(input_dir.iterdir())
-    except OSError:
-        return sources
-    for entry in entries:
-        if entry.is_file() and entry.suffix.lower() in _GDE_SUFFIXES:
-            try:
-                sources[entry.name] = entry.read_bytes()
-            except OSError:
-                continue
-    return sources
 
 
 def _data_errors_total(data_errors: list[dict]) -> int:

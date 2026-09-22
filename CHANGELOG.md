@@ -9,6 +9,33 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+### Fixed
+
+- **A file the mapping doesn't use can no longer stop a conversion.** Convert read
+  every `.csv`/`.txt` file in the input folder and tried to make sense of all of
+  them, so an extract DistrictSync has no use for could fail the whole run — SD67
+  hit this on an empty `AccidentInformation.txt`, which MyEd BC produces when a
+  district has no accident records to report. The nightly sync was never affected:
+  it has always read only the files the district's mapping names, and Convert now
+  does the same. You can point Convert at your full MyEd BC export folder.
+- **Convert now finds a file whose name is in a different case.** If your export is
+  `studentdemographicenh.txt` and the mapping spells it `StudentDemographicEnh.txt`,
+  Convert reads it — as the nightly sync already did. Before, it quietly found
+  nothing and reported an incomplete roster.
+- **SD67 (Okanagan Skaha) reads the enhanced demographic export**
+  (`StudentDemographicEnh.txt`).
+
+### Changed
+
+- **Two input-folder problems now stop a conversion instead of passing quietly.**
+  If a source file appears twice in different cases (`Students.txt` *and*
+  `students.txt`) and the mapping matches neither exactly, Convert stops rather than
+  guessing which one to load — picking wrong would convert the wrong roster. And a
+  file that cannot be read because another program is holding it open now reports an
+  error, where it used to be skipped and its students silently left out. Both match
+  what the nightly sync has always done.
+
+
 ## [3.23.0] - 2026-09-21
 
 A district can now run the nightly sync as a service account without anyone
