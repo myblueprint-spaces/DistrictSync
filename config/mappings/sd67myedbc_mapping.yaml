@@ -34,6 +34,15 @@ mappings:
   Students:
     source_files:
       student_demographic: "StudentDemographicEnh.txt"
+    field_map:
+      # The district's own address scheme, generated rather than read: their
+      # demographic export's email entry is inconsistent, so the source column
+      # cannot be trusted per-row. Same pattern as sd10/sd51/sd74 — every active
+      # student gets a deterministic, correct address. NOT sanitized: the student
+      # number is already `[a-z0-9]`, and turning sanitizing on here would change
+      # nothing while implying the input needs scrubbing.
+      "Email Address":
+        format: "{student number}@sd67.bc.ca"
 
   Classes:
     source_files:

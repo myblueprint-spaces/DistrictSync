@@ -1346,6 +1346,36 @@ class TestDistrictQuirks:
             "s003@sd51.bc.ca",
         }
 
+    # ---- SD67: ENHANCED demographic export + generated emails ----
+
+    @pytest.mark.parametrize("district_output", ["sd67myedbc"], indirect=True)
+    def test_sd67_generated_sd67_emails(self, district_output):
+        """The district's demographic export has inconsistent email entry, so every
+        address is generated from the student number instead of read per-row."""
+        _, out, _ = district_output
+        students = _read_output(out, "Students")
+        assert set(students["Email Address"]) == {
+            "s001@sd67.bc.ca",
+            "s002@sd67.bc.ca",
+            "s003@sd67.bc.ca",
+        }
+
+    @pytest.mark.parametrize("district_output", ["sd67myedbc"], indirect=True)
+    def test_sd67_emits_family_from_the_emergency_contact_export(self, district_output):
+        """SD67 enables Family, and a canonical contact export produces it.
+
+        Pinned because a 2026-09-22 SD67 run shipped without `Family.csv` and the
+        config was the first suspect. It is not: given the contact file this fixture
+        writes, Family is produced. The entity is dropped only when every contact row
+        is filtered out — no email, or a student number that is not on the active
+        roster — which is a DATA question, and each of those paths logs its own
+        distinct warning.
+        """
+        _, out, _ = district_output
+        family = _read_output(out, "Family")
+        assert not family.empty
+        assert set(family["Student User ID"]) <= set(_read_output(out, "Students")["Student Number"])
+
     # ---- SD54: withdraw-date-only active detection + surname.firstname emails ----
 
     @pytest.mark.parametrize("district_output", ["sd54myedbc"], indirect=True)

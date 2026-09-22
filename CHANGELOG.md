@@ -23,7 +23,9 @@ Per-release download links and auto-generated commit notes live on the
   Convert reads it — as the nightly sync already did. Before, it quietly found
   nothing and reported an incomplete roster.
 - **SD67 (Okanagan Skaha) reads the enhanced demographic export**
-  (`StudentDemographicEnh.txt`).
+  (`StudentDemographicEnh.txt`), and its student email addresses are now
+  generated as `<student number>@sd67.bc.ca` rather than read from the export,
+  whose own email entry is inconsistent.
 
 ### Changed
 
