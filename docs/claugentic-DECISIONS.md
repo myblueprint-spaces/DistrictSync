@@ -1,6 +1,46 @@
 # Decisions (claugentic harness)
 
 
+
+## 2026-09-23 — release v3.25.0: staff who do not teach are no longer administrators
+
+**Shipped:** plan 0052 (`.claude/plans/0052-staff-role-no-implicit-admin.md`),
+PR #143. `map_role` returns `teacher` or nothing; `resolve_staff_roles` rescues
+an unroled staff member who is teacher-of-record on a section and drops the
+rest. `administrator` is reachable only through `normalize_staff_role` against
+a column a district populated to state it.
+
+**Output contract moved to 2.6.0** — a `Staff.csv` ROW-SET change plus a
+narrowing of how `Role` may be derived, the same kind of change as 2.3.0. It
+had been left at 2.5.0 in the implementation PR; caught in review.
+
+**Partner-facing consequence, stated because it is irreversible in effect.**
+`docs/partner/faq.md` documents that SpacesEDU marks a user Inactive when they
+stop appearing in `Staff.csv`, matched on User ID, **Role** and School ID. The
+19–60% of staff this stops delivering are therefore DEACTIVATED on the next
+sync, and that includes anyone who is genuinely an administrator today but
+whose export does not say so. The CHANGELOG tells districts to create those
+accounts before their first sync after upgrading. Districts also hit a one-time
+anomaly pause in Convert (the >20% `Staff.csv` drop); the nightly logs it and
+continues.
+
+**Certification / QA disposition, honestly:** the standing position (2026-09-02)
+that manual Windows-exe QA may follow tagging applies here, and this release was
+tagged at the owner's explicit instruction while `main`'s CI run was still in
+progress. That is safe by construction rather than by luck — `release.yml`
+gates `build-flet` on its own ubuntu `pytest --cov-fail-under=80` job, so a
+broken tree fails the release before anything is published. Local gates were
+green on Windows (7,620 tests, ruff, mypy, bandit, email scan, architecture
+tree, 20 configs) and all five real district drops were re-measured: zero
+administrators emitted, orphaned teacher-enrollment counts byte-identical to
+baseline. **No manual exe QA had been performed at tag time.**
+
+**Open, deliberately:** a `staff_role` config block letting a district declare
+how its administrators are identified is NOT designed yet — blocked on two
+districts answering the intake question, since one answer is a special case.
+Until then administrators are mapped per-district via `normalize_staff_role`
+or created by hand. See ROADMAP.
+
 ## 2026-09-22 — a teaching flag of "N" no longer means "administrator" (plan 0052)
 
 **Decision.** `map_role` returns `teacher` or NOTHING; a staff row with no

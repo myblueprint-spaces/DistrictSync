@@ -9,6 +9,15 @@ Per-release download links and auto-generated commit notes live on the
 
 ## [Unreleased]
 
+## [3.25.0] - 2026-09-23
+
+Staff who do not teach are no longer delivered to SpacesEDU as administrators.
+A MyEd BC teaching flag of anything other than `Y` used to mean "administrator"
+— a real permission level — so education assistants, secretaries and support
+staff were swept into it at every district using the default mapping. **Please
+read the note about existing accounts below before you upgrade**: staff this
+release stops delivering are marked Inactive in SpacesEDU on the next sync.
+
 ### Fixed
 
 - **Staff who do not teach are no longer imported as administrators.** Until
