@@ -20,6 +20,53 @@ For each such district, you create a small YAML override file that inherits from
 
 ---
 
+## Staff roles: administrators must be STATED
+
+`Staff.csv`'s `Role` accepts exactly two values, `teacher` and `administrator`,
+and `administrator` is a real permission level in SpacesEDU.
+
+**The default mapping cannot produce it.** The base config derives `Role` from
+MyEd BC's `Teaching Staff` flag via `map_role`, which yields `teacher` for `Y`
+and *no role* for anything else; a row with no role does not ship. This is
+deliberate (plan 0052): the flag answers *does this person teach*, so a
+secretary, an education assistant and a principal are identical `N`, and
+defaulting them to `administrator` granted that privilege to support staff at
+every district using the default mapping.
+
+Before such a row is dropped it is **rescued** as `teacher` if the person is
+teacher-of-record in any file the Classes or Enrollments entity names under
+`student_schedule`, `class_info` or `student_demographic` (the last being the
+homeroom teacher). MyEd BC's flag is stale for some real teachers, so this is
+what stops a class losing its teacher. `staff_info` is deliberately NOT
+consulted — it lists every employee, so it would rescue the entire export.
+
+**To roster a district's administrators**, the export must carry a column whose
+cells hold the literal role. Map it with `normalize_staff_role`, which accepts
+exactly `teacher`/`administrator` (case- and whitespace-insensitive) and raises
+on anything else rather than guessing:
+
+```yaml
+  Staff:
+    # Drop rows whose column holds something that is not a role, BEFORE the
+    # field map, so no data error is recorded for a courtesy title.
+    row_filters:
+      - column: "Prefix"
+        include: ["Teacher", "Administrator"]
+    field_map:
+      "Role":
+        column: "Prefix"
+        transform: "normalize_staff_role"
+```
+
+That is SD83's shipped config. MyEd BC defines no role, job-code, position or
+department field on any staff extract, so that district repurposed the `Prefix`
+courtesy-title column — blank or a courtesy title in every other district's
+export we have seen, and therefore usually free to reuse.
+
+If a district cannot add such a column, do **not** invent a rule from the
+teaching flag, a job title, or absence from the timetable. Administrator
+accounts are created by hand instead.
+
 ## Step 1 — Collect the district's GDE files
 
 Obtain a sample export from the district and note:

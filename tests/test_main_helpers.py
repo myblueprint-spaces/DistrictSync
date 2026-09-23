@@ -588,6 +588,54 @@ class TestRunTransform:
             "field_map": field_map,
         }
 
+    def test_publishes_entity_mappings_so_staff_can_reach_the_classes_timetable(self):
+        """`run_transform` must publish the WHOLE `mappings` onto the shared context.
+
+        Without this, `StaffTransformer._teacher_of_record_ids` silently resolves
+        nothing and every unflagged-but-teaching staff member is dropped (plan
+        0051). The unit tests in `test_transform_staff.py` call
+        `set_entity_mappings` themselves, so they would stay green while the
+        production wiring was missing — this is the test that proves the
+        orchestrator does it.
+
+        It pins the real failure mode, which was NOT hypothetical:
+        `context.global_config` carries only the config's `global_config`
+        SECTION, never `mappings`, so the obvious lookup returns `{}` in
+        production while working fine in any test that builds the context by
+        hand.
+        """
+        staff_df = pd.DataFrame(
+            {
+                "teacher id": ["T001", "T002"],
+                "first name": ["Jane", "Ben"],
+                "last name": ["Harper", "Wong"],
+                "email address": ["a@s.ca", "b@s.ca"],
+                "teaching staff": ["Y", "N"],
+                "school number": ["100", "100"],
+            }
+        )
+        # T002's flag says "N" but they are teacher-of-record on a section.
+        schedule_df = pd.DataFrame({"teacher id": ["T002"], "master timetable id": ["MT1"]})
+        mappings = {
+            "Staff": {
+                "source_files": {"staff_info": "Staff.txt"},
+                "field_map": {
+                    "User ID": "Teacher Id",
+                    "Role": {"column": "Teaching Staff", "transform": "map_role"},
+                },
+            },
+            "Classes": {"source_files": {"student_schedule": "Sched.txt"}, "field_map": {}},
+        }
+        raw_data = {"Staff.txt": staff_df, "Sched.txt": schedule_df}
+
+        outputs, _, _, _ = run_transform(raw_data, mappings, self._global_config(enabled_entities=["Staff"]))
+
+        roles = dict(zip(outputs["Staff"]["User ID"].astype(str), outputs["Staff"]["Role"]))
+        assert roles == {"T001": "teacher", "T002": "teacher"}, (
+            "T002 must be rescued via the Classes timetable — if only T001 survives, "
+            "run_transform is no longer publishing `mappings` onto the context"
+        )
+
     def test_returns_transformoutputs_namedtuple(self):
         mappings = {"Widgets": self._entity("widgets.txt", {"Out": "in_col"})}
         raw_data = {"widgets.txt": pd.DataFrame({"in_col": ["a", "b"]})}

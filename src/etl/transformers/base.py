@@ -89,21 +89,48 @@ class BaseTransformer(ABC):
     STAFF_ROLE_ADMINISTRATOR: str = "administrator"
     STAFF_ROLES: frozenset[str] = frozenset({STAFF_ROLE_TEACHER, STAFF_ROLE_ADMINISTRATOR})
 
+    #: "This export does not say what this person is." NOT a third role — it is
+    #: the absence of one, and `StaffTransformer.resolve_staff_roles` removes
+    #: every row still carrying it rather than publishing a blank `Role` (which
+    #: the Advanced CSV contract does not accept) or guessing at one.
+    #:
+    #: Empty string rather than `pd.NA` deliberately: `apply_field_map`'s
+    #: per-row `transform:` path already uses `pd.NA` for a row whose transform
+    #: RAISED, and those two facts must stay tellable apart in the frame — a
+    #: raise is a recorded data error, an unstated role is not an error at all.
+    NO_STAFF_ROLE: str = ""
+
     @staticmethod
     def map_role(teaching_flag: Any) -> str:
         """Map a teaching FLAG (MyEd BC's `Teaching Staff` Y/N) to a contract role.
 
-        Exactly `"y"` (case/whitespace-insensitive) is a teacher; EVERY other
-        value — including blank, `nan` and `"Yes"` — becomes an administrator.
-        That default is deliberately preserved here: it is what all 20 bundled
-        configs have always produced, and changing it would re-role staff at
-        every district. A district whose export states the role OUTRIGHT should
-        use :meth:`normalize_staff_role` against that column instead of relying
-        on this fallback (see `docs/claugentic-ROADMAP.md` for the open question
-        of whether the blank default should stay `administrator` at all).
+        Exactly `"y"` (case/whitespace-insensitive) is a teacher. EVERY other
+        value — `"N"`, blank, `nan`, `"Yes"` — yields :attr:`NO_STAFF_ROLE`,
+        because the flag answers *does this person teach*, never *is this person
+        an administrator*. A secretary, an education assistant and a principal
+        are all `"N"`.
+
+        **This used to return `administrator` for every non-`"y"` value, and
+        that was a live defect** (plan 0052). `administrator` is a real
+        privilege level in SpacesEDU, so the fallback silently granted it to
+        support staff at every district: 44.9% of SD40's export, 49.3% of
+        SD74's, and 60% of the staff Unity Christian actually ships — which is
+        how it was found, by the district's own network administrator, in their
+        production tenant. Absence of a teaching flag is not evidence of
+        anything; the only honest answer is "this export does not say".
+
+        Rows left with no role do NOT ship. `StaffTransformer.resolve_staff_roles`
+        first rescues anyone who is teacher-of-record on a real section (MyEd's
+        flag is demonstrably stale for some teachers — three of Unity's carry 26,
+        26 and 16 sections between them while flagged `"N"`), then drops the rest.
+
+        A district that wants its administrators rostered must SAY which people
+        they are: a column stating the role outright, read through
+        :meth:`normalize_staff_role` (SD83 repurposes MyEd BC's `Prefix` for
+        exactly this). There is no way back to inferring it from this flag.
         """
         val = str(teaching_flag).strip().lower()
-        return BaseTransformer.STAFF_ROLE_TEACHER if val == "y" else BaseTransformer.STAFF_ROLE_ADMINISTRATOR
+        return BaseTransformer.STAFF_ROLE_TEACHER if val == "y" else BaseTransformer.NO_STAFF_ROLE
 
     @staticmethod
     def normalize_staff_role(role_value: Any) -> str:
@@ -121,9 +148,12 @@ class BaseTransformer(ABC):
         silent-miscategorisation failure this transform exists to avoid: a value
         we do not understand must never be guessed into "administrator".
 
-        Districts that want such rows EXCLUDED rather than reported configure
-        `row_filters` on the Staff entity alongside this transform; the filter
-        removes them before the field map ever sees them.
+        Such a row is excluded from the output either way — a blank `Role` is not
+        a value the contract accepts, so `StaffTransformer.resolve_staff_roles`
+        drops it (plan 0052). What `row_filters` on the Staff entity ADDS is
+        removing it BEFORE the field map, so no data error is recorded at all for
+        a value the district already knows is not a role (SD83 does this for
+        courtesy titles in `Prefix`).
 
         The message names the accepted vocabulary but NEVER echoes the cell — a
         staff-file cell can hold a person's title and the message reaches the log.

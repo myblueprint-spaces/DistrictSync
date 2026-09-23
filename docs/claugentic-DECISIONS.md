@@ -1,5 +1,64 @@
 # Decisions (claugentic harness)
 
+
+## 2026-09-22 — a teaching flag of "N" no longer means "administrator" (plan 0052)
+
+**Decision.** `map_role` returns `teacher` or NOTHING; a staff row with no
+publishable role is dropped rather than published as an administrator.
+`administrator` is emitted only where a district's export STATES it.
+
+**Why now.** Unity Christian's network administrator found it in their
+production tenant and put their import on hold: *"All EAs have been added as
+admins. This is problematic."* 60% of the staff that school ships were
+administrators. Measured across every drop on hand, no district was the
+"teachers and admins only" shape the blanket assumed — the admin share ran
+18.6% to 53.9%.
+
+**The non-obvious part: a bare drop was NOT safe, and only the data said so.**
+MyEd BC's teaching flag is stale for some real teachers. Three of Unity's carry
+26, 26 and 16 sections while flagged `"N"`; dropping every non-`Y` row would
+have stranded 68 of that school's 186 sections with no teacher, in the very
+week the school had escalated *about wrong teacher assignments*. So the rule
+rescues anyone who is teacher-of-record on a section before dropping the rest.
+After the change, orphaned teacher-enrollment counts are byte-identical to
+baseline across all five districts — the rescue absorbs the whole delta.
+
+**Three findings that changed the design, each from measurement rather than
+reasoning:**
+
+1. The SD74 snapshot golden does **not** move. Its fixture staff are all `Y`,
+   so the branch was never exercised — which is why a change this consequential
+   passes the regression suite untouched, and why nobody noticed for a year.
+2. `student_demographic` had to be admitted as teaching evidence. Its
+   teacher-id column names the HOMEROOM teacher, and `_homeroom_enrollments`
+   builds real teacher rows from it. Leaving it out (on the reasoning that a
+   student roster asserts nothing about teaching) stranded a live Unity
+   homeroom teacher who holds no timetabled section. `staff_info` stays
+   excluded and that exclusion is load-bearing: it lists every employee, so
+   admitting it would rescue the entire export and restore the defect.
+3. `context.global_config` has never carried `mappings`, so the obvious
+   cross-entity lookup silently resolved to `{}` in production while working in
+   tests (the fixture injects `mappings` into the section). Hence the new
+   explicit `TransformContext.entity_mappings`, published once by
+   `run_transform` and pinned by a test that fails when the wiring is removed.
+   The two pre-existing victims of the same gap are logged in ROADMAP rather
+   than repointed here — changing column resolution for 20 districts does not
+   belong in a slice about staff roles.
+
+**Rejected: shipping a blank `Role`.** Not a value the Advanced CSV contract
+accepts. A row we cannot describe does not ship.
+
+**Rejected: an empty-output floor.** `filter_departed_staff` ships everyone
+rather than deliver an empty `Staff.csv`, and that asymmetry is deliberate —
+publishing nobody is recoverable and visible; publishing the wrong privilege
+level is neither.
+
+**Consequence for districts.** A district that wants administrators rostered
+must say who they are. The only mechanism today is a column stating the role
+outright (SD83's repurposed `Prefix`); a general `staff_role` config block is
+in ROADMAP, deliberately blocked on district answers rather than designed
+against one example.
+
 Append the **newest decision at the top**. Consult this log before re-litigating a past choice. Each entry is a dated one-liner: what was decided and why. An entry that **reverses or supersedes** an earlier one must name that entry's date, restate the condition it set for re-proposal, and show the evidence that met it — *and what that evidence does NOT prove* (the 2026-07-28 light-flavor reversal is the worked example).
 
 ---

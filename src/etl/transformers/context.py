@@ -43,6 +43,18 @@ class TransformContext:
     raw_data: dict[str, pd.DataFrame] = field(default_factory=dict)
     global_config: dict[str, Any] = field(default_factory=dict)
 
+    # The WHOLE config's per-entity `mappings` block, published once per run by
+    # `run_transform`. Distinct from `global_config` above, which is only the
+    # config's `global_config` SECTION — it has never carried `mappings`, which
+    # is why `get_teacher_id_col`/`get_demo_student_col` below have always
+    # silently resolved to their defaults (harmless today: every bundled config
+    # agrees with those defaults, verified across all 20 — see
+    # `docs/claugentic-ROADMAP.md`). Read by Staff to find the timetable files
+    # an entity other than its own declares; empty in a directly-constructed
+    # context, which callers must treat as "no cross-entity config available"
+    # rather than as an error.
+    entity_mappings: dict[str, Any] = field(default_factory=dict)
+
     # Active roster: normalized `User ID` strings of the students retained by
     # StudentTransformer (its filtered output). Published by Students and read
     # by Classes (homeroom) + Enrollments (homeroom + subject) to guarantee no
@@ -112,10 +124,26 @@ class TransformContext:
         self.academic_end = f"{year}-{end_month_day}"
 
     def get_teacher_id_col(self) -> str:
-        """Extract teacher ID column name from Enrollments config. Used by multiple entities."""
-        enrollment_map = self.global_config.get("mappings", {}).get("Enrollments", {}).get("field_map", {})
+        """Teacher-ID column name, resolved from the Enrollments ``User ID`` config.
+
+        Reads :attr:`entity_mappings` FIRST. It used to read only
+        ``global_config["mappings"]``, which `run_transform` never populates (it
+        passes the config's ``global_config`` SECTION), so this silently fell
+        through to the hardcoded default for every district — harmless in
+        practice, since all 20 bundled configs resolve to exactly that value,
+        but a Configurable Columns violation waiting for the first district to
+        rename the column. Repointed at 0052, when the resolution started
+        gating whether staff are DROPPED rather than merely joined.
+
+        ``global_config`` is still consulted as a fallback: tests build a
+        context by hand and pass ``mappings`` inside that section.
+        """
+        mappings = self.entity_mappings or self.global_config.get("mappings", {})
+        enrollment_map = mappings.get("Enrollments", {}).get("field_map", {})
         user_id_map = enrollment_map.get("User ID", {})
-        return user_id_map.get("staff_id_col", "teacher id").lower()
+        if not isinstance(user_id_map, dict):
+            return "teacher id"
+        return str(user_id_map.get("staff_id_col", "teacher id")).lower()
 
     def get_students_config(self) -> dict[str, Any]:
         return self.global_config.get("mappings", {}).get("Students", {})

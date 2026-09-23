@@ -34,7 +34,7 @@ python -m pytest tests/ -k "test_active_only_filter" -v
 | `test_email_generation.py` | `generate_student_email()` — format string substitution |
 | `test_class_generation.py` | `generate_class_name()`, `generate_class_id()` |
 | `test_enrollment_status.py` | Active/inactive/pre-reg status filtering |
-| `test_role_mapping.py` | `map_role()` — Y/N → teacher/administrator |
+| `test_role_mapping.py` | `map_role()` — Y → teacher, anything else → no role (never administrator) |
 | `test_school_year.py` | `determine_school_year()` — data-derived and date-fallback |
 | `test_source_config.py` | `normalize_source_config()` — dict/list/list-of-dict formats |
 | `test_extractor.py` | DataExtractor — encoding fallback, delimiter detection |

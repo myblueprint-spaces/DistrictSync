@@ -85,7 +85,7 @@ Abstract base class (`src/etl/transformers/base.py`) providing:
 |---------|-------------|
 | `apply_field_map()` | Generic YAML field_map → DataFrame column loop |
 | `grade_to_ceds()` | BC grade → CEDS standard (K→KG, 1→01 …) |
-| `map_role()` | Teaching flag (Y/N) → "teacher" / "administrator" |
+| `map_role()` | Teaching flag → `"teacher"` (Y) or NO role (anything else — never `"administrator"`) |
 | `normalize_columns()` | Lowercase + strip DataFrame column names |
 | `clean_invalid_ids()` | Drop rows where ID is NaN / empty / "nan" |
 | `get_source_file()` | Fetch a named source DataFrame from TransformContext |
@@ -115,7 +115,7 @@ class TransformContext:
 | File | Key logic |
 |------|-----------|
 | `students.py` | Active-only filter, CEDS grade mapping, email generation |
-| `staff.py` | Roster join, role mapping (teacher/administrator) |
+| `staff.py` | Roster join, departed-staff exclusion, role rule (rescue-then-drop; `administrator` only where the export states it) |
 | `family.py` | Emergency contact extraction, deduplication by student |
 | `classes.py` | Homeroom generation, subject class join, blended class integration |
 | `enrollments.py` | Student + teacher rows from schedule + demographic data |
