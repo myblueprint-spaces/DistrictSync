@@ -146,6 +146,10 @@ def _write_student_demographic(path: Path, filename: str) -> None:
 #: them; keeping them in the fixture (rather than a district-specific one) means
 #: no config can regress the exclusion silently. Deliberately NOT one of the
 #: teaching T001/T003/T004, so the schedule/class joins are untouched.
+#: Currently employed, does not teach, holds no section — must NEVER be published
+#: as an administrator, and must not be published at all (plan 0052).
+_SUPPORT_STAFF_ID = "T910"
+
 _DEPARTED_TEACHER_ID = "T009"
 
 #: The contact EVERY Family ``row_filters`` fixture marks as a NON-guardian, and
@@ -165,21 +169,29 @@ def _write_staff(path: Path, filename: str) -> None:
     Every real district drop seen so far (SD40, SD60, SD74, Unity Christian)
     carries this UNFILTERED column, so the fixture does too: the departed row is
     the positive twin for the "Staff.csv excludes departed staff" assertion.
+
+    ``_SUPPORT_STAFF_ID`` is CURRENTLY EMPLOYED but does not teach and appears in
+    no timetable — an education assistant or school secretary. Until 2026-09-22
+    they were published as an ``administrator`` at every district using the
+    default mapping, and this fixture could not have caught it: every row was
+    ``"Y"``, so the branch was never exercised (the SD74 snapshot golden has the
+    same blind spot, which is why that regression test does not move either).
     """
     pd.DataFrame(
         {
-            "Teacher ID": ["T001", "T003", "T004", _DEPARTED_TEACHER_ID],
-            "First Name": ["Jane", "Linda", "Raj", "Dana"],
-            "Last Name": ["Harper", "Liu", "Singh", "Okafor"],
+            "Teacher ID": ["T001", "T003", "T004", _DEPARTED_TEACHER_ID, _SUPPORT_STAFF_ID],
+            "First Name": ["Jane", "Linda", "Raj", "Dana", "Sam"],
+            "Last Name": ["Harper", "Liu", "Singh", "Okafor", "Ellis"],
             "Email Address": [
                 "harper@school.ca",
                 "liu@school.ca",
                 "singh@school.ca",
                 "okafor@school.ca",
+                "ellis@school.ca",
             ],
-            "Teaching Staff": ["Y", "Y", "Y", "Y"],
-            "School Number": ["100", "200", "200", "100"],
-            "Staff Status": ["Active", "Active", "Active", "Inactive"],
+            "Teaching Staff": ["Y", "Y", "Y", "Y", "N"],
+            "School Number": ["100", "200", "200", "100", "100"],
+            "Staff Status": ["Active", "Active", "Active", "Inactive", "Active"],
         }
     ).to_csv(path / filename, index=False)
 
@@ -1039,6 +1051,57 @@ class TestOutputSchemaContract:
             f"an Inactive employee would become an active SpacesEDU user."
         )
 
+    def test_staff_never_publishes_an_administrator_from_a_teaching_flag(self, district_output):
+        """No teaching flag, at any district, may produce an administrator.
+
+        The blanket this replaced granted a real SpacesEDU privilege level to
+        between 19% and 60% of the staff each district delivered. Only a config
+        whose export STATES the role may emit it — sd83myedbc, via
+        ``normalize_staff_role`` over its repurposed ``Prefix``.
+        """
+        sis, out, _ = district_output
+        _skip_unless_emitted(sis, "Staff")
+        df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
+        roles = set(df["Role"].dropna().astype(str).str.strip().str.lower())
+        if sis == "sd83myedbc":
+            assert "administrator" in roles, "sd83 states roles outright and must still emit them"
+            return
+        assert "administrator" not in roles, (
+            f"[{sis}] Staff.csv published an administrator, but this config derives Role from a "
+            f"teaching FLAG — which says who teaches, never who administers."
+        )
+
+    def test_staff_excludes_an_employee_whose_role_the_export_does_not_state(self, district_output):
+        """The support-staff row is currently employed and holds no section, so
+        there is nothing to publish: not an administrator, and not a blank Role."""
+        sis, out, _ = district_output
+        _skip_unless_emitted(sis, "Staff")
+        df = pd.read_csv(out / "Staff.csv", encoding="utf-8-sig")
+        shipped = set(df["User ID"].dropna().astype(str))
+        assert _SUPPORT_STAFF_ID not in shipped, (
+            f"[{sis}] Staff.csv ships an employee whose role the export never states"
+        )
+
+    def test_teacher_enrollments_reference_published_staff(self, district_output):
+        """The zero-orphan pairing, for EVERY emitting district.
+
+        Was parametrized to sd83myedbc alone — the one config that does NOT use
+        `map_role`, so it exercised none of the mechanism that now decides which
+        staff ship. Teacher enrollment rows are deliberately not roster-filtered
+        (`enrollments.py`), so narrowing Staff.csv is the thing that can orphan
+        them, and this is where that surfaces rather than at the partner's
+        ingest.
+        """
+        sis, out, _ = district_output
+        _skip_unless_emitted(sis, "Staff")
+        _skip_unless_emitted(sis, "Enrollments")
+        staff_ids = set(_read_output(out, "Staff")["User ID"].astype(str))
+        enrollments = _read_output(out, "Enrollments")
+        teachers = enrollments[enrollments["Role"].astype(str) == "teacher"]
+        assert not teachers.empty, f"[{sis}] no teacher enrollments at all — the pairing is vacuous"
+        orphans = set(teachers["User ID"].astype(str)) - staff_ids
+        assert not orphans, f"[{sis}] {len(orphans)} teacher enrollment(s) reference staff absent from Staff.csv"
+
     def test_staff_keeps_active_staff(self, district_output):
         """The positive twin: the exclusion narrows, it does not empty."""
         sis, out, _ = district_output
@@ -1658,17 +1721,7 @@ class TestDistrictQuirks:
         assert _DEPARTED_TEACHER_ID not in ids, "a departed staff member was published"
         assert staff["Role"].notna().all() and (staff["Role"].astype(str).str.strip() != "").all()
 
-    @pytest.mark.parametrize("district_output", ["sd83myedbc"], indirect=True)
-    def test_sd83_teacher_enrollments_still_reference_published_staff(self, district_output):
-        """The filter's blast radius, checked in the direction that actually bites:
-        narrowing Staff.csv must not orphan a teacher enrollment. The homeroom
-        teacher (T001) is published, so the pairing holds — but if a future filter
-        ever excluded a rostered teacher, this is where it surfaces rather than at
-        the partner's ingest.
-        """
-        _, out, _ = district_output
-        staff_ids = set(_read_output(out, "Staff")["User ID"].astype(str))
-        enrollments = _read_output(out, "Enrollments")
-        teachers = enrollments[enrollments["Role"].astype(str) == "teacher"]
-        assert not teachers.empty, "no teacher enrollments at all — the pairing would be vacuous"
-        assert set(teachers["User ID"].astype(str)) <= staff_ids
+    # The sd83-only orphan-pairing test moved UP to
+    # `test_teacher_enrollments_reference_published_staff`, which runs for every
+    # emitting district — sd83 was the one config that does not use `map_role`,
+    # so it exercised none of the mechanism that decides which staff ship.

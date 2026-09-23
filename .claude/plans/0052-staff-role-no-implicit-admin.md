@@ -1,4 +1,4 @@
-# Plan 0051 — a teaching flag of "N" must stop meaning "administrator"
+# Plan 0052 — a teaching flag of "N" must stop meaning "administrator"
 
 **Status:** approved by the owner in-conversation 2026-09-22 (twice).
 **Trigger:** Unity Christian, live. Matt Zacharias (Network Administrator),

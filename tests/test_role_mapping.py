@@ -14,7 +14,7 @@ class TestMapRole:
 
     It used to send every non-`"y"` value to `administrator`, a real privilege
     level in SpacesEDU, which silently granted it to secretaries, education
-    assistants and custodial staff at every district (plan 0051). The flag
+    assistants and custodial staff at every district (plan 0052). The flag
     answers *does this person teach*; it has never said anything about who
     administers, and absence of a `"y"` is not evidence of anything.
 
@@ -50,7 +50,7 @@ class TestMapRole:
         "flag",
         ["N", "n", "", "   ", "No", "Yes", "True", "1", "Teacher", "Administrator", None, float("nan")],
     )
-    def test_no_input_whatsoever_yields_administrator(self, flag):
+    def test_no_teaching_flag_value_can_ever_yield_administrator(self, flag):
         """The regression guard, stated as the rule rather than a value table.
 
         Nothing a district can put in a teaching-flag column may produce

@@ -1,7 +1,7 @@
 # Decisions (claugentic harness)
 
 
-## 2026-09-22 — a teaching flag of "N" no longer means "administrator" (plan 0051)
+## 2026-09-22 — a teaching flag of "N" no longer means "administrator" (plan 0052)
 
 **Decision.** `map_role` returns `teacher` or NOTHING; a staff row with no
 publishable role is dropped rather than published as an administrator.

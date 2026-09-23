@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from src.etl.transformer import DataTransformer
+from src.etl.transformers.staff import TEACHING_ASSIGNMENT_SOURCE_ROLES
 
 
 class TestStaffTransform:
@@ -17,7 +18,7 @@ class TestStaffTransform:
         result = self.transformer.transform(staff_info_df, staff_mapping, "Staff", raw_data, global_config)
         # One fewer than the fixture: T005's flag is "N" and no source file in
         # `raw_data` gives them a section, so they have no publishable role
-        # (plan 0051). Every OTHER row survives — that is the positive half.
+        # (plan 0052). Every OTHER row survives — that is the positive half.
         assert len(result) == len(staff_info_df) - 1
         assert "T005" not in set(result["User ID"].astype(str))
         for field in staff_mapping["field_map"]:
@@ -76,7 +77,7 @@ class TestStaffTransform:
         """An export of nothing but `Teaching Staff = "N"` publishes NO ONE.
 
         The inversion of the old `test_staff_all_administrators`, and the whole
-        point of plan 0051: these two used to become SpacesEDU administrators.
+        point of plan 0052: these two used to become SpacesEDU administrators.
 
         Note there is deliberately NO empty-output floor here, unlike
         `filter_departed_staff`, which ships everyone rather than deliver an
@@ -147,7 +148,7 @@ class TestStaffTransform:
         }
         result = self.transformer.transform(staff_info_df, mapping, "Staff", raw_data, global_config)
         # Left join retains every row it is given; T005 then drops for having no
-        # stated role and no section (plan 0051), which the join did not cause.
+        # stated role and no section (plan 0052), which the join did not cause.
         assert len(result) == len(staff_info_df) - 1
 
     def test_staff_deduplication(self, staff_mapping, global_config):
@@ -291,7 +292,7 @@ class TestStaffDepartedExclusion:
         """A district whose export has no status column has told us nothing.
 
         Scoped to THIS filter: the one row that still leaves is T005, removed by
-        the unstated-role rule (plan 0051), not by any employment decision.
+        the unstated-role rule (plan 0052), not by any employment decision.
         """
         result = self.transformer.transform(staff_info_df, staff_mapping, "Staff", raw_data, global_config)
         assert len(result) == len(staff_info_df) - 1
@@ -334,7 +335,7 @@ class TestStaffDepartedExclusion:
 
 
 class TestStaffUnstatedRoles:
-    """The unstated-role rule (plan 0051): rescue who demonstrably teaches, drop the rest.
+    """The unstated-role rule (plan 0052): rescue who demonstrably teaches, drop the rest.
 
     Replaces the blanket that made every non-``"y"`` teaching flag an
     ``administrator`` — a real SpacesEDU privilege level — which is how
@@ -405,6 +406,67 @@ class TestStaffUnstatedRoles:
         )
         roles = dict(zip(result["User ID"].astype(str), result["Role"]))
         assert roles == {"T001": "teacher", "T002": "teacher"}, "T002 rescued as teacher; T003 dropped"
+
+    @pytest.mark.parametrize(
+        "role, filename",
+        [
+            ("student_schedule", "StudentSchedule.txt"),
+            ("class_info", "ClassInformationEnh.txt"),
+            ("student_demographic", "StudentDemographicInformation.txt"),
+        ],
+    )
+    def test_every_teaching_assignment_role_is_wired(self, global_config, role, filename):
+        """Completeness over `TEACHING_ASSIGNMENT_SOURCE_ROLES`, member by member.
+
+        Without this, `class_info` could be deleted from the tuple and the suite
+        would stay green — the constant decides who is DELETED from the roster,
+        so every member needs its own evidence that it is actually consulted.
+        The companion test below pins the tuple's MEMBERSHIP, so a new role
+        added without a case here is red.
+        """
+        staff_df = self._staff_df()
+        frame = pd.DataFrame({"teacher id": ["T002"], "master timetable id": ["MT1"]})
+        raw_data = {"StaffInformationEnhanced.txt": staff_df, filename: frame}
+        result = self._run(staff_df, raw_data, global_config, self._classes_mapping(**{role: filename}))
+        assert set(result["User ID"].astype(str)) == {"T001", "T002"}, f"role {role!r} is not consulted"
+
+    def test_the_roles_tuple_has_not_grown_without_a_case_above(self):
+        """The completeness half: a new role must arrive with its own evidence."""
+        assert set(TEACHING_ASSIGNMENT_SOURCE_ROLES) == {
+            "student_schedule",
+            "class_info",
+            "student_demographic",
+        }
+        assert "staff_info" not in TEACHING_ASSIGNMENT_SOURCE_ROLES
+        assert "course_info" not in TEACHING_ASSIGNMENT_SOURCE_ROLES
+
+    def test_enrollments_own_schedule_is_consulted_too(self, global_config):
+        """`source_files` is a dict and deep merge takes a PARTIAL override, so a
+        district can point Enrollments at a schedule Classes does not name. The
+        teacher rows come from Enrollments' block, so reading only Classes'
+        would delete a teacher who IS rostered."""
+        staff_df = self._staff_df()
+        schedule = pd.DataFrame({"teacher id": ["T002"], "master timetable id": ["MT1"]})
+        raw_data = {"StaffInformationEnhanced.txt": staff_df, "OtherSchedule.txt": schedule}
+        entity_mappings = {
+            "Classes": {"source_files": {"student_schedule": "StudentSchedule.txt"}},
+            "Enrollments": {"source_files": {"student_schedule": "OtherSchedule.txt"}},
+        }
+        result = self._run(staff_df, raw_data, global_config, entity_mappings)
+        assert set(result["User ID"].astype(str)) == {"T001", "T002"}
+
+    def test_every_row_unroled_warns_before_the_entity_vanishes(self, global_config, caplog):
+        """A renamed role column is an INTENDED blank — `apply_field_map` neither
+        records nor logs it — so without this WARNING a district's Staff.csv
+        would disappear from the delivery in complete silence."""
+        staff_df = self._staff_df().drop(columns=["teaching staff"])
+        raw_data = {"StaffInformationEnhanced.txt": staff_df}
+        with caplog.at_level(logging.WARNING):
+            result = self._run(staff_df, raw_data, global_config, self._classes_mapping())
+        assert result.empty
+        warnings = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("NONE of 3 staff row(s) carry a role" in m for m in warnings)
+        assert any("Excluded 3 of 3" in m for m in warnings), "a total exclusion must not be INFO"
 
     def test_a_homeroom_assignment_rescues_a_teacher_with_no_timetabled_section(self, global_config):
         """The demographic file's teacher-id column names the HOMEROOM teacher.
@@ -559,7 +621,7 @@ class TestStaffRowFilters:
 
         T005 leaves even with no filter configured, but for a DIFFERENT reason —
         its `Prefix` is a courtesy title, so `normalize_staff_role` raises and the
-        row has no publishable role (plan 0051). The filter's own job is to remove
+        row has no publishable role (plan 0052). The filter's own job is to remove
         it BEFORE the field map, which is what stops the data error being recorded
         at all; the next test pins that distinction.
         """
@@ -670,7 +732,7 @@ class TestStaffRowFilters:
         """Without the Prefix filter the courtesy-title row reaches the field map,
         `normalize_staff_role` RAISES, the cell is blanked and recorded as a data
         error — and the row then LEAVES, because a blank `Role` is not a value the
-        Advanced CSV contract accepts (plan 0051; it used to ship blank).
+        Advanced CSV contract accepts (plan 0052; it used to ship blank).
 
         Row-resilience is unchanged and is the positive half here: one bad cell
         does not cost the other four rows their values.

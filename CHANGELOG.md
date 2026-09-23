@@ -16,26 +16,42 @@ Per-release download links and auto-generated commit notes live on the
   **administrator** role — a real permission level in SpacesEDU. That flag only
   ever answered *does this person teach*, so education assistants, school
   secretaries, custodial and support staff were all swept into it. In the
-  districts we have data for this was between 19% and 60% of the staff being
-  delivered. One school's network administrator found it in their own tenant.
+  districts we have data for this was between 19% and 60% of the staff actually
+  being delivered. One school's network administrator found it in their own
+  tenant.
 
-  From this release, that no longer happens: **only teachers are delivered**,
-  and nobody is made an administrator unless the district's own export says
-  they are one. Staff whose role the file does not state are left out of
-  `Staff.csv` entirely rather than guessed at.
+  From this release, nobody is made an administrator unless the district's own
+  export says they are one. Staff whose role the file does not state are left
+  out of `Staff.csv` entirely rather than guessed at. For most districts that
+  means only teachers are delivered; a district whose export states roles
+  outright keeps delivering both.
 
   **Teachers whose flag is out of date are still delivered.** Some districts'
   exports mark a teacher `N` by mistake — at one school three such people were
   teaching 68 classes between them. Anyone listed as the teacher of a class,
-  homeroom included, is delivered as a teacher regardless of the flag, so no
-  class loses its teacher because of this change.
+  homeroom included, is delivered as a teacher regardless of the flag. Across
+  every district export we hold, this left the number of classes without a
+  teacher exactly where it was before the change.
 
-  **If you need administrators in SpacesEDU**, your export has to identify
-  them — for example a column that says `Teacher` or `Administrator` outright,
-  which is how one district already does it. Talk to us and we will map it.
-  Until then, administrator accounts can be created by hand. Districts already
-  holding administrator accounts created by earlier imports keep them; this
-  changes what future imports deliver, and does not remove existing accounts.
+  **Please read this before you upgrade.** SpacesEDU marks a user **Inactive**
+  when they stop appearing in `Staff.csv`, matching on User ID, Role and School
+  ID. So the staff this change stops delivering — at most districts a large
+  share of the file — **will be deactivated on the next sync**, and that
+  includes anyone who is genuinely an administrator today but whose role your
+  export does not state. They are deactivated, not deleted.
+
+  **If you need administrators in SpacesEDU**, tell us how your export
+  identifies them before your next sync. The simplest answer is a column
+  holding the word `Teacher` or `Administrator`, which is how one district
+  already does it — we map it and those accounts keep working. If your export
+  cannot say, the accounts can be created by hand instead, but create them
+  before the first sync after upgrading rather than after.
+
+  **Your first conversion will warn about the drop.** `Staff.csv` shrinking by
+  more than a fifth trips the usual large-change warning. On the scheduled
+  nightly that is logged and the sync continues; in **Convert** it pauses and
+  asks you to confirm before writing. Expect it once, and it is safe to
+  confirm.
 
 ## [3.24.0] - 2026-09-22
 

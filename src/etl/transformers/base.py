@@ -111,7 +111,7 @@ class BaseTransformer(ABC):
         are all `"N"`.
 
         **This used to return `administrator` for every non-`"y"` value, and
-        that was a live defect** (plan 0051). `administrator` is a real
+        that was a live defect** (plan 0052). `administrator` is a real
         privilege level in SpacesEDU, so the fallback silently granted it to
         support staff at every district: 44.9% of SD40's export, 49.3% of
         SD74's, and 60% of the staff Unity Christian actually ships — which is
@@ -148,9 +148,12 @@ class BaseTransformer(ABC):
         silent-miscategorisation failure this transform exists to avoid: a value
         we do not understand must never be guessed into "administrator".
 
-        Districts that want such rows EXCLUDED rather than reported configure
-        `row_filters` on the Staff entity alongside this transform; the filter
-        removes them before the field map ever sees them.
+        Such a row is excluded from the output either way — a blank `Role` is not
+        a value the contract accepts, so `StaffTransformer.resolve_staff_roles`
+        drops it (plan 0052). What `row_filters` on the Staff entity ADDS is
+        removing it BEFORE the field map, so no data error is recorded at all for
+        a value the district already knows is not a role (SD83 does this for
+        courtesy titles in `Prefix`).
 
         The message names the accepted vocabulary but NEVER echoes the cell — a
         staff-file cell can hold a person's title and the message reaches the log.

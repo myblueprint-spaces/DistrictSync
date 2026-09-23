@@ -18,7 +18,7 @@ decided on the DATA for every district, while ``row_filters`` is opt-in config.
 Role is ``map_role`` over a teaching flag by default, or ``normalize_staff_role``
 over a column that states the role outright.
 
-**No role is ever inferred from the absence of one** (plan 0051). A teaching
+**No role is ever inferred from the absence of one** (plan 0052). A teaching
 flag of ``"N"`` used to mean ``administrator``, which is a real privilege level
 in SpacesEDU — so support staff were silently granted it at every district
 (44.9% of SD40's export; 60% of the staff Unity Christian ships, found by that
@@ -100,7 +100,7 @@ class StaffTransformer(BaseTransformer):
         return self.resolve_staff_roles(result, context)
 
     def resolve_staff_roles(self, result: pd.DataFrame, context: TransformContext) -> pd.DataFrame:
-        """Rescue unroled staff who demonstrably teach; drop the rest (plan 0051).
+        """Rescue unroled staff who demonstrably teach; drop the rest (plan 0052).
 
         Runs on the OUTPUT frame, where ``Role`` holds whatever the district's
         configured transform resolved. A row whose ``Role`` is not one of
@@ -124,15 +124,47 @@ class StaffTransformer(BaseTransformer):
            must state who they are — see :meth:`~BaseTransformer.map_role`.
 
         The rescue is deliberately one-directional: it can only ADD a teacher,
-        never re-role or remove someone the district's own export already
-        placed. An export that STATES ``administrator`` is always believed.
+        never re-role or remove a row whose stated role we RECOGNISE. An export
+        that says ``administrator`` is believed even for someone who also
+        teaches. A row whose stated role we do NOT recognise
+        (``normalize_staff_role`` raised, so the cell is blank) is unroled like
+        any other and may be rescued — there is nothing there to contradict.
+
+        **Scope caveat, stated because the rule is easy to over-read.** This asks
+        whether the person teaches ANYWHERE in the input, not whether the classes
+        they teach survive this run's grade scoping. A district with a narrow
+        ``class_rostering_grades`` can therefore publish a rescued teacher who
+        ends up with no rostered class. That is the deliberate direction to err:
+        the alternative deletes a real teacher, and a surplus teacher account is
+        both recoverable and visible.
 
         PII rule: counts only — never a name, an email or an id.
         """
-        if "Role" not in result.columns or result.empty:
+        if result.empty:
+            return result
+        if "Role" not in result.columns:
+            # No Role column at all: the field map produced none. Nothing to
+            # decide here, and emitting the frame unchanged is the pre-existing
+            # behaviour — but say so, because otherwise every row would look
+            # unroled and the whole entity would vanish in silence.
+            logger.warning(
+                "[Staff] No 'Role' column was produced, so no role rule could be applied to "
+                f"{len(result)} row(s). Check the Staff field_map."
+            )
             return result
 
         roles = result["Role"].astype(str).str.strip().str.lower()
+        if bool(roles.isin(["<na>", "nan", ""]).all()):
+            # EVERY row unroled. Reachable with no data error at all when the
+            # configured role column is simply ABSENT from the export (a renamed
+            # column): `apply_field_map` treats that as an INTENDED blank — not
+            # recorded, not logged — so this WARNING is the only signal before
+            # Staff.csv vanishes from the delivery entirely.
+            logger.warning(
+                f"[Staff] NONE of {len(result)} staff row(s) carry a role. If this district's "
+                "export does state roles, the configured role column is probably missing or "
+                "renamed — check the Staff field_map before trusting this run."
+            )
         unroled = ~roles.isin(self.STAFF_ROLES)
         if not bool(unroled.any()):
             return result
@@ -160,7 +192,12 @@ class StaffTransformer(BaseTransformer):
                 f"flag is out of date for them)."
             )
         if dropped:
-            logger.info(
+            # WARNING when NOTHING survives: the sibling `filter_departed_staff`
+            # logs a total exclusion at WARNING too, and a zero-row Staff entity
+            # leaves `outputs`, archives the previous Staff.csv and drops out of
+            # the SFTP manifest — all without failing the run.
+            emit = logger.warning if dropped == len(result) else logger.info
+            emit(
                 f"[Staff] Excluded {dropped} of {len(result)} staff row(s) whose role this export "
                 f"does not state and who hold no section. They are NOT published as "
                 f"'{self.STAFF_ROLE_ADMINISTRATOR}' — a teaching flag says who TEACHES, never who "
@@ -172,11 +209,12 @@ class StaffTransformer(BaseTransformer):
     def _teacher_of_record_ids(self, context: TransformContext) -> set[str]:
         """Normalized staff ids with a teaching assignment in THIS run's input.
 
-        Resolved from the **Classes** entity via ``context.entity_mappings``, not
-        — Staff declares only ``staff_info``, and reading that would make every
-        row its own evidence of teaching. Same cross-entity config read as
-        ``context.get_teacher_id_col`` / ``get_demo_student_col``; config-driven
-        end to end, so no filename or column name is spelled here.
+        Resolved from the **Classes** and **Enrollments** entities via
+        ``context.entity_mappings`` — Staff declares only ``staff_info``, and
+        reading that would make every row its own evidence of teaching. No
+        filename is spelled here; the column comes from
+        ``context.get_teacher_id_col``, which resolves the district's own
+        ``staff_id_col`` and falls back to the canonical MyEd BC spelling.
 
         Only the roles in :data:`TEACHING_ASSIGNMENT_SOURCE_ROLES` are consulted
         — see that constant for why ``staff_info`` and ``course_info`` are not
@@ -186,13 +224,22 @@ class StaffTransformer(BaseTransformer):
         of every transformer. An empty set is a legitimate answer (a config
         declaring none of these roles rescues nobody) and never an error.
         """
-        classes_config = context.entity_mappings.get("Classes", {}) or {}
-        sources = self.normalize_source_config(classes_config.get("source_files", {}))
         teacher_id_col = context.get_teacher_id_col()
+        filenames: set[str] = set()
+        # UNION over Classes AND Enrollments. They name the same schedule file in
+        # all 20 bundled configs, but `source_files` is a dict and deep merge
+        # takes a PARTIAL override happily — a district overriding one entity's
+        # filename and not the other gets an empty frame, not an error
+        # (sd67myedbc's own config comment documents this footgun). Reading only
+        # one would then delete a teacher who IS rostered from the other.
+        for entity in ("Classes", "Enrollments"):
+            entity_config = context.entity_mappings.get(entity, {}) or {}
+            sources = self.normalize_source_config(entity_config.get("source_files", {}))
+            filenames.update(sources.get(role, "") for role in TEACHING_ASSIGNMENT_SOURCE_ROLES)
 
         found: set[str] = set()
-        for role in TEACHING_ASSIGNMENT_SOURCE_ROLES:
-            frame = context.raw_data.get(sources.get(role, ""))
+        for filename in sorted(filenames - {""}):
+            frame = context.raw_data.get(filename)
             if frame is None or frame.empty or teacher_id_col not in frame.columns:
                 continue
             values = normalize_id_series(frame[teacher_id_col])
