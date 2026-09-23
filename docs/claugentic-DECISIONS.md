@@ -1,6 +1,24 @@
 # Decisions (claugentic harness)
 
+**Convention (adopted 2026-09-23):** every new entry carries a line `Supersedes: <date — title of the replaced entry>` (or `Supersedes: nothing`) directly under its heading, so a replaced decision is found by search rather than by reading prose.
 
+
+
+## 2026-09-23 — failure is scoped to the entity; criticality is declared; conservative default until Q5
+
+Supersedes: nothing — first written ETL failure policy (plan 0053, `.claude/plans/0053-etl-failure-policy.md`).
+
+**The incident.** Unity Christian's 2026-09-22 drop sent the PLAIN Emergency Contact report (18 columns, no `Email Address`, no `Parent Auth / Guardian`) under the Enhanced report's filename. Family's `row_filters` on the guardian column raised — correctly: shipping unfiltered contacts would deliver non-guardian PII — but `run_transform` has no seam for an entity that raises (`src/etl/pipeline.py:345`), so Students, Staff, Classes and Enrollments, all built correctly, were discarded and the whole run failed. The missing unit is the unit of failure, not a row-filter bug.
+
+**Decided.** The rule set is written once, in `docs/developer/failure-policy.md` (§0–§14; rules P1–P16, each with one `docs/claugentic-INVARIANTS.md` row). Failure is scoped to the ENTITY by one boundary in `run_transform` shared by the CLI and Convert (S4); each entity's criticality is DECLARED in `outcomes.ENTITY_CRITICALITY` (S2), an unlisted entity is CRITICAL, and a CRITICAL entity's failure fails the run exactly as today. Until SpacesEDU answers Q5 (`docs/developer/output-contract.md` — what the importer does with an ABSENT file) the conservative branch applies everywhere else, and no partner doc claims an omitted file has no side effects.
+
+**D1 — which entities are ISOLATABLE before Q5 (owner, 2026-09-23): option (c), all four optional feeds — Family, StudentAttendance, CourseInfo, StudentCourses.** Students, Staff, Classes and Enrollments stay CRITICAL. This OVERRIDES the orchestrator's recommendation (b), Family + StudentAttendance only, which kept CourseInfo/StudentCourses CRITICAL because there is no absence evidence for them and Q5d (must they arrive together?) is open. The owner accepts explicitly: (1) CourseInfo and StudentCourses are isolatable by decision, ahead of partner evidence, and either may ship on a night the other failed; (2) Unity's guardians, linked since 2026-09-14, may be unlinked by a delivery without `Family.csv` — unknown until Q5e, recoverable on the next good night, and weighed against the CERTAIN harm of the whole roster freezing. S14 governs any change after the answer, one entity per change.
+
+**D3 — exit code for a delivery missing only an isolatable file (owner): 0, with a PARTIAL record.** No new exit code; the documented "a partial run stays exit 0" contract holds, and the warning repeats on Home every night it persists.
+
+**D4 — naming the file and column (owner): yes, config-DECLARED labels only, membership-validated against the resolved config and sanitised (S7).** Observed header text stays banned everywhere (a headerless file read without its header makes row 1 a pupil); `str(e)`, paths and cell values stay banned.
+
+**Deliberately NOT decided here:** D2 (sending Q5 is the owner's action), D5–D14 (open in the plan). **Not changed by S0:** any code — S0 is docs only, and every rule row in `failure-policy.md` says what the code does TODAY, marked `ENFORCED` or `PLANNED (0053 Sn)`.
 
 ## 2026-09-23 — release v3.25.0: staff who do not teach are no longer administrators
 

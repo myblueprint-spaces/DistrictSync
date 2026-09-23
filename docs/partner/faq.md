@@ -16,9 +16,15 @@ You set it up **once**: the window repeats every year automatically, with nothin
 
 No. That's the seasonal pause working as configured, which is why the message is green rather than a warning. While paused, DistrictSync also stays quiet about missing nightly runs (none are expected) and resumes on its own on your start date. If your nightly schedule is ever genuinely missing, it tells you that instead — a pause never hides a real problem.
 
-**Q: What happens if the GDE files are not present at run time?**
+**Q: What happens if the GDE files are not present at run time — or a file is present but different from usual?**
 
-The tool logs a warning for each missing file and skips the affected entity. For example, if the Course Information GDE file is missing, Classes and Enrollments will be skipped. The run is still considered complete; other entities are processed normally.
+It depends on what is wrong. Today there are three main outcomes:
+
+- **One output is left out; the rest are delivered.** When *every* file an output reads is missing or empty, or every row it reads is filtered out, that output (for example `Family.csv` — but never `Students.csv`, see the next point) is not produced that night and the other outputs are delivered as normal. The run log names the output it skipped. The first night it is left out, Home shows a warning that a roster file was smaller than usual.
+- **The whole run stops, and nothing is written or delivered.** This happens when the student export produces no students, when nothing at all could be built, when none of the required files is usable (a wrong folder, a truncated or locked export), when a file is present but cannot be read, or when a file is present but is missing a column this district's mapping uses to limit who is sent (a row filter, a grade scope, cross-school enrollment). Nothing new is sent to SpacesEDU that night, and the files from the last successful run stay in your output folder; fix the export and the next run sends a fresh set.
+- **A missing secondary file weakens an output rather than stopping the run.** For example, with no Class Information file at all, blended classes are not detected — each section of a blended class is delivered as its own class — and co-taught teachers are left out of `Enrollments.csv`.
+
+Other missing columns — typically because a different MyEd BC report was saved under the usual filename — are handled differently from column to column today: some stop the run; others leave rows out or leave a field or ID blank; and a few send more people rather than fewer (for example, if the staff export has no status column, staff who have left are not filtered out and are sent along with current staff). Rows left out of a delivered file are not harmless — see *What happens to students or staff no longer in the file?* and *What happens to enrollments no longer in the file?* below. Home warns only if a file shrank by more than a fifth, so a quieter-than-usual night is also worth checking: Run History shows each run's counts, and support can help you read a run's log.
 
 **Q: Can I run it manually?**
 

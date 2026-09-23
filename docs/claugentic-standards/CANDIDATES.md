@@ -420,3 +420,31 @@ lived in `ROADMAP`), and it was restated five times — including in a dispositi
 "APPLIED" — without anyone re-opening the file. Both are the same failure: **a claim about a
 file's contents, made without reading that file.** The pin is the mechanised version of it.
 Beneficiary roles: `implementer-architect`, `plan-reviewer`, `architect-reviewer`.
+
+---
+
+## reliability — "A fail-closed check on an OPTIONAL unit scopes its failure to that unit; criticality is declared and restrictive by default; alarms about absence are level-triggered"  [staged 2026-09-23, plan 0053 S0]
+
+- **Fail closed at the smallest scope that contains the fault.** A guard that correctly refuses to
+  ship (a PII-scope row filter whose column vanished) must stop only the unit it guards. When the
+  orchestrator has no seam between "this unit failed" and "the run failed", a correct guard on an
+  optional feed freezes every mandatory one — the guard is right and the outcome is still wrong.
+- **Criticality is DECLARED, in one table, and restrictive by default.** "Which units may fail
+  alone" is a product decision, not something to infer from which code happens to catch what. An
+  unlisted unit is critical; promotion to isolatable needs evidence (a partner answer, or proof the
+  absence already ships), no shared state published, no critical reader, and a dated decision. A
+  unit something else depends on can never be isolatable — pin that structurally rather than
+  writing a runtime branch that could never execute.
+- **Alarms about ABSENCE are level-triggered.** A warning derived from "last run had it, this run
+  does not" decays the moment the run archives its own baseline; the signal must come from the
+  run's own record, every run the fault persists, or it becomes a one-night blip nobody reads.
+- **Write the failure policy down before conforming the code to it** — one doc, every row marked
+  enforced/planned truthfully, then parity tests. Five coexisting postures for "a needed column is
+  missing" is what an unwritten policy looks like.
+
+Incident: plan 0053 (Unity Christian, 2026-09-22) — a report flip under the same filename made
+Family's guardian filter raise; with no entity seam, four correctly built rostering files were
+discarded and the admin was told to check an input folder that was correct. The vanished-file
+anomaly that should have flagged the omission lasts one run, because the same run archives the
+previous CSV it compares against.
+Beneficiary roles: `plan-reviewer`, `implementer-architect`, `architect-reviewer` (reliability lens).

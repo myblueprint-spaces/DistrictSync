@@ -632,6 +632,8 @@ python -m src.main --sis sd99myedbc \
 
 Then without `--dry-run` to verify the output CSVs, and with `--quality` to spot any mapping gaps.
 
+- [ ] Failure policy (`docs/developer/failure-policy.md`) — declare criticality in `outcomes.ENTITY_CRITICALITY` (from S2) for any entity this district is the first to enable; classify every column your config makes the code read (renamed columns, `row_filters`, grade scopes) into failure-policy §5 (a)–(e) and state what happens if it vanishes from the district's export.
+
 ---
 
 ## Self-service overlays (plan 0044)
