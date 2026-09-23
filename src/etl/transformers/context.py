@@ -43,6 +43,18 @@ class TransformContext:
     raw_data: dict[str, pd.DataFrame] = field(default_factory=dict)
     global_config: dict[str, Any] = field(default_factory=dict)
 
+    # The WHOLE config's per-entity `mappings` block, published once per run by
+    # `run_transform`. Distinct from `global_config` above, which is only the
+    # config's `global_config` SECTION — it has never carried `mappings`, which
+    # is why `get_teacher_id_col`/`get_demo_student_col` below have always
+    # silently resolved to their defaults (harmless today: every bundled config
+    # agrees with those defaults, verified across all 20 — see
+    # `docs/claugentic-ROADMAP.md`). Read by Staff to find the timetable files
+    # an entity other than its own declares; empty in a directly-constructed
+    # context, which callers must treat as "no cross-entity config available"
+    # rather than as an error.
+    entity_mappings: dict[str, Any] = field(default_factory=dict)
+
     # Active roster: normalized `User ID` strings of the students retained by
     # StudentTransformer (its filtered output). Published by Students and read
     # by Classes (homeroom) + Enrollments (homeroom + subject) to guarantee no

@@ -86,6 +86,17 @@ class DataTransformer:
         """No in-code date defaults — caller must pass the validated YAML values."""
         self._context.set_school_year(year, start_month_day, end_month_day)
 
+    def set_entity_mappings(self, mappings: dict[str, Any]) -> None:
+        """Publish the whole config's per-entity `mappings` onto the shared context.
+
+        Called ONCE per run by `run_transform`, before the entity loop, so a
+        transformer can resolve a source file another entity declares (Staff
+        reads the Classes timetable roles — see
+        `StaffTransformer._teacher_of_record_ids`). The per-entity `transform`
+        call deliberately keeps receiving only its OWN `mapping`.
+        """
+        self._context.entity_mappings = mappings
+
     def determine_school_year(
         self,
         all_data: dict[str, pd.DataFrame],

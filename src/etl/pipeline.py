@@ -254,6 +254,9 @@ def run_transform(
     entity (empty on a clean run).
     """
     transformer = DataTransformer()
+    # Before the entity loop: an entity may need a source file that ANOTHER
+    # entity declares (Staff resolves the Classes timetable roles).
+    transformer.set_entity_mappings(mappings)
 
     outputs: dict[str, pd.DataFrame] = {}
     field_orders: dict[str, list[str]] = {}

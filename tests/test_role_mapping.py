@@ -4,30 +4,66 @@ import pandas as pd
 import pytest
 
 from src.etl.transformer import DataTransformer
+from src.etl.transformers.base import BaseTransformer
+
+NO_STAFF_ROLE = BaseTransformer.NO_STAFF_ROLE
 
 
 class TestMapRole:
+    """The teaching FLAG yields `teacher` or NOTHING — never `administrator`.
+
+    It used to send every non-`"y"` value to `administrator`, a real privilege
+    level in SpacesEDU, which silently granted it to secretaries, education
+    assistants and custodial staff at every district (plan 0051). The flag
+    answers *does this person teach*; it has never said anything about who
+    administers, and absence of a `"y"` is not evidence of anything.
+
+    `NO_STAFF_ROLE` is not a third role — `StaffTransformer.resolve_staff_roles`
+    removes the rows still carrying it (after rescuing anyone who demonstrably
+    teaches). See :class:`TestStaffUnstatedRoles` in `test_transform_staff.py`
+    for the row-level half of this contract.
+    """
+
     @pytest.mark.parametrize(
         "flag, expected",
         [
             ("Y", "teacher"),
             ("y", "teacher"),
             (" Y ", "teacher"),
-            ("N", "administrator"),
-            ("n", "administrator"),
-            ("", "administrator"),
-            ("No", "administrator"),
-            ("Yes", "administrator"),  # Only exact "y" is teacher
+            ("N", NO_STAFF_ROLE),
+            ("n", NO_STAFF_ROLE),
+            ("", NO_STAFF_ROLE),
+            ("No", NO_STAFF_ROLE),
+            ("Yes", NO_STAFF_ROLE),  # Only exact "y" is teacher
         ],
     )
     def test_map_role(self, flag, expected):
         assert DataTransformer.map_role(flag) == expected
 
     def test_map_role_none(self):
-        assert DataTransformer.map_role(None) == "administrator"
+        assert DataTransformer.map_role(None) == NO_STAFF_ROLE
 
     def test_map_role_nan(self):
-        assert DataTransformer.map_role(float("nan")) == "administrator"
+        assert DataTransformer.map_role(float("nan")) == NO_STAFF_ROLE
+
+    @pytest.mark.parametrize(
+        "flag",
+        ["N", "n", "", "   ", "No", "Yes", "True", "1", "Teacher", "Administrator", None, float("nan")],
+    )
+    def test_no_input_whatsoever_yields_administrator(self, flag):
+        """The regression guard, stated as the rule rather than a value table.
+
+        Nothing a district can put in a teaching-flag column may produce
+        `administrator` — including the literal word. That value is reachable
+        ONLY through `normalize_staff_role`, against a column the district
+        populated to state the role outright.
+        """
+        assert DataTransformer.map_role(flag) != "administrator"
+
+    def test_exactly_y_is_the_only_teacher(self):
+        """Positive twin: the rule above is not vacuously true by returning
+        `NO_STAFF_ROLE` for everything."""
+        assert DataTransformer.map_role("Y") == "teacher"
 
 
 class TestNormalizeStaffRole:
