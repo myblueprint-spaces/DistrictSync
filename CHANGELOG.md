@@ -37,27 +37,81 @@ Per-release download links and auto-generated commit notes live on the
   holding administrator accounts created by earlier imports keep them; this
   changes what future imports deliver, and does not remove existing accounts.
 
+## [3.24.0] - 2026-09-22
+
+A conversion is no longer decided by files your mapping doesn't use. Point
+Convert at your full MyEd BC export folder and it reads only the extracts your
+district's mapping actually names — the same files the nightly sync has always
+read. Two district mappings are updated (SD67, SD75). Nothing needs
+reconfiguring: installing this version changes no setting you have chosen.
+
+### Fixed
+
+- **A file the mapping doesn't use can no longer stop a conversion.** Convert read
+  every `.csv`/`.txt` file in the input folder and tried to make sense of all of
+  them, so an extract DistrictSync has no use for could fail the whole run — SD67
+  hit this on an empty `AccidentInformation.txt`, which MyEd BC produces when a
+  district has no accident records to report. The nightly sync was never affected:
+  it has always read only the files the district's mapping names, and Convert now
+  does the same. You can point Convert at your full MyEd BC export folder.
+- **Convert now finds a file whose name is in a different case.** If your export is
+  `studentdemographicenh.txt` and the mapping spells it `StudentDemographicEnh.txt`,
+  Convert reads it — as the nightly sync already did. Before, it quietly found
+  nothing and reported an incomplete roster.
+- **An export with nothing in it no longer fails the sync.** A source file that is
+  present but empty — no records at all — used to stop the whole run, even though a
+  file that is simply *missing* has always been handled gracefully. A district with
+  no family contacts to send, or an attendance export covering a week with no
+  absences, now converts normally and that one entity is skipped. A file with
+  content that genuinely cannot be read still stops the run, and an empty *student*
+  export is still refused rather than delivered as an empty roster.
+- **SD75 (Mission) homerooms now stop at grade 6.** Grade 7 moves from a
+  homeroom class to its timetabled classes, at the district's request; grades K-6
+  are unchanged.
+- **SD67 (Okanagan Skaha) reads the enhanced demographic export**
+  (`StudentDemographicEnh.txt`), and its student email addresses are now
+  generated as `<student number>@sd67.bc.ca` rather than read from the export,
+  whose own email entry is inconsistent.
+
+### Changed
+
+- **Two input-folder problems now stop a conversion instead of passing quietly.**
+  If a source file appears twice in different cases (`Students.txt` *and*
+  `students.txt`) and the mapping matches neither exactly, Convert stops rather than
+  guessing which one to load — picking wrong would convert the wrong roster. And a
+  file that cannot be read because another program is holding it open now reports an
+  error, where it used to be skipped and its students silently left out. Both match
+  what the nightly sync has always done.
+
+
+## [3.23.0] - 2026-09-21
+
+A district can now run the nightly sync as a service account without anyone
+signing in as it first, and — where a district's IT policy forbids storing a
+task password — as a managed service account (gMSA) instead. Both work by
+moving this computer's DistrictSync settings into one shared folder that the
+nightly task's account can read. Nothing changes unless you choose it:
+installing this version switches nothing on its own, and a nightly sync
+already scheduled under an earlier version keeps running exactly as it is.
+
 ### Added
 
-- **Managed service accounts (gMSA): available, untested.** Setup can now be
-  asked to schedule the nightly sync as a group managed service account —
-  type the account with its trailing `$` into **Windows account for the
-  nightly task** and tick **This is a managed service account (gMSA)**. The
-  Windows password box disappears, because the directory holds that
-  credential and there is nothing for you to type. **We have not been able to
-  test this against a live domain** — there is no domain controller in our
-  test environment — so it is offered as something to try with your IT team,
-  not as a known fix. The option says so on screen, and every failure message
-  it can produce carries the Windows code we would need to work it out with
-  you. Two districts may find it useful anyway — one whose security policy
-  refuses to store a task's password (Windows code `0x80070520`), and one
-  whose service-account password rotation keeps breaking the nightly task.
-  **It is not a free experiment:** scheduling the nightly sync as any account
-  other than your own also moves this computer's settings to a shared folder,
-  which this version cannot undo, and that part can succeed even if the gMSA
+- **The nightly sync can run as a managed service account (gMSA).** Setup can
+  now schedule it as a group managed service account — type the account with
+  its trailing `$` into **Windows account for the nightly task** and tick
+  **This is a managed service account (gMSA)**. The Windows password box
+  disappears, because the directory holds that credential: there is nothing
+  for you to type, and nothing stored on this computer that can go stale. Two
+  districts will want this — one whose security policy refuses to store a
+  task's password (Windows code `0x80070520`), and one whose service-account
+  password rotation keeps breaking the nightly task. **A failed attempt still
+  changes this computer:** scheduling the nightly sync as any account other
+  than your own also moves this computer's settings to a shared folder, which
+  this version cannot undo, and that part can succeed even if the gMSA
   registration then fails — DistrictSync asks you to confirm the move first,
-  as it already does for a service account. The three things your IT team
-  must do before you try, and what DistrictSync can and cannot undo, are in
+  as it already does for a service account. Every failure message the option
+  can produce carries the Windows code your IT team needs. The three things
+  they must do first, and what DistrictSync can and cannot undo, are in
   *Managed service accounts (gMSA) — what your IT team needs to do*. The
   option is on the Setup screen of a configured install only; first-run setup
   does not offer it.

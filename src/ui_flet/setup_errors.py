@@ -73,7 +73,6 @@ from src.scheduler.windows import (
 )
 from src.ui_flet.setup_flow import (
     GMSA_PREREQUISITES,
-    GMSA_UNTESTED_CAPTION,
     SCHEDULE_ACCOUNT_FIELD_LABEL,
     SCHEDULE_GMSA_TOGGLE_LABEL,
 )
@@ -197,11 +196,11 @@ def classify_schedule_error(msg: str, elevated: bool, *, account_is_current: boo
             # would be a regression dressed as an improvement. A managed service account is
             # the one escape that does not need the policy lifted, because the directory holds
             # the credential and nothing is stored on this computer — so the option is named
-            # here, hedged, rather than left for the admin to discover.
+            # here rather than left for the admin to discover.
             + "\n\n"
             + "If your IT team can provide a managed service account (a gMSA), that is the one "
             f"unattended option this policy does not block — tick '{SCHEDULE_GMSA_TOGGLE_LABEL}' "
-            f"in the Daily schedule section. {GMSA_UNTESTED_CAPTION}"
+            "in the Daily schedule section."
         )
     if msg == MSG_ACCOUNT_INFO_NOT_SET:
         # States the code's DOCUMENTED meaning and claims no cause — 0x8004130F's cause is not
@@ -242,19 +241,22 @@ def classify_schedule_error(msg: str, elevated: bool, *, account_is_current: boo
             # NO "try again": retrying a name the directory does not know — or a computer the
             # account is not authorised for — changes nothing, and the three things that WOULD
             # change it are all somebody else's to do. So the copy is the one check the admin
-            # CAN make (the name in the box), then the checklist and the code to hand over. It
+            # CAN make (the name in the box), then the code and the checklist to hand over. It
             # says up front that we cannot tell which of the two causes it is, rather than
             # picking one and sending them down it.
+            #
+            # The code rides the FIRST paragraph, not the last: the checklist is a list, and
+            # anything appended after its third bullet reads as part of that bullet.
             return (
                 "Windows would not schedule the task as that managed service account — either the "
                 "directory doesn't know the name, or this computer isn't set up to use the account. "
-                f"DistrictSync can't tell which from here. Check the name in the "
-                f"'{SCHEDULE_ACCOUNT_FIELD_LABEL}' box, then send your IT team this list and the "
-                "code shown here:"
-                "\n\n"
-                f"{_GMSA_CHECKLIST}"
-                "\n\n"
-                f"{GMSA_UNTESTED_CAPTION}" + _code(msg)
+                "DistrictSync can't tell which from here. Check the name in the "
+                f"'{SCHEDULE_ACCOUNT_FIELD_LABEL}' box first."
+                + _code(msg)
+                + "\n\n"
+                + "Then send your IT team that code and the three things that have to be in place:"
+                + "\n\n"
+                + _GMSA_CHECKLIST
             )
         return (
             "Windows doesn't recognise that account name. Check the spelling in the "

@@ -223,7 +223,22 @@ def register_block(
         return RegisterBlock.RUN_TIME
 
     typed_key = principal_key(account.typed, account.current)
-    if typed_key:
+    # 0049 S-4 FIELD DEFECT (2026-09-21, found on the owner's first real attempt): the shape
+    # rung is scoped to a FOREIGN account by 0046's G5 rule, so that a legitimate `PC\John
+    # Smith` prefill keeps registering. That scoping is WRONG for a managed service account:
+    # the signed-in account can never BE one, and the field arrives PREFILLED with it. Ticking
+    # the disclosure and pressing Schedule therefore sailed past this rung (`principal_key` of
+    # the current account is `""`), reached `Principal.__post_init__`, and surfaced as the
+    # generic worker sentence — "Windows wouldn't accept that account name … try again" — which
+    # blames Windows for OUR refusal and invites a retry that cannot work. An MSA is validated
+    # ALWAYS, and a BLANK field is a shape failure rather than "the signed-in account", because
+    # "run as the signed-in gMSA" is not a thing that exists.
+    if account.kind is PrincipalKind.MANAGED_SERVICE_ACCOUNT:
+        try:
+            validate_principal_account(account.kind, account.typed)
+        except (ValueError, TypeError):
+            return RegisterBlock.ACCOUNT_SHAPE
+    elif typed_key:
         try:
             # 0049 S-4: dispatched on the DECLARED kind, through the ONE kind→validator
             # dispatcher the engine and both halves of the elevation handshake already use.

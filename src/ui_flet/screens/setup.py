@@ -141,7 +141,6 @@ from src.ui_flet.setup_errors import classify_provision_step, classify_schedule_
 from src.ui_flet.setup_flow import (
     GMSA_IT_DOC_TITLE,
     GMSA_PREREQUISITES,
-    GMSA_UNTESTED_CAPTION,
     SCHEDULE_ACCOUNT_FIELD_LABEL,
     SCHEDULE_GMSA_TOGGLE_LABEL,
     TRANSITION_CUE,
@@ -2671,15 +2670,11 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         return PrincipalKind.PASSWORD if typed_password else PrincipalKind.INTERACTIVE_TOKEN
 
     def _gmsa_disclosure_controls() -> list[ft.Control]:
-        """What the gMSA tick box reveals: the hedge, the three prerequisites, where to get them.
+        """What the gMSA tick box reveals: the three prerequisites, and where to get them.
 
-        The caption is NEW copy on the existing muted-note primitive
-        (``tokens.type_caption`` + ``color_muted``) — worth saying, because there is no
-        "untested" caption anywhere else in ``src/ui_flet`` to reuse. Nothing in this app has
-        ever been run against a live domain controller, so it is the only honest thing the
-        surface can lead with, and it is single-sourced at
-        ``setup_flow.GMSA_UNTESTED_CAPTION`` (the downgrade interrupt and the classifier's MSA
-        arm say it in the same words).
+        All of it rides the existing muted-note primitive (``tokens.type_caption`` +
+        ``color_muted``), so the disclosure reads as a note under the control it belongs to
+        rather than as a second section.
 
         The prerequisites render as READ-ONLY tick glyphs, deliberately not ``check_row``: none
         of the three is knowable from here (``validate_gmsa_account`` is a shape check, and
@@ -2692,7 +2687,6 @@ def _build_schedule_section(  # pragma: no cover - Flet view glue
         is NAMED instead, so an admin can ask for it by name.
         """
         rows: list[ft.Control] = [
-            ft.Text(GMSA_UNTESTED_CAPTION, size=tokens.type_caption, color=tokens.color_muted),
             ft.Text(
                 "Before this can work, your IT team needs to have done all three of these:",
                 size=tokens.type_caption,

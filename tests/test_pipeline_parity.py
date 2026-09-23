@@ -1,8 +1,9 @@
 """CLI ↔ UI output-parity lock.
 
-The Convert page (Streamlit) and the CLI/wizard (`run_pipeline`) must produce
+The Convert screen (`convert_job`) and the CLI/wizard (`run_pipeline`) must produce
 **byte-for-byte identical** CSVs for identical inputs. This test runs the SAME
-synthetic GDE bytes through both paths and asserts, per entity:
+synthetic GDE bytes through both REAL paths — neither side is re-implemented here
+(plan 0051) — and asserts, per entity:
 
   * the transformed frames are equal, AND
   * the on-disk CSV **bytes** are equal — including the per-entity BOM rule
@@ -23,10 +24,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from src.config.app_config import AppConfig
 from src.config.loader import load_config
-from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader
-from src.etl.pipeline import run_pipeline, run_transform
+from src.etl.pipeline import run_pipeline
+from src.ui_flet.convert_result import ConvertStatus
+from src.ui_flet.screens.convert import convert_job
 
 CONFIG = "sd51myedbc"  # 5 rostering entities + StudentAttendance (no-BOM)
 
@@ -288,15 +291,28 @@ def _run_cli_path(gde_sources: dict[str, bytes], tmp_path: Path) -> Path:
 
 
 def _run_ui_path(gde_sources: dict[str, bytes], tmp_path: Path) -> Path:
-    """UI adapter path: load_from_bytes → run_transform → DataLoader.save_all."""
+    """UI path: the REAL ``convert_job``, not a hand-rolled copy of it.
+
+    This used to re-implement the adapter inline (``load_from_bytes → run_transform →
+    save_all``), which made the lock weaker than it looked in two ways: it could not see a
+    divergence that lived in ``convert_job`` itself, and — until plan 0051 — the two sides
+    were handed DIFFERENT file sets, agreeing only because this fixture folder happens to
+    hold exactly the config's files and nothing else. A parity test that mirrors the thing
+    it guards is the very "two implementations of one job" fault 0051 exists to delete.
+
+    Calling the production function means this now pins what it claims: identical inputs
+    through both real paths produce byte-identical CSVs, including the per-entity BOM split
+    and field order.
+    """
+    input_dir = tmp_path / "ui_input"
     output_dir = tmp_path / "ui_output"
+    input_dir.mkdir()
     output_dir.mkdir()
-    raw = load_config(CONFIG).to_raw_dict()
-    mappings = raw["mappings"]
-    global_config = raw["global_config"]
-    raw_data = DataExtractor("").load_from_bytes(gde_sources, _file_headers(CONFIG))
-    outputs, field_orders, _, _ = run_transform(raw_data, mappings, global_config)
-    DataLoader(str(output_dir)).save_all(outputs, field_orders)
+    for name, data in gde_sources.items():
+        (input_dir / name).write_bytes(data)
+    AppConfig(input_dir=str(input_dir), output_dir=str(output_dir), sis_type=CONFIG).save()
+    result = convert_job(CONFIG, str(input_dir))
+    assert result.status is ConvertStatus.DELIVERED, f"UI path did not build: {result.status}"
     return output_dir
 
 

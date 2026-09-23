@@ -1,9 +1,10 @@
 # SD75 - Mission: inherits from standard MyEducation BC mapping, with the
 # full myBlueprint+ tier enabled (phase-2 migration; K-12 students, 10-12
 # HS course feeds — both are the base defaults, so only the entity tier is
-# stated) and generated `learn75.ca` student emails. Standard MyEd BC GDE
-# file naming is assumed (no source_files overrides here) — confirmed
-# working by the district (2026-09-04), including the homeroom split.
+# stated), generated `learn75.ca` student emails, and a homeroom split one
+# grade lower than the base. Standard MyEd BC GDE file naming is assumed (no
+# source_files overrides here) — confirmed working by the district
+# (2026-09-04); the split moved to K-6 at their request (2026-09-22).
 #
 # NOTE (2026-08-31): SD75 reported "selecting the sd75myedbc configuration"
 # BEFORE this file shipped — almost certainly a user-dir config the retired
@@ -23,6 +24,16 @@ district_name: SD75 - Mission School District
 district_domains: ["mpsd.ca", "sd75.bc.ca"]
 
 global_config:
+  # Mission takes homeroom attendance through grade 6 and timetables from
+  # grade 7 up (district request, 2026-09-22 — the base splits at K-7/8-12).
+  # Only grade 07 moves, and it moves the whole way: a homeroom grade gets
+  # homeroom classes INSTEAD of subject ones, so dropping it from this list is
+  # what gives grade 7 its scheduled classes. With no `class_rostering_grades`
+  # set, the timetable scope is CEDS-minus-homeroom, so 07-12 is automatic and
+  # nothing else needs stating. Deep-merge REPLACES lists (see sd51myedbc's
+  # comment on `enabled_entities`), so the FULL list is restated — an override
+  # holding only the grades that changed would silently drop the rest.
+  homeroom_grades: ["IT", "PR", "PK", "TK", "KG", "01", "02", "03", "04", "05", "06"]
   # Full myBlueprint+ tier. Deep-merge REPLACES lists (see sd51myedbc's
   # comment on this same key), so the full set must be restated here.
   enabled_entities:

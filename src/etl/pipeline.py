@@ -14,7 +14,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -191,6 +191,27 @@ def advisory_expected_files(config) -> list[str]:
                 continue
             files.add(filename)
     return list(files)
+
+
+def has_no_usable_input(raw_data: Mapping[str, pd.DataFrame]) -> bool:
+    """True when a load produced NOTHING usable — no keys, or every frame empty.
+
+    The single source for "this folder gave us nothing", shared by ``run_pipeline``
+    (which raises) and ``convert_job`` (which returns ``NO_INPUT``). It exists
+    because the two callers cannot spell the test the same way by accident:
+    ``load_data`` inserts an EMPTY frame for every file it could not find, so a
+    completely empty folder yields a FULL dict of empty frames and a bare
+    ``not raw_data`` is permanently False. Convert only ever got away with the bare
+    test while it read the folder's own contents; the moment it reads the config's
+    file set, the truthiness check silently stops firing and the status becomes
+    unreachable.
+
+    Keys off INPUT presence, independent of ``run_transform``'s per-entity
+    skip-on-empty — so a PARTIAL load (some files present) is usable, and a
+    period-only attendance run (period file non-empty, daily absent) does not fire
+    it.
+    """
+    return not raw_data or all(df.empty for df in raw_data.values())
 
 
 def configured_entity_order(mappings: dict, global_config: dict) -> list[str]:
@@ -915,11 +936,11 @@ def run_pipeline(
 
         # Fail loud on NO USABLE INPUT. A scheduled, unattended run that received
         # no usable required input (wrong folder, truncated export, locked file)
-        # must not masquerade as a clean run. The guard keys off INPUT presence
-        # (`raw_data`), independent of `run_transform`'s per-entity skip-on-empty
-        # — so a partial run (some files present) proceeds, and a period-only
-        # attendance run (period file non-empty, daily absent) does NOT fire it.
-        if not raw_data or all(df.empty for df in raw_data.values()):
+        # must not masquerade as a clean run. The predicate is shared with
+        # `convert_job` (`has_no_usable_input`) so the two paths cannot answer
+        # "this folder gave us nothing" differently — see its docstring for why the
+        # bare truthiness test is a trap once a caller reads the CONFIG's file set.
+        if has_no_usable_input(raw_data):
             empty_or_missing = [name for name, df in raw_data.items() if df.empty] or list(required_files)
             raise RuntimeError(
                 "No usable required input was loaded — every required file is "

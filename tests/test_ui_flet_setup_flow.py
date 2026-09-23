@@ -15,7 +15,6 @@ from src.scheduler.task_com import PrincipalKind
 from src.ui_flet.schedule_status import ScheduleState, ScheduleStatus
 from src.ui_flet.setup_flow import (
     CREATOR_STEP_ORDER,
-    GMSA_UNTESTED_CAPTION,
     SCHEDULE_ACCOUNT_FIELD_LABEL,
     STEP_ORDER,
     TOTAL_STEPS,
@@ -2070,10 +2069,14 @@ class TestDowngradeInterruptForAManagedServiceAccount:
         assert interrupt is not None
         assert "Remove nightly sync" in interrupt.detail
 
-    def test_it_hedges(self):
+    def test_it_says_what_applying_will_do_and_to_check_the_result(self):
+        """Replaces the hedge row (retired 2026-09-21). What is left is the reason this variant
+        interrupts at all: applying re-creates the task, for an account this app can neither
+        verify nor re-authorise, so the admin is told to look at the result."""
         interrupt = self._variant()
         assert interrupt is not None
-        assert GMSA_UNTESTED_CAPTION in interrupt.detail
+        assert "re-creates the task as the same account" in interrupt.detail
+        assert "Check the schedule shown on this page afterwards" in interrupt.detail
 
     def test_it_is_checked_BEFORE_the_foreign_account_arm(self):
         """An MSA is always foreign, so the service-account arm would otherwise swallow it and

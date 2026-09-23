@@ -29,7 +29,6 @@ from src.ui_flet.screens.setup import build_setup
 from src.ui_flet.setup_flow import (
     GMSA_IT_DOC_TITLE,
     GMSA_PREREQUISITES,
-    GMSA_UNTESTED_CAPTION,
     SCHEDULE_ACCOUNT_FIELD_LABEL,
     SCHEDULE_GMSA_TOGGLE_LABEL,
     ReconcileOutcome,
@@ -1183,7 +1182,7 @@ class TestTheDisclosureIsSettingsOnly:
         cfg = _settings(tmp_path, monkeypatch)
         tree, _ = _schedule_section(cfg, stub_page)
         assert _gmsa_box(tree) is None
-        assert not _has_text_containing(tree, GMSA_UNTESTED_CAPTION)
+        assert not _has_text_containing(tree, GMSA_IT_DOC_TITLE)
 
     def test_the_settings_mount_has_one(self, tmp_path, stub_page, monkeypatch):
         cfg = _settings(tmp_path, monkeypatch)
@@ -1233,9 +1232,12 @@ class TestWhatTheDisclosureReveals:
         _toggle_gmsa(tree, True)
         return cfg, tree
 
-    def test_it_reveals_the_untested_caption(self, tmp_path, stub_page, monkeypatch):
+    def test_it_leads_with_what_has_to_be_in_place_first(self, tmp_path, stub_page, monkeypatch):
+        # The disclosure's opening line, which the three prerequisite rows hang off. It used to
+        # lead with the "not yet tested" caption (retired 2026-09-21), so this row is what keeps
+        # the surviving lead pinned rather than leaving the reveal proved only by its list.
         _cfg, tree = self._on(tmp_path, stub_page, monkeypatch)
-        assert _has_text_containing(tree, GMSA_UNTESTED_CAPTION)
+        assert _has_text_containing(tree, "your IT team needs to have done all three")
 
     def test_it_reveals_all_three_prerequisites(self, tmp_path, stub_page, monkeypatch):
         _cfg, tree = self._on(tmp_path, stub_page, monkeypatch)
@@ -1252,7 +1254,7 @@ class TestWhatTheDisclosureReveals:
         mounts in."""
         cfg = _settings(tmp_path, monkeypatch)
         tree, _ = _settings_schedule_section(cfg, stub_page)
-        assert not _has_text_containing(tree, GMSA_UNTESTED_CAPTION)
+        assert not _has_text_containing(tree, "your IT team needs to have done all three")
         assert not _has_text_containing(tree, GMSA_IT_DOC_TITLE)
         for item in GMSA_PREREQUISITES:
             assert not _has_text_containing(tree, item)
@@ -1260,7 +1262,8 @@ class TestWhatTheDisclosureReveals:
     def test_untoggling_takes_it_all_away_again(self, tmp_path, stub_page, monkeypatch):
         _cfg, tree = self._on(tmp_path, stub_page, monkeypatch)
         _toggle_gmsa(tree, False)
-        assert not _has_text_containing(tree, GMSA_UNTESTED_CAPTION)
+        assert not _has_text_containing(tree, "your IT team needs to have done all three")
+        assert not _has_text_containing(tree, GMSA_IT_DOC_TITLE)
         for item in GMSA_PREREQUISITES:
             assert not _has_text_containing(tree, item)
 
@@ -1392,7 +1395,7 @@ class TestTheToggleIsSessionStateSeededFromTheRecord:
 
         assert _gmsa_box(tree).value is True
         assert _password_slot(tree).visible is False
-        assert _has_text_containing(tree, GMSA_UNTESTED_CAPTION)
+        assert _has_text_containing(tree, GMSA_IT_DOC_TITLE)
 
     def test_a_password_install_mounts_with_it_OFF(self, tmp_path, stub_page, monkeypatch):
         """The negative twin — and the state all 20 shipped districts mount in."""

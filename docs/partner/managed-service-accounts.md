@@ -1,16 +1,14 @@
 # Managed service accounts (gMSA) — what your IT team needs to do
 
-**Status: available, untested.** DistrictSync can now be asked to schedule its nightly sync as a
-**group managed service account (gMSA)**. Nothing in this feature has ever been run against a live
-Active Directory domain — we have no domain controller to test it on. If it does not work for you,
-that is a result we want: send us the Windows code DistrictSync shows on screen and we will work it
-out with your IT team.
+DistrictSync can schedule its nightly sync as a **group managed service account (gMSA)**. Windows
+gets the account's credential from your directory, so nothing is stored on this computer and there
+is no password for anybody to type, keep or rotate.
 
-**Read "What DistrictSync will do" before you try it.** Scheduling the nightly sync as any account
+**Read "What DistrictSync will do" before you start.** Scheduling the nightly sync as any account
 other than your own — a managed service account included — also moves this computer's DistrictSync
 settings into a shared folder, and **this version cannot move them back**. DistrictSync shows you
 exactly what will move and asks you to confirm first, but that part can succeed even if the gMSA
-registration then fails, so it is not a free experiment.
+registration then fails — so a failed attempt still leaves this computer changed.
 
 This page is written to be handed to whoever administers your Active Directory. It is one page on
 purpose.
@@ -138,8 +136,9 @@ advance:
   it shows the three prerequisites rather than guessing at one. Pressing **Schedule nightly sync**
   again on its own changes nothing — check the three above first.
 - **"Windows would not save the password for the nightly task"** (Windows code `0x80070520`) — the
-  storage policy described at the top of this page. If you see this **with** the gMSA option
-  ticked, that is a result we want to hear about, because it should not happen.
+  storage policy described at the top of this page. Please tell us if you see this **with** the
+  gMSA option ticked: a managed service account stores nothing on this computer, so that policy
+  should not apply to it.
 
 For anything else, DistrictSync's log file carries one line per failure with the Windows code in
 it — the failure card on screen has an **Open log folder** button, and
