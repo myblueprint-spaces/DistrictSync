@@ -11,7 +11,7 @@ derives two PII-free things the Run History view renders:
   precedence) and reuses ``home_status.is_stale`` (the landed staleness), keeping Home and Run
   History from ever drifting. Graceful degradation is a first-class OUTPUT: ``None`` → a calm
   "history unavailable" WARNING (never a raise); ``[]`` → "no runs yet" WARNING (never red).
-- **the per-run display rows** — ``to_run_row(record, *, now=None, active_sis=None)`` → a total,
+- **the per-run display rows** — ``to_run_row(record, *, prior_build, now=None, active_sis=None)`` → a total,
   PII-free ``RunRow`` (plain time, a category-only ``status_label`` + its ``Verdict``, entity
   counts, an SFTP enum, a warnings count, a plain duration, a bounded run-origin ``source`` label,
   an optional different-district note) and ``to_run_rows(records)`` over the newest-first list.
@@ -41,6 +41,7 @@ from datetime import datetime
 from enum import Enum
 
 from src.config.app_config import AppConfig
+from src.ui_flet.failure_copy import data_warnings_clause, partial_copy
 from src.ui_flet.home_status import (
     _MYBLUEPRINT_ENTITIES,
     _ROSTERING_ENTITIES,
@@ -56,10 +57,13 @@ from src.ui_flet.home_status import (
     _schedule_confirmed_live,
     _schedule_confirmed_missing,
     _schedule_is_live,
+    build_record_for,
     classify_latest_reason,
+    failed_detail,
     has_earlier_run_history,
     is_delivery_only,
     is_stale,
+    left_out_outcomes,
     sftp_delivered,
     sync_window_paused,
     verdict_for_reason,
@@ -331,13 +335,16 @@ def derive_history_banner(
         )
 
     latest = records[0]
-    reason = classify_latest_reason(latest)
+    prior_build = build_record_for(records, 0)
+    reason = classify_latest_reason(latest, prior_build=prior_build)
 
+    # Plan 0053 S3: the cause is the record's bounded ``error_category``, through the SAME
+    # ``home_status.failed_detail`` Home uses — so the two surfaces word one failure identically.
     if reason is LatestReason.FAILED_ETL:
         return HistoryBanner(
             verdict=verdict_for_reason(reason),
             headline="Your last sync failed",
-            detail="The most recent run hit a problem and didn't finish — see the run below.",
+            detail=f"The most recent run didn't finish. {failed_detail(latest)}",
         )
 
     if reason is LatestReason.FAILED_DELIVERY:
@@ -366,6 +373,19 @@ def derive_history_banner(
     # the anomaly/data-warning copy would already be false by construction.
     if foreign_records:
         return _foreign_records_banner(schedule_status)  # type: ignore[arg-type]
+
+    # Plan 0053 S3: at HOME'S EXACT POSITION (below the pause and the foreign-principal rule,
+    # above the anomaly), with Home's EXACT copy — ``failure_copy.partial_copy`` is the one source.
+    if reason is LatestReason.PARTIAL:
+        headline, detail = partial_copy(
+            left_out_outcomes(latest, prior_build=prior_build), delivered=sftp_delivered(latest)
+        )
+        clause = data_warnings_clause(_data_errors_total(latest))
+        return HistoryBanner(
+            verdict=verdict_for_reason(reason),
+            headline=headline,
+            detail=f"{detail} {clause}" if clause else detail,
+        )
 
     if reason is LatestReason.ANOMALY:
         anomalies = latest.get("anomalies") or []
@@ -472,8 +492,13 @@ def _row_entity_counts(record: dict) -> dict[str, int]:
     return counts
 
 
-def _status_label(reason: LatestReason, record: dict, *, sftp: SftpDelivery) -> str:
+def _status_label(reason: LatestReason, record: dict, *, sftp: SftpDelivery, left_out: int) -> str:
     """The plain per-run category label from the shared ``LatestReason`` (no emoji, no raw string).
+
+    ``PARTIAL`` (plan 0053 S3) reads "<Delivered|Completed> · N file(s) skipped" — the files
+    the run was set up to build and left out (``left_out``, a count only; the banner names
+    them). A delivery-only record's form is "Delivered saved files · N file(s) skipped": the
+    saved files it shipped are the partial build's.
 
     ``DATA_WARNINGS`` and ``CLEAN`` both open with "Delivered" ONLY when the SFTP axis says the
     run genuinely shipped, else "Completed" (SFTP not attempted — a local-only run must never
@@ -487,6 +512,12 @@ def _status_label(reason: LatestReason, record: dict, *, sftp: SftpDelivery) -> 
         if reason is LatestReason.FAILED_DELIVERY and is_delivery_only(record):
             return "Delivery failed"
         return _REASON_LABELS[reason]
+    if reason is LatestReason.PARTIAL:
+        if is_delivery_only(record):
+            word = "Delivered saved files"
+        else:
+            word = "Delivered" if sftp is SftpDelivery.DELIVERED else "Completed"
+        return f"{word} · {left_out} {pluralize('file', left_out)} skipped"
     if reason is LatestReason.DATA_WARNINGS:
         total = _data_errors_total(record)
         word = "Delivered" if sftp is SftpDelivery.DELIVERED else "Completed"
@@ -536,6 +567,7 @@ def _duration(record: dict) -> str:
 def to_run_row(
     record: dict,
     *,
+    prior_build: dict | None,
     now: datetime | None = None,
     active_sis: str | None = None,
     district_displays: dict[str, str] | None = None,
@@ -549,6 +581,11 @@ def to_run_row(
     (the default) derives no note. ``district_displays`` is an optional pre-resolved
     district-display cache (see ``to_run_rows``) so a single record resolves live when absent.
 
+    ``prior_build`` (plan 0053 S3) is REQUIRED keyword-only for the same reason it is on
+    ``home_status.classify_latest_reason``, which receives it: a delivery-only row's PARTIAL is
+    the build's, and a forgotten walk-back would paint that row green. ``to_run_rows`` passes
+    ``home_status.build_record_for`` of each row's position; ``None`` for a build record.
+
     ``current_account`` (``accounts.process_account()``, injected by the view — this module is
     pure and never reads the environment) enables the bounded ``run_as`` display. It DEFAULTS to
     ``""`` deliberately: a caller that cannot name the account gets "not established" and no
@@ -556,11 +593,12 @@ def to_run_row(
     about a run's verdict, delivery or counts depends on it.
     """
     sftp = _sftp_delivery(record)
-    reason = classify_latest_reason(record)
+    reason = classify_latest_reason(record, prior_build=prior_build)
     counts = _row_entity_counts(record)
+    left_out = len(left_out_outcomes(record, prior_build=prior_build))
     return RunRow(
         when=friendly_timestamp(str(record.get("timestamp", "")), now=now),
-        status_label=_status_label(reason, record, sftp=sftp),
+        status_label=_status_label(reason, record, sftp=sftp, left_out=left_out),
         status_verdict=verdict_for_reason(reason),
         entity_counts=counts,
         entity_total=sum(counts.values()),
@@ -597,10 +635,11 @@ def to_run_rows(
     return [
         to_run_row(
             record,
+            prior_build=build_record_for(records, index),
             now=now,
             active_sis=active_sis,
             district_displays=displays,
             current_account=current_account,
         )
-        for record in records
+        for index, record in enumerate(records)
     ]

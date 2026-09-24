@@ -160,6 +160,17 @@ def _base_record(**overrides: object) -> dict:
 _RECORD_FOR_REASON: dict[LatestReason, dict] = {
     LatestReason.FAILED_ETL: _base_record(status="failed", error="FileNotFoundError: /x/y.csv"),
     LatestReason.FAILED_DELIVERY: _base_record(sftp_attempted=True, sftp_ok=False),
+    # Plan 0053 S3: a completed run that left Family out (the Unity plain-report shape).
+    LatestReason.PARTIAL: _base_record(
+        Family=0,
+        entity_outcomes={
+            "Students": {"kind": "built", "reason": "none", "rows": 100},
+            "Staff": {"kind": "built", "reason": "none", "rows": 12},
+            "Family": {"kind": "failed", "reason": "missing_source_column", "rows": 0},
+            "Classes": {"kind": "built", "reason": "none", "rows": 40},
+            "Enrollments": {"kind": "built", "reason": "none", "rows": 300},
+        },
+    ),
     LatestReason.ANOMALY: _base_record(anomalies=["ANOMALY: Students dropped 42%"]),
     LatestReason.DATA_WARNINGS: _base_record(data_errors={"total": 3, "by_field": {"Grade": 3}}),
     LatestReason.CLEAN: _base_record(),
@@ -175,7 +186,7 @@ class TestTheSweepIsNotVacuous:
 
     @pytest.mark.parametrize("reason", _REASONS, ids=lambda r: r.value)
     def test_each_record_actually_classifies_to_the_reason_it_is_filed_under(self, reason: LatestReason) -> None:
-        assert classify_latest_reason(_RECORD_FOR_REASON[reason]) is reason
+        assert classify_latest_reason(_RECORD_FOR_REASON[reason], prior_build=None) is reason
 
     @pytest.mark.parametrize("reason", _REASONS, ids=lambda r: r.value)
     def test_each_record_is_recent_so_the_staleness_axis_stays_out(self, reason: LatestReason) -> None:
@@ -211,7 +222,7 @@ class TestStrictAgreement:
 
         home = derive_home_status([record], _CONFIGURED, now=_NOW, schedule_status=schedule)
         banner = derive_history_banner([record], _CONFIGURED, now=_NOW, schedule_status=schedule)
-        row = to_run_row(record, now=_NOW)
+        row = to_run_row(record, prior_build=None, now=_NOW)
 
         assert home.verdict is expected, f"Home disagreed with {reason} under a {schedule_id} schedule"
         assert banner.verdict is expected, f"the banner disagreed with {reason} under a {schedule_id} schedule"
@@ -293,11 +304,11 @@ class TestTheStalenessEscape:
 
     def test_a_stale_clean_run_is_amber_on_BOTH_banners_and_healthy_on_the_row(self) -> None:
         stale = _base_record(timestamp=_OLD)
-        assert classify_latest_reason(stale) is LatestReason.CLEAN
+        assert classify_latest_reason(stale, prior_build=None) is LatestReason.CLEAN
 
         home = derive_home_status([stale], _CONFIGURED, now=_NOW, schedule_status=None)
         banner = derive_history_banner([stale], _CONFIGURED, now=_NOW, schedule_status=None)
-        row = to_run_row(stale, now=_NOW)
+        row = to_run_row(stale, prior_build=None, now=_NOW)
 
         assert home.verdict is Verdict.WARNING
         assert banner.verdict is Verdict.WARNING

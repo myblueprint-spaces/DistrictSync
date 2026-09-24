@@ -295,6 +295,22 @@ def _outcome_from_entry(entity: Any, entry: Any) -> EntityOutcome | None:
         return None
 
 
+def failed_entities(outcomes: Iterable[EntityOutcome]) -> tuple[EntityOutcome, ...]:
+    """The outcomes whose entity FAILED — the ONE predicate behind the PARTIAL verdict (P7).
+
+    Plan 0053 S3's reader asks this of a SUCCESSFUL run's record: a non-empty answer means
+    the run completed but left at least one entity out, which Home, Run History and Convert
+    show as a WARNING every run it persists. Returned in the given (configured) order, as
+    whole outcomes so a caller can word each one by its reason.
+
+    FAILED only, deliberately. ``NOT_RUN`` exists only after a raise that failed the whole
+    run (a failed record already outranks PARTIAL), and EMPTY is per-entity skip-on-empty,
+    which is not a fault today — whether a persistently-empty entity warns is plan 0053 S8's
+    question (``failure_copy.OUTCOME_TIER``), not this predicate's.
+    """
+    return tuple(outcome for outcome in outcomes if outcome.kind is OutcomeKind.FAILED)
+
+
 def outcomes_from_record(record: Any) -> tuple[EntityOutcome, ...]:
     """Read a run record's outcomes back — TOTAL: never raises, whatever the record holds (P12).
 

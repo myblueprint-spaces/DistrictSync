@@ -605,7 +605,7 @@ def test_output_entities_and_labels_are_one_ordering(bundle_dir: Path) -> None:
     Two independently-built tuples would let a picker's label order and Home's "which entity
     leads" rule drift apart while both looked right in isolation.
     """
-    from src.ui_flet.home_status import ENTITY_LABELS
+    from src.ui_flet.humanize import ENTITY_LABELS
 
     for sis_type in ("sd48myedbc", "mbp_all", "mbp_core", "mbponly", "sd51attendance", "sd51myedbc"):
         summary = summarize_config(sis_type, config_dir=bundle_dir)

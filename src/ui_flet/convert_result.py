@@ -23,6 +23,14 @@ Reuses IA-3's verdict spine (``Verdict`` + ``home_status``'s voice, esp. the
 exit-3 "built but didn't reach SpacesEDU" headline) so setup / health / convert
 feedback read consistently. The one Convert-specific addition is the transient
 ``NEEDS_ANOMALY_ACK`` state (Home never needs an acknowledgment).
+
+**One copy source for failures (plan 0053 S3).** Every FAILED status that is a run-failure
+CATEGORY (no input, no output, an empty student list, an unusable output folder) reads its
+words from ``failure_copy.FAILED_CATEGORY_COPY`` — the table Home and Run History read — and a
+raised failure's ``on_error`` card is ``failure_copy.error_card_copy(exc)``, which replaced the
+retired ``convert_error_copy`` (it sent the admin to the input folder whatever went wrong). A
+success-shaped result whose outcomes show a FAILED entity is the PARTIAL WARNING, worded by
+``failure_copy.partial_copy`` exactly as Home words it.
 """
 
 from __future__ import annotations
@@ -31,7 +39,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from src.etl.errors import RunErrorCategory
-from src.etl.outcomes import EntityOutcome
+from src.etl.outcomes import EntityOutcome, failed_entities
+from src.ui_flet.failure_copy import data_warnings_clause, failed_copy, partial_copy
 from src.ui_flet.humanize import AnomalyVariant, friendly_anomaly_detail, pluralize
 from src.ui_flet.verdict import Verdict
 
@@ -73,8 +82,17 @@ class ConvertResult:
             which says explicitly that NO outcome ledger existed for this result: the
             output-folder pre-flight refused before one was built, or the result is a
             delivery from disk (a delivery is not a build). REQUIRED keyword-only with
-            no default, so no construction site can omit it by accident. Carried, not
-            yet read: ``summarize`` renders nothing from it until plan 0053 S3.
+            no default, so no construction site can omit it by accident. Read by
+            ``summarize`` since plan 0053 S3: a FAILED entity on a success-shaped status is
+            the PARTIAL WARNING.
+        delivery_requested: whether the admin asked for this run to be delivered to
+            SpacesEDU (convert_job's ``sftp_requested``; always ``True`` for a delivery from
+            disk). It picks a FAILED status's closing line (plan 0053 S3): every FAILED
+            status stops BEFORE the upload, so "requested" means "nothing was sent" — the
+            same tail the ``on_error`` card gives a raised failure of the same run.
+            REQUIRED keyword-only with no default: the tail is a claim about what did NOT
+            happen. ``sftp_attempted`` without it is refused — an attempt nobody asked for
+            is a state no path produces.
     """
 
     status: ConvertStatus
@@ -87,6 +105,11 @@ class ConvertResult:
     # `kw_only`: every field above has a default, and a required positional field after
     # defaulted ones is a `TypeError` at class definition.
     entity_outcomes: tuple[EntityOutcome, ...] | None = field(kw_only=True)
+    delivery_requested: bool = field(kw_only=True)
+
+    def __post_init__(self) -> None:
+        if self.sftp_attempted and not self.delivery_requested:
+            raise ValueError("a delivery was attempted that nobody requested")
 
 
 def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
@@ -96,9 +119,22 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
     programming-error guard surfaced loudly by the totality test, never reached at
     runtime. NEVER interpolates a raw path / ``sis_type`` / column name / raw
     anomaly string into the copy — faults are named by CATEGORY; only safe count
-    scalars appear.
+    scalars (and ``failure_copy``'s authored entity phrases) appear.
+
+    **PARTIAL (plan 0053 S3).** A success-shaped status (``DELIVERED``,
+    ``DELIVERED_WITH_DATA_ERRORS``, ``BUILT_WITH_DATA_ERRORS``) whose ``entity_outcomes``
+    show a FAILED entity is a WARNING worded by ``failure_copy.partial_copy`` — the same
+    headline and detail Home shows for that run — with the data-warning count as a second
+    sentence. Every FAILED status, ``BUILT_NOT_DELIVERED`` and the anomaly gate keep their
+    precedence: a partial build that also failed to upload is still a delivery failure.
     """
     status = result.status
+
+    left_out = failed_entities(result.entity_outcomes or ())
+    if left_out and status in _SUCCESS_SHAPED:
+        headline, detail = partial_copy(left_out, delivered=result.sftp_attempted and result.sftp_ok)
+        clause = data_warnings_clause(result.data_errors_total)
+        return Verdict.WARNING, headline, f"{detail} {clause}" if clause else detail
 
     if status is ConvertStatus.DELIVERED:
         if result.sftp_attempted:
@@ -157,60 +193,36 @@ def summarize(result: ConvertResult) -> tuple[Verdict, str, str]:
             friendly_anomaly_detail(count, variant=AnomalyVariant.CONVERT),
         )
 
-    if status is ConvertStatus.NO_INPUT:
-        return (
-            Verdict.FAILED,
-            "No files could be read",
-            "We couldn't read any MyEd BC extract files from the folder you chose. Check the folder and try again.",
-        )
-
-    if status is ConvertStatus.NO_OUTPUT:
-        return (
-            Verdict.FAILED,
-            "No output was produced",
-            "The conversion ran but produced no roster files. Check that the right district is selected.",
-        )
-
-    if status is ConvertStatus.INCOMPLETE_ROSTER:
-        # The way-OUT delivery gate refused (see ``etl.pipeline.check_delivery_integrity``).
-        # Category-only, like every other branch: the copy names WHAT was wrong (no students)
-        # and WHY it stopped — never a path, a column, a district id or a student value.
-        return (
-            Verdict.FAILED,
-            "Your student list came through empty",
-            "The other roster files were built, but with no students they would point at people "
-            "SpacesEDU has never seen — so nothing was saved and nothing was sent. Your last saved "
-            "files are untouched. Check this district's student export, then convert again.",
-        )
-
-    if status is ConvertStatus.OUTPUT_FOLDER_UNUSABLE:
-        # Plan 0050. ONE string serves TWO paths — the pre-flight refusal (nothing ran)
-        # and the write-time ``OSError`` (the conversion ran, only the save failed) — so
-        # it says "nothing NEW was saved", which is true on both, never "nothing was
-        # converted", which would be false on the second and contradict its own headline.
-        #
-        # It deliberately does NOT promise "your existing files were not changed". That
-        # would be an absolute over a BEST-EFFORT rollback: ``_commit_staged`` restores
-        # per file inside ``try/except OSError`` and a restore that itself fails is
-        # logged at ERROR, not raised — and on the very fault this copy is for (a drive
-        # dropping mid-commit) the restore fails on the same dead path. "Nothing new was
-        # saved" is true whatever the rollback managed.
-        #
-        # The network/shared-folder clause is COACHING, not detection — nothing here
-        # inspects a path or branches on one, and it is deliberately wider than "network
-        # drive" so it does not bias diagnosis toward the single most-reported cause.
-        # Zero-arg like every other branch: the folder is named by the screen's CAPTION
-        # (``convert_output.resolved_output_caption``), never by this banner.
-        return (
-            Verdict.FAILED,
-            "We couldn't save to your output folder",
-            "DistrictSync couldn't write to your output folder, so nothing new was saved. Check the "
-            "output folder in Settings — if it's on a network drive or a shared folder, make sure you "
-            "can still open it. Then try again; if it keeps failing, the Help page has our support "
-            "contact.",
-        )
+    if status in _FAILED_STATUS_CATEGORIES:
+        # A run-failure CATEGORY: the words are ``failure_copy``'s (plan 0053 S3), so this card and
+        # Home / Run History say the same thing about the same fault. INCOMPLETE_ROSTER is the
+        # way-OUT delivery gate's refusal (``etl.pipeline.check_delivery_integrity``);
+        # OUTPUT_FOLDER_UNUSABLE is plan 0050's (its reasoning sits beside the OUTPUT copy). Every
+        # branch names WHAT was wrong — never a path, a column, a district id or a student value.
+        headline, detail = failed_copy(_FAILED_STATUS_CATEGORIES[status], delivery_requested=result.delivery_requested)
+        return Verdict.FAILED, headline, detail
 
     raise ValueError(f"Unmapped ConvertStatus: {status!r}")  # pragma: no cover - totality guard
+
+
+# The success-shaped statuses a FAILED entity turns into the PARTIAL warning (plan 0053 S3).
+# DELIVERED_FROM_DISK is not one: a delivery is not a build and carries no outcomes.
+_SUCCESS_SHAPED: frozenset[ConvertStatus] = frozenset(
+    {
+        ConvertStatus.DELIVERED,
+        ConvertStatus.DELIVERED_WITH_DATA_ERRORS,
+        ConvertStatus.BUILT_WITH_DATA_ERRORS,
+    }
+)
+
+# The FAILED statuses that ARE a run-failure category → that category, whose copy
+# (``failure_copy.FAILED_CATEGORY_COPY``) is the ONE wording on every surface.
+_FAILED_STATUS_CATEGORIES: dict[ConvertStatus, RunErrorCategory] = {
+    ConvertStatus.NO_INPUT: RunErrorCategory.NO_INPUT,
+    ConvertStatus.NO_OUTPUT: RunErrorCategory.NO_OUTPUT,
+    ConvertStatus.INCOMPLETE_ROSTER: RunErrorCategory.INCOMPLETE_ROSTER,
+    ConvertStatus.OUTPUT_FOLDER_UNUSABLE: RunErrorCategory.OUTPUT,
+}
 
 
 # The way-OUT delivery gate's bounded faults → the Convert status that words each one.
@@ -238,31 +250,13 @@ def status_for_integrity_fault(category: str) -> ConvertStatus:
         raise ValueError(f"No Convert status is mapped for delivery-integrity category {category!r}") from None
 
 
-def convert_error_copy() -> tuple[str, str]:
-    """The (headline, detail) for Convert's generic ``on_error`` card — fixed, no dead end.
-
-    0035 W3b (T1 #2): a mid-build failure routed to ``on_error`` surfaces a BOUNDED
-    category message only — the raw exception (which may carry a path / column name)
-    stays in the log, NEVER in the banner. Zero-arg by design: nothing can be
-    interpolated, so nothing can leak. The copy ends with a concrete next step
-    (check the input folder → try again → the Help page's support path) so a failure
-    is never a dead end.
-    """
-    return (
-        "The conversion couldn't finish",
-        "Something went wrong while building your roster. Your existing files were not changed. "
-        "Check that your input folder holds this district's MyEd BC extract files, then try "
-        "again — if it keeps failing, the Help page has our support contact.",
-    )
-
-
 def deliver_error_copy() -> tuple[str, str]:
     """The (headline, detail) for the deliver pre-flight ``on_error`` card — fixed, no dead end.
 
     Reached only when ``deliver_job`` fails BEFORE the upload begins (an unset output
-    folder — a gate/programming error surfaced loudly). Same contract as
-    :func:`convert_error_copy`: bounded fixed copy, zero-arg (nothing to leak), and a
-    concrete next step (the output folder lives in Settings; Help carries the support path).
+    folder — a gate/programming error surfaced loudly). Bounded fixed copy, zero-arg (nothing
+    to leak), and a concrete next step (the output folder lives in Settings; Help carries the
+    support path). The BUILD path's card is ``failure_copy.error_card_copy`` (plan 0053 S3).
     """
     return (
         "The delivery couldn't start",

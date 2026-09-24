@@ -6,7 +6,11 @@ drift from the code (or the code from the doc) without a red test that names the
 * §3 (the ``criticality`` table) == :data:`src.etl.outcomes.ENTITY_CRITICALITY`, row for
   row, including the ``depends_on`` column == :data:`src.etl.outcomes.DEPENDS_ON`;
 * §6 (the ``vocabularies`` table) == the members of every closed enum it lists
-  (``RunErrorCategory``, ``OutcomeKind``, ``OutcomeReason``) — name AND persisted value.
+  (``RunErrorCategory``, ``OutcomeKind``, ``OutcomeReason``) — name AND persisted value;
+* §6's rule "every closed-enum member maps to copy, a verdict and a row here" (plan 0053
+  S3): every documented ``RunErrorCategory`` except ``NONE`` has a
+  ``failure_copy.FAILED_CATEGORY_COPY`` entry, every documented ``OutcomeKind`` an
+  ``OUTCOME_TIER`` verdict, and every documented ``OutcomeReason`` an ``outcome_sentence``.
 
 Each pin has a non-vacuity assertion (the parser really found the rows) and a
 doctored-doc negative twin (an edited copy of the real doc turns it red). Tables are found
@@ -21,7 +25,8 @@ from pathlib import Path
 import pytest
 
 from src.etl.errors import RunErrorCategory
-from src.etl.outcomes import DEPENDS_ON, ENTITY_CRITICALITY, OutcomeKind, OutcomeReason
+from src.etl.outcomes import DEPENDS_ON, ENTITY_CRITICALITY, VALID_REASONS, OutcomeKind, OutcomeReason
+from src.ui_flet.failure_copy import FAILED_CATEGORY_COPY, OUTCOME_TIER
 
 _DOC = Path(__file__).resolve().parents[1] / "docs" / "developer" / "failure-policy.md"
 
@@ -210,4 +215,60 @@ class TestSection6Vocabularies:
         row = next(line for line in text.splitlines() if line.startswith("| RunErrorCategory | INPUT_UNREADABLE |"))
         assert _vocabulary_mismatches(text.replace(row + "\n", "", 1)) == [
             "failure-policy.md §6: no row for RunErrorCategory.INPUT_UNREADABLE = 'input_unreadable'"
+        ]
+
+
+# --------------------------------------------------------------------------- #
+# §6 ↔ copy — every documented member is worded (plan 0053 S3)                 #
+# --------------------------------------------------------------------------- #
+def _copy_gaps(text: str, *, category_copy, tier, reasons_with_copy) -> list[str]:
+    """Documented §6 members the copy layer cannot word (empty = every member is covered)."""
+    problems: list[str] = []
+    for row in _table(text, "vocabularies"):
+        enum, member = _unticked(row.get("enum", "")), _unticked(row.get("member", ""))
+        if enum == "RunErrorCategory" and member != "NONE" and RunErrorCategory[member] not in category_copy:
+            problems.append(f"failure-policy.md §6: RunErrorCategory.{member} has no FAILED_CATEGORY_COPY entry")
+        if enum == "OutcomeKind" and OutcomeKind[member] not in tier:
+            problems.append(f"failure-policy.md §6: OutcomeKind.{member} has no OUTCOME_TIER verdict")
+        if enum == "OutcomeReason" and OutcomeReason[member] not in reasons_with_copy:
+            problems.append(f"failure-policy.md §6: OutcomeReason.{member} has no outcome_sentence")
+    return problems
+
+
+def _reasons_with_copy() -> set[OutcomeReason]:
+    from src.ui_flet import failure_copy
+
+    return {reason for (_kind, reason) in failure_copy._OUTCOME_TEMPLATES}
+
+
+class TestSection6CopyParity:
+    def test_every_documented_member_is_worded(self):
+        assert (
+            _copy_gaps(
+                _doc_text(),
+                category_copy=FAILED_CATEGORY_COPY,
+                tier=OUTCOME_TIER,
+                reasons_with_copy=_reasons_with_copy(),
+            )
+            == []
+        )
+
+    def test_non_vacuity_the_rows_checked_are_the_real_ones(self):
+        rows = _table(_doc_text(), "vocabularies")
+        documented = {_unticked(r["member"]) for r in rows if _unticked(r["enum"]) == "RunErrorCategory"}
+        assert documented == {m.name for m in RunErrorCategory}
+        assert _reasons_with_copy() == {r for reasons in VALID_REASONS.values() for r in reasons}
+
+    def test_doctored_a_category_without_copy_is_red(self):
+        missing = {k: v for k, v in FAILED_CATEGORY_COPY.items() if k is not RunErrorCategory.SOURCE_SCHEMA}
+        assert _copy_gaps(
+            _doc_text(), category_copy=missing, tier=OUTCOME_TIER, reasons_with_copy=_reasons_with_copy()
+        ) == ["failure-policy.md §6: RunErrorCategory.SOURCE_SCHEMA has no FAILED_CATEGORY_COPY entry"]
+
+    def test_doctored_a_kind_without_a_tier_and_a_reason_without_copy_are_red(self):
+        tier = {k: v for k, v in OUTCOME_TIER.items() if k is not OutcomeKind.NOT_RUN}
+        reasons = _reasons_with_copy() - {OutcomeReason.RUN_ABORTED}
+        assert _copy_gaps(_doc_text(), category_copy=FAILED_CATEGORY_COPY, tier=tier, reasons_with_copy=reasons) == [
+            "failure-policy.md §6: OutcomeKind.NOT_RUN has no OUTCOME_TIER verdict",
+            "failure-policy.md §6: OutcomeReason.RUN_ABORTED has no outcome_sentence",
         ]

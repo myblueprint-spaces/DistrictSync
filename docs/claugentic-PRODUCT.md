@@ -169,6 +169,19 @@ States:
 - **Degraded** — the store couldn't be read: "Sync status unavailable" WARNING, reassuring the nightly
   sync may still be running.
 - **Stale** — a clean success that's simply too old (>~1.5 nightly cycles): "No recent sync" WARNING.
+- **Failed** — "Last sync failed", and the detail says WHAT KIND of problem it was, from the run's
+  bounded failure category (an export file missing a column, an unreadable file, the output folder,
+  the district mapping…) — only a missing or unreadable input names the input folder. The same words
+  appear in Run History and on Convert's error card (plan 0053 S3). It closes with "nothing new was
+  saved" unless the record shows an upload that failed, when it says nothing was sent — a record
+  cannot tell whether delivery was requested, so it never claims more than it shows.
+- **Part of the sync was skipped** *(the reader ships in plan 0053 S3; a run can only produce this
+  state from S4, when a problem with one isolatable file stops leaving the whole roster undelivered)*
+  — a completed run that left one of its files out: "Your roster synced without family contacts"
+  WARNING, routed to Run History, with what to re-export. It is derived from that run's own record,
+  so it repeats every night the file stays broken, and a later "deliver the saved files" does not
+  turn it green. It outranks the smaller-than-usual anomaly and keeps any data-warning count as a
+  second sentence.
 - **Error** — the never-crash floor renders an `ErrorCard`, never a trace.
 
 ### Convert — ad-hoc, on-demand conversion
@@ -192,8 +205,12 @@ States:
 - **Output findable (post-run)** — a committed run shows the output folder + an "Open folder" button.
   The path is app-owned config (never student PII), so it lives at the view layer and never enters the
   PII-free result model.
-- **Error** — a fixed category card ("The conversion couldn't finish") — the raw exception is
-  discarded, the existing files are explicitly unchanged.
+- **Part of the sync was skipped** *(produced from plan 0053 S4)* — a completed conversion that left
+  one of its files out reads as a WARNING with Home's exact wording, never as a clean conversion.
+- **Error** — a category card worded from the failure's TYPE (plan 0053 S3), never its message: the
+  same words Home and Run History use for that category, with only a missing or unreadable input
+  pointing at the input folder, and a closing line that says nothing new was saved (or nothing was
+  sent, when delivery was requested — for a refusal status and a crash alike). The raw exception goes to the log, never the card.
 
 ### Run History — the read-only log of nightly runs
 
@@ -205,6 +222,8 @@ warnings count, and a plain duration. A raw error cannot be rendered because the
 
 States:
 - **Empty** — no runs yet: a calm WARNING.
+- **Part of the sync was skipped** *(produced from plan 0053 S4)* — the banner carries Home's exact
+  wording and the row reads "Delivered · 1 file skipped" (or "Completed · …" when nothing was sent).
 - **Degraded** — history unavailable (log unreadable): a calm WARNING, not red.
 - **Error** — the never-crash `ErrorCard` floor.
 

@@ -11,15 +11,25 @@ Per-release download links and auto-generated commit notes live on the
 
 ### Changed
 
+- **Failure messages now say what kind of problem it was instead of always pointing
+  at the input folder.** When a sync or a conversion fails, Home, Run History and the
+  Convert screen's error card now name the cause — an export file missing a column
+  the district's mapping needs, an export file that could not be read, the output
+  folder, the district mapping, or no usable input at all — with a next step to
+  match, in the same words on all three. Only a missing or unreadable input tells you
+  to check the input folder. On the Convert screen the message ends by saying nothing
+  was sent to SpacesEDU when you asked for delivery, and that nothing new was saved to
+  your output folder when you did not. Home and Run History say nothing was sent only
+  when the run's record shows an upload that failed; otherwise they say nothing new was
+  saved to your output folder. Run History's row for a failed run still reads "Failed".
 - **A failed run now records its cause more precisely.** When an export
   file is missing a column the mapping needs to decide who may be delivered or to
   link records (for example the guardian column a family filter reads), the run
   record now says `source_schema` instead of the generic `data`; when an export
   file exists but cannot be read, it says `input_unreadable` instead of `unknown`.
-  You see this in the `--diagnose` support report's "problem" line. The Home and
-  Run History screens still show such a run simply as failed — they do not show the
-  category yet. Nothing about what is delivered changes: these runs fail exactly as
-  before.
+  You see this in the `--diagnose` support report's "problem" line, and it is the
+  category the new failure messages above are worded from. Nothing about what is
+  delivered changes: these runs fail exactly as before.
 
 ### Privacy
 
@@ -37,9 +47,11 @@ Per-release download links and auto-generated commit notes live on the
   Staff, Family contacts and so on — whether it was built (and how many rows), left
   empty (and why: no source file, an empty export, or no usable rows), failed (a
   missing column, or another error), or was not reached because the run stopped
-  first. Nothing on screen reads it yet, and nothing about what is built or delivered
-  changes: a run that failed before still fails the same way. An older DistrictSync
-  sharing the same history simply ignores the new entry.
+  first. Home, Run History and Convert are ready to read it, but no run can finish
+  with a file left out yet, so nothing you see changes because of it, and nothing
+  about what is built or delivered changes: a run that failed before still fails the
+  same way. An older DistrictSync sharing the same history simply ignores the new
+  entry.
 
 ## [3.25.0] - 2026-09-23
 

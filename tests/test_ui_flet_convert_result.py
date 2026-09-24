@@ -9,16 +9,26 @@ are named by CATEGORY only — mirrors ``home_status``'s privacy test).
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
-from src.etl.errors import RunErrorCategory
+from src.etl.errors import EtlError, RunErrorCategory
+from src.etl.outcomes import EntityOutcome, OutcomeReason
 from src.ui_flet.convert_result import (
     ConvertResult,
     ConvertStatus,
-    convert_error_copy,
     deliver_error_copy,
     status_for_integrity_fault,
     summarize,
+)
+from src.ui_flet.failure_copy import (
+    FAILED_CATEGORY_COPY,
+    NOTHING_SAVED_TAIL,
+    NOTHING_SENT_TAIL,
+    error_card_copy,
+    failed_copy,
+    partial_copy,
 )
 from src.ui_flet.verdict import Verdict
 
@@ -26,6 +36,7 @@ from src.ui_flet.verdict import Verdict
 class TestSummarizeDelivered:
     def test_delivered_with_sftp_is_healthy_and_mentions_spacesedu(self) -> None:
         result = ConvertResult(
+            delivery_requested=True,
             entity_outcomes=None,
             status=ConvertStatus.DELIVERED,
             entity_counts={"Students": 100},
@@ -39,7 +50,9 @@ class TestSummarizeDelivered:
         assert detail
 
     def test_delivered_without_sftp_is_healthy_converted(self) -> None:
-        result = ConvertResult(entity_outcomes=None, status=ConvertStatus.DELIVERED, sftp_attempted=False)
+        result = ConvertResult(
+            delivery_requested=False, entity_outcomes=None, status=ConvertStatus.DELIVERED, sftp_attempted=False
+        )
         verdict, headline, detail = summarize(result)
         assert verdict is Verdict.HEALTHY
         assert "converted" in headline.lower()
@@ -51,6 +64,7 @@ class TestSummarizeDeliveredFromDisk:
     def test_delivered_from_disk_is_healthy_and_never_claims_a_build(self) -> None:
         """Deliver-from-disk (0034 Slice 2): the files shipped, but NOTHING was converted."""
         result = ConvertResult(
+            delivery_requested=True,
             entity_outcomes=None,
             status=ConvertStatus.DELIVERED_FROM_DISK,
             sftp_attempted=True,
@@ -70,6 +84,7 @@ class TestSummarizeBuiltNotDelivered:
     def test_exit3_booleans_map_to_failed_built_but_not_delivered(self) -> None:
         """sftp_attempted=True + sftp_ok=False → FAILED 'built but didn't reach SpacesEDU'."""
         result = ConvertResult(
+            delivery_requested=True,
             entity_outcomes=None,
             status=ConvertStatus.BUILT_NOT_DELIVERED,
             entity_counts={"Students": 100},
@@ -85,6 +100,7 @@ class TestSummarizeBuiltNotDelivered:
 class TestSummarizeDataErrors:
     def test_data_errors_are_a_warning_with_the_count(self) -> None:
         result = ConvertResult(
+            delivery_requested=False,
             entity_outcomes=None,
             status=ConvertStatus.BUILT_WITH_DATA_ERRORS,
             data_errors_total=3,
@@ -95,7 +111,12 @@ class TestSummarizeDataErrors:
         assert detail
 
     def test_single_data_error_uses_singular(self) -> None:
-        result = ConvertResult(entity_outcomes=None, status=ConvertStatus.BUILT_WITH_DATA_ERRORS, data_errors_total=1)
+        result = ConvertResult(
+            delivery_requested=False,
+            entity_outcomes=None,
+            status=ConvertStatus.BUILT_WITH_DATA_ERRORS,
+            data_errors_total=1,
+        )
         _verdict, headline, _detail = summarize(result)
         assert "1 data warning" in headline
         assert "warnings" not in headline
@@ -104,6 +125,7 @@ class TestSummarizeDataErrors:
         # Fail-loud: a successful delivery must NOT silently erase the data-error warning
         # (mirrors home_status's delivered-with-warnings verdict); it stays a WARNING.
         result = ConvertResult(
+            delivery_requested=True,
             entity_outcomes=None,
             status=ConvertStatus.DELIVERED_WITH_DATA_ERRORS,
             data_errors_total=2,
@@ -120,6 +142,7 @@ class TestSummarizeDataErrors:
 class TestSummarizeAnomalyAck:
     def test_anomaly_ack_is_a_warning_naming_smaller_files(self) -> None:
         result = ConvertResult(
+            delivery_requested=False,
             entity_outcomes=None,
             status=ConvertStatus.NEEDS_ANOMALY_ACK,
             anomalies=("Students dropped from 100 to 40 rows (60% decrease)",),
@@ -131,6 +154,7 @@ class TestSummarizeAnomalyAck:
 
     def test_multiple_anomalies_pluralize(self) -> None:
         result = ConvertResult(
+            delivery_requested=False,
             entity_outcomes=None,
             status=ConvertStatus.NEEDS_ANOMALY_ACK,
             anomalies=(
@@ -144,19 +168,25 @@ class TestSummarizeAnomalyAck:
 
 class TestSummarizeNoInputNoOutput:
     def test_no_input_is_failed_plain(self) -> None:
-        verdict, headline, detail = summarize(ConvertResult(entity_outcomes=None, status=ConvertStatus.NO_INPUT))
+        verdict, headline, detail = summarize(
+            ConvertResult(delivery_requested=False, entity_outcomes=None, status=ConvertStatus.NO_INPUT)
+        )
         assert verdict is Verdict.FAILED
         assert "No files could be read" in headline
         assert detail
 
     def test_no_input_uses_plain_language_not_gde(self) -> None:
         # Vocabulary map (0035 W3b): GDE → "MyEd BC extract files" — no jargon in copy.
-        _verdict, headline, detail = summarize(ConvertResult(entity_outcomes=None, status=ConvertStatus.NO_INPUT))
+        _verdict, headline, detail = summarize(
+            ConvertResult(delivery_requested=False, entity_outcomes=None, status=ConvertStatus.NO_INPUT)
+        )
         assert "GDE" not in headline and "GDE" not in detail
         assert "MyEd BC extract files" in detail
 
     def test_no_output_is_failed_plain(self) -> None:
-        verdict, headline, detail = summarize(ConvertResult(entity_outcomes=None, status=ConvertStatus.NO_OUTPUT))
+        verdict, headline, detail = summarize(
+            ConvertResult(delivery_requested=False, entity_outcomes=None, status=ConvertStatus.NO_OUTPUT)
+        )
         assert verdict is Verdict.FAILED
         assert "No output" in headline
         assert detail
@@ -167,6 +197,7 @@ class TestSummarizeIncompleteRoster:
 
     def test_incomplete_roster_is_failed_and_names_the_missing_students(self) -> None:
         result = ConvertResult(
+            delivery_requested=False,
             entity_outcomes=None,
             status=ConvertStatus.INCOMPLETE_ROSTER,
             entity_counts={"Classes": 40, "Enrollments": 300, "Family": 80},
@@ -174,20 +205,26 @@ class TestSummarizeIncompleteRoster:
         verdict, headline, detail = summarize(result)
         assert verdict is Verdict.FAILED
         assert headline == "Your student list came through empty"
-        assert "nothing was saved and nothing was sent" in detail
-        assert "Your last saved files are untouched." in detail  # the recoverability promise
+        # Plan 0053 S3: the save/send fact is the category copy's shared tail (no delivery was
+        # attempted on this result, so it is the output-folder tail) — no longer an absolute
+        # "untouched" promise over a best-effort rollback.
+        assert detail.endswith("Nothing new was saved to your output folder.")
         assert "student export" in detail  # the concrete next step
 
     def test_it_is_distinct_from_no_output(self) -> None:
         # Files WERE built here — telling the admin "no output was produced" would send
         # them looking for the wrong fault.
-        _v, incomplete, _d = summarize(ConvertResult(entity_outcomes=None, status=ConvertStatus.INCOMPLETE_ROSTER))
-        _v2, no_output, _d2 = summarize(ConvertResult(entity_outcomes=None, status=ConvertStatus.NO_OUTPUT))
+        _v, incomplete, _d = summarize(
+            ConvertResult(delivery_requested=False, entity_outcomes=None, status=ConvertStatus.INCOMPLETE_ROSTER)
+        )
+        _v2, no_output, _d2 = summarize(
+            ConvertResult(delivery_requested=False, entity_outcomes=None, status=ConvertStatus.NO_OUTPUT)
+        )
         assert incomplete != no_output
 
     def test_the_copy_is_plain_language_and_carries_no_identifiers(self) -> None:
         _verdict, headline, detail = summarize(
-            ConvertResult(entity_outcomes=None, status=ConvertStatus.INCOMPLETE_ROSTER)
+            ConvertResult(delivery_requested=False, entity_outcomes=None, status=ConvertStatus.INCOMPLETE_ROSTER)
         )
         for jargon in ("Students.csv", "roster anchor", "entity", "SFTP", "GDE", "exception", "archive_"):
             assert jargon not in headline and jargon not in detail
@@ -236,12 +273,14 @@ class TestOutputFolderUnusableCopy:
 
     def _copy(self) -> tuple[str, str]:
         _verdict, headline, detail = summarize(
-            ConvertResult(entity_outcomes=None, status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE)
+            ConvertResult(delivery_requested=False, entity_outcomes=None, status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE)
         )
         return headline, detail
 
     def test_it_is_a_failed_verdict(self) -> None:
-        verdict, _h, _d = summarize(ConvertResult(entity_outcomes=None, status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE))
+        verdict, _h, _d = summarize(
+            ConvertResult(delivery_requested=False, entity_outcomes=None, status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE)
+        )
         assert verdict is Verdict.FAILED
 
     def test_it_names_the_output_folder_and_never_the_input_one(self) -> None:
@@ -252,11 +291,17 @@ class TestOutputFolderUnusableCopy:
         assert "extract files" not in detail.lower()
 
     def test_it_is_not_the_generic_on_error_copy(self) -> None:
-        # Acceptance criterion 2: none of the four causes may render convert_error_copy.
+        # Acceptance criterion 2: none of the four causes may render the generic card (the
+        # retired ``convert_error_copy`` became ``error_card_copy`` of an unclassified raise).
         headline, detail = self._copy()
-        generic_headline, generic_detail = convert_error_copy()
+        generic_headline, generic_detail = error_card_copy(RuntimeError("x"), delivery_requested=False)
         assert headline != generic_headline
         assert detail != generic_detail
+
+    def test_it_is_the_output_categorys_shared_copy(self) -> None:
+        # Plan 0053 S3: ONE copy source — this status words exactly what Home and Run History
+        # say about a run whose record carries the ``output`` category.
+        assert self._copy() == failed_copy(RunErrorCategory.OUTPUT, delivery_requested=False)
 
     def test_it_says_nothing_NEW_was_saved_not_nothing_was_converted(self) -> None:
         # ONE string serves TWO paths. On the write-time path the conversion DID run and
@@ -286,6 +331,7 @@ class TestOutputFolderUnusableCopy:
         # A result carrying a path/district/column in every field must produce the SAME
         # two strings as an empty one - the structural reason nothing can leak.
         loaded = ConvertResult(
+            delivery_requested=False,
             entity_outcomes=None,
             status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE,
             entity_counts={"Students": 4},
@@ -300,7 +346,9 @@ class TestSummarizeTotality:
     def test_every_status_has_a_mapping(self) -> None:
         """summarize is TOTAL over ConvertStatus — every member returns a valid triple."""
         for status in ConvertStatus:
-            result = ConvertResult(entity_outcomes=None, status=status, data_errors_total=1, anomalies=("x",))
+            result = ConvertResult(
+                delivery_requested=False, entity_outcomes=None, status=status, data_errors_total=1, anomalies=("x",)
+            )
             verdict, headline, detail = summarize(result)
             assert isinstance(verdict, Verdict)
             assert isinstance(headline, str) and headline
@@ -321,6 +369,7 @@ class TestSummarizePrivacy:
 
     def test_anomaly_strings_carrying_identifiers_never_leak(self) -> None:
         result = ConvertResult(
+            delivery_requested=False,
             entity_outcomes=None,
             status=ConvertStatus.NEEDS_ANOMALY_ACK,
             anomalies=(f"{self._FAKE_COLUMN} in {self._FAKE_PATH} for {self._FAKE_SIS} dropped from 100 to 1 rows",),
@@ -331,6 +380,7 @@ class TestSummarizePrivacy:
     def test_no_status_interpolates_the_raw_fields(self) -> None:
         for status in ConvertStatus:
             result = ConvertResult(
+                delivery_requested=False,
                 entity_outcomes=None,
                 status=status,
                 entity_counts={self._FAKE_COLUMN: 5},
@@ -343,20 +393,20 @@ class TestSummarizePrivacy:
 
 
 class TestOnErrorCardCopy:
-    """0035 W3b (T1 #2): the generic ``on_error`` cards are fixed, bounded, and never a dead end.
+    """0035 W3b (T1 #2): the ``on_error`` cards are fixed, bounded, and never a dead end.
 
-    Both providers are ZERO-ARG by contract — no exception, path, or column name can be
-    interpolated, so nothing can leak — and each detail ends with a concrete next step
-    (what to check → try again → the Help page's support path).
+    The BUILD card is ``failure_copy.error_card_copy(exc)`` since plan 0053 S3 (its own
+    tests live in ``tests/test_ui_flet_failure_copy.py``); the deliver pre-flight card stays
+    the zero-arg ``deliver_error_copy`` — nothing can be interpolated, so nothing can leak.
     """
 
-    def test_convert_error_copy_ends_with_a_concrete_next_step(self) -> None:
-        headline, detail = convert_error_copy()
-        assert headline == "The conversion couldn't finish"
-        assert "Your existing files were not changed." in detail
-        assert "Check that your input folder" in detail  # the concrete check
-        assert "try" in detail and "again" in detail  # the retry
-        assert "Help page" in detail and "support" in detail  # the support path
+    def test_the_input_folder_card_is_retired(self) -> None:
+        # Plan 0053 S3: ONE copy source. A second, zero-arg build card would be a second place
+        # to word a failure — and the one it replaced pointed every crash at the input folder.
+        from src.ui_flet import convert_result
+
+        assert not hasattr(convert_result, "convert_error_copy")
+        assert hasattr(convert_result, "deliver_error_copy")  # the twin: the lookup does find a card
 
     def test_deliver_error_copy_ends_with_a_concrete_next_step(self) -> None:
         headline, detail = deliver_error_copy()
@@ -366,7 +416,8 @@ class TestOnErrorCardCopy:
         assert "Help page" in detail and "support" in detail
 
     def test_error_copy_is_plain_language(self) -> None:
-        for headline, detail in (convert_error_copy(), deliver_error_copy()):
+        cards = (deliver_error_copy(), error_card_copy(RuntimeError("x"), delivery_requested=False))
+        for headline, detail in cards:
             for jargon in ("SFTP", "GDE", "exception", "traceback", "SSH"):
                 assert jargon not in headline
                 assert jargon not in detail
@@ -374,5 +425,182 @@ class TestOnErrorCardCopy:
     def test_error_copy_has_no_interpolation_slots(self) -> None:
         # Belt-and-suspenders: fixed copy means no format placeholders a future edit
         # could accidentally feed a raw exception into.
-        for headline, detail in (convert_error_copy(), deliver_error_copy()):
+        for headline, detail in (deliver_error_copy(), error_card_copy(ValueError("x"), delivery_requested=True)):
             assert "{" not in headline + detail and "}" not in headline + detail
+
+
+def _outcomes(*failed: str, reason: OutcomeReason = OutcomeReason.MISSING_SOURCE_COLUMN) -> tuple[EntityOutcome, ...]:
+    """A rostering run's outcomes with ``failed`` entities FAILED and the rest BUILT."""
+    return tuple(
+        EntityOutcome.failed(name, reason) if name in failed else EntityOutcome.built(name, 10)
+        for name in ("Students", "Staff", "Family", "Classes", "Enrollments")
+    )
+
+
+_SUCCESS_SHAPED = [
+    ConvertStatus.DELIVERED,
+    ConvertStatus.DELIVERED_WITH_DATA_ERRORS,
+    ConvertStatus.BUILT_WITH_DATA_ERRORS,
+]
+
+
+class TestSummarizePartial:
+    """Plan 0053 S3: a success-shaped result whose outcomes show a FAILED entity is PARTIAL."""
+
+    @pytest.mark.parametrize("status", _SUCCESS_SHAPED)
+    def test_a_failed_entity_turns_a_success_shaped_status_into_a_warning(self, status: ConvertStatus) -> None:
+        result = ConvertResult(
+            delivery_requested=True,
+            status=status,
+            sftp_attempted=True,
+            sftp_ok=True,
+            entity_outcomes=_outcomes("Family"),
+        )
+        verdict, headline, detail = summarize(result)
+        assert verdict is Verdict.WARNING
+        expected_headline, expected_detail = partial_copy(_outcomes("Family")[2:3], delivered=True)
+        assert headline == expected_headline == "Your roster synced without family contacts"
+        assert detail.startswith(expected_detail)
+
+    @pytest.mark.parametrize("status", _SUCCESS_SHAPED)
+    def test_twin_the_same_status_with_every_entity_built_is_unchanged(self, status: ConvertStatus) -> None:
+        # The positive twin: outcomes are READ, but only a FAILED one changes the verdict.
+        built = ConvertResult(
+            delivery_requested=True, status=status, sftp_attempted=True, sftp_ok=True, entity_outcomes=_outcomes()
+        )
+        legacy = ConvertResult(
+            delivery_requested=True, status=status, sftp_attempted=True, sftp_ok=True, entity_outcomes=None
+        )
+        assert summarize(built) == summarize(legacy)
+        assert "without" not in summarize(built)[1]
+
+    def test_not_delivered_says_completed(self) -> None:
+        result = ConvertResult(
+            delivery_requested=False, status=ConvertStatus.DELIVERED, entity_outcomes=_outcomes("Family")
+        )
+        _verdict, headline, detail = summarize(result)
+        assert headline == "Your sync completed without family contacts"
+        assert "Everything else completed." in detail
+        assert "delivered" not in detail.lower()
+
+    def test_the_data_warning_count_rides_along_as_a_second_sentence(self) -> None:
+        result = ConvertResult(
+            delivery_requested=False,
+            status=ConvertStatus.BUILT_WITH_DATA_ERRORS,
+            data_errors_total=3,
+            entity_outcomes=_outcomes("Family"),
+        )
+        _verdict, _headline, detail = summarize(result)
+        assert detail.endswith("There were also 3 data warnings: some records had field problems and were left blank.")
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            ConvertStatus.BUILT_NOT_DELIVERED,
+            ConvertStatus.NO_OUTPUT,
+            ConvertStatus.INCOMPLETE_ROSTER,
+            ConvertStatus.OUTPUT_FOLDER_UNUSABLE,
+            ConvertStatus.NEEDS_ANOMALY_ACK,
+        ],
+    )
+    def test_failed_statuses_and_the_anomaly_gate_keep_their_precedence(self, status: ConvertStatus) -> None:
+        with_failure = ConvertResult(
+            delivery_requested=False, status=status, anomalies=("x",), entity_outcomes=_outcomes("Family")
+        )
+        without = ConvertResult(delivery_requested=False, status=status, anomalies=("x",), entity_outcomes=None)
+        assert summarize(with_failure) == summarize(without)
+
+
+class TestFailedStatusesReadTheSharedTable:
+    """Plan 0053 S3: ONE copy source — every category-FAILED status words its category."""
+
+    @pytest.mark.parametrize(
+        ("status", "category"),
+        [
+            (ConvertStatus.NO_INPUT, RunErrorCategory.NO_INPUT),
+            (ConvertStatus.NO_OUTPUT, RunErrorCategory.NO_OUTPUT),
+            (ConvertStatus.INCOMPLETE_ROSTER, RunErrorCategory.INCOMPLETE_ROSTER),
+            (ConvertStatus.OUTPUT_FOLDER_UNUSABLE, RunErrorCategory.OUTPUT),
+        ],
+    )
+    def test_the_status_renders_its_categorys_copy(self, status: ConvertStatus, category: RunErrorCategory) -> None:
+        verdict, headline, detail = summarize(
+            ConvertResult(delivery_requested=False, status=status, entity_outcomes=None)
+        )
+        assert verdict is Verdict.FAILED
+        assert (headline, detail) == failed_copy(category, delivery_requested=False)
+        assert headline == FAILED_CATEGORY_COPY[category][0]
+
+    @pytest.mark.parametrize(
+        ("status", "category"),
+        [
+            (ConvertStatus.NO_INPUT, RunErrorCategory.NO_INPUT),
+            (ConvertStatus.NO_OUTPUT, RunErrorCategory.NO_OUTPUT),
+            (ConvertStatus.INCOMPLETE_ROSTER, RunErrorCategory.INCOMPLETE_ROSTER),
+            (ConvertStatus.OUTPUT_FOLDER_UNUSABLE, RunErrorCategory.OUTPUT),
+        ],
+    )
+    def test_a_refusal_with_delivery_requested_says_nothing_was_sent_like_the_crash_card(
+        self, status: ConvertStatus, category: RunErrorCategory
+    ) -> None:
+        # One Convert run with delivery ticked gets ONE tail whether it failed as a status or as a
+        # raise: every FAILED status stops before the upload, so "requested" means "not sent".
+        _verdict, headline, detail = summarize(
+            ConvertResult(delivery_requested=True, status=status, entity_outcomes=None)
+        )
+        assert detail.endswith(NOTHING_SENT_TAIL)
+        assert (headline, detail) == error_card_copy(EtlError("x", category=category), delivery_requested=True)
+
+    def test_twin_without_delivery_requested_says_nothing_new_was_saved(self) -> None:
+        _v, _h, detail = summarize(
+            ConvertResult(delivery_requested=False, status=ConvertStatus.INCOMPLETE_ROSTER, entity_outcomes=None)
+        )
+        assert detail.endswith(NOTHING_SAVED_TAIL)
+        assert NOTHING_SENT_TAIL not in detail
+
+
+class TestDeliveryRequestedContract:
+    """``ConvertResult.delivery_requested`` picks a claim about what did NOT happen — no default."""
+
+    def test_it_is_required_keyword_only_with_no_default(self) -> None:
+        param = inspect.signature(ConvertResult).parameters["delivery_requested"]
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+        assert param.default is inspect.Parameter.empty
+
+    def test_omitting_it_is_a_type_error(self) -> None:
+        with pytest.raises(TypeError, match="delivery_requested"):
+            ConvertResult(status=ConvertStatus.NO_INPUT, entity_outcomes=None)  # type: ignore[call-arg]
+
+    def test_an_attempt_nobody_requested_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="nobody requested"):
+            ConvertResult(
+                status=ConvertStatus.DELIVERED, sftp_attempted=True, entity_outcomes=None, delivery_requested=False
+            )
+
+    def test_twin_an_attempt_that_was_requested_constructs(self) -> None:
+        result = ConvertResult(
+            status=ConvertStatus.DELIVERED, sftp_attempted=True, entity_outcomes=None, delivery_requested=True
+        )
+        assert result.delivery_requested is True
+
+
+class TestUnsetOutputFolderCard:
+    """``convert_job``'s unset-output-folder gate error words the OUTPUT category, never DATA."""
+
+    def test_it_is_still_a_value_error_for_every_existing_caller(self) -> None:
+        from src.etl.errors import OutputFolderUnsetError
+
+        assert issubclass(OutputFolderUnsetError, ValueError)
+
+    def test_the_card_points_at_the_output_folder(self) -> None:
+        from src.etl.errors import OutputFolderUnsetError
+
+        for requested in (True, False):
+            card = error_card_copy(OutputFolderUnsetError("x"), delivery_requested=requested)
+            assert card == failed_copy(RunErrorCategory.OUTPUT, delivery_requested=requested)
+            assert "output folder" in card[1].lower()
+
+    def test_twin_an_untyped_value_error_is_the_data_card(self) -> None:
+        # Why the type exists: a bare ValueError classifies to DATA ("something in this district's data").
+        card = error_card_copy(ValueError("x"), delivery_requested=False)
+        assert card == failed_copy(RunErrorCategory.DATA, delivery_requested=False)

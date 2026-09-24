@@ -60,7 +60,7 @@ roster byte is read — and an unusable folder returns ``OUTPUT_FOLDER_UNUSABLE`
 ETL work done and no run record. The write is additionally wrapped in ``except OSError``
 (the Excel-lock / drive-drops-mid-run window a pre-check structurally cannot see) and
 folds into the SAME status. Both exist because every one of these faults used to surface
-as ``convert_error_copy``, which tells the admin to check their *input* folder.
+as the retired ``convert_error_copy``, which told the admin to check their *input* folder.
 
 **Deliver from disk (0034 Slice 2):** EVERY deliver action — the post-build card, the
 BUILT_NOT_DELIVERED retry, and the standalone "Deliver the files in your output folder"
@@ -91,8 +91,10 @@ routed "Finish setup first" card (pure ``show_setup_first_card``/``setup_first_c
 mode-aware (wizard vs Settings); an amber ``district_mismatch_note`` flags a per-run pick
 that differs from the saved district; and every busy/idle disabled flag paints the pure
 ``interaction_state`` table (inputs lock while a job runs — no dead clicks, no
-double-start, no mid-run edits). The ``on_error`` cards render the fixed
-``convert_error_copy``/``deliver_error_copy`` pairs, each ending with a concrete next step.
+double-start, no mid-run edits). The ``on_error`` cards render bounded, fixed copy ending with
+a concrete next step: a failed BUILD renders ``failure_copy.error_card_copy(exc)`` — the
+exception's category (by TYPE, never its text) worded by the same table Home and Run History
+read (plan 0053 S3) — and a failed deliver pre-flight renders ``deliver_error_copy``.
 
 **Write-in-flight close guard (IA-5b, C6):** a module-level flag
 (``_WRITE_IN_FLIGHT``) is set immediately before ``save_all`` and cleared in a
@@ -114,7 +116,7 @@ import flet as ft
 
 from src.config.app_config import AppConfig
 from src.config.loader import load_config
-from src.etl.errors import RunErrorCategory
+from src.etl.errors import OutputFolderUnsetError, RunErrorCategory
 from src.etl.extractor import DataExtractor
 from src.etl.loader import DataLoader, output_target_problem
 from src.etl.outcomes import EntityOutcome, OutcomeLedger
@@ -161,14 +163,13 @@ from src.ui_flet.convert_output import (
 from src.ui_flet.convert_result import (
     ConvertResult,
     ConvertStatus,
-    convert_error_copy,
     deliver_error_copy,
     status_for_integrity_fault,
     summarize,
 )
+from src.ui_flet.failure_copy import error_card_copy
 from src.ui_flet.filepicker import validate_input_dir
-from src.ui_flet.home_status import ENTITY_LABELS
-from src.ui_flet.humanize import friendly_district_name
+from src.ui_flet.humanize import ENTITY_LABELS, friendly_district_name
 from src.ui_flet.identity_gate import stored_identity_domain
 from src.ui_flet.job_runner import JobRunner
 from src.ui_flet.mapping_catalog import disambiguated_labels, filtered_catalog
@@ -284,7 +285,7 @@ def convert_job(
     # `AppConfig.load().output_dir or input_dir` fallback is gone). Fail-fast, before any I/O.
     output_dir_value = (AppConfig.load().output_dir or "").strip()
     if not output_dir_value:
-        raise ValueError("No output folder is configured — set one in Settings before converting.")
+        raise OutputFolderUnsetError("No output folder is configured — set one in Settings before converting.")
     output_dir = Path(output_dir_value)
 
     # Gate 0 — the OUTPUT-FOLDER PRE-FLIGHT (plan 0050). HERE, not at the `DataLoader(...)`
@@ -293,7 +294,9 @@ def convert_job(
     output_problem = output_target_problem(output_dir_value)
     if output_problem is not None:
         logger.error("Output folder is not usable for district %r: %s", config_name, output_problem)
-        return ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE, entity_outcomes=None)
+        return ConvertResult(
+            status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE, entity_outcomes=None, delivery_requested=sftp_requested
+        )
 
     raw = config.to_raw_dict()
     mappings = raw.get("mappings", {})
@@ -323,7 +326,9 @@ def convert_job(
     # fire again. Shared with `run_pipeline` so both paths answer this the same way.
     if has_no_usable_input(raw_data):
         # Every entity NOT_RUN — what the CLI records when it raises `NoUsableInputError` here.
-        return ConvertResult(status=ConvertStatus.NO_INPUT, entity_outcomes=ledger.finalize_aborted())
+        return ConvertResult(
+            status=ConvertStatus.NO_INPUT, entity_outcomes=ledger.finalize_aborted(), delivery_requested=sftp_requested
+        )
 
     transform_outputs = run_transform(raw_data, mappings, global_config, ledger=ledger)
     outputs = transform_outputs.outputs
@@ -347,6 +352,7 @@ def convert_job(
             entity_counts={name: len(df) for name, df in outputs.items()},
             data_errors_total=_data_errors_total(data_errors),
             entity_outcomes=entity_outcomes,
+            delivery_requested=sftp_requested,
         )
         _record_manual_run(
             refused,
@@ -369,6 +375,7 @@ def convert_job(
             data_errors_total=_data_errors_total(data_errors),
             anomalies=tuple(anomalies),
             entity_outcomes=entity_outcomes,
+            delivery_requested=sftp_requested,
         )
 
     # Atomic write. Plan 0050 REVERSES the old "a `save_all` failure PROPAGATES" rule,
@@ -390,7 +397,11 @@ def convert_job(
         # A RESULT on screen, but still a failure worth a trace — the card is bounded and
         # category-only, so the raw path lives here or nowhere.
         logger.error("Could not write to the output folder (district %r).", config_name, exc_info=True)
-        return ConvertResult(status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE, entity_outcomes=entity_outcomes)
+        return ConvertResult(
+            status=ConvertStatus.OUTPUT_FOLDER_UNUSABLE,
+            entity_outcomes=entity_outcomes,
+            delivery_requested=sftp_requested,
+        )
 
     # Archive (non-destructive) entity CSVs left in the output dir that this run
     # did NOT produce — mirrors run_pipeline: a stale CSV must never ship in an
@@ -442,6 +453,7 @@ def convert_job(
                 sftp_ok=False,
                 quality_text=quality_text,
                 entity_outcomes=entity_outcomes,
+                delivery_requested=sftp_requested,
             )
             _record_manual_run(
                 built_not_delivered,
@@ -461,6 +473,7 @@ def convert_job(
             sftp_ok=True,
             quality_text=quality_text,
             entity_outcomes=entity_outcomes,
+            delivery_requested=sftp_requested,
         )
         _record_manual_run(
             delivered, sis_type=config_name, elapsed=time.monotonic() - t0, entity_outcomes=entity_outcomes
@@ -474,6 +487,7 @@ def convert_job(
         data_errors_total=errors_total,
         quality_text=quality_text,
         entity_outcomes=entity_outcomes,
+        delivery_requested=sftp_requested,
     )
     _record_manual_run(built, sis_type=config_name, elapsed=time.monotonic() - t0, entity_outcomes=entity_outcomes)
     return built
@@ -533,14 +547,22 @@ def deliver_job(sis_type: str) -> ConvertResult:
     except Exception:  # noqa: BLE001 - exit-3 shape: a failed delivery is a RESULT, not on_error
         logger.error("Delivery-only run failed (district %r).", district, exc_info=True)
         failed = ConvertResult(
-            status=ConvertStatus.BUILT_NOT_DELIVERED, sftp_attempted=True, sftp_ok=False, entity_outcomes=None
+            status=ConvertStatus.BUILT_NOT_DELIVERED,
+            sftp_attempted=True,
+            sftp_ok=False,
+            entity_outcomes=None,
+            delivery_requested=True,
         )
         _record_manual_run(
             failed, sis_type=sis_type, elapsed=time.monotonic() - t0, delivery_only=True, entity_outcomes=None
         )
         return failed
     delivered = ConvertResult(
-        status=ConvertStatus.DELIVERED_FROM_DISK, sftp_attempted=True, sftp_ok=True, entity_outcomes=None
+        status=ConvertStatus.DELIVERED_FROM_DISK,
+        sftp_attempted=True,
+        sftp_ok=True,
+        entity_outcomes=None,
+        delivery_requested=True,
     )
     _record_manual_run(
         delivered, sis_type=sis_type, elapsed=time.monotonic() - t0, delivery_only=True, entity_outcomes=None
@@ -864,14 +886,16 @@ def build_convert(
         def _on_error(exc: BaseException) -> None:
             # Privacy: the raw exception (may carry a path / column) is NEVER surfaced —
             # fixed category copy only (the raw error belongs to the log). The copy ends
-            # with a concrete next step (0035 W3b — no dead-end failures).
+            # with a concrete next step (0035 W3b — no dead-end failures). Plan 0053 S3: the
+            # category is the exception's TYPE (`error_card_copy` → `classify_error_category`,
+            # never `str(exc)`), so a missing column no longer reads as "check your input folder".
             #
             # "Belongs to the log" was aspirational until QA 2026-08-18 — nothing wrote it
             # there. The split is the whole point: the CARD stays category-only, and the
             # TRACE goes to the file the card's own "Open log folder" button opens.
             logger.error("Convert failed for district %r.", identity.district, exc_info=exc)
             _set_running(False)
-            result_slot.controls = [components.ErrorCard(*convert_error_copy())]
+            result_slot.controls = [components.ErrorCard(*error_card_copy(exc, delivery_requested=sftp_requested))]
             rendered["value"] = None
             _refresh_output_caption()  # a render path too: no refusal wording may survive here
             page.update()

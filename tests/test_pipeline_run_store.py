@@ -271,12 +271,15 @@ class TestConvertManual:
         The old ``AppConfig.load().output_dir or input_dir`` fallback would have quietly written the
         roster into the *input* folder; now it raises, and (fail-fast) records nothing.
         """
+        from src.etl.errors import OutputFolderUnsetError
         from src.ui_flet.screens.convert import convert_job
 
         AppConfig(input_dir=str(gde_input), output_dir="", sis_type="myedbc").save()
         before = sorted(p.name for p in gde_input.iterdir())
-        with pytest.raises(ValueError, match="output folder"):
+        with pytest.raises(ValueError, match="output folder") as excinfo:
             convert_job("myedbc", str(gde_input))
+        # Typed (plan 0053 S3) so the on_error card words it as the OUTPUT category, not DATA.
+        assert excinfo.type is OutputFolderUnsetError
         assert read_run_records() == []
         # The anti-regression is airtight: nothing was written into the INPUT folder
         # (the old fallback's exact failure mode), not merely "the call raised".

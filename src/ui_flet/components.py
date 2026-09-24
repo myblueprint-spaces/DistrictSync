@@ -50,8 +50,8 @@ from src.ui_flet.convert_output import open_folder
 from src.ui_flet.home_status import (
     _MYBLUEPRINT_ENTITIES,
     _ROSTERING_ENTITIES,
-    ENTITY_LABELS,
 )
+from src.ui_flet.humanize import ENTITY_LABELS
 from src.ui_flet.run_history import RunRow, SftpDelivery
 from src.ui_flet.verdict import Verdict, verdict_visuals
 from src.utils.paths import user_log_file
@@ -640,7 +640,7 @@ def status_pill(label: str, status: Verdict) -> ft.Container:
 # The 5 rostering entities always shown, then the 2 myBlueprint+ entities shown
 # only when a row has them — off the `home_status` entity tuples. Each entry
 # is (entity key -> column header). Both the entity ORDER (the `home_status` tuples)
-# and the entity→label fact (`home_status.ENTITY_LABELS`) are single-sourced — this
+# and the entity→label fact (`humanize.ENTITY_LABELS`) are single-sourced — this
 # `run_table` and the pure `mapping_catalog` read ONE definition, so a label rename
 # (e.g. "Courses") changes every surface at once (DRY).
 _ROW_ROSTERING_COLUMNS: tuple[tuple[str, str], ...] = tuple(

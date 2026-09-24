@@ -608,7 +608,12 @@ class TestSignatures:
         from src.ui_flet.convert_result import ConvertResult, ConvertStatus
 
         assert PipelineResult(entity_outcomes=_SAMPLE).entity_outcomes == _SAMPLE
-        assert ConvertResult(status=ConvertStatus.DELIVERED, entity_outcomes=None).entity_outcomes is None
+        assert (
+            ConvertResult(
+                delivery_requested=False, status=ConvertStatus.DELIVERED, entity_outcomes=None
+            ).entity_outcomes
+            is None
+        )
 
 
 # --------------------------------------------------------------------------- #

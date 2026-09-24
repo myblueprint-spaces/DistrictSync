@@ -141,6 +141,19 @@ class ConfigLoadError(EtlError, ValueError):
     default_category = RunErrorCategory.CONFIG
 
 
+class OutputFolderUnsetError(EtlError, ValueError):
+    """A conversion was started with no output folder configured — a gate/programming error.
+
+    Convert's run gate (``can_run_convert``) blocks this path, so it is never a normal flow
+    and fails loud (D10). Typed (plan 0053 S3) so Convert's ``on_error`` card words it as the
+    ``output`` category — "check the output folder in Settings" — rather than the ``data``
+    copy an untyped ``ValueError`` classifies to. A ``ValueError`` for every existing caller,
+    and still never recorded (plan 0053 S5 lists it among the deliberate non-records).
+    """
+
+    default_category = RunErrorCategory.OUTPUT
+
+
 def available_columns_note(count: int) -> str:
     """The ONE phrasing of "what the file did carry" in a missing-column message.
 
