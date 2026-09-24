@@ -12,6 +12,12 @@ Supersedes: the message-substring branch of `pipeline._classify_error_category` 
 
 **Deliberately NOT changed:** the pipeline's config-load block still records `config` via `_record_early_failure` and exits 1 (converting it would double-record and defeat `humanize_config_error`'s type-based branches); `ConfigLoadError` is defined but first raised by Convert in S5. Scope is unchanged — every typed error still fails the RUN until S4's entity boundary. `config_editor.humanize_config_error` still reads message text to pick its bounded sentence; it is a creator-screen copy mapper, not the run-record classifier, and is out of S1's scope.
 
+## 2026-09-24 — plan 0053 lands as ONE integration PR; the owner tests the exe and merges once
+
+Supersedes: 2026-09-23 plan 0053 execution scaffolding — "owner merges each slice" and "cut a release after S4".
+
+**Decided (owner, 2026-09-24):** no 0053 slice merges to `main` on its own. Every slice is built on its own branch `claude/0053-s<n>-<slug>`, reviewed and gated locally, then fast-forwarded by the agent into the integration branch `claude/0053-etl-failure-policy`, which has ONE draft PR into `main`. CI runs on that PR at every push (`ci.yml` triggers only on PRs into `main`, so stacked per-slice PRs would get no CI); its result is read and quoted per slice. At the end the owner downloads the CI-built exe, tests it, and merges the one PR. The release planned after S4 (the Unity fix) is DEFERRED to that end: Unity stays on the Enhanced report / workaround until then. S0 (docs only) already merged as #144; S1's PR #145 is closed in favour of the integration PR. **Why:** `main` — and the exe districts run — stays exactly as released until the whole policy has been tested end to end.
+
 ## 2026-09-24 — Gate A (plan 0053): §3 and §5 of the failure policy approved as written
 
 Supersedes: nothing — completes Gate A of the 2026-09-23 failure-policy entry below.
