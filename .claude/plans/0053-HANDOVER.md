@@ -17,8 +17,8 @@ Last updated: 2026-09-24 (Gate A approved; S0 awaiting the owner's merge; S1 nex
 | Slice | Status | Branch / PR | Notes |
 |---|---|---|---|
 | Plan | Stage 3 complete; **Gate A COMPLETE 2026-09-24** (owner approved §3/§5 as written — DECISIONS 2026-09-24) | committed with S0 | D1 = all four optional feeds ISOLATABLE (owner overrode the (b) recommendation); D3 = exit 0 + PARTIAL; D4 = validated config-declared labels |
-| **S0** | **PR #144 OPEN — Gate A approved; awaiting the owner's MERGE** (docs only) | `claude/0053-s0-failure-policy` (off `8d33664`) → **PR #144** (https://github.com/myblueprint-spaces/DistrictSync/pull/144), commits `d88aa5f`, `6542ff0` (Q5 evidence; CI run 36016686379 green), + the Gate A record | Local gates green 2026-09-23: 7,627 passed / 98 skipped, coverage 96.5%, ruff clean, email scan OK. Written by an Opus writer + 3 rounds of adversarial verification (truth-vs-code, catalogue, harness) |
-| S1 | next | `claude/0053-s1-typed-errors` | Gate A cleared. Branch off `origin/main` once #144 is merged (or stack on S0's head and merge `origin/main` before opening the PR) |
+| **S0** | **MERGED 2026-09-24** (`f0e3d46`; docs only). The Gate A record commit landed after the merge, so it rides S1's branch | `claude/0053-s0-failure-policy` (off `8d33664`) → **PR #144** (https://github.com/myblueprint-spaces/DistrictSync/pull/144), commits `d88aa5f`, `6542ff0` (Q5 evidence; CI run 36016686379 green), + the Gate A record | Local gates green 2026-09-23: 7,627 passed / 98 skipped, coverage 96.5%, ruff clean, email scan OK. Written by an Opus writer + 3 rounds of adversarial verification (truth-vs-code, catalogue, harness) |
+| S1 | **in progress** | `claude/0053-s1-typed-errors` (off `f0e3d46`) | Gate A cleared; implementer → review → verify → fix workflow running |
 | S2–S15 | not started | — | — |
 
 ### Q5 evidence gathered 2026-09-24 (now recorded in `output-contract.md` "Evidence so far" as E1–E6, on #144; `Q5-status` stays `open`)
@@ -31,7 +31,7 @@ Last updated: 2026-09-24 (Gate A approved; S0 awaiting the owner's merge; S1 nex
 
 **Gate A answers (owner, 2026-09-24 — all three confirm §3/§5 as written):** (1) an unlisted entity is CRITICAL until promoted; (2) a missing LINKING column (class (b), co-teacher columns included) fails the night, behind S10's measurement gate; (3) a missing NICE-TO-HAVE column (class (d), e.g. homeroom teacher name — site #35) is blank + warn, never a run failure.
 
-**Next action:** if #144 is still open, ask the owner to merge it (read CI first). Then run S1 (spec: plan § "S1 — Typed ETL error taxonomy").
+**Next action:** finish S1 (spec: plan § "S1 — Typed ETL error taxonomy") on `claude/0053-s1-typed-errors`.
 
 ### S0 checklist (from the plan's S0 Spec — tick as done)
 - [x] `docs/developer/failure-policy.md` §0–§14, ≤300 lines, every row's Status truthful about TODAY
