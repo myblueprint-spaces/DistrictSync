@@ -649,15 +649,48 @@ Q5-status: open
 (`docs/developer/failure-policy.md` §3) lets Family, StudentAttendance, CourseInfo and StudentCourses be
 left out of a night's delivery when their own export fails — an owner decision (2026-09-23) taken ahead of
 this answer; every later change to that table waits on it. Q1b stays the first attendance-correctness check; Q5 governs every
-file. **What we have is evidence, not an answer:** `docs/partner/faq.md` states that a user missing from a
-DELIVERED `Students.csv`/`Staff.csv` is marked Inactive and that an enrollment missing from a DELIVERED
-`Enrollments.csv` is removed — both describe a row absent from a file that arrived, not a file that did not;
+file. **What we have is evidence, not an answer:** `docs/partner/faq.md` states that a student missing from a
+DELIVERED `Students.csv` is marked Inactive and that what happens to staff and to class enrollments missing
+from a DELIVERED file depends on the district's import settings — all of it describes a row absent from a file that arrived, not a file that did not;
 the same FAQ's import-validation table says a file with an invalid format is skipped as a whole, which
 suggests but does not establish how an absent file is treated; and rostering zips without `Family.csv`
 already ship whenever Family builds no rows (SD51 since its contacts export carries no email column —
 DECISIONS 2026-09-12) — whether anything was unlinked on those nights has not been checked. DistrictSync
 does not emit a header-only CSV today (an entity with no rows is skipped, never written), so Q5b matters
 only if that ever changes. The owner sends Q5 (plan 0053 D2); S14 records the answer.
+
+**Evidence so far (2026-09-24).** Six sources, none of them a Q5 answer; `Q5-status` stays `open`.
+
+- **E1 — owner, 2026-09-24:** the SpacesEDU import works in a hierarchy — it can import users
+  (Students/Staff) on their own, but not Enrollments without Classes, and not Family without users.
+- **E2 — owner, 2026-09-24:** Unity Christian has the family-association removal setting OFF.
+- **E3 — Confluence "SpacesEDU - Advanced CSV Requirements" (2025-03-17):** "The system should import the
+  files that are on the SFTP, even if not all file types are there."
+- **E4 — Confluence "[SpacesEDU] School-Family-Student Associations M2 & Other Family Updates" (2026-07-15):**
+  a district setting to remove imported school-family-student associations no longer in the data; "The
+  family data set must be a complete file set if this toggle is enabled."
+- **E5 — Confluence "Imports" KB (2025-10-06):** staff setting "Unenroll teachers absent or unenrolled in the
+  imports" — when OFF, teachers are left active even if no longer in the rostering data; student setting
+  "Remove from classes students unenrolled in the imports" — when OFF, students remain in their classes.
+  Removing a student from a class is a SOFT remove (shown "(Removed)", data kept) per "REQs Met - Updated
+  Behaviour for Removing Students from Class" (2025-04-24).
+- **E6 — Confluence "GDE 2 AdvancedCSV ETL Tool" (2025-08-06):** user records are marked Inactive when they
+  no longer have a matching record in `Students.csv` or `Staff.csv`, matched on User ID, Role and School ID.
+
+What it narrows, sub-question by sub-question:
+
+- **Q5a — narrowed (E1 + E3), not answered.** Per the requirement in E3 and the owner in E1, the import
+  proceeds with the files present, within the hierarchy (users alone; Enrollments need Classes; Family
+  needs users). NOT confirmed: that records an earlier
+  delivery of the absent file created stay unchanged.
+- **Q5b — still open.** No source says what a header-only file does.
+- **Q5c — still open.** No source says whether a missing `CourseInfo.csv`, `StudentCourses.csv` or
+  `StudentAttendance.csv` raises an alert, or what it changes.
+- **Q5d — not narrowed.** E1's hierarchy covers the rostering files only; it says nothing about the two
+  course feeds.
+- **Q5e — narrowed (E4 + E2), not answered.** E4 describes an opt-in district setting that removes
+  associations no longer in the data and needs a complete family file when ON; no source says what
+  happens when it is OFF. Unity has it OFF (E2).
 
 > **Q5a — rostering files: when `Students.csv`, `Staff.csv`, `Family.csv`, `Classes.csv` or `Enrollments.csv` is ABSENT from the rostering zip, what happens to records an earlier delivery of that file created?**
 > For each of the five files separately: are previously imported records left unchanged, deactivated / unlinked / unenrolled, or is the whole zip rejected?
@@ -685,7 +718,7 @@ previously imported data changes and whether any alert is raised.
 reverse; note what is imported in each case.
 
 > **Q5e — family links: when a guardian who was in the previous `Family.csv` is missing from a DELIVERED `Family.csv`, is that guardian unlinked from the student?**
-> The FAQ answers this question for students, staff and enrollments but not for family contacts.
+> The FAQ now says staff and enrollment removal depend on district import settings and describes the family-association setting; it does not say what happens to a guardian missing from a delivered `Family.csv` when that setting is OFF.
 
 *The check:* import a `Family.csv`, then one identical except that one guardian row is removed; note
 whether that guardian's link to the student survives.

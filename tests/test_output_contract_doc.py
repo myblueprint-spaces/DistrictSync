@@ -168,7 +168,9 @@ Q5D_TEXT = (
 Q5E_TEXT = (
     "**Q5e — family links: when a guardian who was in the previous `Family.csv` is missing from a DELIVERED "
     "`Family.csv`, is that guardian unlinked from the student?**\n"
-    "> The FAQ answers this question for students, staff and enrollments but not for family contacts."
+    "> The FAQ now says staff and enrollment removal depend on district import settings and describes the "
+    "family-association setting; it does not say what happens to a guardian missing from a delivered "
+    "`Family.csv` when that setting is OFF."
 )
 
 _EXPECTED_QUESTION_COUNTS = {

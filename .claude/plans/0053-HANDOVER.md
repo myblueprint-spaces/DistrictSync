@@ -17,8 +17,14 @@ Last updated: 2026-09-23, end of the planning session (Fable 5.1 orchestrated th
 | Slice | Status | Branch / PR | Notes |
 |---|---|---|---|
 | Plan | Stage 3 complete; Gate A decided except §3/§5 approval | untracked → committed with S0 | D1 = all four optional feeds ISOLATABLE (owner overrode the (b) recommendation); D3 = exit 0 + PARTIAL; D4 = validated config-declared labels |
-| **S0** | **PR OPEN — awaiting CI + owner review/merge** (docs only) | `claude/0053-s0-failure-policy` (off `8d33664`) → PR: see `gh pr list --head claude/0053-s0-failure-policy` | Local gates green 2026-09-23: 7,627 passed / 98 skipped, coverage 96.5%, ruff clean, email scan OK. Written by an Opus writer + 3 rounds of adversarial verification (truth-vs-code, catalogue, harness) |
+| **S0** | **PR #144 OPEN, CI GREEN — awaiting owner §3/§5 approval + merge** (docs only) | `claude/0053-s0-failure-policy` (off `8d33664`) → **PR #144** (https://github.com/myblueprint-spaces/DistrictSync/pull/144), commit `d88aa5f` | Local gates green 2026-09-23: 7,627 passed / 98 skipped, coverage 96.5%, ruff clean, email scan OK. Written by an Opus writer + 3 rounds of adversarial verification (truth-vs-code, catalogue, harness) |
 | S1–S15 | not started | — | S1 waits for the owner to approve §3 + §5 of `docs/developer/failure-policy.md` after S0's PR |
+
+### Q5 evidence gathered 2026-09-24 (now recorded in `output-contract.md` "Evidence so far" as E1–E6, on #144; `Q5-status` stays `open`)
+- **Owner (2026-09-24):** the import runs in a HIERARCHY — it can import users (Students/Staff) alone, but not Enrollments without Classes, and not Family without users. This matches the plan's CRITICAL set and `DEPENDS_ON`.
+- **Owner (2026-09-24):** Unity Christian has the family-association removal toggle **OFF** (E2). Narrowed for Unity, not resolved: what an absent `Family.csv` does is still Q5a, unconfirmed.
+- **Confluence:** "import the files that are on the SFTP, even if not all file types are there" (SpacesEDU - Advanced CSV Requirements, NP, 2025-03-17). Family: toggle "Remove imported School-Family-Student Associations no longer in data" — when ON, "the family data set must be a complete file set" (REQ page 4149313554, 2026-07-15). Staff deactivation and student class removal are ALSO per-district toggles, and student removal is a SOFT remove (Imports KB, SKB 3847160494) — `docs/partner/faq.md` now states them as setting-dependent (corrected on #144).
+- Still NOT found: header-only file behaviour (Q5b); alerting on a missing course/attendance feed (Q5c).
 
 **S0 findings the next slices need:** `failure-policy.md` §5 is the verified site catalogue (39 rows incl. new defects: blended `_add_session_key` silently merges classes when time/school columns are absent — #39; a missing `User ID` SOURCE column makes the roster `{"<NA>"}` and drops every downstream student row — #27(ii); `staff._merge_roster` raw KeyError — #13a). Prefer its line numbers over the plan's. S2's `DEPENDS_ON` gains `Classes→{Students}` (already in the plan).
 
@@ -32,7 +38,7 @@ Last updated: 2026-09-23, end of the planning session (Fable 5.1 orchestrated th
 - [x] `docs/partner/faq.md:19-21` + `help-centre-myedbc-districtsync-guide.md` (:175 and the missing-file passage) restated to today's truth
 - [x] DECISIONS entry (+ D1/D3/D4 recorded) · INVARIANTS pointer rows · ROADMAP "Plan 0053" cross-reference heading · CANDIDATES lesson · CLAUDE.md +1 line · adding-transformer.md / adding-district.md checklist lines
 - [x] `python scripts/check_no_emails.py` green; `pytest tests/test_output_contract_doc.py` + any doc-parity tests green; full suite green
-- [ ] commit (plan + handover + S0), push, PR, CI read and quoted
+- [x] commit `d88aa5f` (plan + handover + S0), pushed, PR #144 opened · [x] CI read and quoted: run 35914480408 — `test` (ubuntu) pass 17m45s, `test-windows` pass 11m27s, watch exit 0 (PR CI has no macOS job; macOS runs only in release.yml)
 
 ---
 

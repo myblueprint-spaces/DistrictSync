@@ -112,11 +112,13 @@ SpacesEDU matches incoming records against the database by **User ID** or **emai
 
 **Q: What happens to students or staff no longer in the file?**
 
-Users that no longer appear in `Students.csv` or `Staff.csv` (by User ID, Role, and School ID) are marked **Inactive** in SpacesEDU. They are not deleted.
+A student who no longer appears in `Students.csv` (matched by User ID, Role, and School ID) is marked **Inactive** in SpacesEDU. For staff, it depends on your district's import settings: if the setting to unenroll teachers who are absent from the imports is off, teachers are left active even when they are no longer in the rostering data.
+
+If your district has turned on the setting that removes school-family-student associations no longer in the data, family links missing from the file are removed, and that setting expects a complete family file.
 
 **Q: What happens to enrollments no longer in the file?**
 
-Students and teachers are **unenrolled** from a class if they no longer appear in `Enrollments.csv` for that class. Existing classes are preserved and new enrollments are added.
+It depends on your district's import settings. If the setting to remove students unenrolled in the imports from their classes is off, students stay in their classes even when they are no longer in the enrollment data. For teachers, the setting to unenroll teachers absent or unenrolled in the imports applies. When a student is removed from a class, they are shown as removed and their data is kept.
 
 **Q: When does SpacesEDU skip a record during import?**
 

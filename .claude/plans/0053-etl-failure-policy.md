@@ -155,7 +155,7 @@ Pattern once; representative paths per slice are in **Decomposition**. New sourc
 
 ## Risks & mitigations
 
-- **Guardians already linked at Unity (since 2026-09-14) may be unlinked by a delivery without `Family.csv`.** Unknown (Q5). Same delivery shape as an existing empty-contacts night; recoverable on the next good night; the owner accepts it explicitly in D1. The alternative keeps a CERTAIN harm (the whole roster frozen).
+- **Guardians already linked at Unity (since 2026-09-14) may be unlinked by a delivery without `Family.csv`.** *Narrowed for Unity 2026-09-24: Unity's association-removal setting is OFF (E2); what an absent `Family.csv` does is still Q5a, unconfirmed — see `output-contract.md` "Evidence so far".* Same delivery shape as an existing empty-contacts night; recoverable on the next good night; the owner accepts it explicitly in D1. The alternative keeps a CERTAIN harm (the whole roster frozen).
 - **Isolating an entity that a critical one depends on.** Prevented structurally: Classes→Enrollments (`context.class_artifacts`) and everything→Students (`active_student_ids`) are the only context publishers (`students.py:47`, `classes.py:49` — AST-pinned in S2); both are CRITICAL.
 - **A bug in Family's own code now shows as a nightly WARNING rather than a failure.** Still loud: ERROR + traceback in the log, PARTIAL every night on every surface, `ENTITY NOT BUILT` grep anchor.
 - **Older exes sharing `history.db` paint a partial run green** (two builds on one machine, `store.py:21/200`). Accepted: the partial record keeps `status="success"` (exit-0 contract; older readers degrade to today's behaviour, never to a crash). Documented in S2.
