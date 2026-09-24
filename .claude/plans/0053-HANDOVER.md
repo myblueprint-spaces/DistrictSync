@@ -31,7 +31,7 @@ Last updated: 2026-09-24 (Gate A approved; S0 awaiting the owner's merge; S1 nex
 
 **Gate A answers (owner, 2026-09-24 — all three confirm §3/§5 as written):** (1) an unlisted entity is CRITICAL until promoted; (2) a missing LINKING column (class (b), co-teacher columns included) fails the night, behind S10's measurement gate; (3) a missing NICE-TO-HAVE column (class (d), e.g. homeroom teacher name — site #35) is blank + warn, never a run failure.
 
-**Integration PR:** `claude/0053-etl-failure-policy` → `main`, DRAFT (see the PR link in the State table's header note below). **Next action:** start S2 (spec: plan § "S2 — Per-entity outcome ledger").
+**Integration PR:** `claude/0053-etl-failure-policy` → `main`, **DRAFT PR #146** (https://github.com/myblueprint-spaces/DistrictSync/pull/146) — keep its slice table current. **Next action:** start S2 (spec: plan § "S2 — Per-entity outcome ledger").
 
 **S1 findings the next slices need:** `errors.available_columns_note(count)` is the one "count, never headers" phrasing; site #4 (`grades.filter_to_grade_scope`) carries the RESOLVED lower-cased grade column until S9; `ExtractionError` also covers the case-insensitive filename collision (records `input_unreadable`); `config_editor.humanize_config_error` still routes by message text (S3/S5 concern); SD51 20260918 builds Family = 0 rows (feeds the plan's SD51-Family verify item, S6); no site tags added (S11 owns them).
 
